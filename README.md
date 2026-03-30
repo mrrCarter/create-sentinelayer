@@ -74,6 +74,7 @@ When `Advanced options?` is enabled:
 
 - `Connect a GitHub repo and inject Actions secret?`
 - `How should we choose the repo?` (current / GitHub picker / manual)
+- GitHub picker reads all accessible repos via paginated `gh api`
 - `Clone this repo locally and build directly into it now?`
 - `Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?`
 
