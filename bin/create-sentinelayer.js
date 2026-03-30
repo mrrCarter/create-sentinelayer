@@ -469,20 +469,34 @@ function ensureGhAuthSession(ghCommand) {
 }
 
 function listReposViaGh(ghCommand) {
+  const endpoint = "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member";
   const apiResult = spawnSync(
     ghCommand,
-    ["api", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member"],
+    ["api", "--paginate", "--slurp", endpoint],
     { encoding: "utf-8" }
   );
   if (apiResult.status !== 0) {
-    throw new Error(
-      String(apiResult.stderr || apiResult.stdout || "Unable to fetch repositories with gh api.").trim()
-    );
+    const fallback = spawnSync(ghCommand, ["api", endpoint], { encoding: "utf-8" });
+    if (fallback.status !== 0) {
+      throw new Error(
+        String(
+          fallback.stderr ||
+            fallback.stdout ||
+            apiResult.stderr ||
+            apiResult.stdout ||
+            "Unable to fetch repositories with gh api."
+        ).trim()
+      );
+    }
+    return parseGhRepoListPayload(String(fallback.stdout || "[]"));
   }
+  return parseGhRepoListPayload(String(apiResult.stdout || "[]"));
+}
 
+function parseGhRepoListPayload(rawJson) {
   let payload = [];
   try {
-    payload = JSON.parse(String(apiResult.stdout || "[]"));
+    payload = JSON.parse(rawJson);
   } catch {
     throw new Error("GitHub repo list response was not valid JSON.");
   }
@@ -490,9 +504,18 @@ function listReposViaGh(ghCommand) {
     throw new Error("GitHub repo list response was not an array.");
   }
 
+  const flattened = [];
+  for (const entry of payload) {
+    if (Array.isArray(entry)) {
+      flattened.push(...entry);
+    } else {
+      flattened.push(entry);
+    }
+  }
+
   const seen = new Set();
   const repos = [];
-  for (const item of payload) {
+  for (const item of flattened) {
     const slug = normalizeRepoSlug(item && typeof item.full_name === "string" ? item.full_name : "");
     if (!isValidRepoSlug(slug)) continue;
     const key = slug.toLowerCase();
