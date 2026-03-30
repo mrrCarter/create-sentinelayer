@@ -45,8 +45,14 @@ jobs:
           name: create-sentinelayer-tarball
           path: create-sentinelayer-*.tgz
 
+      - name: Publish skipped (missing NPM_TOKEN)
+        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && secrets.NPM_TOKEN == ''
+        run: |
+          echo "NPM_TOKEN is not configured. Skipping npm publish."
+          echo "Set repository/org secret NPM_TOKEN and rerun with publish=true."
+
       - name: Publish to npm
-        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
+        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && secrets.NPM_TOKEN != ''
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
