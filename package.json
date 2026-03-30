@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
+  "scripts": {
+    "check": "node --check bin/create-sentinelayer.js",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "node --test tests/e2e.test.mjs",
+    "verify": "npm run check && npm run test:e2e && npm pack --dry-run"
+  },
   "bin": {
     "create-sentinelayer": "bin/create-sentinelayer.js"
   },

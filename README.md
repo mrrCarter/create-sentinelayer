@@ -31,6 +31,22 @@ npx create-sentinelayer@latest my-agent-app
 npm run sentinel:start
 ```
 
+## Non-interactive mode (CI/E2E)
+
+Use non-interactive mode to run full scaffolding in automation:
+
+```bash
+SENTINELAYER_CLI_INTERVIEW_JSON='{"projectName":"demo-app","projectDescription":"Build an autonomous secure code review orchestrator.","aiProvider":"openai","generationMode":"detailed","audienceLevel":"developer","projectType":"greenfield","techStack":["TypeScript","Node.js"],"features":["auth","scan"],"connectRepo":false,"injectSecret":false}' \
+npx create-sentinelayer@latest demo-app --non-interactive --skip-browser-open
+```
+
+Inputs for non-interactive mode:
+
+- `SENTINELAYER_CLI_INTERVIEW_JSON` (JSON string)
+- or `--interview-file <path-to-json>`
+- `--non-interactive` is required to disable prompts
+- `--skip-browser-open` avoids launching local browser in headless runs
+
 ## Generated files
 
 - `docs/spec.md`
@@ -102,6 +118,18 @@ Release options:
 
 1. Push a tag like `v0.1.1` to publish automatically.
 2. Run the `Release` workflow manually from Actions.
+
+## Local verification
+
+```bash
+npm run verify
+```
+
+This runs:
+
+- CLI syntax check
+- end-to-end automated scaffolding tests (mock API + mock `gh`)
+- package tarball dry-run
 
 ## Troubleshooting
 
