@@ -92,6 +92,20 @@ pwsh .\scripts\audit_sentinelayer_token_contract.ps1 -SyncGitHubSecrets -Repos <
 - network access to Sentinelayer API/web
 - optional: GitHub CLI (`gh`) authenticated for secret injection
 
+## Release to npm
+
+This repo includes `.github/workflows/release.yml`.
+
+Prerequisites:
+
+- npm package name is available (`create-sentinelayer`)
+- repository secret `NPM_TOKEN` is set with publish access
+
+Release options:
+
+1. Push a tag like `v0.1.1` to publish automatically.
+2. Run the `Release` workflow manually from Actions.
+
 ## Troubleshooting
 
 - `Authentication timed out`: rerun and approve browser session faster.
