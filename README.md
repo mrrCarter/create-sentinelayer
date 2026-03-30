@@ -119,6 +119,7 @@ Release options:
 1. Push a tag like `v0.1.1` to publish automatically.
 2. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
 3. Run `Release` manually with `publish=true` to publish from Actions.
+4. If `NPM_TOKEN` is not configured, publish is skipped with an explicit workflow message (verification + tarball still succeed).
 
 ## Local verification
 
