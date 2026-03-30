@@ -157,12 +157,15 @@ This runs:
 - end-to-end automated scaffolding tests (mock API + mock `gh`)
 - package tarball dry-run
 
-## Roadmap
+## Local commands (MVP)
 
-Planned follow-on terminal commands (post-scaffold):
+The CLI now supports local command mode:
 
-- `sentinel /omargate deep` for in-terminal deep policy scan
-- `sentinel /audit` for local codebase audit without GitHub PR flow
+- `/omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
+- `/audit --path <repo>` runs local readiness + scan audit and writes `.sentinelayer/reports/audit-*.md` (non-zero exit if blocking findings exist)
+
+Roadmap:
+
 - persona orchestrator command set for specialized review/execution modes
 
 ## Troubleshooting
