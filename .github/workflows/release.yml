@@ -28,9 +28,7 @@ jobs:
         run: npm ci
 
       - name: Validate package
-        run: |
-          node --check bin/create-sentinelayer.js
-          npm pack --dry-run
+        run: npm run verify
 
       - name: Publish to npm
         run: npm publish --access public

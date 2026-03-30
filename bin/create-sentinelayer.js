@@ -17,12 +17,18 @@ const DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentine
 const DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
 const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+const CLI_VERSION = "0.1.0";
 
 const DEFAULT_MODEL_BY_PROVIDER = {
   openai: "gpt-5.3-codex",
   anthropic: "claude-sonnet-4-6",
   google: "gemini-2.5-flash",
 };
+
+const VALID_AI_PROVIDERS = new Set(["openai", "anthropic", "google"]);
+const VALID_GENERATION_MODES = new Set(["detailed", "quick", "enterprise"]);
+const VALID_AUDIENCE_LEVELS = new Set(["developer", "intermediate", "beginner"]);
+const VALID_PROJECT_TYPES = new Set(["greenfield", "add_feature", "bugfix"]);
 
 class SentinelayerApiError extends Error {
   constructor(message, { code = "API_ERROR", status = 500, requestId = null } = {}) {
@@ -67,6 +73,141 @@ function isValidRepoSlug(value) {
 
 function isValidSecretName(value) {
   return /^[A-Z][A-Z0-9_]{1,127}$/.test(String(value || "").trim());
+}
+
+function boolFromEnv(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function normalizeListInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  return parseCommaList(value);
+}
+
+function parseCliArgs(argv) {
+  let projectName = "";
+  let interviewFile = "";
+  let nonInteractive = boolFromEnv(process.env.SENTINELAYER_CLI_NON_INTERACTIVE);
+  let skipBrowserOpen = boolFromEnv(process.env.SENTINELAYER_CLI_SKIP_BROWSER_OPEN);
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = String(argv[i] || "").trim();
+    if (!arg) continue;
+    if (arg === "--non-interactive") {
+      nonInteractive = true;
+      continue;
+    }
+    if (arg === "--skip-browser-open") {
+      skipBrowserOpen = true;
+      continue;
+    }
+    if (arg === "--interview-file") {
+      const next = String(argv[i + 1] || "").trim();
+      if (!next) {
+        throw new Error("Missing value for --interview-file");
+      }
+      interviewFile = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+    if (!projectName) {
+      projectName = arg;
+    } else {
+      throw new Error(`Unexpected extra argument: ${arg}`);
+    }
+  }
+
+  return {
+    projectName,
+    interviewFile,
+    nonInteractive,
+    skipBrowserOpen,
+  };
+}
+
+function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" } = {}) {
+  const obj = raw && typeof raw === "object" ? raw : {};
+  const aiProvider = String(obj.aiProvider || "openai").trim().toLowerCase();
+  const generationMode = String(obj.generationMode || "detailed").trim().toLowerCase();
+  const audienceLevel = String(obj.audienceLevel || "developer").trim().toLowerCase();
+  const projectType = String(obj.projectType || "greenfield").trim().toLowerCase();
+  const connectRepo = Boolean(obj.connectRepo);
+  const repoSlug = normalizeRepoSlug(obj.repoSlug || detectedRepo || "");
+
+  const normalized = {
+    projectName: sanitizeProjectName(obj.projectName || argProjectName),
+    projectDescription: String(obj.projectDescription || "").trim(),
+    aiProvider: VALID_AI_PROVIDERS.has(aiProvider) ? aiProvider : "openai",
+    generationMode: VALID_GENERATION_MODES.has(generationMode) ? generationMode : "detailed",
+    audienceLevel: VALID_AUDIENCE_LEVELS.has(audienceLevel) ? audienceLevel : "developer",
+    projectType: VALID_PROJECT_TYPES.has(projectType) ? projectType : "greenfield",
+    techStack: normalizeListInput(obj.techStack),
+    features: normalizeListInput(obj.features),
+    connectRepo,
+    repoSlug: connectRepo ? repoSlug : "",
+    injectSecret: connectRepo ? Boolean(obj.injectSecret) : false,
+  };
+
+  return normalized;
+}
+
+function validateInterviewInput(interview) {
+  if (!interview.projectName) {
+    throw new Error("Project name is required.");
+  }
+  if (String(interview.projectDescription || "").trim().length < 15) {
+    throw new Error("Project description must be at least 15 characters.");
+  }
+  if (!VALID_AI_PROVIDERS.has(interview.aiProvider)) {
+    throw new Error("Invalid aiProvider. Use openai, anthropic, or google.");
+  }
+  if (!VALID_GENERATION_MODES.has(interview.generationMode)) {
+    throw new Error("Invalid generationMode. Use detailed, quick, or enterprise.");
+  }
+  if (!VALID_AUDIENCE_LEVELS.has(interview.audienceLevel)) {
+    throw new Error("Invalid audienceLevel. Use developer, intermediate, or beginner.");
+  }
+  if (!VALID_PROJECT_TYPES.has(interview.projectType)) {
+    throw new Error("Invalid projectType. Use greenfield, add_feature, or bugfix.");
+  }
+  if (interview.connectRepo && !isValidRepoSlug(interview.repoSlug)) {
+    throw new Error("Invalid repo slug. Expected owner/repo.");
+  }
+}
+
+async function loadAutomatedInterview({ argProjectName, detectedRepo, interviewFile }) {
+  const envPayload = String(process.env.SENTINELAYER_CLI_INTERVIEW_JSON || "").trim();
+  let payload = null;
+  let source = "";
+
+  if (interviewFile) {
+    const filePath = path.resolve(process.cwd(), interviewFile);
+    const fileContents = await fsp.readFile(filePath, "utf-8");
+    payload = JSON.parse(fileContents);
+    source = `--interview-file (${filePath})`;
+  } else if (envPayload) {
+    payload = JSON.parse(envPayload);
+    source = "SENTINELAYER_CLI_INTERVIEW_JSON";
+  }
+
+  if (payload === null) {
+    return null;
+  }
+
+  const normalized = normalizeInterviewInput(payload, { argProjectName, detectedRepo });
+  try {
+    validateInterviewInput(normalized);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid interview payload from ${source}: ${message}`);
+  }
+  return normalized;
 }
 
 async function waitForEnter(message) {
@@ -388,6 +529,8 @@ jobs:
 
 function runGhSecretSet({ repoSlug, secretName, secretValue }) {
   const normalizedRepo = normalizeRepoSlug(repoSlug);
+  const ghCommand = String(process.env.SENTINELAYER_GH_BIN || "").trim() || "gh";
+  const secretSinkFile = String(process.env.SENTINELAYER_SECRET_SINK_FILE || "").trim();
   if (!isValidRepoSlug(normalizedRepo)) {
     return {
       ok: false,
@@ -400,7 +543,18 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
       reason: "Invalid secret name from bootstrap response.",
     };
   }
-  const ghVersion = spawnSync("gh", ["--version"], { encoding: "utf-8" });
+  if (secretSinkFile) {
+    try {
+      fs.appendFileSync(secretSinkFile, `${normalizedRepo}|${secretName}|${secretValue}\n`, "utf-8");
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `Failed to write SENTINELAYER_SECRET_SINK_FILE: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  const ghVersion = spawnSync(ghCommand, ["--version"], { encoding: "utf-8" });
   if (ghVersion.status !== 0) {
     return {
       ok: false,
@@ -408,7 +562,7 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
     };
   }
 
-  const result = spawnSync("gh", ["secret", "set", secretName, "--repo", normalizedRepo], {
+  const result = spawnSync(ghCommand, ["secret", "set", secretName, "--repo", normalizedRepo], {
     encoding: "utf-8",
     input: `${secretValue}\n`,
   });
@@ -575,8 +729,8 @@ function printInfo(message) {
 }
 
 async function run() {
-  const pkgVersion = "0.1.0";
-  const argProjectName = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "";
+  const args = parseCliArgs(process.argv.slice(2));
+  const argProjectName = args.projectName;
   const detectedRepo = detectRepoSlug(process.cwd());
 
   printSection("Sentinelayer Scaffold");
@@ -586,34 +740,52 @@ async function run() {
     printInfo(`Detected repo: ${detectedRepo}`);
   }
 
-  const interview = await collectInterview({
-    initialProjectName: argProjectName,
+  const automatedInterview = await loadAutomatedInterview({
+    argProjectName,
     detectedRepo,
+    interviewFile: args.interviewFile,
   });
 
-  if (!interview.projectName) {
-    throw new Error("Project name is required.");
+  const interview =
+    automatedInterview ||
+    (args.nonInteractive
+      ? null
+      : await collectInterview({
+          initialProjectName: argProjectName,
+          detectedRepo,
+        }));
+
+  if (!interview) {
+    throw new Error(
+      "Non-interactive mode requires SENTINELAYER_CLI_INTERVIEW_JSON or --interview-file."
+    );
   }
-  if (interview.connectRepo && !isValidRepoSlug(interview.repoSlug)) {
-    throw new Error("Invalid repo slug. Expected owner/repo.");
-  }
+  validateInterviewInput(interview);
 
   printSection("Authentication");
-  await waitForEnter("Press Enter to authenticate with Sentinelayer in your browser...");
+  if (args.nonInteractive) {
+    console.log("Non-interactive mode: skipping Enter confirmation.");
+  } else {
+    await waitForEnter("Press Enter to authenticate with Sentinelayer in your browser...");
+  }
 
   const challenge = crypto.randomBytes(32).toString("hex");
   const session = await startCliSession({
     apiUrl: DEFAULT_API_URL,
     challenge,
-    cliVersion: pkgVersion,
+    cliVersion: CLI_VERSION,
   });
 
-  console.log(`Opening browser: ${session.authorize_url}`);
-  try {
-    await open(session.authorize_url);
-  } catch {
-    console.log(pc.yellow("Could not auto-open browser. Open this URL manually:"));
-    console.log(pc.yellow(session.authorize_url));
+  if (args.skipBrowserOpen || args.nonInteractive) {
+    console.log(`Browser open skipped. Authorize manually: ${session.authorize_url}`);
+  } else {
+    console.log(`Opening browser: ${session.authorize_url}`);
+    try {
+      await open(session.authorize_url);
+    } catch {
+      console.log(pc.yellow("Could not auto-open browser. Open this URL manually:"));
+      console.log(pc.yellow(session.authorize_url));
+    }
   }
 
   console.log("Waiting for browser approval...");

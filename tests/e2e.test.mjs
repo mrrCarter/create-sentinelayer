@@ -1,0 +1,257 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
+
+function jsonResponse(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks).toString("utf-8");
+  if (!raw.trim()) return {};
+  return JSON.parse(raw);
+}
+
+async function startMockApi({ includeBootstrapInGenerate = true, requiredSecretName = "SENTINELAYER_TOKEN" } = {}) {
+  const state = {
+    pollCalls: 0,
+    bootstrapCalls: 0,
+    generatePayload: null,
+    generateAuthHeader: "",
+  };
+
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.method === "POST" && req.url === "/api/v1/auth/cli/sessions/start") {
+        await readJsonBody(req);
+        return jsonResponse(res, 200, {
+          session_id: "sess_123",
+          authorize_url: "http://127.0.0.1/cli-auth?session_id=sess_123",
+          poll_interval_seconds: 0,
+        });
+      }
+
+      if (req.method === "POST" && req.url === "/api/v1/auth/cli/sessions/poll") {
+        await readJsonBody(req);
+        state.pollCalls += 1;
+        if (state.pollCalls === 1) {
+          return jsonResponse(res, 200, { status: "pending" });
+        }
+        return jsonResponse(res, 200, {
+          status: "approved",
+          auth_token: "web_auth_token_abc",
+          user: { github_username: "demo-user" },
+        });
+      }
+
+      if (req.method === "POST" && req.url === "/api/v1/builder/generate") {
+        state.generateAuthHeader = String(req.headers.authorization || "");
+        state.generatePayload = await readJsonBody(req);
+        const payload = {
+          project_name: "demo-app",
+          spec_sheet: "# Spec\n\nShip it.",
+          playbook: "# Build Guide\n\nDo this.",
+          builder_prompt: "Follow the generated docs.",
+          omar_gate_yaml:
+            "name: Omar Gate\non:\n  pull_request:\n    types: [opened, synchronize, reopened]\n",
+        };
+        if (includeBootstrapInGenerate) {
+          payload.bootstrap_token = {
+            token: "sl_boot_from_generate_123",
+            required_secret_name: requiredSecretName,
+          };
+        }
+        return jsonResponse(res, 200, payload);
+      }
+
+      if (req.method === "POST" && req.url === "/api/v1/builder/bootstrap-token") {
+        state.bootstrapCalls += 1;
+        await readJsonBody(req);
+        return jsonResponse(res, 200, {
+          token: "sl_boot_from_bootstrap_endpoint_456",
+          required_secret_name: "SENTINELAYER_TOKEN",
+        });
+      }
+
+      return jsonResponse(res, 404, {
+        error: { code: "NOT_FOUND", message: "Route not found" },
+      });
+    } catch (error) {
+      return jsonResponse(res, 500, {
+        error: {
+          code: "TEST_SERVER_ERROR",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Unable to resolve mock API address");
+  }
+
+  const apiUrl = `http://127.0.0.1:${address.port}`;
+  return {
+    apiUrl,
+    state,
+    async close() {
+      server.close();
+      await once(server, "close");
+    },
+  };
+}
+
+async function runCli({ cwd, env, args = [] }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI_PATH, ...args], {
+      cwd,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => reject(error));
+    child.on("close", (code) => {
+      resolve({ code: Number(code || 0), stdout, stderr });
+    });
+  });
+}
+
+function baseInterview(overrides = {}) {
+  return {
+    projectName: "demo-app",
+    projectDescription: "Build an autonomous secure code review orchestrator.",
+    aiProvider: "openai",
+    generationMode: "detailed",
+    audienceLevel: "developer",
+    projectType: "greenfield",
+    techStack: ["TypeScript", "Node.js", "PostgreSQL"],
+    features: ["auth", "scanning", "reporting"],
+    connectRepo: false,
+    repoSlug: "",
+    injectSecret: false,
+    ...overrides,
+  };
+}
+
+test("CLI end-to-end: generates artifacts and injects secret via gh", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({ includeBootstrapInGenerate: true, requiredSecretName: "bad-secret-name" });
+  const secretSinkPath = path.join(tempRoot, "secret-sink.log");
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_SECRET_SINK_FILE: secretSinkPath,
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
+        baseInterview({
+          connectRepo: true,
+          repoSlug: "acme/demo-repo",
+          injectSecret: true,
+        })
+      ),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const projectDir = path.join(tempRoot, "demo-app");
+    const envText = await readFile(path.join(projectDir, ".env"), "utf-8");
+    const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
+    const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
+    const secretSink = await readFile(secretSinkPath, "utf-8");
+
+    assert.match(envText, /SENTINELAYER_TOKEN=sl_boot_from_generate_123/);
+    assert.match(result.stdout, /Falling back to SENTINELAYER_TOKEN/);
+    assert.match(todoText, /Repo: `acme\/demo-repo`/);
+    assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
+    assert.equal(packageJson.scripts["sentinel:start"].includes("Sentinelayer artifacts are ready"), true);
+    assert.match(secretSink, /acme\/demo-repo\|SENTINELAYER_TOKEN\|sl_boot_from_generate_123/);
+
+    assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
+    assert.equal(mock.state.generatePayload.model_provider, "openai");
+    assert.equal(mock.state.generatePayload.model_id, "gpt-5.3-codex");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI end-to-end: falls back to /builder/bootstrap-token when generate omits bootstrap token", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({ includeBootstrapInGenerate: false });
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(baseInterview()),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const envText = await readFile(path.join(tempRoot, "demo-app", ".env"), "utf-8");
+    assert.match(envText, /SENTINELAYER_TOKEN=sl_boot_from_bootstrap_endpoint_456/);
+    assert.equal(mock.state.bootstrapCalls, 1);
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI non-interactive mode fails fast when interview payload is missing", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: "",
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr + result.stdout, /Non-interactive mode requires/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
