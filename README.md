@@ -117,7 +117,8 @@ Prerequisites:
 Release options:
 
 1. Push a tag like `v0.1.1` to publish automatically.
-2. Run the `Release` workflow manually from Actions.
+2. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
+3. Run `Release` manually with `publish=true` to publish from Actions.
 
 ## Local verification
 
