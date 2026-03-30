@@ -648,6 +648,49 @@ async function ensureGitRepositorySetup({ projectDir, repoSlug }) {
   }
 }
 
+async function buildRepoIngestSummary(projectDir) {
+  try {
+    const entries = await fsp.readdir(projectDir, { withFileTypes: true });
+    const ignored = new Set([".git", "node_modules", ".venv", "dist", "build", ".next"]);
+    const files = [];
+    const dirs = [];
+    for (const entry of entries) {
+      if (ignored.has(entry.name)) continue;
+      if (entry.isDirectory()) {
+        dirs.push(entry.name);
+      } else if (entry.isFile()) {
+        files.push(entry.name);
+      }
+    }
+
+    const lines = [];
+    lines.push(`Workspace path: ${projectDir}`);
+    lines.push(`Top-level directories: ${dirs.slice(0, 20).join(", ") || "none"}`);
+    lines.push(`Top-level files: ${files.slice(0, 20).join(", ") || "none"}`);
+
+    const packagePath = path.join(projectDir, "package.json");
+    if (fs.existsSync(packagePath)) {
+      try {
+        const pkg = JSON.parse(await fsp.readFile(packagePath, "utf-8"));
+        const pkgName = String(pkg.name || "").trim();
+        const scripts = pkg && typeof pkg.scripts === "object" && pkg.scripts ? Object.keys(pkg.scripts) : [];
+        if (pkgName) {
+          lines.push(`package.json name: ${pkgName}`);
+        }
+        if (scripts.length > 0) {
+          lines.push(`package scripts: ${scripts.slice(0, 15).join(", ")}`);
+        }
+      } catch {
+        lines.push("package.json: present but not valid JSON");
+      }
+    }
+
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 async function resolveProjectDirectory({ cwd, interview, detectedRepo }) {
   const normalizedTargetRepo = normalizeRepoSlug(interview.repoSlug);
   const normalizedDetected = normalizeRepoSlug(detectedRepo || "");
@@ -1207,6 +1250,25 @@ async function run() {
   }
   validateInterviewInput(interview);
 
+  const workspace = await resolveProjectDirectory({
+    cwd: process.cwd(),
+    interview,
+    detectedRepo,
+  });
+  const projectDir = workspace.projectDir;
+
+  printSection("Workspace");
+  if (workspace.reusedCurrentRepo) {
+    printInfo(`Using current repo workspace: ${projectDir}`);
+  } else if (workspace.clonedRepo) {
+    printInfo(`Cloned repo workspace: ${projectDir}`);
+    if (workspace.cloneUrl) {
+      printInfo(`Clone URL: ${workspace.cloneUrl}`);
+    }
+  } else {
+    printInfo(`Target scaffold workspace: ${projectDir}`);
+  }
+
   printSection("Authentication");
   if (args.nonInteractive) {
     console.log("Non-interactive mode: skipping Enter confirmation.");
@@ -1248,8 +1310,18 @@ async function run() {
   }
 
   printSection("Artifact Generation");
+  let description = interview.projectDescription;
+  if (interview.buildFromExistingRepo) {
+    const repoSummary = await buildRepoIngestSummary(projectDir);
+    if (repoSummary) {
+      description = `${description}\n\nExisting repo context:\n${repoSummary}`;
+      printInfo("Included existing repo ingest summary in generation payload.");
+    } else {
+      printInfo("No repo ingest summary was available. Continuing with base description.");
+    }
+  }
   const generatePayload = {
-    description: interview.projectDescription,
+    description,
     tech_stack: interview.techStack,
     features: interview.features,
     generation_mode: interview.generationMode,
@@ -1286,21 +1358,6 @@ async function run() {
         `Received invalid secret name '${requestedSecretName}' from API. Falling back to ${secretName}.`
       )
     );
-  }
-
-  const workspace = await resolveProjectDirectory({
-    cwd: process.cwd(),
-    interview,
-    detectedRepo,
-  });
-  const projectDir = workspace.projectDir;
-  if (workspace.reusedCurrentRepo) {
-    printInfo(`Using current repo workspace: ${projectDir}`);
-  } else if (workspace.clonedRepo) {
-    printInfo(`Cloned repo workspace: ${projectDir}`);
-    if (workspace.cloneUrl) {
-      printInfo(`Clone URL: ${workspace.cloneUrl}`);
-    }
   }
 
   const effectiveProjectName =
