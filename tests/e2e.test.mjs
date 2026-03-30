@@ -537,3 +537,60 @@ test("CLI local command: /audit writes pass report for prepared workspace", asyn
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("CLI local command: /persona orchestrator writes mode report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    await writeFile(path.join(tempRoot, "package.json"), '{"name":"demo","version":"0.0.1"}\n', "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/persona", "orchestrator", "--mode", "reviewer", "--path", tempRoot],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Mode: reviewer/);
+
+    const reportDir = path.join(tempRoot, ".sentinelayer", "reports");
+    const files = await readdir(reportDir);
+    const reportName = files.find((name) => name.startsWith("persona-orchestrator-reviewer-") && name.endsWith(".md"));
+    assert.ok(reportName, "Expected persona report file");
+
+    const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
+    assert.match(reportText, /Mode: reviewer/);
+    assert.match(reportText, /Prioritize risk discovery/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI local command: /apply parses todo plan and writes execution preview", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "tasks", "todo.md"),
+      "# Plan\n- [ ] PR 1: foundation\n- [ ] PR 2: auth\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/apply", "--plan", "tasks/todo.md", "--path", tempRoot],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Parsed tasks: 2/);
+
+    const reportDir = path.join(tempRoot, ".sentinelayer", "reports");
+    const files = await readdir(reportDir);
+    const reportName = files.find((name) => name.startsWith("apply-plan-") && name.endsWith(".md"));
+    assert.ok(reportName, "Expected apply-plan report file");
+
+    const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
+    assert.match(reportText, /1\. PR 1: foundation/);
+    assert.match(reportText, /2\. PR 2: auth/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

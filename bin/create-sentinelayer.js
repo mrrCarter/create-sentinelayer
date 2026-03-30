@@ -159,6 +159,8 @@ function printUsage() {
   console.log("  create-sentinelayer [project-name] [options]");
   console.log("  create-sentinelayer /omargate deep [--path PATH]");
   console.log("  create-sentinelayer /audit [--path PATH]");
+  console.log("  create-sentinelayer /persona orchestrator [--mode MODE] [--path PATH]");
+  console.log("  create-sentinelayer /apply --plan <todo.md> [--path PATH]");
   console.log("");
   console.log("Options:");
   console.log("  -h, --help             Show help");
@@ -950,16 +952,141 @@ ${formatFindingsMarkdown(scan.findings)}
   return 0;
 }
 
+async function runLocalPersonaCommand(args) {
+  const subcommand = String(args[0] || "").trim().toLowerCase();
+  const optionArgs = subcommand === "orchestrator" ? args.slice(1) : args;
+  if (subcommand && subcommand !== "orchestrator") {
+    throw new Error(`Unsupported /persona subcommand '${subcommand}'. Use: /persona orchestrator --mode <mode>`);
+  }
+
+  const mode = String(getCommandOptionValue(optionArgs, "--mode") || "builder").trim().toLowerCase();
+  const validModes = new Set(["builder", "reviewer", "hardener"]);
+  if (!validModes.has(mode)) {
+    throw new Error("Invalid --mode for /persona. Use builder, reviewer, or hardener.");
+  }
+
+  const pathArg = getCommandOptionValue(optionArgs, "--path") || ".";
+  const targetPath = path.resolve(process.cwd(), pathArg);
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+    throw new Error(`Invalid --path target: ${targetPath}`);
+  }
+
+  printSection("Persona Orchestrator");
+  printInfo(`Mode: ${mode}`);
+  printInfo(`Target: ${targetPath}`);
+
+  const modeInstructions = {
+    builder: [
+      "Prioritize implementation throughput and deterministic delivery.",
+      "Keep PR scope tight and finish one batch before opening the next.",
+      "Use Omar loop after each PR and fix all P0/P1 before merge.",
+    ],
+    reviewer: [
+      "Prioritize risk discovery, regressions, and missing tests.",
+      "Focus findings-first output ordered by severity.",
+      "Escalate architecture/security concerns before code changes.",
+    ],
+    hardener: [
+      "Prioritize security posture, policy controls, and failure modes.",
+      "Add guardrails for auth, secrets handling, and CI enforceability.",
+      "Treat P2 debt as merge-blocking unless explicitly waived.",
+    ],
+  };
+
+  const ingest = await buildRepoIngestSummary(targetPath);
+  const report = `# Persona Orchestrator Plan
+
+Generated: ${nowIso()}
+Target: ${targetPath}
+Mode: ${mode}
+
+Instructions:
+${modeInstructions[mode].map((line, index) => `${index + 1}. ${line}`).join("\n")}
+
+Repo summary:
+${ingest || "No repository summary available."}
+`;
+
+  const reportPath = await writeLocalCommandReport(targetPath, `persona-orchestrator-${mode}`, report);
+  console.log(pc.cyan(`Report: ${reportPath}`));
+  return 0;
+}
+
+function parseTodoPlanTasks(content) {
+  const tasks = [];
+  const lines = String(content || "").split(/\r?\n/);
+  for (const line of lines) {
+    const unchecked = line.match(/^\s*-\s*\[\s\]\s+(.+)\s*$/);
+    if (unchecked) {
+      tasks.push(unchecked[1].trim());
+      continue;
+    }
+    const ordered = line.match(/^\s*\d+\.\s+(.+)\s*$/);
+    if (ordered) {
+      tasks.push(ordered[1].trim());
+    }
+  }
+  return tasks.filter(Boolean);
+}
+
+async function runLocalApplyCommand(args) {
+  const pathArg = getCommandOptionValue(args, "--path") || ".";
+  const targetPath = path.resolve(process.cwd(), pathArg);
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+    throw new Error(`Invalid --path target: ${targetPath}`);
+  }
+
+  const planArg = getCommandOptionValue(args, "--plan") || "tasks/todo.md";
+  const planPath = path.resolve(targetPath, planArg);
+  if (!fs.existsSync(planPath)) {
+    throw new Error(`Plan file not found: ${planPath}`);
+  }
+
+  printSection("Apply Plan");
+  printInfo(`Target: ${targetPath}`);
+  printInfo(`Plan: ${planPath}`);
+
+  const planText = await fsp.readFile(planPath, "utf-8");
+  const tasks = parseTodoPlanTasks(planText);
+  if (!tasks.length) {
+    throw new Error("No executable checklist items were found in the plan file.");
+  }
+
+  const report = `# Apply Plan Preview
+
+Generated: ${nowIso()}
+Target: ${targetPath}
+Plan: ${planPath}
+
+Execution order:
+${tasks.map((task, index) => `${index + 1}. ${task}`).join("\n")}
+
+Next action:
+- Execute each item PR-by-PR and run Omar loop before every merge.
+`;
+
+  const reportPath = await writeLocalCommandReport(targetPath, "apply-plan", report);
+  console.log(pc.cyan(`Report: ${reportPath}`));
+  console.log(`Parsed tasks: ${tasks.length}`);
+  return 0;
+}
+
 async function tryRunLocalCommandMode(argv) {
   const command = String(argv[0] || "").trim().toLowerCase();
-  if (command !== "/omargate" && command !== "/audit") {
+  if (command !== "/omargate" && command !== "/audit" && command !== "/persona" && command !== "/apply") {
     return null;
   }
   const args = argv.slice(1);
   if (command === "/omargate") {
     return runLocalOmarGateCommand(args);
   }
-  return runLocalAuditCommand(args);
+  if (command === "/audit") {
+    return runLocalAuditCommand(args);
+  }
+  if (command === "/persona") {
+    return runLocalPersonaCommand(args);
+  }
+  return runLocalApplyCommand(args);
 }
 
 async function resolveProjectDirectory({ cwd, interview, detectedRepo }) {

@@ -163,6 +163,8 @@ The CLI now supports local command mode:
 
 - `/omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
 - `/audit --path <repo>` runs local readiness + scan audit and writes `.sentinelayer/reports/audit-*.md` (non-zero exit if blocking findings exist)
+- `/persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
+- `/apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
 
 Roadmap:
 
