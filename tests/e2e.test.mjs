@@ -360,6 +360,50 @@ test("CLI end-to-end: builds a feature into a cloned existing repo", async () =>
   }
 });
 
+test("CLI existing-repo mode fails when target folder is git repo without GitHub origin", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({ includeBootstrapInGenerate: true });
+
+  try {
+    const collidingRepoDir = path.join(tempRoot, "inventory-service");
+    await mkdir(collidingRepoDir, { recursive: true });
+    runCommand({ cwd: collidingRepoDir, command: "git", args: ["init"] });
+    await writeFile(path.join(collidingRepoDir, "README.md"), "# Local Repo\n", "utf-8");
+    runCommand({ cwd: collidingRepoDir, command: "git", args: ["add", "."] });
+    runCommand({
+      cwd: collidingRepoDir,
+      command: "git",
+      args: ["-c", "user.name=Sentinelayer E2E", "-c", "user.email=e2e@sentinelayer.local", "commit", "-m", "seed"],
+    });
+
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
+        baseInterview({
+          projectName: "",
+          projectDescription: "Add audit feature into existing repo and preserve safety guarantees.",
+          projectType: "add_feature",
+          connectRepo: true,
+          repoSlug: "acme/inventory-service",
+          buildFromExistingRepo: true,
+          injectSecret: false,
+        })
+      ),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["--non-interactive"] });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr + result.stdout, /git repo without a detectable GitHub origin/i);
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI end-to-end: falls back to /builder/bootstrap-token when generate omits bootstrap token", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
   const mock = await startMockApi({ includeBootstrapInGenerate: false });
