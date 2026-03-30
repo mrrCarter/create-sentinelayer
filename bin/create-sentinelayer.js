@@ -562,6 +562,11 @@ async function cloneGithubRepo({ repoSlug, cwd }) {
   }
   if (isGitRepo(targetDir)) {
     const localSlug = normalizeRepoSlug(detectRepoSlug(targetDir) || "");
+    if (!localSlug) {
+      throw new Error(
+        `Directory '${repoName}' already contains a git repo without a detectable GitHub origin. Refusing to overwrite it.`
+      );
+    }
     if (localSlug && localSlug.toLowerCase() !== normalizedRepo.toLowerCase()) {
       throw new Error(
         `Directory '${repoName}' already contains a different repo (${localSlug}). Choose another project name or folder.`
