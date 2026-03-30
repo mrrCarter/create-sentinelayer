@@ -344,6 +344,9 @@ test("CLI end-to-end: builds a feature into a cloned existing repo", async () =>
     assert.match(specText, /# Spec/);
     assert.match(todoText, /Workspace mode: `existing repo clone`/);
     assert.match(todoText, /Repo: `acme\/inventory-service`/);
+    assert.match(String(mock.state.generatePayload?.description || ""), /Existing repo context:/);
+    assert.match(String(mock.state.generatePayload?.description || ""), /Top-level files: .*README\.md/);
+    assert.match(String(mock.state.generatePayload?.description || ""), /package scripts: test/);
 
     const remote = runCommand({
       cwd: repoDir,

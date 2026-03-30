@@ -87,6 +87,7 @@ When `Clone this repo locally and build directly into it now?` is enabled:
 
 - the CLI clones `<owner>/<repo>` into `./<repo-name>` unless current folder already matches that repo
 - it writes generated docs/prompts/tasks/workflow into that cloned repo
+- it extracts a deterministic repo summary and includes it in generation context
 - if the repo is empty, scaffolding still proceeds deterministically
 - if the target folder already contains a different non-empty repo, CLI fails fast with a clear error
 - if the target folder is a git repo without a detectable GitHub `origin`, CLI refuses to continue
