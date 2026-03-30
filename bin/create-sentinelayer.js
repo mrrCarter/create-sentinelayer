@@ -1094,7 +1094,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
   const projectName =
     sanitizeProjectName(initialProjectName || base.projectName) || getRepoNameFromSlug(advanced.repoSlug);
 
-  return {
+  const interviewResult = {
     projectName,
     projectDescription: String(base.projectDescription || "").trim(),
     aiProvider: base.aiProvider,
@@ -1108,6 +1108,53 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
     buildFromExistingRepo: Boolean(advanced.buildFromExistingRepo),
     injectSecret: Boolean(advanced.injectSecret),
   };
+
+  printSection("Interview Review");
+  printInfo(`Project: ${interviewResult.projectName}`);
+  printInfo(`Type: ${interviewResult.projectType}`);
+  printInfo(`Provider: ${interviewResult.aiProvider}`);
+  printInfo(`Repo: ${interviewResult.repoSlug || "not connected"}`);
+  printInfo(
+    `Existing repo mode: ${interviewResult.buildFromExistingRepo ? "enabled (clone/reuse)" : "disabled"}`
+  );
+
+  const review = await prompts(
+    [
+      {
+        type: "toggle",
+        name: "proceed",
+        message: "Proceed with these selections?",
+        initial: true,
+        active: "yes",
+        inactive: "no",
+      },
+    ],
+    { onCancel }
+  );
+
+  if (!review.proceed) {
+    const next = await prompts(
+      [
+        {
+          type: "select",
+          name: "action",
+          message: "What do you want to do?",
+          choices: [
+            { title: "Restart interview", value: "restart" },
+            { title: "Cancel", value: "cancel" },
+          ],
+          initial: 0,
+        },
+      ],
+      { onCancel }
+    );
+    if (next.action === "restart") {
+      return collectInterview({ initialProjectName, detectedRepo });
+    }
+    throw new Error("Prompt flow cancelled by user.");
+  }
+
+  return interviewResult;
 }
 
 function printSection(title) {
