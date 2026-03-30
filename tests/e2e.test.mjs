@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -470,6 +470,69 @@ test("CLI flags: --help and --version return successfully", async () => {
     });
     assert.equal(versionResult.code, 0, versionResult.stderr || versionResult.stdout);
     assert.match(versionResult.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI local command: /omargate deep writes report and fails on P1 findings", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    const srcDir = path.join(tempRoot, "src");
+    await mkdir(srcDir, { recursive: true });
+    await writeFile(
+      path.join(srcDir, "secrets.ts"),
+      "export const leaked = 'AKIAABCDEFGHIJKLMNOP';\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/omargate", "deep", "--path", tempRoot],
+    });
+    assert.equal(result.code, 2);
+    assert.match(result.stdout + result.stderr, /Blocking findings detected/);
+
+    const reportDir = path.join(tempRoot, ".sentinelayer", "reports");
+    const files = await readdir(reportDir);
+    const reportName = files.find((name) => name.startsWith("omargate-deep-") && name.endsWith(".md"));
+    assert.ok(reportName, "Expected omargate report file");
+
+    const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
+    assert.match(reportText, /P1 findings: 1/);
+    assert.match(reportText, /\[P1\] src\/secrets\.ts:1/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI local command: /audit writes pass report for prepared workspace", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    await mkdir(path.join(tempRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(tempRoot, "docs"), { recursive: true });
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(path.join(tempRoot, ".github", "workflows", "omar-gate.yml"), "name: Omar Gate\n", "utf-8");
+    await writeFile(path.join(tempRoot, "docs", "spec.md"), "# Spec\n", "utf-8");
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), "# Todo\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/audit", "--path", tempRoot],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Overall status: PASS/);
+
+    const reportDir = path.join(tempRoot, ".sentinelayer", "reports");
+    const files = await readdir(reportDir);
+    const reportName = files.find((name) => name.startsWith("audit-") && name.endsWith(".md"));
+    assert.ok(reportName, "Expected audit report file");
+
+    const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
+    assert.match(reportText, /Overall status: PASS/);
+    assert.match(reportText, /\[x\] \(P1\) \.github\/workflows\/omar-gate\.yml/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -157,6 +157,8 @@ function printUsage() {
   console.log("");
   console.log("Usage:");
   console.log("  create-sentinelayer [project-name] [options]");
+  console.log("  create-sentinelayer /omargate deep [--path PATH]");
+  console.log("  create-sentinelayer /audit [--path PATH]");
   console.log("");
   console.log("Options:");
   console.log("  -h, --help             Show help");
@@ -164,6 +166,7 @@ function printUsage() {
   console.log("  --non-interactive      Disable prompts and require interview payload");
   console.log("  --interview-file PATH  Load interview JSON from file");
   console.log("  --skip-browser-open    Do not auto-open browser during auth");
+  console.log("  --path PATH            Target path for local command mode");
   console.log("");
   console.log("Environment:");
   console.log("  SENTINELAYER_CLI_NON_INTERACTIVE=1");
@@ -691,6 +694,274 @@ async function buildRepoIngestSummary(projectDir) {
   }
 }
 
+function formatTimestampForFile() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(
+    now.getUTCHours()
+  )}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+}
+
+function getCommandOptionValue(args, optionName) {
+  const index = args.findIndex((arg) => String(arg || "").trim() === optionName);
+  if (index < 0) return "";
+  const next = String(args[index + 1] || "").trim();
+  if (!next || next.startsWith("-")) {
+    throw new Error(`Missing value for ${optionName}`);
+  }
+  return next;
+}
+
+async function collectScanFiles(rootPath) {
+  const files = [];
+  const stack = [rootPath];
+  const ignoredDirs = new Set([".git", "node_modules", ".venv", ".next", "dist", "build", ".sentinelayer"]);
+  const maxFileSizeBytes = 512 * 1024;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    let entries = [];
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (ignoredDirs.has(entry.name)) continue;
+        stack.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = await fsp.stat(fullPath);
+        if (stat.size > maxFileSizeBytes) continue;
+      } catch {
+        continue;
+      }
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+async function runCredentialScan(targetPath) {
+  const rules = [
+    {
+      severity: "P1",
+      message: "Possible AWS access key detected.",
+      regex: /AKIA[0-9A-Z]{16}/,
+    },
+    {
+      severity: "P1",
+      message: "Possible private key material detected.",
+      regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+    },
+    {
+      severity: "P1",
+      message: "Possible provider API key detected.",
+      regex: /\b(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,})\b/,
+    },
+    {
+      severity: "P2",
+      message: "Possible hardcoded credential literal.",
+      regex: /(api[_-]?key|secret|token)\s*[:=]\s*['"][^'"]{20,}['"]/i,
+    },
+    {
+      severity: "P2",
+      message: "TODO/FIXME marker found.",
+      regex: /\b(TODO|FIXME|HACK)\b/,
+    },
+  ];
+
+  const files = await collectScanFiles(targetPath);
+  const findings = [];
+  const maxFindings = 200;
+
+  for (const filePath of files) {
+    let text = "";
+    try {
+      text = await fsp.readFile(filePath, "utf-8");
+    } catch {
+      continue;
+    }
+    const lines = text.split(/\r?\n/);
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
+      if (!line) continue;
+      if (line.includes("<your-token>") || line.includes("example")) continue;
+      for (const rule of rules) {
+        if (!rule.regex.test(line)) continue;
+        findings.push({
+          severity: rule.severity,
+          file: path.relative(targetPath, filePath).replace(/\\/g, "/"),
+          line: lineIndex + 1,
+          message: rule.message,
+          excerpt: line.trim().slice(0, 180),
+        });
+        if (findings.length >= maxFindings) break;
+      }
+      if (findings.length >= maxFindings) break;
+    }
+    if (findings.length >= maxFindings) break;
+  }
+
+  const p1 = findings.filter((item) => item.severity === "P1").length;
+  const p2 = findings.filter((item) => item.severity === "P2").length;
+
+  return {
+    scannedFiles: files.length,
+    findings,
+    p1,
+    p2,
+  };
+}
+
+async function writeLocalCommandReport(targetPath, prefix, body) {
+  const reportDir = path.join(targetPath, ".sentinelayer", "reports");
+  await ensureDirectory(reportDir);
+  const reportPath = path.join(reportDir, `${prefix}-${formatTimestampForFile()}.md`);
+  await writeTextFile(reportPath, `${body}\n`);
+  return reportPath;
+}
+
+function formatFindingsMarkdown(findings) {
+  if (!findings.length) return "- none";
+  return findings
+    .map((item, index) => `${index + 1}. [${item.severity}] ${item.file}:${item.line} - ${item.message}`)
+    .join("\n");
+}
+
+async function runLocalOmarGateCommand(args) {
+  const mode = String(args[0] || "").trim().toLowerCase();
+  if (mode && mode !== "deep") {
+    throw new Error(`Unsupported /omargate mode '${mode}'. Use: /omargate deep`);
+  }
+  const pathArg = getCommandOptionValue(args, "--path") || ".";
+  const targetPath = path.resolve(process.cwd(), pathArg);
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+    throw new Error(`Invalid --path target: ${targetPath}`);
+  }
+
+  printSection("Local Omar Gate Deep");
+  printInfo(`Target: ${targetPath}`);
+
+  const scan = await runCredentialScan(targetPath);
+  const report = `# Local Omar Gate Deep Scan
+
+Generated: ${nowIso()}
+Target: ${targetPath}
+
+Summary:
+- Files scanned: ${scan.scannedFiles}
+- P1 findings: ${scan.p1}
+- P2 findings: ${scan.p2}
+
+Findings:
+${formatFindingsMarkdown(scan.findings)}
+`;
+
+  const reportPath = await writeLocalCommandReport(targetPath, "omargate-deep", report);
+  console.log(pc.cyan(`Report: ${reportPath}`));
+  console.log(`P1 findings: ${scan.p1}`);
+  console.log(`P2 findings: ${scan.p2}`);
+
+  if (scan.p1 > 0) {
+    console.log(pc.red("Blocking findings detected (P1 > 0)."));
+    return 2;
+  }
+  return 0;
+}
+
+async function runLocalAuditCommand(args) {
+  const pathArg = getCommandOptionValue(args, "--path") || ".";
+  const targetPath = path.resolve(process.cwd(), pathArg);
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+    throw new Error(`Invalid --path target: ${targetPath}`);
+  }
+
+  printSection("Local Audit");
+  printInfo(`Target: ${targetPath}`);
+
+  const requiredChecks = [
+    {
+      key: ".github/workflows/omar-gate.yml",
+      severity: "P1",
+      ok: fs.existsSync(path.join(targetPath, ".github", "workflows", "omar-gate.yml")),
+      message: "Omar workflow is present.",
+    },
+    {
+      key: "docs/spec.md",
+      severity: "P2",
+      ok: fs.existsSync(path.join(targetPath, "docs", "spec.md")),
+      message: "Spec doc is present.",
+    },
+    {
+      key: "tasks/todo.md",
+      severity: "P2",
+      ok: fs.existsSync(path.join(targetPath, "tasks", "todo.md")),
+      message: "Todo plan is present.",
+    },
+  ];
+
+  const scan = await runCredentialScan(targetPath);
+  const failedP1Checks = requiredChecks.filter((item) => !item.ok && item.severity === "P1").length;
+  const failedP2Checks = requiredChecks.filter((item) => !item.ok && item.severity === "P2").length;
+  const totalP1 = scan.p1 + failedP1Checks;
+  const totalP2 = scan.p2 + failedP2Checks;
+  const overallStatus = totalP1 > 0 ? "FAIL" : "PASS";
+
+  const checkText = requiredChecks
+    .map(
+      (item) =>
+        `- [${item.ok ? "x" : " "}] (${item.severity}) ${item.key} :: ${item.message}${item.ok ? "" : " [missing]"}`
+    )
+    .join("\n");
+  const report = `# Local Sentinelayer Audit
+
+Generated: ${nowIso()}
+Target: ${targetPath}
+Overall status: ${overallStatus}
+
+Readiness checks:
+${checkText}
+
+Scan summary:
+- Files scanned: ${scan.scannedFiles}
+- P1 findings: ${scan.p1}
+- P2 findings: ${scan.p2}
+
+Findings:
+${formatFindingsMarkdown(scan.findings)}
+`;
+
+  const reportPath = await writeLocalCommandReport(targetPath, "audit", report);
+  console.log(pc.cyan(`Report: ${reportPath}`));
+  console.log(`Overall status: ${overallStatus}`);
+  console.log(`P1 total: ${totalP1}`);
+  console.log(`P2 total: ${totalP2}`);
+
+  if (totalP1 > 0) {
+    console.log(pc.red("Audit failed due to blocking findings (P1 > 0)."));
+    return 2;
+  }
+  return 0;
+}
+
+async function tryRunLocalCommandMode(argv) {
+  const command = String(argv[0] || "").trim().toLowerCase();
+  if (command !== "/omargate" && command !== "/audit") {
+    return null;
+  }
+  const args = argv.slice(1);
+  if (command === "/omargate") {
+    return runLocalOmarGateCommand(args);
+  }
+  return runLocalAuditCommand(args);
+}
+
 async function resolveProjectDirectory({ cwd, interview, detectedRepo }) {
   const normalizedTargetRepo = normalizeRepoSlug(interview.repoSlug);
   const normalizedDetected = normalizeRepoSlug(detectedRepo || "");
@@ -1209,7 +1480,16 @@ function printInfo(message) {
 }
 
 async function run() {
-  const args = parseCliArgs(process.argv.slice(2));
+  const rawArgs = process.argv.slice(2);
+  const commandExitCode = await tryRunLocalCommandMode(rawArgs);
+  if (commandExitCode !== null) {
+    if (commandExitCode !== 0) {
+      process.exitCode = commandExitCode;
+    }
+    return;
+  }
+
+  const args = parseCliArgs(rawArgs);
   if (args.showHelp) {
     printUsage();
     return;
