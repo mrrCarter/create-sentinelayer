@@ -57,6 +57,18 @@ function sanitizeProjectName(value) {
     .replace(/^-|-$/g, "");
 }
 
+function normalizeRepoSlug(value) {
+  return String(value || "").trim().replace(/\.git$/i, "");
+}
+
+function isValidRepoSlug(value) {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizeRepoSlug(value));
+}
+
+function isValidSecretName(value) {
+  return /^[A-Z][A-Z0-9_]{1,127}$/.test(String(value || "").trim());
+}
+
 async function waitForEnter(message) {
   const rl = createInterface({ input, output });
   try {
@@ -375,6 +387,19 @@ jobs:
 }
 
 function runGhSecretSet({ repoSlug, secretName, secretValue }) {
+  const normalizedRepo = normalizeRepoSlug(repoSlug);
+  if (!isValidRepoSlug(normalizedRepo)) {
+    return {
+      ok: false,
+      reason: "Invalid repo format. Use owner/repo.",
+    };
+  }
+  if (!isValidSecretName(secretName)) {
+    return {
+      ok: false,
+      reason: "Invalid secret name from bootstrap response.",
+    };
+  }
   const ghVersion = spawnSync("gh", ["--version"], { encoding: "utf-8" });
   if (ghVersion.status !== 0) {
     return {
@@ -383,7 +408,7 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
     };
   }
 
-  const result = spawnSync("gh", ["secret", "set", secretName, "--repo", repoSlug], {
+  const result = spawnSync("gh", ["secret", "set", secretName, "--repo", normalizedRepo], {
     encoding: "utf-8",
     input: `${secretValue}\n`,
   });
@@ -509,7 +534,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
           message: "GitHub repo (owner/repo)",
           initial: detectedRepo || "",
           validate: (value) =>
-            String(value || "").trim().match(/^[^/\s]+\/[^/\s]+$/)
+            isValidRepoSlug(value)
               ? true
               : "Use owner/repo format.",
         },
@@ -536,7 +561,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
     techStack: parseCommaList(base.techStack),
     features: parseCommaList(base.features),
     connectRepo: Boolean(advanced.connectRepo),
-    repoSlug: String(advanced.repoSlug || "").trim(),
+    repoSlug: normalizeRepoSlug(advanced.repoSlug),
     injectSecret: Boolean(advanced.injectSecret),
   };
 }
@@ -568,6 +593,9 @@ async function run() {
 
   if (!interview.projectName) {
     throw new Error("Project name is required.");
+  }
+  if (interview.connectRepo && !isValidRepoSlug(interview.repoSlug)) {
+    throw new Error("Invalid repo slug. Expected owner/repo.");
   }
 
   printSection("Authentication");
@@ -631,8 +659,17 @@ async function run() {
     throw new Error("Sentinelayer token bootstrap failed.");
   }
 
-  const secretName =
-    String(bootstrapToken.required_secret_name || "").trim() || "SENTINELAYER_TOKEN";
+  const requestedSecretName = String(bootstrapToken.required_secret_name || "").trim();
+  const secretName = isValidSecretName(requestedSecretName)
+    ? requestedSecretName
+    : "SENTINELAYER_TOKEN";
+  if (requestedSecretName && requestedSecretName !== secretName) {
+    console.log(
+      pc.yellow(
+        `Received invalid secret name '${requestedSecretName}' from API. Falling back to ${secretName}.`
+      )
+    );
+  }
   const projectDir = path.resolve(process.cwd(), interview.projectName);
   const docsDir = path.join(projectDir, "docs");
   const promptsDir = path.join(projectDir, "prompts");
