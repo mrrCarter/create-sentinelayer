@@ -65,7 +65,7 @@ Inputs for non-interactive mode:
 - `.github/workflows/omar-gate.yml`
 - `tasks/todo.md`
 - `AGENT_HANDOFF_PROMPT.md`
-- `package.json` (`sentinel:start` script added when missing)
+- `package.json` (adds `sentinel:start`, `sentinel:omargate`, `sentinel:audit`, `sentinel:persona:*`, `sentinel:apply` when missing)
 - `.env` with `SENTINELAYER_TOKEN` (or API-provided secret name)
 
 ## Advanced options
