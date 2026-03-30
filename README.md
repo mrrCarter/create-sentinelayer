@@ -73,13 +73,10 @@ echo "SENTINELAYER_TOKEN=<your-token>" >> .env
 gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 ```
 
-3. If you operate Sentinelayer AWS runtime, you can sync from Secrets Manager without copy/paste:
-
-```powershell
-pwsh .\scripts\audit_sentinelayer_token_contract.ps1 -SyncGitHubSecrets -Repos <owner/repo>
-```
-
-(From the `sentinellayer-aws-terraform` repository.)
+3. BYOK fallback (no Sentinelayer token):
+   - keep generated `docs/spec.md`, `docs/build-guide.md`, `prompts/execution-prompt.md`, and `tasks/todo.md`
+   - run your coding agent directly with your provider key (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`)
+   - do not use the generated Omar Gate workflow in this mode
 
 ## Environment overrides
 
