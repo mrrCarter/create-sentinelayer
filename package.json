@@ -1,0 +1,29 @@
+{
+  "name": "create-sentinelayer",
+  "version": "0.1.0",
+  "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
+  "type": "module",
+  "bin": {
+    "create-sentinelayer": "bin/create-sentinelayer.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "keywords": [
+    "sentinelayer",
+    "omar-gate",
+    "security",
+    "scaffold",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "open": "^10.1.2",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2"
+  }
+}
