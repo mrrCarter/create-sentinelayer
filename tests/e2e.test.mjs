@@ -255,3 +255,27 @@ test("CLI non-interactive mode fails fast when interview payload is missing", as
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("CLI flags: --help and --version return successfully", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  try {
+    const helpResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["--help"],
+    });
+    assert.equal(helpResult.code, 0, helpResult.stderr || helpResult.stdout);
+    assert.match(helpResult.stdout, /Usage:/);
+    assert.match(helpResult.stdout, /--non-interactive/);
+
+    const versionResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["--version"],
+    });
+    assert.equal(versionResult.code, 0, versionResult.stderr || versionResult.stdout);
+    assert.match(versionResult.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

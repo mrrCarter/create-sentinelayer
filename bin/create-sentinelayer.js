@@ -92,10 +92,20 @@ function parseCliArgs(argv) {
   let interviewFile = "";
   let nonInteractive = boolFromEnv(process.env.SENTINELAYER_CLI_NON_INTERACTIVE);
   let skipBrowserOpen = boolFromEnv(process.env.SENTINELAYER_CLI_SKIP_BROWSER_OPEN);
+  let showHelp = false;
+  let showVersion = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = String(argv[i] || "").trim();
     if (!arg) continue;
+    if (arg === "--help" || arg === "-h") {
+      showHelp = true;
+      continue;
+    }
+    if (arg === "--version" || arg === "-v") {
+      showVersion = true;
+      continue;
+    }
     if (arg === "--non-interactive") {
       nonInteractive = true;
       continue;
@@ -128,7 +138,28 @@ function parseCliArgs(argv) {
     interviewFile,
     nonInteractive,
     skipBrowserOpen,
+    showHelp,
+    showVersion,
   };
+}
+
+function printUsage() {
+  console.log(`create-sentinelayer v${CLI_VERSION}`);
+  console.log("");
+  console.log("Usage:");
+  console.log("  create-sentinelayer [project-name] [options]");
+  console.log("");
+  console.log("Options:");
+  console.log("  -h, --help             Show help");
+  console.log("  -v, --version          Show CLI version");
+  console.log("  --non-interactive      Disable prompts and require interview payload");
+  console.log("  --interview-file PATH  Load interview JSON from file");
+  console.log("  --skip-browser-open    Do not auto-open browser during auth");
+  console.log("");
+  console.log("Environment:");
+  console.log("  SENTINELAYER_CLI_NON_INTERACTIVE=1");
+  console.log("  SENTINELAYER_CLI_SKIP_BROWSER_OPEN=1");
+  console.log("  SENTINELAYER_CLI_INTERVIEW_JSON='{\"projectName\":\"my-app\",...}'");
 }
 
 function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" } = {}) {
@@ -730,6 +761,14 @@ function printInfo(message) {
 
 async function run() {
   const args = parseCliArgs(process.argv.slice(2));
+  if (args.showHelp) {
+    printUsage();
+    return;
+  }
+  if (args.showVersion) {
+    console.log(CLI_VERSION);
+    return;
+  }
   const argProjectName = args.projectName;
   const detectedRepo = detectRepoSlug(process.cwd());
 
