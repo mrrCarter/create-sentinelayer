@@ -46,6 +46,8 @@ Inputs for non-interactive mode:
 - or `--interview-file <path-to-json>`
 - `--non-interactive` is required to disable prompts
 - `--skip-browser-open` avoids launching local browser in headless runs
+- `--help` / `-h` prints CLI usage
+- `--version` / `-v` prints CLI version
 
 ## Generated files
 
