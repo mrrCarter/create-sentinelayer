@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
@@ -147,6 +147,54 @@ async function runCli({ cwd, env, args = [] }) {
   });
 }
 
+function runCommand({ cwd, command, args }) {
+  const result = spawnSync(command, args, { cwd, encoding: "utf-8" });
+  assert.equal(
+    result.status,
+    0,
+    `${command} ${args.join(" ")} failed:\n${result.stderr || result.stdout || "(no output)"}`
+  );
+  return result;
+}
+
+async function createGithubRepoFixture(tempRoot, { owner = "acme", repo = "feature-app" } = {}) {
+  const seedDir = path.join(tempRoot, "seed-repo");
+  const gitRoot = path.join(tempRoot, "github");
+  const bareRepoDir = path.join(gitRoot, owner, `${repo}.git`);
+
+  await mkdir(seedDir, { recursive: true });
+  await mkdir(path.dirname(bareRepoDir), { recursive: true });
+
+  runCommand({ cwd: seedDir, command: "git", args: ["init"] });
+  runCommand({ cwd: seedDir, command: "git", args: ["config", "user.name", "Sentinelayer E2E"] });
+  runCommand({ cwd: seedDir, command: "git", args: ["config", "user.email", "e2e@sentinelayer.local"] });
+
+  await writeFile(
+    path.join(seedDir, "package.json"),
+    `${JSON.stringify({ name: repo, version: "0.0.1", private: true, scripts: { test: "echo test" } }, null, 2)}\n`,
+    "utf-8"
+  );
+  await writeFile(path.join(seedDir, "README.md"), "# Existing Codebase\n", "utf-8");
+
+  runCommand({ cwd: seedDir, command: "git", args: ["add", "."] });
+  runCommand({ cwd: seedDir, command: "git", args: ["commit", "-m", "seed"] });
+
+  runCommand({ cwd: tempRoot, command: "git", args: ["init", "--bare", bareRepoDir] });
+  runCommand({ cwd: seedDir, command: "git", args: ["branch", "-M", "main"] });
+  runCommand({ cwd: seedDir, command: "git", args: ["remote", "add", "origin", bareRepoDir] });
+  runCommand({ cwd: seedDir, command: "git", args: ["push", "-u", "origin", "main"] });
+  runCommand({
+    cwd: tempRoot,
+    command: "git",
+    args: [`--git-dir=${bareRepoDir}`, "symbolic-ref", "HEAD", "refs/heads/main"],
+  });
+
+  return {
+    repoSlug: `${owner}/${repo}`,
+    cloneBaseUrl: pathToFileURL(gitRoot).href.replace(/\/$/, ""),
+  };
+}
+
 function baseInterview(overrides = {}) {
   return {
     projectName: "demo-app",
@@ -159,6 +207,7 @@ function baseInterview(overrides = {}) {
     features: ["auth", "scanning", "reporting"],
     connectRepo: false,
     repoSlug: "",
+    buildFromExistingRepo: false,
     injectSecret: false,
     ...overrides,
   };
@@ -206,6 +255,67 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
     assert.equal(mock.state.generatePayload.model_provider, "openai");
     assert.equal(mock.state.generatePayload.model_id, "gpt-5.3-codex");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI end-to-end: builds a feature into a cloned existing repo", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({ includeBootstrapInGenerate: true });
+
+  try {
+    const repoFixture = await createGithubRepoFixture(tempRoot, {
+      owner: "acme",
+      repo: "inventory-service",
+    });
+
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_GITHUB_CLONE_BASE_URL: repoFixture.cloneBaseUrl,
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
+        baseInterview({
+          projectName: "",
+          projectDescription: "Build a feature into an existing codebase and preserve repository state.",
+          projectType: "add_feature",
+          connectRepo: true,
+          repoSlug: repoFixture.repoSlug,
+          buildFromExistingRepo: true,
+          injectSecret: false,
+        })
+      ),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["--non-interactive"] });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Cloned repo workspace:/);
+    assert.match(result.stdout, /Sentinelayer orchestration initialized/);
+
+    const repoDir = path.join(tempRoot, "inventory-service");
+    const pkg = JSON.parse(await readFile(path.join(repoDir, "package.json"), "utf-8"));
+    const specText = await readFile(path.join(repoDir, "docs", "spec.md"), "utf-8");
+    const todoText = await readFile(path.join(repoDir, "tasks", "todo.md"), "utf-8");
+
+    assert.equal(pkg.scripts.test, "echo test");
+    assert.ok(pkg.scripts["sentinel:start"]);
+    assert.match(specText, /# Spec/);
+    assert.match(todoText, /Workspace mode: `existing repo clone`/);
+    assert.match(todoText, /Repo: `acme\/inventory-service`/);
+
+    const remote = runCommand({
+      cwd: repoDir,
+      command: "git",
+      args: ["config", "--get", "remote.origin.url"],
+    });
+    assert.equal(
+      String(remote.stdout || "").trim(),
+      `${repoFixture.cloneBaseUrl}/acme/inventory-service.git`
+    );
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

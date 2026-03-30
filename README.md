@@ -9,10 +9,13 @@ Scaffolds Sentinelayer spec/prompt/guide artifacts and bootstraps `SENTINELAYER_
 - runs an interactive project interview
 - opens browser auth at Sentinelayer `/cli-auth`
 - receives approved auth session in terminal
+- optionally opens GitHub auth (`gh auth login -w`) and lets you arrow-select a repo
+- optionally clones the selected repo into the current folder for in-place feature work
 - generates `spec + build guide + execution prompt + omar workflow + todo + handoff prompt`
 - issues bootstrap `SENTINELAYER_TOKEN`
 - writes token to local `.env`
 - optionally injects token to GitHub Actions secret via `gh secret set`
+- ensures target workspace is a git repo (`git init` + `origin` when needed)
 
 ## 60-second flow
 
@@ -23,9 +26,13 @@ npx create-sentinelayer@latest my-agent-app
 ```
 
 2. Interview prompts (project goal, provider, depth, audience, project type, optional repo connect).
-3. Browser auth opens automatically.
-4. Token + artifacts are generated.
-5. CLI prints handoff and next command:
+3. If repo connect is enabled:
+   - choose repo source: current repo, GitHub picker, or manual `owner/repo`
+   - optional browser GitHub authorization
+   - optional clone into local workspace for existing-codebase feature work
+4. Browser auth opens automatically.
+5. Token + artifacts are generated.
+6. CLI prints handoff and next command:
 
 ```bash
 npm run sentinel:start
@@ -48,6 +55,7 @@ Inputs for non-interactive mode:
 - `--skip-browser-open` avoids launching local browser in headless runs
 - `--help` / `-h` prints CLI usage
 - `--version` / `-v` prints CLI version
+- `SENTINELAYER_GITHUB_CLONE_BASE_URL` overrides clone base (default `https://github.com`)
 
 ## Generated files
 
@@ -65,10 +73,20 @@ Inputs for non-interactive mode:
 When `Advanced options?` is enabled:
 
 - `Connect a GitHub repo and inject Actions secret?`
-- `GitHub repo (owner/repo)`
+- `How should we choose the repo?` (current / GitHub picker / manual)
+- `Clone this repo locally and build directly into it now?`
 - `Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?`
 
 The CLI validates repo format and secret-name format before injection.
+
+## Existing codebase mode
+
+When `Clone this repo locally and build directly into it now?` is enabled:
+
+- the CLI clones `<owner>/<repo>` into `./<repo-name>` unless current folder already matches that repo
+- it writes generated docs/prompts/tasks/workflow into that cloned repo
+- if the repo is empty, scaffolding still proceeds deterministically
+- if the target folder already contains a different non-empty repo, CLI fails fast with a clear error
 
 ## Token handling model
 
@@ -134,6 +152,14 @@ This runs:
 - CLI syntax check
 - end-to-end automated scaffolding tests (mock API + mock `gh`)
 - package tarball dry-run
+
+## Roadmap
+
+Planned follow-on terminal commands (post-scaffold):
+
+- `sentinel /omargate deep` for in-terminal deep policy scan
+- `sentinel /audit` for local codebase audit without GitHub PR flow
+- persona orchestrator command set for specialized review/execution modes
 
 ## Troubleshooting
 

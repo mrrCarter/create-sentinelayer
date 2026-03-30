@@ -15,6 +15,8 @@ import prompts from "prompts";
 
 const DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
 const DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
+const DEFAULT_GITHUB_CLONE_BASE_URL =
+  process.env.SENTINELAYER_GITHUB_CLONE_BASE_URL || "https://github.com";
 const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const CLI_VERSION = "0.1.0";
@@ -69,6 +71,13 @@ function normalizeRepoSlug(value) {
 
 function isValidRepoSlug(value) {
   return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizeRepoSlug(value));
+}
+
+function getRepoNameFromSlug(value) {
+  const normalized = normalizeRepoSlug(value);
+  const parts = normalized.split("/");
+  if (parts.length !== 2) return "";
+  return sanitizeProjectName(parts[1]);
 }
 
 function isValidSecretName(value) {
@@ -160,6 +169,7 @@ function printUsage() {
   console.log("  SENTINELAYER_CLI_NON_INTERACTIVE=1");
   console.log("  SENTINELAYER_CLI_SKIP_BROWSER_OPEN=1");
   console.log("  SENTINELAYER_CLI_INTERVIEW_JSON='{\"projectName\":\"my-app\",...}'");
+  console.log("  SENTINELAYER_GITHUB_CLONE_BASE_URL=https://github.com");
 }
 
 function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" } = {}) {
@@ -170,9 +180,11 @@ function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" }
   const projectType = String(obj.projectType || "greenfield").trim().toLowerCase();
   const connectRepo = Boolean(obj.connectRepo);
   const repoSlug = normalizeRepoSlug(obj.repoSlug || detectedRepo || "");
+  const buildFromExistingRepo = connectRepo ? Boolean(obj.buildFromExistingRepo) : false;
+  const derivedProjectName = sanitizeProjectName(obj.projectName || argProjectName) || getRepoNameFromSlug(repoSlug);
 
   const normalized = {
-    projectName: sanitizeProjectName(obj.projectName || argProjectName),
+    projectName: derivedProjectName,
     projectDescription: String(obj.projectDescription || "").trim(),
     aiProvider: VALID_AI_PROVIDERS.has(aiProvider) ? aiProvider : "openai",
     generationMode: VALID_GENERATION_MODES.has(generationMode) ? generationMode : "detailed",
@@ -182,6 +194,7 @@ function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" }
     features: normalizeListInput(obj.features),
     connectRepo,
     repoSlug: connectRepo ? repoSlug : "",
+    buildFromExistingRepo,
     injectSecret: connectRepo ? Boolean(obj.injectSecret) : false,
   };
 
@@ -209,6 +222,9 @@ function validateInterviewInput(interview) {
   }
   if (interview.connectRepo && !isValidRepoSlug(interview.repoSlug)) {
     throw new Error("Invalid repo slug. Expected owner/repo.");
+  }
+  if (interview.buildFromExistingRepo && !interview.connectRepo) {
+    throw new Error("buildFromExistingRepo requires connectRepo=true.");
   }
 }
 
@@ -404,6 +420,237 @@ function detectRepoSlug(cwd) {
   return null;
 }
 
+function getGhCommand() {
+  return String(process.env.SENTINELAYER_GH_BIN || "").trim() || "gh";
+}
+
+function getGitCommand() {
+  return String(process.env.SENTINELAYER_GIT_BIN || "").trim() || "git";
+}
+
+function isGitRepo(cwd) {
+  const gitCommand = getGitCommand();
+  const probe = spawnSync(gitCommand, ["rev-parse", "--is-inside-work-tree"], {
+    cwd,
+    encoding: "utf-8",
+  });
+  return probe.status === 0;
+}
+
+function buildGithubCloneUrl(repoSlug) {
+  const base = String(DEFAULT_GITHUB_CLONE_BASE_URL || "https://github.com").trim().replace(/\/+$/g, "");
+  return `${base}/${normalizeRepoSlug(repoSlug)}.git`;
+}
+
+function ensureGhCliAvailable(ghCommand) {
+  const ghVersion = spawnSync(ghCommand, ["--version"], { encoding: "utf-8" });
+  if (ghVersion.status !== 0) {
+    throw new Error("GitHub CLI (gh) is not installed or not in PATH.");
+  }
+}
+
+function ensureGhAuthSession(ghCommand) {
+  ensureGhCliAvailable(ghCommand);
+  const status = spawnSync(ghCommand, ["auth", "status", "-h", "github.com"], {
+    encoding: "utf-8",
+  });
+  if (status.status === 0) {
+    return;
+  }
+
+  console.log("GitHub authorization required. Opening browser for gh auth login...");
+  const login = spawnSync(ghCommand, ["auth", "login", "-h", "github.com", "-s", "repo", "-w"], {
+    encoding: "utf-8",
+    stdio: "inherit",
+  });
+  if (login.status !== 0) {
+    throw new Error("GitHub authorization failed. Complete gh auth login and retry.");
+  }
+}
+
+function listReposViaGh(ghCommand) {
+  const apiResult = spawnSync(
+    ghCommand,
+    ["api", "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member"],
+    { encoding: "utf-8" }
+  );
+  if (apiResult.status !== 0) {
+    throw new Error(
+      String(apiResult.stderr || apiResult.stdout || "Unable to fetch repositories with gh api.").trim()
+    );
+  }
+
+  let payload = [];
+  try {
+    payload = JSON.parse(String(apiResult.stdout || "[]"));
+  } catch {
+    throw new Error("GitHub repo list response was not valid JSON.");
+  }
+  if (!Array.isArray(payload)) {
+    throw new Error("GitHub repo list response was not an array.");
+  }
+
+  const seen = new Set();
+  const repos = [];
+  for (const item of payload) {
+    const slug = normalizeRepoSlug(item && typeof item.full_name === "string" ? item.full_name : "");
+    if (!isValidRepoSlug(slug)) continue;
+    const key = slug.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    repos.push({
+      slug,
+      privateRepo: Boolean(item.private),
+      defaultBranch: String(item.default_branch || "").trim() || "main",
+    });
+  }
+  return repos;
+}
+
+async function selectRepoSlugFromGithub() {
+  const ghCommand = getGhCommand();
+  ensureGhAuthSession(ghCommand);
+  const repos = listReposViaGh(ghCommand);
+  if (repos.length === 0) {
+    throw new Error("No accessible GitHub repos found for this account.");
+  }
+
+  const result = await prompts(
+    [
+      {
+        type: "select",
+        name: "repoSlug",
+        message: "Choose a GitHub repo",
+        choices: repos.map((repo) => ({
+          title: `${repo.slug}${repo.privateRepo ? " (private)" : ""} [${repo.defaultBranch}]`,
+          value: repo.slug,
+        })),
+        initial: 0,
+      },
+    ],
+    {
+      onCancel: () => {
+        throw new Error("GitHub repo selection cancelled.");
+      },
+    }
+  );
+
+  const selected = normalizeRepoSlug(result.repoSlug);
+  if (!isValidRepoSlug(selected)) {
+    throw new Error("GitHub repo selection returned an invalid repository slug.");
+  }
+  return selected;
+}
+
+async function cloneGithubRepo({ repoSlug, cwd }) {
+  const normalizedRepo = normalizeRepoSlug(repoSlug);
+  const repoName = getRepoNameFromSlug(normalizedRepo) || "repo";
+  const targetDir = path.resolve(cwd, repoName);
+  const gitCommand = getGitCommand();
+  const cloneUrl = buildGithubCloneUrl(normalizedRepo);
+
+  if (path.resolve(cwd) === path.resolve(targetDir)) {
+    throw new Error("Target clone directory cannot match the current working directory.");
+  }
+  if (fs.existsSync(targetDir) && !isGitRepo(targetDir)) {
+    const entries = await fsp.readdir(targetDir);
+    if (entries.length > 0) {
+      throw new Error(
+        `Cannot clone ${normalizedRepo}: target directory '${repoName}' already exists and is not an empty git repo.`
+      );
+    }
+  }
+  if (isGitRepo(targetDir)) {
+    const localSlug = normalizeRepoSlug(detectRepoSlug(targetDir) || "");
+    if (localSlug && localSlug.toLowerCase() !== normalizedRepo.toLowerCase()) {
+      throw new Error(
+        `Directory '${repoName}' already contains a different repo (${localSlug}). Choose another project name or folder.`
+      );
+    }
+    return {
+      projectDir: targetDir,
+      cloneUrl,
+      cloned: false,
+    };
+  }
+
+  const cloneResult = spawnSync(gitCommand, ["clone", "--depth", "1", cloneUrl, targetDir], {
+    cwd,
+    encoding: "utf-8",
+  });
+  if (cloneResult.status !== 0) {
+    throw new Error(String(cloneResult.stderr || cloneResult.stdout || "git clone failed").trim());
+  }
+  return {
+    projectDir: targetDir,
+    cloneUrl,
+    cloned: true,
+  };
+}
+
+async function ensureGitRepositorySetup({ projectDir, repoSlug }) {
+  const gitCommand = getGitCommand();
+  if (!isGitRepo(projectDir)) {
+    const initResult = spawnSync(gitCommand, ["init"], {
+      cwd: projectDir,
+      encoding: "utf-8",
+    });
+    if (initResult.status !== 0) {
+      throw new Error(String(initResult.stderr || initResult.stdout || "git init failed").trim());
+    }
+  }
+
+  const normalizedRepo = normalizeRepoSlug(repoSlug);
+  if (!isValidRepoSlug(normalizedRepo)) return;
+
+  const remoteGet = spawnSync(gitCommand, ["config", "--get", "remote.origin.url"], {
+    cwd: projectDir,
+    encoding: "utf-8",
+  });
+  const remote = String(remoteGet.stdout || "").trim();
+  if (remote) return;
+
+  const remoteUrl = buildGithubCloneUrl(normalizedRepo);
+  const remoteAdd = spawnSync(gitCommand, ["remote", "add", "origin", remoteUrl], {
+    cwd: projectDir,
+    encoding: "utf-8",
+  });
+  if (remoteAdd.status !== 0) {
+    throw new Error(String(remoteAdd.stderr || remoteAdd.stdout || "git remote add failed").trim());
+  }
+}
+
+async function resolveProjectDirectory({ cwd, interview, detectedRepo }) {
+  const normalizedTargetRepo = normalizeRepoSlug(interview.repoSlug);
+  const normalizedDetected = normalizeRepoSlug(detectedRepo || "");
+
+  if (interview.connectRepo && interview.buildFromExistingRepo && isValidRepoSlug(normalizedTargetRepo)) {
+    if (normalizedDetected && normalizedDetected.toLowerCase() === normalizedTargetRepo.toLowerCase()) {
+      return {
+        projectDir: cwd,
+        clonedRepo: false,
+        reusedCurrentRepo: true,
+      };
+    }
+    const cloned = await cloneGithubRepo({
+      repoSlug: normalizedTargetRepo,
+      cwd,
+    });
+    return {
+      projectDir: cloned.projectDir,
+      clonedRepo: cloned.cloned,
+      reusedCurrentRepo: false,
+      cloneUrl: cloned.cloneUrl,
+    };
+  }
+
+  return {
+    projectDir: path.resolve(cwd, interview.projectName),
+    clonedRepo: false,
+    reusedCurrentRepo: false,
+  };
+}
+
 async function ensureDirectory(targetPath) {
   await fsp.mkdir(targetPath, { recursive: true });
 }
@@ -463,6 +710,7 @@ function buildTodoContent({
   projectName,
   aiProvider,
   repoSlug,
+  buildFromExistingRepo,
   generationMode,
   audienceLevel,
   projectType,
@@ -478,6 +726,7 @@ Project: ${projectName}
 - Audience level: \`${audienceLevel}\`
 - Project type: \`${projectType}\`
 - Repo: \`${repoSlug || "not connected"}\`
+- Workspace mode: \`${buildFromExistingRepo ? "existing repo clone" : "new scaffold"}\`
 
 ## Execution Checklist
 - [ ] PR 1: foundation and architecture skeleton
@@ -502,7 +751,7 @@ Project: ${projectName}
 `;
 }
 
-function buildHandoffPrompt({ projectName, repoSlug, secretName }) {
+function buildHandoffPrompt({ projectName, repoSlug, secretName, buildFromExistingRepo }) {
   return `# Sentinelayer Agent Handoff Prompt
 
 You are executing "${projectName}" autonomously.
@@ -527,6 +776,7 @@ GitHub Action contract:
 
 Repo context:
 - Target repo: ${repoSlug || "not provided"}
+- Workspace mode: ${buildFromExistingRepo ? "existing codebase" : "new scaffold"}
 
 Start now and continue autonomously.
 `;
@@ -560,7 +810,7 @@ jobs:
 
 function runGhSecretSet({ repoSlug, secretName, secretValue }) {
   const normalizedRepo = normalizeRepoSlug(repoSlug);
-  const ghCommand = String(process.env.SENTINELAYER_GH_BIN || "").trim() || "gh";
+  const ghCommand = getGhCommand();
   const secretSinkFile = String(process.env.SENTINELAYER_SECRET_SINK_FILE || "").trim();
   if (!isValidRepoSlug(normalizedRepo)) {
     return {
@@ -585,11 +835,12 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
       };
     }
   }
-  const ghVersion = spawnSync(ghCommand, ["--version"], { encoding: "utf-8" });
-  if (ghVersion.status !== 0) {
+  try {
+    ensureGhCliAvailable(ghCommand);
+  } catch (error) {
     return {
       ok: false,
-      reason: "GitHub CLI (gh) is not installed or not in PATH.",
+      reason: error instanceof Error ? error.message : String(error),
     };
   }
 
@@ -700,10 +951,27 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
   let advanced = {
     connectRepo: false,
     repoSlug: detectedRepo || "",
+    buildFromExistingRepo: false,
     injectSecret: false,
   };
   if (base.advanced) {
-    advanced = await prompts(
+    const repoChoices = [];
+    if (detectedRepo) {
+      repoChoices.push({
+        title: `Use current repo (${detectedRepo})`,
+        value: "current",
+      });
+    }
+    repoChoices.push({
+      title: "Choose from GitHub account (browser auth)",
+      value: "picker",
+    });
+    repoChoices.push({
+      title: "Enter owner/repo manually",
+      value: "manual",
+    });
+
+    const repoSetup = await prompts(
       [
         {
           type: "toggle",
@@ -714,30 +982,78 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
           inactive: "no",
         },
         {
-          type: (prev) => (prev ? "text" : null),
-          name: "repoSlug",
-          message: "GitHub repo (owner/repo)",
-          initial: detectedRepo || "",
-          validate: (value) =>
-            isValidRepoSlug(value)
-              ? true
-              : "Use owner/repo format.",
-        },
-        {
-          type: (prev, values) => (values.connectRepo ? "toggle" : null),
-          name: "injectSecret",
-          message: "Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?",
-          initial: true,
-          active: "yes",
-          inactive: "no",
+          type: (prev) => (prev ? "select" : null),
+          name: "repoSource",
+          message: "How should we choose the repo?",
+          choices: repoChoices,
+          initial: detectedRepo ? 0 : 1,
         },
       ],
       { onCancel }
     );
+
+    advanced.connectRepo = Boolean(repoSetup.connectRepo);
+    if (advanced.connectRepo) {
+      let repoSlug = detectedRepo || "";
+      const repoSource = String(repoSetup.repoSource || "").trim().toLowerCase();
+
+      if (repoSource === "manual") {
+        const manual = await prompts(
+          [
+            {
+              type: "text",
+              name: "repoSlug",
+              message: "GitHub repo (owner/repo)",
+              initial: detectedRepo || "",
+              validate: (value) => (isValidRepoSlug(value) ? true : "Use owner/repo format."),
+            },
+          ],
+          { onCancel }
+        );
+        repoSlug = normalizeRepoSlug(manual.repoSlug);
+      } else if (repoSource === "picker") {
+        repoSlug = await selectRepoSlugFromGithub();
+      } else {
+        repoSlug = normalizeRepoSlug(detectedRepo);
+      }
+
+      if (!isValidRepoSlug(repoSlug)) {
+        throw new Error("GitHub repo selection did not produce a valid owner/repo value.");
+      }
+
+      const repoMode = await prompts(
+        [
+          {
+            type: "toggle",
+            name: "buildFromExistingRepo",
+            message: "Clone this repo locally and build directly into it now?",
+            initial: base.projectType === "add_feature" || base.projectType === "bugfix",
+            active: "yes",
+            inactive: "no",
+          },
+          {
+            type: "toggle",
+            name: "injectSecret",
+            message: "Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?",
+            initial: true,
+            active: "yes",
+            inactive: "no",
+          },
+        ],
+        { onCancel }
+      );
+
+      advanced.repoSlug = repoSlug;
+      advanced.buildFromExistingRepo = Boolean(repoMode.buildFromExistingRepo);
+      advanced.injectSecret = Boolean(repoMode.injectSecret);
+    }
   }
 
+  const projectName =
+    sanitizeProjectName(initialProjectName || base.projectName) || getRepoNameFromSlug(advanced.repoSlug);
+
   return {
-    projectName: sanitizeProjectName(initialProjectName || base.projectName),
+    projectName,
     projectDescription: String(base.projectDescription || "").trim(),
     aiProvider: base.aiProvider,
     generationMode: base.generationMode,
@@ -747,6 +1063,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
     features: parseCommaList(base.features),
     connectRepo: Boolean(advanced.connectRepo),
     repoSlug: normalizeRepoSlug(advanced.repoSlug),
+    buildFromExistingRepo: Boolean(advanced.buildFromExistingRepo),
     injectSecret: Boolean(advanced.injectSecret),
   };
 }
@@ -881,7 +1198,25 @@ async function run() {
       )
     );
   }
-  const projectDir = path.resolve(process.cwd(), interview.projectName);
+
+  const workspace = await resolveProjectDirectory({
+    cwd: process.cwd(),
+    interview,
+    detectedRepo,
+  });
+  const projectDir = workspace.projectDir;
+  if (workspace.reusedCurrentRepo) {
+    printInfo(`Using current repo workspace: ${projectDir}`);
+  } else if (workspace.clonedRepo) {
+    printInfo(`Cloned repo workspace: ${projectDir}`);
+    if (workspace.cloneUrl) {
+      printInfo(`Clone URL: ${workspace.cloneUrl}`);
+    }
+  }
+
+  const effectiveProjectName =
+    sanitizeProjectName(generated.project_name || interview.projectName || path.basename(projectDir)) ||
+    path.basename(projectDir);
   const docsDir = path.join(projectDir, "docs");
   const promptsDir = path.join(projectDir, "prompts");
   const tasksDir = path.join(projectDir, "tasks");
@@ -902,9 +1237,10 @@ async function run() {
   await writeTextFile(
     path.join(tasksDir, "todo.md"),
     buildTodoContent({
-      projectName: generated.project_name || interview.projectName,
+      projectName: effectiveProjectName,
       aiProvider: interview.aiProvider,
       repoSlug: interview.repoSlug,
+      buildFromExistingRepo: interview.buildFromExistingRepo,
       generationMode: interview.generationMode,
       audienceLevel: interview.audienceLevel,
       projectType: interview.projectType,
@@ -913,14 +1249,19 @@ async function run() {
   await writeTextFile(
     path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"),
     buildHandoffPrompt({
-      projectName: generated.project_name || interview.projectName,
+      projectName: effectiveProjectName,
       repoSlug: interview.repoSlug,
       secretName,
+      buildFromExistingRepo: interview.buildFromExistingRepo,
     })
   );
 
-  await ensureSentinelStartScript(projectDir, generated.project_name || interview.projectName);
+  await ensureSentinelStartScript(projectDir, effectiveProjectName);
   await upsertEnvVariable(path.join(projectDir, ".env"), secretName, sentinelayerToken);
+  await ensureGitRepositorySetup({
+    projectDir,
+    repoSlug: interview.connectRepo ? interview.repoSlug : "",
+  });
 
   let secretInjection = { ok: false, reason: "Skipped." };
   if (interview.connectRepo && interview.injectSecret && interview.repoSlug) {
@@ -948,7 +1289,8 @@ async function run() {
   }
 
   console.log("\nNext:");
-  console.log(`1. cd ${interview.projectName}`);
+  const nextCd = path.relative(process.cwd(), projectDir) || ".";
+  console.log(`1. cd ${nextCd}`);
   console.log("2. npm run sentinel:start");
   console.log("3. Copy/paste AGENT_HANDOFF_PROMPT.md into your coding agent and let it run autonomously.");
 }
