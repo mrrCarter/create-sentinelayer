@@ -30,7 +30,11 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function startMockApi({ includeBootstrapInGenerate = true, requiredSecretName = "SENTINELAYER_TOKEN" } = {}) {
+async function startMockApi({
+  includeBootstrapInGenerate = true,
+  includeOmarWorkflowInGenerate = true,
+  requiredSecretName = "SENTINELAYER_TOKEN",
+} = {}) {
   const state = {
     pollCalls: 0,
     bootstrapCalls: 0,
@@ -70,9 +74,11 @@ async function startMockApi({ includeBootstrapInGenerate = true, requiredSecretN
           spec_sheet: "# Spec\n\nShip it.",
           playbook: "# Build Guide\n\nDo this.",
           builder_prompt: "Follow the generated docs.",
-          omar_gate_yaml:
-            "name: Omar Gate\non:\n  pull_request:\n    types: [opened, synchronize, reopened]\n",
         };
+        if (includeOmarWorkflowInGenerate) {
+          payload.omar_gate_yaml =
+            "name: Omar Gate\non:\n  pull_request:\n    types: [opened, synchronize, reopened]\n";
+        }
         if (includeBootstrapInGenerate) {
           payload.bootstrap_token = {
             token: "sl_boot_from_generate_123",
@@ -255,6 +261,38 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
     assert.equal(mock.state.generatePayload.model_provider, "openai");
     assert.equal(mock.state.generatePayload.model_id, "gpt-5.3-codex");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI fallback workflow binds dynamically to API-provided secret name", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({
+    includeBootstrapInGenerate: true,
+    includeOmarWorkflowInGenerate: false,
+    requiredSecretName: "SENTINELAYER_BETA_TOKEN",
+  });
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(baseInterview()),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const workflowText = await readFile(
+      path.join(tempRoot, "demo-app", ".github", "workflows", "omar-gate.yml"),
+      "utf-8"
+    );
+    assert.match(workflowText, /sentinelayer_token:\s*\$\{\{\s*secrets\.SENTINELAYER_BETA_TOKEN\s*\}\}/);
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

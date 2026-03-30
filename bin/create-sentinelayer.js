@@ -795,7 +795,8 @@ Start now and continue autonomously.
 `;
 }
 
-function fallbackWorkflow() {
+function fallbackWorkflow(secretName = "SENTINELAYER_TOKEN") {
+  const normalizedSecret = isValidSecretName(secretName) ? secretName : "SENTINELAYER_TOKEN";
   return `name: Omar Gate
 
 on:
@@ -815,7 +816,7 @@ jobs:
       - name: Omar Gate
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
-          sentinelayer_token: \${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_token: \${{ secrets.${normalizedSecret} }}
           scan_mode: deep
           severity_gate: P1
 `;
@@ -1245,7 +1246,7 @@ async function run() {
   );
   await writeTextFile(
     path.join(projectDir, ".github", "workflows", "omar-gate.yml"),
-    (String(generated.omar_gate_yaml || "").trim() || fallbackWorkflow()) + "\n"
+    (String(generated.omar_gate_yaml || "").trim() || fallbackWorkflow(secretName)) + "\n"
   );
   await writeTextFile(
     path.join(tasksDir, "todo.md"),
