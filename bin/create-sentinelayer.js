@@ -1172,6 +1172,22 @@ async function ensureSentinelStartScript(projectDir, projectName) {
   payload.scripts["sentinel:start"] =
     payload.scripts["sentinel:start"] ||
     "echo \"Sentinelayer artifacts are ready. Open AGENT_HANDOFF_PROMPT.md and start your coding agent.\"";
+  const scriptDefaults = {
+    "sentinel:omargate": "npx create-sentinelayer@latest /omargate deep --path .",
+    "sentinel:audit": "npx create-sentinelayer@latest /audit --path .",
+    "sentinel:persona:builder":
+      "npx create-sentinelayer@latest /persona orchestrator --mode builder --path .",
+    "sentinel:persona:reviewer":
+      "npx create-sentinelayer@latest /persona orchestrator --mode reviewer --path .",
+    "sentinel:persona:hardener":
+      "npx create-sentinelayer@latest /persona orchestrator --mode hardener --path .",
+    "sentinel:apply": "npx create-sentinelayer@latest /apply --plan tasks/todo.md --path .",
+  };
+  for (const [name, command] of Object.entries(scriptDefaults)) {
+    if (!payload.scripts[name]) {
+      payload.scripts[name] = command;
+    }
+  }
   await writeTextFile(packagePath, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
