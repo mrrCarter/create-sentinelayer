@@ -77,6 +77,7 @@ When `Advanced options?` is enabled:
 - GitHub picker reads all accessible repos via paginated `gh api`
 - `Clone this repo locally and build directly into it now?`
 - `Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?`
+- Final review step lets you proceed, restart interview, or cancel cleanly
 
 The CLI validates repo format and secret-name format before injection.
 
