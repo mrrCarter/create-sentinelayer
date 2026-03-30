@@ -2,6 +2,12 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to npm (requires NPM_TOKEN)"
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -30,7 +36,17 @@ jobs:
       - name: Validate package
         run: npm run verify
 
+      - name: Build release tarball
+        run: npm pack
+
+      - name: Upload release tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: create-sentinelayer-tarball
+          path: create-sentinelayer-*.tgz
+
       - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
