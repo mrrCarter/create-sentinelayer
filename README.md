@@ -166,6 +166,11 @@ The CLI now supports local command mode:
 - `/persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `/apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
 
+You can run these via either binary:
+
+- `create-sentinelayer /omargate deep --path .`
+- `sentinel /omargate deep --path .`
+
 Roadmap:
 
 - persona orchestrator command set for specialized review/execution modes
