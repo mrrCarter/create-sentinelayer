@@ -1265,7 +1265,9 @@ async function ensureSentinelStartScript(projectDir, projectName) {
     "echo \"Sentinelayer artifacts are ready. Open AGENT_HANDOFF_PROMPT.md and start your coding agent.\"";
   const scriptDefaults = {
     "sentinel:omargate": "npx create-sentinelayer@latest /omargate deep --path .",
+    "sentinel:omargate:json": "npx create-sentinelayer@latest /omargate deep --path . --json",
     "sentinel:audit": "npx create-sentinelayer@latest /audit --path .",
+    "sentinel:audit:json": "npx create-sentinelayer@latest /audit --path . --json",
     "sentinel:persona:builder":
       "npx create-sentinelayer@latest /persona orchestrator --mode builder --path .",
     "sentinel:persona:reviewer":
