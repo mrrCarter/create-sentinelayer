@@ -1363,6 +1363,12 @@ function buildHandoffPrompt({ projectName, repoSlug, secretName, buildFromExisti
       : `- Sentinelayer token: not configured (BYOK mode).
 - Keep provider credentials in your own environment (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY).
 - If you later adopt Omar Gate GitHub Action, set secrets.${secretName} and wire sentinelayer_token accordingly.`;
+  const workflowTuning =
+    authMode === "sentinelayer"
+      ? `- scan_mode: deep (default) or quick
+- severity_gate: P1 (default) or P2`
+      : `- BYOK workflow is guidance-only and does not call the Sentinelayer action.
+- To enable Omar Gate later, set ${secretName} and configure scan_mode/severity_gate in workflow inputs.`;
 
   return `# Sentinelayer Agent Handoff Prompt
 
@@ -1383,6 +1389,18 @@ Execution mode:
 
 GitHub Action contract:
 ${tokenContract}
+
+Terminal command options:
+- sentinel /omargate deep --path .
+- sentinel /audit --path .
+- sentinel /persona orchestrator --mode builder --path .
+- sentinel /persona orchestrator --mode reviewer --path .
+- sentinel /persona orchestrator --mode hardener --path .
+- sentinel /apply --plan tasks/todo.md --path .
+- Add --json to /omargate, /audit, /persona, or /apply for machine-readable CI output.
+
+Workflow tuning options:
+${workflowTuning}
 
 Repo context:
 - Target repo: ${repoSlug || "not provided"}
