@@ -206,6 +206,7 @@ function baseInterview(overrides = {}) {
     projectName: "demo-app",
     projectDescription: "Build an autonomous secure code review orchestrator.",
     aiProvider: "openai",
+    authMode: "sentinelayer",
     generationMode: "detailed",
     audienceLevel: "developer",
     projectType: "greenfield",
@@ -439,6 +440,52 @@ test("CLI end-to-end: falls back to /builder/bootstrap-token when generate omits
     assert.equal(mock.state.bootstrapCalls, 1);
   } finally {
     await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const secretSinkPath = path.join(tempRoot, "secret-sink.log");
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: "http://127.0.0.1:9",
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_SECRET_SINK_FILE: secretSinkPath,
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
+        baseInterview({
+          projectName: "byok-app",
+          authMode: "byok",
+          connectRepo: true,
+          repoSlug: "acme/byok-app",
+          injectSecret: true,
+        })
+      ),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["byok-app", "--non-interactive"] });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /BYOK mode selected/i);
+    assert.match(result.stdout, /BYOK mode active/i);
+
+    const projectDir = path.join(tempRoot, "byok-app");
+    const workflowText = await readFile(path.join(projectDir, ".github", "workflows", "omar-gate.yml"), "utf-8");
+    const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
+    const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
+    const specText = await readFile(path.join(projectDir, "docs", "spec.md"), "utf-8");
+
+    assert.match(workflowText, /Omar Gate \(BYOK Mode\)/);
+    assert.match(todoText, /Auth mode: `byok`/);
+    assert.match(handoffText, /Sentinelayer token: not configured \(BYOK mode\)/);
+    assert.match(specText, /## Goal/);
+    assert.match(specText, /autonomous secure code review orchestrator/i);
+
+    await assert.rejects(readFile(path.join(projectDir, ".env"), "utf-8"));
+    await assert.rejects(readFile(secretSinkPath, "utf-8"));
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

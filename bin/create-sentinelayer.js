@@ -31,6 +31,7 @@ const VALID_AI_PROVIDERS = new Set(["openai", "anthropic", "google"]);
 const VALID_GENERATION_MODES = new Set(["detailed", "quick", "enterprise"]);
 const VALID_AUDIENCE_LEVELS = new Set(["developer", "intermediate", "beginner"]);
 const VALID_PROJECT_TYPES = new Set(["greenfield", "add_feature", "bugfix"]);
+const VALID_AUTH_MODES = new Set(["sentinelayer", "byok"]);
 
 class SentinelayerApiError extends Error {
   constructor(message, { code = "API_ERROR", status = 500, requestId = null } = {}) {
@@ -184,9 +185,11 @@ function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" }
   const generationMode = String(obj.generationMode || "detailed").trim().toLowerCase();
   const audienceLevel = String(obj.audienceLevel || "developer").trim().toLowerCase();
   const projectType = String(obj.projectType || "greenfield").trim().toLowerCase();
+  const authMode = String(obj.authMode || "sentinelayer").trim().toLowerCase();
   const connectRepo = Boolean(obj.connectRepo);
   const repoSlug = normalizeRepoSlug(obj.repoSlug || detectedRepo || "");
   const buildFromExistingRepo = connectRepo ? Boolean(obj.buildFromExistingRepo) : false;
+  const normalizedAuthMode = VALID_AUTH_MODES.has(authMode) ? authMode : "sentinelayer";
   const derivedProjectName = sanitizeProjectName(obj.projectName || argProjectName) || getRepoNameFromSlug(repoSlug);
 
   const normalized = {
@@ -198,10 +201,11 @@ function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" }
     projectType: VALID_PROJECT_TYPES.has(projectType) ? projectType : "greenfield",
     techStack: normalizeListInput(obj.techStack),
     features: normalizeListInput(obj.features),
+    authMode: normalizedAuthMode,
     connectRepo,
     repoSlug: connectRepo ? repoSlug : "",
     buildFromExistingRepo,
-    injectSecret: connectRepo ? Boolean(obj.injectSecret) : false,
+    injectSecret: connectRepo && normalizedAuthMode === "sentinelayer" ? Boolean(obj.injectSecret) : false,
   };
 
   return normalized;
@@ -226,11 +230,17 @@ function validateInterviewInput(interview) {
   if (!VALID_PROJECT_TYPES.has(interview.projectType)) {
     throw new Error("Invalid projectType. Use greenfield, add_feature, or bugfix.");
   }
+  if (!VALID_AUTH_MODES.has(interview.authMode)) {
+    throw new Error("Invalid authMode. Use sentinelayer or byok.");
+  }
   if (interview.connectRepo && !isValidRepoSlug(interview.repoSlug)) {
     throw new Error("Invalid repo slug. Expected owner/repo.");
   }
   if (interview.buildFromExistingRepo && !interview.connectRepo) {
     throw new Error("buildFromExistingRepo requires connectRepo=true.");
+  }
+  if (interview.injectSecret && interview.authMode !== "sentinelayer") {
+    throw new Error("injectSecret requires authMode=sentinelayer.");
   }
 }
 
@@ -1287,6 +1297,7 @@ async function ensureSentinelStartScript(projectDir, projectName) {
 function buildTodoContent({
   projectName,
   aiProvider,
+  authMode,
   repoSlug,
   buildFromExistingRepo,
   generationMode,
@@ -1300,6 +1311,7 @@ Project: ${projectName}
 
 ## Inputs
 - AI provider: \`${aiProvider}\`
+- Auth mode: \`${authMode}\`
 - Generation mode: \`${generationMode}\`
 - Audience level: \`${audienceLevel}\`
 - Project type: \`${projectType}\`
@@ -1342,7 +1354,16 @@ Project: ${projectName}
 `;
 }
 
-function buildHandoffPrompt({ projectName, repoSlug, secretName, buildFromExistingRepo }) {
+function buildHandoffPrompt({ projectName, repoSlug, secretName, buildFromExistingRepo, authMode }) {
+  const tokenContract =
+    authMode === "sentinelayer"
+      ? `- Required secret name: ${secretName}
+- Workflow input binding: sentinelayer_token: \${{ secrets.${secretName} }}
+- Optional: OPENAI_API_KEY for runtime policy/BYOK scenarios.`
+      : `- Sentinelayer token: not configured (BYOK mode).
+- Keep provider credentials in your own environment (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY).
+- If you later adopt Omar Gate GitHub Action, set secrets.${secretName} and wire sentinelayer_token accordingly.`;
+
   return `# Sentinelayer Agent Handoff Prompt
 
 You are executing "${projectName}" autonomously.
@@ -1361,9 +1382,7 @@ Execution mode:
 - Stop only for blocking secrets/permission gaps.
 
 GitHub Action contract:
-- Required secret name: ${secretName}
-- Workflow input binding: sentinelayer_token: \${{ secrets.${secretName} }}
-- Optional: OPENAI_API_KEY for runtime policy/BYOK scenarios.
+${tokenContract}
 
 Repo context:
 - Target repo: ${repoSlug || "not provided"}
@@ -1373,7 +1392,28 @@ Start now and continue autonomously.
 `;
 }
 
-function fallbackWorkflow(secretName = "SENTINELAYER_TOKEN") {
+function fallbackWorkflow({ secretName = "SENTINELAYER_TOKEN", authMode = "sentinelayer" } = {}) {
+  if (authMode === "byok") {
+    return `name: Omar Gate (BYOK Mode)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  byok-note:
+    runs-on: ubuntu-latest
+    steps:
+      - name: BYOK mode reminder
+        run: |
+          echo "Sentinelayer token is not configured in BYOK mode."
+          echo "Use local commands: npx create-sentinelayer@latest /audit --path ."
+          echo "Set SENTINELAYER_TOKEN and wire sentinelayer_token to enable Omar Gate action later."
+`;
+  }
   const normalizedSecret = isValidSecretName(secretName) ? secretName : "SENTINELAYER_TOKEN";
   return `name: Omar Gate
 
@@ -1398,6 +1438,76 @@ jobs:
           scan_mode: deep
           severity_gate: P1
 `;
+}
+
+function buildByokArtifacts({ interview, description }) {
+  const featureList =
+    interview.features.length > 0
+      ? interview.features.map((item, index) => `${index + 1}. ${item}`).join("\n")
+      : "1. Implement the core workflow end-to-end.\n2. Add observability and hardening.\n3. Add tests and docs.";
+  const techStack =
+    interview.techStack.length > 0 ? interview.techStack.join(", ") : "Node.js, TypeScript, PostgreSQL";
+
+  return {
+    project_name: interview.projectName,
+    spec_sheet: `# Spec
+
+## Project
+${interview.projectName}
+
+## Goal
+${description}
+
+## Target audience
+${interview.audienceLevel}
+
+## Preferred provider
+${interview.aiProvider}
+
+## Project type
+${interview.projectType}
+
+## Suggested stack
+${techStack}
+
+## Key features
+${featureList}
+`,
+    playbook: `# Build Guide
+
+## Scope
+- Keep each PR bounded and shippable.
+- Run tests and local scans before each handoff.
+- Keep secrets out of source control.
+
+## Implementation order
+1. Establish repo baseline and CI checks.
+2. Implement domain model and persistence boundaries.
+3. Implement API/worker surface and auth/session policies.
+4. Add observability, retries, and production hardening.
+5. Finalize docs and operational runbooks.
+
+## Review loop
+- Run \`sentinel /omargate deep --path .\` and \`sentinel /audit --path .\`.
+- Fix P0/P1 issues before merge.
+- Fix P2 findings before merge when feasible.
+`,
+    builder_prompt: `You are operating in Sentinelayer BYOK mode.
+
+Read files in order:
+1. docs/spec.md
+2. docs/build-guide.md
+3. tasks/todo.md
+4. AGENT_HANDOFF_PROMPT.md
+
+Execute PR-by-PR from tasks/todo.md.
+Run local scans after each PR:
+- sentinel /omargate deep --path .
+- sentinel /audit --path .
+
+Continue autonomously unless blocked by missing credentials or permissions.`,
+    omar_gate_yaml: fallbackWorkflow({ authMode: "byok" }),
+  };
 }
 
 function runGhSecretSet({ repoSlug, secretName, secretValue }) {
@@ -1529,6 +1639,16 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
         message: "Key features (comma-separated, optional)",
       },
       {
+        type: "select",
+        name: "authMode",
+        message: "Auth mode",
+        choices: [
+          { title: "Sentinelayer managed token (recommended)", value: "sentinelayer" },
+          { title: "BYOK only (skip Sentinelayer token)", value: "byok" },
+        ],
+        initial: 0,
+      },
+      {
         type: "toggle",
         name: "advanced",
         message: "Advanced options?",
@@ -1624,7 +1744,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
             inactive: "no",
           },
           {
-            type: "toggle",
+            type: base.authMode === "sentinelayer" ? "toggle" : null,
             name: "injectSecret",
             message: "Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?",
             initial: true,
@@ -1637,7 +1757,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
 
       advanced.repoSlug = repoSlug;
       advanced.buildFromExistingRepo = Boolean(repoMode.buildFromExistingRepo);
-      advanced.injectSecret = Boolean(repoMode.injectSecret);
+      advanced.injectSecret = base.authMode === "sentinelayer" ? Boolean(repoMode.injectSecret) : false;
     }
   }
 
@@ -1653,6 +1773,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
     projectType: base.projectType,
     techStack: parseCommaList(base.techStack),
     features: parseCommaList(base.features),
+    authMode: base.authMode,
     connectRepo: Boolean(advanced.connectRepo),
     repoSlug: normalizeRepoSlug(advanced.repoSlug),
     buildFromExistingRepo: Boolean(advanced.buildFromExistingRepo),
@@ -1663,6 +1784,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
   printInfo(`Project: ${interviewResult.projectName}`);
   printInfo(`Type: ${interviewResult.projectType}`);
   printInfo(`Provider: ${interviewResult.aiProvider}`);
+  printInfo(`Auth mode: ${interviewResult.authMode}`);
   printInfo(`Repo: ${interviewResult.repoSlug || "not connected"}`);
   printInfo(
     `Existing repo mode: ${interviewResult.buildFromExistingRepo ? "enabled (clone/reuse)" : "disabled"}`
@@ -1785,44 +1907,51 @@ async function run() {
     printInfo(`Target scaffold workspace: ${projectDir}`);
   }
 
+  const requestedAuthMode = interview.authMode === "byok" ? "byok" : "sentinelayer";
+  let authToken = "";
+
   printSection("Authentication");
-  if (args.nonInteractive) {
-    console.log("Non-interactive mode: skipping Enter confirmation.");
+  if (requestedAuthMode === "byok") {
+    printInfo("BYOK mode selected. Skipping Sentinelayer browser auth and token bootstrap.");
   } else {
-    await waitForEnter("Press Enter to authenticate with Sentinelayer in your browser...");
-  }
-
-  const challenge = crypto.randomBytes(32).toString("hex");
-  const session = await startCliSession({
-    apiUrl: DEFAULT_API_URL,
-    challenge,
-    cliVersion: CLI_VERSION,
-  });
-
-  if (args.skipBrowserOpen || args.nonInteractive) {
-    console.log(`Browser open skipped. Authorize manually: ${session.authorize_url}`);
-  } else {
-    console.log(`Opening browser: ${session.authorize_url}`);
-    try {
-      await open(session.authorize_url);
-    } catch {
-      console.log(pc.yellow("Could not auto-open browser. Open this URL manually:"));
-      console.log(pc.yellow(session.authorize_url));
+    if (args.nonInteractive) {
+      console.log("Non-interactive mode: skipping Enter confirmation.");
+    } else {
+      await waitForEnter("Press Enter to authenticate with Sentinelayer in your browser...");
     }
-  }
 
-  console.log("Waiting for browser approval...");
-  const approval = await pollCliSession({
-    apiUrl: DEFAULT_API_URL,
-    sessionId: session.session_id,
-    challenge,
-    pollIntervalSeconds: session.poll_interval_seconds || 2,
-    timeoutMs: DEFAULT_AUTH_TIMEOUT_MS,
-  });
+    const challenge = crypto.randomBytes(32).toString("hex");
+    const session = await startCliSession({
+      apiUrl: DEFAULT_API_URL,
+      challenge,
+      cliVersion: CLI_VERSION,
+    });
 
-  const authToken = String(approval.auth_token || "").trim();
-  if (!authToken) {
-    throw new Error("Authentication completed but no auth token was returned.");
+    if (args.skipBrowserOpen || args.nonInteractive) {
+      console.log(`Browser open skipped. Authorize manually: ${session.authorize_url}`);
+    } else {
+      console.log(`Opening browser: ${session.authorize_url}`);
+      try {
+        await open(session.authorize_url);
+      } catch {
+        console.log(pc.yellow("Could not auto-open browser. Open this URL manually:"));
+        console.log(pc.yellow(session.authorize_url));
+      }
+    }
+
+    console.log("Waiting for browser approval...");
+    const approval = await pollCliSession({
+      apiUrl: DEFAULT_API_URL,
+      sessionId: session.session_id,
+      challenge,
+      pollIntervalSeconds: session.poll_interval_seconds || 2,
+      timeoutMs: DEFAULT_AUTH_TIMEOUT_MS,
+    });
+
+    authToken = String(approval.auth_token || "").trim();
+    if (!authToken) {
+      throw new Error("Authentication completed but no auth token was returned.");
+    }
   }
 
   printSection("Artifact Generation");
@@ -1846,35 +1975,53 @@ async function run() {
     model_provider: interview.aiProvider,
     model_id: DEFAULT_MODEL_BY_PROVIDER[interview.aiProvider] || undefined,
   };
-  const generated = await generateArtifacts({
-    apiUrl: DEFAULT_API_URL,
-    authToken,
-    payload: generatePayload,
-  });
+  let generated = null;
+  let sentinelayerToken = "";
+  let secretName = "SENTINELAYER_TOKEN";
 
-  let bootstrapToken = generated?.bootstrap_token || null;
-  if (!bootstrapToken || !String(bootstrapToken.token || "").trim()) {
-    bootstrapToken = await issueBootstrapToken({
+  if (requestedAuthMode === "byok") {
+    generated = buildByokArtifacts({
+      interview,
+      description,
+    });
+  } else {
+    generated = await generateArtifacts({
       apiUrl: DEFAULT_API_URL,
       authToken,
+      payload: generatePayload,
     });
-  }
-  const sentinelayerToken = String(bootstrapToken.token || "").trim();
-  if (!sentinelayerToken) {
-    throw new Error("Sentinelayer token bootstrap failed.");
-  }
 
-  const requestedSecretName = String(bootstrapToken.required_secret_name || "").trim();
-  const secretName = isValidSecretName(requestedSecretName)
-    ? requestedSecretName
-    : "SENTINELAYER_TOKEN";
-  if (requestedSecretName && requestedSecretName !== secretName) {
-    console.log(
-      pc.yellow(
-        `Received invalid secret name '${requestedSecretName}' from API. Falling back to ${secretName}.`
-      )
-    );
+    let bootstrapToken = generated?.bootstrap_token || null;
+    if (!bootstrapToken || !String(bootstrapToken.token || "").trim()) {
+      try {
+        bootstrapToken = await issueBootstrapToken({
+          apiUrl: DEFAULT_API_URL,
+          authToken,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(
+          pc.yellow(`Token bootstrap unavailable. Continuing in BYOK mode for this scaffold. (${message})`)
+        );
+      }
+    }
+
+    sentinelayerToken = String(bootstrapToken?.token || "").trim();
+    if (sentinelayerToken) {
+      const requestedSecretName = String(bootstrapToken.required_secret_name || "").trim();
+      secretName = isValidSecretName(requestedSecretName) ? requestedSecretName : "SENTINELAYER_TOKEN";
+      if (requestedSecretName && requestedSecretName !== secretName) {
+        console.log(
+          pc.yellow(
+            `Received invalid secret name '${requestedSecretName}' from API. Falling back to ${secretName}.`
+          )
+        );
+      }
+    } else {
+      console.log(pc.yellow("Sentinelayer token unavailable. Continuing in BYOK mode for this scaffold."));
+    }
   }
+  const effectiveAuthMode = sentinelayerToken ? "sentinelayer" : "byok";
 
   const effectiveProjectName =
     sanitizeProjectName(generated.project_name || interview.projectName || path.basename(projectDir)) ||
@@ -1894,13 +2041,17 @@ async function run() {
   );
   await writeTextFile(
     path.join(projectDir, ".github", "workflows", "omar-gate.yml"),
-    (String(generated.omar_gate_yaml || "").trim() || fallbackWorkflow(secretName)) + "\n"
+    (
+      (effectiveAuthMode === "sentinelayer" ? String(generated.omar_gate_yaml || "").trim() : "") ||
+      fallbackWorkflow({ secretName, authMode: effectiveAuthMode })
+    ) + "\n"
   );
   await writeTextFile(
     path.join(tasksDir, "todo.md"),
     buildTodoContent({
       projectName: effectiveProjectName,
       aiProvider: interview.aiProvider,
+      authMode: effectiveAuthMode,
       repoSlug: interview.repoSlug,
       buildFromExistingRepo: interview.buildFromExistingRepo,
       generationMode: interview.generationMode,
@@ -1915,18 +2066,21 @@ async function run() {
       repoSlug: interview.repoSlug,
       secretName,
       buildFromExistingRepo: interview.buildFromExistingRepo,
+      authMode: effectiveAuthMode,
     })
   );
 
   await ensureSentinelStartScript(projectDir, effectiveProjectName);
-  await upsertEnvVariable(path.join(projectDir, ".env"), secretName, sentinelayerToken);
+  if (sentinelayerToken) {
+    await upsertEnvVariable(path.join(projectDir, ".env"), secretName, sentinelayerToken);
+  }
   await ensureGitRepositorySetup({
     projectDir,
     repoSlug: interview.connectRepo ? interview.repoSlug : "",
   });
 
   let secretInjection = { ok: false, reason: "Skipped." };
-  if (interview.connectRepo && interview.injectSecret && interview.repoSlug) {
+  if (interview.connectRepo && interview.injectSecret && interview.repoSlug && sentinelayerToken) {
     secretInjection = runGhSecretSet({
       repoSlug: interview.repoSlug,
       secretName,
@@ -1936,8 +2090,12 @@ async function run() {
 
   printSection("Complete");
   console.log(pc.green(`✔ Sentinelayer orchestration initialized in ${projectDir}`));
-  console.log(pc.green(`✔ ${secretName} injected into ${path.join(projectDir, ".env")}`));
-  if (interview.connectRepo && interview.injectSecret) {
+  if (sentinelayerToken) {
+    console.log(pc.green(`✔ ${secretName} injected into ${path.join(projectDir, ".env")}`));
+  } else {
+    console.log(pc.yellow("! BYOK mode active: Sentinelayer token was not injected."));
+  }
+  if (interview.connectRepo && interview.injectSecret && sentinelayerToken) {
     if (secretInjection.ok) {
       console.log(pc.green(`✔ ${secretName} injected into GitHub repo secret (${interview.repoSlug})`));
     } else {

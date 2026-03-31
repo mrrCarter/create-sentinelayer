@@ -2,19 +2,20 @@
 
 `npx create-sentinelayer@latest <project-name>`
 
-Scaffolds Sentinelayer spec/prompt/guide artifacts and bootstraps `SENTINELAYER_TOKEN` without manual copy/paste.
+Scaffolds Sentinelayer spec/prompt/guide artifacts and bootstraps `SENTINELAYER_TOKEN` without manual copy/paste, with optional `BYOK` mode.
 
 ## What it does
 
 - runs an interactive project interview
 - opens browser auth at Sentinelayer `/cli-auth`
 - receives approved auth session in terminal
+- supports explicit `BYOK` mode (skip Sentinelayer browser auth/token bootstrap)
 - optionally opens GitHub auth (`gh auth login -w`) and lets you arrow-select a repo
 - optionally clones the selected repo into the current folder for in-place feature work
 - generates `spec + build guide + execution prompt + omar workflow + todo + handoff prompt`
-- issues bootstrap `SENTINELAYER_TOKEN`
-- writes token to local `.env`
-- optionally injects token to GitHub Actions secret via `gh secret set`
+- issues bootstrap `SENTINELAYER_TOKEN` when managed auth mode is used
+- writes token to local `.env` when managed auth mode is used
+- optionally injects token to GitHub Actions secret via `gh secret set` in managed auth mode
 - ensures target workspace is a git repo (`git init` + `origin` when needed)
 
 ## 60-second flow
@@ -25,12 +26,12 @@ Scaffolds Sentinelayer spec/prompt/guide artifacts and bootstraps `SENTINELAYER_
 npx create-sentinelayer@latest my-agent-app
 ```
 
-2. Interview prompts (project goal, provider, depth, audience, project type, optional repo connect).
+2. Interview prompts (project goal, provider, auth mode, depth, audience, project type, optional repo connect).
 3. If repo connect is enabled:
    - choose repo source: current repo, GitHub picker, or manual `owner/repo`
    - optional browser GitHub authorization
    - optional clone into local workspace for existing-codebase feature work
-4. Browser auth opens automatically.
+4. Browser auth opens automatically in managed auth mode.
 5. Token + artifacts are generated.
 6. CLI prints handoff and next command:
 
@@ -43,13 +44,14 @@ npm run sentinel:start
 Use non-interactive mode to run full scaffolding in automation:
 
 ```bash
-SENTINELAYER_CLI_INTERVIEW_JSON='{"projectName":"demo-app","projectDescription":"Build an autonomous secure code review orchestrator.","aiProvider":"openai","generationMode":"detailed","audienceLevel":"developer","projectType":"greenfield","techStack":["TypeScript","Node.js"],"features":["auth","scan"],"connectRepo":false,"injectSecret":false}' \
+SENTINELAYER_CLI_INTERVIEW_JSON='{"projectName":"demo-app","projectDescription":"Build an autonomous secure code review orchestrator.","aiProvider":"openai","authMode":"sentinelayer","generationMode":"detailed","audienceLevel":"developer","projectType":"greenfield","techStack":["TypeScript","Node.js"],"features":["auth","scan"],"connectRepo":false,"injectSecret":false}' \
 npx create-sentinelayer@latest demo-app --non-interactive --skip-browser-open
 ```
 
 Inputs for non-interactive mode:
 
 - `SENTINELAYER_CLI_INTERVIEW_JSON` (JSON string)
+- interview JSON supports `authMode: "sentinelayer" | "byok"` (default: `sentinelayer`)
 - or `--interview-file <path-to-json>`
 - `--non-interactive` is required to disable prompts
 - `--skip-browser-open` avoids launching local browser in headless runs
@@ -66,17 +68,18 @@ Inputs for non-interactive mode:
 - `tasks/todo.md`
 - `AGENT_HANDOFF_PROMPT.md`
 - `package.json` (adds `sentinel:start`, `sentinel:omargate`, `sentinel:omargate:json`, `sentinel:audit`, `sentinel:audit:json`, `sentinel:persona:*`, `sentinel:apply` when missing)
-- `.env` with `SENTINELAYER_TOKEN` (or API-provided secret name)
+- `.env` with `SENTINELAYER_TOKEN` (or API-provided secret name) in managed auth mode
 
 ## Advanced options
 
 When `Advanced options?` is enabled:
 
+- `Auth mode` (`sentinelayer` or `byok`)
 - `Connect a GitHub repo and inject Actions secret?`
 - `How should we choose the repo?` (current / GitHub picker / manual)
 - GitHub picker reads all accessible repos via paginated `gh api`
 - `Clone this repo locally and build directly into it now?`
-- `Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?`
+- `Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?` (managed auth mode only)
 - Final review step lets you proceed, restart interview, or cancel cleanly
 
 The CLI validates repo format and secret-name format before injection.
@@ -95,9 +98,10 @@ When `Clone this repo locally and build directly into it now?` is enabled:
 ## Token handling model
 
 - browser auth JWT is used in-memory only
-- CLI stores only bootstrap token in `.env`
-- GitHub secret injection uses stdin (`gh secret set ...`) and never writes token to command history
+- in managed auth mode, CLI stores only bootstrap token in `.env`
+- in managed auth mode, GitHub secret injection uses stdin (`gh secret set ...`) and never writes token to command history
 - API fallback secret name is pinned to `SENTINELAYER_TOKEN` if server response is invalid
+- in BYOK mode, no Sentinelayer token is created or injected
 
 ## Manual fallback (if auto injection is skipped)
 
@@ -113,10 +117,10 @@ echo "SENTINELAYER_TOKEN=<your-token>" >> .env
 gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 ```
 
-3. BYOK fallback (no Sentinelayer token):
+3. BYOK mode (no Sentinelayer token):
    - keep generated `docs/spec.md`, `docs/build-guide.md`, `prompts/execution-prompt.md`, and `tasks/todo.md`
    - run your coding agent directly with your provider key (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`)
-   - do not use the generated Omar Gate workflow in this mode
+   - generated workflow is a BYOK reminder workflow; wire `SENTINELAYER_TOKEN` later to enable Omar Gate action
 
 ## Environment overrides
 
