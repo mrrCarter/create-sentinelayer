@@ -10,7 +10,8 @@
     "verify": "npm run check && npm run test:e2e && npm pack --dry-run"
   },
   "bin": {
-    "create-sentinelayer": "bin/create-sentinelayer.js"
+    "create-sentinelayer": "bin/create-sentinelayer.js",
+    "sentinel": "bin/create-sentinelayer.js"
   },
   "files": [
     "bin",
