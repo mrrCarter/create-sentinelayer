@@ -1012,6 +1012,7 @@ async function runLocalPersonaCommand(args) {
   if (subcommand && subcommand !== "orchestrator") {
     throw new Error(`Unsupported /persona subcommand '${subcommand}'. Use: /persona orchestrator --mode <mode>`);
   }
+  const asJson = hasCommandOption(optionArgs, "--json");
 
   const mode = String(getCommandOptionValue(optionArgs, "--mode") || "builder").trim().toLowerCase();
   const validModes = new Set(["builder", "reviewer", "hardener"]);
@@ -1025,9 +1026,11 @@ async function runLocalPersonaCommand(args) {
     throw new Error(`Invalid --path target: ${targetPath}`);
   }
 
-  printSection("Persona Orchestrator");
-  printInfo(`Mode: ${mode}`);
-  printInfo(`Target: ${targetPath}`);
+  if (!asJson) {
+    printSection("Persona Orchestrator");
+    printInfo(`Mode: ${mode}`);
+    printInfo(`Target: ${targetPath}`);
+  }
 
   const modeInstructions = {
     builder: [
@@ -1062,7 +1065,22 @@ ${ingest || "No repository summary available."}
 `;
 
   const reportPath = await writeLocalCommandReport(targetPath, `persona-orchestrator-${mode}`, report);
-  console.log(pc.cyan(`Report: ${reportPath}`));
+  if (asJson) {
+    console.log(
+      JSON.stringify(
+        {
+          command: "/persona orchestrator",
+          mode,
+          targetPath,
+          reportPath,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.log(pc.cyan(`Report: ${reportPath}`));
+  }
   return 0;
 }
 
@@ -1084,6 +1102,7 @@ function parseTodoPlanTasks(content) {
 }
 
 async function runLocalApplyCommand(args) {
+  const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
@@ -1096,9 +1115,11 @@ async function runLocalApplyCommand(args) {
     throw new Error(`Plan file not found: ${planPath}`);
   }
 
-  printSection("Apply Plan");
-  printInfo(`Target: ${targetPath}`);
-  printInfo(`Plan: ${planPath}`);
+  if (!asJson) {
+    printSection("Apply Plan");
+    printInfo(`Target: ${targetPath}`);
+    printInfo(`Plan: ${planPath}`);
+  }
 
   const planText = await fsp.readFile(planPath, "utf-8");
   const tasks = parseTodoPlanTasks(planText);
@@ -1120,8 +1141,24 @@ Next action:
 `;
 
   const reportPath = await writeLocalCommandReport(targetPath, "apply-plan", report);
-  console.log(pc.cyan(`Report: ${reportPath}`));
-  console.log(`Parsed tasks: ${tasks.length}`);
+  if (asJson) {
+    console.log(
+      JSON.stringify(
+        {
+          command: "/apply",
+          targetPath,
+          planPath,
+          reportPath,
+          taskCount: tasks.length,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.log(pc.cyan(`Report: ${reportPath}`));
+    console.log(`Parsed tasks: ${tasks.length}`);
+  }
   return 0;
 }
 

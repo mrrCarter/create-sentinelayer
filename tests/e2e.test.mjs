@@ -606,6 +606,25 @@ test("CLI local command: /persona orchestrator writes mode report", async () => 
   }
 });
 
+test("CLI local command: /persona orchestrator --json emits machine-readable summary", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/persona", "orchestrator", "--mode", "hardener", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "/persona orchestrator");
+    assert.equal(payload.mode, "hardener");
+    assert.match(String(payload.reportPath || ""), /[\\/]\.sentinelayer[\\/]reports[\\/]persona-orchestrator-hardener-/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /apply parses todo plan and writes execution preview", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
@@ -632,6 +651,28 @@ test("CLI local command: /apply parses todo plan and writes execution preview", 
     const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
     assert.match(reportText, /1\. PR 1: foundation/);
     assert.match(reportText, /2\. PR 2: auth/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI local command: /apply --json emits machine-readable summary", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), "- [ ] PR 1: baseline\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/apply", "--plan", "tasks/todo.md", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "/apply");
+    assert.equal(payload.taskCount, 1);
+    assert.match(String(payload.reportPath || ""), /[\\/]\.sentinelayer[\\/]reports[\\/]apply-plan-/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
