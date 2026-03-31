@@ -257,7 +257,9 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
     assert.equal(packageJson.scripts["sentinel:start"].includes("Sentinelayer artifacts are ready"), true);
     assert.match(String(packageJson.scripts["sentinel:omargate"] || ""), /\/omargate deep --path \./);
+    assert.match(String(packageJson.scripts["sentinel:omargate:json"] || ""), /\/omargate deep --path \. --json/);
     assert.match(String(packageJson.scripts["sentinel:audit"] || ""), /\/audit --path \./);
+    assert.match(String(packageJson.scripts["sentinel:audit:json"] || ""), /\/audit --path \. --json/);
     assert.match(String(packageJson.scripts["sentinel:persona:builder"] || ""), /--mode builder/);
     assert.match(String(packageJson.scripts["sentinel:apply"] || ""), /\/apply --plan tasks\/todo\.md/);
     assert.match(secretSink, /acme\/demo-repo\|SENTINELAYER_TOKEN\|sl_boot_from_generate_123/);
@@ -346,7 +348,9 @@ test("CLI end-to-end: builds a feature into a cloned existing repo", async () =>
     assert.equal(pkg.scripts.test, "echo test");
     assert.ok(pkg.scripts["sentinel:start"]);
     assert.match(String(pkg.scripts["sentinel:omargate"] || ""), /\/omargate deep --path \./);
+    assert.match(String(pkg.scripts["sentinel:omargate:json"] || ""), /\/omargate deep --path \. --json/);
     assert.match(String(pkg.scripts["sentinel:audit"] || ""), /\/audit --path \./);
+    assert.match(String(pkg.scripts["sentinel:audit:json"] || ""), /\/audit --path \. --json/);
     assert.match(specText, /# Spec/);
     assert.match(todoText, /Workspace mode: `existing repo clone`/);
     assert.match(todoText, /Repo: `acme\/inventory-service`/);
