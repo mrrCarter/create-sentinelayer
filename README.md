@@ -165,7 +165,7 @@ The CLI now supports local command mode:
 - `/audit --path <repo>` runs local readiness + scan audit and writes `.sentinelayer/reports/audit-*.md` (non-zero exit if blocking findings exist)
 - `/persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `/apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
-- add `--json` to `/omargate` or `/audit` for machine-readable summaries in CI
+- add `--json` to `/omargate`, `/audit`, `/persona`, or `/apply` for machine-readable summaries in CI
 
 You can run these via either binary:
 
