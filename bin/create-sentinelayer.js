@@ -169,6 +169,7 @@ function printUsage() {
   console.log("  --interview-file PATH  Load interview JSON from file");
   console.log("  --skip-browser-open    Do not auto-open browser during auth");
   console.log("  --path PATH            Target path for local command mode");
+  console.log("  --json                 Emit machine-readable JSON for local command mode");
   console.log("");
   console.log("Environment:");
   console.log("  SENTINELAYER_CLI_NON_INTERACTIVE=1");
@@ -714,6 +715,10 @@ function getCommandOptionValue(args, optionName) {
   return next;
 }
 
+function hasCommandOption(args, optionName) {
+  return args.some((arg) => String(arg || "").trim() === optionName);
+}
+
 async function collectScanFiles(rootPath) {
   const files = [];
   const stack = [rootPath];
@@ -841,14 +846,17 @@ async function runLocalOmarGateCommand(args) {
   if (mode && mode !== "deep") {
     throw new Error(`Unsupported /omargate mode '${mode}'. Use: /omargate deep`);
   }
+  const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
   }
 
-  printSection("Local Omar Gate Deep");
-  printInfo(`Target: ${targetPath}`);
+  if (!asJson) {
+    printSection("Local Omar Gate Deep");
+    printInfo(`Target: ${targetPath}`);
+  }
 
   const scan = await runCredentialScan(targetPath);
   const report = `# Local Omar Gate Deep Scan
@@ -866,26 +874,49 @@ ${formatFindingsMarkdown(scan.findings)}
 `;
 
   const reportPath = await writeLocalCommandReport(targetPath, "omargate-deep", report);
-  console.log(pc.cyan(`Report: ${reportPath}`));
-  console.log(`P1 findings: ${scan.p1}`);
-  console.log(`P2 findings: ${scan.p2}`);
+  if (asJson) {
+    console.log(
+      JSON.stringify(
+        {
+          command: "/omargate deep",
+          targetPath,
+          reportPath,
+          scannedFiles: scan.scannedFiles,
+          p1: scan.p1,
+          p2: scan.p2,
+          blocking: scan.p1 > 0,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.log(pc.cyan(`Report: ${reportPath}`));
+    console.log(`P1 findings: ${scan.p1}`);
+    console.log(`P2 findings: ${scan.p2}`);
+  }
 
   if (scan.p1 > 0) {
-    console.log(pc.red("Blocking findings detected (P1 > 0)."));
+    if (!asJson) {
+      console.log(pc.red("Blocking findings detected (P1 > 0)."));
+    }
     return 2;
   }
   return 0;
 }
 
 async function runLocalAuditCommand(args) {
+  const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
   }
 
-  printSection("Local Audit");
-  printInfo(`Target: ${targetPath}`);
+  if (!asJson) {
+    printSection("Local Audit");
+    printInfo(`Target: ${targetPath}`);
+  }
 
   const requiredChecks = [
     {
@@ -940,13 +971,36 @@ ${formatFindingsMarkdown(scan.findings)}
 `;
 
   const reportPath = await writeLocalCommandReport(targetPath, "audit", report);
-  console.log(pc.cyan(`Report: ${reportPath}`));
-  console.log(`Overall status: ${overallStatus}`);
-  console.log(`P1 total: ${totalP1}`);
-  console.log(`P2 total: ${totalP2}`);
+  if (asJson) {
+    console.log(
+      JSON.stringify(
+        {
+          command: "/audit",
+          targetPath,
+          reportPath,
+          overallStatus,
+          scannedFiles: scan.scannedFiles,
+          p1: scan.p1,
+          p2: scan.p2,
+          p1Total: totalP1,
+          p2Total: totalP2,
+          blocking: totalP1 > 0,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.log(pc.cyan(`Report: ${reportPath}`));
+    console.log(`Overall status: ${overallStatus}`);
+    console.log(`P1 total: ${totalP1}`);
+    console.log(`P2 total: ${totalP2}`);
+  }
 
   if (totalP1 > 0) {
-    console.log(pc.red("Audit failed due to blocking findings (P1 > 0)."));
+    if (!asJson) {
+      console.log(pc.red("Audit failed due to blocking findings (P1 > 0)."));
+    }
     return 2;
   }
   return 0;

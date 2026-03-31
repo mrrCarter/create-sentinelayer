@@ -550,6 +550,36 @@ test("CLI local command: /audit writes pass report for prepared workspace", asyn
   }
 });
 
+test("CLI local command: /audit --json emits machine-readable summary", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    await mkdir(path.join(tempRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(tempRoot, "docs"), { recursive: true });
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(path.join(tempRoot, ".github", "workflows", "omar-gate.yml"), "name: Omar Gate\n", "utf-8");
+    await writeFile(path.join(tempRoot, "docs", "spec.md"), "# Spec\n", "utf-8");
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), "# Todo\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/audit", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "/audit");
+    assert.equal(payload.overallStatus, "PASS");
+    assert.equal(payload.blocking, false);
+    assert.match(String(payload.reportPath || ""), /[\\/]\.sentinelayer[\\/]reports[\\/]audit-/);
+
+    const reportText = await readFile(payload.reportPath, "utf-8");
+    assert.match(reportText, /Overall status: PASS/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /persona orchestrator writes mode report", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
