@@ -19,7 +19,23 @@ const DEFAULT_GITHUB_CLONE_BASE_URL =
   process.env.SENTINELAYER_GITHUB_CLONE_BASE_URL || "https://github.com";
 const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
-const CLI_VERSION = "0.1.0";
+const PACKAGE_JSON_PATH = new URL("../package.json", import.meta.url);
+
+function resolveCliVersion() {
+  try {
+    const raw = fs.readFileSync(PACKAGE_JSON_PATH, "utf-8");
+    const pkg = JSON.parse(raw);
+    const version = String(pkg && pkg.version ? pkg.version : "").trim();
+    if (version) {
+      return version;
+    }
+  } catch {
+    // Ignore and fall through to static fallback.
+  }
+  return "0.1.0";
+}
+
+const CLI_VERSION = resolveCliVersion();
 
 const DEFAULT_MODEL_BY_PROVIDER = {
   openai: "gpt-5.3-codex",
