@@ -612,8 +612,9 @@ test("CLI flags: --help and --version return successfully", async () => {
       env: { ...process.env },
       args: ["--version"],
     });
+    const pkg = JSON.parse(await readFile(path.resolve(__dirname, "..", "package.json"), "utf-8"));
     assert.equal(versionResult.code, 0, versionResult.stderr || versionResult.stdout);
-    assert.match(versionResult.stdout.trim(), /^\d+\.\d+\.\d+$/);
+    assert.equal(versionResult.stdout.trim(), pkg.version);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
