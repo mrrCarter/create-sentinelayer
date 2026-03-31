@@ -274,6 +274,10 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(result.stdout, /Falling back to SENTINELAYER_TOKEN/);
     assert.match(todoText, /Repo: `acme\/demo-repo`/);
     assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
+    assert.match(handoffText, /Terminal command options:/);
+    assert.match(handoffText, /sentinel \/omargate deep --path \./);
+    assert.match(handoffText, /Workflow tuning options:/);
+    assert.match(handoffText, /scan_mode: deep/);
     assert.equal(packageJson.scripts["sentinel:start"].includes("Sentinelayer artifacts are ready"), true);
     assert.match(String(packageJson.scripts["sentinel:omargate"] || ""), /\/omargate deep --path \./);
     assert.match(String(packageJson.scripts["sentinel:omargate:json"] || ""), /\/omargate deep --path \. --json/);
@@ -561,6 +565,8 @@ test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", 
     assert.match(workflowText, /Omar Gate \(BYOK Mode\)/);
     assert.match(todoText, /Auth mode: `byok`/);
     assert.match(handoffText, /Sentinelayer token: not configured \(BYOK mode\)/);
+    assert.match(handoffText, /sentinel \/apply --plan tasks\/todo\.md --path \./);
+    assert.match(handoffText, /BYOK workflow is guidance-only/);
     assert.match(specText, /## Goal/);
     assert.match(specText, /autonomous secure code review orchestrator/i);
 
