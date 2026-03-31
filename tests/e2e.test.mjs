@@ -201,6 +201,24 @@ async function createGithubRepoFixture(tempRoot, { owner = "acme", repo = "featu
   };
 }
 
+async function createEmptyGithubRepoFixture(tempRoot, { owner = "acme", repo = "empty-repo" } = {}) {
+  const gitRoot = path.join(tempRoot, "github-empty");
+  const bareRepoDir = path.join(gitRoot, owner, `${repo}.git`);
+
+  await mkdir(path.dirname(bareRepoDir), { recursive: true });
+  runCommand({ cwd: tempRoot, command: "git", args: ["init", "--bare", bareRepoDir] });
+  runCommand({
+    cwd: tempRoot,
+    command: "git",
+    args: [`--git-dir=${bareRepoDir}`, "symbolic-ref", "HEAD", "refs/heads/main"],
+  });
+
+  return {
+    repoSlug: `${owner}/${repo}`,
+    cloneBaseUrl: pathToFileURL(gitRoot).href.replace(/\/$/, ""),
+  };
+}
+
 function baseInterview(overrides = {}) {
   return {
     projectName: "demo-app",
@@ -367,6 +385,69 @@ test("CLI end-to-end: builds a feature into a cloned existing repo", async () =>
     assert.equal(
       String(remote.stdout || "").trim(),
       `${repoFixture.cloneBaseUrl}/acme/inventory-service.git`
+    );
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI end-to-end: builds deterministically into a cloned empty GitHub repo", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({ includeBootstrapInGenerate: true });
+
+  try {
+    const repoFixture = await createEmptyGithubRepoFixture(tempRoot, {
+      owner: "acme",
+      repo: "greenfield-empty",
+    });
+
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_GITHUB_CLONE_BASE_URL: repoFixture.cloneBaseUrl,
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
+        baseInterview({
+          projectName: "",
+          projectDescription: "Scaffold into an empty repository with deterministic outputs.",
+          projectType: "add_feature",
+          connectRepo: true,
+          repoSlug: repoFixture.repoSlug,
+          buildFromExistingRepo: true,
+          injectSecret: false,
+        })
+      ),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["--non-interactive"] });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Cloned repo workspace:/);
+
+    const repoDir = path.join(tempRoot, "greenfield-empty");
+    const pkg = JSON.parse(await readFile(path.join(repoDir, "package.json"), "utf-8"));
+    const specText = await readFile(path.join(repoDir, "docs", "spec.md"), "utf-8");
+    const todoText = await readFile(path.join(repoDir, "tasks", "todo.md"), "utf-8");
+
+    assert.match(String(pkg.scripts["sentinel:start"] || ""), /Sentinelayer artifacts are ready/);
+    assert.match(String(pkg.scripts["sentinel:omargate"] || ""), /\/omargate deep --path \./);
+    assert.match(String(pkg.scripts["sentinel:audit"] || ""), /\/audit --path \./);
+    assert.match(specText, /# Spec/);
+    assert.match(todoText, /Workspace mode: `existing repo clone`/);
+    assert.match(todoText, /Repo: `acme\/greenfield-empty`/);
+    assert.match(String(mock.state.generatePayload?.description || ""), /Top-level files: none/);
+    assert.match(String(mock.state.generatePayload?.description || ""), /Top-level directories: none/);
+
+    const remote = runCommand({
+      cwd: repoDir,
+      command: "git",
+      args: ["config", "--get", "remote.origin.url"],
+    });
+    assert.equal(
+      String(remote.stdout || "").trim(),
+      `${repoFixture.cloneBaseUrl}/acme/greenfield-empty.git`
     );
   } finally {
     await mock.close();
