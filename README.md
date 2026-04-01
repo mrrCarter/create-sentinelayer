@@ -163,15 +163,16 @@ This runs:
 
 ## Local commands (MVP)
 
-The CLI now supports local command mode:
+The CLI now supports a command tree, while keeping slash-command compatibility:
 
-- `/omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
-- `/audit --path <repo>` runs local readiness + scan audit and writes `.sentinelayer/reports/audit-*.md` (non-zero exit if blocking findings exist)
-- `/persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
-- `/apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
-- add `--json` to `/omargate`, `/audit`, `/persona`, or `/apply` for machine-readable summaries in CI
+- `create-sentinelayer init <project-name>` runs scaffold/auth generation (legacy top-level invocation still works)
+- `create-sentinelayer omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
+- `create-sentinelayer audit --path <repo>` runs local readiness + scan audit and writes `.sentinelayer/reports/audit-*.md` (non-zero exit if blocking findings exist)
+- `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
+- `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
+- add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 
-You can run these via either binary:
+Legacy slash commands are still supported:
 
 - `create-sentinelayer /omargate deep --path .`
 - `sentinel /omargate deep --path .`
