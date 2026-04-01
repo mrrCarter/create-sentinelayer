@@ -190,6 +190,7 @@ function printUsage() {
   console.log("  create-sentinelayer /apply --plan <todo.md> [--path PATH]");
   console.log("  create-sentinelayer config <list|get|set|edit> [options]");
   console.log("  create-sentinelayer ingest map [--path PATH] [--output-file PATH]");
+  console.log("  create-sentinelayer spec <list-templates|show-template|generate> [options]");
   console.log("");
   console.log("Options:");
   console.log("  -h, --help             Show help");

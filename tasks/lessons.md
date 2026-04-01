@@ -26,3 +26,4 @@
 - During multi-PR autonomous runs, cut a fresh feature branch before each PR scope; committing directly on `main` causes avoidable local divergence even when GitHub squash-merge succeeds.
 - When upgrading deterministic ingest summaries, preserve backward-compatible summary fields (`package scripts`) used by downstream prompts/tests before adding richer metadata.
 - Keep ingest outputs bounded (`indexedFiles.limit`) so deterministic context remains scalable and avoids artifact bloat on large repositories.
+- Reuse one deterministic ingest engine across commands (`ingest`, `spec`, existing-repo scaffolding) to avoid drift between generated context artifacts and prompt payload summaries.

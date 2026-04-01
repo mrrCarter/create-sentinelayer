@@ -926,6 +926,65 @@ test("CLI ingest command respects .sentinelayerignore patterns", async () => {
   }
 });
 
+test("CLI spec commands expose templates and generate SPEC.md offline", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-spec-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "spec-demo",
+          version: "0.0.1",
+          dependencies: { express: "^4.19.0" },
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+    await writeFile(path.join(tempRoot, "src", "index.ts"), "export const v = 1;\n", "utf-8");
+
+    const listResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "list-templates", "--json"],
+    });
+    assert.equal(listResult.code, 0, listResult.stderr || listResult.stdout);
+    const listPayload = JSON.parse(String(listResult.stdout || "").trim());
+    assert.equal(Array.isArray(listPayload.templates), true);
+    assert.equal(listPayload.templates.some((template) => template.id === "api-service"), true);
+
+    const generateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "spec",
+        "generate",
+        "--path",
+        tempRoot,
+        "--template",
+        "api-service",
+        "--description",
+        "Build hardened API review automation.",
+        "--json",
+      ],
+    });
+    assert.equal(generateResult.code, 0, generateResult.stderr || generateResult.stdout);
+    const generatePayload = JSON.parse(String(generateResult.stdout || "").trim());
+    assert.equal(generatePayload.command, "spec generate");
+    assert.match(String(generatePayload.outputPath || ""), /[\\/]SPEC\.md$/);
+
+    const specText = await readFile(generatePayload.outputPath, "utf-8");
+    assert.match(specText, /# SPEC - spec-demo/);
+    assert.match(specText, /Build hardened API review automation\./);
+    assert.match(specText, /## Security Checklist/);
+    assert.match(specText, /## Phase Plan/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
