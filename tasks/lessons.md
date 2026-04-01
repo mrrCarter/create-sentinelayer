@@ -30,3 +30,5 @@
 - Keep prompt generation decoupled from providers and API calls; derive prompts purely from local spec artifacts so CI and offline flows stay deterministic.
 - Local deterministic secret-pattern scanning can catch test fixture literals; preserve test intent by composing sensitive test strings at runtime instead of embedding direct patterns in source.
 - For CLI package repos, use service-repo parity selectively: copy Omar review/watchdog patterns, but keep ECS/migration/worker deploy pipelines in backend service repos.
+- Spec-derived workflow generation should stay deterministic but always allow explicit operator overrides (`--playwright-mode`, `--has-e2e-tests`) to avoid hidden inference errors.
+- Add a dedicated drift validator for generated CI artifacts and make it fail closed (non-zero exit) so config regressions are caught before merge.

@@ -171,6 +171,22 @@ Generate execution prompts directly from `SPEC.md`:
 
 Supported targets: `claude`, `cursor`, `copilot`, `codex`, `generic`.
 
+## Omar workflow generation (PR 1.4 slice)
+
+Generate and validate a spec-aligned security workflow:
+
+- `create-sentinelayer scan init --path . --non-interactive`
+- `create-sentinelayer scan init --path . --has-e2e-tests yes --playwright-mode auto`
+- `create-sentinelayer scan validate --path . --json`
+
+`scan init` writes `.github/workflows/security-review.yml` and derives:
+
+- `scan_mode` + `severity_gate` from spec risk profile
+- `playwright_mode` from spec signals + optional E2E wizard/flags
+- `sbom_mode` from supply-chain/dependency signals in spec
+
+`scan validate` checks workflow drift against the current spec profile and exits non-zero when mismatched.
+
 ## Requirements
 
 - Node `>=18.17`

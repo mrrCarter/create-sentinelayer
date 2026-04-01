@@ -1029,6 +1029,149 @@ test("CLI prompt commands generate and preview agent-targeted prompts from spec"
   }
 });
 
+test("CLI scan init generates security-review workflow from spec profile", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      [
+        "# SPEC - Scan Demo",
+        "",
+        "## Goal",
+        "Harden auth, token, payment, and compliance flows for production rollout.",
+        "",
+        "## Security Checklist",
+        "1. Prevent secrets leakage",
+        "2. Enforce supply_chain controls",
+        "3. Add dependency monitoring",
+        "",
+        "## Acceptance Criteria",
+        "1. Add E2E coverage for login and payment journeys.",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const initResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "init",
+        "--path",
+        tempRoot,
+        "--non-interactive",
+        "--has-e2e-tests",
+        "yes",
+        "--json",
+      ],
+    });
+    assert.equal(initResult.code, 0, initResult.stderr || initResult.stdout);
+
+    const initPayload = JSON.parse(String(initResult.stdout || "").trim());
+    assert.equal(initPayload.command, "scan init");
+    assert.equal(initPayload.profile.scanMode, "deep");
+    assert.equal(initPayload.profile.severityGate, "P2");
+    assert.equal(initPayload.profile.playwrightMode, "audit");
+    assert.equal(initPayload.profile.sbomMode, "audit");
+    assert.match(String(initPayload.workflowPath || ""), /[\\/]security-review\.yml$/);
+
+    const workflowText = await readFile(initPayload.workflowPath, "utf-8");
+    assert.match(workflowText, /name: Security Review/);
+    assert.match(workflowText, /scan_mode: deep/);
+    assert.match(workflowText, /severity_gate: P2/);
+    assert.match(workflowText, /playwright_mode: audit/);
+    assert.match(workflowText, /sbom_mode: audit/);
+    assert.match(workflowText, /sentinelayer_token:\s*\$\{\{\s*secrets\.SENTINELAYER_TOKEN\s*\}\}/);
+
+    const validateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "validate",
+        "--path",
+        tempRoot,
+        "--has-e2e-tests",
+        "yes",
+        "--json",
+      ],
+    });
+    assert.equal(validateResult.code, 0, validateResult.stderr || validateResult.stdout);
+
+    const validatePayload = JSON.parse(String(validateResult.stdout || "").trim());
+    assert.equal(validatePayload.command, "scan validate");
+    assert.equal(validatePayload.aligned, true);
+    assert.equal(Array.isArray(validatePayload.mismatches), true);
+    assert.equal(validatePayload.mismatches.length, 0);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI scan validate detects workflow drift against current spec profile", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      [
+        "# SPEC - Scan Drift Demo",
+        "",
+        "## Goal",
+        "Protect auth and tenant boundaries with supply chain hardening.",
+        "",
+        "## Security Checklist",
+        "1. Add dependency controls",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const initResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "init",
+        "--path",
+        tempRoot,
+        "--non-interactive",
+        "--has-e2e-tests",
+        "no",
+        "--json",
+      ],
+    });
+    assert.equal(initResult.code, 0, initResult.stderr || initResult.stdout);
+    const initPayload = JSON.parse(String(initResult.stdout || "").trim());
+
+    const originalWorkflow = await readFile(initPayload.workflowPath, "utf-8");
+    const driftedWorkflow = originalWorkflow.replace("severity_gate: P2", "severity_gate: P1");
+    await writeFile(initPayload.workflowPath, driftedWorkflow, "utf-8");
+
+    const validateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "validate",
+        "--path",
+        tempRoot,
+        "--has-e2e-tests",
+        "no",
+        "--json",
+      ],
+    });
+    assert.equal(validateResult.code, 2);
+
+    const validatePayload = JSON.parse(String(validateResult.stdout || "").trim());
+    assert.equal(validatePayload.aligned, false);
+    assert.equal(
+      validatePayload.mismatches.some((mismatch) => mismatch.field === "severity_gate"),
+      true
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
