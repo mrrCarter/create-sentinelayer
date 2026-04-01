@@ -202,6 +202,13 @@ Generate and validate a spec-aligned security workflow:
 
 `scan validate` checks workflow drift against the current spec profile and exits non-zero when mismatched.
 
+AI-assisted pre-scan triage (budgeted + telemetry-instrumented):
+
+- `create-sentinelayer scan precheck --path . --provider openai --model gpt-5.3-codex`
+- `create-sentinelayer scan precheck --path . --max-cost 0.5 --warn-at-percent 80 --json`
+
+`scan precheck` writes an AI report to `.sentinelayer/reports/scan-precheck-*.md` (or configured output root), records usage in `.sentinelayer/cost-history.json`, and emits usage/stop events to `.sentinelayer/observability/run-events.jsonl`.
+
 ## Build guide generation (PR 1.5 slice)
 
 Generate phase-by-phase implementation guides from `SPEC.md`:
