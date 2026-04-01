@@ -154,6 +154,17 @@ By default, watch output is persisted to:
 - `.sentinelayer/observability/runtime-watch/<run-id>/events-<timestamp>.ndjson`
 - `.sentinelayer/observability/runtime-watch/<run-id>/summary-<timestamp>.json`
 
+## Chat command foundation (Phase 2.1 slice)
+
+The CLI now includes a low-latency chat command surface:
+
+- `sl chat ask --prompt "Summarize this diff" --dry-run`
+- `sl chat ask --prompt "Explain this failure" --provider openai --model gpt-4o`
+
+Each call appends reproducible transcript entries to:
+
+- `.sentinelayer/chat/sessions/<session-id>.jsonl`
+
 ## Deterministic review pipeline (Phase 9.2 foundation slice)
 
 The default `review` command now runs a layered deterministic pipeline:
@@ -446,6 +457,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
+- `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
 - `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
