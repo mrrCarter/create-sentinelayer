@@ -4,7 +4,7 @@
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
   "scripts": {
-    "check": "node --check bin/create-sentinelayer.js",
+    "check": "node --check bin/create-sentinelayer.js && node --check src/cli.js && node --check src/legacy-cli.js",
     "test": "node --test tests/*.test.mjs",
     "test:e2e": "node --test tests/e2e.test.mjs",
     "verify": "npm run check && npm run test:e2e && npm pack --dry-run"
@@ -15,6 +15,7 @@
   },
   "files": [
     "bin",
+    "src",
     "README.md"
   ],
   "engines": {
@@ -29,6 +30,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "commander": "^14.0.1",
     "open": "^10.1.2",
     "picocolors": "^1.1.1",
     "prompts": "^2.4.2"

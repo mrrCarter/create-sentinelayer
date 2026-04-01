@@ -577,6 +577,40 @@ test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", 
   }
 });
 
+test("CLI subcommand: init supports command-tree scaffold invocation", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: "http://127.0.0.1:9",
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
+        baseInterview({
+          projectName: "init-subcommand-app",
+          authMode: "byok",
+          connectRepo: false,
+          injectSecret: false,
+        })
+      ),
+    };
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env,
+      args: ["init", "init-subcommand-app", "--non-interactive"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /BYOK mode selected/i);
+
+    const specText = await readFile(path.join(tempRoot, "init-subcommand-app", "docs", "spec.md"), "utf-8");
+    assert.match(specText, /## Goal/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI non-interactive mode fails fast when interview payload is missing", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
   try {
@@ -653,6 +687,33 @@ test("CLI local command: /omargate deep writes report and fails on P1 findings",
     const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
     assert.match(reportText, /P1 findings: 1/);
     assert.match(reportText, /\[P1\] src\/secrets\.ts:1/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI subcommand: omargate deep maps to legacy local command implementation", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
+  try {
+    const srcDir = path.join(tempRoot, "src");
+    await mkdir(srcDir, { recursive: true });
+    await writeFile(
+      path.join(srcDir, "secrets.ts"),
+      "export const leaked = 'AKIAABCDEFGHIJKLMNOP';\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["omargate", "deep", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 2);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "/omargate deep");
+    assert.equal(payload.blocking, true);
+    assert.match(String(payload.reportPath || ""), /[\\/]\.sentinelayer[\\/]reports[\\/]omargate-deep-/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
