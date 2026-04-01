@@ -48,3 +48,5 @@
 - Runtime watch commands need durable artifacts (`events.ndjson` + summary json) so autonomous agents can stream live output and still hand off reproducible traces after the terminal session ends.
 - Session auto-rotation is safest as "rotate on use near expiry" before introducing daemonized background refresh loops, because it keeps failure modes local and observable.
 - Session history should be sourced from local watch artifacts first (`watch history`) so operators and agents can reconstruct run timelines even when API access is limited.
+- Keep GitHub review orchestration on one path: PR checks should rely on `.github/workflows/omar-gate.yml` only, while comment-triggered watchdog flows stay disabled to avoid mixed scan semantics.
+- Plugin extensibility should start schema-first (`plugin init|validate|list`) with explicit load-order/security/budget fields before adding runtime execution hooks.

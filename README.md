@@ -163,6 +163,14 @@ The CLI now includes deterministic MCP registry commands:
 
 Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for AIdenID provisioning APIs, then customize transport/auth before runtime wiring.
 
+## Plugin manifest foundation (Phase 5 foundation slice)
+
+The CLI now includes deterministic plugin manifest commands:
+
+- `sl plugin init --id <plugin-id>`
+- `sl plugin validate --file <manifest.json>`
+- `sl plugin list`
+
 ## Manual fallback (if auto injection is skipped)
 
 1. Set local token:
@@ -396,6 +404,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
+- `create-sentinelayer plugin init|validate|list` manages plugin extension manifests
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 

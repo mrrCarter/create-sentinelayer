@@ -31,7 +31,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch D PR 3.4 (AI pre-scan triage command with governed cost/telemetry outputs).
 - [x] Complete Batch E PR 4.1 foundation slice (persistent `sl auth` sessions, keyring/file token store, near-expiry rotation).
 - [x] Complete Batch F PR 9.0 foundation slice (`sl watch run-events` runtime stream + reproducible watch artifacts).
-- [ ] Complete Batch E PR 4.2 foundation slice (`watch history` session/readback for reproducible handoffs).
+- [x] Complete Batch E PR 4.2 foundation slice (`watch history` session/readback for reproducible handoffs).
+- [x] Complete Batch E PR 6.1 foundation slice (`mcp schema|registry` contract + AIdenID template scaffold).
+- [x] Complete workflow correction PR (Omar Gate only path: removed multi-agent watchdog workflow and aligned threshold enforcement with active gate mode).
+- [ ] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -130,8 +133,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract.
 
 ### Workflow hardening (current)
-- Add repo-level `.github/workflows/omar-gate.yml` with quality + deep scan gates.
-- Add `.github/workflows/omar-review-watchdog.yml` for comment-driven Omar loop monitoring.
+- Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
+- Remove `.github/workflows/omar-review-watchdog.yml` to avoid comment-triggered multi-agent scan path drift.
 - Add release automation (`release-please`) and harden npm release workflow with packaged install verification.
 - Add instruction-topology files (`.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`).
 - Confirm local Omar deep scan and local audit return zero P0-P2 before merge.
@@ -242,3 +245,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `npm run verify` (pass, e2e `34/34`; unit tests `20/20`; coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
     - Added `sl` binary alias and `auth` command set (`login`, `status`, `logout`) with API-token-backed persistent sessions.
     - Added `watch run-events` (`watch runtime` alias) with polling stream + reproducible artifacts under `.sentinelayer/observability/runtime-watch/`.
+  - PR 4.2 foundation slice completion:
+    - #47 merged (`feat(watch): add runtime watch history readback command`).
+    - Added `watch history` (`--run-id`, `--limit`, `--json`) backed by persisted summary artifacts.
+  - PR 6.1 foundation slice completion:
+    - #48 merged (`feat(mcp): add schema + registry tooling with AIdenID template`).
+    - Added `mcp schema show|write`, `mcp registry init-aidenid`, and `mcp registry validate`.
+  - Omar workflow correction:
+    - #49 merged (`ci: enforce Omar Gate-only PR workflow`).
+    - Removed comment-triggered multi-agent watchdog path and aligned threshold enforcement to the active `severity_gate`.
