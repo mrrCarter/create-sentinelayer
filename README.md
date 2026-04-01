@@ -152,6 +152,16 @@ Run deterministic mapping and emit `CODEBASE_INGEST.json`:
 
 The ingest artifact includes language/LOC breakdown, framework hints, entry points, risk-surface hints, and a bounded file index to support deterministic handoff context.
 
+## Offline spec generation (PR 1.2 slice)
+
+Generate a local `SPEC.md` without calling the API:
+
+- `create-sentinelayer spec list-templates`
+- `create-sentinelayer spec show-template api-service`
+- `create-sentinelayer spec generate --path . --template api-service --description \"Build secure autonomous review orchestration\"`
+
+The generator uses deterministic ingest context plus template architecture/security checklists.
+
 ## Requirements
 
 - Node `>=18.17`

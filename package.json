@@ -4,7 +4,7 @@
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
   "scripts": {
-    "check": "node --check bin/create-sentinelayer.js && node --check src/cli.js && node --check src/legacy-cli.js && node --check src/commands/config.js && node --check src/commands/ingest.js && node --check src/config/service.js && node --check src/ingest/engine.js",
+    "check": "node --check bin/create-sentinelayer.js && node --check src/cli.js && node --check src/legacy-cli.js && node --check src/commands/config.js && node --check src/commands/ingest.js && node --check src/commands/spec.js && node --check src/config/service.js && node --check src/ingest/engine.js && node --check src/spec/generator.js && node --check src/spec/templates.js",
     "test": "node --test tests/*.test.mjs",
     "test:e2e": "node --test tests/e2e.test.mjs",
     "verify": "npm run check && npm run test:e2e && npm pack --dry-run"
