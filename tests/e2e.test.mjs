@@ -1326,6 +1326,12 @@ test("CLI cost record and cost show maintain deterministic per-project ledger", 
     assert.equal(recordPayload.command, "cost record");
     assert.equal(recordPayload.budget.blocking, false);
     assert.match(String(recordPayload.filePath || ""), /cost-history\.json$/);
+    assert.match(
+      String(recordPayload.telemetry?.filePath || ""),
+      /[\\/]observability[\\/]run-events\.jsonl$/
+    );
+    assert.ok(String(recordPayload.telemetry?.usageEventId || "").length > 0);
+    assert.equal(recordPayload.telemetry?.stopEventId, null);
 
     const showResult = await runCli({
       cwd: tempRoot,
@@ -1338,6 +1344,17 @@ test("CLI cost record and cost show maintain deterministic per-project ledger", 
     assert.equal(showPayload.summary.sessionCount, 1);
     assert.equal(showPayload.summary.invocationCount, 1);
     assert.equal(showPayload.summary.sessions[0].sessionId, "session-1");
+
+    const telemetryShowResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["telemetry", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(telemetryShowResult.code, 0, telemetryShowResult.stderr || telemetryShowResult.stdout);
+    const telemetryShowPayload = JSON.parse(String(telemetryShowResult.stdout || "").trim());
+    assert.equal(telemetryShowPayload.command, "telemetry show");
+    assert.equal(telemetryShowPayload.summary.eventCount, 1);
+    assert.equal(telemetryShowPayload.summary.eventTypeCounts.usage, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1414,6 +1431,98 @@ test("CLI cost record enforces max-cost and max-no-progress guardrails", async (
       secondPayload.budget.reasons.some((reason) => reason.code === "DIMINISHING_RETURNS"),
       true
     );
+
+    const telemetryShowResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["telemetry", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(telemetryShowResult.code, 0, telemetryShowResult.stderr || telemetryShowResult.stdout);
+    const telemetryShowPayload = JSON.parse(String(telemetryShowResult.stdout || "").trim());
+    assert.equal(telemetryShowPayload.summary.eventCount, 4);
+    assert.equal(telemetryShowPayload.summary.eventTypeCounts.usage, 2);
+    assert.equal(telemetryShowPayload.summary.eventTypeCounts.run_stop, 2);
+    assert.equal(telemetryShowPayload.summary.stopClassCounts.MAX_COST_EXCEEDED, 1);
+    assert.equal(telemetryShowPayload.summary.stopClassCounts.DIMINISHING_RETURNS, 1);
+    assert.equal(telemetryShowPayload.summary.reasonCodeCounts.MAX_COST_EXCEEDED, 1);
+    assert.equal(telemetryShowPayload.summary.reasonCodeCounts.DIMINISHING_RETURNS, 1);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI telemetry record/show writes structured run events and blocking stop classes", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-telemetry-cmd-"));
+  try {
+    const usageRecord = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "telemetry",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-tel",
+        "--run-id",
+        "run-tel",
+        "--event-type",
+        "tool_call",
+        "--tool-calls",
+        "2",
+        "--duration-ms",
+        "120",
+        "--metadata-json",
+        "{\"tool\":\"bash\",\"status\":\"ok\"}",
+        "--json",
+      ],
+    });
+    assert.equal(usageRecord.code, 0, usageRecord.stderr || usageRecord.stdout);
+    const usagePayload = JSON.parse(String(usageRecord.stdout || "").trim());
+    assert.equal(usagePayload.command, "telemetry record");
+    assert.equal(usagePayload.event.eventType, "tool_call");
+    assert.equal(usagePayload.event.usage.toolCalls, 2);
+
+    const stopRecord = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "telemetry",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-tel",
+        "--run-id",
+        "run-tel",
+        "--event-type",
+        "run_stop",
+        "--stop-class",
+        "MAX_RUNTIME_MS_EXCEEDED",
+        "--reason-codes",
+        "MAX_RUNTIME_MS_EXCEEDED",
+        "--blocking",
+        "--json",
+      ],
+    });
+    assert.equal(stopRecord.code, 2);
+    const stopPayload = JSON.parse(String(stopRecord.stdout || "").trim());
+    assert.equal(stopPayload.event.stop.stopClass, "MAX_RUNTIME_MS_EXCEEDED");
+    assert.equal(stopPayload.event.stop.blocking, true);
+
+    const showResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["telemetry", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(showResult.code, 0, showResult.stderr || showResult.stdout);
+    const showPayload = JSON.parse(String(showResult.stdout || "").trim());
+    assert.equal(showPayload.command, "telemetry show");
+    assert.equal(showPayload.summary.eventCount, 2);
+    assert.equal(showPayload.summary.eventTypeCounts.tool_call, 1);
+    assert.equal(showPayload.summary.eventTypeCounts.run_stop, 1);
+    assert.equal(showPayload.summary.stopClassCounts.MAX_RUNTIME_MS_EXCEEDED, 1);
+    assert.equal(showPayload.summary.reasonCodeCounts.MAX_RUNTIME_MS_EXCEEDED, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

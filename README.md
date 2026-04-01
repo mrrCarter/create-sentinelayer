@@ -229,6 +229,26 @@ Budget controls in `cost record`:
 - `--max-tokens <count>` (default `0`, disabled)
 - `--max-no-progress <count>` diminishing-returns guard (default `3`)
 
+Each `cost record` call now emits observability events to:
+
+- `.sentinelayer/observability/run-events.jsonl`
+
+including normalized usage snapshots and blocking stop-class events when budgets are exceeded.
+
+## Observability telemetry contract (PR 3.5 slice)
+
+The CLI now supports a deterministic run-event ledger and stop-class schema:
+
+- `create-sentinelayer telemetry show --path .`
+- `create-sentinelayer telemetry record --path . --event-type tool_call --tool-calls 1`
+- `create-sentinelayer telemetry record --path . --event-type run_stop --stop-class MAX_RUNTIME_MS_EXCEEDED --reason-codes MAX_RUNTIME_MS_EXCEEDED --blocking`
+
+Ledger contract:
+
+- file: `.sentinelayer/observability/run-events.jsonl`
+- event types: `run_start`, `run_step`, `tool_call`, `usage`, `budget_check`, `run_stop`
+- stop classes: `MAX_COST_EXCEEDED`, `MAX_OUTPUT_TOKENS_EXCEEDED`, `DIMINISHING_RETURNS`, `MAX_RUNTIME_MS_EXCEEDED`, `MAX_TOOL_CALLS_EXCEEDED`, `MANUAL_STOP`, `ERROR`, `UNKNOWN`
+
 ## Requirements
 
 - Node `>=18.17`
