@@ -1774,6 +1774,55 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
   }
 });
 
+test("CLI plugin commands scaffold, validate, and list manifests", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-plugin-cmd-"));
+  try {
+    const manifestPath = path.join(
+      tempRoot,
+      ".sentinelayer",
+      "plugins",
+      "security-pack",
+      "plugin.json"
+    );
+
+    const initResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "init", "--id", "security-pack", "--json"],
+    });
+    assert.equal(initResult.code, 0, initResult.stderr || initResult.stdout);
+    const initPayload = JSON.parse(String(initResult.stdout || "").trim());
+    assert.equal(initPayload.command, "plugin init");
+    assert.equal(initPayload.pluginId, "security-pack");
+    assert.equal(path.resolve(initPayload.outputPath), path.resolve(manifestPath));
+
+    const validateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "validate", "--file", manifestPath, "--json"],
+    });
+    assert.equal(validateResult.code, 0, validateResult.stderr || validateResult.stdout);
+    const validatePayload = JSON.parse(String(validateResult.stdout || "").trim());
+    assert.equal(validatePayload.command, "plugin validate");
+    assert.equal(validatePayload.valid, true);
+    assert.equal(validatePayload.pluginId, "security-pack");
+
+    const listResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "list", "--json"],
+    });
+    assert.equal(listResult.code, 0, listResult.stderr || listResult.stdout);
+    const listPayload = JSON.parse(String(listResult.stdout || "").trim());
+    assert.equal(listPayload.command, "plugin list");
+    assert.equal(listPayload.pluginCount, 1);
+    assert.equal(listPayload.plugins[0].id, "security-pack");
+    assert.equal(listPayload.invalidCount, 0);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
