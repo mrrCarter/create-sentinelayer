@@ -52,6 +52,8 @@ function normalizeEntry(entry) {
     outputTokens: normalizeNumber(entry.outputTokens, "entry.outputTokens"),
     cacheReadTokens: normalizeNumber(entry.cacheReadTokens, "entry.cacheReadTokens"),
     cacheWriteTokens: normalizeNumber(entry.cacheWriteTokens, "entry.cacheWriteTokens"),
+    durationMs: normalizeNumber(entry.durationMs, "entry.durationMs"),
+    toolCalls: normalizeNumber(entry.toolCalls, "entry.toolCalls"),
     costUsd: normalizeNumber(entry.costUsd, "entry.costUsd"),
     progressScore: normalizeProgressScore(entry.progressScore),
   };
@@ -134,6 +136,8 @@ function summarizeSessionEntries(entries) {
   const usage = rollupUsage(usageEntries);
   const cacheReadTokens = entries.reduce((sum, item) => sum + Number(item.cacheReadTokens || 0), 0);
   const cacheWriteTokens = entries.reduce((sum, item) => sum + Number(item.cacheWriteTokens || 0), 0);
+  const durationMs = entries.reduce((sum, item) => sum + Number(item.durationMs || 0), 0);
+  const toolCalls = entries.reduce((sum, item) => sum + Number(item.toolCalls || 0), 0);
 
   let noProgressStreak = 0;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -149,6 +153,8 @@ function summarizeSessionEntries(entries) {
     outputTokens: usage.outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    durationMs,
+    toolCalls,
     costUsd: usage.costUsd,
     noProgressStreak,
   };
