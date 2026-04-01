@@ -35,6 +35,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch E PR 6.1 foundation slice (`mcp schema|registry` contract + AIdenID template scaffold).
 - [x] Complete workflow correction PR (Omar Gate only path: removed multi-agent watchdog workflow and aligned threshold enforcement with active gate mode).
 - [x] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
+- [ ] Complete Batch E PR 5.2 foundation slice (plugin pack boundaries + deterministic load-order governance).
 - [x] Complete Batch E PR 4.3 foundation slice (session inventory metadata + explicit token revocation controls).
 - [x] Complete Batch H PR 11.1 foundation slice (`sl ai provision-email` command surface with dry-run/live execute and artifact trail).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).

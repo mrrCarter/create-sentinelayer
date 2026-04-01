@@ -1828,35 +1828,66 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
 test("CLI plugin commands scaffold, validate, and list manifests", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-plugin-cmd-"));
   try {
-    const manifestPath = path.join(
+    const policyManifestPath = path.join(
       tempRoot,
       ".sentinelayer",
       "plugins",
       "security-pack",
       "plugin.json"
     );
+    const baseManifestPath = path.join(tempRoot, ".sentinelayer", "plugins", "base-pack", "plugin.json");
 
     const initResult = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
-      args: ["plugin", "init", "--id", "security-pack", "--json"],
+      args: [
+        "plugin",
+        "init",
+        "--id",
+        "security-pack",
+        "--pack-type",
+        "policy_pack",
+        "--stage",
+        "scan",
+        "--json",
+      ],
     });
     assert.equal(initResult.code, 0, initResult.stderr || initResult.stdout);
     const initPayload = JSON.parse(String(initResult.stdout || "").trim());
     assert.equal(initPayload.command, "plugin init");
     assert.equal(initPayload.pluginId, "security-pack");
-    assert.equal(path.resolve(initPayload.outputPath), path.resolve(manifestPath));
+    assert.equal(initPayload.packType, "policy_pack");
+    assert.equal(path.resolve(initPayload.outputPath), path.resolve(policyManifestPath));
+
+    const baseInitResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "init", "--id", "base-pack", "--json"],
+    });
+    assert.equal(baseInitResult.code, 0, baseInitResult.stderr || baseInitResult.stdout);
+
+    const policyManifest = JSON.parse(await readFile(policyManifestPath, "utf-8"));
+    policyManifest.load_order.after = ["base-pack"];
+    await writeFile(policyManifestPath, `${JSON.stringify(policyManifest, null, 2)}\n`, "utf-8");
 
     const validateResult = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
-      args: ["plugin", "validate", "--file", manifestPath, "--json"],
+      args: ["plugin", "validate", "--file", policyManifestPath, "--json"],
     });
     assert.equal(validateResult.code, 0, validateResult.stderr || validateResult.stdout);
     const validatePayload = JSON.parse(String(validateResult.stdout || "").trim());
     assert.equal(validatePayload.command, "plugin validate");
     assert.equal(validatePayload.valid, true);
     assert.equal(validatePayload.pluginId, "security-pack");
+    assert.equal(validatePayload.packType, "policy_pack");
+
+    const baseValidateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "validate", "--file", baseManifestPath, "--json"],
+    });
+    assert.equal(baseValidateResult.code, 0, baseValidateResult.stderr || baseValidateResult.stdout);
 
     const listResult = await runCli({
       cwd: tempRoot,
@@ -1866,9 +1897,28 @@ test("CLI plugin commands scaffold, validate, and list manifests", async () => {
     assert.equal(listResult.code, 0, listResult.stderr || listResult.stdout);
     const listPayload = JSON.parse(String(listResult.stdout || "").trim());
     assert.equal(listPayload.command, "plugin list");
-    assert.equal(listPayload.pluginCount, 1);
-    assert.equal(listPayload.plugins[0].id, "security-pack");
+    assert.equal(listPayload.pluginCount, 2);
+    assert.equal(listPayload.plugins.some((plugin) => plugin.id === "security-pack"), true);
+    assert.equal(
+      listPayload.plugins.some(
+        (plugin) => plugin.id === "security-pack" && plugin.packType === "policy_pack"
+      ),
+      true
+    );
     assert.equal(listPayload.invalidCount, 0);
+
+    const orderResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "order", "--json"],
+    });
+    assert.equal(orderResult.code, 0, orderResult.stderr || orderResult.stdout);
+    const orderPayload = JSON.parse(String(orderResult.stdout || "").trim());
+    assert.equal(orderPayload.command, "plugin order");
+    const scanStage = orderPayload.stages.find((stage) => stage.stage === "scan");
+    assert.ok(scanStage);
+    assert.equal(scanStage.cycleDetected, false);
+    assert.deepEqual(scanStage.order, ["base-pack", "security-pack"]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
