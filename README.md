@@ -187,6 +187,21 @@ Generate and validate a spec-aligned security workflow:
 
 `scan validate` checks workflow drift against the current spec profile and exits non-zero when mismatched.
 
+## Build guide generation (PR 1.5 slice)
+
+Generate phase-by-phase implementation guides from `SPEC.md`:
+
+- `create-sentinelayer guide generate --path .`
+- `create-sentinelayer guide generate --path . --output-file docs/BUILD_GUIDE.md`
+
+Export phases as issue-ready payloads:
+
+- `create-sentinelayer guide export --path . --format jira`
+- `create-sentinelayer guide export --path . --format linear`
+- `create-sentinelayer guide export --path . --format github-issues`
+
+`guide generate` writes `BUILD_GUIDE.md` with per-phase effort estimates, dependencies, implementation tasks, and acceptance criteria. `guide export` transforms phases into tracker-friendly artifacts.
+
 ## Requirements
 
 - Node `>=18.17`

@@ -20,7 +20,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch B PR 1.2 (template-based offline spec generation).
 - [x] Complete Batch B PR 1.3 (offline prompt generator from SPEC.md).
 - [x] Complete workflow hardening PR (repo-level Omar Gate + watchdog + release-please automation + npm release smoke install).
-- [ ] Complete Batch B PR 1.4 (Omar Gate config generator: `scan init` + `scan validate`).
+- [x] Complete Batch B PR 1.4 (Omar Gate config generator: `scan init` + `scan validate`).
 - [ ] Complete Batch B PR 1.5 (build guide generator + export formats).
 
 ## Cross-Repo Audit Snapshot
@@ -50,7 +50,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 1.1 Codebase ingestion engine. (merged as #33)
 - PR 1.2 Template-based spec generation. (merged as #34)
 - PR 1.3 Prompt generator. (merged as #35)
-- PR 1.4 Omar config generator.
+- PR 1.4 Omar config generator. (merged as #37)
 - PR 1.5 Build guide generator.
 
 ### Batch C - Quality & Cost Safety Baseline (P0/P1)
@@ -171,5 +171,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - #36 merged (`ci(workflows): add Omar Gate/watchdog + release automation hardening`).
   - PR 1.4 (`scan init` + `scan validate`) local evidence (branch `roadmap/pr-1-4-omar-config-generator`):
     - `npm run verify` (pass, 28/28 e2e)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
+  - PR 1.5 (`guide generate` + `guide export`) local evidence (branch `roadmap/pr-1-5-build-guide-generator`):
+    - `npm run verify` (pass, 30/30 e2e)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)

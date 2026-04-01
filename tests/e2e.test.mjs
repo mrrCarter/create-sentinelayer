@@ -1172,6 +1172,128 @@ test("CLI scan validate detects workflow drift against current spec profile", as
   }
 });
 
+test("CLI guide generate creates BUILD_GUIDE.md with phases, dependencies, and acceptance criteria", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-guide-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      [
+        "# SPEC - Guide Demo",
+        "",
+        "## Goal",
+        "Ship deterministic autonomous review automation.",
+        "",
+        "## Acceptance Criteria",
+        "1. Core flow is implemented and tested.",
+        "2. Security controls are enforced.",
+        "3. CI gates stay deterministic.",
+        "",
+        "## Phase Plan",
+        "### Phase 1 - Foundation",
+        "1. Define architecture boundaries.",
+        "2. Establish baseline scaffolding.",
+        "",
+        "### Phase 2 - Core Delivery",
+        "1. Implement primary workflow end-to-end.",
+        "2. Add telemetry and error handling.",
+        "",
+        "### Phase 3 - Hardening",
+        "1. Add security regression tests.",
+        "2. Validate rollback plan.",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const generateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["guide", "generate", "--path", tempRoot, "--json"],
+    });
+    assert.equal(generateResult.code, 0, generateResult.stderr || generateResult.stdout);
+
+    const payload = JSON.parse(String(generateResult.stdout || "").trim());
+    assert.equal(payload.command, "guide generate");
+    assert.match(String(payload.outputPath || ""), /[\\/]BUILD_GUIDE\.md$/);
+    assert.equal(Array.isArray(payload.phases), true);
+    assert.equal(payload.phases.length, 3);
+
+    const guideText = await readFile(payload.outputPath, "utf-8");
+    assert.match(guideText, /# BUILD GUIDE - Guide Demo/);
+    assert.match(guideText, /- Estimated effort: \d+-\d+ hours/);
+    assert.match(guideText, /- Dependencies: none \(entry phase\)/);
+    assert.match(guideText, /#### Acceptance Criteria/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI guide export emits jira, linear, and github-issues formats", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-guide-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      [
+        "# SPEC - Export Demo",
+        "",
+        "## Goal",
+        "Export implementation phases to trackers.",
+        "",
+        "## Acceptance Criteria",
+        "1. Tickets include dependencies.",
+        "",
+        "## Phase Plan",
+        "### Phase 1 - Foundation",
+        "1. Setup command scaffolding.",
+        "",
+        "### Phase 2 - Delivery",
+        "1. Add guide generation command.",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const jiraResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["guide", "export", "--path", tempRoot, "--format", "jira", "--json"],
+    });
+    assert.equal(jiraResult.code, 0, jiraResult.stderr || jiraResult.stdout);
+    const jiraPayload = JSON.parse(String(jiraResult.stdout || "").trim());
+    assert.equal(jiraPayload.command, "guide export");
+    assert.equal(jiraPayload.format, "jira");
+    const jiraFile = JSON.parse(await readFile(jiraPayload.outputPath, "utf-8"));
+    assert.equal(jiraFile.format, "jira");
+    assert.equal(Array.isArray(jiraFile.issues), true);
+    assert.equal(jiraFile.issues.length, 2);
+
+    const linearResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["guide", "export", "--path", tempRoot, "--format", "linear", "--json"],
+    });
+    assert.equal(linearResult.code, 0, linearResult.stderr || linearResult.stdout);
+    const linearPayload = JSON.parse(String(linearResult.stdout || "").trim());
+    assert.equal(linearPayload.format, "linear");
+    const linearFile = JSON.parse(await readFile(linearPayload.outputPath, "utf-8"));
+    assert.equal(linearFile.format, "linear");
+    assert.equal(Array.isArray(linearFile.issues), true);
+    assert.equal(linearFile.issues.length, 2);
+
+    const githubResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["guide", "export", "--path", tempRoot, "--format", "github-issues", "--json"],
+    });
+    assert.equal(githubResult.code, 0, githubResult.stderr || githubResult.stdout);
+    const githubPayload = JSON.parse(String(githubResult.stdout || "").trim());
+    assert.equal(githubPayload.format, "github-issues");
+    const githubBody = await readFile(githubPayload.outputPath, "utf-8");
+    assert.match(githubBody, /# GitHub Issues Export - Export Demo/);
+    assert.match(githubBody, /## Issue 1: Phase 1 - Foundation/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
