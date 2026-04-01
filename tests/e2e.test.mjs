@@ -1949,6 +1949,68 @@ test("CLI ai provision-email execute mode posts to AIdenID API with scoped heade
   }
 });
 
+test("CLI review scan full mode emits deterministic report and findings summary", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-cmd-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "index.js"),
+      "const value = 1; // TODO: tighten validation logic\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "scan", "--mode", "full", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review scan");
+    assert.equal(payload.mode, "full");
+    assert.equal(payload.scannedFiles >= 1, true);
+    assert.equal(payload.p2 >= 1, true);
+    const reportText = await readFile(payload.reportPath, "utf-8");
+    assert.match(reportText, /Local Review Scan/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI review scan diff mode scopes findings to changed git files", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-cmd-"));
+  try {
+    runCommand({ cwd: tempRoot, command: "git", args: ["init"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["config", "user.name", "Sentinelayer E2E"] });
+    runCommand({
+      cwd: tempRoot,
+      command: "git",
+      args: ["config", "user.email", "e2e@sentinelayer.local"],
+    });
+
+    const filePath = path.join(tempRoot, "app.js");
+    await writeFile(filePath, "const value = 1;\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
+
+    await writeFile(filePath, "const value = 1; // TODO: add sanitizer\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "scan", "--mode", "diff", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review scan");
+    assert.equal(payload.mode, "diff");
+    assert.equal(payload.scannedFiles >= 1, true);
+    assert.equal(payload.scopedFiles.includes("app.js"), true);
+    assert.equal(payload.p2 >= 1, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
