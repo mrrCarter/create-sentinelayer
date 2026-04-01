@@ -56,3 +56,4 @@
 - Deterministic review should preserve a lightweight compatibility command (`review scan`) while promoting a richer layered pipeline (`review`) with per-run artifacts and check logs under a stable directory contract.
 - Plugin ecosystem governance needs explicit `pack_type` boundaries and deterministic topological ordering checks (`plugin order`) to prevent ambiguous or cyclic runtime load behavior.
 - MCP rollout should include both registry schema contracts and runtime server/bridge scaffolds so local CLI and editor integrations share one validated server config source of truth.
+- Chat ergonomics should still produce deterministic artifacts (session IDs + JSONL transcripts) so interactive/streaming UX remains auditable for enterprise workflows.

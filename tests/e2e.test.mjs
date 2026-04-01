@@ -2058,6 +2058,39 @@ test("CLI ai provision-email execute mode posts to AIdenID API with scoped heade
   }
 });
 
+test("CLI chat ask dry-run writes transcript artifact deterministically", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-chat-cmd-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["chat", "ask", "--prompt", "Summarize pending PR work.", "--dry-run", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "chat ask");
+    assert.equal(payload.dryRun, true);
+    assert.match(payload.response, /DRY_RUN_RESPONSE/);
+    assert.ok(String(payload.sessionId || "").length > 8);
+    assert.match(String(payload.transcriptPath || ""), /[\\/]chat[\\/]sessions[\\/]/);
+
+    const transcriptText = await readFile(payload.transcriptPath, "utf-8");
+    const lines = transcriptText
+      .split(/\r?\n/g)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].role, "user");
+    assert.equal(lines[1].role, "assistant");
+    assert.equal(lines[1].dry_run, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI review scan full mode emits deterministic report and findings summary", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-cmd-"));
   try {
