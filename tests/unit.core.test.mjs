@@ -29,6 +29,7 @@ import {
   listKnownModelPricing,
   rollupUsage,
 } from "../src/cost/tracker.js";
+import { buildCliProgram } from "../src/cli.js";
 
 test("Unit: config layering resolves env > project > global and output root precedence", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-unit-config-"));
@@ -339,4 +340,11 @@ test("Unit: cost tracker estimates, aggregates, and enforces budget deterministi
       }),
     /inputPerMillionUsd must be a non-negative number/
   );
+});
+
+test("Unit: CLI command tree registers auth/watch command groups", () => {
+  const program = buildCliProgram({ invokeLegacy: async () => {} });
+  const commandNames = program.commands.map((command) => command.name());
+  assert.equal(commandNames.includes("auth"), true);
+  assert.equal(commandNames.includes("watch"), true);
 });

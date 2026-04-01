@@ -40,3 +40,10 @@
 - Deterministic governors are more operator-friendly when hard-stop reasons and near-limit warnings are both first-class (`MAX_*` stop codes plus `*_NEAR_LIMIT` warning codes) and emitted from the same budget contract.
 - For AI-enhanced generation commands, keep deterministic artifacts as the first pass and layer AI refinement on top, then route usage through the same cost/telemetry governors to avoid a second ungoverned execution path.
 - For AI pre-scan features, write reports into the same artifact root contract (`.sentinelayer/reports`) and emit the same cost/telemetry schema as generation commands so HITL dashboards can reason about both flows uniformly.
+
+## 2026-04-01
+
+- Persistent CLI auth should use API-token minting after browser approval, because current `/auth/me` JWTs are short-lived and there is no dedicated refresh endpoint.
+- Keyring storage must be optional and fail-safe; provide deterministic file fallback and an explicit kill switch (`SENTINELAYER_DISABLE_KEYRING=1`) for CI/headless environments.
+- Runtime watch commands need durable artifacts (`events.ndjson` + summary json) so autonomous agents can stream live output and still hand off reproducible traces after the terminal session ends.
+- Session auto-rotation is safest as "rotate on use near expiry" before introducing daemonized background refresh loops, because it keeps failure modes local and observable.
