@@ -1729,6 +1729,51 @@ test("CLI watch history lists persisted runtime watch summaries deterministicall
   }
 });
 
+test("CLI mcp schema and registry commands scaffold and validate AIdenID template", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-cmd-"));
+  try {
+    const schemaPath = path.join(tempRoot, "artifacts", "mcp-tool-registry.schema.json");
+    const templatePath = path.join(tempRoot, "artifacts", "mcp-tool-registry.aidenid-template.json");
+
+    const schemaWriteResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["mcp", "schema", "write", "--path", schemaPath, "--json"],
+    });
+    assert.equal(schemaWriteResult.code, 0, schemaWriteResult.stderr || schemaWriteResult.stdout);
+    const schemaWritePayload = JSON.parse(String(schemaWriteResult.stdout || "").trim());
+    assert.equal(schemaWritePayload.command, "mcp schema write");
+    assert.equal(path.resolve(schemaWritePayload.outputPath), path.resolve(schemaPath));
+
+    const schemaText = await readFile(schemaPath, "utf-8");
+    assert.match(schemaText, /Sentinelayer MCP Tool Registry/);
+
+    const templateWriteResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["mcp", "registry", "init-aidenid", "--path", templatePath, "--json"],
+    });
+    assert.equal(templateWriteResult.code, 0, templateWriteResult.stderr || templateWriteResult.stdout);
+    const templateWritePayload = JSON.parse(String(templateWriteResult.stdout || "").trim());
+    assert.equal(templateWritePayload.command, "mcp registry init-aidenid");
+    assert.equal(templateWritePayload.toolCount, 1);
+
+    const validateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["mcp", "registry", "validate", "--file", templatePath, "--json"],
+    });
+    assert.equal(validateResult.code, 0, validateResult.stderr || validateResult.stdout);
+    const validatePayload = JSON.parse(String(validateResult.stdout || "").trim());
+    assert.equal(validatePayload.command, "mcp registry validate");
+    assert.equal(validatePayload.valid, true);
+    assert.equal(validatePayload.toolCount, 1);
+    assert.equal(validatePayload.tools.includes("aidenid.provision_email"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {

@@ -152,6 +152,17 @@ By default, watch output is persisted to:
 - `.sentinelayer/observability/runtime-watch/<run-id>/events-<timestamp>.ndjson`
 - `.sentinelayer/observability/runtime-watch/<run-id>/summary-<timestamp>.json`
 
+## MCP registry schema foundation (Phase 6 foundation slice)
+
+The CLI now includes deterministic MCP registry commands:
+
+- `sl mcp schema show`
+- `sl mcp schema write`
+- `sl mcp registry init-aidenid`
+- `sl mcp registry validate --file <path>`
+
+Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for AIdenID provisioning APIs, then customize transport/auth before runtime wiring.
+
 ## Manual fallback (if auto injection is skipped)
 
 1. Set local token:
@@ -384,6 +395,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
 - `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
+- `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 
