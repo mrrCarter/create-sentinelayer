@@ -13,7 +13,8 @@
     "src/cost/tracker.js",
     "src/cost/history.js",
     "src/cost/budget.js",
-    "src/ai/client.js"
+    "src/ai/client.js",
+    "src/telemetry/ledger.js"
   ]
 }
 

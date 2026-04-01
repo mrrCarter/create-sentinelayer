@@ -9,6 +9,7 @@ import {
   summarizeCostHistory,
 } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
+import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -183,6 +184,68 @@ export function registerCostCommand(program) {
         maxNoProgress: parseNonNegativeNumber(options.maxNoProgress, "maxNoProgress"),
       });
 
+      const usageTelemetry = await appendRunEvent(
+        {
+          targetPath,
+          outputDirOverride: options.outputDir,
+        },
+        {
+          sessionId: options.sessionId,
+          runId: options.sessionId,
+          eventType: "usage",
+          usage: {
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            costUsd,
+            durationMs: 0,
+            toolCalls: 0,
+          },
+          metadata: {
+            sourceCommand: "cost record",
+            provider,
+            model,
+            invocationId: appended.entry.invocationId,
+          },
+        }
+      );
+
+      let stopTelemetry = null;
+      if (budget.blocking) {
+        stopTelemetry = await appendRunEvent(
+          {
+            targetPath,
+            outputDirOverride: options.outputDir,
+          },
+          {
+            sessionId: options.sessionId,
+            runId: options.sessionId,
+            eventType: "run_stop",
+            usage: {
+              inputTokens: sessionSummary.inputTokens,
+              outputTokens: sessionSummary.outputTokens,
+              cacheReadTokens: sessionSummary.cacheReadTokens,
+              cacheWriteTokens: sessionSummary.cacheWriteTokens,
+              costUsd: sessionSummary.costUsd,
+              durationMs: 0,
+              toolCalls: 0,
+            },
+            stop: {
+              stopClass: deriveStopClassFromBudget(budget),
+              blocking: true,
+              reasonCodes: budget.reasons.map((reason) => reason.code),
+            },
+            metadata: {
+              sourceCommand: "cost record",
+              provider,
+              model,
+              invocationId: appended.entry.invocationId,
+            },
+          }
+        );
+      }
+
       const payload = {
         command: "cost record",
         targetPath,
@@ -190,6 +253,11 @@ export function registerCostCommand(program) {
         entry: appended.entry,
         session: sessionSummary,
         budget,
+        telemetry: {
+          filePath: usageTelemetry.filePath,
+          usageEventId: usageTelemetry.event.eventId,
+          stopEventId: stopTelemetry?.event?.eventId || null,
+        },
       };
 
       if (shouldEmitJson(options, command)) {
@@ -197,6 +265,7 @@ export function registerCostCommand(program) {
       } else {
         console.log(pc.bold("Cost entry recorded"));
         console.log(pc.gray(`File: ${appended.filePath}`));
+        console.log(pc.gray(`Telemetry file: ${usageTelemetry.filePath}`));
         printSessionSummary(sessionSummary);
         if (budget.blocking) {
           console.log(pc.red("Budget guardrail triggered:"));

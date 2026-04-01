@@ -24,7 +24,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch B PR 1.5 (build guide generator + export formats).
 - [x] Complete Batch C PR 8.3 (unit coverage gates + CI quality pipeline hardening).
 - [x] Complete Batch C PR 3.1 (multi-provider API client contract + retries + streaming).
-- [ ] Complete Batch C PR 3.2 (cost tracking + token budget stop governors + `cost` CLI command).
+- [x] Complete Batch C PR 3.2 (cost tracking + token budget stop governors + `cost` CLI command).
+- [ ] Complete Batch C PR 3.5 (CLI observability contract: run events + usage ledger + stop-class schema).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -178,6 +179,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - Batch C progress:
     - #39 merged (`test(ci): unit coverage gates + hardened quality workflow`).
     - #40 merged (`feat(ai): multi-provider API client contract + retry/streaming`).
+    - #41 merged (`feat(cost): add cost tracking and budget stop governors (PR 3.2)`).
   - PR 1.4 (`scan init` + `scan validate`) local evidence (branch `roadmap/pr-1-4-omar-config-generator`):
     - `npm run verify` (pass, 28/28 e2e)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
@@ -196,5 +198,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
   - PR 3.2 (cost tracking + budget governors) local evidence (branch `roadmap/pr-3-2-cost-budget-system`):
     - `npm run verify` (pass, e2e `32/32`; unit coverage statements `89.6%`, branches `71.7%`, functions `96.77%`, lines `89.6%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
+  - PR 3.5 (CLI observability contract) local evidence (branch `roadmap/pr-3-5-cli-observability-contract`):
+    - `npm run verify` (pass, e2e `33/33`; unit coverage statements `89.1%`, branches `70.94%`, functions `97.4%`, lines `89.1%`)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
