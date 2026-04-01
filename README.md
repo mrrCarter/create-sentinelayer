@@ -235,8 +235,16 @@ npm run verify
 This runs:
 
 - CLI syntax check
+- unit tests for core offline generators/config/cost tracking
 - end-to-end automated scaffolding tests (mock API + mock `gh`)
+- coverage enforcement (`>=80%` lines/functions/statements, `>=70%` branches for core modules)
 - package tarball dry-run
+
+Additional test commands:
+
+- `npm run test:unit`
+- `npm run test:e2e`
+- `npm run test:coverage`
 
 ## Local commands (MVP)
 
