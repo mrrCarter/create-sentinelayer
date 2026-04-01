@@ -7,9 +7,14 @@ import { ZodError } from "zod";
 import {
   buildAidenIdRegistryTemplate,
   buildMcpToolRegistrySchema,
+  buildMcpServerConfigTemplate,
+  buildVsCodeMcpBridgeTemplate,
   readJsonFile,
   resolveDefaultMcpOutputPath,
+  resolveDefaultMcpServerConfigPath,
+  resolveDefaultVsCodeBridgePath,
   stringifyJson,
+  validateMcpServerConfig,
   validateMcpToolRegistry,
   writeJsonFile,
 } from "../mcp/registry.js";
@@ -162,5 +167,132 @@ export function registerMcpCommand(program) {
       for (const name of toolNames) {
         console.log(`- ${name}`);
       }
+    });
+
+  const server = mcp.command("server").description("Manage MCP server runtime configuration");
+
+  server
+    .command("init")
+    .description("Write a deterministic MCP server configuration scaffold")
+    .requiredOption("--id <server-id>", "Server id (lowercase)")
+    .option(
+      "--registry-file <path>",
+      "Registry file path referenced by server config",
+      ".sentinelayer/mcp/tool-registry.aidenid-template.json"
+    )
+    .option("--path <path>", "Destination file path override")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--force", "Overwrite destination file if it already exists")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const serverId = String(options.id || "")
+        .trim()
+        .toLowerCase();
+      const defaultPath = await resolveDefaultMcpServerConfigPath({
+        cwd: process.cwd(),
+        outputDir: options.outputDir,
+        env: process.env,
+        serverId,
+      });
+      const outputPath = normalizeOutputPath(options.path, defaultPath);
+      const template = buildMcpServerConfigTemplate({
+        serverId,
+        registryFile: options.registryFile,
+      });
+      const config = validateMcpServerConfig(template);
+      const writtenPath = await writeJsonFile(outputPath, config, { force: Boolean(options.force) });
+
+      const payload = {
+        command: "mcp server init",
+        serverId: config.server_id,
+        outputPath: writtenPath,
+        registryFile: config.registry_file,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Wrote MCP server config: ${writtenPath}`));
+      console.log(pc.gray(`server_id: ${config.server_id}`));
+    });
+
+  server
+    .command("validate")
+    .description("Validate an MCP server config payload")
+    .requiredOption("--file <path>", "Server config JSON to validate")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const inputPath = path.resolve(process.cwd(), String(options.file || "").trim());
+      const loaded = await readJsonFile(inputPath);
+      let parsed;
+      try {
+        parsed = validateMcpServerConfig(loaded.data);
+      } catch (error) {
+        const payload = {
+          command: "mcp server validate",
+          valid: false,
+          filePath: loaded.path,
+          error: zodIssueSummary(error),
+        };
+        if (shouldEmitJson(options, command)) {
+          console.log(JSON.stringify(payload, null, 2));
+        } else {
+          console.log(pc.red(`Server config invalid: ${payload.error}`));
+          console.log(pc.gray(`File: ${loaded.path}`));
+        }
+        process.exitCode = 2;
+        return;
+      }
+
+      const payload = {
+        command: "mcp server validate",
+        valid: true,
+        filePath: loaded.path,
+        serverId: parsed.server_id,
+        transportMode: parsed.transport.mode,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Server config valid (${parsed.server_id})`));
+      console.log(pc.gray(`File: ${loaded.path}`));
+    });
+
+  const bridge = mcp.command("bridge").description("Generate MCP bridge configuration wrappers");
+
+  bridge
+    .command("init-vscode")
+    .description("Write a VS Code MCP bridge config bound to a server config file")
+    .requiredOption("--server-id <server-id>", "Server id to register")
+    .requiredOption("--server-config <path>", "Path to MCP server config file")
+    .option("--path <path>", "Destination VS Code config path override")
+    .option("--force", "Overwrite destination file if it already exists")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const serverId = String(options.serverId || "")
+        .trim()
+        .toLowerCase();
+      const outputPath = normalizeOutputPath(
+        options.path,
+        resolveDefaultVsCodeBridgePath({ cwd: process.cwd() })
+      );
+      const bridgePayload = buildVsCodeMcpBridgeTemplate({
+        serverId,
+        serverConfigFile: String(options.serverConfig || "").trim(),
+      });
+      const writtenPath = await writeJsonFile(outputPath, bridgePayload, { force: Boolean(options.force) });
+
+      const payload = {
+        command: "mcp bridge init-vscode",
+        serverId,
+        serverConfig: String(options.serverConfig || "").trim(),
+        outputPath: writtenPath,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Wrote VS Code MCP bridge config: ${writtenPath}`));
     });
 }

@@ -1785,6 +1785,8 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
   try {
     const schemaPath = path.join(tempRoot, "artifacts", "mcp-tool-registry.schema.json");
     const templatePath = path.join(tempRoot, "artifacts", "mcp-tool-registry.aidenid-template.json");
+    const serverPath = path.join(tempRoot, "artifacts", "mcp-server.local-aidenid.json");
+    const vscodeBridgePath = path.join(tempRoot, "artifacts", ".vscode", "mcp.json");
 
     const schemaWriteResult = await runCli({
       cwd: tempRoot,
@@ -1820,6 +1822,63 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(validatePayload.valid, true);
     assert.equal(validatePayload.toolCount, 1);
     assert.equal(validatePayload.tools.includes("aidenid.provision_email"), true);
+
+    const serverInitResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "mcp",
+        "server",
+        "init",
+        "--id",
+        "local-aidenid",
+        "--registry-file",
+        templatePath,
+        "--path",
+        serverPath,
+        "--json",
+      ],
+    });
+    assert.equal(serverInitResult.code, 0, serverInitResult.stderr || serverInitResult.stdout);
+    const serverInitPayload = JSON.parse(String(serverInitResult.stdout || "").trim());
+    assert.equal(serverInitPayload.command, "mcp server init");
+    assert.equal(serverInitPayload.serverId, "local-aidenid");
+    assert.equal(path.resolve(serverInitPayload.outputPath), path.resolve(serverPath));
+
+    const serverValidateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["mcp", "server", "validate", "--file", serverPath, "--json"],
+    });
+    assert.equal(serverValidateResult.code, 0, serverValidateResult.stderr || serverValidateResult.stdout);
+    const serverValidatePayload = JSON.parse(String(serverValidateResult.stdout || "").trim());
+    assert.equal(serverValidatePayload.command, "mcp server validate");
+    assert.equal(serverValidatePayload.valid, true);
+    assert.equal(serverValidatePayload.serverId, "local-aidenid");
+
+    const bridgeInitResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "mcp",
+        "bridge",
+        "init-vscode",
+        "--server-id",
+        "local-aidenid",
+        "--server-config",
+        serverPath,
+        "--path",
+        vscodeBridgePath,
+        "--json",
+      ],
+    });
+    assert.equal(bridgeInitResult.code, 0, bridgeInitResult.stderr || bridgeInitResult.stdout);
+    const bridgeInitPayload = JSON.parse(String(bridgeInitResult.stdout || "").trim());
+    assert.equal(bridgeInitPayload.command, "mcp bridge init-vscode");
+    assert.equal(path.resolve(bridgeInitPayload.outputPath), path.resolve(vscodeBridgePath));
+
+    const bridgeConfig = JSON.parse(await readFile(vscodeBridgePath, "utf-8"));
+    assert.equal(Boolean(bridgeConfig.mcpServers["local-aidenid"]), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -1,11 +1,15 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 
 import { z } from "zod";
 
 import { resolveOutputRoot } from "../config/service.js";
 
 export const MCP_TOOL_REGISTRY_SCHEMA_VERSION = "1.0.0";
+export const MCP_SERVER_CONFIG_SCHEMA_VERSION = "1.0.0";
+
+const serverIdRegex = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
 const jsonSchemaObject = z.object({
   type: z.literal("object"),
@@ -57,6 +61,64 @@ const mcpRegistrySchema = z
     version: z.string().min(1),
     generated_at: z.string().optional(),
     tools: z.array(mcpToolSchema).min(1),
+  })
+  .strict();
+
+const mcpServerTransportSchema = z.discriminatedUnion("mode", [
+  z
+    .object({
+      mode: z.literal("stdio"),
+      command: z.string().min(1),
+      args: z.array(z.string()).default([]),
+      cwd: z.string().min(1).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("http"),
+      url: z.string().min(1),
+      timeout_ms: z.number().int().positive().default(15000),
+      auth: z
+        .object({
+          mode: z.enum(["bearer", "api_key", "oauth2", "none"]).default("bearer"),
+          secret_ref: z.string().min(1).optional(),
+        })
+        .optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+    })
+    .strict(),
+]);
+
+const mcpServerConfigSchema = z
+  .object({
+    version: z.literal(MCP_SERVER_CONFIG_SCHEMA_VERSION).default(MCP_SERVER_CONFIG_SCHEMA_VERSION),
+    server_id: z.string().regex(serverIdRegex),
+    registry_file: z.string().min(1),
+    transport: mcpServerTransportSchema,
+    budgets: z
+      .object({
+        max_calls_per_run: z.number().int().positive().default(20),
+        max_runtime_ms: z.number().int().positive().default(60000),
+      })
+      .strict()
+      .default({
+        max_calls_per_run: 20,
+        max_runtime_ms: 60000,
+      }),
+    security: z
+      .object({
+        requires_human_approval: z.boolean().default(false),
+        allow_network: z.boolean().default(false),
+        kill_switch: z.enum(["enabled", "disabled"]).default("enabled"),
+      })
+      .strict()
+      .default({
+        requires_human_approval: false,
+        allow_network: false,
+        kill_switch: "enabled",
+      }),
+    metadata: z.record(z.string(), z.any()).optional(),
   })
   .strict();
 
@@ -234,9 +296,69 @@ export function buildAidenIdRegistryTemplate({ generatedAt = new Date().toISOStr
   };
 }
 
+export function buildMcpServerConfigTemplate({
+  serverId = "sentinelayer-local",
+  registryFile = ".sentinelayer/mcp/tool-registry.aidenid-template.json",
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  const normalizedId = String(serverId || "")
+    .trim()
+    .toLowerCase();
+  if (!serverIdRegex.test(normalizedId)) {
+    throw new Error("server id must use lowercase [a-z0-9._-] and be 1-64 chars.");
+  }
+  return {
+    version: MCP_SERVER_CONFIG_SCHEMA_VERSION,
+    server_id: normalizedId,
+    registry_file: String(registryFile || "").trim() || ".sentinelayer/mcp/tool-registry.aidenid-template.json",
+    transport: {
+      mode: "stdio",
+      command: "create-sentinelayer",
+      args: ["mcp", "server", "run", "--config", `.sentinelayer/mcp/servers/${normalizedId}.json`],
+    },
+    budgets: {
+      max_calls_per_run: 20,
+      max_runtime_ms: 60000,
+    },
+    security: {
+      requires_human_approval: false,
+      allow_network: false,
+      kill_switch: "enabled",
+    },
+    metadata: {
+      generated_at: generatedAt,
+      generated_by: "create-sentinelayer",
+    },
+  };
+}
+
+export function buildVsCodeMcpBridgeTemplate({
+  serverId,
+  serverConfigFile,
+} = {}) {
+  const normalizedId = String(serverId || "")
+    .trim()
+    .toLowerCase();
+  if (!serverIdRegex.test(normalizedId)) {
+    throw new Error("server id must use lowercase [a-z0-9._-] and be 1-64 chars.");
+  }
+  return {
+    mcpServers: {
+      [normalizedId]: {
+        command: "create-sentinelayer",
+        args: ["mcp", "server", "run", "--config", String(serverConfigFile || "").trim()],
+      },
+    },
+  };
+}
+
 export function validateMcpToolRegistry(payload) {
   const parsed = mcpRegistrySchema.parse(payload);
   return parsed;
+}
+
+export function validateMcpServerConfig(payload) {
+  return mcpServerConfigSchema.parse(payload);
 }
 
 export function stringifyJson(value) {
@@ -280,4 +402,28 @@ export async function resolveDefaultMcpOutputPath({ cwd, outputDir, env } = {}) 
     env,
   });
   return path.join(outputRoot, "mcp", "tool-registry.schema.json");
+}
+
+export async function resolveDefaultMcpServerConfigPath({
+  cwd,
+  outputDir,
+  env,
+  serverId,
+} = {}) {
+  const outputRoot = await resolveOutputRoot({
+    cwd,
+    outputDirOverride: outputDir,
+    env,
+  });
+  const normalizedId = String(serverId || "")
+    .trim()
+    .toLowerCase();
+  if (!serverIdRegex.test(normalizedId)) {
+    throw new Error("server id must use lowercase [a-z0-9._-] and be 1-64 chars.");
+  }
+  return path.join(outputRoot, "mcp", "servers", `${normalizedId}.json`);
+}
+
+export function resolveDefaultVsCodeBridgePath({ cwd } = {}) {
+  return path.join(path.resolve(cwd || process.cwd()), ".vscode", "mcp.json");
 }

@@ -55,3 +55,4 @@
 - Diff-scoped local review must source staged + unstaged + untracked files together to match real developer workflows; scanning only one git state misses actionable findings.
 - Deterministic review should preserve a lightweight compatibility command (`review scan`) while promoting a richer layered pipeline (`review`) with per-run artifacts and check logs under a stable directory contract.
 - Plugin ecosystem governance needs explicit `pack_type` boundaries and deterministic topological ordering checks (`plugin order`) to prevent ambiguous or cyclic runtime load behavior.
+- MCP rollout should include both registry schema contracts and runtime server/bridge scaffolds so local CLI and editor integrations share one validated server config source of truth.
