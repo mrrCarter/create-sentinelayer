@@ -33,6 +33,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch F PR 9.0 foundation slice (`sl watch run-events` runtime stream + reproducible watch artifacts).
 - [x] Complete Batch E PR 4.2 foundation slice (`watch history` session/readback for reproducible handoffs).
 - [x] Complete Batch E PR 6.1 foundation slice (`mcp schema|registry` contract + AIdenID template scaffold).
+- [ ] Complete Batch E PR 6.2 foundation slice (`mcp server|bridge` runtime config + VS Code MCP bridge scaffolds).
 - [x] Complete workflow correction PR (Omar Gate only path: removed multi-agent watchdog workflow and aligned threshold enforcement with active gate mode).
 - [x] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
 - [ ] Complete Batch E PR 5.2 foundation slice (plugin pack boundaries + deterministic load-order governance).

@@ -181,6 +181,9 @@ The CLI now includes deterministic MCP registry commands:
 - `sl mcp schema write`
 - `sl mcp registry init-aidenid`
 - `sl mcp registry validate --file <path>`
+- `sl mcp server init --id <server-id> --registry-file <path>`
+- `sl mcp server validate --file <path>`
+- `sl mcp bridge init-vscode --server-id <server-id> --server-config <path>`
 
 Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for AIdenID provisioning APIs, then customize transport/auth before runtime wiring.
 
@@ -440,7 +443,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
 - `create-sentinelayer auth sessions|revoke` supports session inventory and explicit token revocation controls
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
-- `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
+- `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
