@@ -2,137 +2,155 @@ name: Omar Gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types:
+      - opened
+      - synchronize
+      - reopened
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: "Optional PR number override for manual runs"
+      scan_mode:
+        description: Sentinelayer scan profile
         required: false
+        default: deep
+        type: choice
+        options:
+          - deep
+          - nightly
+      severity_gate:
+        description: Severity threshold that blocks merge
+        required: false
+        default: P2
+        type: choice
+        options:
+          - P0
+          - P1
+          - P2
+          - none
+      p2_max_allowed:
+        description: Maximum allowed P2 findings before Omar Gate blocks merge
+        required: false
+        default: "5"
         type: string
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: read
+  checks: write
+  pull-requests: write
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  quality-gates:
-    name: Quality Gates
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
+  omar_gate:
+    name: Omar Gate
+    runs-on: ubuntu-latest
+    environment: security-review
     permissions:
       contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "20"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run repository verification
-        run: npm run verify
-
-      - name: Audit AI instruction topology (advisory)
-        run: |
-          set -euo pipefail
-
-          REPO_INSTRUCTION_FILE=".github/copilot-instructions.md"
-          if [ ! -f "${REPO_INSTRUCTION_FILE}" ]; then
-            echo "::warning::Missing ${REPO_INSTRUCTION_FILE}. Add repository-wide review instructions."
-          fi
-
-          if [ ! -d ".github/instructions" ]; then
-            echo "::warning::Missing .github/instructions directory. Add path-scoped instructions for high-risk paths."
-          else
-            count="$(find .github/instructions -type f -name '*.instructions.md' | wc -l | tr -d ' ')"
-            if [ "${count}" -eq 0 ]; then
-              echo "::warning::.github/instructions exists but no *.instructions.md files were found."
-            fi
-          fi
-
-  omar-review:
-    name: Omar Gate (Deep Scan)
-    needs: [quality-gates]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      pull-requests: write
       checks: write
+      pull-requests: write
+      id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Resolve provider installation id
-        id: resolve_installation
-        run: |
-          set -euo pipefail
-          installation_id="${{ vars.SENTINELAYER_PROVIDER_INSTALLATION_ID || vars.OMAR_PROVIDER_INSTALLATION_ID || '116444787' }}"
-          echo "installation_id=${installation_id}" >> "${GITHUB_OUTPUT}"
-
-      - name: Probe Omar status auth capability
-        id: status_auth
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Validate Sentinelayer token secret
+        shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          SENTINELAYER_API_URL: https://api.sentinelayer.com
         run: |
           set -euo pipefail
-          if [ -z "${SENTINELAYER_TOKEN}" ]; then
-            echo "::error::Missing SENTINELAYER_TOKEN secret. Omar Gate cannot run."
-            exit 1
-          fi
-          echo "wait_for_completion=false" >> "${GITHUB_OUTPUT}"
-          probe_url="${SENTINELAYER_API_URL}/api/v1/github-app/runs/ghdeep_status_auth_probe/status"
-          http_code="$(curl -sS -o /tmp/omar-status-auth-probe.json -w "%{http_code}" \
-            -H "Authorization: Bearer ${SENTINELAYER_TOKEN}" \
-            -H "Accept: application/json" \
-            "${probe_url}" || true)"
-          if [ "${http_code}" = "401" ]; then
-            echo "::warning::Omar status endpoint token auth probe returned 401; using async mode for this run."
-            exit 0
-          fi
-          echo "wait_for_completion=true" >> "${GITHUB_OUTPUT}"
-          echo "::notice::Omar status auth probe returned HTTP ${http_code}; enabling wait_for_completion."
-
-      - name: Omar Gate Deep Scan
+          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
+      - name: Validate OpenAI key secret for Omar LLM scan
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+      - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@55a2c158f637d7d92e26ab0ef3ba81db791da4be
+        uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
         with:
+          github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-          provider_installation_id: ${{ steps.resolve_installation.outputs.installation_id }}
-          scan_mode: deep
-          severity_gate: P2
-          wait_for_completion: ${{ steps.status_auth.outputs.wait_for_completion == 'true' }}
-          pr_number: ${{ github.event.inputs.pr_number || '' }}
-
-      - name: Upload Omar artifacts
-        if: ${{ always() && steps.omar.outputs.run_id != '' }}
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
-        with:
-          name: sentinelayer-codex-${{ steps.omar.outputs.run_id }}
-          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
-          if-no-files-found: warn
-
-  release-readiness:
-    name: Release Readiness
-    if: >-
-      ${{
-        always() &&
-        needs.quality-gates.result == 'success' &&
-        needs.omar-review.result == 'success'
-      }}
-    needs: [quality-gates, omar-review]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Confirm required checks
-        run: echo "Quality and Omar deep-scan checks passed."
+          sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_managed_llm: "false"
+          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          model: gpt-5.3-codex
+          codex_model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
+          llm_failure_policy: block
+      - name: Enforce Omar reviewer merge thresholds
+        shell: bash
+        env:
+          P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
+          P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
+          P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
+          P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
+          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+        run: |
+          set -euo pipefail
+          p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
+          p1="$(echo "${P1_COUNT}" | tr -d '\r' | xargs || true)"
+          p2="$(echo "${P2_COUNT}" | tr -d '\r' | xargs || true)"
+          p2_max="$(echo "${P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
+          severity_gate="$(echo "${SEVERITY_GATE_SELECTED}" | tr -d '\r' | xargs || true)"
+          case "${p0}" in ''|*[!0-9]*) echo "::error::Invalid Omar P0 count: ${p0}" ; exit 1 ;; esac
+          case "${p1}" in ''|*[!0-9]*) echo "::error::Invalid Omar P1 count: ${p1}" ; exit 1 ;; esac
+          case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
+          case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
+          case "${severity_gate}" in
+            P0)
+              if [ "${p0}" -gt 0 ]; then
+                echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
+                exit 1
+              fi
+              ;;
+            P1)
+              if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
+                echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
+                exit 1
+              fi
+              ;;
+            P2)
+              if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
+                echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
+                exit 1
+              fi
+              if [ "${p2}" -gt "${p2_max}" ]; then
+                echo "::error::Omar Gate blocked: P2=${p2} exceeds max allowed ${p2_max}."
+                exit 1
+              fi
+              ;;
+            none)
+              echo "::notice::Omar Gate threshold enforcement disabled (severity_gate=none)."
+              ;;
+            *)
+              echo "::error::Invalid severity_gate value: ${severity_gate}"
+              exit 1
+              ;;
+          esac
+      - name: Emit Omar run summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
+          p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
+          threshold_line="P0=0, P1=0"
+          if [ "${severity_gate}" = "P0" ]; then
+            threshold_line="P0=0"
+          elif [ "${severity_gate}" = "P2" ]; then
+            threshold_line="P0=0, P1=0, P2<=${p2_max}"
+          elif [ "${severity_gate}" = "none" ]; then
+            threshold_line="none"
+          fi
+          echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"
