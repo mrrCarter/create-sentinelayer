@@ -53,3 +53,4 @@
 - Auth lifecycle controls should separate concerns: `auth sessions` is local metadata inventory, while `auth revoke` performs explicit remote token revocation and clears matching local metadata deterministically.
 - AIdenID command execution should default to dry-run artifact generation and require explicit `--execute` for network calls, so agents can prepare reproducible requests without accidental live identity churn.
 - Diff-scoped local review must source staged + unstaged + untracked files together to match real developer workflows; scanning only one git state misses actionable findings.
+- Deterministic review should preserve a lightweight compatibility command (`review scan`) while promoting a richer layered pipeline (`review`) with per-run artifacts and check logs under a stable directory contract.

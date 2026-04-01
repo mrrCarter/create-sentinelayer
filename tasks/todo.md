@@ -37,7 +37,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
 - [x] Complete Batch E PR 4.3 foundation slice (session inventory metadata + explicit token revocation controls).
 - [x] Complete Batch H PR 11.1 foundation slice (`sl ai provision-email` command surface with dry-run/live execute and artifact trail).
-- [ ] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
+- [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
+- [ ] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -266,3 +267,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - PR 11.1 foundation slice completion:
     - #52 merged (`feat(ai): phase 11.1 AIdenID provisioning command surface`).
     - Added `ai provision-email` dry-run/live execute flow with deterministic request/response artifacts.
+  - PR 9.1 extension slice completion:
+    - #53 merged (`feat(review): phase 9.1 deterministic local scan command`).
+    - Added `review scan --mode full|diff` deterministic local review scan flow with reproducible report artifacts.

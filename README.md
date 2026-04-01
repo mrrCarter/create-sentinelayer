@@ -154,17 +154,24 @@ By default, watch output is persisted to:
 - `.sentinelayer/observability/runtime-watch/<run-id>/events-<timestamp>.ndjson`
 - `.sentinelayer/observability/runtime-watch/<run-id>/summary-<timestamp>.json`
 
-## Deterministic review scan (Phase 9 extension slice)
+## Deterministic review pipeline (Phase 9.2 foundation slice)
 
-You can run deterministic local review scans in full-repo or diff-scoped mode:
+The default `review` command now runs a layered deterministic pipeline:
 
-- `sl review scan --mode full`
-- `sl review scan --mode diff`
+- `sl review` (full workspace mode)
+- `sl review --diff` (staged + unstaged + untracked git changes)
+- `sl review --staged` (staged changes only)
 
-`diff` mode scopes to staged/unstaged/untracked git changes. Reports are written to:
+Each run writes reproducible artifacts to:
 
-- `.sentinelayer/reports/review-scan-full-<timestamp>.md`
-- `.sentinelayer/reports/review-scan-diff-<timestamp>.md`
+- `.sentinelayer/reviews/<run-id>/REVIEW_DETERMINISTIC.md`
+- `.sentinelayer/reviews/<run-id>/REVIEW_DETERMINISTIC.json`
+- `.sentinelayer/reviews/<run-id>/checks/*.log` (static check output)
+
+For compatibility, lightweight scan mode remains available:
+
+- `sl review scan --mode full|diff|staged`
+- `.sentinelayer/reports/review-scan-<mode>-<timestamp>.md`
 
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
@@ -435,7 +442,8 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
 - `create-sentinelayer plugin init|validate|list` manages plugin extension manifests
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
-- `create-sentinelayer review scan --mode full|diff` runs deterministic local review scans with report artifacts
+- `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
+- `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 
