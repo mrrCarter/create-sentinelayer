@@ -142,6 +142,16 @@ Commands:
 - `create-sentinelayer config set defaultModelProvider openai --scope project`
 - `create-sentinelayer config edit --scope project`
 
+## Codebase ingest (PR 1.1 slice)
+
+Run deterministic mapping and emit `CODEBASE_INGEST.json`:
+
+- `create-sentinelayer ingest map --path .`
+- `create-sentinelayer ingest map --path . --json`
+- `create-sentinelayer ingest map --path . --output-file artifacts/CODEBASE_INGEST.json`
+
+The ingest artifact includes language/LOC breakdown, framework hints, entry points, risk-surface hints, and a bounded file index to support deterministic handoff context.
+
 ## Requirements
 
 - Node `>=18.17`

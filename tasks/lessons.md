@@ -23,3 +23,6 @@
 - Place canonical provisioning semantics in AIdenID and expose them in Sentinelayer via MCP adapter/registry contracts; avoid duplicating identity business logic in Sentinelayer runtime.
 - Treat autonomous error remediation as an event-driven control plane (ingest -> route -> assign -> execute -> verify -> close) with explicit budget and kill-switch primitives, not as a UI-only streaming feature.
 - Jira integration should be lifecycle-native (ticket create + plan comment + status transitions + closure evidence), not only export/sync snapshots.
+- During multi-PR autonomous runs, cut a fresh feature branch before each PR scope; committing directly on `main` causes avoidable local divergence even when GitHub squash-merge succeeds.
+- When upgrading deterministic ingest summaries, preserve backward-compatible summary fields (`package scripts`) used by downstream prompts/tests before adding richer metadata.
+- Keep ingest outputs bounded (`indexedFiles.limit`) so deterministic context remains scalable and avoids artifact bloat on large repositories.
