@@ -173,6 +173,19 @@ The CLI now includes deterministic plugin manifest commands:
 - `sl plugin validate --file <manifest.json>`
 - `sl plugin list`
 
+## AIdenID CLI foundation (Phase 11 foundation slice)
+
+The CLI now includes an `sl ai` surface for AIdenID identity provisioning:
+
+- `sl ai provision-email --json` (dry-run artifact generation)
+- `sl ai provision-email --execute --api-key <key> --org-id <id> --project-id <id>` (live API call)
+
+Credential env fallbacks for live execution:
+
+- `AIDENID_API_KEY`
+- `AIDENID_ORG_ID`
+- `AIDENID_PROJECT_ID`
+
 ## Manual fallback (if auto injection is skipped)
 
 1. Set local token:
@@ -197,6 +210,7 @@ gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 - `SENTINELAYER_API_URL` (default: `https://api.sentinelayer.com`)
 - `SENTINELAYER_WEB_URL` (default: `https://sentinelayer.com`)
 - `SENTINELAYER_DISABLE_KEYRING=1` (force file-based credential storage)
+- `AIDENID_API_KEY`, `AIDENID_ORG_ID`, `AIDENID_PROJECT_ID` (used by `sl ai provision-email --execute`)
 
 ## Layered config (PR 0.2)
 
@@ -408,6 +422,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
 - `create-sentinelayer plugin init|validate|list` manages plugin extension manifests
+- `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 

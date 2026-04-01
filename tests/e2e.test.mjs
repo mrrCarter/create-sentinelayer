@@ -130,6 +130,57 @@ async function startMockApi({
   };
 }
 
+async function startAidenIdMockApi() {
+  const state = {
+    requestCount: 0,
+    lastHeaders: {},
+    lastPayload: null,
+  };
+
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.method === "POST" && req.url === "/v1/identities") {
+        state.requestCount += 1;
+        state.lastHeaders = { ...req.headers };
+        state.lastPayload = await readJsonBody(req);
+        return jsonResponse(res, 200, {
+          id: "id_123",
+          emailAddress: "scan@aidenid.com",
+          status: "ACTIVE",
+          expiresAt: "2026-05-01T00:00:00.000Z",
+          projectId: "proj_test",
+        });
+      }
+      return jsonResponse(res, 404, {
+        error: { code: "NOT_FOUND", message: "Route not found" },
+      });
+    } catch (error) {
+      return jsonResponse(res, 500, {
+        error: {
+          code: "TEST_SERVER_ERROR",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Unable to resolve AIdenID mock API address");
+  }
+
+  return {
+    apiUrl: `http://127.0.0.1:${address.port}`,
+    state,
+    async close() {
+      server.close();
+      await once(server, "close");
+    },
+  };
+}
+
 async function runCli({ cwd, env, args = [] }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
@@ -1819,6 +1870,81 @@ test("CLI plugin commands scaffold, validate, and list manifests", async () => {
     assert.equal(listPayload.plugins[0].id, "security-pack");
     assert.equal(listPayload.invalidCount, 0);
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--alias-template",
+        "nightly-scan",
+        "--tags",
+        "security,nightly",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "ai provision-email");
+    assert.equal(payload.execute, false);
+    assert.equal(Array.isArray(payload.credentialsMissing), true);
+    assert.ok(String(payload.requestPath || "").includes("aidenid"));
+
+    const requestArtifact = JSON.parse(await readFile(payload.requestPath, "utf-8"));
+    assert.equal(requestArtifact.payload.aliasTemplate, "nightly-scan");
+    assert.deepEqual(requestArtifact.payload.tags, ["security", "nightly"]);
+    assert.equal(requestArtifact.payload.ttlHours, 24);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai provision-email execute mode posts to AIdenID API with scoped headers", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "ai provision-email");
+    assert.equal(payload.execute, true);
+    assert.equal(payload.identity.id, "id_123");
+    assert.equal(payload.identity.emailAddress, "scan@aidenid.com");
+
+    assert.equal(mock.state.requestCount, 1);
+    assert.equal(mock.state.lastHeaders.authorization, "Bearer k_test");
+    assert.equal(mock.state.lastHeaders["x-org-id"], "org_test");
+    assert.equal(mock.state.lastHeaders["x-project-id"], "proj_test");
+    assert.ok(String(mock.state.lastHeaders["idempotency-key"] || "").length > 0);
+    assert.equal(mock.state.lastPayload.ttlHours, 24);
+    assert.equal(mock.state.lastPayload.policy.receiveMode, "EDGE_ACCEPT");
+  } finally {
+    await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
