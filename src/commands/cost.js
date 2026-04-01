@@ -26,6 +26,14 @@ function parseNonNegativeNumber(rawValue, field) {
   return normalized;
 }
 
+function parsePercent(rawValue, field) {
+  const normalized = Number(rawValue || 0);
+  if (!Number.isFinite(normalized) || normalized < 0 || normalized > 100) {
+    throw new Error(`${field} must be between 0 and 100.`);
+  }
+  return normalized;
+}
+
 function formatUsd(value) {
   return `$${Number(value || 0).toFixed(6)}`;
 }
@@ -41,7 +49,7 @@ function printSessionSummary(session) {
   );
   console.log(
     pc.gray(
-      `Cache(read/write)=${session.cacheReadTokens}/${session.cacheWriteTokens}, No-progress streak=${session.noProgressStreak}`
+      `Cache(read/write)=${session.cacheReadTokens}/${session.cacheWriteTokens}, RuntimeMs=${session.durationMs}, ToolCalls=${session.toolCalls}, No-progress streak=${session.noProgressStreak}`
     )
   );
 }
@@ -122,11 +130,16 @@ export function registerCostCommand(program) {
     .option("--output-tokens <n>", "Output token count", "0")
     .option("--cache-read-tokens <n>", "Cache read token count", "0")
     .option("--cache-write-tokens <n>", "Cache write token count", "0")
+    .option("--duration-ms <n>", "Invocation runtime in milliseconds", "0")
+    .option("--tool-calls <n>", "Invocation tool-call count", "0")
     .option("--cost-usd <amount>", "Optional explicit cost override in USD")
     .option("--progress-score <n>", "Progress score (<=0 increments no-progress streak)", "1")
     .option("--max-cost <usd>", "Max cost budget per session", "1")
     .option("--max-tokens <n>", "Max output token budget per session (0 = disabled)", "0")
+    .option("--max-runtime-ms <n>", "Max runtime budget per session in milliseconds (0 = disabled)", "0")
+    .option("--max-tool-calls <n>", "Max tool-call budget per session (0 = disabled)", "0")
     .option("--max-no-progress <n>", "Max consecutive no-progress events before stop", "3")
+    .option("--warn-at-percent <n>", "Warning threshold percentage for enabled budgets", "80")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -136,6 +149,8 @@ export function registerCostCommand(program) {
       const outputTokens = parseNonNegativeNumber(options.outputTokens, "outputTokens");
       const cacheReadTokens = parseNonNegativeNumber(options.cacheReadTokens, "cacheReadTokens");
       const cacheWriteTokens = parseNonNegativeNumber(options.cacheWriteTokens, "cacheWriteTokens");
+      const durationMs = parseNonNegativeNumber(options.durationMs, "durationMs");
+      const toolCalls = parseNonNegativeNumber(options.toolCalls, "toolCalls");
       const progressScore = Number(options.progressScore || 0);
 
       const costUsd =
@@ -160,6 +175,8 @@ export function registerCostCommand(program) {
           outputTokens,
           cacheReadTokens,
           cacheWriteTokens,
+          durationMs,
+          toolCalls,
           costUsd,
           progressScore,
         }
@@ -173,6 +190,8 @@ export function registerCostCommand(program) {
         outputTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
+        durationMs: 0,
+        toolCalls: 0,
         costUsd: 0,
         noProgressStreak: 0,
       };
@@ -182,6 +201,9 @@ export function registerCostCommand(program) {
         maxCostUsd: parseNonNegativeNumber(options.maxCost, "maxCost"),
         maxOutputTokens: parseNonNegativeNumber(options.maxTokens, "maxTokens"),
         maxNoProgress: parseNonNegativeNumber(options.maxNoProgress, "maxNoProgress"),
+        maxRuntimeMs: parseNonNegativeNumber(options.maxRuntimeMs, "maxRuntimeMs"),
+        maxToolCalls: parseNonNegativeNumber(options.maxToolCalls, "maxToolCalls"),
+        warningThresholdPercent: parsePercent(options.warnAtPercent, "warnAtPercent"),
       });
 
       const usageTelemetry = await appendRunEvent(
@@ -198,9 +220,9 @@ export function registerCostCommand(program) {
             outputTokens,
             cacheReadTokens,
             cacheWriteTokens,
+            durationMs,
+            toolCalls,
             costUsd,
-            durationMs: 0,
-            toolCalls: 0,
           },
           metadata: {
             sourceCommand: "cost record",
@@ -228,8 +250,8 @@ export function registerCostCommand(program) {
               cacheReadTokens: sessionSummary.cacheReadTokens,
               cacheWriteTokens: sessionSummary.cacheWriteTokens,
               costUsd: sessionSummary.costUsd,
-              durationMs: 0,
-              toolCalls: 0,
+              durationMs: sessionSummary.durationMs,
+              toolCalls: sessionSummary.toolCalls,
             },
             stop: {
               stopClass: deriveStopClassFromBudget(budget),
@@ -271,6 +293,11 @@ export function registerCostCommand(program) {
           console.log(pc.red("Budget guardrail triggered:"));
           for (const reason of budget.reasons) {
             console.log(`- ${reason.code}: ${reason.message}`);
+          }
+        } else if (budget.warnings.length > 0) {
+          console.log(pc.yellow("Budget warning threshold reached:"));
+          for (const warning of budget.warnings) {
+            console.log(`- ${warning.code}: ${warning.message}`);
           }
         } else {
           console.log(pc.green("Budget status: within limits."));

@@ -227,7 +227,15 @@ Budget controls in `cost record`:
 
 - `--max-cost <usd>` (default `1`)
 - `--max-tokens <count>` (default `0`, disabled)
+- `--max-runtime-ms <n>` (default `0`, disabled)
+- `--max-tool-calls <n>` (default `0`, disabled)
 - `--max-no-progress <count>` diminishing-returns guard (default `3`)
+- `--warn-at-percent <n>` near-limit warning threshold (default `80`)
+
+Usage counters tracked per invocation/session:
+
+- `--duration-ms <n>`
+- `--tool-calls <n>`
 
 Each `cost record` call now emits observability events to:
 

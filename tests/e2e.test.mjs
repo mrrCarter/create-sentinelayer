@@ -1315,6 +1315,10 @@ test("CLI cost record and cost show maintain deterministic per-project ledger", 
         "1000",
         "--output-tokens",
         "500",
+        "--duration-ms",
+        "120",
+        "--tool-calls",
+        "2",
         "--progress-score",
         "1",
         "--json",
@@ -1344,6 +1348,8 @@ test("CLI cost record and cost show maintain deterministic per-project ledger", 
     assert.equal(showPayload.summary.sessionCount, 1);
     assert.equal(showPayload.summary.invocationCount, 1);
     assert.equal(showPayload.summary.sessions[0].sessionId, "session-1");
+    assert.equal(showPayload.summary.sessions[0].durationMs, 120);
+    assert.equal(showPayload.summary.sessions[0].toolCalls, 2);
 
     const telemetryShowResult = await runCli({
       cwd: tempRoot,
@@ -1355,6 +1361,8 @@ test("CLI cost record and cost show maintain deterministic per-project ledger", 
     assert.equal(telemetryShowPayload.command, "telemetry show");
     assert.equal(telemetryShowPayload.summary.eventCount, 1);
     assert.equal(telemetryShowPayload.summary.eventTypeCounts.usage, 1);
+    assert.equal(telemetryShowPayload.summary.usageTotals.durationMs, 120);
+    assert.equal(telemetryShowPayload.summary.usageTotals.toolCalls, 2);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1446,6 +1454,112 @@ test("CLI cost record enforces max-cost and max-no-progress guardrails", async (
     assert.equal(telemetryShowPayload.summary.stopClassCounts.DIMINISHING_RETURNS, 1);
     assert.equal(telemetryShowPayload.summary.reasonCodeCounts.MAX_COST_EXCEEDED, 1);
     assert.equal(telemetryShowPayload.summary.reasonCodeCounts.DIMINISHING_RETURNS, 1);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI cost record enforces runtime/tool-call hard stops and warning thresholds", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cost-cmd-"));
+  try {
+    const warningRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "cost",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-runtime",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5.3-codex",
+        "--input-tokens",
+        "10",
+        "--output-tokens",
+        "10",
+        "--duration-ms",
+        "850",
+        "--tool-calls",
+        "8",
+        "--max-runtime-ms",
+        "1000",
+        "--max-tool-calls",
+        "10",
+        "--warn-at-percent",
+        "80",
+        "--json",
+      ],
+    });
+    assert.equal(warningRun.code, 0, warningRun.stderr || warningRun.stdout);
+    const warningPayload = JSON.parse(String(warningRun.stdout || "").trim());
+    assert.equal(
+      warningPayload.budget.warnings.some((warning) => warning.code === "RUNTIME_MS_NEAR_LIMIT"),
+      true
+    );
+    assert.equal(
+      warningPayload.budget.warnings.some((warning) => warning.code === "TOOL_CALLS_NEAR_LIMIT"),
+      true
+    );
+    assert.equal(warningPayload.budget.blocking, false);
+
+    const blockingRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "cost",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-runtime",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5.3-codex",
+        "--input-tokens",
+        "10",
+        "--output-tokens",
+        "10",
+        "--duration-ms",
+        "200",
+        "--tool-calls",
+        "3",
+        "--max-runtime-ms",
+        "1000",
+        "--max-tool-calls",
+        "10",
+        "--warn-at-percent",
+        "80",
+        "--json",
+      ],
+    });
+    assert.equal(blockingRun.code, 2);
+    const blockingPayload = JSON.parse(String(blockingRun.stdout || "").trim());
+    assert.equal(
+      blockingPayload.budget.reasons.some((reason) => reason.code === "MAX_RUNTIME_MS_EXCEEDED"),
+      true
+    );
+    assert.equal(
+      blockingPayload.budget.reasons.some((reason) => reason.code === "MAX_TOOL_CALLS_EXCEEDED"),
+      true
+    );
+
+    const telemetryShowResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["telemetry", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(telemetryShowResult.code, 0, telemetryShowResult.stderr || telemetryShowResult.stdout);
+    const telemetryShowPayload = JSON.parse(String(telemetryShowResult.stdout || "").trim());
+    assert.equal(telemetryShowPayload.summary.eventCount, 3);
+    assert.equal(telemetryShowPayload.summary.eventTypeCounts.usage, 2);
+    assert.equal(telemetryShowPayload.summary.eventTypeCounts.run_stop, 1);
+    assert.equal(telemetryShowPayload.summary.stopClassCounts.MAX_RUNTIME_MS_EXCEEDED, 1);
+    assert.equal(telemetryShowPayload.summary.reasonCodeCounts.MAX_RUNTIME_MS_EXCEEDED, 1);
+    assert.equal(telemetryShowPayload.summary.reasonCodeCounts.MAX_TOOL_CALLS_EXCEEDED, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
