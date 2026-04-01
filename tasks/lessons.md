@@ -32,3 +32,4 @@
 - For CLI package repos, use service-repo parity selectively: copy Omar review/watchdog patterns, but keep ECS/migration/worker deploy pipelines in backend service repos.
 - Spec-derived workflow generation should stay deterministic but always allow explicit operator overrides (`--playwright-mode`, `--has-e2e-tests`) to avoid hidden inference errors.
 - Add a dedicated drift validator for generated CI artifacts and make it fail closed (non-zero exit) so config regressions are caught before merge.
+- For offline planning artifacts, keep `SPEC.md` as the single source of truth and derive both human-readable guides and tracker exports from the same parsed phase graph.

@@ -12,6 +12,7 @@ import { registerIngestCommand } from "./commands/ingest.js";
 import { registerSpecCommand } from "./commands/spec.js";
 import { registerPromptCommand } from "./commands/prompt.js";
 import { registerScanCommand } from "./commands/scan.js";
+import { registerGuideCommand } from "./commands/guide.js";
 
 const COMMAND_SET = new Set([
   "init",
@@ -24,6 +25,7 @@ const COMMAND_SET = new Set([
   "spec",
   "prompt",
   "scan",
+  "guide",
 ]);
 
 function shouldBypassCommander(rawArgs) {
@@ -72,6 +74,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
   registerSpecCommand(program);
   registerPromptCommand(program);
   registerScanCommand(program);
+  registerGuideCommand(program);
 
   return program;
 }
