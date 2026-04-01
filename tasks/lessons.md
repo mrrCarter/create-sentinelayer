@@ -27,3 +27,4 @@
 - When upgrading deterministic ingest summaries, preserve backward-compatible summary fields (`package scripts`) used by downstream prompts/tests before adding richer metadata.
 - Keep ingest outputs bounded (`indexedFiles.limit`) so deterministic context remains scalable and avoids artifact bloat on large repositories.
 - Reuse one deterministic ingest engine across commands (`ingest`, `spec`, existing-repo scaffolding) to avoid drift between generated context artifacts and prompt payload summaries.
+- Keep prompt generation decoupled from providers and API calls; derive prompts purely from local spec artifacts so CI and offline flows stay deterministic.

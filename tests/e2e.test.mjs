@@ -985,6 +985,45 @@ test("CLI spec commands expose templates and generate SPEC.md offline", async ()
   }
 });
 
+test("CLI prompt commands generate and preview agent-targeted prompts from spec", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-prompt-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      "# SPEC - Prompt Demo\\n\\n## Goal\\nBuild deterministic prompt generation.\\n",
+      "utf-8"
+    );
+
+    const generateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["prompt", "generate", "--path", tempRoot, "--agent", "codex", "--json"],
+    });
+    assert.equal(generateResult.code, 0, generateResult.stderr || generateResult.stdout);
+    const generatePayload = JSON.parse(String(generateResult.stdout || "").trim());
+    assert.equal(generatePayload.command, "prompt generate");
+    assert.match(String(generatePayload.outputPath || ""), /[\\/]PROMPT_codex\.md$/);
+
+    const promptText = await readFile(generatePayload.outputPath, "utf-8");
+    assert.match(promptText, /Agent target: codex/);
+    assert.match(promptText, /# SPEC - Prompt Demo/);
+
+    const previewResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["prompt", "preview", "--path", tempRoot, "--agent", "claude", "--max-lines", "8", "--json"],
+    });
+    assert.equal(previewResult.code, 0, previewResult.stderr || previewResult.stdout);
+    const previewPayload = JSON.parse(String(previewResult.stdout || "").trim());
+    assert.equal(previewPayload.command, "prompt preview");
+    assert.equal(previewPayload.agent, "claude");
+    assert.equal(previewPayload.lineCount, 8);
+    assert.match(String(previewPayload.preview || ""), /Claude Code execution prompt/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {

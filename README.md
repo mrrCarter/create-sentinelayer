@@ -162,6 +162,15 @@ Generate a local `SPEC.md` without calling the API:
 
 The generator uses deterministic ingest context plus template architecture/security checklists.
 
+## Prompt generation (PR 1.3 slice)
+
+Generate execution prompts directly from `SPEC.md`:
+
+- `create-sentinelayer prompt generate --path . --agent codex`
+- `create-sentinelayer prompt preview --path . --agent claude --max-lines 40`
+
+Supported targets: `claude`, `cursor`, `copilot`, `codex`, `generic`.
+
 ## Requirements
 
 - Node `>=18.17`

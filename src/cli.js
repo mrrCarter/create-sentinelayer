@@ -10,8 +10,19 @@ import { registerApplyCommand } from "./commands/apply.js";
 import { registerConfigCommand } from "./commands/config.js";
 import { registerIngestCommand } from "./commands/ingest.js";
 import { registerSpecCommand } from "./commands/spec.js";
+import { registerPromptCommand } from "./commands/prompt.js";
 
-const COMMAND_SET = new Set(["init", "omargate", "audit", "persona", "apply", "config", "ingest", "spec"]);
+const COMMAND_SET = new Set([
+  "init",
+  "omargate",
+  "audit",
+  "persona",
+  "apply",
+  "config",
+  "ingest",
+  "spec",
+  "prompt",
+]);
 
 function shouldBypassCommander(rawArgs) {
   if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
@@ -57,6 +68,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
   registerConfigCommand(program);
   registerIngestCommand(program);
   registerSpecCommand(program);
+  registerPromptCommand(program);
 
   return program;
 }
