@@ -138,6 +138,7 @@ You can stream runtime run events directly from the CLI:
 
 - `sl watch run-events --run-id <run-id>`
 - `sl watch runtime --run-id <run-id>` (alias)
+- `sl watch history` (list persisted watch summaries)
 
 Options:
 

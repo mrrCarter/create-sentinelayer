@@ -47,3 +47,4 @@
 - Keyring storage must be optional and fail-safe; provide deterministic file fallback and an explicit kill switch (`SENTINELAYER_DISABLE_KEYRING=1`) for CI/headless environments.
 - Runtime watch commands need durable artifacts (`events.ndjson` + summary json) so autonomous agents can stream live output and still hand off reproducible traces after the terminal session ends.
 - Session auto-rotation is safest as "rotate on use near expiry" before introducing daemonized background refresh loops, because it keeps failure modes local and observable.
+- Session history should be sourced from local watch artifacts first (`watch history`) so operators and agents can reconstruct run timelines even when API access is limited.

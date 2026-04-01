@@ -139,6 +139,110 @@ function formatApiError(error) {
   return `${error.message} [${error.code}] status=${error.status}${requestId}`;
 }
 
+function normalizeHistoryEntry(raw = {}, filePath = "") {
+  return {
+    command: String(raw.command || "watch run-events").trim() || "watch run-events",
+    runId: String(raw.runId || "").trim(),
+    apiUrl: String(raw.apiUrl || "").trim(),
+    tokenSource: String(raw.tokenSource || "").trim(),
+    status: String(raw.status || "unknown").trim().toLowerCase(),
+    terminal: Boolean(raw.terminal),
+    stopReason: String(raw.stopReason || "unknown").trim(),
+    startedAt: String(raw.startedAt || "").trim(),
+    endedAt: String(raw.endedAt || "").trim(),
+    durationMs: Number(raw.durationMs || 0),
+    eventCount: Number(raw.eventCount || 0),
+    lastEventId: raw.lastEventId ? String(raw.lastEventId) : null,
+    summaryPath: filePath,
+    eventsPath:
+      raw.artifacts && typeof raw.artifacts === "object" && raw.artifacts.eventsPath
+        ? String(raw.artifacts.eventsPath)
+        : null,
+    watchDir:
+      raw.artifacts && typeof raw.artifacts === "object" && raw.artifacts.watchDir
+        ? String(raw.artifacts.watchDir)
+        : null,
+  };
+}
+
+function sortHistoryEntries(entries = []) {
+  return [...entries].sort((left, right) => {
+    const leftEpoch = Date.parse(String(left.endedAt || left.startedAt || "")) || 0;
+    const rightEpoch = Date.parse(String(right.endedAt || right.startedAt || "")) || 0;
+    return rightEpoch - leftEpoch;
+  });
+}
+
+async function collectWatchHistory({
+  targetPath,
+  outputDir,
+  runId = "",
+  limit = 20,
+} = {}) {
+  const outputRoot = await resolveOutputRoot({
+    cwd: targetPath,
+    outputDirOverride: outputDir,
+    env: process.env,
+  });
+  const baseDir = path.join(outputRoot, "observability", "runtime-watch");
+  const normalizedRunId = String(runId || "").trim();
+
+  let runDirs = [];
+  if (normalizedRunId) {
+    runDirs = [sanitizePathSegment(normalizedRunId)];
+  } else {
+    try {
+      const entries = await fsp.readdir(baseDir, { withFileTypes: true });
+      runDirs = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "ENOENT") {
+        return {
+          outputRoot,
+          baseDir,
+          entries: [],
+        };
+      }
+      throw error;
+    }
+  }
+
+  const history = [];
+  for (const runDirName of runDirs) {
+    const runDirPath = path.join(baseDir, runDirName);
+    let files = [];
+    try {
+      files = await fsp.readdir(runDirPath, { withFileTypes: true });
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+    const summaryFiles = files
+      .filter((entry) => entry.isFile() && entry.name.startsWith("summary-") && entry.name.endsWith(".json"))
+      .map((entry) => path.join(runDirPath, entry.name));
+
+    for (const filePath of summaryFiles) {
+      try {
+        const rawText = await fsp.readFile(filePath, "utf-8");
+        const parsed = JSON.parse(rawText);
+        history.push(normalizeHistoryEntry(parsed, filePath));
+      } catch {
+        // Skip malformed summary artifacts so one corrupt file does not block history listing.
+      }
+    }
+  }
+
+  const sorted = sortHistoryEntries(history);
+  return {
+    outputRoot,
+    baseDir,
+    entries: sorted.slice(0, Math.max(1, Math.round(Number(limit || 20)))),
+  };
+}
+
 async function resolveWatchArtifacts({
   targetPath,
   outputDir,
@@ -172,6 +276,54 @@ export function registerWatchCommand(program) {
   const watch = program
     .command("watch")
     .description("Stream runtime execution events and persist reproducible watch artifacts");
+
+  watch
+    .command("history")
+    .description("List persisted runtime watch summaries from local observability artifacts")
+    .option("--run-id <id>", "Filter by runtime run id")
+    .option("--path <path>", "Workspace path for config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--limit <n>", "Maximum summaries to return", "20")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const limit = parsePositiveNumber(options.limit, "limit", 20);
+      const history = await collectWatchHistory({
+        targetPath,
+        outputDir: options.outputDir,
+        runId: options.runId,
+        limit,
+      });
+
+      const payload = {
+        command: "watch history",
+        baseDir: history.baseDir,
+        entryCount: history.entries.length,
+        entries: history.entries,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("Runtime watch history"));
+      console.log(pc.gray(`Base dir: ${history.baseDir}`));
+      if (!history.entries.length) {
+        console.log(pc.gray("(no watch artifacts found)"));
+        return;
+      }
+
+      for (const entry of history.entries) {
+        console.log(
+          `${entry.runId || "unknown-run"} | status=${entry.status} | events=${entry.eventCount} | stop=${entry.stopReason} | ended=${entry.endedAt || "unknown"}`
+        );
+        if (entry.summaryPath) {
+          console.log(pc.gray(`  summary: ${entry.summaryPath}`));
+        }
+      }
+    });
 
   watch
     .command("run-events")

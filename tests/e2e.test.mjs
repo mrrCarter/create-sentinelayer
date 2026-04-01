@@ -1643,6 +1643,92 @@ test("CLI telemetry record/show writes structured run events and blocking stop c
   }
 });
 
+test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
+  try {
+    const run1Dir = path.join(
+      tempRoot,
+      ".sentinelayer",
+      "observability",
+      "runtime-watch",
+      "run-1"
+    );
+    const run2Dir = path.join(
+      tempRoot,
+      ".sentinelayer",
+      "observability",
+      "runtime-watch",
+      "run-2"
+    );
+    await mkdir(run1Dir, { recursive: true });
+    await mkdir(run2Dir, { recursive: true });
+
+    await writeFile(
+      path.join(run1Dir, "summary-2026-04-01T00-00-00-000Z.json"),
+      `${JSON.stringify({
+        command: "watch run-events",
+        runId: "run-1",
+        status: "completed",
+        stopReason: "terminal",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        endedAt: "2026-04-01T00:00:10.000Z",
+        durationMs: 10_000,
+        eventCount: 7,
+        artifacts: {
+          watchDir: run1Dir,
+          summaryPath: path.join(run1Dir, "summary-2026-04-01T00-00-00-000Z.json"),
+          eventsPath: path.join(run1Dir, "events-2026-04-01T00-00-00-000Z.ndjson"),
+        },
+      })}\n`,
+      "utf-8"
+    );
+
+    await writeFile(
+      path.join(run2Dir, "summary-2026-04-01T01-00-00-000Z.json"),
+      `${JSON.stringify({
+        command: "watch run-events",
+        runId: "run-2",
+        status: "failed",
+        stopReason: "terminal",
+        startedAt: "2026-04-01T01:00:00.000Z",
+        endedAt: "2026-04-01T01:00:05.000Z",
+        durationMs: 5_000,
+        eventCount: 3,
+        artifacts: {
+          watchDir: run2Dir,
+          summaryPath: path.join(run2Dir, "summary-2026-04-01T01-00-00-000Z.json"),
+          eventsPath: path.join(run2Dir, "events-2026-04-01T01-00-00-000Z.ndjson"),
+        },
+      })}\n`,
+      "utf-8"
+    );
+
+    const listResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["watch", "history", "--path", tempRoot, "--json"],
+    });
+    assert.equal(listResult.code, 0, listResult.stderr || listResult.stdout);
+    const payload = JSON.parse(String(listResult.stdout || "").trim());
+    assert.equal(payload.command, "watch history");
+    assert.equal(payload.entryCount, 2);
+    assert.equal(payload.entries[0].runId, "run-2");
+    assert.equal(payload.entries[1].runId, "run-1");
+
+    const filterResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["watch", "history", "--path", tempRoot, "--run-id", "run-1", "--json"],
+    });
+    assert.equal(filterResult.code, 0, filterResult.stderr || filterResult.stdout);
+    const filtered = JSON.parse(String(filterResult.stdout || "").trim());
+    assert.equal(filtered.entryCount, 1);
+    assert.equal(filtered.entries[0].runId, "run-1");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
