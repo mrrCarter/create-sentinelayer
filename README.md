@@ -162,6 +162,21 @@ Generate a local `SPEC.md` without calling the API:
 
 The generator uses deterministic ingest context plus template architecture/security checklists.
 
+## AI-enhanced spec generation (PR 3.3 slice)
+
+Generate a deterministic base spec, then optionally refine it with a provider model:
+
+- `create-sentinelayer spec generate --path . --template api-service --description "Harden auth and release workflows" --ai`
+- `create-sentinelayer spec generate --path . --ai --provider openai --model gpt-5.3-codex --max-cost 1 --warn-at-percent 80`
+
+`--ai` mode behavior:
+
+- deterministic `SPEC.md` draft is always generated first
+- AI refinement prompt includes ingest summary + template context + base markdown
+- usage is recorded in `.sentinelayer/cost-history.json`
+- telemetry usage/stop events are recorded in `.sentinelayer/observability/run-events.jsonl`
+- budget governors apply (`--max-cost`, `--max-tokens`, `--max-runtime-ms`, `--max-tool-calls`, `--max-no-progress`)
+
 ## Prompt generation (PR 1.3 slice)
 
 Generate execution prompts directly from `SPEC.md`:

@@ -26,7 +26,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch C PR 3.1 (multi-provider API client contract + retries + streaming).
 - [x] Complete Batch C PR 3.2 (cost tracking + token budget stop governors + `cost` CLI command).
 - [x] Complete Batch C PR 3.5 (CLI observability contract: run events + usage ledger + stop-class schema).
-- [ ] Complete Batch C PR 3.6 (deterministic stop governors: token/cost/runtime/tool-call hard stops + warnings + terminal stop reasons).
+- [x] Complete Batch C PR 3.6 (deterministic stop governors: token/cost/runtime/tool-call hard stops + warnings + terminal stop reasons).
+- [ ] Complete Batch D PR 3.3 (AI-enhanced spec generation with cost+telemetry governance).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -182,6 +183,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - #40 merged (`feat(ai): multi-provider API client contract + retry/streaming`).
     - #41 merged (`feat(cost): add cost tracking and budget stop governors (PR 3.2)`).
     - #42 merged (`feat(telemetry): add CLI run-event observability contract (PR 3.5)`).
+    - #43 merged (`feat(cost): add deterministic runtime/tool governors with warnings (PR 3.6)`).
   - PR 1.4 (`scan init` + `scan validate`) local evidence (branch `roadmap/pr-1-4-omar-config-generator`):
     - `npm run verify` (pass, 28/28 e2e)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
@@ -208,5 +210,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
   - PR 3.6 (deterministic stop governors) local evidence (branch `roadmap/pr-3-6-deterministic-stop-governors`):
     - `npm run verify` (pass, e2e `34/34`; unit coverage statements `89.63%`, branches `71.02%`, functions `97.72%`, lines `89.63%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
+  - PR 3.3 (AI-enhanced spec generation) local evidence (branch `roadmap/pr-3-3-ai-enhanced-spec-generation`):
+    - `npm run verify` (pass, e2e `34/34`; unit coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
