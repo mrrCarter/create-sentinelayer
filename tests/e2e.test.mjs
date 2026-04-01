@@ -731,10 +731,11 @@ test("CLI flags: --help and --version return successfully", async () => {
   }
 });
 
-test("Package metadata exposes sentinel binary alias", async () => {
+test("Package metadata exposes sentinel and sl binary aliases", async () => {
   const pkg = JSON.parse(await readFile(path.resolve(__dirname, "..", "package.json"), "utf-8"));
   assert.equal(pkg.bin["create-sentinelayer"], "bin/create-sentinelayer.js");
   assert.equal(pkg.bin.sentinel, "bin/create-sentinelayer.js");
+  assert.equal(pkg.bin.sl, "bin/sl.js");
 });
 
 test("CLI local command: /omargate deep writes report and fails on P1 findings", async () => {

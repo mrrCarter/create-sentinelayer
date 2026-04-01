@@ -28,7 +28,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch C PR 3.5 (CLI observability contract: run events + usage ledger + stop-class schema).
 - [x] Complete Batch C PR 3.6 (deterministic stop governors: token/cost/runtime/tool-call hard stops + warnings + terminal stop reasons).
 - [x] Complete Batch D PR 3.3 (AI-enhanced spec generation with cost+telemetry governance).
-- [ ] Complete Batch D PR 3.4 (AI pre-scan triage command with governed cost/telemetry outputs).
+- [x] Complete Batch D PR 3.4 (AI pre-scan triage command with governed cost/telemetry outputs).
+- [x] Complete Batch E PR 4.1 foundation slice (persistent `sl auth` sessions, keyring/file token store, near-expiry rotation).
+- [x] Complete Batch F PR 9.0 foundation slice (`sl watch run-events` runtime stream + reproducible watch artifacts).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -76,7 +78,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 3.4 AI pre-scan.
 
 ### Batch E - State, Extensibility, Integrations (P2)
-- PR 4.1/4.2/4.3 sessions + history + spec binding.
+- PR 4.1 sessions/auth persistence foundation (`sl auth login|status|logout`, long-lived API token flow).
+- PR 4.2 runtime history/watch bindings (session-aware event watch + run artifact trail).
+- PR 4.3 spec binding/version linkage.
 - PR 5.1/5.2/5.3 plugin + template + policy packs.
 - PR 6.1/6.2 MCP server mode + VS Code bridge.
 
@@ -96,6 +100,16 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch H - Identity + QA Swarm (P1/P2)
 - PR 11.1-11.6 AIdenID identity engine.
 - PR 12.1-12.7 QA swarm runtime, DSL, dashboard, security mode.
+
+## Requested Phase Expansion Plan (2026-04-01 update)
+- [ ] Phase 2: add low-latency interactive chat mode with streaming progress UX (AWS/GH CLI style) while preserving deterministic command mode.
+- [ ] Phase 4: complete persistent session lifecycle (auto-rotate, session listing/resume metadata, revocation controls).
+- [ ] Phase 5: define plugin/template/policy extension API boundaries and load-order governance.
+- [ ] Phase 6: implement MCP tool registry schema + adapter contracts (including AIdenID provisioning adapter).
+- [ ] Phase 9: expand watch + review into full OMAR local reviewer pipeline with deterministic diff/full scan modes.
+- [ ] Phase 10: add multi-agent audit swarm orchestration and reconciliation report packaging.
+- [ ] Phase 11: expose AIdenID operations through CLI command surface (including `sl ai ...` alias plan and policy gating).
+- [ ] Phase 12: implement governed QA swarm runtime/dashboard with explicit token/time/tool/path/network budgets and kill/quarantine controls.
 
 ### Batch I - Stretch / Deferred (P3)
 - PR 7.1 interactive AI refinement.
@@ -223,3 +237,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `npm run verify` (pass, e2e `34/34`; unit coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
+  - PR 4.1 + 9.0 foundation slice (persistent auth + runtime watch streaming) local evidence:
+    - `npm run verify` (pass, e2e `34/34`; unit tests `20/20`; coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
+    - Added `sl` binary alias and `auth` command set (`login`, `status`, `logout`) with API-token-backed persistent sessions.
+    - Added `watch run-events` (`watch runtime` alias) with polling stream + reproducible artifacts under `.sentinelayer/observability/runtime-watch/`.

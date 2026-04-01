@@ -4,6 +4,12 @@
 
 Scaffolds Sentinelayer spec/prompt/guide artifacts and bootstraps `SENTINELAYER_TOKEN` without manual copy/paste, with optional `BYOK` mode.
 
+CLI binaries:
+
+- `create-sentinelayer` (primary)
+- `sentinel` (legacy alias)
+- `sl` (short alias)
+
 ## What it does
 
 - runs an interactive project interview
@@ -103,6 +109,48 @@ When `Clone this repo locally and build directly into it now?` is enabled:
 - API fallback secret name is pinned to `SENTINELAYER_TOKEN` if server response is invalid
 - in BYOK mode, no Sentinelayer token is created or injected
 
+## Persistent CLI auth sessions (Phase 4 foundation slice)
+
+For long-running agent/operator workflows, the CLI now supports persistent auth sessions:
+
+- `sl auth login --api-url https://api.sentinelayer.com --skip-browser-open`
+- `sl auth status`
+- `sl auth logout`
+
+Behavior:
+
+- login uses browser approval (`/api/v1/auth/cli/sessions/*`)
+- after approval, CLI mints a long-lived API token (`/api/v1/auth/api-tokens`)
+- session metadata is stored at `~/.sentinelayer/credentials.json`
+- token storage uses OS keyring when `keytar` is available; file fallback is used otherwise
+- near-expiry token rotation is automatic on command use for stored sessions
+- env/config tokens still take precedence:
+  - `SENTINELAYER_TOKEN`
+  - `.sentinelayer.yml` `sentinelayerToken`
+
+Opt-out of keyring usage:
+
+- `SENTINELAYER_DISABLE_KEYRING=1`
+
+## Runtime watch streaming (Phase 9 foundation slice)
+
+You can stream runtime run events directly from the CLI:
+
+- `sl watch run-events --run-id <run-id>`
+- `sl watch runtime --run-id <run-id>` (alias)
+
+Options:
+
+- `--poll-seconds <seconds>` polling interval
+- `--max-idle-seconds <seconds>` optional idle timeout
+- `--output-dir <path>` artifact root override
+- `--json` machine-readable event stream + summary
+
+By default, watch output is persisted to:
+
+- `.sentinelayer/observability/runtime-watch/<run-id>/events-<timestamp>.ndjson`
+- `.sentinelayer/observability/runtime-watch/<run-id>/summary-<timestamp>.json`
+
 ## Manual fallback (if auto injection is skipped)
 
 1. Set local token:
@@ -126,6 +174,7 @@ gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 
 - `SENTINELAYER_API_URL` (default: `https://api.sentinelayer.com`)
 - `SENTINELAYER_WEB_URL` (default: `https://sentinelayer.com`)
+- `SENTINELAYER_DISABLE_KEYRING=1` (force file-based credential storage)
 
 ## Layered config (PR 0.2)
 
@@ -332,6 +381,8 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer audit --path <repo>` runs local readiness + scan audit and writes `.sentinelayer/reports/audit-*.md` (non-zero exit if blocking findings exist)
 - `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
+- `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
+- `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 
