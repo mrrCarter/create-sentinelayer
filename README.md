@@ -212,6 +212,23 @@ Export phases as issue-ready payloads:
 - retry + exponential backoff on retryable statuses (`429`, `5xx`)
 - non-stream and streaming invocation APIs with provider-normalized text output
 
+## Cost tracking and budgets (PR 3.2 slice)
+
+The CLI now includes deterministic cost-ledger commands:
+
+- `create-sentinelayer cost show --path .`
+- `create-sentinelayer cost record --path . --provider openai --model gpt-5.3-codex --input-tokens 1000 --output-tokens 500`
+
+Ledger path:
+
+- `.sentinelayer/cost-history.json` (or configured output root)
+
+Budget controls in `cost record`:
+
+- `--max-cost <usd>` (default `1`)
+- `--max-tokens <count>` (default `0`, disabled)
+- `--max-no-progress <count>` diminishing-returns guard (default `3`)
+
 ## Requirements
 
 - Node `>=18.17`

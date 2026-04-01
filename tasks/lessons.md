@@ -35,3 +35,4 @@
 - For offline planning artifacts, keep `SPEC.md` as the single source of truth and derive both human-readable guides and tracker exports from the same parsed phase graph.
 - Coverage gates are only stable when thresholds align with branch-path tests; add explicit negative-path unit tests (error branches, invalid inputs) before raising branch thresholds.
 - For multi-provider integrations, keep transport logic dependency-injected (`fetchImpl`) so retry/streaming behavior is unit-testable without live API keys.
+- Budget governors are easier to operationalize when every stop condition emits deterministic reason codes (`MAX_COST_EXCEEDED`, `MAX_OUTPUT_TOKENS_EXCEEDED`, `DIMINISHING_RETURNS`).
