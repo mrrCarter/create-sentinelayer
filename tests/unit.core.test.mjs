@@ -297,6 +297,8 @@ test("Unit: cost tracker estimates, aggregates, and enforces budget deterministi
   const pricing = listKnownModelPricing();
   assert.equal(Array.isArray(pricing), true);
   assert.equal(pricing.some((entry) => entry.modelId === "gpt-5.3-codex"), true);
+  assert.equal(pricing.some((entry) => entry.modelId === "gpt-4o"), true);
+  assert.equal(pricing.some((entry) => entry.modelId === "claude-sonnet-4"), true);
 
   assert.throws(
     () =>

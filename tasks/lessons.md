@@ -38,3 +38,4 @@
 - Budget governors are easier to operationalize when every stop condition emits deterministic reason codes (`MAX_COST_EXCEEDED`, `MAX_OUTPUT_TOKENS_EXCEEDED`, `DIMINISHING_RETURNS`).
 - A JSONL run-event ledger with explicit `eventType` and `stopClass` enums is a low-friction way to unify CLI observability now while staying forward-compatible with richer runtime telemetry sinks later.
 - Deterministic governors are more operator-friendly when hard-stop reasons and near-limit warnings are both first-class (`MAX_*` stop codes plus `*_NEAR_LIMIT` warning codes) and emitted from the same budget contract.
+- For AI-enhanced generation commands, keep deterministic artifacts as the first pass and layer AI refinement on top, then route usage through the same cost/telemetry governors to avoid a second ungoverned execution path.

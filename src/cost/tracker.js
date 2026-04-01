@@ -1,7 +1,15 @@
 const DEFAULT_MODEL_PRICING = Object.freeze({
+  "gpt-4o": Object.freeze({
+    inputPerMillionUsd: 2.5,
+    outputPerMillionUsd: 10.0,
+  }),
   "gpt-5.3-codex": Object.freeze({
     inputPerMillionUsd: 1.5,
     outputPerMillionUsd: 6.0,
+  }),
+  "claude-sonnet-4": Object.freeze({
+    inputPerMillionUsd: 3.0,
+    outputPerMillionUsd: 15.0,
   }),
   "claude-sonnet-4.5": Object.freeze({
     inputPerMillionUsd: 3.0,
