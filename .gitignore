@@ -4,3 +4,5 @@ node_modules/
 npm-debug.log*
 .sentinelayer/
 create-sentinelayer-*.tgz
+coverage/
+.nyc_output/

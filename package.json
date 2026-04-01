@@ -4,10 +4,12 @@
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
   "scripts": {
-    "check": "node --check bin/create-sentinelayer.js && node --check src/cli.js && node --check src/legacy-cli.js && node --check src/commands/config.js && node --check src/commands/ingest.js && node --check src/commands/spec.js && node --check src/commands/prompt.js && node --check src/commands/scan.js && node --check src/commands/guide.js && node --check src/config/service.js && node --check src/ingest/engine.js && node --check src/spec/generator.js && node --check src/spec/templates.js && node --check src/prompt/generator.js && node --check src/scan/generator.js && node --check src/guide/generator.js",
-    "test": "node --test tests/*.test.mjs",
+    "check": "node --check bin/create-sentinelayer.js && node --check src/cli.js && node --check src/legacy-cli.js && node --check src/commands/config.js && node --check src/commands/ingest.js && node --check src/commands/spec.js && node --check src/commands/prompt.js && node --check src/commands/scan.js && node --check src/commands/guide.js && node --check src/config/service.js && node --check src/ingest/engine.js && node --check src/spec/generator.js && node --check src/spec/templates.js && node --check src/prompt/generator.js && node --check src/scan/generator.js && node --check src/guide/generator.js && node --check src/cost/tracker.js",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test tests/unit*.test.mjs",
     "test:e2e": "node --test tests/e2e.test.mjs",
-    "verify": "npm run check && npm run test:e2e && npm pack --dry-run"
+    "test:coverage": "c8 node --test tests/unit*.test.mjs",
+    "verify": "npm run check && npm run test:e2e && npm run test:coverage && npm pack --dry-run"
   },
   "bin": {
     "create-sentinelayer": "bin/create-sentinelayer.js",
@@ -37,5 +39,8 @@
     "prompts": "^2.4.2",
     "yaml": "^2.8.1",
     "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "c8": "^10.1.3"
   }
 }
