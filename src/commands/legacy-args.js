@@ -12,9 +12,17 @@ function appendPathFlag(args, maybePath) {
   }
 }
 
+function appendOutputDirFlag(args, maybeOutputDir) {
+  const value = String(maybeOutputDir || "").trim();
+  if (value) {
+    args.push("--output-dir", value);
+  }
+}
+
 export function buildLegacyArgs(baseArgs, { commandOptions = {}, command } = {}) {
   const args = [...baseArgs];
   appendPathFlag(args, commandOptions.path);
+  appendOutputDirFlag(args, commandOptions.outputDir);
   if (wantsJsonOutput(commandOptions, command)) {
     args.push("--json");
   }

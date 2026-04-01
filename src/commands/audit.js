@@ -5,6 +5,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .command("audit")
     .description("Run local readiness + policy audit")
     .option("--path <path>", "Target repository path")
+    .option("--output-dir <path>", "Artifact root for report output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const legacyArgs = buildLegacyArgs(["/audit"], {

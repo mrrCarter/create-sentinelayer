@@ -10,6 +10,7 @@ export function registerPersonaCommand(program, invokeLegacy) {
     .description("Generate mode-specific orchestrator report")
     .option("--mode <mode>", "Mode: builder|reviewer|hardener", "builder")
     .option("--path <path>", "Target repository path")
+    .option("--output-dir <path>", "Artifact root for report output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const legacyArgs = buildLegacyArgs([

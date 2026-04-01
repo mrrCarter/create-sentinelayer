@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import open from "open";
 import pc from "picocolors";
 import prompts from "prompts";
+import { resolveOutputRoot } from "./config/service.js";
 
 let DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
 let DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
@@ -195,6 +196,7 @@ function printUsage() {
   console.log("  --interview-file PATH  Load interview JSON from file");
   console.log("  --skip-browser-open    Do not auto-open browser during auth");
   console.log("  --path PATH            Target path for local command mode");
+  console.log("  --output-dir PATH      Artifact root for local command reports (default .sentinelayer)");
   console.log("  --json                 Emit machine-readable JSON for local command mode");
   console.log("");
   console.log("Environment:");
@@ -861,8 +863,12 @@ async function runCredentialScan(targetPath) {
   };
 }
 
-async function writeLocalCommandReport(targetPath, prefix, body) {
-  const reportDir = path.join(targetPath, ".sentinelayer", "reports");
+async function writeLocalCommandReport(targetPath, prefix, body, { outputDir = "" } = {}) {
+  const outputRoot = await resolveOutputRoot({
+    cwd: targetPath,
+    outputDirOverride: outputDir,
+  });
+  const reportDir = path.join(outputRoot, "reports");
   await ensureDirectory(reportDir);
   const reportPath = path.join(reportDir, `${prefix}-${formatTimestampForFile()}.md`);
   await writeTextFile(reportPath, `${body}\n`);
@@ -883,6 +889,7 @@ async function runLocalOmarGateCommand(args) {
   }
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
+  const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -908,7 +915,9 @@ Findings:
 ${formatFindingsMarkdown(scan.findings)}
 `;
 
-  const reportPath = await writeLocalCommandReport(targetPath, "omargate-deep", report);
+  const reportPath = await writeLocalCommandReport(targetPath, "omargate-deep", report, {
+    outputDir: outputDirArg,
+  });
   if (asJson) {
     console.log(
       JSON.stringify(
@@ -943,6 +952,7 @@ ${formatFindingsMarkdown(scan.findings)}
 async function runLocalAuditCommand(args) {
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
+  const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -1005,7 +1015,9 @@ Findings:
 ${formatFindingsMarkdown(scan.findings)}
 `;
 
-  const reportPath = await writeLocalCommandReport(targetPath, "audit", report);
+  const reportPath = await writeLocalCommandReport(targetPath, "audit", report, {
+    outputDir: outputDirArg,
+  });
   if (asJson) {
     console.log(
       JSON.stringify(
@@ -1056,6 +1068,7 @@ async function runLocalPersonaCommand(args) {
   }
 
   const pathArg = getCommandOptionValue(optionArgs, "--path") || ".";
+  const outputDirArg = getCommandOptionValue(optionArgs, "--output-dir") || "";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -1099,7 +1112,9 @@ Repo summary:
 ${ingest || "No repository summary available."}
 `;
 
-  const reportPath = await writeLocalCommandReport(targetPath, `persona-orchestrator-${mode}`, report);
+  const reportPath = await writeLocalCommandReport(targetPath, `persona-orchestrator-${mode}`, report, {
+    outputDir: outputDirArg,
+  });
   if (asJson) {
     console.log(
       JSON.stringify(
@@ -1139,6 +1154,7 @@ function parseTodoPlanTasks(content) {
 async function runLocalApplyCommand(args) {
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
+  const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -1175,7 +1191,9 @@ Next action:
 - Execute each item PR-by-PR and run Omar loop before every merge.
 `;
 
-  const reportPath = await writeLocalCommandReport(targetPath, "apply-plan", report);
+  const reportPath = await writeLocalCommandReport(targetPath, "apply-plan", report, {
+    outputDir: outputDirArg,
+  });
   if (asJson) {
     console.log(
       JSON.stringify(
