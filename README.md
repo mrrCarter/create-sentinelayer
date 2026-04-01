@@ -180,6 +180,7 @@ Supported targets: `claude`, `cursor`, `copilot`, `codex`, `generic`.
 ## Release to npm
 
 This repo includes `.github/workflows/release.yml`.
+Automated version/tag PR flow is handled by `.github/workflows/release-please.yml`.
 
 Prerequisites:
 
@@ -188,10 +189,11 @@ Prerequisites:
 
 Release options:
 
-1. Push a tag like `v0.1.1` to publish automatically.
-2. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
-3. Run `Release` manually with `publish=true` to publish from Actions.
-4. If `NPM_TOKEN` is not configured, publish is skipped with an explicit workflow message (verification + tarball still succeed).
+1. Merge to `main` and let `Release Please` open/update the release PR and tag.
+2. Push a tag like `v0.1.1` to publish automatically (or via release-please tag creation).
+3. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
+4. Run `Release` manually with `publish=true` to publish from Actions.
+5. If `NPM_TOKEN` is not configured, publish is skipped with an explicit workflow message (verification + tarball still succeed).
 
 ## Local verification
 

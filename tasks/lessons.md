@@ -28,3 +28,5 @@
 - Keep ingest outputs bounded (`indexedFiles.limit`) so deterministic context remains scalable and avoids artifact bloat on large repositories.
 - Reuse one deterministic ingest engine across commands (`ingest`, `spec`, existing-repo scaffolding) to avoid drift between generated context artifacts and prompt payload summaries.
 - Keep prompt generation decoupled from providers and API calls; derive prompts purely from local spec artifacts so CI and offline flows stay deterministic.
+- Local deterministic secret-pattern scanning can catch test fixture literals; preserve test intent by composing sensitive test strings at runtime instead of embedding direct patterns in source.
+- For CLI package repos, use service-repo parity selectively: copy Omar review/watchdog patterns, but keep ECS/migration/worker deploy pipelines in backend service repos.

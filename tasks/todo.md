@@ -19,6 +19,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch B PR 1.1 (deterministic codebase ingest engine + artifact output).
 - [x] Complete Batch B PR 1.2 (template-based offline spec generation).
 - [ ] Complete Batch B PR 1.3 (offline prompt generator from SPEC.md).
+- [ ] Complete workflow hardening PR (repo-level Omar Gate + watchdog + release-please automation + npm release smoke install).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -104,6 +105,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping).
 - PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path).
 - PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract.
+
+### Workflow hardening (current)
+- Add repo-level `.github/workflows/omar-gate.yml` with quality + deep scan gates.
+- Add `.github/workflows/omar-review-watchdog.yml` for comment-driven Omar loop monitoring.
+- Add release automation (`release-please`) and harden npm release workflow with packaged install verification.
+- Add instruction-topology files (`.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`).
+- Confirm local Omar deep scan and local audit return zero P0-P2 before merge.
 
 ## Definition Of Ready (per PR)
 - [ ] Clear PR scope mapped to exactly one roadmap PR id.
