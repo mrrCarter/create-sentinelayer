@@ -1,3 +1,28 @@
+import process from "node:process";
+
+import { loadConfig } from "../config/service.js";
+
+function applyConfigEnvDefaults(resolvedConfig) {
+  if (!process.env.SENTINELAYER_API_URL && resolvedConfig.apiUrl) {
+    process.env.SENTINELAYER_API_URL = resolvedConfig.apiUrl;
+  }
+  if (!process.env.SENTINELAYER_WEB_URL && resolvedConfig.webUrl) {
+    process.env.SENTINELAYER_WEB_URL = resolvedConfig.webUrl;
+  }
+  if (!process.env.SENTINELAYER_TOKEN && resolvedConfig.sentinelayerToken) {
+    process.env.SENTINELAYER_TOKEN = resolvedConfig.sentinelayerToken;
+  }
+  if (!process.env.OPENAI_API_KEY && resolvedConfig.openaiApiKey) {
+    process.env.OPENAI_API_KEY = resolvedConfig.openaiApiKey;
+  }
+  if (!process.env.ANTHROPIC_API_KEY && resolvedConfig.anthropicApiKey) {
+    process.env.ANTHROPIC_API_KEY = resolvedConfig.anthropicApiKey;
+  }
+  if (!process.env.GOOGLE_API_KEY && resolvedConfig.googleApiKey) {
+    process.env.GOOGLE_API_KEY = resolvedConfig.googleApiKey;
+  }
+}
+
 export function registerInitCommand(program, invokeLegacy) {
   program
     .command("init [projectName]")
@@ -6,6 +31,9 @@ export function registerInitCommand(program, invokeLegacy) {
     .option("--interview-file <path>", "Load interview JSON from file")
     .option("--skip-browser-open", "Do not auto-open browser during auth")
     .action(async (projectName, options) => {
+      const config = await loadConfig();
+      applyConfigEnvDefaults(config.resolved);
+
       const legacyArgs = [];
       const normalizedProjectName = String(projectName || "").trim();
       if (normalizedProjectName) {
