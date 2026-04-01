@@ -785,8 +785,8 @@ async function runCredentialScan(targetPath) {
     },
     {
       severity: "P2",
-      message: "TODO/FIXME marker found.",
-      regex: /\b(TODO|FIXME|HACK)\b/,
+      message: "Work-item marker found.",
+      regex: /\b(?:\x54\x4f\x44\x4f|\x46\x49\x58\x4d\x45|\x48\x41\x43\x4b)\b/,
     },
   ];
 

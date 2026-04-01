@@ -1,0 +1,201 @@
+name: Omar Review Watchdog
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to monitor"
+        required: true
+      timeout_minutes:
+        description: "Timeout in minutes"
+        required: false
+        default: "10"
+      poll_seconds:
+        description: "Polling interval in seconds"
+        required: false
+        default: "20"
+      fail_on_timeout:
+        description: "When true, fail if Omar does not reach terminal state before timeout"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  monitor:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+       (
+         contains(github.event.comment.body, '/omar baseline') ||
+         contains(github.event.comment.body, '/omar deep-scan') ||
+         contains(github.event.comment.body, '/omar full-depth') ||
+         contains(github.event.comment.body, '/omar fix-plan')
+       ))
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Resolve monitor target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import json
+          import os
+          import re
+
+          event_name = str(os.environ.get("GITHUB_EVENT_NAME") or "").strip()
+          event_path = str(os.environ.get("GITHUB_EVENT_PATH") or "").strip()
+          if not event_path:
+              raise SystemExit("Missing GITHUB_EVENT_PATH")
+          with open(event_path, "r", encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          pr_number = ""
+          timeout_minutes = "10"
+          poll_seconds = "20"
+          fail_on_timeout = "false"
+
+          if event_name == "workflow_dispatch":
+              inputs = event.get("inputs") or {}
+              pr_number = str(inputs.get("pr_number") or "").strip()
+              timeout_minutes = str(inputs.get("timeout_minutes") or "10").strip()
+              poll_seconds = str(inputs.get("poll_seconds") or "20").strip()
+              fail_on_timeout = str(inputs.get("fail_on_timeout") or "true").strip().lower()
+          else:
+              issue = event.get("issue") or {}
+              comment = event.get("comment") or {}
+              pr_number = str(issue.get("number") or "").strip()
+
+              association = str(comment.get("author_association") or "").strip().upper()
+              if association not in {"OWNER", "MEMBER", "COLLABORATOR"}:
+                  raise SystemExit(
+                      f"Unauthorized author_association '{association}' for Omar watchdog trigger"
+                  )
+
+              comment_body = str(comment.get("body") or "")
+              supported_commands = [
+                  "/omar baseline",
+                  "/omar deep-scan",
+                  "/omar full-depth",
+                  "/omar fix-plan",
+              ]
+              if not any(command in comment_body for command in supported_commands):
+                  raise SystemExit("No supported /omar command found in issue_comment body")
+
+          if not re.fullmatch(r"\d+", pr_number):
+              raise SystemExit(f"Invalid PR number: '{pr_number}'")
+
+          if not re.fullmatch(r"\d+", timeout_minutes) or int(timeout_minutes) < 1:
+              timeout_minutes = "10"
+
+          if not re.fullmatch(r"\d+", poll_seconds) or int(poll_seconds) < 5:
+              poll_seconds = "20"
+
+          if fail_on_timeout not in {"true", "false"}:
+              fail_on_timeout = "false"
+
+          output_path = str(os.environ["GITHUB_OUTPUT"])
+          with open(output_path, "a", encoding="utf-8") as out:
+              out.write(f"pr_number={pr_number}\n")
+              out.write(f"timeout_minutes={timeout_minutes}\n")
+              out.write(f"poll_seconds={poll_seconds}\n")
+              out.write(f"fail_on_timeout={fail_on_timeout}\n")
+          PY
+
+      - name: Monitor Omar summary state
+        id: monitor
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          TIMEOUT_MINUTES: ${{ steps.target.outputs.timeout_minutes }}
+          POLL_SECONDS: ${{ steps.target.outputs.poll_seconds }}
+          FAIL_ON_TIMEOUT: ${{ steps.target.outputs.fail_on_timeout }}
+        run: |
+          set -euo pipefail
+
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          summary_status=""
+          summary_progress=""
+          summary_run_id=""
+          summary_url=""
+
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            comments_json="$(
+              curl -fsS \
+                --connect-timeout 5 \
+                --max-time 20 \
+                --retry 3 \
+                --retry-delay 2 \
+                --retry-connrefused \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100"
+            )"
+
+            summary_json="$(
+              printf '%s' "${comments_json}" | jq -c '[.[] | select(((.user.login == "sentinelayer") or (.user.login == "sentinelayer[bot]")) and ((.body | contains("<!-- sentinelayer-omar-summary -->")) or (.body | contains("Omar Multi-Agent Review"))))] | last // empty'
+            )"
+
+            if [ -z "${summary_json}" ] || [ "${summary_json}" = "null" ]; then
+              sleep "$POLL_SECONDS"
+              continue
+            fi
+
+            summary_body="$(printf '%s' "${summary_json}" | jq -r '.body // ""')"
+            summary_url="$(printf '%s' "${summary_json}" | jq -r '.html_url // ""')"
+
+            summary_status="$(
+              printf '%s\n' "${summary_body}" \
+                | sed -n -E 's/^\*{0,2}[Ss]tatus:\*{0,2}[[:space:]]*//p' \
+                | head -n 1
+            )"
+            summary_progress="$(
+              printf '%s\n' "${summary_body}" \
+                | sed -n -E 's/^(-[[:space:]]*)?[Pp]rogress:[[:space:]]*//p; s/^Pack-scoped review active:[[:space:]]*//p' \
+                | sed 's/^`//; s/`$//' \
+                | head -n 1
+            )"
+            summary_run_id="$(
+              printf '%s\n' "${summary_body}" \
+                | sed -n -E 's/^(-[[:space:]]*)?[Ii]nvestigation run:[[:space:]]*`?([^`[:space:]]+)`?.*$/\2/p' \
+                | head -n 1
+            )"
+
+            status_lc="$(printf '%s' "$summary_status" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status_lc" == *"completed"* || "$status_lc" == *"failed"* || "$status_lc" == *"blocked"* || "$status_lc" == *"error"* || "$status_lc" == *"done"* ]]; then
+              echo "terminal=true" >> "$GITHUB_OUTPUT"
+              echo "timed_out=false" >> "$GITHUB_OUTPUT"
+              echo "status=${summary_status}" >> "$GITHUB_OUTPUT"
+              echo "progress=${summary_progress}" >> "$GITHUB_OUTPUT"
+              echo "run_id=${summary_run_id}" >> "$GITHUB_OUTPUT"
+              echo "summary_url=${summary_url}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            sleep "$POLL_SECONDS"
+          done
+
+          echo "terminal=false" >> "$GITHUB_OUTPUT"
+          echo "timed_out=true" >> "$GITHUB_OUTPUT"
+          echo "status=${summary_status}" >> "$GITHUB_OUTPUT"
+          echo "progress=${summary_progress}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${summary_run_id}" >> "$GITHUB_OUTPUT"
+          echo "summary_url=${summary_url}" >> "$GITHUB_OUTPUT"
+          if [ "${FAIL_ON_TIMEOUT}" = "true" ]; then
+            echo "::error::Omar review did not reach a terminal state within ${TIMEOUT_MINUTES} minutes."
+            exit 1
+          fi
+          echo "::warning::Omar review did not reach a terminal state within ${TIMEOUT_MINUTES} minutes."
+          exit 0

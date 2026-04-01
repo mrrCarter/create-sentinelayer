@@ -1,0 +1,138 @@
+name: Omar Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Optional PR number override for manual runs"
+        required: false
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run repository verification
+        run: npm run verify
+
+      - name: Audit AI instruction topology (advisory)
+        run: |
+          set -euo pipefail
+
+          REPO_INSTRUCTION_FILE=".github/copilot-instructions.md"
+          if [ ! -f "${REPO_INSTRUCTION_FILE}" ]; then
+            echo "::warning::Missing ${REPO_INSTRUCTION_FILE}. Add repository-wide review instructions."
+          fi
+
+          if [ ! -d ".github/instructions" ]; then
+            echo "::warning::Missing .github/instructions directory. Add path-scoped instructions for high-risk paths."
+          else
+            count="$(find .github/instructions -type f -name '*.instructions.md' | wc -l | tr -d ' ')"
+            if [ "${count}" -eq 0 ]; then
+              echo "::warning::.github/instructions exists but no *.instructions.md files were found."
+            fi
+          fi
+
+  omar-review:
+    name: Omar Gate (Deep Scan)
+    needs: [quality-gates]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve provider installation id
+        id: resolve_installation
+        run: |
+          set -euo pipefail
+          installation_id="${{ vars.SENTINELAYER_PROVIDER_INSTALLATION_ID || vars.OMAR_PROVIDER_INSTALLATION_ID || '116444787' }}"
+          echo "installation_id=${installation_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Probe Omar status auth capability
+        id: status_auth
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          SENTINELAYER_API_URL: https://api.sentinelayer.com
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTINELAYER_TOKEN}" ]; then
+            echo "::error::Missing SENTINELAYER_TOKEN secret. Omar Gate cannot run."
+            exit 1
+          fi
+          echo "wait_for_completion=false" >> "${GITHUB_OUTPUT}"
+          probe_url="${SENTINELAYER_API_URL}/api/v1/github-app/runs/ghdeep_status_auth_probe/status"
+          http_code="$(curl -sS -o /tmp/omar-status-auth-probe.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${SENTINELAYER_TOKEN}" \
+            -H "Accept: application/json" \
+            "${probe_url}" || true)"
+          if [ "${http_code}" = "401" ]; then
+            echo "::warning::Omar status endpoint token auth probe returned 401; using async mode for this run."
+            exit 0
+          fi
+          echo "wait_for_completion=true" >> "${GITHUB_OUTPUT}"
+          echo "::notice::Omar status auth probe returned HTTP ${http_code}; enabling wait_for_completion."
+
+      - name: Omar Gate Deep Scan
+        id: omar
+        uses: mrrCarter/sentinelayer-v1-action@55a2c158f637d7d92e26ab0ef3ba81db791da4be
+        with:
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          provider_installation_id: ${{ steps.resolve_installation.outputs.installation_id }}
+          scan_mode: deep
+          severity_gate: P2
+          wait_for_completion: ${{ steps.status_auth.outputs.wait_for_completion == 'true' }}
+          pr_number: ${{ github.event.inputs.pr_number || '' }}
+
+      - name: Upload Omar artifacts
+        if: ${{ always() && steps.omar.outputs.run_id != '' }}
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: sentinelayer-codex-${{ steps.omar.outputs.run_id }}
+          path: .sentinelayer/runs/${{ steps.omar.outputs.run_id }}
+          if-no-files-found: warn
+
+  release-readiness:
+    name: Release Readiness
+    if: >-
+      ${{
+        always() &&
+        needs.quality-gates.result == 'success' &&
+        needs.omar-review.result == 'success'
+      }}
+    needs: [quality-gates, omar-review]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm required checks
+        run: echo "Quality and Omar deep-scan checks passed."

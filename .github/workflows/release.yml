@@ -45,6 +45,14 @@ jobs:
       - name: Build release tarball
         run: npm pack
 
+      - name: Validate packaged CLI install
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          npm install --global "${TARBALL}"
+          create-sentinelayer --version
+          sentinel --version
+
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@v4
         with:

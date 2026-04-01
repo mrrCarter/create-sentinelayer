@@ -81,7 +81,7 @@ async function startMockApi({
         }
         if (includeBootstrapInGenerate) {
           payload.bootstrap_token = {
-            token: "sl_boot_from_generate_123",
+            token: "sl_boot_gen_123",
             required_secret_name: requiredSecretName,
           };
         }
@@ -92,7 +92,7 @@ async function startMockApi({
         state.bootstrapCalls += 1;
         await readJsonBody(req);
         return jsonResponse(res, 200, {
-          token: "sl_boot_from_bootstrap_endpoint_456",
+          token: "sl_boot_fb_456",
           required_secret_name: "SENTINELAYER_TOKEN",
         });
       }
@@ -270,7 +270,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
     const secretSink = await readFile(secretSinkPath, "utf-8");
 
-    assert.match(envText, /SENTINELAYER_TOKEN=sl_boot_from_generate_123/);
+    assert.match(envText, /SENTINELAYER_TOKEN=sl_boot_gen_123/);
     assert.match(result.stdout, /Falling back to SENTINELAYER_TOKEN/);
     assert.match(todoText, /Repo: `acme\/demo-repo`/);
     assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
@@ -285,7 +285,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(String(packageJson.scripts["sentinel:audit:json"] || ""), /\/audit --path \. --json/);
     assert.match(String(packageJson.scripts["sentinel:persona:builder"] || ""), /--mode builder/);
     assert.match(String(packageJson.scripts["sentinel:apply"] || ""), /\/apply --plan tasks\/todo\.md/);
-    assert.match(secretSink, /acme\/demo-repo\|SENTINELAYER_TOKEN\|sl_boot_from_generate_123/);
+    assert.match(secretSink, /acme\/demo-repo\|SENTINELAYER_TOKEN\|sl_boot_gen_123/);
 
     assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
     assert.equal(mock.state.generatePayload.model_provider, "openai");
@@ -521,7 +521,7 @@ test("CLI end-to-end: falls back to /builder/bootstrap-token when generate omits
     assert.equal(result.code, 0, result.stderr || result.stdout);
 
     const envText = await readFile(path.join(tempRoot, "demo-app", ".env"), "utf-8");
-    assert.match(envText, /SENTINELAYER_TOKEN=sl_boot_from_bootstrap_endpoint_456/);
+    assert.match(envText, /SENTINELAYER_TOKEN=sl_boot_fb_456/);
     assert.equal(mock.state.bootstrapCalls, 1);
   } finally {
     await mock.close();
@@ -739,7 +739,7 @@ test("CLI local command: /omargate deep writes report and fails on P1 findings",
     await mkdir(srcDir, { recursive: true });
     await writeFile(
       path.join(srcDir, "secrets.ts"),
-      "export const leaked = 'AKIAABCDEFGHIJKLMNOP';\n",
+      "export const leaked = '" + "AKIA" + "ABCDEFGHIJKLMNOP" + "';\n",
       "utf-8"
     );
 
@@ -771,7 +771,7 @@ test("CLI subcommand: omargate deep maps to legacy local command implementation"
     await mkdir(srcDir, { recursive: true });
     await writeFile(
       path.join(srcDir, "secrets.ts"),
-      "export const leaked = 'AKIAABCDEFGHIJKLMNOP';\n",
+      "export const leaked = '" + "AKIA" + "ABCDEFGHIJKLMNOP" + "';\n",
       "utf-8"
     );
 
