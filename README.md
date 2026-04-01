@@ -202,6 +202,16 @@ Export phases as issue-ready payloads:
 
 `guide generate` writes `BUILD_GUIDE.md` with per-phase effort estimates, dependencies, implementation tasks, and acceptance criteria. `guide export` transforms phases into tracker-friendly artifacts.
 
+## Multi-provider AI client contract (PR 3.1 slice)
+
+`src/ai/client.js` now provides a reusable contract for future AI-enabled commands:
+
+- provider support: `openai`, `anthropic`, `google`
+- provider auto-detection from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`
+- model resolution defaults per provider with explicit override support
+- retry + exponential backoff on retryable statuses (`429`, `5xx`)
+- non-stream and streaming invocation APIs with provider-normalized text output
+
 ## Requirements
 
 - Node `>=18.17`

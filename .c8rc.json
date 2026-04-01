@@ -10,7 +10,8 @@
     "src/config/service.js",
     "src/spec/generator.js",
     "src/prompt/generator.js",
-    "src/cost/tracker.js"
+    "src/cost/tracker.js",
+    "src/ai/client.js"
   ]
 }
 
