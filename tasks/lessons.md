@@ -39,3 +39,4 @@
 - A JSONL run-event ledger with explicit `eventType` and `stopClass` enums is a low-friction way to unify CLI observability now while staying forward-compatible with richer runtime telemetry sinks later.
 - Deterministic governors are more operator-friendly when hard-stop reasons and near-limit warnings are both first-class (`MAX_*` stop codes plus `*_NEAR_LIMIT` warning codes) and emitted from the same budget contract.
 - For AI-enhanced generation commands, keep deterministic artifacts as the first pass and layer AI refinement on top, then route usage through the same cost/telemetry governors to avoid a second ungoverned execution path.
+- For AI pre-scan features, write reports into the same artifact root contract (`.sentinelayer/reports`) and emit the same cost/telemetry schema as generation commands so HITL dashboards can reason about both flows uniformly.
