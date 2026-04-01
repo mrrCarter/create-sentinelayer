@@ -14,6 +14,7 @@ import open from "open";
 import pc from "picocolors";
 import prompts from "prompts";
 import { resolveOutputRoot } from "./config/service.js";
+import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
 
 let DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
 let DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
@@ -188,6 +189,7 @@ function printUsage() {
   console.log("  create-sentinelayer /persona orchestrator [--mode MODE] [--path PATH]");
   console.log("  create-sentinelayer /apply --plan <todo.md> [--path PATH]");
   console.log("  create-sentinelayer config <list|get|set|edit> [options]");
+  console.log("  create-sentinelayer ingest map [--path PATH] [--output-file PATH]");
   console.log("");
   console.log("Options:");
   console.log("  -h, --help             Show help");
@@ -693,42 +695,8 @@ async function ensureGitRepositorySetup({ projectDir, repoSlug }) {
 
 async function buildRepoIngestSummary(projectDir) {
   try {
-    const entries = await fsp.readdir(projectDir, { withFileTypes: true });
-    const ignored = new Set([".git", "node_modules", ".venv", "dist", "build", ".next"]);
-    const files = [];
-    const dirs = [];
-    for (const entry of entries) {
-      if (ignored.has(entry.name)) continue;
-      if (entry.isDirectory()) {
-        dirs.push(entry.name);
-      } else if (entry.isFile()) {
-        files.push(entry.name);
-      }
-    }
-
-    const lines = [];
-    lines.push(`Workspace path: ${projectDir}`);
-    lines.push(`Top-level directories: ${dirs.slice(0, 20).join(", ") || "none"}`);
-    lines.push(`Top-level files: ${files.slice(0, 20).join(", ") || "none"}`);
-
-    const packagePath = path.join(projectDir, "package.json");
-    if (fs.existsSync(packagePath)) {
-      try {
-        const pkg = JSON.parse(await fsp.readFile(packagePath, "utf-8"));
-        const pkgName = String(pkg.name || "").trim();
-        const scripts = pkg && typeof pkg.scripts === "object" && pkg.scripts ? Object.keys(pkg.scripts) : [];
-        if (pkgName) {
-          lines.push(`package.json name: ${pkgName}`);
-        }
-        if (scripts.length > 0) {
-          lines.push(`package scripts: ${scripts.slice(0, 15).join(", ")}`);
-        }
-      } catch {
-        lines.push("package.json: present but not valid JSON");
-      }
-    }
-
-    return lines.join("\n");
+    const ingest = await collectCodebaseIngest({ rootPath: projectDir });
+    return formatIngestSummary(ingest);
   } catch {
     return "";
   }

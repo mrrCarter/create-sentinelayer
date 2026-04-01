@@ -8,8 +8,9 @@ import { registerAuditCommand } from "./commands/audit.js";
 import { registerPersonaCommand } from "./commands/persona.js";
 import { registerApplyCommand } from "./commands/apply.js";
 import { registerConfigCommand } from "./commands/config.js";
+import { registerIngestCommand } from "./commands/ingest.js";
 
-const COMMAND_SET = new Set(["init", "omargate", "audit", "persona", "apply", "config"]);
+const COMMAND_SET = new Set(["init", "omargate", "audit", "persona", "apply", "config", "ingest"]);
 
 function shouldBypassCommander(rawArgs) {
   if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
@@ -53,6 +54,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
   registerPersonaCommand(program, invokeLegacy);
   registerApplyCommand(program, invokeLegacy);
   registerConfigCommand(program);
+  registerIngestCommand(program);
 
   return program;
 }

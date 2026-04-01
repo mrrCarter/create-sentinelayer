@@ -852,6 +852,80 @@ test("CLI local command: /audit --json emits machine-readable summary", async ()
   }
 });
 
+test("CLI ingest command emits CODEBASE_INGEST artifact with framework and surface hints", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ingest-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "ingest-demo",
+          version: "0.0.1",
+          dependencies: {
+            next: "^15.0.0",
+            react: "^19.0.0",
+            express: "^4.19.0",
+          },
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+    await writeFile(path.join(tempRoot, "src", "index.ts"), "export const app = 1;\n", "utf-8");
+    await writeFile(path.join(tempRoot, "README.md"), "# Demo\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ingest", "map", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "ingest map");
+    assert.match(String(payload.outputPath || ""), /[\\/]\.sentinelayer[\\/]CODEBASE_INGEST\.json$/);
+    assert.ok(Array.isArray(payload.frameworks));
+    assert.equal(payload.frameworks.includes("nextjs"), true);
+    assert.equal(payload.frameworks.includes("express"), true);
+
+    const ingest = JSON.parse(await readFile(payload.outputPath, "utf-8"));
+    assert.equal(ingest.summary.filesScanned > 0, true);
+    assert.equal(Array.isArray(ingest.entryPoints), true);
+    assert.equal(ingest.entryPoints.includes("src/index.ts"), true);
+    assert.equal(Array.isArray(ingest.riskSurfaces), true);
+    assert.equal(ingest.riskSurfaces.some((item) => item.surface === "supply_chain"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ingest command respects .sentinelayerignore patterns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ingest-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(path.join(tempRoot, "src", "keep.ts"), "export const keep = true;\n", "utf-8");
+    await writeFile(path.join(tempRoot, "src", "ignore.ts"), "export const ignored = true;\n", "utf-8");
+    await writeFile(path.join(tempRoot, ".sentinelayerignore"), "src/ignore.ts\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ingest", "map", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    const ingest = JSON.parse(await readFile(payload.outputPath, "utf-8"));
+    const indexedPaths = ingest.indexedFiles.files.map((item) => item.path);
+    assert.equal(indexedPaths.includes("src/keep.ts"), true);
+    assert.equal(indexedPaths.includes("src/ignore.ts"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {

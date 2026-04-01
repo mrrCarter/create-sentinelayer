@@ -13,8 +13,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Audit `src` Kairos mode controls (assistant activation, async spawn model, blocking/time budgets, token/task budget distinctions) with line-level evidence.
 - [x] Audit `src` telemetry/observability and budget-stop enforcement (time/tool/token/cost capture + hard-stop paths) and compare against Sentinelayer API + CLI gaps.
 - [x] Publish architecture prep doc for OMAR daemon swarm + observability + Jira + budgets + kill-switch controls.
-- [ ] Create Batch 0 branch plan and PR templates (DoR/DoD evidence fields).
-- [ ] Start Phase 0 PR 0.1 (Commander + modular CLI skeleton) with behavior parity tests.
+- [x] Create Batch 0 branch plan and PR templates (DoR/DoD evidence fields).
+- [x] Start Phase 0 PR 0.1 (Commander + modular CLI skeleton) with behavior parity tests.
+- [x] Complete Batch A foundation PRs (0.1, 0.2, 0.3) with merged OMAR review comments.
+- [ ] Complete Batch B PR 1.1 (deterministic codebase ingest engine + artifact output).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -35,12 +37,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ## PR Batch Queue (one PR at a time, grouped by dependency)
 
 ### Batch A - Foundation (P0)
-- PR 0.1 CLI entrypoint + Commander subcommand tree.
-- PR 0.2 Layered config system.
-- PR 0.3 Artifact writer + `.sentinelayer/` output contract.
+- PR 0.1 CLI entrypoint + Commander subcommand tree. (merged as #30)
+- PR 0.2 Layered config system. (merged as #31)
+- PR 0.3 Artifact writer + `.sentinelayer/` output contract. (merged as #32)
 
 ### Batch B - Offline Generation Core (P0)
-- PR 1.1 Codebase ingestion engine.
+- PR 1.1 Codebase ingestion engine. (in progress)
 - PR 1.2 Template-based spec generation.
 - PR 1.3 Prompt generator.
 - PR 1.4 Omar config generator.
@@ -143,3 +145,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `src` enforces a 15-second main-thread blocking budget in assistant mode and auto-backgrounds long Bash/PowerShell commands to preserve coordinator responsiveness.
   - `src` token-budget continuation logic is explicit and deterministic (90% target threshold + diminishing-return early-stop checks), which is a reusable pattern for Sentinelayer daemon remediation loops.
   - Sentinelayer runtime schemas expose token/cost/runtime budget fields, but current runtime service enforcement is primarily iteration-based; explicit token/cost/runtime stop checks should be added in early governance hardening.
+- Execution progress after baseline:
+  - Batch A shipped and merged with OMAR review comments captured on each PR:
+    - #30 (`feat(cli): command tree + legacy bridge`)
+    - #31 (`feat(cli): layered config + config commands`)
+    - #32 (`feat(cli): output root contract for local artifacts`)
+  - Quality gate remained green after each merge via `npm run verify`.
