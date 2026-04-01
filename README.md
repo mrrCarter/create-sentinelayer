@@ -184,13 +184,14 @@ The CLI now includes deterministic MCP registry commands:
 
 Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for AIdenID provisioning APIs, then customize transport/auth before runtime wiring.
 
-## Plugin manifest foundation (Phase 5 foundation slice)
+## Plugin governance foundation (Phase 5.2 slice)
 
-The CLI now includes deterministic plugin manifest commands:
+The CLI now includes deterministic plugin/template/policy pack governance commands:
 
-- `sl plugin init --id <plugin-id>`
+- `sl plugin init --id <plugin-id> --pack-type plugin|template_pack|policy_pack|hybrid --stage pre_scan|scan|post_scan|reporting`
 - `sl plugin validate --file <manifest.json>`
 - `sl plugin list`
+- `sl plugin order [--stage <stage>]` (deterministic load-order resolution + cycle detection)
 
 ## AIdenID CLI foundation (Phase 11 foundation slice)
 
@@ -440,7 +441,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer auth sessions|revoke` supports session inventory and explicit token revocation controls
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
-- `create-sentinelayer plugin init|validate|list` manages plugin extension manifests
+- `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
 - `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility

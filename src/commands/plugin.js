@@ -5,8 +5,13 @@ import pc from "picocolors";
 
 import {
   buildPluginManifestTemplate,
+  computePluginLoadOrder,
   listPluginManifests,
   normalizePluginId,
+  normalizePluginLoadStage,
+  normalizePluginPackType,
+  PLUGIN_LOAD_STAGES,
+  PLUGIN_PACK_TYPES,
   readJsonFile,
   resolveDefaultPluginManifestPath,
   summarizePluginValidationError,
@@ -38,12 +43,24 @@ export function registerPluginCommand(program) {
     .command("init")
     .description("Initialize a deterministic plugin manifest scaffold")
     .requiredOption("--id <plugin-id>", "Unique plugin id (lowercase)")
+    .option(
+      "--pack-type <type>",
+      `Pack boundary type (${PLUGIN_PACK_TYPES.join("|")})`,
+      "plugin"
+    )
+    .option(
+      "--stage <stage>",
+      `Load-order stage (${PLUGIN_LOAD_STAGES.join("|")})`,
+      "scan"
+    )
     .option("--path <path>", "Destination file path override")
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--force", "Overwrite destination file if it already exists")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const pluginId = normalizePluginId(options.id);
+      const packType = normalizePluginPackType(options.packType);
+      const stage = normalizePluginLoadStage(options.stage);
       const defaultPath = await resolveDefaultPluginManifestPath({
         cwd: process.cwd(),
         outputDir: options.outputDir,
@@ -51,13 +68,19 @@ export function registerPluginCommand(program) {
         pluginId,
       });
       const outputPath = normalizeOutputPath(options.path, defaultPath);
-      const template = buildPluginManifestTemplate({ pluginId });
+      const template = buildPluginManifestTemplate({
+        pluginId,
+        packType,
+        stage,
+      });
       const manifest = validatePluginManifest(template);
       const writtenPath = await writeJsonFile(outputPath, manifest, { force: Boolean(options.force) });
 
       const payload = {
         command: "plugin init",
         pluginId,
+        packType: manifest.pack_type,
+        stage: manifest.load_order.stage,
         outputPath: writtenPath,
         schemaVersion: manifest.schema_version,
         kind: manifest.kind,
@@ -69,7 +92,9 @@ export function registerPluginCommand(program) {
 
       console.log(pc.green(`Wrote plugin manifest: ${writtenPath}`));
       console.log(pc.gray(`Plugin id: ${pluginId}`));
-      console.log(pc.gray("Next: edit manifest capabilities/security/load_order and validate before use."));
+      console.log(pc.gray(`Pack type: ${manifest.pack_type}`));
+      console.log(pc.gray(`Stage: ${manifest.load_order.stage}`));
+      console.log(pc.gray("Next: edit capabilities/security/load_order and validate before use."));
     });
 
   plugin
@@ -88,6 +113,7 @@ export function registerPluginCommand(program) {
           filePath: loaded.path,
           pluginId: manifest.id,
           version: manifest.version,
+          packType: manifest.pack_type,
           stage: manifest.load_order.stage,
         };
         if (shouldEmitJson(options, command)) {
@@ -149,7 +175,7 @@ export function registerPluginCommand(program) {
 
         for (const pluginEntry of listing.plugins) {
           console.log(
-            `${pluginEntry.id}@${pluginEntry.version} | stage=${pluginEntry.stage} | commands=${pluginEntry.commandCount} | policies=${pluginEntry.policyCount}`
+            `${pluginEntry.id}@${pluginEntry.version} | type=${pluginEntry.packType} | stage=${pluginEntry.stage} | commands=${pluginEntry.commandCount} | templates=${pluginEntry.templateCount} | policies=${pluginEntry.policyCount}`
           );
           console.log(pc.gray(`  ${pluginEntry.path}`));
         }
@@ -161,6 +187,73 @@ export function registerPluginCommand(program) {
       }
 
       if (listing.invalid.length > 0) {
+        process.exitCode = 2;
+      }
+    });
+
+  plugin
+    .command("order")
+    .description("Resolve deterministic plugin load order by stage")
+    .option("--path <path>", "Workspace path for config resolution", ".")
+    .option(
+      "--stage <stage>",
+      `Optional single-stage filter (${PLUGIN_LOAD_STAGES.join("|")})`
+    )
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const stage = options.stage ? normalizePluginLoadStage(options.stage) : "";
+      const ordering = await computePluginLoadOrder({
+        cwd: targetPath,
+        outputDir: options.outputDir,
+        env: process.env,
+        stage,
+      });
+
+      const payload = {
+        command: "plugin order",
+        pluginsRoot: ordering.pluginsRoot,
+        invalidCount: ordering.invalidCount,
+        hasBlockingIssues: ordering.hasBlockingIssues,
+        stages: ordering.stages,
+        invalid: ordering.invalid,
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Plugin load order"));
+        console.log(pc.gray(`Root: ${ordering.pluginsRoot}`));
+        for (const stageEntry of ordering.stages) {
+          console.log(
+            `${stageEntry.stage}: plugins=${stageEntry.pluginCount} cycle=${stageEntry.cycleDetected ? "yes" : "no"}`
+          );
+          if (stageEntry.order.length > 0) {
+            console.log(pc.gray(`  order: ${stageEntry.order.join(" -> ")}`));
+          }
+          if (stageEntry.unresolvedReferences.length > 0) {
+            for (const unresolved of stageEntry.unresolvedReferences) {
+              console.log(
+                pc.yellow(
+                  `  unresolved ${unresolved.relation}: ${unresolved.pluginId} -> ${unresolved.dependencyId}`
+                )
+              );
+            }
+          }
+          if (stageEntry.cycleNodes.length > 0) {
+            console.log(pc.red(`  cycle nodes: ${stageEntry.cycleNodes.join(", ")}`));
+          }
+        }
+        if (ordering.invalid.length > 0) {
+          for (const invalidEntry of ordering.invalid) {
+            console.log(pc.yellow(`invalid manifest: ${invalidEntry.path}`));
+            console.log(pc.gray(`  ${invalidEntry.error}`));
+          }
+        }
+      }
+
+      if (ordering.hasBlockingIssues) {
         process.exitCode = 2;
       }
     });
