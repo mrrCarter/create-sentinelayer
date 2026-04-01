@@ -11,6 +11,8 @@
     "src/spec/generator.js",
     "src/prompt/generator.js",
     "src/cost/tracker.js",
+    "src/cost/history.js",
+    "src/cost/budget.js",
     "src/ai/client.js"
   ]
 }

@@ -1294,6 +1294,131 @@ test("CLI guide export emits jira, linear, and github-issues formats", async () 
   }
 });
 
+test("CLI cost record and cost show maintain deterministic per-project ledger", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cost-cmd-"));
+  try {
+    const recordResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "cost",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-1",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5.3-codex",
+        "--input-tokens",
+        "1000",
+        "--output-tokens",
+        "500",
+        "--progress-score",
+        "1",
+        "--json",
+      ],
+    });
+    assert.equal(recordResult.code, 0, recordResult.stderr || recordResult.stdout);
+
+    const recordPayload = JSON.parse(String(recordResult.stdout || "").trim());
+    assert.equal(recordPayload.command, "cost record");
+    assert.equal(recordPayload.budget.blocking, false);
+    assert.match(String(recordPayload.filePath || ""), /cost-history\.json$/);
+
+    const showResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["cost", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(showResult.code, 0, showResult.stderr || showResult.stdout);
+    const showPayload = JSON.parse(String(showResult.stdout || "").trim());
+    assert.equal(showPayload.command, "cost show");
+    assert.equal(showPayload.summary.sessionCount, 1);
+    assert.equal(showPayload.summary.invocationCount, 1);
+    assert.equal(showPayload.summary.sessions[0].sessionId, "session-1");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI cost record enforces max-cost and max-no-progress guardrails", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cost-cmd-"));
+  try {
+    const first = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "cost",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-guard",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5.3-codex",
+        "--input-tokens",
+        "100000",
+        "--output-tokens",
+        "100000",
+        "--progress-score",
+        "0",
+        "--max-cost",
+        "0.01",
+        "--max-no-progress",
+        "2",
+        "--json",
+      ],
+    });
+    assert.equal(first.code, 2);
+    const firstPayload = JSON.parse(String(first.stdout || "").trim());
+    assert.equal(firstPayload.budget.blocking, true);
+    assert.equal(
+      firstPayload.budget.reasons.some((reason) => reason.code === "MAX_COST_EXCEEDED"),
+      true
+    );
+
+    const second = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "cost",
+        "record",
+        "--path",
+        tempRoot,
+        "--session-id",
+        "session-guard",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5.3-codex",
+        "--input-tokens",
+        "1",
+        "--output-tokens",
+        "1",
+        "--progress-score",
+        "0",
+        "--max-cost",
+        "10",
+        "--max-no-progress",
+        "2",
+        "--json",
+      ],
+    });
+    assert.equal(second.code, 2);
+    const secondPayload = JSON.parse(String(second.stdout || "").trim());
+    assert.equal(
+      secondPayload.budget.reasons.some((reason) => reason.code === "DIMINISHING_RETURNS"),
+      true
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
