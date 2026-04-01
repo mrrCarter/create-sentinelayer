@@ -9,9 +9,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   getAuthStatus,
   getRuntimeRunStatus,
+  listStoredAuthSessions,
   listRuntimeRunEvents,
   loginAndPersistSession,
   logoutSession,
+  revokeAuthToken,
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
 import { readStoredSession, resolveCredentialsFilePath } from "../src/auth/session-store.js";
@@ -268,6 +270,63 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(logoutResult.hadStoredSession, true);
     assert.equal(logoutResult.clearedLocal, true);
     assert.equal(logoutResult.revokedRemote, true);
+    assert.equal(mock.state.tokenDeleteIds.includes("token_1"), true);
+
+    const clearedSession = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(clearedSession, null);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: session metadata listing and explicit revoke are deterministic", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi();
+
+  try {
+    await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+
+    const listed = await listStoredAuthSessions({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+    });
+    assert.equal(listed.apiUrl, mock.apiUrl);
+    assert.equal(listed.sessions.length, 1);
+    assert.equal(listed.sessions[0].tokenId, "token_1");
+    assert.equal(listed.sessions[0].user.email, "demo@example.com");
+
+    const revoked = await revokeAuthToken({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+    });
+    assert.equal(revoked.revokedRemote, true);
+    assert.equal(revoked.tokenId, "token_1");
+    assert.equal(revoked.matchedStoredSession, true);
+    assert.equal(revoked.clearedLocal, true);
     assert.equal(mock.state.tokenDeleteIds.includes("token_1"), true);
 
     const clearedSession = await readStoredSession({ homeDir: tempRoot });

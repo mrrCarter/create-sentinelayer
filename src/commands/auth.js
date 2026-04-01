@@ -7,8 +7,10 @@ import {
   DEFAULT_API_TOKEN_TTL_DAYS,
   DEFAULT_AUTH_TIMEOUT_MS,
   getAuthStatus,
+  listStoredAuthSessions,
   loginAndPersistSession,
   logoutSession,
+  revokeAuthToken,
 } from "../auth/service.js";
 import { resolveCredentialsFilePath } from "../auth/session-store.js";
 import { CLI_VERSION } from "../legacy-cli.js";
@@ -205,6 +207,109 @@ export function registerAuthCommand(program) {
         console.log(pc.yellow("Remote validation was skipped (`--offline`)."));
       }
       printAuthHint();
+    });
+
+  auth
+    .command("sessions")
+    .alias("list")
+    .description("List persisted local session metadata for resume and auditability")
+    .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      let result;
+      try {
+        result = await listStoredAuthSessions({
+          cwd: process.cwd(),
+          env: process.env,
+          explicitApiUrl: options.apiUrl,
+        });
+      } catch (error) {
+        throw new Error(formatApiError(error));
+      }
+
+      const payload = {
+        command: "auth sessions",
+        ...result,
+        defaultCredentialsPath: resolveCredentialsFilePath(),
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("Stored sessions"));
+      console.log(pc.gray(`API: ${result.apiUrl}`));
+      if (!result.sessions.length) {
+        console.log(pc.yellow("No persisted sessions found."));
+        printAuthHint();
+        return;
+      }
+
+      for (const session of result.sessions) {
+        console.log(
+          `${renderUserSummary(session.user)} | source=${session.source} | storage=${session.storage || "unknown"}`
+        );
+        if (session.tokenId) {
+          console.log(pc.gray(`  token_id: ${session.tokenId}`));
+        }
+        if (session.tokenExpiresAt) {
+          console.log(pc.gray(`  expires_at: ${session.tokenExpiresAt}`));
+        }
+        if (session.updatedAt) {
+          console.log(pc.gray(`  updated_at: ${session.updatedAt}`));
+        }
+        if (session.filePath) {
+          console.log(pc.gray(`  metadata: ${session.filePath}`));
+        }
+      }
+    });
+
+  auth
+    .command("revoke")
+    .description("Revoke a remote API token and clear matching local session metadata")
+    .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option("--token-id <id>", "API token id to revoke (defaults to active session token id)")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      let result;
+      try {
+        result = await revokeAuthToken({
+          cwd: process.cwd(),
+          env: process.env,
+          explicitApiUrl: options.apiUrl,
+          tokenId: options.tokenId,
+        });
+      } catch (error) {
+        throw new Error(formatApiError(error));
+      }
+
+      const payload = {
+        command: "auth revoke",
+        ...result,
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.green(`Revoked token: ${result.tokenId}`));
+      console.log(pc.gray(`API: ${result.apiUrl}`));
+      if (result.matchedStoredSession) {
+        console.log(
+          pc.gray(
+            result.clearedLocal
+              ? "Matching local session metadata was cleared."
+              : "Matching local session metadata was detected but not cleared."
+          )
+        );
+      } else {
+        console.log(pc.gray("No local session metadata matched the revoked token id."));
+      }
+      if (result.filePath) {
+        console.log(pc.gray(`Session metadata path: ${result.filePath}`));
+      }
     });
 
   auth

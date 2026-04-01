@@ -149,6 +149,18 @@ export async function readStoredSession({ homeDir } = {}) {
   };
 }
 
+export async function readStoredSessionMetadata({ homeDir } = {}) {
+  const { filePath, metadata } = await readMetadata({ homeDir });
+  if (!metadata) {
+    return null;
+  }
+  return {
+    ...metadata,
+    filePath,
+    token: null,
+  };
+}
+
 export async function writeStoredSession(
   {
     apiUrl,

@@ -34,7 +34,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch E PR 4.2 foundation slice (`watch history` session/readback for reproducible handoffs).
 - [x] Complete Batch E PR 6.1 foundation slice (`mcp schema|registry` contract + AIdenID template scaffold).
 - [x] Complete workflow correction PR (Omar Gate only path: removed multi-agent watchdog workflow and aligned threshold enforcement with active gate mode).
-- [ ] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
+- [x] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
+- [x] Complete Batch E PR 4.3 foundation slice (session inventory metadata + explicit token revocation controls).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -254,3 +255,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - Omar workflow correction:
     - #49 merged (`ci: enforce Omar Gate-only PR workflow`).
     - Removed comment-triggered multi-agent watchdog path and aligned threshold enforcement to the active `severity_gate`.
+  - PR 5.1 foundation slice completion:
+    - #50 merged (`feat(plugin): phase 5.1 manifest scaffold/validate/list foundation`).
+    - Added plugin manifest contract and `plugin init|validate|list` command surface.

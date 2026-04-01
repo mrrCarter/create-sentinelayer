@@ -6,7 +6,12 @@ import open from "open";
 
 import { loadConfig } from "../config/service.js";
 import { SentinelayerApiError, requestJson } from "./http.js";
-import { clearStoredSession, readStoredSession, writeStoredSession } from "./session-store.js";
+import {
+  clearStoredSession,
+  readStoredSession,
+  readStoredSessionMetadata,
+  writeStoredSession,
+} from "./session-store.js";
 
 const DEFAULT_API_URL = "https://api.sentinelayer.com";
 export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
@@ -482,6 +487,95 @@ export async function getAuthStatus({
     tokenPrefix: session.tokenPrefix,
     tokenId: session.tokenId,
     filePath: session.filePath,
+  };
+}
+
+export async function listStoredAuthSessions({
+  cwd = process.cwd(),
+  env = process.env,
+  explicitApiUrl = "",
+  homeDir,
+} = {}) {
+  const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  const stored = await readStoredSessionMetadata({ homeDir });
+  if (!stored) {
+    return {
+      apiUrl,
+      sessions: [],
+    };
+  }
+
+  return {
+    apiUrl,
+    sessions: [
+      {
+        source: "session",
+        storage: stored.storage || null,
+        tokenId: stored.tokenId || null,
+        tokenPrefix: stored.tokenPrefix || null,
+        tokenExpiresAt: stored.tokenExpiresAt || null,
+        createdAt: stored.createdAt || null,
+        updatedAt: stored.updatedAt || null,
+        user: normalizeUser(stored.user || {}),
+        filePath: stored.filePath || null,
+      },
+    ],
+  };
+}
+
+export async function revokeAuthToken({
+  cwd = process.cwd(),
+  env = process.env,
+  explicitApiUrl = "",
+  tokenId = "",
+  homeDir,
+} = {}) {
+  const active = await resolveActiveAuthSession({
+    cwd,
+    env,
+    explicitApiUrl,
+    autoRotate: false,
+    homeDir,
+  });
+  if (!active || !active.token) {
+    throw new SentinelayerApiError("No active auth token found. Run `sl auth login` first.", {
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+  }
+
+  const targetTokenId = String(tokenId || "").trim() || String(active.tokenId || "").trim();
+  if (!targetTokenId) {
+    throw new Error(
+      "tokenId is required. Provide --token-id or use a stored session that includes token metadata."
+    );
+  }
+
+  await revokeApiToken({
+    apiUrl: active.apiUrl,
+    authToken: active.token,
+    tokenId: targetTokenId,
+  });
+
+  let matchedStoredSession = false;
+  let clearedLocal = false;
+  let filePath = null;
+  const stored = await readStoredSession({ homeDir });
+  if (stored && String(stored.tokenId || "").trim() === targetTokenId) {
+    matchedStoredSession = true;
+    const cleared = await clearStoredSession({ homeDir });
+    clearedLocal = Boolean(cleared.hadSession);
+    filePath = cleared.filePath || null;
+  }
+
+  return {
+    apiUrl: active.apiUrl,
+    source: active.source,
+    tokenId: targetTokenId,
+    revokedRemote: true,
+    matchedStoredSession,
+    clearedLocal,
+    filePath,
   };
 }
 

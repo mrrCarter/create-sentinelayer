@@ -116,6 +116,8 @@ For long-running agent/operator workflows, the CLI now supports persistent auth 
 - `sl auth login --api-url https://api.sentinelayer.com --skip-browser-open`
 - `sl auth status`
 - `sl auth logout`
+- `sl auth sessions`
+- `sl auth revoke --token-id <token-id>`
 
 Behavior:
 
@@ -402,6 +404,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
 - `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
+- `create-sentinelayer auth sessions|revoke` supports session inventory and explicit token revocation controls
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
 - `create-sentinelayer plugin init|validate|list` manages plugin extension manifests
