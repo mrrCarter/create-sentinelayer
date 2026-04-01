@@ -20,6 +20,7 @@ import { registerWatchCommand } from "./commands/watch.js";
 import { registerMcpCommand } from "./commands/mcp.js";
 import { registerPluginCommand } from "./commands/plugin.js";
 import { registerAiCommand } from "./commands/ai.js";
+import { registerReviewCommand } from "./commands/review.js";
 
 const COMMAND_SET = new Set([
   "init",
@@ -40,6 +41,7 @@ const COMMAND_SET = new Set([
   "mcp",
   "plugin",
   "ai",
+  "review",
 ]);
 
 function shouldBypassCommander(rawArgs) {
@@ -96,6 +98,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
   registerMcpCommand(program);
   registerPluginCommand(program);
   registerAiCommand(program);
+  registerReviewCommand(program);
 
   return program;
 }

@@ -154,6 +154,18 @@ By default, watch output is persisted to:
 - `.sentinelayer/observability/runtime-watch/<run-id>/events-<timestamp>.ndjson`
 - `.sentinelayer/observability/runtime-watch/<run-id>/summary-<timestamp>.json`
 
+## Deterministic review scan (Phase 9 extension slice)
+
+You can run deterministic local review scans in full-repo or diff-scoped mode:
+
+- `sl review scan --mode full`
+- `sl review scan --mode diff`
+
+`diff` mode scopes to staged/unstaged/untracked git changes. Reports are written to:
+
+- `.sentinelayer/reports/review-scan-full-<timestamp>.md`
+- `.sentinelayer/reports/review-scan-diff-<timestamp>.md`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -423,6 +435,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer mcp schema|registry ...` manages MCP registry schema + AIdenID template scaffolds
 - `create-sentinelayer plugin init|validate|list` manages plugin extension manifests
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
+- `create-sentinelayer review scan --mode full|diff` runs deterministic local review scans with report artifacts
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 
