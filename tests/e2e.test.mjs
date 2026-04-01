@@ -611,6 +611,78 @@ test("CLI subcommand: init supports command-tree scaffold invocation", async () 
   }
 });
 
+test("CLI config commands: set/get/list project scope", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-"));
+  try {
+    const setResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "config",
+        "set",
+        "defaultModelProvider",
+        "anthropic",
+        "--scope",
+        "project",
+        "--path",
+        tempRoot,
+        "--json",
+      ],
+    });
+    assert.equal(setResult.code, 0, setResult.stderr || setResult.stdout);
+    const setPayload = JSON.parse(String(setResult.stdout || "").trim());
+    assert.equal(setPayload.scope, "project");
+    assert.equal(setPayload.key, "defaultModelProvider");
+    assert.equal(setPayload.value, "anthropic");
+
+    const projectConfigText = await readFile(path.join(tempRoot, ".sentinelayer.yml"), "utf-8");
+    assert.match(projectConfigText, /defaultModelProvider:\s*anthropic/);
+
+    const getResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["config", "get", "defaultModelProvider", "--scope", "resolved", "--path", tempRoot, "--json"],
+    });
+    assert.equal(getResult.code, 0, getResult.stderr || getResult.stdout);
+    const getPayload = JSON.parse(String(getResult.stdout || "").trim());
+    assert.equal(getPayload.value, "anthropic");
+    assert.equal(getPayload.source, "project");
+
+    const listResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["config", "list", "--scope", "project", "--path", tempRoot, "--json"],
+    });
+    assert.equal(listResult.code, 0, listResult.stderr || listResult.stdout);
+    const listPayload = JSON.parse(String(listResult.stdout || "").trim());
+    assert.equal(listPayload.config.defaultModelProvider, "anthropic");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI config resolved scope gives precedence to environment overrides", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-"));
+  try {
+    await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "apiUrl: https://project.example\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        SENTINELAYER_API_URL: "https://env.example",
+      },
+      args: ["config", "get", "apiUrl", "--scope", "resolved", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.value, "https://env.example");
+    assert.equal(payload.source, "env");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI non-interactive mode fails fast when interview payload is missing", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
   try {

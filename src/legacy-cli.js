@@ -14,13 +14,20 @@ import open from "open";
 import pc from "picocolors";
 import prompts from "prompts";
 
-const DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
-const DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
-const DEFAULT_GITHUB_CLONE_BASE_URL =
+let DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
+let DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
+let DEFAULT_GITHUB_CLONE_BASE_URL =
   process.env.SENTINELAYER_GITHUB_CLONE_BASE_URL || "https://github.com";
 const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const PACKAGE_JSON_PATH = new URL("../package.json", import.meta.url);
+
+function refreshRuntimeDefaults() {
+  DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
+  DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
+  DEFAULT_GITHUB_CLONE_BASE_URL =
+    process.env.SENTINELAYER_GITHUB_CLONE_BASE_URL || "https://github.com";
+}
 
 function resolveCliVersion() {
   try {
@@ -179,6 +186,7 @@ function printUsage() {
   console.log("  create-sentinelayer /audit [--path PATH]");
   console.log("  create-sentinelayer /persona orchestrator [--mode MODE] [--path PATH]");
   console.log("  create-sentinelayer /apply --plan <todo.md> [--path PATH]");
+  console.log("  create-sentinelayer config <list|get|set|edit> [options]");
   console.log("");
   console.log("Options:");
   console.log("  -h, --help             Show help");
@@ -1873,6 +1881,7 @@ function printInfo(message) {
 }
 
 export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
+  refreshRuntimeDefaults();
   const commandExitCode = await tryRunLocalCommandMode(rawArgs);
   if (commandExitCode !== null) {
     if (commandExitCode !== 0) {

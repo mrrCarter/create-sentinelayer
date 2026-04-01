@@ -127,6 +127,21 @@ gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 - `SENTINELAYER_API_URL` (default: `https://api.sentinelayer.com`)
 - `SENTINELAYER_WEB_URL` (default: `https://sentinelayer.com`)
 
+## Layered config (PR 0.2)
+
+The CLI supports layered config resolution:
+
+- global: `~/.sentinelayer/config.yml`
+- project: `.sentinelayer.yml` at repo root
+- env overrides: `SENTINELAYER_API_URL`, `SENTINELAYER_WEB_URL`, `SENTINELAYER_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`
+
+Commands:
+
+- `create-sentinelayer config list --scope resolved --json`
+- `create-sentinelayer config get apiUrl --scope resolved`
+- `create-sentinelayer config set defaultModelProvider openai --scope project`
+- `create-sentinelayer config edit --scope project`
+
 ## Requirements
 
 - Node `>=18.17`
