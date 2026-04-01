@@ -186,6 +186,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
+- add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 
 Legacy slash commands are still supported:
 

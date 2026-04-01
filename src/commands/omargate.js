@@ -9,6 +9,7 @@ export function registerOmarGateCommand(program, invokeLegacy) {
     .command("deep")
     .description("Run local credential/policy scan")
     .option("--path <path>", "Target repository path")
+    .option("--output-dir <path>", "Artifact root for report output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const legacyArgs = buildLegacyArgs(["/omargate", "deep"], {

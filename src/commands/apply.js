@@ -6,6 +6,7 @@ export function registerApplyCommand(program, invokeLegacy) {
     .description("Parse a todo plan into deterministic execution order")
     .requiredOption("--plan <path>", "Path to plan markdown")
     .option("--path <path>", "Target repository path")
+    .option("--output-dir <path>", "Artifact root for report output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const planPath = String(options.plan || "").trim();

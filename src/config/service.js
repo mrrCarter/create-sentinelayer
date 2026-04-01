@@ -1,4 +1,5 @@
 import process from "node:process";
+import path from "node:path";
 
 import { getConfigPaths } from "./paths.js";
 import { ensureConfigFile, readConfigFile, writeConfigFile } from "./io.js";
@@ -159,4 +160,24 @@ export async function ensureEditableConfigPath({ scope = "project", cwd = proces
 
 export function listConfigKeys() {
   return [...CONFIG_KEYS];
+}
+
+export async function resolveOutputRoot({
+  cwd = process.cwd(),
+  outputDirOverride = "",
+  env = process.env,
+  homeDir,
+} = {}) {
+  const overrideValue = String(outputDirOverride || "").trim();
+  if (overrideValue) {
+    return path.resolve(cwd, overrideValue);
+  }
+
+  const config = await loadConfig({ cwd, env, homeDir });
+  const configuredOutputDir = String(config.resolved.outputDir || "").trim();
+  if (configuredOutputDir) {
+    return path.resolve(cwd, configuredOutputDir);
+  }
+
+  return path.resolve(cwd, ".sentinelayer");
 }
