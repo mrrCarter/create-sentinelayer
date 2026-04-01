@@ -2011,6 +2011,79 @@ test("CLI review scan diff mode scopes findings to changed git files", async () 
   }
 });
 
+test("CLI review deterministic command writes layered review artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-pipeline-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "index.js"),
+      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review");
+    assert.equal(payload.mode, "full");
+    assert.equal(payload.scannedFiles >= 1, true);
+    assert.equal(payload.p2 >= 1, true);
+    assert.equal(String(payload.runId || "").startsWith("review-"), true);
+
+    const reviewJson = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
+    assert.equal(reviewJson.schemaVersion, "1.0.0");
+    assert.equal(Array.isArray(reviewJson.layers.ingest.frameworks), true);
+    assert.equal(reviewJson.layers.structural.ruleCount >= 20, true);
+    assert.equal(Array.isArray(reviewJson.findings), true);
+
+    const reviewMarkdown = await readFile(payload.reportPath, "utf-8");
+    assert.match(reviewMarkdown, /REVIEW_DETERMINISTIC/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI review deterministic staged mode scopes to staged files only", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-pipeline-"));
+  try {
+    runCommand({ cwd: tempRoot, command: "git", args: ["init"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["config", "user.name", "Sentinelayer E2E"] });
+    runCommand({
+      cwd: tempRoot,
+      command: "git",
+      args: ["config", "user.email", "e2e@sentinelayer.local"],
+    });
+
+    const stagedPath = path.join(tempRoot, "app.js");
+    await writeFile(stagedPath, "const value = 1;\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
+
+    await writeFile(stagedPath, "const value = 2; // TODO: sanitize\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
+    await writeFile(path.join(tempRoot, "untracked.js"), "const leak = 'sk-test-12345678901234567890';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "--staged", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review");
+    assert.equal(payload.mode, "staged");
+    assert.equal(payload.scannedFiles >= 1, true);
+    assert.equal(payload.scopedFiles.includes("app.js"), true);
+    assert.equal(payload.scopedFiles.includes("untracked.js"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit resolves report output dir from project config", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {
