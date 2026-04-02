@@ -130,18 +130,52 @@ async function startMockApi({
   };
 }
 
-async function startAidenIdMockApi() {
+async function startAidenIdMockApi({
+  events = null,
+  latestExtractionResponses = null,
+} = {}) {
+  const defaultEvents = Array.isArray(events) && events.length > 0
+    ? events
+    : [
+        {
+          eventId: "evt_123",
+          eventType: "email.received",
+          receivedAt: "2026-05-01T00:00:00.000Z",
+          from: "no-reply@example.com",
+          subject: "Your verification code is 123456",
+        },
+      ];
+  const defaultLatestExtractionResponses =
+    Array.isArray(latestExtractionResponses) && latestExtractionResponses.length > 0
+      ? latestExtractionResponses
+      : [
+          {
+            otp: "123456",
+            primaryActionUrl: "https://example.com/verify?token=abc",
+            confidence: 0.95,
+            source: "RULES",
+          },
+        ];
+
   const state = {
     requestCount: 0,
     revokeCount: 0,
+    latestExtractionPollCount: 0,
     lastHeaders: {},
     lastPayload: null,
     lastRevokeIdentityId: "",
+    lastEventsIdentityId: "",
+    lastLatestIdentityId: "",
+    events: defaultEvents,
+    latestExtractionResponses: defaultLatestExtractionResponses,
   };
 
   const server = createServer(async (req, res) => {
     try {
-      if (req.method === "POST" && req.url === "/v1/identities") {
+      const parsedUrl = new URL(req.url || "/", "http://127.0.0.1");
+      const pathname = parsedUrl.pathname;
+
+      if (req.method === "POST" && pathname === "/v1/identities") {
         state.requestCount += 1;
         state.lastHeaders = { ...req.headers };
         state.lastPayload = await readJsonBody(req);
@@ -153,7 +187,8 @@ async function startAidenIdMockApi() {
           projectId: "proj_test",
         });
       }
-      const revokeMatch = req.url && req.url.match(/^\/v1\/identities\/([^/]+)\/revoke$/);
+
+      const revokeMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/revoke$/);
       if (req.method === "POST" && revokeMatch) {
         state.revokeCount += 1;
         state.lastHeaders = { ...req.headers };
@@ -165,6 +200,38 @@ async function startAidenIdMockApi() {
           projectId: "proj_test",
         });
       }
+
+      const eventsMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/events$/);
+      if (req.method === "GET" && eventsMatch) {
+        state.lastEventsIdentityId = decodeURIComponent(eventsMatch[1] || "");
+        const requestedLimit = Number(parsedUrl.searchParams.get("limit") || "50");
+        const safeLimit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.round(requestedLimit) : 50;
+        const payloadEvents = state.events.slice(0, safeLimit);
+        return jsonResponse(res, 200, {
+          events: payloadEvents,
+          nextCursor: null,
+        });
+      }
+
+      const latestExtractionMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/latest-extraction$/);
+      if (req.method === "GET" && latestExtractionMatch) {
+        state.latestExtractionPollCount += 1;
+        state.lastLatestIdentityId = decodeURIComponent(latestExtractionMatch[1] || "");
+        const index = Math.min(
+          state.latestExtractionPollCount - 1,
+          state.latestExtractionResponses.length - 1
+        );
+        const extraction = state.latestExtractionResponses[index] || null;
+        if (!extraction) {
+          return jsonResponse(res, 404, {
+            error: { code: "NOT_FOUND", message: "No extraction available yet" },
+          });
+        }
+        return jsonResponse(res, 200, {
+          extraction,
+        });
+      }
+
       return jsonResponse(res, 404, {
         error: { code: "NOT_FOUND", message: "Route not found" },
       });
@@ -2766,6 +2833,242 @@ test("CLI ai identity revoke execute mode calls API and updates lifecycle status
     assert.equal(show.code, 0, show.stderr || show.stdout);
     const showPayload = JSON.parse(String(show.stdout || "").trim());
     assert.equal(showPayload.identity.status, "REVOKED");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity events/latest expose extraction signal metadata", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const identityId = String(provisionPayload.identity?.id || "");
+    assert.equal(identityId.length > 0, true);
+
+    const events = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "events",
+        identityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--json",
+      ],
+    });
+    assert.equal(events.code, 0, events.stderr || events.stdout);
+    const eventsPayload = JSON.parse(String(events.stdout || "").trim());
+    assert.equal(eventsPayload.command, "ai identity events");
+    assert.equal(eventsPayload.identityId, identityId);
+    assert.equal(eventsPayload.count >= 1, true);
+    assert.match(String(eventsPayload.outputPath || ""), /[\\/]aidenid[\\/]events[\\/]/);
+
+    const latest = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "latest",
+        identityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--json",
+      ],
+    });
+    assert.equal(latest.code, 0, latest.stderr || latest.stdout);
+    const latestPayload = JSON.parse(String(latest.stdout || "").trim());
+    assert.equal(latestPayload.command, "ai identity latest");
+    assert.equal(latestPayload.identityId, identityId);
+    assert.equal(latestPayload.extraction.otp, "123456");
+    assert.equal(latestPayload.extraction.source, "RULES");
+    assert.equal(mock.state.lastEventsIdentityId, identityId);
+    assert.equal(mock.state.lastLatestIdentityId, identityId);
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity wait-for-otp polls until confidence threshold is met", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi({
+    latestExtractionResponses: [
+      {
+        otp: "123456",
+        primaryActionUrl: "https://example.com/verify?token=low",
+        confidence: 0.6,
+        source: "LLM",
+      },
+      {
+        otp: "654321",
+        primaryActionUrl: "https://example.com/verify?token=high",
+        confidence: 0.98,
+        source: "RULES",
+      },
+    ],
+  });
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const identityId = String(provisionPayload.identity?.id || "");
+    assert.equal(identityId.length > 0, true);
+
+    const wait = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "wait-for-otp",
+        identityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--interval-seconds",
+        "1",
+        "--timeout",
+        "10",
+        "--min-confidence",
+        "0.8",
+        "--json",
+      ],
+    });
+    assert.equal(wait.code, 0, wait.stderr || wait.stdout);
+    const waitPayload = JSON.parse(String(wait.stdout || "").trim());
+    assert.equal(waitPayload.command, "ai identity wait-for-otp");
+    assert.equal(waitPayload.identityId, identityId);
+    assert.equal(waitPayload.extraction.otp, "654321");
+    assert.equal(waitPayload.source, "RULES");
+    assert.equal(waitPayload.confidence >= 0.8, true);
+    assert.equal(waitPayload.attempts >= 2, true);
+    assert.equal(mock.state.latestExtractionPollCount >= 2, true);
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity wait-for-otp exits non-zero on timeout", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi({
+    latestExtractionResponses: [null],
+  });
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const identityId = String(provisionPayload.identity?.id || "");
+    assert.equal(identityId.length > 0, true);
+
+    const wait = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "wait-for-otp",
+        identityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--interval-seconds",
+        "1",
+        "--timeout",
+        "1",
+        "--json",
+      ],
+    });
+    assert.equal(wait.code !== 0, true);
+    assert.match(String(wait.stderr || wait.stdout), /Timed out waiting for OTP\/link/);
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

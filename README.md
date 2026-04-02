@@ -314,6 +314,9 @@ The CLI now includes an `sl ai` surface for AIdenID identity provisioning:
 - `sl ai identity list --json` (list locally tracked identities)
 - `sl ai identity show <identity-id> --json`
 - `sl ai identity revoke <identity-id> --execute --api-key <key> --org-id <id> --project-id <id>`
+- `sl ai identity events <identity-id> --json` (list inbound events with cursor/limit support)
+- `sl ai identity latest <identity-id> --json` (latest event + extraction metadata)
+- `sl ai identity wait-for-otp <identity-id> --min-confidence 0.8 --timeout 60 --json`
 
 Identity lifecycle records are persisted to:
 
@@ -324,6 +327,8 @@ Credential env fallbacks for live execution:
 - `AIDENID_API_KEY`
 - `AIDENID_ORG_ID`
 - `AIDENID_PROJECT_ID`
+
+Extraction responses include deterministic source metadata (`RULES` vs `LLM`) and confidence scores.
 
 ## Manual fallback (if auto injection is skipped)
 
@@ -584,6 +589,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - `create-sentinelayer ai identity list|show|revoke` manages local identity lifecycle records and optional live revoke calls
+- `create-sentinelayer ai identity events|latest|wait-for-otp` manages extraction/event polling for OTP and verification-link retrieval
 - `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
 - `create-sentinelayer review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings
