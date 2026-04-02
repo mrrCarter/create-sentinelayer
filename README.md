@@ -402,6 +402,28 @@ New identity lifecycle commands:
 
 `kill-all --execute` blocks legal-hold identities and marks eligible tagged identities as `SQUASHED` in local registry with campaign metadata.
 
+## Error daemon worker (Phase 13.1 slice)
+
+The CLI now includes an OMAR daemon lane for deterministic error intake and routed queue generation:
+
+- `sl daemon error record --service sentinelayer-api --endpoint /v1/runtime/runs --error-code RUNTIME_TIMEOUT --severity P1 --message "runtime timeout"`
+- `sl daemon error worker --max-events 200 --json`
+- `sl daemon error queue --json`
+
+Daemon artifacts:
+
+- `.sentinelayer/observability/error-daemon/admin-error-stream.ndjson` (append-only intake stream)
+- `.sentinelayer/observability/error-daemon/queue.json` (deduped routed queue work items)
+- `.sentinelayer/observability/error-daemon/worker-state.json` (stream cursor + aggregate stats)
+- `.sentinelayer/observability/error-daemon/intake/intake-*.json` (per-event intake snapshots)
+- `.sentinelayer/observability/error-daemon/runs/error-daemon-run-*.json` (worker tick execution evidence)
+
+Queue routing behavior:
+
+- events are fingerprinted from service, endpoint, error code, stack fingerprint, and commit sha
+- matching open fingerprints are deduped with `occurrenceCount` increments and severity escalation
+- worker cursor tracks processed stream offset for deterministic resumability across ticks
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -722,6 +744,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
 - `create-sentinelayer auth sessions|revoke` supports session inventory and explicit token revocation controls
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
+- `create-sentinelayer daemon error record|worker|queue` ingests admin errors and routes deterministic daemon queue work items
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
