@@ -15,6 +15,12 @@ function resolveHomeDir(homeDir) {
   return path.resolve(String(homeDir || os.homedir()));
 }
 
+/**
+ * Resolve the deterministic credentials metadata file path for the current user/home override.
+ *
+ * @param {{ homeDir?: string }} [options]
+ * @returns {string}
+ */
 export function resolveCredentialsFilePath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
   return path.join(resolvedHome, ".sentinelayer", "credentials.json");
@@ -112,6 +118,32 @@ async function writeMetadata(filePath, metadata) {
   }
 }
 
+/**
+ * Load the active stored session, resolving keyring-backed tokens when configured.
+ *
+ * @param {{ homeDir?: string }} [options]
+ * @returns {Promise<null | {
+ *   version: number,
+ *   apiUrl: string,
+ *   storage: "file" | "keyring",
+ *   keyringService: string,
+ *   keyringAccount: string,
+ *   tokenId: string | null,
+ *   tokenPrefix: string | null,
+ *   tokenExpiresAt: string | null,
+ *   createdAt: string,
+ *   updatedAt: string,
+ *   user: {
+ *     id: string,
+ *     githubUsername: string,
+ *     email: string,
+ *     avatarUrl: string,
+ *     isAdmin: boolean
+ *   },
+ *   token: string,
+ *   filePath: string
+ * }>}
+ */
 export async function readStoredSession({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (!metadata) {
@@ -149,6 +181,32 @@ export async function readStoredSession({ homeDir } = {}) {
   };
 }
 
+/**
+ * Read persisted session metadata without returning secret token material.
+ *
+ * @param {{ homeDir?: string }} [options]
+ * @returns {Promise<null | {
+ *   version: number,
+ *   apiUrl: string,
+ *   storage: string,
+ *   keyringService: string,
+ *   keyringAccount: string,
+ *   tokenId: string | null,
+ *   tokenPrefix: string | null,
+ *   tokenExpiresAt: string | null,
+ *   createdAt: string,
+ *   updatedAt: string,
+ *   user: {
+ *     id: string,
+ *     githubUsername: string,
+ *     email: string,
+ *     avatarUrl: string,
+ *     isAdmin: boolean
+ *   },
+ *   filePath: string,
+ *   token: null
+ * }>}
+ */
 export async function readStoredSessionMetadata({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (!metadata) {
@@ -161,6 +219,40 @@ export async function readStoredSessionMetadata({ homeDir } = {}) {
   };
 }
 
+/**
+ * Persist a new session token and metadata using keyring storage when available.
+ *
+ * @param {{
+ *   apiUrl: string,
+ *   token: string,
+ *   tokenId?: string | null,
+ *   tokenPrefix?: string | null,
+ *   tokenExpiresAt?: string | null,
+ *   user?: Record<string, unknown>
+ * }} [session]
+ * @param {{ homeDir?: string }} [options]
+ * @returns {Promise<{
+ *   version: number,
+ *   apiUrl: string,
+ *   storage: "file" | "keyring",
+ *   keyringService: string,
+ *   keyringAccount: string,
+ *   tokenId: string | null,
+ *   tokenPrefix: string | null,
+ *   tokenExpiresAt: string | null,
+ *   createdAt: string,
+ *   updatedAt: string,
+ *   user: {
+ *     id: string,
+ *     githubUsername: string,
+ *     email: string,
+ *     avatarUrl: string,
+ *     isAdmin: boolean
+ *   },
+ *   filePath: string,
+ *   token: string
+ * }>}
+ */
 export async function writeStoredSession(
   {
     apiUrl,
@@ -225,6 +317,12 @@ export async function writeStoredSession(
   };
 }
 
+/**
+ * Remove local session metadata and keyring credentials for the active account.
+ *
+ * @param {{ homeDir?: string }} [options]
+ * @returns {Promise<{ filePath: string, hadSession: boolean }>}
+ */
 export async function clearStoredSession({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (metadata && metadata.storage === "keyring") {

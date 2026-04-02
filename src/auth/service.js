@@ -14,8 +14,11 @@ import {
 } from "./session-store.js";
 
 const DEFAULT_API_URL = "https://api.sentinelayer.com";
+/** Default maximum wall-clock wait for browser-based CLI auth approval (ms). */
 export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
+/** Default lifetime for issued API tokens used by CLI sessions (days). */
 export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
+/** Default threshold at which stored tokens are rotated before expiry (days). */
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
 
@@ -86,6 +89,17 @@ function isNearExpiry(tokenExpiresAt, thresholdDays) {
   return expiryEpoch - Date.now() <= thresholdMs;
 }
 
+/**
+ * Resolve API URL precedence for auth operations: explicit -> env -> config -> default.
+ *
+ * @param {{
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   homeDir?: string
+ * }} [options]
+ * @returns {Promise<string>}
+ */
 export async function resolveApiUrl({
   cwd = process.cwd(),
   env = process.env,
@@ -247,6 +261,39 @@ async function rotateStoredApiTokenIfNeeded({
   };
 }
 
+/**
+ * Perform browser-based CLI login flow and persist an API token session locally.
+ *
+ * @param {{
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   skipBrowserOpen?: boolean,
+ *   timeoutMs?: number,
+ *   tokenLabel?: string,
+ *   tokenTtlDays?: number,
+ *   ide?: string,
+ *   cliVersion?: string,
+ *   homeDir?: string
+ * }} [options]
+ * @returns {Promise<{
+ *   apiUrl: string,
+ *   authorizeUrl: string,
+ *   browserOpened: boolean,
+ *   user: {
+ *     id: string,
+ *     githubUsername: string,
+ *     email: string,
+ *     avatarUrl: string,
+ *     isAdmin: boolean
+ *   },
+ *   tokenId: string | null,
+ *   tokenPrefix: string | null,
+ *   tokenExpiresAt: string | null,
+ *   storage: string,
+ *   filePath: string
+ * }>}
+ */
 export async function loginAndPersistSession({
   cwd = process.cwd(),
   env = process.env,
@@ -328,6 +375,38 @@ export async function loginAndPersistSession({
   };
 }
 
+/**
+ * Resolve active auth credentials used by CLI commands, optionally rotating near-expiry session tokens.
+ *
+ * @param {{
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   autoRotate?: boolean,
+ *   rotateThresholdDays?: number,
+ *   tokenLabel?: string,
+ *   tokenTtlDays?: number,
+ *   homeDir?: string
+ * }} [options]
+ * @returns {Promise<null | {
+ *   apiUrl: string,
+ *   token: string,
+ *   source: "env" | "config" | "session",
+ *   user: {
+ *     id: string,
+ *     githubUsername: string,
+ *     email: string,
+ *     avatarUrl: string,
+ *     isAdmin: boolean
+ *   } | null,
+ *   storage: string,
+ *   tokenId: string | null,
+ *   tokenPrefix: string | null,
+ *   tokenExpiresAt: string | null,
+ *   rotated: boolean,
+ *   filePath: string | null
+ * }>}
+ */
 export async function resolveActiveAuthSession({
   cwd = process.cwd(),
   env = process.env,
@@ -412,6 +491,35 @@ export async function resolveActiveAuthSession({
   };
 }
 
+/**
+ * Return current authentication state, with optional remote `/auth/me` verification.
+ *
+ * @param {{
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   checkRemote?: boolean,
+ *   autoRotate?: boolean,
+ *   rotateThresholdDays?: number,
+ *   tokenLabel?: string,
+ *   tokenTtlDays?: number,
+ *   homeDir?: string
+ * }} [options]
+ * @returns {Promise<{
+ *   authenticated: boolean,
+ *   apiUrl: string,
+ *   source: string | null,
+ *   storage: string | null,
+ *   user: any,
+ *   remoteUser: any,
+ *   remoteError: null | { code: string, message: string, status: number, requestId: string | null },
+ *   rotated: boolean,
+ *   tokenExpiresAt: string | null,
+ *   tokenPrefix: string | null,
+ *   tokenId: string | null,
+ *   filePath: string | null
+ * }>}
+ */
 export async function getAuthStatus({
   cwd = process.cwd(),
   env = process.env,
@@ -490,6 +598,12 @@ export async function getAuthStatus({
   };
 }
 
+/**
+ * List persisted local session metadata for CLI operators/HITL dashboards.
+ *
+ * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, explicitApiUrl?: string, homeDir?: string }} [options]
+ * @returns {Promise<{ apiUrl: string, sessions: Array<any> }>}
+ */
 export async function listStoredAuthSessions({
   cwd = process.cwd(),
   env = process.env,
@@ -523,6 +637,26 @@ export async function listStoredAuthSessions({
   };
 }
 
+/**
+ * Revoke an API token remotely and clear matching local stored session metadata when applicable.
+ *
+ * @param {{
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   tokenId?: string,
+ *   homeDir?: string
+ * }} [options]
+ * @returns {Promise<{
+ *   apiUrl: string,
+ *   source: string,
+ *   tokenId: string,
+ *   revokedRemote: boolean,
+ *   matchedStoredSession: boolean,
+ *   clearedLocal: boolean,
+ *   filePath: string | null
+ * }>}
+ */
 export async function revokeAuthToken({
   cwd = process.cwd(),
   env = process.env,
@@ -579,6 +713,24 @@ export async function revokeAuthToken({
   };
 }
 
+/**
+ * Clear local CLI session state and optionally revoke the remote token first.
+ *
+ * @param {{
+ *   homeDir?: string,
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   revokeRemote?: boolean
+ * }} [options]
+ * @returns {Promise<{
+ *   hadStoredSession: boolean,
+ *   revokedRemote: boolean,
+ *   clearedLocal: boolean,
+ *   apiUrl?: string,
+ *   filePath?: string
+ * }>}
+ */
 export async function logoutSession({
   homeDir,
   cwd = process.cwd(),
@@ -619,6 +771,17 @@ export async function logoutSession({
   };
 }
 
+/**
+ * Fetch runtime run event stream slices used by `sl watch` and reproducibility artifacts.
+ *
+ * @param {{
+ *   apiUrl: string,
+ *   authToken: string,
+ *   runId: string,
+ *   afterEventId?: string | null
+ * }} [options]
+ * @returns {Promise<any>}
+ */
 export async function listRuntimeRunEvents({
   apiUrl,
   authToken,
@@ -637,6 +800,12 @@ export async function listRuntimeRunEvents({
   );
 }
 
+/**
+ * Fetch runtime run status snapshot from the Sentinelayer API.
+ *
+ * @param {{ apiUrl: string, authToken: string, runId: string }} [options]
+ * @returns {Promise<any>}
+ */
 export async function getRuntimeRunStatus({
   apiUrl,
   authToken,

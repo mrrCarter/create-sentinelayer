@@ -6,8 +6,11 @@ import { z } from "zod";
 
 import { resolveOutputRoot } from "../config/service.js";
 
+/** MCP tool-registry schema version used by Sentinelayer CLI generated artifacts. */
 export const MCP_TOOL_REGISTRY_SCHEMA_VERSION = "1.0.0";
+/** MCP server-config schema version used by Sentinelayer CLI generated artifacts. */
 export const MCP_SERVER_CONFIG_SCHEMA_VERSION = "1.0.0";
+/** AIdenID adapter-contract schema version used by Sentinelayer CLI generated artifacts. */
 export const AIDENID_ADAPTER_CONTRACT_SCHEMA_VERSION = "1.0.0";
 
 const serverIdRegex = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
@@ -212,6 +215,11 @@ const mcpServerConfigSchema = z
   })
   .strict();
 
+/**
+ * Build JSON schema for Sentinelayer MCP tool-registry documents.
+ *
+ * @returns {Record<string, any>}
+ */
 export function buildMcpToolRegistrySchema() {
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -326,6 +334,12 @@ export function buildMcpToolRegistrySchema() {
   };
 }
 
+/**
+ * Create a secure-by-default MCP tool-registry template for AIdenID provisioning.
+ *
+ * @param {{ generatedAt?: string }} [options]
+ * @returns {Record<string, any>}
+ */
 export function buildAidenIdRegistryTemplate({ generatedAt = new Date().toISOString() } = {}) {
   return {
     version: MCP_TOOL_REGISTRY_SCHEMA_VERSION,
@@ -387,6 +401,12 @@ export function buildAidenIdRegistryTemplate({ generatedAt = new Date().toISOStr
   };
 }
 
+/**
+ * Create an AIdenID adapter contract template that binds MCP tools to provisioning endpoints.
+ *
+ * @param {{ generatedAt?: string, registryFile?: string }} [options]
+ * @returns {Record<string, any>}
+ */
 export function buildAidenIdProvisioningAdapterTemplate({
   generatedAt = new Date().toISOString(),
   registryFile = ".sentinelayer/mcp/tool-registry.aidenid-template.json",
@@ -438,6 +458,12 @@ export function buildAidenIdProvisioningAdapterTemplate({
   };
 }
 
+/**
+ * Create a local MCP server config template with deterministic runtime budgets and security defaults.
+ *
+ * @param {{ serverId?: string, registryFile?: string, generatedAt?: string }} [options]
+ * @returns {Record<string, any>}
+ */
 export function buildMcpServerConfigTemplate({
   serverId = "sentinelayer-local",
   registryFile = ".sentinelayer/mcp/tool-registry.aidenid-template.json",
@@ -474,6 +500,12 @@ export function buildMcpServerConfigTemplate({
   };
 }
 
+/**
+ * Build VS Code bridge config content that points to Sentinelayer MCP server runtime.
+ *
+ * @param {{ serverId?: string, serverConfigFile?: string }} [options]
+ * @returns {{ mcpServers: Record<string, { command: string, args: string[] }> }}
+ */
 export function buildVsCodeMcpBridgeTemplate({
   serverId,
   serverConfigFile,
@@ -494,11 +526,25 @@ export function buildVsCodeMcpBridgeTemplate({
   };
 }
 
+/**
+ * Validate and normalize a tool-registry payload against Sentinelayer MCP registry schema.
+ *
+ * @param {unknown} payload
+ * @returns {any}
+ */
 export function validateMcpToolRegistry(payload) {
   const parsed = mcpRegistrySchema.parse(payload);
   return parsed;
 }
 
+/**
+ * Validate and normalize AIdenID adapter contract payload.
+ * Optionally cross-validates adapter tool bindings against a provided registry payload.
+ *
+ * @param {unknown} payload
+ * @param {{ registryPayload?: unknown }} [options]
+ * @returns {any}
+ */
 export function validateAidenIdAdapterContract(payload, { registryPayload } = {}) {
   const parsed = aidenIdAdapterContractSchema.parse(payload);
 
@@ -518,14 +564,34 @@ export function validateAidenIdAdapterContract(payload, { registryPayload } = {}
   return parsed;
 }
 
+/**
+ * Validate and normalize MCP server runtime config payload.
+ *
+ * @param {unknown} payload
+ * @returns {any}
+ */
 export function validateMcpServerConfig(payload) {
   return mcpServerConfigSchema.parse(payload);
 }
 
+/**
+ * Serialize a value into pretty-printed JSON with trailing newline for deterministic artifacts.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
 export function stringifyJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/**
+ * Write JSON file with optional overwrite protection.
+ *
+ * @param {string} filePath
+ * @param {unknown} value
+ * @param {{ force?: boolean }} [options]
+ * @returns {Promise<string>}
+ */
 export async function writeJsonFile(filePath, value, { force = false } = {}) {
   const resolvedPath = path.resolve(filePath);
   if (!force) {
@@ -547,6 +613,12 @@ export async function writeJsonFile(filePath, value, { force = false } = {}) {
   return resolvedPath;
 }
 
+/**
+ * Read and parse JSON from disk using an absolute resolved path.
+ *
+ * @param {string} filePath
+ * @returns {Promise<{ path: string, data: any }>}
+ */
 export async function readJsonFile(filePath) {
   const resolvedPath = path.resolve(filePath);
   const rawText = await fsp.readFile(resolvedPath, "utf-8");
@@ -556,6 +628,12 @@ export async function readJsonFile(filePath) {
   };
 }
 
+/**
+ * Resolve default output path for generated MCP registry schema artifacts.
+ *
+ * @param {{ cwd?: string, outputDir?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {Promise<string>}
+ */
 export async function resolveDefaultMcpOutputPath({ cwd, outputDir, env } = {}) {
   const outputRoot = await resolveOutputRoot({
     cwd,
@@ -565,6 +643,12 @@ export async function resolveDefaultMcpOutputPath({ cwd, outputDir, env } = {}) 
   return path.join(outputRoot, "mcp", "tool-registry.schema.json");
 }
 
+/**
+ * Resolve default output path for generated AIdenID adapter contract artifacts.
+ *
+ * @param {{ cwd?: string, outputDir?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {Promise<string>}
+ */
 export async function resolveDefaultAidenIdAdapterContractPath({ cwd, outputDir, env } = {}) {
   const outputRoot = await resolveOutputRoot({
     cwd,
@@ -574,6 +658,12 @@ export async function resolveDefaultAidenIdAdapterContractPath({ cwd, outputDir,
   return path.join(outputRoot, "mcp", "aidenid-provisioning-adapter.json");
 }
 
+/**
+ * Resolve default MCP server config output path for a specific server id.
+ *
+ * @param {{ cwd?: string, outputDir?: string, env?: NodeJS.ProcessEnv, serverId?: string }} [options]
+ * @returns {Promise<string>}
+ */
 export async function resolveDefaultMcpServerConfigPath({
   cwd,
   outputDir,
@@ -594,6 +684,12 @@ export async function resolveDefaultMcpServerConfigPath({
   return path.join(outputRoot, "mcp", "servers", `${normalizedId}.json`);
 }
 
+/**
+ * Resolve default VS Code MCP bridge file path.
+ *
+ * @param {{ cwd?: string }} [options]
+ * @returns {string}
+ */
 export function resolveDefaultVsCodeBridgePath({ cwd } = {}) {
   return path.join(path.resolve(cwd || process.cwd()), ".vscode", "mcp.json");
 }
