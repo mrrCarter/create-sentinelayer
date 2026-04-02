@@ -36,6 +36,7 @@ import {
   getBudgetHealthColor,
   normalizeOperatorStopMode,
 } from "../daemon/operator-control.js";
+import { buildArtifactLineageIndex, listArtifactLineage } from "../daemon/artifact-lineage.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -197,6 +198,22 @@ function printControlPlaneSummary(payload) {
         `- ${agent.agentIdentity} | work_items=${agent.workItemCount} | active=${agent.activeWorkItemCount} | blocked=${agent.blockedCount} | squashed=${agent.squashedCount} | longest_session=${formatDurationSeconds(agent.maxSessionElapsedSeconds)}`
       );
     }
+  }
+}
+
+function printLineageSummary(payload) {
+  console.log(pc.bold("OMAR artifact lineage"));
+  console.log(pc.gray(`Index: ${payload.indexPath}`));
+  console.log(pc.gray(`Events: ${payload.eventPath}`));
+  console.log(
+    pc.gray(
+      `visible=${payload.visibleCount} total=${payload.totalCount} lineage_run=${payload.lineageRunId || "n/a"}`
+    )
+  );
+  for (const item of payload.workItems) {
+    console.log(
+      `- ${item.workItemId} | ${item.severity} | ${item.workItemStatus} | agent=${item.links?.agentIdentity || "unassigned"} | jira=${item.links?.jiraIssueKey || "n/a"} | budget=${item.links?.budgetLifecycleState || "WITHIN_BUDGET"} | operator_snapshot=${item.links?.latestOperatorSnapshotRunId || "n/a"}`
+    );
   }
 }
 
@@ -1006,6 +1023,160 @@ export function registerDaemonCommand(program) {
       if (stopped.jiraCommentWarning) {
         console.log(pc.yellow(`jira_warning=${stopped.jiraCommentWarning}`));
       }
+    });
+
+  const lineage = daemon
+    .command("lineage")
+    .description("Build and inspect deterministic observability artifact lineage by work item");
+
+  lineage
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option(
+      "--status <csv>",
+      `Optional queue status filter (${WORK_ITEM_STATUSES.join(", ")})`
+    )
+    .option("--work-item-id <id>", "Filter to a specific work item id")
+    .option("--limit <n>", "Maximum work items to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listArtifactLineage({
+        targetPath,
+        outputDir: options.outputDir,
+        statuses: parseCsv(options.status),
+        workItemId: options.workItemId,
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon lineage",
+        targetPath,
+        indexPath: listed.lineageIndexPath,
+        eventPath: listed.lineageEventsPath,
+        generatedAt: listed.generatedAt,
+        lineageRunId: listed.lineageRunId,
+        summary: listed.summary,
+        totalCount: listed.totalCount,
+        visibleCount: listed.workItems.length,
+        workItems: listed.workItems,
+        runs: listed.runs,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printLineageSummary(payload);
+    });
+
+  lineage
+    .command("build")
+    .description("Rebuild deterministic artifact lineage index from daemon observability artifacts")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const built = await buildArtifactLineageIndex({
+        targetPath,
+        outputDir: options.outputDir,
+        nowIso: options.nowIso,
+      });
+      const payload = {
+        command: "daemon lineage build",
+        targetPath,
+        indexPath: built.indexPath,
+        eventPath: built.eventPath,
+        lineageRunId: built.lineageRunId,
+        summary: built.summary,
+        totalCount: built.workItems.length,
+        visibleCount: Math.min(built.workItems.length, 20),
+        workItems: built.workItems.slice(0, 20),
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printLineageSummary(payload);
+    });
+
+  lineage
+    .command("list")
+    .description("List lineage work-item records from the latest lineage index")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option(
+      "--status <csv>",
+      `Optional queue status filter (${WORK_ITEM_STATUSES.join(", ")})`
+    )
+    .option("--work-item-id <id>", "Filter to a specific work item id")
+    .option("--limit <n>", "Maximum work items to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listArtifactLineage({
+        targetPath,
+        outputDir: options.outputDir,
+        statuses: parseCsv(options.status),
+        workItemId: options.workItemId,
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon lineage list",
+        targetPath,
+        indexPath: listed.lineageIndexPath,
+        eventPath: listed.lineageEventsPath,
+        generatedAt: listed.generatedAt,
+        lineageRunId: listed.lineageRunId,
+        summary: listed.summary,
+        totalCount: listed.totalCount,
+        visibleCount: listed.workItems.length,
+        workItems: listed.workItems,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printLineageSummary(payload);
+    });
+
+  lineage
+    .command("show")
+    .description("Show one lineage work-item record by id")
+    .argument("<workItemId>", "Queue work item id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listArtifactLineage({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        limit: 1,
+      });
+      const record = listed.workItems[0] || null;
+      if (!record) {
+        throw new Error(`No lineage record found for work item '${workItemId}'.`);
+      }
+      const payload = {
+        command: "daemon lineage show",
+        targetPath,
+        indexPath: listed.lineageIndexPath,
+        eventPath: listed.lineageEventsPath,
+        generatedAt: listed.generatedAt,
+        lineageRunId: listed.lineageRunId,
+        workItem: record,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("OMAR artifact lineage record"));
+      console.log(pc.gray(`Index: ${listed.lineageIndexPath}`));
+      console.log(
+        `${record.workItemId} status=${record.workItemStatus} jira=${record.links?.jiraIssueKey || "n/a"} agent=${record.links?.agentIdentity || "unassigned"}`
+      );
     });
 
   const error = daemon

@@ -3037,6 +3037,162 @@ test("CLI daemon control snapshot and stop enforce operator visibility + confirm
   }
 });
 
+test("CLI daemon lineage build/list/show produces reproducible artifact linkage records", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-lineage-e2e-"));
+  try {
+    const record = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Runtime timeout",
+        "--json",
+      ],
+    });
+    assert.equal(record.code, 0, record.stderr || record.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+
+    const queue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queue.code, 0, queue.stderr || queue.stdout);
+    const queuePayload = JSON.parse(String(queue.stdout || "").trim());
+    const workItemId = String(queuePayload.items[0]?.workItemId || "");
+    assert.equal(workItemId.length > 0, true);
+
+    const claim = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "claim",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "maya.markov@sentinelayer.local",
+        "--run-id",
+        "loop_003",
+        "--json",
+      ],
+    });
+    assert.equal(claim.code, 0, claim.stderr || claim.stdout);
+
+    const jiraOpen = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "jira",
+        "open",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--issue-key-prefix",
+        "SL",
+        "--json",
+      ],
+    });
+    assert.equal(jiraOpen.code, 0, jiraOpen.stderr || jiraOpen.stdout);
+
+    const budgetCheck = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "budget",
+        "check",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--usage-json",
+        "{\"tokensUsed\":95}",
+        "--budget-json",
+        "{\"maxTokens\":100,\"warningThresholdPercent\":80}",
+        "--now-iso",
+        "2026-04-02T00:10:20.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(budgetCheck.code, 0, budgetCheck.stderr || budgetCheck.stdout);
+
+    const controlSnapshot = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "control",
+        "snapshot",
+        "--path",
+        tempRoot,
+        "--now-iso",
+        "2026-04-02T00:10:30.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(controlSnapshot.code, 0, controlSnapshot.stderr || controlSnapshot.stdout);
+
+    const lineageBuild = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "lineage", "build", "--path", tempRoot, "--json"],
+    });
+    assert.equal(lineageBuild.code, 0, lineageBuild.stderr || lineageBuild.stdout);
+    const lineageBuildPayload = JSON.parse(String(lineageBuild.stdout || "").trim());
+    assert.equal(lineageBuildPayload.command, "daemon lineage build");
+    assert.equal(lineageBuildPayload.summary.totalWorkItemsIndexed, 1);
+
+    const lineageShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "lineage", "show", workItemId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(lineageShow.code, 0, lineageShow.stderr || lineageShow.stdout);
+    const lineageShowPayload = JSON.parse(String(lineageShow.stdout || "").trim());
+    assert.equal(lineageShowPayload.command, "daemon lineage show");
+    assert.equal(lineageShowPayload.workItem.workItemId, workItemId);
+    assert.equal(lineageShowPayload.workItem.links.agentIdentity, "maya.markov@sentinelayer.local");
+    assert.equal(lineageShowPayload.workItem.links.loopRunId, "loop_003");
+    assert.equal(lineageShowPayload.workItem.links.jiraIssueKey.startsWith("SL-"), true);
+    assert.equal(lineageShowPayload.workItem.links.budgetLifecycleState, "WARNING_THRESHOLD");
+
+    const lineageList = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "lineage", "list", "--path", tempRoot, "--status", "ASSIGNED", "--json"],
+    });
+    assert.equal(lineageList.code, 0, lineageList.stderr || lineageList.stdout);
+    const lineageListPayload = JSON.parse(String(lineageList.stdout || "").trim());
+    assert.equal(lineageListPayload.command, "daemon lineage list");
+    assert.equal(lineageListPayload.visibleCount, 1);
+    assert.equal(lineageListPayload.workItems[0].workItemId, workItemId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {

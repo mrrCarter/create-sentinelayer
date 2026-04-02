@@ -517,6 +517,25 @@ Operator control artifacts:
 - `.sentinelayer/observability/error-daemon/operator-events.ndjson`
 - `.sentinelayer/observability/error-daemon/operator-snapshots/operator-snapshot-*.json`
 
+## Artifact lineage tree (Phase 13.6 slice)
+
+Daemon lineage commands now index reproducibility links across queue, assignment, Jira, budget, and operator artifacts:
+
+- `sl daemon lineage build --json`
+- `sl daemon lineage list --status ASSIGNED,BLOCKED --json`
+- `sl daemon lineage show <work-item-id> --json`
+
+Lineage index fields include:
+
+- work-item links (`agentIdentity`, `assignmentStatus`, `loopRunId`, `jiraIssueKey`, `budgetLifecycleState`)
+- artifact pointers (queue/ledger/jira/budget/operator state files + per-work-item run artifacts)
+- reproducibility run catalogs (`errorDaemonRuns`, `budgetChecks`, `operatorSnapshots`)
+
+Lineage artifacts:
+
+- `.sentinelayer/observability/error-daemon/lineage/lineage-index.json`
+- `.sentinelayer/observability/error-daemon/lineage/lineage-events.ndjson`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -842,6 +861,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer daemon jira open|start|comment|transition|list` manages Jira lifecycle evidence tied to daemon work items
 - `create-sentinelayer daemon budget check|status` enforces budget warning/quarantine/kill governance with reproducible artifacts
 - `create-sentinelayer daemon control|snapshot|stop` provides operator roster snapshots and explicit confirmed stop controls
+- `create-sentinelayer daemon lineage build|list|show` indexes reproducible work-item artifact lineage across queue/assignment/jira/budget/operator runs
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
