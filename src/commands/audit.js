@@ -248,6 +248,67 @@ export function registerAuditCommand(program, invokeLegacy) {
     });
 
   audit
+    .command("testing")
+    .description("Run testing specialist agent only")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--registry-file <path>", "Optional custom audit registry file")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--dry-run", "Skip deterministic baseline and run testing planning only")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const registry = await loadAuditRegistry({
+        registryFile: options.registryFile,
+      });
+      const selected = selectAuditAgents(registry.agents, "testing");
+      if (selected.selected.length !== 1) {
+        throw new Error("Testing specialist agent is unavailable in the current registry.");
+      }
+
+      const result = await runAuditOrchestrator({
+        targetPath,
+        agents: selected.selected,
+        maxParallel: 1,
+        outputDir: options.outputDir,
+        dryRun: Boolean(options.dryRun),
+      });
+      const testingAgent = result.agentResults.find((agent) => agent.agentId === "testing") || null;
+
+      const payload = {
+        command: "audit testing",
+        targetPath: result.targetPath,
+        runId: result.runId,
+        runDirectory: result.runDirectory,
+        reportPath: result.reportMarkdownPath,
+        reportJsonPath: result.reportJsonPath,
+        testingAgentPath: testingAgent?.artifactPath || null,
+        testingSpecialistReportPath: testingAgent?.specialistReportPath || null,
+        summary: result.summary,
+        specialistSummary: testingAgent?.summary || null,
+        dryRun: result.dryRun,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Testing specialist audit complete"));
+        console.log(pc.gray(`Run: ${result.runId}`));
+        console.log(pc.gray(`Report: ${result.reportMarkdownPath}`));
+        if (payload.testingSpecialistReportPath) {
+          console.log(pc.gray(`Testing report: ${payload.testingSpecialistReportPath}`));
+        }
+        console.log(
+          `Summary: P0=${result.summary.P0} P1=${result.summary.P1} P2=${result.summary.P2} P3=${result.summary.P3}`
+        );
+      }
+
+      if (result.summary.blocking) {
+        process.exitCode = 2;
+      }
+    });
+
+  audit
     .command("local")
     .description("Compatibility mode: run legacy local readiness + policy audit")
     .option("--path <path>", "Target repository path")
