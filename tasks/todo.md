@@ -57,7 +57,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch J PR 13.4 budget-governor slice (`daemon budget check|status` quarantine and deterministic kill controls).
 - [x] Complete Batch J PR 13.5 operator-control slice (`daemon control|snapshot|stop` roster visibility + confirmed kill-switch actions).
 - [x] Complete Batch J PR 13.6 artifact-lineage slice (`daemon lineage build|list|show` reproducibility linkage index).
-- [x] Start Batch J PR 13.7 hybrid-mapper slice (`daemon map scope|list|show` deterministic+semantic impact scoping).
+- [x] Complete Batch J PR 13.7 hybrid-mapper slice (`daemon map scope|list|show` deterministic+semantic impact scoping).
+- [x] Complete Batch J PR 13.8 reliability-lane slice (`daemon reliability run|status` + `maintenance status|on|off` billboard lifecycle).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -173,7 +174,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.4 Runtime budget governance hardening (token/time/tool/path budgets + deterministic squash/quarantine path). (merged as #90)
 - PR 13.5 Operator control plane UX (agent roster, stop/confirm control, budget health colors, session timers). (merged as #91)
 - PR 13.6 Artifact lineage tree (`observability/` reproducibility bundles per run/agent/loop/jira linkage). (merged as #92)
-- PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping).
+- PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping). (merged as #93)
 - PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path).
 - PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract.
 
@@ -192,9 +193,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-13-7-hybrid-mapping-overlay` (current)
-2. `roadmap/pr-13-8-midnight-reliability-lane`
-3. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-13-8-midnight-reliability-lane` (current)
+2. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.

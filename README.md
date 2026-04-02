@@ -557,6 +557,29 @@ Hybrid mapping artifacts:
 - `.sentinelayer/observability/error-daemon/mapping/hybrid-map-events.ndjson`
 - `.sentinelayer/observability/error-daemon/mapping/runs/hybrid-map-*.json`
 
+## Midnight reliability lane (Phase 13.8 slice)
+
+Daemon reliability commands now support scheduled synthetic checks and maintenance-billboard automation:
+
+- `sl daemon reliability run --region us-east-1 --timezone America/New_York --json`
+- `sl daemon reliability run --simulate-failure aidenid_password_reset_flow --json`
+- `sl daemon reliability status --json`
+- `sl daemon maintenance status|on|off --json`
+
+Lane behavior:
+
+- failures enqueue deterministic daemon error events (`source=reliability_lane`) and execute one worker tick
+- failures can auto-enable maintenance billboard for operator/HITL visibility
+- passing runs can automatically clear reliability-opened maintenance state
+- manual maintenance controls remain available (`maintenance on|off`) with reason/actor audit trail
+
+Reliability artifacts:
+
+- `.sentinelayer/observability/error-daemon/reliability/lane-config.json`
+- `.sentinelayer/observability/error-daemon/reliability/maintenance-billboard.json`
+- `.sentinelayer/observability/error-daemon/reliability/reliability-events.ndjson`
+- `.sentinelayer/observability/error-daemon/reliability/runs/reliability-lane-*.json`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -884,6 +907,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer daemon control|snapshot|stop` provides operator roster snapshots and explicit confirmed stop controls
 - `create-sentinelayer daemon lineage build|list|show` indexes reproducible work-item artifact lineage across queue/assignment/jira/budget/operator runs
 - `create-sentinelayer daemon map scope|list|show` builds hybrid deterministic+semantic impact scopes with import-graph overlay for daemon work items
+- `create-sentinelayer daemon reliability run|status` and `daemon maintenance status|on|off` operate the midnight synthetic lane and maintenance billboard lifecycle
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)

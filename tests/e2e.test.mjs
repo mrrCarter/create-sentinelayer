@@ -3329,6 +3329,110 @@ test("CLI daemon map scope/list/show builds hybrid deterministic+semantic impact
   }
 });
 
+test("CLI daemon reliability and maintenance commands manage midnight lane + billboard lifecycle", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-reliability-e2e-"));
+  try {
+    const failRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "reliability",
+        "run",
+        "--path",
+        tempRoot,
+        "--region",
+        "us-east-1",
+        "--timezone",
+        "America/New_York",
+        "--simulate-failure",
+        "aidenid_password_reset_flow",
+        "--now-iso",
+        "2026-04-04T04:00:00.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(failRun.code, 0, failRun.stderr || failRun.stdout);
+    const failPayload = JSON.parse(String(failRun.stdout || "").trim());
+    assert.equal(failPayload.command, "daemon reliability run");
+    assert.equal(failPayload.overallStatus, "FAIL");
+    assert.equal(failPayload.maintenance.enabled, true);
+    assert.equal(failPayload.failureCount, 1);
+
+    const maintenanceStatusOn = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "maintenance", "status", "--path", tempRoot, "--json"],
+    });
+    assert.equal(maintenanceStatusOn.code, 0, maintenanceStatusOn.stderr || maintenanceStatusOn.stdout);
+    const maintenanceStatusOnPayload = JSON.parse(String(maintenanceStatusOn.stdout || "").trim());
+    assert.equal(maintenanceStatusOnPayload.billboard.enabled, true);
+
+    const passRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "reliability",
+        "run",
+        "--path",
+        tempRoot,
+        "--region",
+        "us-east-1",
+        "--timezone",
+        "America/New_York",
+        "--now-iso",
+        "2026-04-05T04:00:00.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(passRun.code, 0, passRun.stderr || passRun.stdout);
+    const passPayload = JSON.parse(String(passRun.stdout || "").trim());
+    assert.equal(passPayload.overallStatus, "PASS");
+    assert.equal(passPayload.maintenance.enabled, false);
+
+    const maintenanceOn = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "maintenance",
+        "on",
+        "--path",
+        tempRoot,
+        "--reason",
+        "manual maintenance",
+        "--message",
+        "maintenance active",
+        "--json",
+      ],
+    });
+    assert.equal(maintenanceOn.code, 0, maintenanceOn.stderr || maintenanceOn.stdout);
+    const maintenanceOnPayload = JSON.parse(String(maintenanceOn.stdout || "").trim());
+    assert.equal(maintenanceOnPayload.billboard.enabled, true);
+
+    const maintenanceOff = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "maintenance", "off", "--path", tempRoot, "--reason", "resolved", "--json"],
+    });
+    assert.equal(maintenanceOff.code, 0, maintenanceOff.stderr || maintenanceOff.stdout);
+    const maintenanceOffPayload = JSON.parse(String(maintenanceOff.stdout || "").trim());
+    assert.equal(maintenanceOffPayload.billboard.enabled, false);
+
+    const reliabilityStatus = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "reliability", "status", "--path", tempRoot, "--json"],
+    });
+    assert.equal(reliabilityStatus.code, 0, reliabilityStatus.stderr || reliabilityStatus.stdout);
+    const reliabilityStatusPayload = JSON.parse(String(reliabilityStatus.stdout || "").trim());
+    assert.equal(reliabilityStatusPayload.runCount >= 2, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {
