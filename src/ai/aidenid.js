@@ -103,6 +103,13 @@ function normalizeTags(rawValue) {
   return normalizeCsvList(rawValue);
 }
 
+function normalizeEventBudget(rawValue) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return null;
+  }
+  return normalizePositiveInteger(rawValue, "eventBudget", { min: 1, max: 1000000 });
+}
+
 export function buildProvisionEmailPayload({
   aliasTemplate = "",
   ttlHours = 24,
@@ -122,6 +129,32 @@ export function buildProvisionEmailPayload({
       allowWebhooks: Boolean(allowWebhooks),
       extractionTypes: normalizeExtractionTypes(extractionTypes),
     },
+  };
+}
+
+export function buildChildIdentityPayload({
+  aliasTemplate = "",
+  ttlHours = 24,
+  tags = [],
+  domainPoolId = "",
+  receiveMode = "EDGE_ACCEPT",
+  allowWebhooks = true,
+  extractionTypes = ["otp", "link"],
+  eventBudget = null,
+} = {}) {
+  const base = buildProvisionEmailPayload({
+    aliasTemplate,
+    ttlHours,
+    tags,
+    domainPoolId,
+    receiveMode,
+    allowWebhooks,
+    extractionTypes,
+  });
+
+  return {
+    ...base,
+    eventBudget: normalizeEventBudget(eventBudget),
   };
 }
 
@@ -458,5 +491,149 @@ export async function getLatestIdentityExtraction({
     requestHeaders,
     extraction: normalizeExtractionPayload(extractionPayload),
     notFound: false,
+  };
+}
+
+export async function createChildIdentity({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  parentIdentityId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedParentIdentityId = normalizeIdentityId(parentIdentityId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedParentIdentityId)}/children`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(payload || {}),
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID create child request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
+
+export async function getIdentityLineage({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  identityId,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedIdentityId = normalizeIdentityId(identityId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/lineage`,
+    {
+      method: "GET",
+      headers: requestHeaders,
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID identity lineage request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  const nodes = Array.isArray(body?.nodes) ? body.nodes : [];
+  const edges = Array.isArray(body?.edges) ? body.edges : [];
+  const rootIdentityId = String(body?.rootIdentityId || "").trim() || normalizedIdentityId;
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+    rootIdentityId,
+    nodes,
+    edges,
+  };
+}
+
+export async function revokeIdentityChildren({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  identityId,
+  idempotencyKey,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedIdentityId = normalizeIdentityId(identityId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/revoke-children`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID revoke children request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  const revokedIdentityIds = Array.isArray(body?.revokedIdentityIds) ? body.revokedIdentityIds : [];
+  const revokedCount = Number.isFinite(Number(body?.revokedCount))
+    ? Number(body.revokedCount)
+    : revokedIdentityIds.length;
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+    parentIdentityId: String(body?.parentIdentityId || "").trim() || normalizedIdentityId,
+    revokedCount,
+    revokedIdentityIds,
   };
 }

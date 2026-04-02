@@ -84,3 +84,36 @@ test("Unit identity store: update status transitions identity to revoked", async
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit identity store: child identity records preserve parent linkage and source metadata", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-store-"));
+  try {
+    const outputRoot = path.join(tempRoot, ".sentinelayer");
+    const recorded = await recordProvisionedIdentity({
+      outputRoot,
+      response: {
+        id: "id_child_1",
+        parentIdentityId: "id_parent_1",
+        emailAddress: "child@aidenid.com",
+        status: "ACTIVE",
+        projectId: "proj_test",
+      },
+      context: {
+        source: "create-child",
+        apiUrl: "https://api.aidenid.com",
+        orgId: "org_test",
+        projectId: "proj_test",
+        idempotencyKey: "idem-child-1",
+        parentIdentityId: "id_parent_1",
+        eventBudget: 42,
+      },
+    });
+
+    assert.equal(recorded.identity.identityId, "id_child_1");
+    assert.equal(recorded.identity.parentIdentityId, "id_parent_1");
+    assert.equal(recorded.identity.metadata.source, "create-child");
+    assert.equal(recorded.identity.metadata.eventBudget, 42);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

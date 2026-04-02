@@ -40,6 +40,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch E PR 4.3 foundation slice (session inventory metadata + explicit token revocation controls).
 - [x] Complete Batch H PR 11.1 foundation slice (`sl ai provision-email` command surface with dry-run/live execute and artifact trail).
 - [x] Complete Batch H PR 11.2 foundation slice (`sl ai identity list|show|revoke` lifecycle controls + registry persistence).
+- [x] Complete Batch H PR 11.3 foundation slice (`sl ai identity events|latest|wait-for-otp` extraction polling + confidence gating).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -120,7 +121,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch H - Identity + QA Swarm (P1/P2)
 - PR 11.1 AIdenID SDK integration/auth. (merged as #52)
 - PR 11.2 identity lifecycle CLI. (merged as #75)
-- PR 11.3-11.6 AIdenID identity engine follow-on. (11.3 in progress on `roadmap/pr-11-3-otp-verification-extraction`)
+- PR 11.3 OTP/verification extraction. (merged as #76)
+- PR 11.4-11.6 AIdenID identity engine follow-on. (11.4 in progress on `roadmap/pr-11-4-child-identity-lineage`)
 - PR 12.1-12.7 QA swarm runtime, DSL, dashboard, security mode.
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
@@ -165,26 +167,25 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-11-3-otp-verification-extraction`
-2. `roadmap/pr-11-4-child-identity-lineage`
-3. `roadmap/pr-11-5-domain-target-management`
-4. `roadmap/pr-11-6-ephemeral-callback-domains`
-5. `roadmap/pr-12-1-swarm-orchestrator-factory`
-6. `roadmap/pr-12-2-playwright-agent-runtime`
-7. `roadmap/pr-12-3-scenario-dsl`
-8. `roadmap/pr-12-4-realtime-swarm-dashboard`
-9. `roadmap/pr-12-5-swarm-execution-report`
-10. `roadmap/pr-12-6-security-pentest-mode`
-11. `roadmap/pr-12-7-swarm-identity-hardening`
-12. `roadmap/pr-13-1-error-event-daemon-worker`
-13. `roadmap/pr-13-2-global-assignment-ledger`
-14. `roadmap/pr-13-3-jira-lifecycle-automation`
-15. `roadmap/pr-13-4-runtime-budget-quarantine`
-16. `roadmap/pr-13-5-operator-control-plane`
-17. `roadmap/pr-13-6-observability-artifact-lineage`
-18. `roadmap/pr-13-7-hybrid-mapping-overlay`
-19. `roadmap/pr-13-8-midnight-reliability-lane`
-20. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-11-4-child-identity-lineage`
+2. `roadmap/pr-11-5-domain-target-management`
+3. `roadmap/pr-11-6-ephemeral-callback-domains`
+4. `roadmap/pr-12-1-swarm-orchestrator-factory`
+5. `roadmap/pr-12-2-playwright-agent-runtime`
+6. `roadmap/pr-12-3-scenario-dsl`
+7. `roadmap/pr-12-4-realtime-swarm-dashboard`
+8. `roadmap/pr-12-5-swarm-execution-report`
+9. `roadmap/pr-12-6-security-pentest-mode`
+10. `roadmap/pr-12-7-swarm-identity-hardening`
+11. `roadmap/pr-13-1-error-event-daemon-worker`
+12. `roadmap/pr-13-2-global-assignment-ledger`
+13. `roadmap/pr-13-3-jira-lifecycle-automation`
+14. `roadmap/pr-13-4-runtime-budget-quarantine`
+15. `roadmap/pr-13-5-operator-control-plane`
+16. `roadmap/pr-13-6-observability-artifact-lineage`
+17. `roadmap/pr-13-7-hybrid-mapping-overlay`
+18. `roadmap/pr-13-8-midnight-reliability-lane`
+19. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -320,6 +321,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - PR 11.2 foundation slice completion:
     - #75 merged (`feat(ai): phase 11.2 identity lifecycle commands`).
     - Added local registry-backed `ai identity list|show|revoke` lifecycle controls.
+  - PR 11.3 foundation slice completion:
+    - #76 merged (`feat(ai): phase 11.3 OTP and extraction lifecycle commands`).
+    - Added `ai identity events|latest|wait-for-otp` with confidence/timeout polling + extraction source reporting.
   - PR 9.1 extension slice completion:
     - #53 merged (`feat(review): phase 9.1 deterministic local scan command`).
     - Added `review scan --mode full|diff` deterministic local review scan flow with reproducible report artifacts.

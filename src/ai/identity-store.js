@@ -10,6 +10,7 @@ function normalizeString(value) {
 function normalizeIdentityRecord(record = {}) {
   return {
     identityId: normalizeString(record.identityId),
+    parentIdentityId: normalizeString(record.parentIdentityId) || null,
     emailAddress: normalizeString(record.emailAddress) || null,
     status: normalizeString(record.status) || "UNKNOWN",
     projectId: normalizeString(record.projectId) || null,
@@ -98,8 +99,10 @@ export async function recordProvisionedIdentity({
   }
 
   const nowIso = new Date().toISOString();
+  const source = normalizeString(context.source) || "provision-email";
   const nextRecord = normalizeIdentityRecord({
     identityId,
+    parentIdentityId: response.parentIdentityId || context.parentIdentityId || null,
     emailAddress: response.emailAddress,
     status: response.status || "ACTIVE",
     projectId: response.projectId || context.projectId,
@@ -109,8 +112,9 @@ export async function recordProvisionedIdentity({
     lastUpdatedAt: nowIso,
     expiresAt: response.expiresAt || null,
     metadata: {
-      source: "provision-email",
+      source,
       idempotencyKey: context.idempotencyKey || null,
+      eventBudget: context.eventBudget ?? null,
     },
   });
 

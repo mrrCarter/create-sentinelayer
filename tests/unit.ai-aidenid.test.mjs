@@ -2,11 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildChildIdentityPayload,
   buildProvisionEmailPayload,
+  createChildIdentity,
   getLatestIdentityExtraction,
+  getIdentityLineage,
   listIdentityEvents,
   normalizeAidenIdApiUrl,
   provisionEmailIdentity,
+  revokeIdentityChildren,
   revokeIdentity,
   resolveAidenIdCredentials,
 } from "../src/ai/aidenid.js";
@@ -38,6 +42,19 @@ test("Unit AIdenID helper: payload normalization is deterministic", () => {
   assert.equal(defaultPayload.ttlHours, 24);
   assert.deepEqual(defaultPayload.tags, []);
   assert.deepEqual(defaultPayload.policy.extractionTypes, ["otp", "link"]);
+
+  const childPayload = buildChildIdentityPayload({
+    aliasTemplate: " child-a ",
+    ttlHours: "12",
+    tags: "lineage,agent",
+    receiveMode: "EDGE_ACCEPT",
+    extractionTypes: "otp",
+    eventBudget: "42",
+  });
+  assert.equal(childPayload.aliasTemplate, "child-a");
+  assert.equal(childPayload.ttlHours, 12);
+  assert.equal(childPayload.eventBudget, 42);
+  assert.deepEqual(childPayload.policy.extractionTypes, ["otp"]);
 });
 
 test("Unit AIdenID helper: credential resolution validates required env", () => {
@@ -323,5 +340,143 @@ test("Unit AIdenID helper: latest extraction request parses extraction and suppo
         }),
       }),
     /status 429/
+  );
+});
+
+test("Unit AIdenID helper: create child request sends payload and parses response", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "id_child_1",
+          parentIdentityId: "id_parent_1",
+          emailAddress: "child@aidenid.com",
+          status: "ACTIVE",
+        };
+      },
+    };
+  };
+
+  const execution = await createChildIdentity({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    parentIdentityId: "id_parent_1",
+    idempotencyKey: "idem-child-1",
+    payload: { ttlHours: 12, eventBudget: 5 },
+    fetchImpl,
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.aidenid.com/v1/identities/id_parent_1/children");
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(execution.response.parentIdentityId, "id_parent_1");
+
+  await assert.rejects(
+    () =>
+      createChildIdentity({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        parentIdentityId: "id_parent_1",
+        idempotencyKey: "idem-child-1",
+        payload: {},
+        fetchImpl: async () => ({
+          ok: false,
+          status: 409,
+          async json() {
+            return { error: { code: "delegation_ttl_violation" } };
+          },
+        }),
+      }),
+    /status 409/
+  );
+});
+
+test("Unit AIdenID helper: lineage and revoke-children routes parse expected payloads", async () => {
+  const lineageRequests = [];
+  const lineage = await getIdentityLineage({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    identityId: "id_parent_1",
+    fetchImpl: async (url, init) => {
+      lineageRequests.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            rootIdentityId: "id_parent_1",
+            nodes: [
+              { identityId: "id_parent_1", emailAddress: "p@aidenid.com", status: "ACTIVE", depth: 0 },
+              { identityId: "id_child_1", emailAddress: "c@aidenid.com", status: "ACTIVE", depth: 1 },
+            ],
+            edges: [{ parentIdentityId: "id_parent_1", childIdentityId: "id_child_1" }],
+          };
+        },
+      };
+    },
+  });
+  assert.equal(lineageRequests.length, 1);
+  assert.equal(lineageRequests[0].url, "https://api.aidenid.com/v1/identities/id_parent_1/lineage");
+  assert.equal(lineage.nodes.length, 2);
+  assert.equal(lineage.edges.length, 1);
+
+  const revokeRequests = [];
+  const revoked = await revokeIdentityChildren({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    identityId: "id_parent_1",
+    idempotencyKey: "idem-revoke-children",
+    fetchImpl: async (url, init) => {
+      revokeRequests.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            parentIdentityId: "id_parent_1",
+            revokedCount: 2,
+            revokedIdentityIds: ["id_child_1", "id_child_2"],
+          };
+        },
+      };
+    },
+  });
+  assert.equal(revokeRequests.length, 1);
+  assert.equal(
+    revokeRequests[0].url,
+    "https://api.aidenid.com/v1/identities/id_parent_1/revoke-children"
+  );
+  assert.equal(revoked.revokedCount, 2);
+  assert.deepEqual(revoked.revokedIdentityIds, ["id_child_1", "id_child_2"]);
+
+  await assert.rejects(
+    () =>
+      revokeIdentityChildren({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        identityId: "id_parent_1",
+        idempotencyKey: "idem-revoke-children",
+        fetchImpl: async () => ({
+          ok: false,
+          status: 500,
+          async json() {
+            return { error: { code: "internal" } };
+          },
+        }),
+      }),
+    /status 500/
   );
 });
