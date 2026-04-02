@@ -303,12 +303,28 @@ jobs:
           sha256sum --check release-sha256.txt
 
       - name: Validate packaged CLI install
+        shell: bash
         run: |
           set -euo pipefail
           TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
-          npm install --global "${TARBALL}"
-          create-sentinelayer --version
-          sentinel --version
+          install_succeeded="false"
+          for attempt in 1 2 3; do
+            if timeout 120s npm install --global "${TARBALL}"; then
+              install_succeeded="true"
+              break
+            fi
+            if [[ "${attempt}" -eq 3 ]]; then
+              echo "::error::Global install from ${TARBALL} failed after ${attempt} attempts."
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
+          if [[ "${install_succeeded}" != "true" ]]; then
+            echo "::error::Global install did not complete successfully."
+            exit 1
+          fi
+          timeout 30s create-sentinelayer --version
+          timeout 30s sentinel --version
 
       - name: Generate build provenance attestation
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0

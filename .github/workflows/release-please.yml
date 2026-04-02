@@ -52,90 +52,89 @@ jobs:
           read_success_workflow_run_ids() {
             local workflow_file="$1"
             local sha="$2"
+            local event="$3"
+            local branch="$4"
             gh_api_with_timeout \
-              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&per_page=50" \
-              --jq '.workflow_runs[] | select(.conclusion=="success" and .event=="push" and .head_branch=="main") | .id' \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&event=${event}&per_page=50" \
+              --arg branch "${branch}" \
+              --jq '.workflow_runs[] | select(.conclusion=="success") | select(($branch | length) == 0 or .head_branch == $branch) | .id' \
               || true
           }
 
-          read_success_job_id_for_run() {
-            local run_id="$1"
-            local job_name="$2"
-            gh_api_with_timeout \
-              "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
-              --jq ".jobs[] | select(.name==\"${job_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
-              | head -n 1 || true
-          }
-
-          read_latest_check_run_result() {
-            local sha="$1"
-            local check_name="$2"
-            gh_api_with_timeout \
-              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
-              --jq ".check_runs | map(select(.name==\"${check_name}\")) | sort_by(.started_at // .completed_at // .id) | last | [(.id|tostring), (.status // \"\"), (.conclusion // \"\")] | @tsv" \
-              || true
-          }
-
-          wait_for_latest_check_success() {
-            local sha="$1"
-            local check_name="$2"
-            local attempts="$3"
-            local sleep_seconds="$4"
-            local result=""
+          find_first_success_run_id() {
+            local workflow_file="$1"
+            local sha="$2"
+            local event="$3"
+            local branch="$4"
+            local attempts="$5"
+            local sleep_seconds="$6"
+            local run_id=""
             for _ in $(seq 1 "${attempts}"); do
-              result="$(read_latest_check_run_result "${sha}" "${check_name}")"
-              if [[ -n "${result}" ]]; then
-                IFS=$'\t' read -r check_id check_status check_conclusion <<< "${result}"
-                if [[ "${check_status}" == "completed" && "${check_conclusion}" == "success" ]]; then
-                  printf '%s\n' "${check_id}"
-                  return 0
-                fi
+              run_id="$(read_success_workflow_run_ids "${workflow_file}" "${sha}" "${event}" "${branch}" | head -n 1 || true)"
+              if [[ -n "${run_id}" && "${run_id}" != "null" ]]; then
+                printf '%s\n' "${run_id}"
+                return 0
               fi
               sleep "${sleep_seconds}"
             done
             printf '\n'
           }
 
-          quality_check_id=""
-          quality_run_id=""
-          for _ in $(seq 1 18); do
-            while IFS= read -r candidate_run_id; do
-              [[ -z "${candidate_run_id}" || "${candidate_run_id}" == "null" ]] && continue
-              quality_job_id="$(read_success_job_id_for_run "${candidate_run_id}" "Quality Summary")"
-              if [[ -n "${quality_job_id}" && "${quality_job_id}" != "null" ]]; then
-                quality_run_id="${candidate_run_id}"
-                quality_check_id="${quality_job_id}"
-                break
+          find_success_omar_run_for_pr_head() {
+            local sha="$1"
+            local pr_number="$2"
+            local attempts="$3"
+            local sleep_seconds="$4"
+            local run_id=""
+            for _ in $(seq 1 "${attempts}"); do
+              run_id="$(gh_api_with_timeout \
+                "/repos/${GITHUB_REPOSITORY}/actions/workflows/omar-gate.yml/runs?head_sha=${sha}&status=completed&event=pull_request&per_page=50" \
+                --argjson pr_number "${pr_number}" \
+                --jq '.workflow_runs[] | select(.conclusion=="success") | select(([.pull_requests[]?.number] | index($pr_number)) != null) | .id' \
+                | head -n 1 || true)"
+              if [[ -n "${run_id}" && "${run_id}" != "null" ]]; then
+                printf '%s\n' "${run_id}"
+                return 0
               fi
-            done < <(read_success_workflow_run_ids "quality-gates.yml" "${GITHUB_SHA}")
-            if [[ -n "${quality_run_id}" && "${quality_run_id}" != "null" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          if [[ -z "${quality_check_id}" ]]; then
-            echo "::error::No successful Quality Summary check run found for commit ${GITHUB_SHA}."
+              sleep "${sleep_seconds}"
+            done
+            printf '\n'
+          }
+
+          quality_run_id="$(find_first_success_run_id "quality-gates.yml" "${GITHUB_SHA}" "push" "main" 18 10)"
+          if [[ -z "${quality_run_id}" ]]; then
+            echo "::error::No successful quality-gates workflow run found for commit ${GITHUB_SHA}."
             exit 1
           fi
 
-          omar_check_id="$(wait_for_latest_check_success "${GITHUB_SHA}" "Omar Gate" 12 5)"
+          pr_number="$(gh_api_with_timeout \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].number' 2>/dev/null || true)"
+          pr_head_sha="$(gh_api_with_timeout \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].head.sha' 2>/dev/null || true)"
 
-          if [[ -z "${omar_check_id}" ]]; then
-            pr_head_sha="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-              --jq '.[0].head.sha' 2>/dev/null || true)"
-            if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
-              omar_check_id="$(wait_for_latest_check_success "${pr_head_sha}" "Omar Gate" 12 5)"
+          omar_run_id="$(find_first_success_run_id "omar-gate.yml" "${GITHUB_SHA}" "workflow_dispatch" "main" 3 5)"
+          if [[ -z "${omar_run_id}" ]]; then
+            case "${pr_number}" in
+              ''|*[!0-9]*)
+                echo "::error::Unable to resolve linked pull request metadata for commit ${GITHUB_SHA}; cannot bind Omar Gate run deterministically."
+                exit 1
+                ;;
+            esac
+            if [[ -z "${pr_head_sha}" || "${pr_head_sha}" == "null" ]]; then
+              echo "::error::Unable to resolve linked pull request head SHA for commit ${GITHUB_SHA}."
+              exit 1
             fi
+            omar_run_id="$(find_success_omar_run_for_pr_head "${pr_head_sha}" "${pr_number}" 18 5)"
           fi
 
-          if [[ -z "${omar_check_id}" ]]; then
-            echo "::error::No successful Omar Gate check run found for commit ${GITHUB_SHA} or its linked PR head."
+          if [[ -z "${omar_run_id}" ]]; then
+            echo "::error::No successful omar-gate workflow run found for commit ${GITHUB_SHA} or linked pull request head."
             exit 1
           fi
 
-          echo "Release-please preflight passed with Quality Summary check ${quality_check_id} (run ${quality_run_id}) and Omar Gate check ${omar_check_id}."
+          echo "Release-please preflight passed with quality-gates run ${quality_run_id} and omar-gate run ${omar_run_id}."
 
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4

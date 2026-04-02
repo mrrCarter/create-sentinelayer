@@ -285,12 +285,71 @@ jobs:
     if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request' }}
     runs-on: ubuntu-22.04
     needs: [build-release-artifact]
+    timeout-minutes: 15
+    environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'security-review' }}
     steps:
-      - name: Emit deterministic deploy-stage promotion marker
+      - name: Download staged release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ github.event_name == 'pull_request' && format('create-sentinelayer-pr-{0}', github.sha) || format('create-sentinelayer-release-{0}', github.sha) }}
+          path: .
+
+      - name: Verify deploy input artifact integrity
         shell: bash
         run: |
           set -euo pipefail
-          echo "Deploy stage gate passed for ${GITHUB_SHA}."
+          test -f release-commit-sha.txt || (echo "::error::Missing release-commit-sha.txt." && exit 1)
+          packed_sha="$(cat release-commit-sha.txt | tr -d '\r' | xargs)"
+          if [[ "${packed_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy gate artifact commit mismatch: expected ${GITHUB_SHA}, got ${packed_sha:-missing}."
+            exit 1
+          fi
+          sha256sum --check release-sha256.txt
+
+      - name: Execute deterministic deploy canary and health gate
+        shell: bash
+        env:
+          DEPLOY_STRATEGY: ${{ vars.DEPLOY_STRATEGY || 'canary' }}
+          DEPLOY_CANARY_COMMAND: ${{ vars.DEPLOY_CANARY_COMMAND || '' }}
+          DEPLOY_HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTHCHECK_URL || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${DEPLOY_STRATEGY}" != "canary" ]]; then
+            echo "::error::Unsupported deploy strategy '${DEPLOY_STRATEGY}'. Expected 'canary'."
+            exit 1
+          fi
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          test -n "${TARBALL}" || (echo "::error::Missing release tarball for deploy stage gate." && exit 1)
+          timeout 120s npm install --global "${TARBALL}"
+          timeout 30s create-sentinelayer --version
+          timeout 30s sentinel --version
+
+          if [[ -n "${DEPLOY_CANARY_COMMAND}" ]]; then
+            timeout 600s bash -lc "${DEPLOY_CANARY_COMMAND}"
+          else
+            echo "::notice::DEPLOY_CANARY_COMMAND is not configured; CLI smoke install verification used as canary fallback."
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            if [[ -z "${DEPLOY_HEALTHCHECK_URL}" ]]; then
+              echo "::error::DEPLOY_HEALTHCHECK_URL must be configured for production deploy gate."
+              exit 1
+            fi
+            timeout 30s curl --fail --silent --show-error "${DEPLOY_HEALTHCHECK_URL}" > /dev/null
+          fi
+
+      - name: Emit deploy gate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Deploy Stage Gate"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- environment: \`${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'security-review' }}\`"
+            echo "- strategy: \`${{ vars.DEPLOY_STRATEGY || 'canary' }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   quality-summary:
     name: Quality Summary

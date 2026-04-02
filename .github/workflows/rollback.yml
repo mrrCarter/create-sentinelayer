@@ -79,21 +79,57 @@ jobs:
           set -euo pipefail
           echo "Dry-run: npm deprecate create-sentinelayer@${{ steps.metadata.outputs.version }} \"${{ steps.metadata.outputs.message }}\""
 
+      - name: Resolve last-known-good fallback version
+        id: fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_version="${{ steps.metadata.outputs.version }}"
+          fallback_version="$(TARGET_VERSION="${target_version}" node - <<'NODE'
+          const { execSync } = require("node:child_process");
+          const target = process.env.TARGET_VERSION || "";
+          const raw = execSync("npm view create-sentinelayer versions --json", { encoding: "utf8" });
+          const parsed = JSON.parse(raw);
+          const versions = Array.isArray(parsed) ? parsed : [String(parsed || "")];
+          const normalized = versions.filter(Boolean);
+          const idx = normalized.lastIndexOf(target);
+          let fallback = "";
+          if (idx > 0) {
+            fallback = normalized[idx - 1];
+          } else if (normalized.length > 1) {
+            fallback = normalized[normalized.length - 2];
+          }
+          process.stdout.write(fallback);
+          NODE
+          )"
+          if [[ -z "${fallback_version}" ]]; then
+            echo "::error::Unable to resolve fallback version for rollback target '${target_version}'."
+            exit 1
+          fi
+          echo "fallback_version=${fallback_version}" >> "${GITHUB_OUTPUT}"
+
       - name: Assert rollback readiness checks
         if: ${{ steps.metadata.outputs.dry_run == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           expected_version="${{ steps.metadata.outputs.version }}"
+          fallback_version="${{ steps.fallback.outputs.fallback_version }}"
           resolved_version="$(npm view "create-sentinelayer@${expected_version}" version | tr -d '\r' | xargs)"
           test -n "${resolved_version}" || (echo "Unable to resolve package version in npm registry." && exit 1)
           if [[ "${resolved_version}" != "${expected_version}" ]]; then
             echo "::error::Rollback readiness failed: expected version '${expected_version}', registry returned '${resolved_version}'."
             exit 1
           fi
+          fallback_resolved="$(npm view "create-sentinelayer@${fallback_version}" version | tr -d '\r' | xargs)"
+          if [[ "${fallback_resolved}" != "${fallback_version}" ]]; then
+            echo "::error::Rollback readiness failed: fallback version '${fallback_version}' is not resolvable."
+            exit 1
+          fi
           deprecated_state="$(npm view "create-sentinelayer@${expected_version}" deprecated 2>/dev/null | tr -d '\r' | xargs || true)"
           echo "Rollback readiness assertion passed for create-sentinelayer@${expected_version}."
           echo "Current deprecate marker: ${deprecated_state:-<none>}."
+          echo "Fallback candidate for latest promotion: ${fallback_version}."
 
       - name: Validate NPM token secret
         if: ${{ steps.metadata.outputs.dry_run != 'true' }}
@@ -104,12 +140,51 @@ jobs:
           set -euo pipefail
           test -n "${NPM_TOKEN}" || (echo "Missing NPM_TOKEN" && exit 1)
 
+      - name: Validate environment rollback controls
+        if: ${{ steps.metadata.outputs.dry_run != 'true' }}
+        shell: bash
+        env:
+          ROLLBACK_DEPLOY_COMMAND: ${{ secrets.ROLLBACK_DEPLOY_COMMAND }}
+          ROLLBACK_HEALTHCHECK_URL: ${{ vars.ROLLBACK_HEALTHCHECK_URL || '' }}
+        run: |
+          set -euo pipefail
+          test -n "${{ steps.fallback.outputs.fallback_version }}" || (echo "::error::Missing fallback rollback version." && exit 1)
+          test -n "${ROLLBACK_DEPLOY_COMMAND}" || (echo "::error::Missing ROLLBACK_DEPLOY_COMMAND secret." && exit 1)
+          test -n "${ROLLBACK_HEALTHCHECK_URL}" || (echo "::error::Missing ROLLBACK_HEALTHCHECK_URL repo variable." && exit 1)
+
       - name: Execute rollback deprecation
         if: ${{ steps.metadata.outputs.dry_run != 'true' }}
         shell: bash
         run: npm deprecate "create-sentinelayer@${{ steps.metadata.outputs.version }}" "${{ steps.metadata.outputs.message }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Promote fallback package version to latest dist-tag
+        if: ${{ steps.metadata.outputs.dry_run != 'true' }}
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          fallback_version="${{ steps.fallback.outputs.fallback_version }}"
+          npm dist-tag add "create-sentinelayer@${fallback_version}" latest
+          promoted_latest="$(npm view create-sentinelayer@latest version | tr -d '\r' | xargs)"
+          if [[ "${promoted_latest}" != "${fallback_version}" ]]; then
+            echo "::error::Rollback latest promotion failed: expected latest=${fallback_version}, got ${promoted_latest:-missing}."
+            exit 1
+          fi
+
+      - name: Execute environment rollback and health verification
+        if: ${{ steps.metadata.outputs.dry_run != 'true' }}
+        shell: bash
+        env:
+          ROLLBACK_DEPLOY_COMMAND: ${{ secrets.ROLLBACK_DEPLOY_COMMAND }}
+          ROLLBACK_HEALTHCHECK_URL: ${{ vars.ROLLBACK_HEALTHCHECK_URL || '' }}
+        run: |
+          set -euo pipefail
+          fallback_version="${{ steps.fallback.outputs.fallback_version }}"
+          timeout 900s bash -lc "${ROLLBACK_DEPLOY_COMMAND} ${fallback_version}"
+          timeout 30s curl --fail --silent --show-error "${ROLLBACK_HEALTHCHECK_URL}" > /dev/null
 
       - name: Emit rollback summary
         shell: bash
@@ -118,6 +193,7 @@ jobs:
           echo "## Rollback Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- package: \`create-sentinelayer\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- version: \`${{ steps.metadata.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- fallback_version: \`${{ steps.fallback.outputs.fallback_version }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- dry_run: \`${{ steps.metadata.outputs.dry_run }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- message: \`${{ steps.metadata.outputs.message }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- workflow_mode: \`${{ github.event_name }}\`" >> "$GITHUB_STEP_SUMMARY"
