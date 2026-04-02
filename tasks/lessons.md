@@ -65,3 +65,4 @@
 - Implement terminal markdown as a shared utility and reuse it across artifact show/preview commands (`spec`, `prompt`, `guide`) so styling changes stay centralized and testable.
 - Diff-aware spec regeneration can preserve operator intent without a stored baseline by treating section deltas as manual edits and surfacing explicit add/remove previews before write.
 - Progress/notification signals should be centralized in one reporter and always suppressed under `--quiet` (and JSON mode) to avoid corrupting machine-readable output.
+- Pen-test swarm execution should fail closed on target governance: verified target state, host match, and strict path/method/scenario policy checks are safer defaults than best-effort probing.

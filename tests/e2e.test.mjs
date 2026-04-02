@@ -2857,6 +2857,97 @@ test("CLI swarm report builds deterministic execution report from runtime artifa
   }
 });
 
+test("CLI swarm create pen-test mode writes policy-governed report and audit artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-pentest-"));
+  try {
+    const registryPath = path.join(tempRoot, ".sentinelayer", "aidenid", "domain-target-registry.json");
+    await mkdir(path.dirname(registryPath), { recursive: true });
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          generatedAt: new Date().toISOString(),
+          domains: [],
+          targets: [
+            {
+              targetId: "tgt_demo",
+              host: "app.customer.local",
+              verificationStatus: "VERIFIED",
+              status: "VERIFIED",
+              freezeStatus: "ACTIVE",
+              policy: {
+                allowedPaths: ["/admin", "/account/profile"],
+                allowedMethods: ["GET", "POST"],
+                allowedScenarios: [
+                  "pen-test",
+                  "auth-bypass",
+                  "rate-limit-probe",
+                  "input-validation",
+                  "privilege-escalation",
+                ],
+                maxRps: 10,
+                maxConcurrency: 2,
+                stopConditions: {},
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "create",
+        "--path",
+        tempRoot,
+        "--scenario",
+        "pen-test",
+        "--pen-test-scenario",
+        "auth-bypass",
+        "--target",
+        "https://app.customer.local",
+        "--target-id",
+        "tgt_demo",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "swarm create");
+    assert.equal(payload.mode, "pen-test");
+    assert.equal(payload.scenario, "pen-test");
+    assert.equal(payload.scenarioId, "auth-bypass");
+    assert.equal(payload.execute, false);
+    assert.equal(payload.target.targetId, "tgt_demo");
+    assert.match(String(payload.reportJsonPath || ""), /[\\/]PENTEST_REPORT\.json$/);
+    assert.match(String(payload.reportMarkdownPath || ""), /[\\/]PENTEST_REPORT\.md$/);
+    assert.match(String(payload.auditLogPath || ""), /[\\/]audit\.jsonl$/);
+    assert.equal(payload.supportedPentestScenarios.includes("auth-bypass"), true);
+
+    const report = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
+    assert.equal(report.scenarioId, "auth-bypass");
+    assert.equal(report.target.targetId, "tgt_demo");
+    assert.equal(report.summary.findingCount, 0);
+
+    const auditEntries = String(await readFile(payload.auditLogPath, "utf-8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(auditEntries.length, 3);
+    assert.equal(auditEntries.every((entry) => entry.response.dryRun === true), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
   try {

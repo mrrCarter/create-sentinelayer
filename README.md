@@ -355,6 +355,36 @@ Report artifacts:
 
 The report links runtime usage, stop class, per-agent status summary, recent events, and plan/runtime artifact paths.
 
+## Security pen-test mode (Phase 12.6 slice)
+
+The CLI now includes a governed pen-test swarm entrypoint:
+
+- `sl swarm create --scenario pen-test --pen-test-scenario auth-bypass --target https://app.customer.local --target-id <target-id>`
+- `sl swarm create --scenario input-validation --target https://app.customer.local --target-id <target-id> --execute`
+
+Built-in pen-test scenarios:
+
+- `auth-bypass`
+- `rate-limit-probe`
+- `input-validation`
+- `privilege-escalation`
+
+Policy enforcement is strict:
+
+- target must exist in local AIdenID target registry and be `VERIFIED`
+- target must not be frozen/inactive
+- target host must match `--target`
+- scenario, methods, and paths must stay within target policy (`allowedScenarios`, `allowedMethods`, `allowedPaths`)
+
+Pen-test artifacts:
+
+- `.sentinelayer/swarms/<pentest-run-id>/pentest/REQUEST_PLAN.json`
+- `.sentinelayer/swarms/<pentest-run-id>/pentest/audit.jsonl` (full request/response headers+body)
+- `.sentinelayer/swarms/<pentest-run-id>/pentest/PENTEST_REPORT.json`
+- `.sentinelayer/swarms/<pentest-run-id>/pentest/PENTEST_REPORT.md`
+
+`PENTEST_REPORT` findings are keyed to OWASP categories and surface `P0-P3` severity summary + blocking status.
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
