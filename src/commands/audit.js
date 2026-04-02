@@ -5,6 +5,7 @@ import pc from "picocolors";
 
 import { runAuditOrchestrator } from "../audit/orchestrator.js";
 import { loadAuditRunReport, resolveAuditRunDirectory, writeDdPackage } from "../audit/package.js";
+import { writeAuditComparisonArtifact } from "../audit/replay.js";
 import { loadAuditRegistry, selectAuditAgents } from "../audit/registry.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { buildLegacyArgs } from "./legacy-args.js";
@@ -148,6 +149,127 @@ export function registerAuditCommand(program, invokeLegacy) {
         console.log(pc.gray(`Run: ${payload.runId}`));
         console.log(pc.gray(`Manifest: ${payload.ddPackageManifestPath}`));
         console.log(pc.gray(`Summary: ${payload.ddPackageSummaryPath}`));
+      }
+    });
+
+  audit
+    .command("replay")
+    .description("Replay an existing audit run with the same selected agent set")
+    .argument("<runId>", "Base audit run id to replay")
+    .option("--path <path>", "Workspace path override (defaults to original run target)")
+    .option("--registry-file <path>", "Optional custom audit registry file")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (runId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const initialTargetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: initialTargetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const baseRunDirectory = await resolveAuditRunDirectory({
+        outputRoot,
+        runId,
+      });
+      const { report: baseReport } = await loadAuditRunReport(baseRunDirectory);
+      const targetPath = options.path
+        ? path.resolve(process.cwd(), String(options.path || "."))
+        : path.resolve(String(baseReport.targetPath || "."));
+
+      const registry = await loadAuditRegistry({
+        registryFile: options.registryFile,
+      });
+      const selected = selectAuditAgents(registry.agents, (baseReport.selectedAgents || []).join(","));
+      if (selected.selected.length === 0) {
+        throw new Error("No eligible agents available for replay in the active registry.");
+      }
+
+      const replayResult = await runAuditOrchestrator({
+        targetPath,
+        agents: selected.selected,
+        maxParallel: Number(baseReport.maxParallel || 1),
+        outputDir: options.outputDir,
+        dryRun: Boolean(baseReport.dryRun),
+      });
+
+      const comparison = await writeAuditComparisonArtifact({
+        baseReport,
+        candidateReport: replayResult,
+        outputDirectory: replayResult.runDirectory,
+      });
+
+      const payload = {
+        command: "audit replay",
+        baseRunId: baseReport.runId,
+        replayRunId: replayResult.runId,
+        targetPath: replayResult.targetPath,
+        runDirectory: replayResult.runDirectory,
+        reportPath: replayResult.reportMarkdownPath,
+        reportJsonPath: replayResult.reportJsonPath,
+        comparisonPath: comparison.outputPath,
+        deterministicEquivalent: comparison.comparison.deterministicEquivalent,
+        addedCount: comparison.comparison.addedCount,
+        removedCount: comparison.comparison.removedCount,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Audit replay complete"));
+        console.log(pc.gray(`Base run: ${payload.baseRunId}`));
+        console.log(pc.gray(`Replay run: ${payload.replayRunId}`));
+        console.log(pc.gray(`Comparison: ${payload.comparisonPath}`));
+      }
+    });
+
+  audit
+    .command("diff")
+    .description("Diff two audit runs and emit a reproducibility comparison artifact")
+    .argument("<baseRunId>", "Base run id")
+    .argument("<candidateRunId>", "Candidate run id")
+    .option("--path <path>", "Workspace path for resolving output root", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (baseRunId, candidateRunId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const baseRunDirectory = await resolveAuditRunDirectory({
+        outputRoot,
+        runId: baseRunId,
+      });
+      const candidateRunDirectory = await resolveAuditRunDirectory({
+        outputRoot,
+        runId: candidateRunId,
+      });
+      const { report: baseReport } = await loadAuditRunReport(baseRunDirectory);
+      const { report: candidateReport } = await loadAuditRunReport(candidateRunDirectory);
+      const comparison = await writeAuditComparisonArtifact({
+        baseReport,
+        candidateReport,
+        outputDirectory: candidateRunDirectory,
+      });
+
+      const payload = {
+        command: "audit diff",
+        baseRunId: baseReport.runId,
+        candidateRunId: candidateReport.runId,
+        outputPath: comparison.outputPath,
+        deterministicEquivalent: comparison.comparison.deterministicEquivalent,
+        addedCount: comparison.comparison.addedCount,
+        removedCount: comparison.comparison.removedCount,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Audit diff complete"));
+        console.log(pc.gray(`Comparison: ${payload.outputPath}`));
       }
     });
 
