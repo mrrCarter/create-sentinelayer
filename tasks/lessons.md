@@ -84,3 +84,4 @@
 - When coverage thresholds are tight, validate the exact `c8` include set with full `npm run verify` before pushing so Omar loop iterations are spent on findings, not preventable CI coverage failures.
 - Command-surface regressions are best caught with registration-contract tests (subcommand tree + option flags) plus lightweight parse-level guardrail tests that fail before network/file side effects.
 - For security-critical modules, JSDoc should focus on precedence rules, token/credential handling, and failure semantics so reviewers can verify guardrails without reverse-engineering implementation details.
+- Governance-only PRs (Dependabot/templates/instructions) should still run full verify + Omar loop; this catches gate interactions like eval-impact or workflow syntax drift before merge.

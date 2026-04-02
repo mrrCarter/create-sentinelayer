@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a defect with reproducible evidence.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Provide deterministic reproduction details so the issue can be triaged quickly.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the bug and expected behavior.
+      placeholder: Briefly explain what happened and what should have happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: List exact steps/commands required to reproduce.
+      placeholder: |
+        1. Run `...`
+        2. Execute `...`
+        3. Observe `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Runtime and tooling context.
+      placeholder: |
+        OS:
+        Node version:
+        CLI version:
+        Provider/config context:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and artifacts
+      description: Include relevant error output, stack traces, and `.sentinelayer` artifact paths.
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I reproduced this on the latest `main`.
+          required: true
+        - label: I attached enough evidence to reproduce and verify a fix.
+          required: true

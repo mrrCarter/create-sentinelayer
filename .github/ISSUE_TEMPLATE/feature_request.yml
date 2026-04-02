@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a scoped enhancement with clear acceptance criteria.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the outcome you want and how to validate success.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user or operational problem does this solve?
+      placeholder: Explain the gap or pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Outline the expected behavior and command/API surface.
+      placeholder: Describe the desired implementation at a high level.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List measurable criteria used to mark this complete.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and constraints
+      description: Note security, compatibility, performance, or rollout concerns.
+      placeholder: Document tradeoffs and constraints.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Proposal checklist
+      options:
+        - label: I checked for existing issues/PRs covering this request.
+          required: true
+        - label: I included clear acceptance criteria.
+          required: true
