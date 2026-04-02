@@ -79,6 +79,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
     .description("Sentinelayer CLI")
     .version(CLI_VERSION)
     .option("--verbose", "Verbose execution logs")
+    .option("--quiet", "Suppress progress indicators and terminal notifications")
     .option("--json", "Emit machine-readable output when supported")
     .showHelpAfterError();
 

@@ -282,6 +282,7 @@ Generate a local `SPEC.md` without calling the API:
 - `create-sentinelayer spec show --path . --plain`
 - `create-sentinelayer spec regenerate --path . --dry-run --json`
 - `create-sentinelayer spec regenerate --path . --max-diff-lines 120`
+- `create-sentinelayer spec regenerate --path . --dry-run --quiet`
 
 The generator uses deterministic ingest context plus template architecture/security checklists.
 

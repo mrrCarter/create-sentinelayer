@@ -1115,6 +1115,15 @@ test("CLI spec regenerate preserves manual edits, supports dry-run, and emits de
 
     const updatedSpec = await readFile(specPath, "utf-8");
     assert.match(updatedSpec, /Manual operator goal override for this sprint\./);
+
+    const quietResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "regenerate", "--path", tempRoot, "--dry-run", "--quiet"],
+    });
+    assert.equal(quietResult.code, 0, quietResult.stderr || quietResult.stdout);
+    assert.doesNotMatch(String(quietResult.stderr || ""), /\[progress /);
+    assert.doesNotMatch(String(quietResult.stdout || ""), /\u001B\]9;/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
