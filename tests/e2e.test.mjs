@@ -2348,6 +2348,193 @@ test("CLI daemon error record/worker/queue routes admin errors into deterministi
   }
 });
 
+test("CLI daemon assign lifecycle manages claim heartbeat reassign release flows", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-assign-e2e-"));
+  try {
+    const record = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Runtime timeout",
+        "--json",
+      ],
+    });
+    assert.equal(record.code, 0, record.stderr || record.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+
+    const queueInitial = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queueInitial.code, 0, queueInitial.stderr || queueInitial.stdout);
+    const queueInitialPayload = JSON.parse(String(queueInitial.stdout || "").trim());
+    assert.equal(queueInitialPayload.totalCount, 1);
+    const workItemId = String(queueInitialPayload.items[0]?.workItemId || "");
+    assert.equal(workItemId.length > 0, true);
+
+    const claim = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "claim",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "maya.markov@sentinelayer.local",
+        "--lease-ttl-seconds",
+        "1200",
+        "--stage",
+        "triage",
+        "--run-id",
+        "run_a",
+        "--jira-issue-key",
+        "SL-201",
+        "--json",
+      ],
+    });
+    assert.equal(claim.code, 0, claim.stderr || claim.stdout);
+    const claimPayload = JSON.parse(String(claim.stdout || "").trim());
+    assert.equal(claimPayload.command, "daemon assign claim");
+    assert.equal(claimPayload.assignment.status, "CLAIMED");
+    assert.equal(claimPayload.assignment.assignedAgentIdentity, "maya.markov@sentinelayer.local");
+
+    const heartbeat = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "heartbeat",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "maya.markov@sentinelayer.local",
+        "--stage",
+        "analysis",
+        "--run-id",
+        "run_b",
+        "--json",
+      ],
+    });
+    assert.equal(heartbeat.code, 0, heartbeat.stderr || heartbeat.stdout);
+    const heartbeatPayload = JSON.parse(String(heartbeat.stdout || "").trim());
+    assert.equal(heartbeatPayload.command, "daemon assign heartbeat");
+    assert.equal(heartbeatPayload.assignment.status, "IN_PROGRESS");
+    assert.equal(heartbeatPayload.assignment.stage, "analysis");
+
+    const reassign = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "reassign",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--from-agent",
+        "maya.markov@sentinelayer.local",
+        "--to-agent",
+        "mark.rao@sentinelayer.local",
+        "--stage",
+        "fix",
+        "--run-id",
+        "run_c",
+        "--json",
+      ],
+    });
+    assert.equal(reassign.code, 0, reassign.stderr || reassign.stdout);
+    const reassignPayload = JSON.parse(String(reassign.stdout || "").trim());
+    assert.equal(reassignPayload.command, "daemon assign reassign");
+    assert.equal(reassignPayload.assignment.status, "CLAIMED");
+    assert.equal(reassignPayload.assignment.assignedAgentIdentity, "mark.rao@sentinelayer.local");
+
+    const release = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "release",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "mark.rao@sentinelayer.local",
+        "--status",
+        "DONE",
+        "--reason",
+        "patched-and-verified",
+        "--json",
+      ],
+    });
+    assert.equal(release.code, 0, release.stderr || release.stdout);
+    const releasePayload = JSON.parse(String(release.stdout || "").trim());
+    assert.equal(releasePayload.command, "daemon assign release");
+    assert.equal(releasePayload.assignment.status, "DONE");
+
+    const listDone = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "list",
+        "--path",
+        tempRoot,
+        "--status",
+        "DONE",
+        "--agent",
+        "mark.rao@sentinelayer.local",
+        "--json",
+      ],
+    });
+    assert.equal(listDone.code, 0, listDone.stderr || listDone.stdout);
+    const listDonePayload = JSON.parse(String(listDone.stdout || "").trim());
+    assert.equal(listDonePayload.command, "daemon assign list");
+    assert.equal(listDonePayload.visibleCount, 1);
+    assert.equal(listDonePayload.assignments[0].workItemId, workItemId);
+
+    const queueDone = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--status", "DONE", "--json"],
+    });
+    assert.equal(queueDone.code, 0, queueDone.stderr || queueDone.stdout);
+    const queueDonePayload = JSON.parse(String(queueDone.stdout || "").trim());
+    assert.equal(queueDonePayload.visibleCount, 1);
+    assert.equal(queueDonePayload.items[0].workItemId, workItemId);
+    assert.equal(queueDonePayload.items[0].status, "DONE");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {
