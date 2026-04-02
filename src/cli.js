@@ -23,6 +23,7 @@ import { registerAiCommand } from "./commands/ai.js";
 import { registerReviewCommand } from "./commands/review.js";
 import { registerChatCommand } from "./commands/chat.js";
 import { registerPolicyCommand } from "./commands/policy.js";
+import { registerSwarmCommand } from "./commands/swarm.js";
 
 const COMMAND_SET = new Set([
   "init",
@@ -46,6 +47,7 @@ const COMMAND_SET = new Set([
   "review",
   "chat",
   "policy",
+  "swarm",
 ]);
 
 function shouldBypassCommander(rawArgs) {
@@ -106,6 +108,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
   registerReviewCommand(program);
   registerChatCommand(program);
   registerPolicyCommand(program);
+  registerSwarmCommand(program);
 
   return program;
 }

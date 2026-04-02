@@ -2604,6 +2604,69 @@ test("CLI audit registry lists built-in orchestrator agents", async () => {
   }
 });
 
+test("CLI swarm registry lists OMAR-led specialist agents", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-registry-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["swarm", "registry", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "swarm registry");
+    assert.equal(payload.agentCount >= 13, true);
+    assert.equal(payload.agents.some((agent) => agent.id === "omar"), true);
+    assert.equal(payload.agents.some((agent) => agent.id === "security"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI swarm plan writes deterministic execution artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-plan-"));
+  try {
+    await writeFile(path.join(tempRoot, "index.js"), "export const status = 'ok';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "plan",
+        "--path",
+        tempRoot,
+        "--scenario",
+        "error_event_remediation",
+        "--agents",
+        "security,testing,reliability",
+        "--max-parallel",
+        "3",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "swarm plan");
+    assert.equal(payload.selectedAgents.includes("omar"), true);
+    assert.equal(payload.selectedAgents.includes("security"), true);
+    assert.equal(payload.selectedAgents.includes("testing"), true);
+    assert.equal(payload.selectedAgents.includes("reliability"), true);
+    assert.match(String(payload.planJsonPath || ""), /[\\/]SWARM_PLAN\.json$/);
+    assert.match(String(payload.planMarkdownPath || ""), /[\\/]SWARM_PLAN\.md$/);
+
+    const plan = JSON.parse(await readFile(payload.planJsonPath, "utf-8"));
+    const markdown = await readFile(payload.planMarkdownPath, "utf-8");
+    assert.equal(plan.selectedAgents[0], "omar");
+    assert.equal(Array.isArray(plan.executionGraph.phases), true);
+    assert.equal(plan.executionGraph.phases.length, 3);
+    assert.match(markdown, /SWARM_PLAN/);
+    assert.match(markdown, /Execution phases:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
   try {
