@@ -27,7 +27,7 @@ env:
 jobs:
   quality_preflight:
     name: Quality Preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 5
     environment: release-approval
     outputs:
@@ -166,7 +166,7 @@ jobs:
   verify:
     name: Release Verify
     needs: quality_preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -244,7 +244,7 @@ jobs:
     name: Omar Release Gate
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     environment: security-review
     permissions:
@@ -289,11 +289,25 @@ jobs:
           codex_only: "false"
           llm_failure_policy: block
 
+  manual_approval:
+    name: Manual Release Approval
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.quality_preflight.outputs.publish_enabled == 'true' }}
+    needs: [quality_preflight, verify, omar_release_gate]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    environment: release-approval
+    steps:
+      - name: Confirm release publish intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Manual release approval granted for ${GITHUB_REF}."
+
   publish:
     name: Publish To npm
     if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.quality_preflight.outputs.publish_enabled == 'true' }}
-    needs: [verify, omar_release_gate]
-    runs-on: ubuntu-latest
+    needs: [quality_preflight, verify, omar_release_gate, manual_approval]
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     environment: npm-publish
     permissions:
@@ -346,3 +360,24 @@ jobs:
         run: npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  rollback_on_failure:
+    name: Rollback Hook
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && needs.quality_preflight.outputs.publish_enabled == 'true' }}
+    needs: [quality_preflight, verify, omar_release_gate, manual_approval, publish]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Emit rollback runbook summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="${GITHUB_REF_NAME#v}"
+          rollback_reason="Automatic rollback hook: release workflow failed for ${GITHUB_REF_NAME}."
+          {
+            echo "## Release Rollback Hook"
+            echo "- failed_ref: \`${GITHUB_REF}\`"
+            echo "- failed_sha: \`${GITHUB_SHA}\`"
+            echo "- package_version: \`${package_version}\`"
+            echo "- rollback_workflow: \`.github/workflows/rollback.yml\`"
+            echo "- suggested_command: \`gh workflow run rollback.yml --repo ${GITHUB_REPOSITORY} -f package_version=${package_version} -f reason='${rollback_reason}' -f dry_run=true\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
