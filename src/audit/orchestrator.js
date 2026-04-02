@@ -10,6 +10,10 @@ import {
   runArchitectureSpecialist,
 } from "./agents/architecture.js";
 import {
+  renderComplianceSpecialistMarkdown,
+  runComplianceSpecialist,
+} from "./agents/compliance.js";
+import {
   renderPerformanceSpecialistMarkdown,
   runPerformanceSpecialist,
 } from "./agents/performance.js";
@@ -69,6 +73,9 @@ function routeFindingToAgentId(finding = {}) {
   }
   if (/query|loop|n\+1|performance|latency|runtime/.test(combined)) {
     return "performance";
+  }
+  if (/compliance|soc2|hipaa|gdpr|privacy|pii|control|evidence|retention/.test(combined)) {
+    return "compliance";
   }
   if (/spec|documentation|docs\//.test(combined)) {
     return "documentation";
@@ -283,6 +290,20 @@ export async function runAuditOrchestrator({
       await fsp.writeFile(
         specialistReportPath,
         `${renderPerformanceSpecialistMarkdown(performanceSpecialist).trim()}\n`,
+        "utf-8"
+      );
+    } else if (agent.id === "compliance") {
+      const complianceSpecialist = runComplianceSpecialist({
+        findings: deterministicBaseline.findings,
+        ingest,
+      });
+      findings = complianceSpecialist.findings;
+      summary = complianceSpecialist.summary;
+      confidence = complianceSpecialist.confidence;
+      specialistReportPath = path.join(agentsDirectory, "COMPLIANCE_AGENT_REPORT.md");
+      await fsp.writeFile(
+        specialistReportPath,
+        `${renderComplianceSpecialistMarkdown(complianceSpecialist).trim()}\n`,
         "utf-8"
       );
     }
