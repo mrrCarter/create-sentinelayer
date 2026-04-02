@@ -145,3 +145,49 @@ test("Unit daemon budget governor: hard-limit quarantine advances to kill after 
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit daemon budget governor: clears quarantine state when usage returns within budget", () => {
+  const evaluation = evaluateDaemonBudget({
+    budget: {
+      maxTokens: 1000,
+      warningThresholdPercent: 80,
+      quarantineGraceSeconds: 30,
+    },
+    usage: {
+      tokensUsed: 100,
+    },
+    previousRecord: {
+      quarantineStartedAt: "2026-04-02T00:00:00.000Z",
+      quarantineUntil: "2026-04-02T00:00:30.000Z",
+    },
+    nowIso: "2026-04-02T00:00:10.000Z",
+  });
+
+  assert.equal(evaluation.lifecycleState, "WITHIN_BUDGET");
+  assert.equal(evaluation.action, "NONE");
+  assert.equal(evaluation.quarantineStartedAt, null);
+  assert.equal(evaluation.quarantineUntil, null);
+  assert.equal(evaluation.stopReasons.length, 0);
+});
+
+test("Unit daemon budget governor: apply check fails closed for missing work item", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-budget-governor-"));
+  try {
+    await assert.rejects(
+      () =>
+        applyDaemonBudgetCheck({
+          targetPath: tempRoot,
+          workItemId: "missing-work-item",
+          budget: {
+            maxTokens: 100,
+          },
+          usage: {
+            tokensUsed: 10,
+          },
+        }),
+      /was not found in daemon queue/i
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

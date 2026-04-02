@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import {
   appendAdminErrorEvent,
   getErrorDaemonState,
   listErrorQueue,
+  resolveErrorDaemonStorage,
   runErrorDaemonWorker,
 } from "../src/daemon/error-worker.js";
 
@@ -123,6 +124,62 @@ test("Unit daemon error worker: advances stream offset deterministically across 
     assert.equal(state.state.streamOffset, 2);
     assert.equal(state.state.totalProcessedEvents, 2);
     assert.equal(state.state.runCount, 2);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon error worker: parse errors are counted and terminal queue items do not dedupe", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-parse-"));
+  try {
+    await appendAdminErrorEvent({
+      targetPath: tempRoot,
+      event: {
+        service: "sentinelayer-api",
+        endpoint: "/v1/runtime/runs",
+        errorCode: "RUNTIME_TIMEOUT",
+        severity: "P2",
+        message: "Initial timeout",
+        stackTrace: "TimeoutError: runtime timeout",
+      },
+    });
+    await runErrorDaemonWorker({
+      targetPath: tempRoot,
+      maxEvents: 20,
+    });
+
+    const storage = await resolveErrorDaemonStorage({ targetPath: tempRoot });
+    const queuePayload = JSON.parse(await readFile(storage.queuePath, "utf-8"));
+    queuePayload.items[0].status = "DONE";
+    await writeFile(storage.queuePath, `${JSON.stringify(queuePayload, null, 2)}\n`, "utf-8");
+
+    await appendAdminErrorEvent({
+      targetPath: tempRoot,
+      event: {
+        service: "sentinelayer-api",
+        endpoint: "/v1/runtime/runs",
+        errorCode: "RUNTIME_TIMEOUT",
+        severity: "P1",
+        message: "Repeated timeout after closeout",
+        stackTrace: "TimeoutError: runtime timeout",
+      },
+    });
+    await writeFile(storage.streamPath, `${await readFile(storage.streamPath, "utf-8")}this-is-not-json\n`, "utf-8");
+
+    const next = await runErrorDaemonWorker({
+      targetPath: tempRoot,
+      maxEvents: 20,
+    });
+    assert.equal(next.parseErrorCount >= 1, true);
+    assert.equal(next.queuedCount, 1);
+    assert.equal(next.dedupedCount, 0);
+
+    const listed = await listErrorQueue({
+      targetPath: tempRoot,
+      limit: 20,
+    });
+    const runtimeItems = listed.items.filter((item) => item.endpoint === "/v1/runtime/runs");
+    assert.equal(runtimeItems.length >= 2, true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
