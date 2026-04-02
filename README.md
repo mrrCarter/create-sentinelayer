@@ -495,6 +495,28 @@ Budget artifacts:
 - `.sentinelayer/observability/error-daemon/budget-events.ndjson`
 - `.sentinelayer/observability/error-daemon/budget-runs/budget-check-*.json`
 
+## Operator control plane (Phase 13.5 slice)
+
+Daemon operator control commands now provide unified queue/assignment/jira/budget visibility with explicit stop controls:
+
+- `sl daemon control --json`
+- `sl daemon control snapshot --status ASSIGNED,BLOCKED --agent maya.markov@sentinelayer.local --json`
+- `sl daemon control stop <work-item-id> --mode QUARANTINE --reason "manual triage hold" --confirm --json`
+- `sl daemon control stop <work-item-id> --mode SQUASH --reason "kill switch activated" --confirm --json`
+
+Control-plane snapshot fields include:
+
+- per-work-item budget health color (`GREEN`, `YELLOW`, `RED`)
+- session timers (`sessionElapsedSeconds`, `sessionIdleSeconds`)
+- assignment + Jira linkage (`assignedAgentIdentity`, `assignmentStatus`, `jiraIssueKey`, `jiraStatus`)
+- agent roster aggregates (`activeWorkItemCount`, `blockedCount`, `squashedCount`, longest-session duration)
+
+Operator control artifacts:
+
+- `.sentinelayer/observability/error-daemon/operator-control-state.json`
+- `.sentinelayer/observability/error-daemon/operator-events.ndjson`
+- `.sentinelayer/observability/error-daemon/operator-snapshots/operator-snapshot-*.json`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -819,6 +841,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer daemon assign claim|heartbeat|release|reassign|list` manages shared daemon assignment leases and lifecycle states
 - `create-sentinelayer daemon jira open|start|comment|transition|list` manages Jira lifecycle evidence tied to daemon work items
 - `create-sentinelayer daemon budget check|status` enforces budget warning/quarantine/kill governance with reproducible artifacts
+- `create-sentinelayer daemon control|snapshot|stop` provides operator roster snapshots and explicit confirmed stop controls
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)

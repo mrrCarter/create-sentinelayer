@@ -29,6 +29,13 @@ import {
   applyDaemonBudgetCheck,
   listBudgetStates,
 } from "../daemon/budget-governor.js";
+import {
+  OPERATOR_STOP_MODES,
+  applyOperatorStopControl,
+  buildOperatorControlSnapshot,
+  getBudgetHealthColor,
+  normalizeOperatorStopMode,
+} from "../daemon/operator-control.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -136,6 +143,60 @@ function printBudgetSummary(payload) {
     console.log(
       `- ${record.workItemId} | ${record.lifecycleState} | action=${record.lastAction || "NONE"} | quarantine_until=${record.quarantineUntil || "n/a"}${stopCodes ? ` | stops=${stopCodes}` : ""}`
     );
+  }
+}
+
+function formatDurationSeconds(seconds) {
+  const normalized = Number(seconds);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return "n/a";
+  }
+  const total = Math.floor(normalized);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${secs}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  }
+  return `${secs}s`;
+}
+
+function colorizeBudgetHealth(value) {
+  const normalized = getBudgetHealthColor(value);
+  if (normalized === "RED") {
+    return pc.red(normalized);
+  }
+  if (normalized === "YELLOW") {
+    return pc.yellow(normalized);
+  }
+  return pc.green(normalized);
+}
+
+function printControlPlaneSummary(payload) {
+  console.log(pc.bold("OMAR operator control plane"));
+  console.log(pc.gray(`State: ${payload.operatorStatePath}`));
+  console.log(pc.gray(`Events: ${payload.operatorEventsPath}`));
+  console.log(pc.gray(`Snapshot: ${payload.runPath}`));
+  console.log(
+    pc.gray(
+      `visible=${payload.visibleWorkItems} total_queue=${payload.totalQueueItems} active_agents=${payload.agentRoster.length}`
+    )
+  );
+  for (const row of payload.workItems) {
+    console.log(
+      `- ${row.workItemId} | ${row.severity} | ${row.workItemStatus} | agent=${row.assignedAgentIdentity || "unassigned"} | budget=${colorizeBudgetHealth(row.budgetHealthColor)} | elapsed=${formatDurationSeconds(row.sessionElapsedSeconds)} | idle=${formatDurationSeconds(row.sessionIdleSeconds)} | jira=${row.jiraIssueKey || "n/a"}`
+    );
+  }
+  if (payload.agentRoster.length > 0) {
+    console.log(pc.bold("Agent roster"));
+    for (const agent of payload.agentRoster) {
+      console.log(
+        `- ${agent.agentIdentity} | work_items=${agent.workItemCount} | active=${agent.activeWorkItemCount} | blocked=${agent.blockedCount} | squashed=${agent.squashedCount} | longest_session=${formatDurationSeconds(agent.maxSessionElapsedSeconds)}`
+      );
+    }
   }
 }
 
@@ -793,6 +854,158 @@ export function registerDaemonCommand(program) {
       console.log(
         `${workItemId} lifecycle=${checked.lifecycleState} action=${checked.action} quarantine_until=${checked.quarantineUntil || "n/a"}`
       );
+    });
+
+  const control = daemon
+    .command("control")
+    .description(
+      "Operator control plane snapshot and stop controls (agent roster, budget health, session timers)"
+    );
+
+  control
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option(
+      "--status <csv>",
+      `Optional queue status filter (${WORK_ITEM_STATUSES.join(", ")})`
+    )
+    .option("--agent <identity>", "Optional assigned-agent filter")
+    .option("--limit <n>", "Maximum work items to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const snapshot = await buildOperatorControlSnapshot({
+        targetPath,
+        outputDir: options.outputDir,
+        statuses: parseCsv(options.status),
+        agentIdentity: options.agent,
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon control",
+        targetPath,
+        runId: snapshot.runId,
+        runPath: snapshot.runPath,
+        operatorStatePath: snapshot.operatorStatePath,
+        operatorEventsPath: snapshot.operatorEventsPath,
+        totalQueueItems: snapshot.totalQueueItems,
+        visibleWorkItems: snapshot.visibleWorkItems,
+        statusCounts: snapshot.statusCounts,
+        healthCounts: snapshot.healthCounts,
+        workItems: snapshot.workItems,
+        agentRoster: snapshot.agentRoster,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printControlPlaneSummary(payload);
+    });
+
+  control
+    .command("snapshot")
+    .description("Create one deterministic operator control-plane snapshot artifact")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option(
+      "--status <csv>",
+      `Optional queue status filter (${WORK_ITEM_STATUSES.join(", ")})`
+    )
+    .option("--agent <identity>", "Optional assigned-agent filter")
+    .option("--limit <n>", "Maximum work items to return", "50")
+    .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const snapshot = await buildOperatorControlSnapshot({
+        targetPath,
+        outputDir: options.outputDir,
+        statuses: parseCsv(options.status),
+        agentIdentity: options.agent,
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+        nowIso: options.nowIso,
+      });
+      const payload = {
+        command: "daemon control snapshot",
+        targetPath,
+        runId: snapshot.runId,
+        runPath: snapshot.runPath,
+        operatorStatePath: snapshot.operatorStatePath,
+        operatorEventsPath: snapshot.operatorEventsPath,
+        totalQueueItems: snapshot.totalQueueItems,
+        visibleWorkItems: snapshot.visibleWorkItems,
+        statusCounts: snapshot.statusCounts,
+        healthCounts: snapshot.healthCounts,
+        workItems: snapshot.workItems,
+        agentRoster: snapshot.agentRoster,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printControlPlaneSummary(payload);
+    });
+
+  control
+    .command("stop")
+    .description("Apply confirmed operator stop control (quarantine or squash) to a work item")
+    .argument("<workItemId>", "Queue work item id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option(
+      "--mode <mode>",
+      `Stop mode (${OPERATOR_STOP_MODES.join(", ")})`,
+      "QUARANTINE"
+    )
+    .option("--reason <text>", "Operator reason for stop action")
+    .option("--actor <identity>", "Operator identity", "omar-operator")
+    .option("--confirm", "Confirm stop action execution")
+    .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const stopped = await applyOperatorStopControl({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        mode: normalizeOperatorStopMode(options.mode),
+        reason: options.reason,
+        actor: options.actor,
+        confirm: Boolean(options.confirm),
+        nowIso: options.nowIso,
+      });
+      const payload = {
+        command: "daemon control stop",
+        targetPath,
+        workItemId: stopped.workItemId,
+        mode: stopped.mode,
+        targetStatus: stopped.targetStatus,
+        actor: stopped.actor,
+        reason: stopped.reason,
+        operatorEventsPath: stopped.operatorEventsPath,
+        queuePath: stopped.queuePath,
+        queueItem: stopped.queueItem,
+        assignment: stopped.assignment,
+        jiraIssueKey: stopped.jiraIssueKey,
+        jiraCommented: stopped.jiraCommented,
+        jiraCommentWarning: stopped.jiraCommentWarning,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Operator stop applied"));
+      console.log(
+        `${stopped.workItemId} mode=${stopped.mode} status=${stopped.targetStatus} actor=${stopped.actor}`
+      );
+      if (stopped.jiraIssueKey) {
+        console.log(
+          `jira=${stopped.jiraIssueKey} commented=${stopped.jiraCommented ? "true" : "false"}`
+        );
+      }
+      if (stopped.jiraCommentWarning) {
+        console.log(pc.yellow(`jira_warning=${stopped.jiraCommentWarning}`));
+      }
     });
 
   const error = daemon
