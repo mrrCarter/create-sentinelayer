@@ -125,6 +125,67 @@ export function registerAuditCommand(program, invokeLegacy) {
     });
 
   audit
+    .command("security")
+    .description("Run security specialist agent only")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--registry-file <path>", "Optional custom audit registry file")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--dry-run", "Skip deterministic baseline and run security planning only")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const registry = await loadAuditRegistry({
+        registryFile: options.registryFile,
+      });
+      const selected = selectAuditAgents(registry.agents, "security");
+      if (selected.selected.length !== 1) {
+        throw new Error("Security specialist agent is unavailable in the current registry.");
+      }
+
+      const result = await runAuditOrchestrator({
+        targetPath,
+        agents: selected.selected,
+        maxParallel: 1,
+        outputDir: options.outputDir,
+        dryRun: Boolean(options.dryRun),
+      });
+      const securityAgent = result.agentResults.find((agent) => agent.agentId === "security") || null;
+
+      const payload = {
+        command: "audit security",
+        targetPath: result.targetPath,
+        runId: result.runId,
+        runDirectory: result.runDirectory,
+        reportPath: result.reportMarkdownPath,
+        reportJsonPath: result.reportJsonPath,
+        securityAgentPath: securityAgent?.artifactPath || null,
+        securitySpecialistReportPath: securityAgent?.specialistReportPath || null,
+        summary: result.summary,
+        specialistSummary: securityAgent?.summary || null,
+        dryRun: result.dryRun,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Security specialist audit complete"));
+        console.log(pc.gray(`Run: ${result.runId}`));
+        console.log(pc.gray(`Report: ${result.reportMarkdownPath}`));
+        if (payload.securitySpecialistReportPath) {
+          console.log(pc.gray(`Security report: ${payload.securitySpecialistReportPath}`));
+        }
+        console.log(
+          `Summary: P0=${result.summary.P0} P1=${result.summary.P1} P2=${result.summary.P2} P3=${result.summary.P3}`
+        );
+      }
+
+      if (result.summary.blocking) {
+        process.exitCode = 2;
+      }
+    });
+
+  audit
     .command("local")
     .description("Compatibility mode: run legacy local readiness + policy audit")
     .option("--path <path>", "Target repository path")

@@ -5,6 +5,10 @@ import path from "node:path";
 import { resolveOutputRoot } from "../config/service.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
 import { runDeterministicReviewPipeline } from "../review/local-review.js";
+import {
+  renderSecuritySpecialistMarkdown,
+  runSecuritySpecialist,
+} from "./agents/security.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -209,8 +213,26 @@ export async function runAuditOrchestrator({
   const startedAt = Date.now();
   const agentResults = await runWithConcurrency(agents, maxParallel, async (agent) => {
     const agentStart = Date.now();
-    const findings = routeBuckets.get(agent.id) || [];
-    const summary = severitySummary(findings);
+    let findings = routeBuckets.get(agent.id) || [];
+    let summary = severitySummary(findings);
+    let confidence = computeConfidenceFloor(agent.confidenceFloor, findings.length);
+    let specialistReportPath = "";
+
+    if (agent.id === "security") {
+      const securitySpecialist = runSecuritySpecialist({
+        findings: deterministicBaseline.findings,
+      });
+      findings = securitySpecialist.findings;
+      summary = securitySpecialist.summary;
+      confidence = securitySpecialist.confidence;
+      specialistReportPath = path.join(agentsDirectory, "SECURITY_AGENT_REPORT.md");
+      await fsp.writeFile(
+        specialistReportPath,
+        `${renderSecuritySpecialistMarkdown(securitySpecialist).trim()}\n`,
+        "utf-8"
+      );
+    }
+
     const result = {
       agentId: agent.id,
       persona: agent.persona,
@@ -218,7 +240,7 @@ export async function runAuditOrchestrator({
       permissionMode: agent.permissionMode,
       maxTurns: agent.maxTurns,
       confidenceFloor: agent.confidenceFloor,
-      confidence: computeConfidenceFloor(agent.confidenceFloor, findings.length),
+      confidence,
       findingCount: findings.length,
       summary,
       findings: findings.slice(0, 120),
@@ -228,6 +250,7 @@ export async function runAuditOrchestrator({
       durationMs: Math.max(0, Date.now() - agentStart),
       escalationTargets: agent.escalationTargets || [],
       evidenceRequirements: agent.evidenceRequirements || [],
+      specialistReportPath,
     };
     const agentPath = path.join(agentsDirectory, `${agent.id}.json`);
     await fsp.writeFile(agentPath, `${JSON.stringify(result, null, 2)}\n`, "utf-8");

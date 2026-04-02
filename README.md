@@ -244,6 +244,7 @@ The CLI now includes an audit swarm orchestrator with a built-in 13-agent regist
 - `sl audit --dry-run`
 - `sl audit --agents security,architecture,testing --max-parallel 3`
 - `sl audit registry`
+- `sl audit security`
 - `sl audit local` (legacy compatibility path for `/audit`)
 
 Artifacts are written to:
@@ -251,6 +252,7 @@ Artifacts are written to:
 - `.sentinelayer/audits/<run-id>/AUDIT_REPORT.md`
 - `.sentinelayer/audits/<run-id>/AUDIT_REPORT.json`
 - `.sentinelayer/audits/<run-id>/agents/<agent-id>.json`
+- `.sentinelayer/audits/<run-id>/agents/SECURITY_AGENT_REPORT.md` (security specialist)
 
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
@@ -538,6 +540,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
 - `create-sentinelayer audit [--agents <ids>] [--max-parallel <n>]` runs orchestrated audit agents and writes `.sentinelayer/audits/<run-id>/AUDIT_REPORT.{md,json}`
 - `create-sentinelayer audit registry` lists built-in/customized audit-agent registry records
+- `create-sentinelayer audit security` runs the security specialist agent and writes a dedicated `SECURITY_AGENT_REPORT.md`
 - `create-sentinelayer audit local --path <repo>` runs legacy readiness + scan audit and writes `.sentinelayer/reports/audit-*.md`
 - `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
