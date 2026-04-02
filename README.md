@@ -424,6 +424,34 @@ Queue routing behavior:
 - matching open fingerprints are deduped with `occurrenceCount` increments and severity escalation
 - worker cursor tracks processed stream offset for deterministic resumability across ticks
 
+## Global assignment ledger (Phase 13.2 slice)
+
+Daemon assignment controls now support explicit claim/heartbeat/release/reassign flow with lease tracking:
+
+- `sl daemon assign claim <work-item-id> --agent maya.markov@sentinelayer.local --lease-ttl-seconds 1800 --stage triage --run-id run_001 --jira-issue-key SL-101`
+- `sl daemon assign heartbeat <work-item-id> --agent maya.markov@sentinelayer.local --stage analysis --run-id run_002`
+- `sl daemon assign reassign <work-item-id> --from-agent maya.markov@sentinelayer.local --to-agent mark.rao@sentinelayer.local --stage fix`
+- `sl daemon assign release <work-item-id> --agent mark.rao@sentinelayer.local --status DONE --reason "fix merged"`
+- `sl daemon assign list --status DONE --agent mark.rao@sentinelayer.local --json`
+
+Ledger artifacts:
+
+- `.sentinelayer/observability/error-daemon/assignment-ledger.json` (current assignment state)
+- `.sentinelayer/observability/error-daemon/assignment-events.ndjson` (claim/heartbeat/reassign/release event history)
+
+Tracked assignment fields include:
+
+- `workItemId`
+- `assignedAgentIdentity`
+- `leasedAt`
+- `leaseTtlSeconds`
+- `leaseExpiresAt`
+- `status`
+- `stage`
+- `runId`
+- `jiraIssueKey`
+- `budgetSnapshot`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -745,6 +773,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer auth sessions|revoke` supports session inventory and explicit token revocation controls
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer daemon error record|worker|queue` ingests admin errors and routes deterministic daemon queue work items
+- `create-sentinelayer daemon assign claim|heartbeat|release|reassign|list` manages shared daemon assignment leases and lifecycle states
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)

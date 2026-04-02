@@ -68,3 +68,4 @@
 - Pen-test swarm execution should fail closed on target governance: verified target state, host match, and strict path/method/scenario policy checks are safer defaults than best-effort probing.
 - For file-backed identity registries, do not run per-identity status writes concurrently (`Promise.all`) against the same JSON file; serialize writes (or batch transactionally) to avoid lost updates.
 - Error-daemon intake should stay append-only with a persisted stream offset cursor; this gives deterministic replay/resume semantics and avoids duplicate queue routing across worker ticks.
+- Assignment ledgers should enforce lease-collision checks by default; a second agent claim must fail while an active non-expired lease exists, then rely on explicit release/reassign transitions for ownership changes.
