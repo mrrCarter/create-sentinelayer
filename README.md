@@ -278,6 +278,8 @@ Generate a local `SPEC.md` without calling the API:
 - `create-sentinelayer spec list-templates`
 - `create-sentinelayer spec show-template api-service`
 - `create-sentinelayer spec generate --path . --template api-service --description \"Build secure autonomous review orchestration\"`
+- `create-sentinelayer spec show --path .`
+- `create-sentinelayer spec show --path . --plain`
 
 The generator uses deterministic ingest context plus template architecture/security checklists.
 
@@ -302,6 +304,8 @@ Generate execution prompts directly from `SPEC.md`:
 
 - `create-sentinelayer prompt generate --path . --agent codex`
 - `create-sentinelayer prompt preview --path . --agent claude --max-lines 40`
+- `create-sentinelayer prompt show --path . --agent codex`
+- `create-sentinelayer prompt show --path . --file docs/PROMPT_codex.md --plain`
 
 Supported targets: `claude`, `cursor`, `copilot`, `codex`, `generic`.
 
@@ -334,6 +338,8 @@ Generate phase-by-phase implementation guides from `SPEC.md`:
 
 - `create-sentinelayer guide generate --path .`
 - `create-sentinelayer guide generate --path . --output-file docs/BUILD_GUIDE.md`
+- `create-sentinelayer guide show --path .`
+- `create-sentinelayer guide show --path . --plain`
 
 Export phases as issue-ready payloads:
 

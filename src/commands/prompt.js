@@ -10,6 +10,7 @@ import {
   resolvePromptTarget,
   SUPPORTED_PROMPT_TARGETS,
 } from "../prompt/generator.js";
+import { renderTerminalMarkdown } from "../ui/markdown.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -51,6 +52,22 @@ async function buildPromptOutput({ targetPath, specFile, agent, outputFile }) {
     promptMarkdown,
     outputPath,
   };
+}
+
+function resolvePromptArtifactPath({ targetPath, promptFile, agent }) {
+  const explicit = String(promptFile || "").trim();
+  if (explicit) {
+    return path.resolve(targetPath, explicit);
+  }
+
+  const resolvedAgent = resolvePromptTarget(agent);
+  const defaultPath = path.resolve(targetPath, defaultPromptFileName(resolvedAgent));
+  if (!fs.existsSync(defaultPath)) {
+    throw new Error(
+      `No prompt artifact found at ${defaultPath}. Generate one with 'prompt generate' or pass --file.`
+    );
+  }
+  return defaultPath;
 }
 
 export function registerPromptCommand(program) {
@@ -107,6 +124,7 @@ export function registerPromptCommand(program) {
     .option("--spec-file <path>", "Spec file path relative to --path")
     .option("--agent <target>", `Prompt target (${SUPPORTED_PROMPT_TARGETS.join("|")})`, "generic")
     .option("--max-lines <n>", "Maximum lines to print (0 = unlimited)", "0")
+    .option("--plain", "Disable terminal markdown styling")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -137,6 +155,42 @@ export function registerPromptCommand(program) {
         return;
       }
 
-      console.log(outputLines.join("\n"));
+      console.log(renderTerminalMarkdown(outputLines.join("\n"), { plain: Boolean(options.plain) }));
+    });
+
+  prompt
+    .command("show")
+    .description("Render an existing prompt artifact in terminal markdown")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--file <path>", "Prompt file path relative to --path")
+    .option("--agent <target>", `Prompt target (${SUPPORTED_PROMPT_TARGETS.join("|")})`, "generic")
+    .option("--plain", "Disable terminal markdown styling")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const promptPath = resolvePromptArtifactPath({
+        targetPath,
+        promptFile: options.file,
+        agent: options.agent,
+      });
+      const markdown = await fsp.readFile(promptPath, "utf-8");
+
+      if (shouldEmitJson(options, command)) {
+        console.log(
+          JSON.stringify(
+            {
+              command: "prompt show",
+              promptPath,
+              lineCount: markdown.split(/\r?\n/).length,
+              preview: markdown,
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
+      console.log(renderTerminalMarkdown(markdown, { plain: Boolean(options.plain) }));
     });
 }

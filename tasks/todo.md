@@ -82,7 +82,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch D - UX + AI Feature Layer (P1)
 - PR 2.1 Ink interactive mode. (merged as #57)
-- PR 2.2 Terminal markdown renderer.
+- PR 2.2 Terminal markdown renderer. (in progress on `roadmap/pr-2-2-terminal-markdown-renderer`)
 - PR 2.3 Diff-aware regeneration.
 - PR 2.4 Progress/notifications.
 - PR 3.3 AI-enhanced spec generation. (merged as #44)
@@ -330,3 +330,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - PR 9.1 extension slice completion:
     - #53 merged (`feat(review): phase 9.1 deterministic local scan command`).
     - Added `review scan --mode full|diff` deterministic local review scan flow with reproducible report artifacts.
+  - PR 2.2 (terminal markdown renderer + artifact show commands) local evidence (branch `roadmap/pr-2-2-terminal-markdown-renderer`):
+    - `npm run verify` (pass, e2e `45/45`; coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=6`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=6`)

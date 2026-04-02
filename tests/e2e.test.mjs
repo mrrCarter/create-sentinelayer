@@ -1081,6 +1081,79 @@ test("CLI prompt commands generate and preview agent-targeted prompts from spec"
   }
 });
 
+test("CLI markdown show commands load spec/prompt/guide artifacts deterministically", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-markdown-show-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      [
+        "# SPEC - Markdown Demo",
+        "",
+        "## Endpoints",
+        "| Path | Method |",
+        "| --- | --- |",
+        "| /health | GET |",
+        "",
+        "```ts",
+        "export const status = 'ok';",
+        "```",
+      ].join("\n"),
+      "utf-8"
+    );
+    await writeFile(
+      path.join(tempRoot, "PROMPT_generic.md"),
+      "# Prompt\n\nUse **deterministic** review with `sl review --diff`.\n",
+      "utf-8"
+    );
+    await writeFile(
+      path.join(tempRoot, "BUILD_GUIDE.md"),
+      "# Build Guide\n\n- [ ] Wire auth\n- [ ] Add coverage\n",
+      "utf-8"
+    );
+
+    const specShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(specShow.code, 0, specShow.stderr || specShow.stdout);
+    const specPayload = JSON.parse(String(specShow.stdout || "").trim());
+    assert.equal(specPayload.command, "spec show");
+    assert.match(String(specPayload.preview || ""), /# SPEC - Markdown Demo/);
+    assert.match(String(specPayload.preview || ""), /\| \/health \| GET \|/);
+
+    const promptShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "prompt",
+        "show",
+        "--path",
+        tempRoot,
+        "--file",
+        "PROMPT_generic.md",
+        "--json",
+      ],
+    });
+    assert.equal(promptShow.code, 0, promptShow.stderr || promptShow.stdout);
+    const promptPayload = JSON.parse(String(promptShow.stdout || "").trim());
+    assert.equal(promptPayload.command, "prompt show");
+    assert.match(String(promptPayload.preview || ""), /Use \*\*deterministic\*\* review/);
+
+    const guideShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["guide", "show", "--path", tempRoot, "--json"],
+    });
+    assert.equal(guideShow.code, 0, guideShow.stderr || guideShow.stdout);
+    const guidePayload = JSON.parse(String(guideShow.stdout || "").trim());
+    assert.equal(guidePayload.command, "guide show");
+    assert.match(String(guidePayload.preview || ""), /# Build Guide/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI scan init generates security-review workflow from spec profile", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-"));
   try {
