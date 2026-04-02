@@ -2433,6 +2433,8 @@ test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", 
     assert.equal(payload.ai.enabled, true);
     assert.equal(payload.ai.dryRun, true);
     assert.equal(payload.ai.findingCount >= 1, true);
+    assert.match(String(payload.reportUnifiedPath || ""), /[\\/]REVIEW_REPORT\.md$/);
+    assert.match(String(payload.reportUnifiedJsonPath || ""), /[\\/]REVIEW_REPORT\.json$/);
     assert.match(String(payload.ai.reportPath || ""), /[\\/]REVIEW_AI\.md$/);
     assert.match(String(payload.ai.reportJsonPath || ""), /[\\/]REVIEW_AI\.json$/);
     assert.match(String(payload.ai.promptPath || ""), /[\\/]REVIEW_AI_PROMPT\.txt$/);
@@ -2453,6 +2455,86 @@ test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", 
     const telemetryText = await readFile(payload.ai.telemetry.filePath, "utf-8");
     assert.match(telemetryText, /\"eventType\":\"usage\"/);
     assert.ok(String(payload.ai.telemetry.usageEventId || "").length > 8);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI review show/export and HITL verdict commands operate on unified report artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-report-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "index.js"),
+      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      "utf-8"
+    );
+
+    const runResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "--ai", "--ai-dry-run", "--json"],
+    });
+    assert.equal(runResult.code, 0, runResult.stderr || runResult.stdout);
+    const runPayload = JSON.parse(String(runResult.stdout || "").trim());
+    assert.ok(String(runPayload.runId || "").startsWith("review-"));
+
+    const showResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "show", "--run-id", runPayload.runId, "--json"],
+    });
+    assert.equal(showResult.code, 0, showResult.stderr || showResult.stdout);
+    const showPayload = JSON.parse(String(showResult.stdout || "").trim());
+    assert.equal(showPayload.command, "review show");
+    assert.equal(Array.isArray(showPayload.report.findings), true);
+    assert.equal(showPayload.report.findings.length >= 1, true);
+    const firstFindingId = showPayload.report.findings[0].findingId;
+    assert.ok(String(firstFindingId || "").startsWith("F-"));
+
+    const acceptResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "review",
+        "accept",
+        firstFindingId,
+        "--run-id",
+        runPayload.runId,
+        "--note",
+        "accepted for remediation tracking",
+        "--json",
+      ],
+    });
+    assert.equal(acceptResult.code, 0, acceptResult.stderr || acceptResult.stdout);
+    const acceptPayload = JSON.parse(String(acceptResult.stdout || "").trim());
+    assert.equal(acceptPayload.command, "review accept");
+    assert.equal(acceptPayload.decision.verdict, "accept");
+
+    const showAfterDecision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "show", "--run-id", runPayload.runId, "--json"],
+    });
+    assert.equal(showAfterDecision.code, 0, showAfterDecision.stderr || showAfterDecision.stdout);
+    const afterPayload = JSON.parse(String(showAfterDecision.stdout || "").trim());
+    const updated = afterPayload.report.findings.find((finding) => finding.findingId === firstFindingId);
+    assert.ok(updated);
+    assert.equal(updated.adjudication.verdict, "accept");
+
+    const exportResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "export", "--run-id", runPayload.runId, "--format", "sarif", "--json"],
+    });
+    assert.equal(exportResult.code, 0, exportResult.stderr || exportResult.stdout);
+    const exportPayload = JSON.parse(String(exportResult.stdout || "").trim());
+    assert.equal(exportPayload.command, "review export");
+    assert.equal(exportPayload.format, "sarif");
+
+    const sarif = JSON.parse(await readFile(exportPayload.outputPath, "utf-8"));
+    assert.equal(sarif.version, "2.1.0");
+    assert.equal(Array.isArray(sarif.runs), true);
+    assert.equal(Array.isArray(sarif.runs[0].results), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -203,6 +203,28 @@ AI usage, cost, and stop-class telemetry are appended to:
 - `.sentinelayer/cost-history.json`
 - `.sentinelayer/observability/run-events.jsonl`
 
+## Unified review report + HITL (Phase 9.4 slice)
+
+Every `review` run now emits reconciled findings:
+
+- `.sentinelayer/reviews/<run-id>/REVIEW_REPORT.md`
+- `.sentinelayer/reviews/<run-id>/REVIEW_REPORT.json`
+
+Capabilities:
+
+- `sl review show [--run-id <id>]`
+- `sl review export --format sarif|json|md|github-annotations`
+- `sl review accept <finding-id> --run-id <id>`
+- `sl review reject <finding-id> --run-id <id>`
+- `sl review defer <finding-id> --run-id <id>`
+
+Reconciliation behavior:
+
+- deduplicates deterministic + AI findings by location/message fingerprint
+- preserves highest severity finding in each duplicate cluster
+- assigns confidence (`100%` deterministic, model-derived for AI)
+- persists HITL decisions in `.sentinelayer/reviews/<run-id>/REVIEW_DECISIONS.json`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -500,6 +522,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
 - `create-sentinelayer review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings
+- `create-sentinelayer review show|export|accept|reject|defer ...` manages reconciled unified reports and HITL adjudication
 - `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
