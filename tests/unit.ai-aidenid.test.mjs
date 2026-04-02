@@ -5,6 +5,7 @@ import {
   buildProvisionEmailPayload,
   normalizeAidenIdApiUrl,
   provisionEmailIdentity,
+  revokeIdentity,
   resolveAidenIdCredentials,
 } from "../src/ai/aidenid.js";
 
@@ -134,5 +135,59 @@ test("Unit AIdenID helper: execute request sends scoped headers and parses respo
         }),
       }),
     /status 403/
+  );
+});
+
+test("Unit AIdenID helper: revoke request sends scoped headers and parses response", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "id_123",
+          status: "REVOKED",
+          revokedAt: "2026-05-01T00:00:00.000Z",
+        };
+      },
+    };
+  };
+
+  const execution = await revokeIdentity({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    idempotencyKey: "idem-456",
+    identityId: "id_123",
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.aidenid.com/v1/identities/id_123/revoke");
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(requests[0].init.headers["Authorization"], "Bearer k_test");
+  assert.equal(execution.response.status, "REVOKED");
+
+  await assert.rejects(
+    () =>
+      revokeIdentity({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        idempotencyKey: "idem-456",
+        identityId: "id_123",
+        fetchImpl: async () => ({
+          ok: false,
+          status: 409,
+          async json() {
+            return { error: { code: "conflict" } };
+          },
+        }),
+      }),
+    /status 409/
   );
 });
