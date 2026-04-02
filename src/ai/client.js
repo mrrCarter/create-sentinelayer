@@ -11,6 +11,7 @@ const DEFAULT_MODELS = Object.freeze({
 });
 
 const SUPPORTED_PROVIDERS = Object.freeze(Object.keys(PROVIDER_ENV_KEYS));
+const GOOGLE_API_KEY_QUERY_REGEX = /([?&]key=)([^&#\s]+)/gi;
 
 function normalizeProvider(provider) {
   const normalized = String(provider || "")
@@ -46,6 +47,27 @@ function normalizePrompt(prompt) {
     throw new Error("Prompt is required.");
   }
   return normalized;
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeSensitiveText(text, { apiKey } = {}) {
+  let sanitized = String(text || "");
+  sanitized = sanitized.replace(GOOGLE_API_KEY_QUERY_REGEX, "$1[REDACTED]");
+
+  const key = String(apiKey || "").trim();
+  if (!key) {
+    return sanitized;
+  }
+
+  sanitized = sanitized.replace(new RegExp(escapeRegExp(key), "g"), "[REDACTED]");
+  const encodedKey = encodeURIComponent(key);
+  if (encodedKey && encodedKey !== key) {
+    sanitized = sanitized.replace(new RegExp(escapeRegExp(encodedKey), "g"), "[REDACTED]");
+  }
+  return sanitized;
 }
 
 function parseStreamDataLine(line) {
@@ -158,11 +180,10 @@ function buildProviderRequest({ provider, apiKey, model, prompt, stream }) {
 
   const method = stream ? "streamGenerateContent" : "generateContent";
   return {
-    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      model
-    )}:${method}?key=${encodeURIComponent(apiKey)}`,
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:${method}`,
     headers: {
       "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
       contents: [
@@ -365,7 +386,9 @@ export class MultiProviderApiClient {
             continue;
           }
 
-          const errorBody = await parseErrorBody(response);
+          const errorBody = sanitizeSensitiveText(await parseErrorBody(response), {
+            apiKey: resolvedApiKey,
+          });
           throw new Error(
             `Provider request failed (${resolvedProvider}) with status ${response.status}${
               errorBody ? `: ${errorBody}` : ""
@@ -391,7 +414,9 @@ export class MultiProviderApiClient {
           text,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = sanitizeSensitiveText(error instanceof Error ? error.message : String(error), {
+          apiKey: resolvedApiKey,
+        });
         const isAbort = /aborted|abort/i.test(message);
         if (attempt < this.maxRetries && !isAbort) {
           const backoff = this.baseDelayMs * 2 ** attempt;
@@ -399,7 +424,13 @@ export class MultiProviderApiClient {
           await sleep(backoff);
           continue;
         }
-        throw error;
+        if (error instanceof Error) {
+          if (message === error.message) {
+            throw error;
+          }
+          throw new Error(message);
+        }
+        throw new Error(message);
       } finally {
         clearTimeout(timeoutHandle);
       }
