@@ -97,12 +97,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
-      - name: Skip Omar Gate on untrusted pull_request refs
+      - name: Fail closed on untrusted pull_request refs
         if: ${{ steps.trust.outputs.trusted != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          echo "::warning::Skipping Omar Gate because this run is not in a trusted secret context."
+          echo "::error::Untrusted pull_request ref cannot access Omar secrets. Security gate fails closed."
+          exit 1
       - name: Run Omar Gate
         if: ${{ steps.trust.outputs.trusted == 'true' }}
         id: omar

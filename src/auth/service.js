@@ -18,6 +18,12 @@ export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
+const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function isTruthy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
 
 function normalizeApiUrl(rawValue) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
@@ -26,6 +32,18 @@ function normalizeApiUrl(rawValue) {
     parsed = new URL(candidate);
   } catch {
     throw new Error(`Invalid API URL '${candidate}'.`);
+  }
+  const protocol = String(parsed.protocol || "").toLowerCase();
+  const hostname = String(parsed.hostname || "").trim().toLowerCase();
+  const allowInsecureHttp =
+    isTruthy(process.env.SENTINELAYER_ALLOW_INSECURE_API_URL) || LOOPBACK_API_HOSTS.has(hostname);
+  if (protocol !== "https:" && !(protocol === "http:" && allowInsecureHttp)) {
+    throw new Error(
+      "API URL must use https:// unless targeting a loopback host or SENTINELAYER_ALLOW_INSECURE_API_URL=true is set for explicit local development."
+    );
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("API URL must not include embedded credentials.");
   }
   parsed.pathname = "/";
   parsed.search = "";

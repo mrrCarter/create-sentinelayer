@@ -79,22 +79,52 @@ jobs:
               || true
           }
 
-          read_success_check_run_id() {
+          read_latest_check_run_result() {
             local sha="$1"
             local check_name="$2"
             gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
-              --jq ".check_runs[] | select(.name==\"${check_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
-              | head -n 1 || true
+              --jq ".check_runs | map(select(.name==\"${check_name}\")) | sort_by(.started_at // .completed_at // .id) | last | [(.id|tostring), (.status // \"\"), (.conclusion // \"\")] | @tsv" \
+              || true
           }
 
-          assert_environment_has_required_reviewers() {
+          wait_for_latest_check_success() {
+            local sha="$1"
+            local check_name="$2"
+            local attempts="$3"
+            local sleep_seconds="$4"
+            local result=""
+            for _ in $(seq 1 "${attempts}"); do
+              result="$(read_latest_check_run_result "${sha}" "${check_name}")"
+              if [[ -n "${result}" ]]; then
+                IFS=$'\t' read -r check_id check_status check_conclusion <<< "${result}"
+                if [[ "${check_status}" == "completed" && "${check_conclusion}" == "success" ]]; then
+                  printf '%s\n' "${check_id}"
+                  return 0
+                fi
+              fi
+              sleep "${sleep_seconds}"
+            done
+            printf '\n'
+          }
+
+          assert_environment_policy() {
             local environment_name="$1"
-            local reviewer_count
-            reviewer_count="$(gh_api_with_timeout \
+            local policy_snapshot
+            policy_snapshot="$(gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/environments/${environment_name}" \
-              --jq '[.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers | length)] | max // 0' \
-              | tr -d '\r' | xargs || true)"
+              --jq '[
+                ([.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers | length)] | max // 0),
+                ([.protection_rules[]? | select(.type=="required_reviewers") | .prevent_self_review] | max // false),
+                (.deployment_branch_policy.protected_branches // false),
+                (.deployment_branch_policy.custom_branch_policies // false)
+              ] | @tsv' \
+              | tr -d '\r' || true)"
+            local reviewer_count=""
+            local prevent_self_review=""
+            local protected_branches=""
+            local custom_branch_policies=""
+            IFS=$'\t' read -r reviewer_count prevent_self_review protected_branches custom_branch_policies <<< "${policy_snapshot}"
             case "${reviewer_count}" in
               ''|*[!0-9]*)
                 echo "::error::Unable to resolve required reviewer protection for environment '${environment_name}'."
@@ -105,23 +135,18 @@ jobs:
               echo "::error::Environment '${environment_name}' must require at least one reviewer."
               exit 1
             fi
+            if [[ "${prevent_self_review}" != "true" ]]; then
+              echo "::error::Environment '${environment_name}' must enforce prevent_self_review=true."
+              exit 1
+            fi
+            if [[ "${protected_branches}" != "true" || "${custom_branch_policies}" != "false" ]]; then
+              echo "::error::Environment '${environment_name}' must enforce protected branch deployments only."
+              exit 1
+            fi
           }
 
-          assert_environment_has_required_reviewers "release-approval"
-          assert_environment_has_required_reviewers "npm-publish"
-
-          quality_check_id=""
-          for _ in $(seq 1 18); do
-            quality_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Quality Summary")"
-            if [[ -n "${quality_check_id}" && "${quality_check_id}" != "null" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          if [[ -z "${quality_check_id}" || "${quality_check_id}" == "null" ]]; then
-            echo "::error::No successful Quality Summary check run found for commit ${GITHUB_SHA}."
-            exit 1
-          fi
+          assert_environment_policy "release-approval"
+          assert_environment_policy "npm-publish"
 
           quality_run_id=""
           release_artifact_name="create-sentinelayer-release-${GITHUB_SHA}"
@@ -146,30 +171,26 @@ jobs:
             exit 1
           fi
 
-          omar_check_id=""
-          for _ in $(seq 1 12); do
-            omar_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Omar Gate")"
-            if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
-              break
-            fi
-            sleep 5
-          done
+          quality_check_id="$(gh_api_with_timeout \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${quality_run_id}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name=="Quality Summary" and .status=="completed" and .conclusion=="success") | .id' \
+            | head -n 1 || true)"
+          if [[ -z "${quality_check_id}" || "${quality_check_id}" == "null" ]]; then
+            echo "::error::Selected quality run '${quality_run_id}' does not contain a successful Quality Summary job."
+            exit 1
+          fi
 
-          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+          omar_check_id="$(wait_for_latest_check_success "${GITHUB_SHA}" "Omar Gate" 12 5)"
+
+          if [[ -z "${omar_check_id}" ]]; then
             pr_head_sha="$(gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
               --jq '.[0].head.sha' 2>/dev/null || true)"
             if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
-              for _ in $(seq 1 12); do
-                omar_check_id="$(read_success_check_run_id "${pr_head_sha}" "Omar Gate")"
-                if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
-                  break
-                fi
-                sleep 5
-              done
+              omar_check_id="$(wait_for_latest_check_success "${pr_head_sha}" "Omar Gate" 12 5)"
             fi
           fi
-          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+          if [[ -z "${omar_check_id}" ]]; then
             echo "::error::No successful Omar Gate check run found for commit ${GITHUB_SHA} or its linked PR head."
             exit 1
           fi

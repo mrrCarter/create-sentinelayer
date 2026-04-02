@@ -141,7 +141,9 @@ function resolveLegacyEncryptionPassphrase() {
   }
 
   const parsed = normalizeBase64Secret(explicit);
-  const allowLegacyWeakKey = isTruthy(process.env.SENTINELAYER_ALLOW_LEGACY_FILE_TOKEN_KEY);
+  const runtimeEnvironment = String(process.env.NODE_ENV || "").trim().toLowerCase();
+  const allowLegacyWeakKey =
+    isTruthy(process.env.SENTINELAYER_ALLOW_LEGACY_FILE_TOKEN_KEY) && runtimeEnvironment === "test";
   if (!parsed || parsed.bytes < MIN_FILE_TOKEN_KEY_BYTES) {
     if (!allowLegacyWeakKey) {
       throw new Error(

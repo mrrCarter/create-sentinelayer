@@ -12,6 +12,7 @@ const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRY_AFTER_DELAY_MS = 15_000;
 const MAX_EXPONENTIAL_RETRY_DELAY_MS = 15_000;
 const MIN_JITTER_RETRY_DELAY_MS = 100;
+const DETERMINISTIC_JITTER_DENOMINATOR = 97;
 
 const circuitBreakerStates = new Map();
 
@@ -205,7 +206,10 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
   if (exponentialCap <= MIN_JITTER_RETRY_DELAY_MS) {
     return exponentialCap;
   }
-  return Math.max(MIN_JITTER_RETRY_DELAY_MS, Math.floor(Math.random() * exponentialCap));
+  const jitterSeed = ((Math.max(0, attemptIndex) + 1) * 17) % DETERMINISTIC_JITTER_DENOMINATOR;
+  const jitterRatio = jitterSeed / DETERMINISTIC_JITTER_DENOMINATOR;
+  const jitteredDelay = Math.round(exponentialCap * jitterRatio);
+  return Math.max(MIN_JITTER_RETRY_DELAY_MS, jitteredDelay);
 }
 
 export async function requestJson(

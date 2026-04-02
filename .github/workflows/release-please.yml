@@ -31,55 +31,55 @@ jobs:
             exit 1
           fi
 
-          read_success_check_run_id() {
+          read_latest_check_run_result() {
             local sha="$1"
             local check_name="$2"
             gh api \
               -H 'Accept: application/vnd.github+json' \
               "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
-              --jq ".check_runs[] | select(.name==\"${check_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
-              | head -n 1 || true
+              --jq ".check_runs | map(select(.name==\"${check_name}\")) | sort_by(.started_at // .completed_at // .id) | last | [(.id|tostring), (.status // \"\"), (.conclusion // \"\")] | @tsv" \
+              || true
           }
 
-          quality_check_id=""
-          for _ in $(seq 1 18); do
-            quality_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Quality Summary")"
-            if [[ -n "${quality_check_id}" && "${quality_check_id}" != "null" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          if [[ -z "${quality_check_id}" || "${quality_check_id}" == "null" ]]; then
+          wait_for_latest_check_success() {
+            local sha="$1"
+            local check_name="$2"
+            local attempts="$3"
+            local sleep_seconds="$4"
+            local result=""
+            for _ in $(seq 1 "${attempts}"); do
+              result="$(read_latest_check_run_result "${sha}" "${check_name}")"
+              if [[ -n "${result}" ]]; then
+                IFS=$'\t' read -r check_id check_status check_conclusion <<< "${result}"
+                if [[ "${check_status}" == "completed" && "${check_conclusion}" == "success" ]]; then
+                  printf '%s\n' "${check_id}"
+                  return 0
+                fi
+              fi
+              sleep "${sleep_seconds}"
+            done
+            printf '\n'
+          }
+
+          quality_check_id="$(wait_for_latest_check_success "${GITHUB_SHA}" "Quality Summary" 18 10)"
+          if [[ -z "${quality_check_id}" ]]; then
             echo "::error::No successful Quality Summary check run found for commit ${GITHUB_SHA}."
             exit 1
           fi
 
-          omar_check_id=""
-          for _ in $(seq 1 12); do
-            omar_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Omar Gate")"
-            if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
-              break
-            fi
-            sleep 5
-          done
+          omar_check_id="$(wait_for_latest_check_success "${GITHUB_SHA}" "Omar Gate" 12 5)"
 
-          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+          if [[ -z "${omar_check_id}" ]]; then
             pr_head_sha="$(gh api \
               -H 'Accept: application/vnd.github+json' \
               "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
               --jq '.[0].head.sha' 2>/dev/null || true)"
             if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
-              for _ in $(seq 1 12); do
-                omar_check_id="$(read_success_check_run_id "${pr_head_sha}" "Omar Gate")"
-                if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
-                  break
-                fi
-                sleep 5
-              done
+              omar_check_id="$(wait_for_latest_check_success "${pr_head_sha}" "Omar Gate" 12 5)"
             fi
           fi
 
-          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+          if [[ -z "${omar_check_id}" ]]; then
             echo "::error::No successful Omar Gate check run found for commit ${GITHUB_SHA} or its linked PR head."
             exit 1
           fi
