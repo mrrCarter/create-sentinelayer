@@ -2305,6 +2305,56 @@ test("CLI audit package rebuilds DD package from run id", async () => {
   }
 });
 
+test("CLI audit replay and audit diff produce reproducibility artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-replay-cmd-"));
+  try {
+    await writeFile(path.join(tempRoot, "index.js"), "export const ready = true;\n", "utf-8");
+
+    const baseRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "--path", tempRoot, "--dry-run", "--agents", "security,testing", "--json"],
+    });
+    assert.equal(baseRun.code, 0, baseRun.stderr || baseRun.stdout);
+    const basePayload = JSON.parse(String(baseRun.stdout || "").trim());
+    assert.ok(String(basePayload.runId || "").startsWith("audit-"));
+
+    const replayRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "replay", basePayload.runId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(replayRun.code, 0, replayRun.stderr || replayRun.stdout);
+    const replayPayload = JSON.parse(String(replayRun.stdout || "").trim());
+    assert.equal(replayPayload.command, "audit replay");
+    assert.equal(replayPayload.baseRunId, basePayload.runId);
+    assert.ok(String(replayPayload.replayRunId || "").startsWith("audit-"));
+    assert.match(String(replayPayload.comparisonPath || ""), /[\\/]AUDIT_COMPARISON_/);
+
+    const replayComparison = JSON.parse(await readFile(replayPayload.comparisonPath, "utf-8"));
+    assert.equal(replayComparison.baseRunId, basePayload.runId);
+    assert.equal(replayComparison.candidateRunId, replayPayload.replayRunId);
+
+    const diffRun = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "diff", basePayload.runId, replayPayload.replayRunId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(diffRun.code, 0, diffRun.stderr || diffRun.stdout);
+    const diffPayload = JSON.parse(String(diffRun.stdout || "").trim());
+    assert.equal(diffPayload.command, "audit diff");
+    assert.equal(diffPayload.baseRunId, basePayload.runId);
+    assert.equal(diffPayload.candidateRunId, replayPayload.replayRunId);
+    assert.match(String(diffPayload.outputPath || ""), /[\\/]AUDIT_COMPARISON_/);
+
+    const diffComparison = JSON.parse(await readFile(diffPayload.outputPath, "utf-8"));
+    assert.equal(diffComparison.baseRunId, basePayload.runId);
+    assert.equal(diffComparison.candidateRunId, replayPayload.replayRunId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit security runs specialist agent and emits dedicated security report", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-security-"));
   try {
