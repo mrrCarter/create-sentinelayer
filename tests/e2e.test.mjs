@@ -2713,6 +2713,168 @@ test("CLI daemon jira lifecycle commands manage start/comment/transition workflo
   }
 });
 
+test("CLI daemon budget check/status enforces quarantine then deterministic kill", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-budget-e2e-"));
+  try {
+    const record = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Runtime timeout",
+        "--json",
+      ],
+    });
+    assert.equal(record.code, 0, record.stderr || record.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+
+    const queue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queue.code, 0, queue.stderr || queue.stdout);
+    const queuePayload = JSON.parse(String(queue.stdout || "").trim());
+    const workItemId = String(queuePayload.items[0]?.workItemId || "");
+    assert.equal(workItemId.length > 0, true);
+
+    const claim = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "claim",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "maya.markov@sentinelayer.local",
+        "--json",
+      ],
+    });
+    assert.equal(claim.code, 0, claim.stderr || claim.stdout);
+
+    const firstCheck = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "budget",
+        "check",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--usage-json",
+        "{\"tokensUsed\":150}",
+        "--budget-json",
+        "{\"maxTokens\":100,\"quarantineGraceSeconds\":30}",
+        "--now-iso",
+        "2026-04-02T00:00:00.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(firstCheck.code, 0, firstCheck.stderr || firstCheck.stdout);
+    const firstCheckPayload = JSON.parse(String(firstCheck.stdout || "").trim());
+    assert.equal(firstCheckPayload.command, "daemon budget check");
+    assert.equal(firstCheckPayload.lifecycleState, "HARD_LIMIT_QUARANTINED");
+    assert.equal(firstCheckPayload.action, "QUARANTINE");
+
+    const firstStatus = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "budget",
+        "status",
+        "--path",
+        tempRoot,
+        "--work-item-id",
+        workItemId,
+        "--json",
+      ],
+    });
+    assert.equal(firstStatus.code, 0, firstStatus.stderr || firstStatus.stdout);
+    const firstStatusPayload = JSON.parse(String(firstStatus.stdout || "").trim());
+    assert.equal(firstStatusPayload.visibleCount, 1);
+    assert.equal(firstStatusPayload.records[0].lifecycleState, "HARD_LIMIT_QUARANTINED");
+
+    const secondCheck = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "budget",
+        "check",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--usage-json",
+        "{\"tokensUsed\":170}",
+        "--budget-json",
+        "{\"maxTokens\":100,\"quarantineGraceSeconds\":30}",
+        "--now-iso",
+        "2026-04-02T00:00:35.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(secondCheck.code, 0, secondCheck.stderr || secondCheck.stdout);
+    const secondCheckPayload = JSON.parse(String(secondCheck.stdout || "").trim());
+    assert.equal(secondCheckPayload.lifecycleState, "HARD_LIMIT_SQUASHED");
+    assert.equal(secondCheckPayload.action, "KILL");
+
+    const secondStatus = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "budget",
+        "status",
+        "--path",
+        tempRoot,
+        "--work-item-id",
+        workItemId,
+        "--json",
+      ],
+    });
+    assert.equal(secondStatus.code, 0, secondStatus.stderr || secondStatus.stdout);
+    const secondStatusPayload = JSON.parse(String(secondStatus.stdout || "").trim());
+    assert.equal(secondStatusPayload.records[0].lifecycleState, "HARD_LIMIT_SQUASHED");
+    assert.equal(secondStatusPayload.records[0].lastAction, "KILL");
+
+    const queueSquashed = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--status", "SQUASHED", "--json"],
+    });
+    assert.equal(queueSquashed.code, 0, queueSquashed.stderr || queueSquashed.stdout);
+    const queueSquashedPayload = JSON.parse(String(queueSquashed.stdout || "").trim());
+    assert.equal(queueSquashedPayload.visibleCount, 1);
+    assert.equal(queueSquashedPayload.items[0].workItemId, workItemId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {

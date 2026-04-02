@@ -70,3 +70,4 @@
 - Error-daemon intake should stay append-only with a persisted stream offset cursor; this gives deterministic replay/resume semantics and avoids duplicate queue routing across worker ticks.
 - Assignment ledgers should enforce lease-collision checks by default; a second agent claim must fail while an active non-expired lease exists, then rely on explicit release/reassign transitions for ownership changes.
 - Jira lifecycle automation should keep both a mutable state registry and an append-only events stream; this preserves operator-friendly status views while retaining full transition/comment provenance for reproducible audits.
+- Budget enforcement is safer as a two-stage control (`HARD_LIMIT_QUARANTINED` then `HARD_LIMIT_SQUASHED` after a grace window) so operators can inspect/override before deterministic kill while still guaranteeing bounded runtime.

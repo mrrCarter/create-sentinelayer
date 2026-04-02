@@ -24,6 +24,11 @@ import {
   startJiraLifecycle,
   transitionJiraIssue,
 } from "../daemon/jira-lifecycle.js";
+import {
+  DAEMON_BUDGET_LIFECYCLE_STATES,
+  applyDaemonBudgetCheck,
+  listBudgetStates,
+} from "../daemon/budget-governor.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -115,6 +120,21 @@ function printJiraSummary(payload) {
   for (const issue of payload.issues) {
     console.log(
       `- ${issue.issueKey} | ${issue.status} | work_item=${issue.workItemId} | assignee=${issue.assignee || "n/a"}`
+    );
+  }
+}
+
+function printBudgetSummary(payload) {
+  console.log(pc.bold("OMAR budget governor"));
+  console.log(pc.gray(`State: ${payload.budgetStatePath}`));
+  console.log(pc.gray(`Events: ${payload.budgetEventsPath}`));
+  console.log(pc.gray(`visible=${payload.visibleCount} total=${payload.totalCount}`));
+  for (const record of payload.records) {
+    const stopCodes = Array.isArray(record.stopReasons)
+      ? record.stopReasons.map((item) => item.code).join(", ")
+      : "";
+    console.log(
+      `- ${record.workItemId} | ${record.lifecycleState} | action=${record.lastAction || "NONE"} | quarantine_until=${record.quarantineUntil || "n/a"}${stopCodes ? ` | stops=${stopCodes}` : ""}`
     );
   }
 }
@@ -646,6 +666,132 @@ export function registerDaemonCommand(program) {
       console.log(pc.bold("Jira lifecycle transitioned"));
       console.log(
         `${transitioned.issue.issueKey} ${transitioned.transition.from} -> ${transitioned.transition.to}`
+      );
+    });
+
+  const budget = daemon
+    .command("budget")
+    .description("Runtime budget governance checks with deterministic quarantine and kill actions");
+
+  budget
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listBudgetStates({
+        targetPath,
+        outputDir: options.outputDir,
+        limit: 20,
+      });
+      const payload = {
+        command: "daemon budget",
+        targetPath,
+        budgetStatePath: listed.budgetStatePath,
+        budgetEventsPath: listed.budgetEventsPath,
+        totalCount: listed.totalCount,
+        visibleCount: listed.records.length,
+        records: listed.records,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printBudgetSummary(payload);
+    });
+
+  budget
+    .command("status")
+    .description("List budget governance state records")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--work-item-id <id>", "Filter by work item id")
+    .option(
+      "--lifecycle-state <csv>",
+      `Optional lifecycle filter (${DAEMON_BUDGET_LIFECYCLE_STATES.join(", ")})`
+    )
+    .option("--limit <n>", "Maximum records to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listBudgetStates({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId: options.workItemId,
+        lifecycleStates: parseCsv(options.lifecycleState),
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon budget status",
+        targetPath,
+        workItemId: options.workItemId || null,
+        lifecycleStates: parseCsv(options.lifecycleState),
+        budgetStatePath: listed.budgetStatePath,
+        budgetEventsPath: listed.budgetEventsPath,
+        totalCount: listed.totalCount,
+        visibleCount: listed.records.length,
+        records: listed.records,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printBudgetSummary(payload);
+    });
+
+  budget
+    .command("check")
+    .description("Apply one budget-governance evaluation tick for a work item")
+    .argument("<workItemId>", "Queue work item id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option(
+      "--usage-json <json>",
+      "Usage snapshot JSON (tokensUsed,costUsd,runtimeMs,toolCalls,pathOutOfScopeHits,networkDomainViolations)",
+      "{}"
+    )
+    .option(
+      "--budget-json <json>",
+      "Budget envelope JSON (maxTokens,maxCostUsd,maxRuntimeMs,maxToolCalls,maxPathViolations,maxNetworkViolations,warningThresholdPercent,quarantineGraceSeconds)",
+      "{}"
+    )
+    .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const checked = await applyDaemonBudgetCheck({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        usage: parseMetadata(options.usageJson),
+        budget: parseMetadata(options.budgetJson),
+        nowIso: options.nowIso,
+      });
+      const payload = {
+        command: "daemon budget check",
+        targetPath,
+        workItemId,
+        runId: checked.runId,
+        runPath: checked.runPath,
+        budgetStatePath: checked.budgetStatePath,
+        budgetEventsPath: checked.budgetEventsPath,
+        lifecycleState: checked.lifecycleState,
+        action: checked.action,
+        warnings: checked.warnings,
+        stopReasons: checked.stopReasons,
+        budget: checked.budget,
+        usage: checked.usage,
+        quarantineStartedAt: checked.quarantineStartedAt,
+        quarantineUntil: checked.quarantineUntil,
+        record: checked.record,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Budget governance check applied"));
+      console.log(
+        `${workItemId} lifecycle=${checked.lifecycleState} action=${checked.action} quarantine_until=${checked.quarantineUntil || "n/a"}`
       );
     });
 
