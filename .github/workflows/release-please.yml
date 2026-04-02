@@ -31,11 +31,46 @@ jobs:
             exit 1
           fi
 
+          gh_api_with_timeout() {
+            local endpoint="$1"
+            shift
+            local attempt=1
+            local max_attempts=4
+            while (( attempt <= max_attempts )); do
+              if timeout 20s gh api -H 'Accept: application/vnd.github+json' "${endpoint}" "$@"; then
+                return 0
+              fi
+              if (( attempt == max_attempts )); then
+                echo "::error::gh api request failed after ${max_attempts} attempts: ${endpoint}" >&2
+                return 1
+              fi
+              sleep "$((attempt + (RANDOM % 2)))"
+              attempt="$((attempt + 1))"
+            done
+          }
+
+          read_success_workflow_run_ids() {
+            local workflow_file="$1"
+            local sha="$2"
+            gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&per_page=50" \
+              --jq '.workflow_runs[] | select(.conclusion=="success" and .event=="push" and .head_branch=="main") | .id' \
+              || true
+          }
+
+          read_success_job_id_for_run() {
+            local run_id="$1"
+            local job_name="$2"
+            gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name==\"${job_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
+              | head -n 1 || true
+          }
+
           read_latest_check_run_result() {
             local sha="$1"
             local check_name="$2"
-            gh api \
-              -H 'Accept: application/vnd.github+json' \
+            gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
               --jq ".check_runs | map(select(.name==\"${check_name}\")) | sort_by(.started_at // .completed_at // .id) | last | [(.id|tostring), (.status // \"\"), (.conclusion // \"\")] | @tsv" \
               || true
@@ -61,7 +96,23 @@ jobs:
             printf '\n'
           }
 
-          quality_check_id="$(wait_for_latest_check_success "${GITHUB_SHA}" "Quality Summary" 18 10)"
+          quality_check_id=""
+          quality_run_id=""
+          for _ in $(seq 1 18); do
+            while IFS= read -r candidate_run_id; do
+              [[ -z "${candidate_run_id}" || "${candidate_run_id}" == "null" ]] && continue
+              quality_job_id="$(read_success_job_id_for_run "${candidate_run_id}" "Quality Summary")"
+              if [[ -n "${quality_job_id}" && "${quality_job_id}" != "null" ]]; then
+                quality_run_id="${candidate_run_id}"
+                quality_check_id="${quality_job_id}"
+                break
+              fi
+            done < <(read_success_workflow_run_ids "quality-gates.yml" "${GITHUB_SHA}")
+            if [[ -n "${quality_run_id}" && "${quality_run_id}" != "null" ]]; then
+              break
+            fi
+            sleep 10
+          done
           if [[ -z "${quality_check_id}" ]]; then
             echo "::error::No successful Quality Summary check run found for commit ${GITHUB_SHA}."
             exit 1
@@ -84,7 +135,7 @@ jobs:
             exit 1
           fi
 
-          echo "Release-please preflight passed with Quality Summary check ${quality_check_id} and Omar Gate check ${omar_check_id}."
+          echo "Release-please preflight passed with Quality Summary check ${quality_check_id} (run ${quality_run_id}) and Omar Gate check ${omar_check_id}."
 
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4

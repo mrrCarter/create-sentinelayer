@@ -8,6 +8,7 @@ const LEDGER_SCHEMA_VERSION = "1.0.0";
 const QUEUE_SCHEMA_VERSION = "1.0.0";
 const FILE_LOCK_ACQUIRE_TIMEOUT_MS = 5000;
 const FILE_LOCK_RETRY_DELAY_MS = 50;
+const FILE_LOCK_STALE_WINDOW_MS = 5 * 60 * 1000;
 
 export const ASSIGNMENT_STATUSES = Object.freeze([
   "QUEUED",
@@ -187,6 +188,21 @@ async function acquireFileLock(filePath, nowEpochMs = Date.now()) {
     } catch (error) {
       if (!(error && typeof error === "object" && error.code === "EEXIST")) {
         throw error;
+      }
+      let recoveredStaleLock = false;
+      try {
+        const rawLock = await fsp.readFile(lockPath, "utf-8");
+        const parsedLock = JSON.parse(String(rawLock || "").split(/\r?\n/, 1)[0] || "{}");
+        const createdEpoch = Date.parse(String(parsedLock.createdAt || ""));
+        if (Number.isFinite(createdEpoch) && Date.now() - createdEpoch >= FILE_LOCK_STALE_WINDOW_MS) {
+          await fsp.rm(lockPath, { force: true });
+          recoveredStaleLock = true;
+        }
+      } catch {
+        // If lock metadata cannot be read/parsing fails, retain conservative wait behavior.
+      }
+      if (recoveredStaleLock) {
+        continue;
       }
       if (Date.now() >= deadlineEpoch) {
         throw new Error(`Timed out acquiring ledger lock '${lockPath}'.`);

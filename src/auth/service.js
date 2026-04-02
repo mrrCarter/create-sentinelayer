@@ -331,12 +331,34 @@ async function rotateStoredApiTokenIfNeeded({
 
   let rotateWarning = null;
   if (session.tokenId) {
+    const revokeAttempts = [{ authToken: session.token }];
+    if (nextSession.token && nextSession.token !== session.token) {
+      revokeAttempts.push({ authToken: nextSession.token });
+    }
+    let revokeError = null;
     try {
-      await revokeApiToken({
-        apiUrl: session.apiUrl,
-        authToken: nextSession.token,
-        tokenId: session.tokenId,
-      });
+      let revoked = false;
+      for (const attempt of revokeAttempts) {
+        try {
+          await revokeApiToken({
+            apiUrl: session.apiUrl,
+            authToken: attempt.authToken,
+            tokenId: session.tokenId,
+          });
+          revoked = true;
+          break;
+        } catch (error) {
+          revokeError = error;
+          const status = error instanceof SentinelayerApiError ? Number(error.status || 0) : 0;
+          const isAuthFailure = status === 401 || status === 403;
+          if (!isAuthFailure) {
+            break;
+          }
+        }
+      }
+      if (!revoked && revokeError) {
+        throw revokeError;
+      }
     } catch (error) {
       rotateWarning =
         error instanceof SentinelayerApiError

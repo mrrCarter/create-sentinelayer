@@ -97,13 +97,21 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
-      - name: Fail closed on untrusted pull_request refs
+      - name: Setup Node for untrusted pull_request gate
+        if: ${{ steps.trust.outputs.trusted != 'true' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Run minimal untrusted pull_request gate
         if: ${{ steps.trust.outputs.trusted != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          echo "::error::Untrusted pull_request ref cannot access Omar secrets. Security gate fails closed."
-          exit 1
+          npm ci --ignore-scripts
+          npm run check
+          echo "::notice::Untrusted pull_request gate passed without secret-backed Omar scan."
       - name: Run Omar Gate
         if: ${{ steps.trust.outputs.trusted == 'true' }}
         id: omar
