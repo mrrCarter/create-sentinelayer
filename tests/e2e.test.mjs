@@ -2535,6 +2535,184 @@ test("CLI daemon assign lifecycle manages claim heartbeat reassign release flows
   }
 });
 
+test("CLI daemon jira lifecycle commands manage start/comment/transition workflow", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-jira-e2e-"));
+  try {
+    const record = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Runtime timeout",
+        "--json",
+      ],
+    });
+    assert.equal(record.code, 0, record.stderr || record.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+
+    const queue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queue.code, 0, queue.stderr || queue.stdout);
+    const queuePayload = JSON.parse(String(queue.stdout || "").trim());
+    const workItemId = String(queuePayload.items[0]?.workItemId || "");
+    assert.equal(workItemId.length > 0, true);
+
+    const claim = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "claim",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "maya.markov@sentinelayer.local",
+        "--json",
+      ],
+    });
+    assert.equal(claim.code, 0, claim.stderr || claim.stdout);
+
+    const start = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "jira",
+        "start",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--actor",
+        "maya.markov@sentinelayer.local",
+        "--assignee",
+        "maya.markov@sentinelayer.local",
+        "--issue-key-prefix",
+        "SL",
+        "--plan",
+        "1) reproduce 2) patch 3) rerun verification",
+        "--json",
+      ],
+    });
+    assert.equal(start.code, 0, start.stderr || start.stdout);
+    const startPayload = JSON.parse(String(start.stdout || "").trim());
+    assert.equal(startPayload.command, "daemon jira start");
+    assert.equal(startPayload.issue.status, "IN_PROGRESS");
+    assert.equal(String(startPayload.issue.issueKey || "").startsWith("SL-"), true);
+
+    const comment = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "jira",
+        "comment",
+        "--path",
+        tempRoot,
+        "--work-item-id",
+        workItemId,
+        "--actor",
+        "maya.markov@sentinelayer.local",
+        "--type",
+        "checkpoint",
+        "--message",
+        "Patch applied and test suite green.",
+        "--json",
+      ],
+    });
+    assert.equal(comment.code, 0, comment.stderr || comment.stdout);
+    const commentPayload = JSON.parse(String(comment.stdout || "").trim());
+    assert.equal(commentPayload.command, "daemon jira comment");
+    assert.equal(commentPayload.comment.type, "checkpoint");
+
+    const transition = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "jira",
+        "transition",
+        "--path",
+        tempRoot,
+        "--work-item-id",
+        workItemId,
+        "--to",
+        "DONE",
+        "--actor",
+        "maya.markov@sentinelayer.local",
+        "--reason",
+        "Fix merged",
+        "--json",
+      ],
+    });
+    assert.equal(transition.code, 0, transition.stderr || transition.stdout);
+    const transitionPayload = JSON.parse(String(transition.stdout || "").trim());
+    assert.equal(transitionPayload.command, "daemon jira transition");
+    assert.equal(transitionPayload.issue.status, "DONE");
+    assert.equal(transitionPayload.transition.to, "DONE");
+
+    const jiraList = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "jira",
+        "list",
+        "--path",
+        tempRoot,
+        "--status",
+        "DONE",
+        "--work-item-id",
+        workItemId,
+        "--json",
+      ],
+    });
+    assert.equal(jiraList.code, 0, jiraList.stderr || jiraList.stdout);
+    const jiraListPayload = JSON.parse(String(jiraList.stdout || "").trim());
+    assert.equal(jiraListPayload.command, "daemon jira list");
+    assert.equal(jiraListPayload.visibleCount, 1);
+    assert.equal(jiraListPayload.issues[0].workItemId, workItemId);
+
+    const assignList = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "assign", "list", "--path", tempRoot, "--json"],
+    });
+    assert.equal(assignList.code, 0, assignList.stderr || assignList.stdout);
+    const assignListPayload = JSON.parse(String(assignList.stdout || "").trim());
+    assert.equal(assignListPayload.visibleCount, 1);
+    assert.equal(
+      assignListPayload.assignments[0].jiraIssueKey,
+      startPayload.issue.issueKey
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {
