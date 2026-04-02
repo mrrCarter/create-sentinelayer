@@ -172,3 +172,43 @@ test("Unit AI client: invoke fails closed when API key is missing", async () => 
     /Missing API key/
   );
 });
+
+test("Unit AI client: invoke redacts Google API key from provider errors", async () => {
+  const calls = [];
+  const leakedUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${encodeURIComponent(
+    FIXTURE_GOOGLE_CRED
+  )}`;
+  const client = createMultiProviderApiClient({
+    maxRetries: 0,
+    fetchImpl: async (url) => {
+      calls.push(String(url || ""));
+      return createJsonResponse({
+        status: 403,
+        payload: {
+          error: {
+            message: `Denied request at ${leakedUrl}`,
+          },
+        },
+      });
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      client.invoke({
+        provider: "google",
+        prompt: "redact-test",
+        apiKey: FIXTURE_GOOGLE_CRED,
+      }),
+    (error) => {
+      assert.equal(error instanceof Error, true);
+      assert.equal(error.message.includes(FIXTURE_GOOGLE_CRED), false);
+      assert.equal(error.message.includes(encodeURIComponent(FIXTURE_GOOGLE_CRED)), false);
+      assert.match(error.message, /\[REDACTED\]/);
+      return true;
+    }
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].includes("?key="), false);
+});
