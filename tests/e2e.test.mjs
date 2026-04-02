@@ -2332,6 +2332,36 @@ test("CLI audit architecture runs specialist agent and emits dedicated architect
   }
 });
 
+test("CLI audit testing runs specialist agent and emits dedicated testing report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-testing-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "services"), { recursive: true });
+    const largeModule = "export function run(){ return 'ok'; }\n".repeat(320);
+    await writeFile(path.join(tempRoot, "src", "services", "checkout.js"), largeModule, "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "testing", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit testing");
+    assert.match(String(payload.testingAgentPath || ""), /[\\/]testing\.json$/);
+    assert.match(String(payload.testingSpecialistReportPath || ""), /[\\/]TESTING_AGENT_REPORT\.md$/);
+
+    const testingAgent = JSON.parse(await readFile(payload.testingAgentPath, "utf-8"));
+    assert.equal(testingAgent.agentId, "testing");
+    assert.equal(Array.isArray(testingAgent.findings), true);
+
+    const testingMarkdown = await readFile(payload.testingSpecialistReportPath, "utf-8");
+    assert.match(testingMarkdown, /TESTING_AGENT_REPORT/);
+    assert.match(testingMarkdown, /Coverage inventory:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {

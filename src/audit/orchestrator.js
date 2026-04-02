@@ -13,6 +13,10 @@ import {
   renderSecuritySpecialistMarkdown,
   runSecuritySpecialist,
 } from "./agents/security.js";
+import {
+  renderTestingSpecialistMarkdown,
+  runTestingSpecialist,
+} from "./agents/testing.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -247,6 +251,20 @@ export async function runAuditOrchestrator({
       await fsp.writeFile(
         specialistReportPath,
         `${renderArchitectureSpecialistMarkdown(architectureSpecialist).trim()}\n`,
+        "utf-8"
+      );
+    } else if (agent.id === "testing") {
+      const testingSpecialist = runTestingSpecialist({
+        findings: deterministicBaseline.findings,
+        ingest,
+      });
+      findings = testingSpecialist.findings;
+      summary = testingSpecialist.summary;
+      confidence = testingSpecialist.confidence;
+      specialistReportPath = path.join(agentsDirectory, "TESTING_AGENT_REPORT.md");
+      await fsp.writeFile(
+        specialistReportPath,
+        `${renderTestingSpecialistMarkdown(testingSpecialist).trim()}\n`,
         "utf-8"
       );
     }
