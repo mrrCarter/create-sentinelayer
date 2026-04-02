@@ -16,7 +16,7 @@ import {
   revokeAuthToken,
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
-import { readStoredSession, resolveCredentialsFilePath } from "../src/auth/session-store.js";
+import { readStoredSession, resolveCredentialsFilePath, writeStoredSession } from "../src/auth/session-store.js";
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -39,7 +39,7 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function startAuthRuntimeMockApi() {
+async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
   const state = {
     pollCalls: 0,
     tokenIssueCalls: 0,
@@ -128,6 +128,11 @@ async function startAuthRuntimeMockApi() {
       }
 
       if (req.method === "DELETE" && pathname.startsWith("/api/v1/auth/api-tokens/")) {
+        if (failTokenDelete) {
+          return jsonResponse(res, 500, {
+            error: { code: "REVOKE_BLOCKED", message: "token revoke failed" },
+          });
+        }
         state.tokenDeleteIds.push(pathname.split("/").pop() || "");
         return jsonResponse(res, 200, { ok: true });
       }
@@ -369,6 +374,63 @@ test("Unit auth service: env and project config token precedence is deterministi
     assert.equal(projectSession?.source, "config");
     assert.equal(projectSession?.token, "project_token");
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: rotation exposes revoke warning metadata when old token revoke fails", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({ failTokenDelete: true });
+
+  try {
+    const login = await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+
+    await writeStoredSession(
+      {
+        apiUrl: mock.apiUrl,
+        token: "api_token_1",
+        tokenId: login.tokenId,
+        tokenPrefix: login.tokenPrefix,
+        tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        user: login.user,
+      },
+      { homeDir: tempRoot }
+    );
+
+    const active = await resolveActiveAuthSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      autoRotate: true,
+      rotateThresholdDays: 7,
+    });
+
+    assert.equal(active?.rotated, true);
+    assert.equal(active?.token, "api_token_2");
+    assert.equal(Boolean(active?.rotateWarning), true);
+    assert.equal(active?.rotateWarning?.code, "REVOKE_BLOCKED");
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

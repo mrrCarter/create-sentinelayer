@@ -19,13 +19,11 @@ on:
       severity_gate:
         description: Severity threshold that blocks merge
         required: false
-        default: P2
+        default: P1
         type: choice
         options:
-          - P0
           - P1
           - P2
-          - none
       p2_max_allowed:
         description: Maximum allowed P2 findings before Omar Gate blocks merge
         required: false
@@ -104,12 +102,6 @@ jobs:
           case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
           case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
           case "${severity_gate}" in
-            P0)
-              if [ "${p0}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
-                exit 1
-              fi
-              ;;
             P1)
               if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
                 echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
@@ -126,9 +118,6 @@ jobs:
                 exit 1
               fi
               ;;
-            none)
-              echo "::notice::Omar Gate threshold enforcement disabled (severity_gate=none)."
-              ;;
             *)
               echo "::error::Invalid severity_gate value: ${severity_gate}"
               exit 1
@@ -141,12 +130,8 @@ jobs:
           severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
           p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
           threshold_line="P0=0, P1=0"
-          if [ "${severity_gate}" = "P0" ]; then
-            threshold_line="P0=0"
-          elif [ "${severity_gate}" = "P2" ]; then
+          if [ "${severity_gate}" = "P2" ]; then
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
-          elif [ "${severity_gate}" = "none" ]; then
-            threshold_line="none"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
           echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"

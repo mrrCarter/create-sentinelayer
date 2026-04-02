@@ -229,6 +229,7 @@ async function rotateStoredApiTokenIfNeeded({
     { homeDir }
   );
 
+  let rotateWarning = null;
   if (session.tokenId) {
     try {
       await revokeApiToken({
@@ -236,14 +237,28 @@ async function rotateStoredApiTokenIfNeeded({
         authToken: nextSession.token,
         tokenId: session.tokenId,
       });
-    } catch {
-      // Ignore revoke failures; new token is already active.
+    } catch (error) {
+      rotateWarning =
+        error instanceof SentinelayerApiError
+          ? {
+              code: error.code,
+              message: error.message,
+              status: error.status,
+              requestId: error.requestId,
+            }
+          : {
+              code: "TOKEN_REVOKE_FAILED",
+              message: error instanceof Error ? error.message : String(error || "Token revoke failed"),
+              status: 500,
+              requestId: null,
+            };
     }
   }
 
   return {
     session: nextSession,
     rotated: true,
+    rotateWarning,
   };
 }
 
@@ -352,6 +367,7 @@ export async function resolveActiveAuthSession({
       tokenPrefix: null,
       tokenExpiresAt: null,
       rotated: false,
+      rotateWarning: null,
       filePath: null,
     };
   }
@@ -369,6 +385,7 @@ export async function resolveActiveAuthSession({
       tokenPrefix: null,
       tokenExpiresAt: null,
       rotated: false,
+      rotateWarning: null,
       filePath: null,
     };
   }
@@ -380,6 +397,7 @@ export async function resolveActiveAuthSession({
 
   let active = stored;
   let rotated = false;
+  let rotateWarning = null;
   if (autoRotate) {
     try {
       const rotateResult = await rotateStoredApiTokenIfNeeded({
@@ -391,10 +409,25 @@ export async function resolveActiveAuthSession({
       });
       active = rotateResult.session;
       rotated = rotateResult.rotated;
-    } catch {
+      rotateWarning = rotateResult.rotateWarning || null;
+    } catch (error) {
       // Keep existing token if rotation fails.
       active = stored;
       rotated = false;
+      rotateWarning =
+        error instanceof SentinelayerApiError
+          ? {
+              code: error.code,
+              message: error.message,
+              status: error.status,
+              requestId: error.requestId,
+            }
+          : {
+              code: "TOKEN_ROTATE_FAILED",
+              message: error instanceof Error ? error.message : String(error || "Token rotation failed"),
+              status: 500,
+              requestId: null,
+            };
     }
   }
 
@@ -408,6 +441,7 @@ export async function resolveActiveAuthSession({
     tokenPrefix: active.tokenPrefix || null,
     tokenExpiresAt: active.tokenExpiresAt || null,
     rotated,
+    rotateWarning,
     filePath: active.filePath,
   };
 }
@@ -447,6 +481,7 @@ export async function getAuthStatus({
       tokenExpiresAt: null,
       tokenPrefix: null,
       tokenId: null,
+      rotateWarning: null,
       filePath: null,
     };
   }
@@ -486,6 +521,7 @@ export async function getAuthStatus({
     tokenExpiresAt: session.tokenExpiresAt,
     tokenPrefix: session.tokenPrefix,
     tokenId: session.tokenId,
+    rotateWarning: session.rotateWarning || null,
     filePath: session.filePath,
   };
 }

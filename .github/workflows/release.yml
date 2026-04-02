@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish to npm (requires NPM_TOKEN)"
+        description: "Publish to npm (requires NPM_TOKEN and environment approval)"
         required: false
         default: false
         type: boolean
@@ -14,30 +14,33 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  publish:
+  verify:
+    name: Release Verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
-      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies (no lifecycle scripts)
+        run: npm ci --ignore-scripts
 
       - name: Validate package
         run: npm run verify
@@ -54,19 +57,94 @@ jobs:
           sentinel --version
 
       - name: Upload release tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: create-sentinelayer-tarball
           path: create-sentinelayer-*.tgz
+          if-no-files-found: error
 
-      - name: Publish skipped (missing NPM_TOKEN)
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT != 'true'
+  omar_release_gate:
+    name: Omar Release Gate
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: security-review
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate Sentinelayer token secret
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
         run: |
-          echo "NPM_TOKEN is not configured. Skipping npm publish."
-          echo "Set repository/org secret NPM_TOKEN and rerun with publish=true."
+          set -euo pipefail
+          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
+
+      - name: Validate OpenAI key secret for Omar LLM scan
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+
+      - name: Run Omar Gate
+        uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+        with:
+          github_token: ${{ github.token }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_managed_llm: "false"
+          scan_mode: deep
+          severity_gate: P1
+          model: gpt-5.3-codex
+          codex_model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
+          llm_failure_policy: block
+
+  publish:
+    name: Publish To npm
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    needs: [verify, omar_release_gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Validate NPM publish token secret
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${NPM_TOKEN}" || (echo "Missing NPM_TOKEN" && exit 1)
+
+      - name: Install dependencies (no lifecycle scripts)
+        run: npm ci --ignore-scripts
 
       - name: Publish to npm
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT == 'true'
-        run: npm publish --access public
+        run: npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

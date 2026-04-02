@@ -60,6 +60,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch J PR 13.7 hybrid-mapper slice (`daemon map scope|list|show` deterministic+semantic impact scoping).
 - [x] Complete Batch J PR 13.8 reliability-lane slice (`daemon reliability run|status` + `maintenance status|on|off` billboard lifecycle).
 - [x] Complete Batch J PR 13.9 MCP adapter slice (`mcp registry init-aidenid-adapter|validate-aidenid-adapter` + registry cross-check contract).
+- [x] Start hardening PR 96 P2 burn-down (workflow + auth-resilience + dependency determinism).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -194,7 +195,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-13-9-mcp-aidenid-registry-contract` (current)
+1. `roadmap/pr-96-p2-burn-down` (current)
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.

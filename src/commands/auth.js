@@ -187,6 +187,16 @@ export function registerAuthCommand(program) {
       if (status.rotated) {
         console.log(pc.yellow("Token was rotated because it was close to expiry."));
       }
+      if (status.rotateWarning) {
+        console.log(pc.yellow(`Rotation warning: ${status.rotateWarning.message}`));
+        console.log(
+          pc.gray(
+            `Warning code: ${status.rotateWarning.code} status=${status.rotateWarning.status}${
+              status.rotateWarning.requestId ? ` request_id=${status.rotateWarning.requestId}` : ""
+            }`
+          )
+        );
+      }
 
       if (status.authenticated) {
         const displayUser = status.remoteUser || status.user || {};

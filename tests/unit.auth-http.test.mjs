@@ -1,0 +1,75 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  __resetAuthHttpCircuitBreakerForTests,
+  requestJson,
+  SentinelayerApiError,
+} from "../src/auth/http.js";
+
+test("Unit auth http: requestJson retries retryable responses and succeeds", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+
+  let callCount = 0;
+  const fetchImpl = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return new Response(
+        JSON.stringify({
+          error: { code: "UPSTREAM_BUSY", message: "try again" },
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const payload = await requestJson("https://api.example.com/test", {
+    method: "GET",
+    maxAttempts: 3,
+    retryBackoffMs: 1,
+    fetchImpl,
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(payload.ok, true);
+});
+
+test("Unit auth http: circuit breaker opens after repeated failures", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+
+  let callCount = 0;
+  const fetchImpl = async () => {
+    callCount += 1;
+    throw new Error("network unavailable");
+  };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          method: "GET",
+          maxAttempts: 1,
+          retryBackoffMs: 1,
+          fetchImpl,
+        }),
+      (error) => error instanceof SentinelayerApiError && error.code === "NETWORK_ERROR"
+    );
+  }
+
+  await assert.rejects(
+    () =>
+      requestJson("https://api.example.com/test", {
+        method: "GET",
+        maxAttempts: 1,
+        retryBackoffMs: 1,
+        fetchImpl,
+      }),
+    (error) => error instanceof SentinelayerApiError && error.code === "CIRCUIT_OPEN"
+  );
+
+  assert.equal(callCount, 3);
+});
