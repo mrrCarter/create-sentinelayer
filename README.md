@@ -271,6 +271,26 @@ Artifacts are written to:
 - `.sentinelayer/audits/<run-id>/DD_EXEC_SUMMARY.md`
 - `.sentinelayer/audits/<run-id>/AUDIT_COMPARISON_<base>_vs_<candidate>.json`
 
+## QA swarm orchestrator factory (Phase 12.1 slice)
+
+The CLI now includes OMAR-led swarm planning commands for governed long-running runs:
+
+- `sl swarm registry`
+- `sl swarm plan --path . --scenario error_event_remediation --agents security,testing,reliability --json`
+
+`swarm plan` outputs deterministic orchestration artifacts (assignments, budgets, and phase graph):
+
+- `.sentinelayer/swarms/<run-id>/SWARM_PLAN.json`
+- `.sentinelayer/swarms/<run-id>/SWARM_PLAN.md`
+
+Global budgets can be set per run:
+
+- `--max-cost-usd`
+- `--max-output-tokens`
+- `--max-runtime-ms`
+- `--max-tool-calls`
+- `--warning-threshold-percent`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
