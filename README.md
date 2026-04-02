@@ -308,6 +308,25 @@ Optional Playwright actions can be provided via playbook JSON:
 
 - `--playbook-file <path>` where file contract is `{ "actions": [ ... ] }`
 
+## Scenario DSL (Phase 12.3 slice)
+
+Swarm runtime now supports a deterministic scenario DSL (`.sls`):
+
+- `sl swarm scenario init nightly-smoke --path .`
+- `sl swarm scenario validate --file .sentinelayer/scenarios/nightly-smoke.sls`
+- `sl swarm run --scenario-file .sentinelayer/scenarios/nightly-smoke.sls --json`
+
+DSL commands:
+
+- `scenario "<id>"`
+- `start_url "<url>"`
+- `tag "<value>"`
+- `action goto "<url>"`
+- `action click "<selector>"`
+- `action fill "<selector>" "<text>"`
+- `action wait <ms>`
+- `action screenshot "<relative-path>"`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:

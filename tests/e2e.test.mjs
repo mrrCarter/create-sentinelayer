@@ -2711,6 +2711,58 @@ test("CLI swarm run executes governed mock runtime and writes runtime artifacts"
   }
 });
 
+test("CLI swarm scenario init/validate enables scenario-file runtime execution", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-scenario-"));
+  try {
+    const initResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["swarm", "scenario", "init", "nightly-smoke", "--path", tempRoot, "--json"],
+    });
+    assert.equal(initResult.code, 0, initResult.stderr || initResult.stdout);
+    const initPayload = JSON.parse(String(initResult.stdout || "").trim());
+    assert.equal(initPayload.command, "swarm scenario init");
+    assert.match(String(initPayload.filePath || ""), /[\\/]nightly-smoke\.sls$/);
+
+    const validateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["swarm", "scenario", "validate", "--file", initPayload.filePath, "--json"],
+    });
+    assert.equal(validateResult.code, 0, validateResult.stderr || validateResult.stdout);
+    const validatePayload = JSON.parse(String(validateResult.stdout || "").trim());
+    assert.equal(validatePayload.command, "swarm scenario validate");
+    assert.equal(validatePayload.valid, true);
+    assert.equal(validatePayload.actionCount >= 1, true);
+
+    const runResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "run",
+        "--path",
+        tempRoot,
+        "--scenario-file",
+        initPayload.filePath,
+        "--agents",
+        "security,testing",
+        "--max-steps",
+        "8",
+        "--json",
+      ],
+    });
+    assert.equal(runResult.code, 0, runResult.stderr || runResult.stdout);
+    const runPayload = JSON.parse(String(runResult.stdout || "").trim());
+    assert.equal(runPayload.command, "swarm run");
+    assert.equal(runPayload.scenarioSource, "scenario_dsl");
+    assert.equal(runPayload.completed, true);
+    assert.match(String(runPayload.runtimeJsonPath || ""), /[\\/]SWARM_RUNTIME\.json$/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
   try {
