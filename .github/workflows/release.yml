@@ -8,39 +8,74 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: "Run release validation without attempting npm publish"
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: release-create-sentinelayer
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    name: Release Preflight (Verify + Security)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate package
+        run: npm run verify
+
+      - name: Run npm audit (prod deps only)
+        run: npm audit --omit=dev --audit-level=high
+
   publish:
-    runs-on: ubuntu-latest
+    name: Publish
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
+    needs: [preflight]
+    environment: production
     env:
       NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+      PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.11.1"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Validate package
-        run: npm run verify
+        run: npm ci --ignore-scripts
 
       - name: Build release tarball
         run: npm pack
@@ -54,19 +89,23 @@ jobs:
           sentinel --version
 
       - name: Upload release tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: create-sentinelayer-tarball
           path: create-sentinelayer-*.tgz
 
-      - name: Publish skipped (missing NPM_TOKEN)
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT != 'true'
+      - name: Enforce NPM token when publish is requested
+        if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT != 'true' && env.DRY_RUN != 'true'
         run: |
-          echo "NPM_TOKEN is not configured. Skipping npm publish."
-          echo "Set repository/org secret NPM_TOKEN and rerun with publish=true."
+          echo "::error::NPM_TOKEN is required when publish is requested."
+          exit 1
+
+      - name: Publish skipped (dry-run)
+        if: env.PUBLISH_REQUESTED == 'true' && env.DRY_RUN == 'true'
+        run: echo "Dry-run enabled. Skipping npm publish."
 
       - name: Publish to npm
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT == 'true'
+        if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT == 'true' && env.DRY_RUN != 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
