@@ -57,3 +57,8 @@
 - Plugin ecosystem governance needs explicit `pack_type` boundaries and deterministic topological ordering checks (`plugin order`) to prevent ambiguous or cyclic runtime load behavior.
 - MCP rollout should include both registry schema contracts and runtime server/bridge scaffolds so local CLI and editor integrations share one validated server config source of truth.
 - Chat ergonomics should still produce deterministic artifacts (session IDs + JSONL transcripts) so interactive/streaming UX remains auditable for enterprise workflows.
+
+## 2026-04-02
+
+- Keep an explicit execution board with exact next branch names to avoid branch drift during long autonomous runs.
+- Treat `gh run watch` on the `Omar Gate` workflow as a required blocking merge step on every PR; do not merge from status assumptions.
