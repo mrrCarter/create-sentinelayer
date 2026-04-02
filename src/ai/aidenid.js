@@ -637,3 +637,267 @@ export async function revokeIdentityChildren({
     revokedIdentityIds,
   };
 }
+
+export async function createDomain({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(`${normalizedApiUrl}/v1/domains`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify(payload || {}),
+  });
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID domain create request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
+
+export async function verifyDomain({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  domainId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedDomainId = normalizeIdentityId(domainId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/domains/${encodeURIComponent(normalizedDomainId)}/verify`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(payload || {}),
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID domain verify request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
+
+export async function freezeDomain({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  domainId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedDomainId = normalizeIdentityId(domainId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/domains/${encodeURIComponent(normalizedDomainId)}/freeze`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(payload || {}),
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID domain freeze request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
+
+export async function createTarget({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(`${normalizedApiUrl}/v1/targets`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify(payload || {}),
+  });
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID target create request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
+
+export async function verifyTarget({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  targetId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedTargetId = normalizeIdentityId(targetId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/targets/${encodeURIComponent(normalizedTargetId)}/verify`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(payload || {}),
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID target verify request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
+
+export async function getTarget({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  targetId,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedTargetId = normalizeIdentityId(targetId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/targets/${encodeURIComponent(normalizedTargetId)}`,
+    {
+      method: "GET",
+      headers: requestHeaders,
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID target show request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}

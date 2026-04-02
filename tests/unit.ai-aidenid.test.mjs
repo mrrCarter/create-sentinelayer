@@ -5,14 +5,20 @@ import {
   buildChildIdentityPayload,
   buildProvisionEmailPayload,
   createChildIdentity,
+  createDomain,
+  createTarget,
+  freezeDomain,
   getLatestIdentityExtraction,
   getIdentityLineage,
+  getTarget,
   listIdentityEvents,
   normalizeAidenIdApiUrl,
   provisionEmailIdentity,
   revokeIdentityChildren,
   revokeIdentity,
   resolveAidenIdCredentials,
+  verifyDomain,
+  verifyTarget,
 } from "../src/ai/aidenid.js";
 
 test("Unit AIdenID helper: payload normalization is deterministic", () => {
@@ -478,5 +484,184 @@ test("Unit AIdenID helper: lineage and revoke-children routes parse expected pay
         }),
       }),
     /status 500/
+  );
+});
+
+test("Unit AIdenID helper: domain and target governance routes parse expected payloads", async () => {
+  const domainCreate = await createDomain({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    idempotencyKey: "idem-domain-create",
+    payload: {
+      domainName: "swarm.customer.local",
+      trustClass: "BYOD",
+      verificationMethod: "DNS_TXT",
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          domain: { id: "dom_1", domainName: "swarm.customer.local", verificationStatus: "PENDING" },
+          proofId: "proof_dom_1",
+          challengeValue: "aidenid-domain-challenge",
+          proofStatus: "PENDING",
+        };
+      },
+    }),
+  });
+  assert.equal(domainCreate.response.domain.id, "dom_1");
+
+  const domainVerify = await verifyDomain({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    domainId: "dom_1",
+    idempotencyKey: "idem-domain-verify",
+    payload: {
+      method: "DNS_TXT",
+      challengeValue: "aidenid-domain-challenge",
+      proofValue: "txt-proof",
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          domain: { id: "dom_1", domainName: "swarm.customer.local", verificationStatus: "VERIFIED" },
+          proofId: "proof_dom_1",
+          challengeValue: "aidenid-domain-challenge",
+          proofStatus: "VERIFIED",
+        };
+      },
+    }),
+  });
+  assert.equal(domainVerify.response.domain.verificationStatus, "VERIFIED");
+
+  const domainFreeze = await freezeDomain({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    domainId: "dom_1",
+    idempotencyKey: "idem-domain-freeze",
+    payload: { reason: "incident containment", poolIsolated: true },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "dom_1",
+          domainName: "swarm.customer.local",
+          freezeStatus: "FROZEN",
+        };
+      },
+    }),
+  });
+  assert.equal(domainFreeze.response.freezeStatus, "FROZEN");
+
+  const targetCreate = await createTarget({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    idempotencyKey: "idem-target-create",
+    payload: {
+      host: "api.swarm.customer.local",
+      domainId: "dom_1",
+      policy: {
+        allowedPaths: ["/auth/*"],
+        allowedMethods: ["GET", "POST"],
+        allowedScenarios: ["signup_burst"],
+        maxRps: 25,
+        maxConcurrency: 10,
+        stopConditions: {},
+      },
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          target: { id: "tgt_1", host: "api.swarm.customer.local", verificationStatus: "PENDING" },
+          proofId: "proof_tgt_1",
+          challengeValue: "aidenid-target-challenge",
+          proofStatus: "PENDING",
+        };
+      },
+    }),
+  });
+  assert.equal(targetCreate.response.target.id, "tgt_1");
+
+  const targetVerify = await verifyTarget({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    targetId: "tgt_1",
+    idempotencyKey: "idem-target-verify",
+    payload: {
+      method: "DNS_TXT",
+      challengeValue: "aidenid-target-challenge",
+      proofValue: "txt-proof",
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          target: { id: "tgt_1", host: "api.swarm.customer.local", verificationStatus: "VERIFIED" },
+          proofId: "proof_tgt_1",
+          challengeValue: "aidenid-target-challenge",
+          proofStatus: "VERIFIED",
+        };
+      },
+    }),
+  });
+  assert.equal(targetVerify.response.target.verificationStatus, "VERIFIED");
+
+  const fetchedTarget = await getTarget({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    targetId: "tgt_1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "tgt_1",
+          host: "api.swarm.customer.local",
+          verificationStatus: "VERIFIED",
+          status: "VERIFIED",
+        };
+      },
+    }),
+  });
+  assert.equal(fetchedTarget.response.id, "tgt_1");
+
+  await assert.rejects(
+    () =>
+      verifyTarget({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        targetId: "tgt_1",
+        idempotencyKey: "idem-target-verify",
+        payload: {},
+        fetchImpl: async () => ({
+          ok: false,
+          status: 409,
+          async json() {
+            return { error: { code: "verification_challenge_mismatch" } };
+          },
+        }),
+      }),
+    /status 409/
   );
 });
