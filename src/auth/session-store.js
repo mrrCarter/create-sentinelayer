@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import fsp from "node:fs/promises";
@@ -6,7 +7,9 @@ import process from "node:process";
 
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
-const FILE_TOKEN_ENCRYPTION_VERSION = 1;
+const FILE_TOKEN_ENCRYPTION_VERSION = 2;
+const LEGACY_FILE_TOKEN_ENCRYPTION_VERSION = 1;
+const MACHINE_BINDING_KEY_FILENAME = "machine-binding.key";
 
 function nowIso() {
   return new Date().toISOString();
@@ -54,6 +57,7 @@ function normalizeMetadata(raw = {}) {
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
     tokenEncVersion: Number(raw.tokenEncVersion || 0) || null,
+    tokenKeyId: String(raw.tokenKeyId || "").trim() || null,
     tokenCiphertext: String(raw.tokenCiphertext || "").trim() || null,
     tokenIv: String(raw.tokenIv || "").trim() || null,
     tokenTag: String(raw.tokenTag || "").trim() || null,
@@ -62,7 +66,39 @@ function normalizeMetadata(raw = {}) {
   };
 }
 
-function resolveEncryptionPassphrase(apiUrl) {
+function isTruthy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function resolveMachineBindingKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer", MACHINE_BINDING_KEY_FILENAME);
+}
+
+function resolveMachineBindingKey({ homeDir } = {}) {
+  const keyPath = resolveMachineBindingKeyPath({ homeDir });
+  try {
+    const existing = fs.readFileSync(keyPath, "utf-8").trim();
+    if (existing) {
+      return existing;
+    }
+  } catch {
+    // Create a deterministic machine-bound secret when absent.
+  }
+
+  const generated = crypto.randomBytes(32).toString("base64url");
+  fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+  fs.writeFileSync(keyPath, `${generated}\n`, { encoding: "utf-8", mode: 0o600 });
+  try {
+    fs.chmodSync(keyPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  return generated;
+}
+
+function resolveLegacyEncryptionPassphrase() {
   const explicit = String(process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY || "").trim();
   if (!explicit) {
     throw new Error(
@@ -78,10 +114,40 @@ function resolveEncryptionPassphrase(apiUrl) {
   return explicit;
 }
 
-function encryptFileToken({ token, apiUrl }) {
+function resolveEncryptionMaterial({ apiUrl, homeDir, keyId = null }) {
+  const explicit = resolveLegacyEncryptionPassphrase();
+  const runningInCi = isTruthy(process.env.CI);
+  const allowCiStorage =
+    process.env.NODE_ENV === "test" || isTruthy(process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE);
+  if (runningInCi && !allowCiStorage) {
+    throw new Error(
+      "Refusing encrypted file-token storage in CI without SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE=true."
+    );
+  }
+
+  const normalizedApiUrl = String(apiUrl || "").trim().toLowerCase();
+  const machineBindingKey = resolveMachineBindingKey({ homeDir });
+  const derivedKeyId = crypto
+    .createHash("sha256")
+    .update(`${normalizedApiUrl}:${machineBindingKey}`)
+    .digest("hex")
+    .slice(0, 16);
+
+  if (keyId && keyId !== derivedKeyId) {
+    throw new Error("Stored token key id does not match this machine binding context.");
+  }
+
+  return {
+    passphrase: `${explicit}:${machineBindingKey}:${normalizedApiUrl}`,
+    keyId: derivedKeyId,
+  };
+}
+
+function encryptFileToken({ token, apiUrl, homeDir }) {
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
-  const passphrase = resolveEncryptionPassphrase(apiUrl);
+  const material = resolveEncryptionMaterial({ apiUrl, homeDir });
+  const passphrase = material.passphrase;
   const key = crypto.scryptSync(passphrase, salt, 32);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(String(token || ""), "utf-8"), cipher.final()]);
@@ -89,6 +155,7 @@ function encryptFileToken({ token, apiUrl }) {
 
   return {
     tokenEncVersion: FILE_TOKEN_ENCRYPTION_VERSION,
+    tokenKeyId: material.keyId,
     tokenCiphertext: encrypted.toString("base64"),
     tokenIv: iv.toString("base64"),
     tokenTag: tag.toString("base64"),
@@ -96,34 +163,55 @@ function encryptFileToken({ token, apiUrl }) {
   };
 }
 
-function decryptFileToken(metadata) {
+function decryptFileToken(metadata, { homeDir } = {}) {
   const encVersion = Number(metadata?.tokenEncVersion || 0);
-  if (encVersion !== FILE_TOKEN_ENCRYPTION_VERSION) {
-    return null;
-  }
 
   const ciphertext = String(metadata?.tokenCiphertext || "").trim();
   const iv = String(metadata?.tokenIv || "").trim();
   const tag = String(metadata?.tokenTag || "").trim();
   const salt = String(metadata?.tokenSalt || "").trim();
   const apiUrl = String(metadata?.apiUrl || "").trim();
+  const tokenKeyId = String(metadata?.tokenKeyId || "").trim();
 
   if (!ciphertext || !iv || !tag || !salt || !apiUrl) {
     return null;
   }
 
-  try {
-    const key = crypto.scryptSync(resolveEncryptionPassphrase(apiUrl), Buffer.from(salt, "base64"), 32);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64"));
-    decipher.setAuthTag(Buffer.from(tag, "base64"));
-    const decrypted = Buffer.concat([
-      decipher.update(Buffer.from(ciphertext, "base64")),
-      decipher.final(),
-    ]);
-    return decrypted.toString("utf-8");
-  } catch {
-    return null;
+  if (encVersion === FILE_TOKEN_ENCRYPTION_VERSION) {
+    if (!tokenKeyId) {
+      return null;
+    }
+    try {
+      const material = resolveEncryptionMaterial({ apiUrl, homeDir, keyId: tokenKeyId });
+      const key = crypto.scryptSync(material.passphrase, Buffer.from(salt, "base64"), 32);
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64"));
+      decipher.setAuthTag(Buffer.from(tag, "base64"));
+      const decrypted = Buffer.concat([
+        decipher.update(Buffer.from(ciphertext, "base64")),
+        decipher.final(),
+      ]);
+      return decrypted.toString("utf-8");
+    } catch {
+      return null;
+    }
   }
+
+  if (encVersion === LEGACY_FILE_TOKEN_ENCRYPTION_VERSION) {
+    try {
+      const key = crypto.scryptSync(resolveLegacyEncryptionPassphrase(), Buffer.from(salt, "base64"), 32);
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64"));
+      decipher.setAuthTag(Buffer.from(tag, "base64"));
+      const decrypted = Buffer.concat([
+        decipher.update(Buffer.from(ciphertext, "base64")),
+        decipher.final(),
+      ]);
+      return decrypted.toString("utf-8");
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 async function loadKeytarClient() {
@@ -208,7 +296,7 @@ export async function readStoredSession({ homeDir } = {}) {
     };
   }
 
-  const decryptedToken = decryptFileToken(metadata);
+  const decryptedToken = decryptFileToken(metadata, { homeDir });
   if (!decryptedToken) {
     return null;
   }
@@ -280,6 +368,7 @@ export async function writeStoredSession(
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
     nextMetadata.tokenEncVersion = null;
+    nextMetadata.tokenKeyId = null;
     nextMetadata.tokenCiphertext = null;
     nextMetadata.tokenIv = null;
     nextMetadata.tokenTag = null;
@@ -289,11 +378,13 @@ export async function writeStoredSession(
     const encryptedToken = encryptFileToken({
       token: normalizedToken,
       apiUrl: normalizedApiUrl,
+      homeDir,
     });
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
     nextMetadata.tokenEncVersion = encryptedToken.tokenEncVersion;
+    nextMetadata.tokenKeyId = encryptedToken.tokenKeyId;
     nextMetadata.tokenCiphertext = encryptedToken.tokenCiphertext;
     nextMetadata.tokenIv = encryptedToken.tokenIv;
     nextMetadata.tokenTag = encryptedToken.tokenTag;

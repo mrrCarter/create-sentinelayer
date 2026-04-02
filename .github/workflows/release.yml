@@ -27,16 +27,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-approval
+    outputs:
+      quality_run_id: ${{ steps.preflight.outputs.quality_run_id }}
+      release_artifact_name: ${{ steps.preflight.outputs.release_artifact_name }}
     permissions:
       contents: read
       checks: read
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Validate release preflight gates
+        id: preflight
         shell: bash
         run: |
           set -euo pipefail
+
+          read_check_conclusion() {
+            local sha="$1"
+            local check_name="$2"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs" \
+              --jq ".check_runs[] | select(.name==\"${check_name}\") | .conclusion" \
+              | head -n 1 || true
+          }
+
           quality_conclusion="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
@@ -52,22 +68,45 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
             --jq '.[0].head.sha' 2>/dev/null || true)"
 
-          if [[ -z "${pr_head_sha}" || "${pr_head_sha}" == "null" ]]; then
-            echo "::error::Unable to resolve PR head commit for ${GITHUB_SHA}; cannot verify Omar Gate."
-            exit 1
+          if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
+            omar_conclusion="$(read_check_conclusion "${pr_head_sha}" "Omar Gate")"
+            if [[ "${omar_conclusion}" != "success" ]]; then
+              echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
+              exit 1
+            fi
+          else
+            omar_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Omar Gate")"
+            security_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Security Scan")"
+            if [[ "${omar_on_sha}" != "success" && "${security_on_sha}" != "success" ]]; then
+              echo "::error::Direct-main release requires Omar Gate or Security Scan success on ${GITHUB_SHA}. Found Omar='${omar_on_sha:-missing}', Security='${security_on_sha:-missing}'."
+              exit 1
+            fi
           fi
 
-          omar_conclusion="$(gh api \
+          quality_run_id="$(gh api \
             -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/commits/${pr_head_sha}/check-runs" \
-            --jq '.check_runs[] | select(.name=="Omar Gate") | .conclusion' | head -n 1 || true)"
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/quality-gates.yml/runs?head_sha=${GITHUB_SHA}&branch=main&status=completed&per_page=20" \
+            --jq '.workflow_runs[] | select(.conclusion=="success") | .id' | head -n 1 || true)"
 
-          if [[ "${omar_conclusion}" != "success" ]]; then
-            echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
+          if [[ -z "${quality_run_id}" || "${quality_run_id}" == "null" ]]; then
+            echo "::error::Could not find a successful quality-gates workflow run for ${GITHUB_SHA}."
             exit 1
           fi
 
-          echo "Release preflight passed (Quality Summary + Omar Gate)."
+          release_artifact_name="create-sentinelayer-release-${GITHUB_SHA}"
+          artifact_id="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${quality_run_id}/artifacts" \
+            --jq ".artifacts[] | select(.name==\"${release_artifact_name}\") | .id" | head -n 1 || true)"
+
+          if [[ -z "${artifact_id}" || "${artifact_id}" == "null" ]]; then
+            echo "::error::Missing release artifact '${release_artifact_name}' in quality run ${quality_run_id}."
+            exit 1
+          fi
+
+          echo "quality_run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "release_artifact_name=${release_artifact_name}" >> "${GITHUB_OUTPUT}"
+          echo "Release preflight passed (Quality Summary + Omar Gate/Security Scan + release artifact promotion)."
 
   verify:
     name: Release Verify
@@ -85,19 +124,28 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Install dependencies (no lifecycle scripts)
-        run: npm ci --ignore-scripts
+      - name: Download promoted release artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "${{ needs.quality_preflight.outputs.quality_run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ needs.quality_preflight.outputs.release_artifact_name }}" \
+            --dir .
 
-      - name: Validate package
-        run: npm run verify
-
-      - name: Build release tarball
+      - name: Verify artifact commit binding and digest
         shell: bash
         run: |
           set -euo pipefail
-          npm pack
-          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
-          sha256sum "${TARBALL}" | tee release-sha256.txt
+          test -f release-commit-sha.txt || (echo "Missing release-commit-sha.txt" && exit 1)
+          packed_sha="$(cat release-commit-sha.txt | tr -d '\r' | xargs)"
+          if [[ "${packed_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Promoted artifact commit mismatch: expected ${GITHUB_SHA}, got ${packed_sha:-missing}."
+            exit 1
+          fi
+          sha256sum --check release-sha256.txt
 
       - name: Validate packaged CLI install
         run: |

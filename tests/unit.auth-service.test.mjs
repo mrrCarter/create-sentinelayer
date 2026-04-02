@@ -200,8 +200,10 @@ async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
 test("Unit auth service: login/status/runtime/list/logout flow remains deterministic", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   const previousFileKey = process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+  const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
   process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = "unit-test-file-token-encryption-key-2026";
+  process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   const mock = await startAuthRuntimeMockApi();
@@ -292,6 +294,11 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     } else {
       process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = previousFileKey;
     }
+    if (previousAllowCiFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = previousAllowCiFileStorage;
+    }
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -300,8 +307,10 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 test("Unit auth service: session metadata listing and explicit revoke are deterministic", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   const previousFileKey = process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+  const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
   process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = "unit-test-file-token-encryption-key-2026";
+  process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   const mock = await startAuthRuntimeMockApi();
@@ -356,6 +365,11 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
     } else {
       process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = previousFileKey;
     }
+    if (previousAllowCiFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = previousAllowCiFileStorage;
+    }
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -395,8 +409,10 @@ test("Unit auth service: env and project config token precedence is deterministi
 test("Unit auth service: rotation exposes revoke warning metadata when old token revoke fails", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   const previousFileKey = process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+  const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
   process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = "unit-test-file-token-encryption-key-2026";
+  process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   const mock = await startAuthRuntimeMockApi({ failTokenDelete: true });
@@ -450,6 +466,11 @@ test("Unit auth service: rotation exposes revoke warning metadata when old token
       delete process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
     } else {
       process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = previousFileKey;
+    }
+    if (previousAllowCiFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = previousAllowCiFileStorage;
     }
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

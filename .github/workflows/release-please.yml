@@ -21,6 +21,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          read_check_conclusion() {
+            local sha="$1"
+            local check_name="$2"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs" \
+              --jq ".check_runs[] | select(.name==\"${check_name}\") | .conclusion" \
+              | head -n 1 || true
+          }
+
           quality_conclusion="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
@@ -36,19 +47,19 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
             --jq '.[0].head.sha' 2>/dev/null || true)"
 
-          if [[ -z "${pr_head_sha}" || "${pr_head_sha}" == "null" ]]; then
-            echo "::error::Unable to resolve PR head commit for ${GITHUB_SHA}; cannot verify Omar Gate."
-            exit 1
-          fi
-
-          omar_conclusion="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/commits/${pr_head_sha}/check-runs" \
-            --jq '.check_runs[] | select(.name=="Omar Gate") | .conclusion' | head -n 1 || true)"
-
-          if [[ "${omar_conclusion}" != "success" ]]; then
-            echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
-            exit 1
+          if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
+            omar_conclusion="$(read_check_conclusion "${pr_head_sha}" "Omar Gate")"
+            if [[ "${omar_conclusion}" != "success" ]]; then
+              echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
+              exit 1
+            fi
+          else
+            omar_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Omar Gate")"
+            security_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Security Scan")"
+            if [[ "${omar_on_sha}" != "success" && "${security_on_sha}" != "success" ]]; then
+              echo "::error::Direct-main release-please requires Omar Gate or Security Scan success on ${GITHUB_SHA}. Found Omar='${omar_on_sha:-missing}', Security='${security_on_sha:-missing}'."
+              exit 1
+            fi
           fi
 
       - name: Run release-please
