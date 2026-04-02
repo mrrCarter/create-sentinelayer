@@ -72,3 +72,4 @@
 - Jira lifecycle automation should keep both a mutable state registry and an append-only events stream; this preserves operator-friendly status views while retaining full transition/comment provenance for reproducible audits.
 - Budget enforcement is safer as a two-stage control (`HARD_LIMIT_QUARANTINED` then `HARD_LIMIT_SQUASHED` after a grace window) so operators can inspect/override before deterministic kill while still guaranteeing bounded runtime.
 - Operator kill-switch actions should be explicit and auditable: require `--confirm`, persist a dedicated operator event stream, and mirror queue+assignment status updates so dashboard state and enforcement state cannot drift.
+- Reproducibility artifacts become operationally useful only after indexing cross-file linkage (`loopRunId`, `jiraIssueKey`, budget state, operator snapshots) into a single lineage index keyed by `workItemId`.

@@ -55,7 +55,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch J PR 13.2 ledger slice (`daemon assign claim|heartbeat|release|reassign|list` global assignment queue ownership).
 - [x] Complete Batch J PR 13.3 Jira lifecycle slice (`daemon jira open|start|comment|transition|list` ticket-state automation).
 - [x] Complete Batch J PR 13.4 budget-governor slice (`daemon budget check|status` quarantine and deterministic kill controls).
-- [x] Start Batch J PR 13.5 operator-control slice (`daemon control|snapshot|stop` roster visibility + confirmed kill-switch actions).
+- [x] Complete Batch J PR 13.5 operator-control slice (`daemon control|snapshot|stop` roster visibility + confirmed kill-switch actions).
+- [x] Start Batch J PR 13.6 artifact-lineage slice (`daemon lineage build|list|show` reproducibility linkage index).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -169,7 +170,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.2 Global autonomous todo/assignment ledger (agent identity, lease, SLA timers, handoff state). (merged as #88)
 - PR 13.3 Jira lifecycle automation (create ticket(s), agent plan comment, in-progress/blocked/done transitions). (merged as #89)
 - PR 13.4 Runtime budget governance hardening (token/time/tool/path budgets + deterministic squash/quarantine path). (merged as #90)
-- PR 13.5 Operator control plane UX (agent roster, stop/confirm control, budget health colors, session timers).
+- PR 13.5 Operator control plane UX (agent roster, stop/confirm control, budget health colors, session timers). (merged as #91)
 - PR 13.6 Artifact lineage tree (`observability/` reproducibility bundles per run/agent/loop/jira linkage).
 - PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping).
 - PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path).
@@ -190,11 +191,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-13-5-operator-control-plane` (current)
-2. `roadmap/pr-13-6-observability-artifact-lineage`
-3. `roadmap/pr-13-7-hybrid-mapping-overlay`
-4. `roadmap/pr-13-8-midnight-reliability-lane`
-5. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-13-6-observability-artifact-lineage` (current)
+2. `roadmap/pr-13-7-hybrid-mapping-overlay`
+3. `roadmap/pr-13-8-midnight-reliability-lane`
+4. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -399,3 +399,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Added unified `daemon control` snapshot/stop surface with budget-health colors, session timers, agent roster aggregates, and `--confirm`-gated operator kill-switch artifacts.
+  - PR 13.6 artifact-lineage slice local evidence (branch `roadmap/pr-13-6-observability-artifact-lineage`):
+    - `npm run verify` (pass, e2e `82/82`; unit tests `106/106`; coverage statements `89.69%`, branches `71.54%`, functions `97.72%`, lines `89.69%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added deterministic lineage index under `observability/error-daemon/lineage` with per-work-item linkage across queue/assignment/Jira/budget/operator artifacts and `lineage build|list|show` command surface.
