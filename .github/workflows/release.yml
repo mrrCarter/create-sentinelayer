@@ -117,7 +117,7 @@ jobs:
   preflight:
     name: Release Preflight (Verify + Security)
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -158,6 +158,27 @@ jobs:
           printf "%s" "${tarball}" > create-sentinelayer.tarball
           sha256sum "${tarball}" > create-sentinelayer.sha256
 
+      - name: Verify deterministic rebuild hash (isolated second pass)
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_hash="$(awk '{print $1}' create-sentinelayer.sha256)"
+          rebuild_dir="$(mktemp -d)"
+          git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
+          pushd "${rebuild_dir}" >/dev/null
+          npm config set registry "https://registry.npmjs.org/"
+          npm ci --ignore-scripts
+          rebuild_pack_json="$(npm pack --json)"
+          rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
+          test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)
+          rebuild_hash="$(sha256sum "${rebuild_tarball}" | awk '{print $1}')"
+          popd >/dev/null
+          printf "%s\n" "${rebuild_hash}" > create-sentinelayer.rebuild.sha256
+          if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
+            echo "::error::Non-deterministic package hash detected (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
+            exit 1
+          fi
+
       - name: Upload immutable release artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
@@ -166,6 +187,7 @@ jobs:
             create-sentinelayer-*.tgz
             create-sentinelayer.tarball
             create-sentinelayer.sha256
+            create-sentinelayer.rebuild.sha256
             package-lock.sha256
             npm-prod-tree.json
 
