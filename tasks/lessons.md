@@ -79,3 +79,4 @@
 - Validate reported audit findings against the active branch before starting remediation PRs, then scope each PR to current confirmed gaps only.
 - For long autonomous PR chains, spawn each new PR from a fresh `origin/main` worktree; this avoids hidden local `main` divergence during `--ff-only` pulls.
 - When creating worktrees, keep option order explicit (`git worktree add -b <branch> <path> origin/main`) or you can silently branch from stale `HEAD` and drift behind `origin/main`.
+- Eval-gating PRs can self-block unless they include their own deterministic evidence artifact; include `tasks/evals/<pr-id>.md` when introducing or changing eval-impact rules.

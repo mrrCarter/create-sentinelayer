@@ -183,7 +183,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 97 AI governance contracts (AGENTS.md, CLAUDE.md, path-scoped instructions, PR template, CODEOWNERS).
 - [x] PR 98 MCP security hardening defaults and audience validation.
 - [x] PR 99 API key security and `.env` defense.
-- [ ] PR 100 eval-impact gating foundation.
+- [x] PR 100 eval-impact gating foundation.
 
 ## Execution Board (2026-04-02)
 
@@ -200,11 +200,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-99-api-key-env-defense` (current)
-2. `roadmap/pr-100-eval-impact-gating`
-3. `roadmap/pr-101-coverage-instrumentation`
-4. `roadmap/pr-102-command-unit-tests`
-5. `roadmap/pr-103-jsdoc-high-risk`
+1. `roadmap/pr-100-eval-impact-gating` (current)
+2. `roadmap/pr-101-coverage-instrumentation`
+3. `roadmap/pr-102-command-unit-tests`
+4. `roadmap/pr-103-jsdoc-high-risk`
+5. `roadmap/pr-104-dependabot-templates`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.

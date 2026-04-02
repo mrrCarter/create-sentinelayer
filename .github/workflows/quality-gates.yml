@@ -14,6 +14,41 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  eval-impact:
+    name: Eval Impact Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate AI-impacting changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            base_sha="${PR_BASE_SHA}"
+            head_sha="${PR_HEAD_SHA}"
+          else
+            base_sha="${PUSH_BEFORE_SHA}"
+            head_sha="${PUSH_HEAD_SHA}"
+          fi
+          if [ -z "${head_sha}" ]; then
+            head_sha="HEAD"
+          fi
+          if [ -z "${base_sha}" ] || [ "${base_sha}" = "0000000000000000000000000000000000000000" ]; then
+            base_sha="HEAD~1"
+          fi
+          bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
+
   syntax-matrix:
     name: Syntax & Sanity (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
@@ -94,10 +129,11 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [syntax-matrix, unit-coverage, e2e-packaging]
+    needs: [eval-impact, syntax-matrix, unit-coverage, e2e-packaging]
     if: >-
       ${{
         always() &&
+        needs.eval-impact.result == 'success' &&
         needs.syntax-matrix.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
         needs.e2e-packaging.result == 'success'
