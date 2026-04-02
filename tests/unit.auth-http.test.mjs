@@ -158,7 +158,7 @@ test("Unit auth http: requestJson omits JSON content-type for body-less GET", as
   assert.equal(Object.prototype.hasOwnProperty.call(seenHeaders, "content-type"), false);
 });
 
-test("Unit auth http: local timeout does not open circuit breaker", async () => {
+test("Unit auth http: local timeout contributes to circuit breaker opening", async () => {
   __resetAuthHttpCircuitBreakerForTests();
 
   const neverResolvingFetch = async (_url, init) =>
@@ -180,14 +180,17 @@ test("Unit auth http: local timeout does not open circuit breaker", async () => 
     );
   }
 
-  const successPayload = await requestJson("https://api.example.com/test", {
-    method: "GET",
-    maxAttempts: 1,
-    fetchImpl: async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+  await assert.rejects(
+    () =>
+      requestJson("https://api.example.com/test", {
+        method: "GET",
+        maxAttempts: 1,
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
       }),
-  });
-  assert.equal(successPayload.ok, true);
+    (error) => error instanceof SentinelayerApiError && error.code === "CIRCUIT_OPEN"
+  );
 });

@@ -345,9 +345,7 @@ export async function requestJson(
       if (normalizedError.code === "CLIENT_ABORTED") {
         throw normalizedError;
       }
-      const shouldRecordCircuitFailure =
-        shouldRetry(normalizedError) &&
-        !(timedOut && normalizedError.code === "TIMEOUT");
+      const shouldRecordCircuitFailure = shouldRetry(normalizedError);
       if (shouldRecordCircuitFailure) {
         registerCircuitFailure(circuitScope);
       }

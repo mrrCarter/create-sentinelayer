@@ -23,6 +23,27 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Install pinned GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="2.89.0"
+          archive="gh_${gh_version}_linux_amd64.tar.gz"
+          checksums="gh_${gh_version}_checksums.txt"
+          base_url="https://github.com/cli/cli/releases/download/v${gh_version}"
+
+          curl -fsSLo "${archive}" "${base_url}/${archive}"
+          curl -fsSLo "${checksums}" "${base_url}/${checksums}"
+          grep " ${archive}$" "${checksums}" | sha256sum --check --
+
+          tar -xzf "${archive}"
+          install_dir="${RUNNER_TEMP}/gh-${gh_version}"
+          mkdir -p "${install_dir}"
+          mv "gh_${gh_version}_linux_amd64/bin/gh" "${install_dir}/gh"
+          chmod +x "${install_dir}/gh"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+          "${install_dir}/gh" --version
+
       - name: Validate release-please preflight gates
         shell: bash
         run: |

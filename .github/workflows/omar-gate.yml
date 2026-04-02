@@ -41,7 +41,7 @@ env:
 jobs:
   omar_gate:
     name: Omar Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: security-review
     permissions:
       contents: read

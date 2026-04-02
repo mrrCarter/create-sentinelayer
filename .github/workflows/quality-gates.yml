@@ -268,6 +268,8 @@ jobs:
           cp "${tarball_a}" "./${tarball_name}"
           printf '%s  %s\n' "${digest_a}" "${tarball_name}" > release-sha256.txt
           echo "${GITHUB_SHA}" > release-commit-sha.txt
+          npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+          test -s sbom.cdx.json || (echo "::error::Failed to generate sbom.cdx.json in build-release-artifact." && exit 1)
 
       - name: Generate build provenance attestation
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
@@ -282,6 +284,7 @@ jobs:
             create-sentinelayer-*.tgz
             release-sha256.txt
             release-commit-sha.txt
+            sbom.cdx.json
           if-no-files-found: error
 
   pr_deploy_smoke_gate:

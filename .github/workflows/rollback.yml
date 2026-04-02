@@ -42,7 +42,7 @@ env:
 jobs:
   rollback:
     name: Deprecate Published Version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'false' && 'npm-publish' || 'security-review' }}
     steps:
