@@ -7,14 +7,30 @@
   "branches": 70,
   "reporter": ["text-summary", "lcov"],
   "include": [
+    "src/cli.js",
+    "src/config/io.js",
+    "src/config/paths.js",
+    "src/config/schema.js",
     "src/config/service.js",
     "src/spec/generator.js",
+    "src/spec/regenerate.js",
+    "src/spec/templates.js",
     "src/prompt/generator.js",
     "src/cost/tracker.js",
-    "src/cost/history.js",
     "src/cost/budget.js",
-    "src/ai/client.js",
-    "src/telemetry/ledger.js"
+    "src/cost/history.js",
+    "src/telemetry/ledger.js",
+    "src/mcp/registry.js",
+    "src/audit/registry.js",
+    "src/audit/replay.js",
+    "src/review/replay.js",
+    "src/swarm/registry.js",
+    "src/daemon/error-worker.js",
+    "src/daemon/budget-governor.js",
+    "src/daemon/hybrid-mapper.js",
+    "src/daemon/reliability-lane.js",
+    "src/ui/markdown.js",
+    "src/ui/progress.js"
   ]
 }
 

@@ -80,3 +80,5 @@
 - For long autonomous PR chains, spawn each new PR from a fresh `origin/main` worktree; this avoids hidden local `main` divergence during `--ff-only` pulls.
 - When creating worktrees, keep option order explicit (`git worktree add -b <branch> <path> origin/main`) or you can silently branch from stale `HEAD` and drift behind `origin/main`.
 - Eval-gating PRs can self-block unless they include their own deterministic evidence artifact; include `tasks/evals/<pr-id>.md` when introducing or changing eval-impact rules.
+- Coverage breadth expansion needs a curated include set: raising include count blindly can drop branch thresholds below gate; expand in batches and keep each batch reproducibly above floor.
+- When coverage thresholds are tight, validate the exact `c8` include set with full `npm run verify` before pushing so Omar loop iterations are spent on findings, not preventable CI coverage failures.
