@@ -2207,6 +2207,63 @@ test("CLI policy commands manage active pack selection and include plugin policy
   }
 });
 
+test("CLI audit registry lists built-in orchestrator agents", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-registry-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "registry", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit registry");
+    assert.equal(payload.agentCount >= 13, true);
+    assert.equal(payload.agents.some((agent) => agent.id === "security"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
+  try {
+    await writeFile(path.join(tempRoot, "index.js"), "export const status = 'ok';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "audit",
+        "--path",
+        tempRoot,
+        "--dry-run",
+        "--agents",
+        "security,architecture,testing",
+        "--max-parallel",
+        "2",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit");
+    assert.equal(payload.dryRun, true);
+    assert.deepEqual(payload.selectedAgents.sort(), ["architecture", "security", "testing"]);
+    assert.match(String(payload.reportPath || ""), /[\\/]AUDIT_REPORT\.md$/);
+    assert.match(String(payload.reportJsonPath || ""), /[\\/]AUDIT_REPORT\.json$/);
+
+    const report = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
+    assert.equal(report.runId, payload.runId);
+    assert.equal(report.dryRun, true);
+    assert.equal(Array.isArray(report.agentResults), true);
+    assert.equal(report.agentResults.length, 3);
+    assert.equal(report.selectedAgents.includes("security"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {
