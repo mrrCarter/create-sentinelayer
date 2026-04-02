@@ -2252,6 +2252,9 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     assert.deepEqual(payload.selectedAgents.sort(), ["architecture", "security", "testing"]);
     assert.match(String(payload.reportPath || ""), /[\\/]AUDIT_REPORT\.md$/);
     assert.match(String(payload.reportJsonPath || ""), /[\\/]AUDIT_REPORT\.json$/);
+    assert.match(String(payload.ddPackageManifestPath || ""), /[\\/]DD_PACKAGE_MANIFEST\.json$/);
+    assert.match(String(payload.ddPackageFindingsPath || ""), /[\\/]DD_FINDINGS_INDEX\.json$/);
+    assert.match(String(payload.ddPackageSummaryPath || ""), /[\\/]DD_EXEC_SUMMARY\.md$/);
 
     const report = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
     assert.equal(report.runId, payload.runId);
@@ -2259,6 +2262,44 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     assert.equal(Array.isArray(report.agentResults), true);
     assert.equal(report.agentResults.length, 3);
     assert.equal(report.selectedAgents.includes("security"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI audit package rebuilds DD package from run id", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-package-cmd-"));
+  try {
+    await writeFile(path.join(tempRoot, "index.js"), "export const ready = true;\n", "utf-8");
+
+    const run = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "--path", tempRoot, "--dry-run", "--agents", "security,testing", "--json"],
+    });
+    assert.equal(run.code, 0, run.stderr || run.stdout);
+    const runPayload = JSON.parse(String(run.stdout || "").trim());
+    assert.ok(String(runPayload.runId || "").startsWith("audit-"));
+
+    const packageResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "package", "--path", tempRoot, "--run-id", runPayload.runId, "--json"],
+    });
+    assert.equal(packageResult.code, 0, packageResult.stderr || packageResult.stdout);
+    const packagePayload = JSON.parse(String(packageResult.stdout || "").trim());
+    assert.equal(packagePayload.command, "audit package");
+    assert.equal(packagePayload.runId, runPayload.runId);
+    assert.match(String(packagePayload.ddPackageManifestPath || ""), /[\\/]DD_PACKAGE_MANIFEST\.json$/);
+    assert.match(String(packagePayload.ddPackageFindingsPath || ""), /[\\/]DD_FINDINGS_INDEX\.json$/);
+    assert.match(String(packagePayload.ddPackageSummaryPath || ""), /[\\/]DD_EXEC_SUMMARY\.md$/);
+
+    const manifest = JSON.parse(await readFile(packagePayload.ddPackageManifestPath, "utf-8"));
+    assert.equal(manifest.runId, runPayload.runId);
+    assert.equal(Array.isArray(manifest.agents), true);
+
+    const summaryText = await readFile(packagePayload.ddPackageSummaryPath, "utf-8");
+    assert.match(summaryText, /DD_EXEC_SUMMARY/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

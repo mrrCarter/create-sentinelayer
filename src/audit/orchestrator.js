@@ -29,6 +29,7 @@ import {
   renderTestingSpecialistMarkdown,
   runTestingSpecialist,
 } from "./agents/testing.js";
+import { writeDdPackage } from "./package.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -397,11 +398,16 @@ export async function runAuditOrchestrator({
   const reportMarkdownPath = path.join(runDirectory, "AUDIT_REPORT.md");
   await fsp.writeFile(reportJsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
   await fsp.writeFile(reportMarkdownPath, `${buildAuditMarkdown(report).trim()}\n`, "utf-8");
+  const ddPackage = await writeDdPackage({
+    report,
+    runDirectory,
+  });
 
   return {
     ...report,
     reportJsonPath,
     reportMarkdownPath,
+    ddPackage,
   };
 }
 
