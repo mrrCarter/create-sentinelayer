@@ -33,6 +33,8 @@ import {
 } from "../ai/domain-target-store.js";
 import { listSites, recordTemporarySite } from "../ai/site-store.js";
 import {
+  filterIdentitiesByTags,
+  findStaleIdentities,
   getIdentityById,
   listIdentities,
   recordProvisionedIdentity,
@@ -103,6 +105,24 @@ function parseJsonObject(rawValue, field) {
     throw new Error(`${field} must be a JSON object.`);
   }
   return parsed;
+}
+
+function normalizeLegalHoldStatus(rawValue) {
+  const normalized = String(rawValue || "").trim().toUpperCase();
+  if (!normalized) {
+    return "NONE";
+  }
+  if (normalized === "HOLD" || normalized === "NONE" || normalized === "UNKNOWN") {
+    return normalized;
+  }
+  return normalized;
+}
+
+function identityIsUnderLegalHold(identityRecord = {}) {
+  const directStatus = normalizeLegalHoldStatus(identityRecord.legalHoldStatus);
+  const metadataStatus = normalizeLegalHoldStatus(identityRecord?.metadata?.legalHoldStatus);
+  const metadataFlag = Boolean(identityRecord?.metadata?.legalHold === true);
+  return directStatus === "HOLD" || metadataStatus === "HOLD" || metadataFlag;
 }
 
 function normalizeIdempotencyKey(rawValue) {
@@ -299,6 +319,7 @@ export function registerAiCommand(program) {
           orgId: requiredCredentials.orgId,
           projectId: requiredCredentials.projectId,
           idempotencyKey,
+          tags: payload.tags,
         },
       });
       const result = {
@@ -342,6 +363,7 @@ export function registerAiCommand(program) {
   const domain = identity.command("domain").description("AIdenID domain governance commands");
   const target = identity.command("target").description("AIdenID target governance commands");
   const site = identity.command("site").description("AIdenID temporary callback domain commands");
+  const legalHold = identity.command("legal-hold").description("Identity legal-hold controls");
 
   domain
     .command("create")
@@ -1454,6 +1476,281 @@ export function registerAiCommand(program) {
       console.log(`status=${identityRecord.status} project=${identityRecord.projectId || "n/a"}`);
     });
 
+  legalHold
+    .command("status")
+    .description("Show legal-hold status for a tracked identity")
+    .argument("<identityId>", "Identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const { registryPath, identity: identityRecord } = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      if (!identityRecord) {
+        throw new Error(`Identity '${identityId}' is not present in local registry.`);
+      }
+
+      const underHold = identityIsUnderLegalHold(identityRecord);
+      const status = underHold ? "HOLD" : normalizeLegalHoldStatus(identityRecord.legalHoldStatus);
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "legal-hold-status");
+      const outputPath = path.join(
+        artifactsDir,
+        `legal-hold-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(outputPath, {
+        generatedAt: new Date().toISOString(),
+        identityId,
+        status,
+        underHold,
+        identity: identityRecord,
+      });
+
+      const payload = {
+        command: "ai identity legal-hold status",
+        identityId,
+        registryPath,
+        outputPath,
+        status,
+        underHold,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID legal-hold status"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Artifact: ${outputPath}`));
+      console.log(`${identityId} | legal_hold=${status}`);
+    });
+
+  identity
+    .command("audit")
+    .description("Audit tracked identities for stale lifecycle records")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--stale", "Return only stale identities", true)
+    .option("--no-stale", "Return full identity inventory")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const staleScan = await findStaleIdentities({
+        outputRoot,
+      });
+      const staleOnly = Boolean(options.stale);
+      const identities = staleOnly ? staleScan.stale : staleScan.identities;
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "identity-audit");
+      const outputPath = path.join(artifactsDir, `identity-audit-${stamp}.json`);
+      await writeArtifact(outputPath, {
+        generatedAt: new Date().toISOString(),
+        staleOnly,
+        staleCount: staleScan.stale.length,
+        totalCount: staleScan.identities.length,
+        identities,
+      });
+
+      const payload = {
+        command: "ai identity audit",
+        staleOnly,
+        registryPath: staleScan.registryPath,
+        outputPath,
+        staleCount: staleScan.stale.length,
+        totalCount: staleScan.identities.length,
+        identities,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID identity audit"));
+      console.log(pc.gray(`Registry: ${staleScan.registryPath}`));
+      console.log(pc.gray(`Artifact: ${outputPath}`));
+      console.log(`stale=${staleScan.stale.length} total=${staleScan.identities.length}`);
+      for (const identityRecord of identities) {
+        console.log(
+          `- ${identityRecord.identityId} | ${identityRecord.status} | expires=${identityRecord.expiresAt || "n/a"}`
+        );
+      }
+    });
+
+  identity
+    .command("kill-all")
+    .description("Emergency bulk squash by tags with legal-hold protections")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--tags <csv>", "Comma-separated tags used for identity selection")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--execute", "Execute live revoke calls before local squash updates")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const tags = parseCsvTokens(options.tags, []);
+      if (tags.length === 0) {
+        throw new Error("At least one tag is required via --tags.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const { registryPath, identities } = await listIdentities({ outputRoot });
+      const tagged = filterIdentitiesByTags(identities, tags);
+      const candidates = tagged.filter((identityRecord) => String(identityRecord.status || "").toUpperCase() !== "SQUASHED");
+      const blocked = candidates.filter((identityRecord) => identityIsUnderLegalHold(identityRecord));
+      const eligible = candidates.filter((identityRecord) => !identityIsUnderLegalHold(identityRecord));
+
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const killCampaignId = normalizeIdempotencyKey("");
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "kill-all");
+      const requestPath = path.join(artifactsDir, `request-${stamp}.json`);
+      await writeArtifact(requestPath, {
+        generatedAt: new Date().toISOString(),
+        killCampaignId,
+        apiUrl,
+        tags,
+        candidateIdentityIds: candidates.map((item) => item.identityId),
+        blockedIdentityIds: blocked.map((item) => item.identityId),
+        eligibleIdentityIds: eligible.map((item) => item.identityId),
+      });
+
+      if (!options.execute) {
+        const payload = {
+          command: "ai identity kill-all",
+          execute: false,
+          killCampaignId,
+          tags,
+          registryPath,
+          requestPath,
+          candidateCount: candidates.length,
+          blockedCount: blocked.length,
+          eligibleCount: eligible.length,
+          blockedIdentityIds: blocked.map((item) => item.identityId),
+          eligibleIdentityIds: eligible.map((item) => item.identityId),
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+
+        console.log(pc.bold("AIdenID kill-all request generated (dry-run)"));
+        console.log(pc.gray(`Registry: ${registryPath}`));
+        console.log(pc.gray(`Request: ${requestPath}`));
+        console.log(`campaign=${killCampaignId} candidates=${candidates.length} blocked=${blocked.length}`);
+        return;
+      }
+
+      const resolvedCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId,
+        projectId: options.projectId,
+        env: process.env,
+        requireAll: false,
+      });
+      const canCallApi = resolvedCredentials.missing.length === 0;
+
+      const executeOne = async (identityRecord) => {
+        const revokedAt = new Date().toISOString();
+        let revokeResponse = null;
+        if (canCallApi) {
+          const revokeExecution = await revokeIdentity({
+            apiUrl,
+            apiKey: resolvedCredentials.apiKey,
+            orgId: resolvedCredentials.orgId,
+            projectId: resolvedCredentials.projectId || identityRecord.projectId,
+            idempotencyKey: normalizeIdempotencyKey(""),
+            identityId: identityRecord.identityId,
+          });
+          revokeResponse = revokeExecution.response || null;
+        }
+        const updated = await updateIdentityStatus({
+          outputRoot,
+          identityId: identityRecord.identityId,
+          status: "SQUASHED",
+          revokedAt,
+          squashedAt: revokedAt,
+          metadataPatch: {
+            killCampaignId,
+            killSwitchTags: tags,
+            killAllExecutedAt: revokedAt,
+            killAllApiCalled: canCallApi,
+          },
+        });
+        return {
+          identityId: identityRecord.identityId,
+          status: updated.identity?.status || "SQUASHED",
+          revokeResponse,
+        };
+      };
+
+      const updates = [];
+      for (const identityRecord of eligible) {
+        const updated = await executeOne(identityRecord);
+        updates.push(updated);
+      }
+      const responsePath = path.join(artifactsDir, `response-${stamp}.json`);
+      await writeArtifact(responsePath, {
+        generatedAt: new Date().toISOString(),
+        killCampaignId,
+        tags,
+        candidateCount: candidates.length,
+        blockedIdentityIds: blocked.map((item) => item.identityId),
+        updated: updates,
+        apiCalled: canCallApi,
+        credentialsMissing: resolvedCredentials.missing,
+      });
+
+      const payload = {
+        command: "ai identity kill-all",
+        execute: true,
+        killCampaignId,
+        tags,
+        registryPath,
+        requestPath,
+        responsePath,
+        candidateCount: candidates.length,
+        blockedCount: blocked.length,
+        updatedCount: updates.length,
+        blockedIdentityIds: blocked.map((item) => item.identityId),
+        updated: updates,
+        apiCalled: canCallApi,
+        credentialsMissing: resolvedCredentials.missing,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID kill-all executed"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Response: ${responsePath}`));
+      console.log(
+        `campaign=${killCampaignId} updated=${updates.length} blocked=${blocked.length} api_called=${canCallApi}`
+      );
+    });
+
   identity
     .command("revoke")
     .description("Revoke a tracked identity (dry-run by default)")
@@ -1493,6 +1790,9 @@ export function registerAiCommand(program) {
       });
       if (!trackedIdentity) {
         throw new Error(`Identity '${identityId}' is not present in local registry.`);
+      }
+      if (identityIsUnderLegalHold(trackedIdentity)) {
+        throw new Error(`Identity '${identityId}' is under legal hold and cannot be revoked.`);
       }
 
       const resolvedCredentials = resolveAidenIdCredentials({
@@ -1749,6 +2049,7 @@ export function registerAiCommand(program) {
           idempotencyKey,
           parentIdentityId,
           eventBudget,
+          tags: payload.tags,
         },
       });
       const childIdentity = execution.response || {};
@@ -1808,6 +2109,9 @@ export function registerAiCommand(program) {
         outputRoot,
         identityId,
       });
+      if (trackedIdentity && identityIsUnderLegalHold(trackedIdentity)) {
+        throw new Error(`Identity '${identityId}' is under legal hold and cannot run revoke-children.`);
+      }
       const credentials = resolveAidenIdCredentials({
         apiKey: options.apiKey,
         orgId: options.orgId || trackedIdentity?.orgId,
@@ -1976,26 +2280,27 @@ export function registerAiCommand(program) {
         response: execution.response,
       });
 
-      const localUpdatedIdentityIds = [];
-      for (const revokedIdentityId of execution.revokedIdentityIds) {
-        try {
-          const updated = await updateIdentityStatus({
-            outputRoot,
-            identityId: revokedIdentityId,
-            status: "SQUASHED",
-            revokedAt: new Date().toISOString(),
-            metadataPatch: {
-              revokeChildrenRequestIdempotencyKey: idempotencyKey,
-              parentIdentityId: execution.parentIdentityId,
-            },
-          });
-          if (updated.identity) {
-            localUpdatedIdentityIds.push(updated.identity.identityId);
+      const updateResults = await Promise.all(
+        execution.revokedIdentityIds.map(async (revokedIdentityId) => {
+          try {
+            const updated = await updateIdentityStatus({
+              outputRoot,
+              identityId: revokedIdentityId,
+              status: "SQUASHED",
+              revokedAt: new Date().toISOString(),
+              squashedAt: new Date().toISOString(),
+              metadataPatch: {
+                revokeChildrenRequestIdempotencyKey: idempotencyKey,
+                parentIdentityId: execution.parentIdentityId,
+              },
+            });
+            return updated.identity?.identityId || null;
+          } catch {
+            return null;
           }
-        } catch {
-          // Skip identities that are not tracked locally.
-        }
-      }
+        })
+      );
+      const localUpdatedIdentityIds = updateResults.filter(Boolean);
 
       const payload = {
         command: "ai identity revoke-children",

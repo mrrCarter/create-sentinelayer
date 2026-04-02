@@ -385,6 +385,23 @@ Pen-test artifacts:
 
 `PENTEST_REPORT` findings are keyed to OWASP categories and surface `P0-P3` severity summary + blocking status.
 
+## Swarm identity hardening (Phase 12.7 slice)
+
+Identity security controls now include:
+
+- zero-trust swarm identity manifest per run (`IDENTITY_ISOLATION.json`)
+- cryptographic audit chain on pen-test request logs (`previousEntryHash` + `entryHash` + `entryHmac`)
+- crash-safe cleanup contract artifact (`CLEANUP_CONTRACT.json`) for post-run squash scheduling
+- legal-hold guardrails on revoke/revoke-children commands
+
+New identity lifecycle commands:
+
+- `sl ai identity audit --stale --json`
+- `sl ai identity legal-hold status <identity-id> --json`
+- `sl ai identity kill-all --tags <tag1,tag2> [--execute] --json`
+
+`kill-all --execute` blocks legal-hold identities and marks eligible tagged identities as `SQUASHED` in local registry with campaign metadata.
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:

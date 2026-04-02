@@ -5,6 +5,8 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
 import {
+  filterIdentitiesByTags,
+  findStaleIdentities,
   getIdentityById,
   listIdentities,
   recordProvisionedIdentity,
@@ -36,6 +38,7 @@ test("Unit identity store: record/list/show identity lifecycle", async () => {
     });
     assert.equal(recorded.identity.identityId, "id_123");
     assert.equal(recorded.identity.status, "ACTIVE");
+    assert.equal(recorded.identity.legalHoldStatus, "NONE");
 
     const listed = await listIdentities({ outputRoot });
     assert.equal(listed.identities.length, 1);
@@ -116,4 +119,72 @@ test("Unit identity store: child identity records preserve parent linkage and so
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("Unit identity store: stale detection excludes squashed identities", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-store-"));
+  try {
+    const outputRoot = path.join(tempRoot, ".sentinelayer");
+    await recordProvisionedIdentity({
+      outputRoot,
+      response: {
+        id: "id_stale",
+        emailAddress: "stale@aidenid.com",
+        status: "ACTIVE",
+        projectId: "proj_test",
+        expiresAt: "2026-01-01T00:00:00.000Z",
+      },
+      context: {
+        apiUrl: "https://api.aidenid.com",
+        orgId: "org_test",
+        projectId: "proj_test",
+        idempotencyKey: "idem-stale",
+      },
+    });
+    await recordProvisionedIdentity({
+      outputRoot,
+      response: {
+        id: "id_squashed",
+        emailAddress: "squashed@aidenid.com",
+        status: "SQUASHED",
+        projectId: "proj_test",
+        expiresAt: "2026-01-01T00:00:00.000Z",
+      },
+      context: {
+        apiUrl: "https://api.aidenid.com",
+        orgId: "org_test",
+        projectId: "proj_test",
+        idempotencyKey: "idem-squashed",
+      },
+    });
+
+    const stale = await findStaleIdentities({
+      outputRoot,
+      nowIso: "2026-06-01T00:00:00.000Z",
+    });
+    assert.equal(stale.stale.length, 1);
+    assert.equal(stale.stale[0].identityId, "id_stale");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit identity store: tag filter requires all requested tags", () => {
+  const identities = [
+    {
+      identityId: "id_1",
+      metadata: {
+        tags: ["campaign-a", "team-security"],
+      },
+    },
+    {
+      identityId: "id_2",
+      metadata: {
+        tags: ["campaign-a"],
+      },
+    },
+  ];
+  const filtered = filterIdentitiesByTags(identities, ["campaign-a", "team-security"]);
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].identityId, "id_1");
 });

@@ -66,3 +66,4 @@
 - Diff-aware spec regeneration can preserve operator intent without a stored baseline by treating section deltas as manual edits and surfacing explicit add/remove previews before write.
 - Progress/notification signals should be centralized in one reporter and always suppressed under `--quiet` (and JSON mode) to avoid corrupting machine-readable output.
 - Pen-test swarm execution should fail closed on target governance: verified target state, host match, and strict path/method/scenario policy checks are safer defaults than best-effort probing.
+- For file-backed identity registries, do not run per-identity status writes concurrently (`Promise.all`) against the same JSON file; serialize writes (or batch transactionally) to avoid lost updates.

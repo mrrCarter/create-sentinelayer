@@ -2,12 +2,53 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 const REGISTRY_SCHEMA_VERSION = "1.0.0";
+const TERMINAL_IDENTITY_STATUSES = new Set(["SQUASHED"]);
 
 function normalizeString(value) {
   return String(value || "").trim();
 }
 
+function normalizeUpper(value) {
+  return normalizeString(value).toUpperCase();
+}
+
+function normalizeTagList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const unique = new Set();
+  for (const item of value) {
+    const normalized = normalizeString(item);
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+  return [...unique];
+}
+
+function normalizeLegalHoldStatus(value) {
+  const normalized = normalizeUpper(value);
+  if (!normalized) {
+    return "NONE";
+  }
+  if (normalized === "HOLD" || normalized === "NONE" || normalized === "UNKNOWN") {
+    return normalized;
+  }
+  return normalized;
+}
+
+function normalizeMetadata(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...source,
+    tags: normalizeTagList(source.tags),
+    legalHoldStatus: normalizeLegalHoldStatus(source.legalHoldStatus),
+  };
+}
+
 function normalizeIdentityRecord(record = {}) {
+  const metadata = normalizeMetadata(record.metadata);
+  const legalHoldStatus = normalizeLegalHoldStatus(record.legalHoldStatus || metadata.legalHoldStatus);
   return {
     identityId: normalizeString(record.identityId),
     parentIdentityId: normalizeString(record.parentIdentityId) || null,
@@ -20,7 +61,9 @@ function normalizeIdentityRecord(record = {}) {
     lastUpdatedAt: normalizeString(record.lastUpdatedAt) || new Date().toISOString(),
     expiresAt: normalizeString(record.expiresAt) || null,
     revokedAt: normalizeString(record.revokedAt) || null,
-    metadata: record.metadata && typeof record.metadata === "object" ? record.metadata : {},
+    squashedAt: normalizeString(record.squashedAt) || null,
+    legalHoldStatus,
+    metadata,
   };
 }
 
@@ -111,10 +154,13 @@ export async function recordProvisionedIdentity({
     createdAt: nowIso,
     lastUpdatedAt: nowIso,
     expiresAt: response.expiresAt || null,
+    legalHoldStatus: response.legalHoldStatus || context.legalHoldStatus || "NONE",
     metadata: {
       source,
       idempotencyKey: context.idempotencyKey || null,
       eventBudget: context.eventBudget ?? null,
+      tags: normalizeTagList(context.tags || response.tags || []),
+      legalHoldStatus: response.legalHoldStatus || context.legalHoldStatus || "NONE",
     },
   });
 
@@ -147,6 +193,7 @@ export async function updateIdentityStatus({
   identityId,
   status,
   revokedAt = "",
+  squashedAt = "",
   metadataPatch = {},
 } = {}) {
   const normalizedIdentityId = normalizeString(identityId);
@@ -170,6 +217,8 @@ export async function updateIdentityStatus({
     ...existing,
     status: nextStatus,
     revokedAt: normalizeString(revokedAt) || existing.revokedAt || null,
+    squashedAt: normalizeString(squashedAt) || existing.squashedAt || null,
+    legalHoldStatus: metadataPatch?.legalHoldStatus || existing.legalHoldStatus || "NONE",
     lastUpdatedAt: new Date().toISOString(),
     metadata: {
       ...existing.metadata,
@@ -181,5 +230,41 @@ export async function updateIdentityStatus({
   return {
     registryPath,
     identity: saved.identities[index],
+  };
+}
+
+export function filterIdentitiesByTags(identities = [], tags = []) {
+  const requestedTags = normalizeTagList(tags);
+  if (requestedTags.length === 0) {
+    return [...identities];
+  }
+  const required = new Set(requestedTags);
+  return identities.filter((identity) => {
+    const identityTags = normalizeTagList(identity?.metadata?.tags);
+    if (identityTags.length === 0) {
+      return false;
+    }
+    return [...required].every((tag) => identityTags.includes(tag));
+  });
+}
+
+export async function findStaleIdentities({ outputRoot, nowIso = new Date().toISOString() } = {}) {
+  const { registryPath, identities } = await listIdentities({ outputRoot });
+  const nowMs = new Date(nowIso).getTime();
+  const stale = identities.filter((identity) => {
+    const status = normalizeUpper(identity.status);
+    if (TERMINAL_IDENTITY_STATUSES.has(status)) {
+      return false;
+    }
+    const expiresAtMs = new Date(identity.expiresAt || "").getTime();
+    if (!Number.isFinite(expiresAtMs)) {
+      return false;
+    }
+    return expiresAtMs <= nowMs;
+  });
+  return {
+    registryPath,
+    identities,
+    stale,
   };
 }

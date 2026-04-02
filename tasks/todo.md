@@ -49,7 +49,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch H PR 12.3 foundation slice (`sl swarm scenario init|validate` DSL contract + runtime binding).
 - [x] Complete Batch H PR 12.4 foundation slice (`sl swarm dashboard` realtime swarm status snapshots + watch loop).
 - [x] Complete Batch H PR 12.5 foundation slice (`sl swarm report` deterministic execution package).
-- [ ] Start Batch H PR 12.6 security slice (`sl swarm create` pen-test mode + target policy gate + audit log/report bundle).
+- [x] Complete Batch H PR 12.6 security slice (`sl swarm create` pen-test mode + target policy gate + audit log/report bundle).
+- [x] Start Batch H PR 12.7 hardening slice (`sl ai identity audit|kill-all|legal-hold` + swarm audit-chain/identity-isolation controls).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -139,8 +140,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 12.3 scenario DSL. (merged as #82)
 - PR 12.4 realtime swarm dashboard. (merged as #83)
 - PR 12.5 swarm execution report. (merged as #84)
-- PR 12.6 security & pen-test mode. (in progress on `roadmap/pr-12-6-security-pentest-mode`)
-- PR 12.7 swarm identity hardening.
+- PR 12.6 security & pen-test mode. (merged as #85)
+- PR 12.7 swarm identity hardening. (in progress on `roadmap/pr-12-7-swarm-identity-hardening`)
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
 - [ ] Phase 2: add low-latency interactive chat mode with streaming progress UX (AWS/GH CLI style) while preserving deterministic command mode.
@@ -184,17 +185,16 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-12-6-security-pentest-mode` (current)
-2. `roadmap/pr-12-7-swarm-identity-hardening`
-3. `roadmap/pr-13-1-error-event-daemon-worker`
-4. `roadmap/pr-13-2-global-assignment-ledger`
-5. `roadmap/pr-13-3-jira-lifecycle-automation`
-6. `roadmap/pr-13-4-runtime-budget-quarantine`
-7. `roadmap/pr-13-5-operator-control-plane`
-8. `roadmap/pr-13-6-observability-artifact-lineage`
-9. `roadmap/pr-13-7-hybrid-mapping-overlay`
-10. `roadmap/pr-13-8-midnight-reliability-lane`
-11. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-12-7-swarm-identity-hardening` (current)
+2. `roadmap/pr-13-1-error-event-daemon-worker`
+3. `roadmap/pr-13-2-global-assignment-ledger`
+4. `roadmap/pr-13-3-jira-lifecycle-automation`
+5. `roadmap/pr-13-4-runtime-budget-quarantine`
+6. `roadmap/pr-13-5-operator-control-plane`
+7. `roadmap/pr-13-6-observability-artifact-lineage`
+8. `roadmap/pr-13-7-hybrid-mapping-overlay`
+9. `roadmap/pr-13-8-midnight-reliability-lane`
+10. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -369,3 +369,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `npm run verify` (pass, e2e `46/46`; coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=6`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=6`)
+  - PR 12.7 hardening slice local evidence (branch `roadmap/pr-12-7-swarm-identity-hardening`):
+    - `npm run verify` (pass, e2e `76/76`; unit tests `94/94`; coverage statements `89.69%`, branches `71.54%`, functions `97.72%`, lines `89.69%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Fixed deterministic identity-registry persistence by replacing concurrent `kill-all` local updates with serialized status writes (prevents dropped `SQUASHED` transitions).
