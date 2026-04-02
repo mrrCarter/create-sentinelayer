@@ -86,7 +86,9 @@ jobs:
           set -euo pipefail
           version="8.24.2"
           archive="gitleaks_${version}_linux_x64.tar.gz"
+          archive_sha256="fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e"
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" -o "${archive}"
+          printf '%s  %s\n' "${archive_sha256}" "${archive}" | sha256sum --check --status
           tar -xzf "${archive}" gitleaks
           chmod +x gitleaks
           ./gitleaks detect --source . --no-git --redact --exit-code 1 --report-format json --report-path gitleaks-report.json

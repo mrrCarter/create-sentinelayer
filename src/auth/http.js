@@ -47,11 +47,17 @@ function normalizePositiveInteger(rawValue, fallbackValue) {
   return Math.floor(normalized);
 }
 
-function normalizeUnknownError(error) {
+function normalizeUnknownError(error, { timedOut = false, externalAbort = false } = {}) {
   if (error instanceof SentinelayerApiError) {
     return error;
   }
   if (error && typeof error === "object" && error.name === "AbortError") {
+    if (externalAbort && !timedOut) {
+      return new SentinelayerApiError("Request canceled by caller.", {
+        status: 499,
+        code: "CLIENT_ABORTED",
+      });
+    }
     return new SentinelayerApiError("Request timed out.", {
       status: 408,
       code: "TIMEOUT",
@@ -160,6 +166,9 @@ function shouldRetry(error) {
   if (!(error instanceof SentinelayerApiError)) {
     return false;
   }
+  if (String(error.code || "") === "CLIENT_ABORTED") {
+    return false;
+  }
   return RETRYABLE_STATUS_CODES.has(Number(error.status || 0));
 }
 
@@ -220,7 +229,11 @@ export async function requestJson(
 
   for (let attemptIndex = 0; attemptIndex < attempts; attemptIndex += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), normalizedTimeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, normalizedTimeoutMs);
     const activeSignal =
       signal && typeof signal === "object"
         ? AbortSignal.any([controller.signal, signal])
@@ -264,7 +277,13 @@ export async function requestJson(
       resetCircuitBreaker(circuitScope);
       return json;
     } catch (error) {
-      const normalizedError = normalizeUnknownError(error);
+      const normalizedError = normalizeUnknownError(error, {
+        timedOut,
+        externalAbort: Boolean(signal && typeof signal === "object" && signal.aborted),
+      });
+      if (normalizedError.code === "CLIENT_ABORTED") {
+        throw normalizedError;
+      }
       registerCircuitFailure(circuitScope);
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
         await sleep(getRetryDelayMs(attemptIndex, retryBackoffMs, normalizedError.retryAfterMs));

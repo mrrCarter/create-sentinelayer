@@ -68,10 +68,11 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
-function buildIdempotencyKey(seedValue, scope = "auth") {
-  const normalizedSeed = String(seedValue || "").trim();
+function buildIdempotencyKey(_seedValue, scope = "auth") {
   const normalizedScope = String(scope || "auth").trim().toLowerCase();
-  return crypto.createHash("sha256").update(`${normalizedScope}:${normalizedSeed}`).digest("hex").slice(0, 64);
+  const scopePrefix = normalizedScope.replace(/[^a-z0-9-]/g, "").slice(0, 24) || "auth";
+  const entropy = crypto.randomUUID().replace(/-/g, "");
+  return `${scopePrefix}-${entropy}`;
 }
 
 function defaultTokenLabel() {

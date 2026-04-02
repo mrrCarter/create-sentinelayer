@@ -105,3 +105,33 @@ test("Unit auth http: surfaces Retry-After delay metadata on retryable responses
       error.retryAfterMs === 2000
   );
 });
+
+test("Unit auth http: caller abort is non-retryable and returned as CLIENT_ABORTED", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+
+  const controller = new AbortController();
+  controller.abort();
+  let callCount = 0;
+  const fetchImpl = async () => {
+    callCount += 1;
+    const error = new Error("request aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+
+  await assert.rejects(
+    () =>
+      requestJson("https://api.example.com/test", {
+        method: "GET",
+        maxAttempts: 3,
+        retryBackoffMs: 1,
+        signal: controller.signal,
+        fetchImpl,
+      }),
+    (error) =>
+      error instanceof SentinelayerApiError &&
+      error.code === "CLIENT_ABORTED" &&
+      error.status === 499
+  );
+  assert.equal(callCount, 1);
+});

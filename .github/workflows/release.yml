@@ -33,6 +33,7 @@ jobs:
     outputs:
       quality_run_id: ${{ steps.preflight.outputs.quality_run_id }}
       release_artifact_name: ${{ steps.preflight.outputs.release_artifact_name }}
+      publish_enabled: ${{ steps.preflight.outputs.publish_enabled }}
     permissions:
       contents: read
       checks: read
@@ -43,6 +44,8 @@ jobs:
       - name: Validate release preflight gates
         id: preflight
         shell: bash
+        env:
+          DISPATCH_PUBLISH_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.publish || '' }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && ! "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
@@ -50,72 +53,115 @@ jobs:
             exit 1
           fi
 
-          read_success_workflow_run_id() {
+          read_success_workflow_run_ids() {
             local workflow_file="$1"
             local sha="$2"
-            local event_name="$3"
-            local branch_name="$4"
-            local query="/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&event=${event_name}&per_page=20"
-            if [[ -n "${branch_name}" ]]; then
-              query="${query}&branch=${branch_name}"
-            fi
             gh api \
               -H 'Accept: application/vnd.github+json' \
-              "${query}" \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&per_page=50" \
               --jq '.workflow_runs[] | select(.conclusion=="success") | .id' \
+              || true
+          }
+
+          read_success_check_run_id() {
+            local sha="$1"
+            local check_name="$2"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
+              --jq ".check_runs[] | select(.name==\"${check_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
               | head -n 1 || true
           }
 
-          quality_run_id=""
+          quality_check_id=""
           for _ in $(seq 1 18); do
-            quality_run_id="$(read_success_workflow_run_id "quality-gates.yml" "${GITHUB_SHA}" "push" "main")"
+            quality_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Quality Summary")"
+            if [[ -n "${quality_check_id}" && "${quality_check_id}" != "null" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "${quality_check_id}" || "${quality_check_id}" == "null" ]]; then
+            echo "::error::No successful Quality Summary check run found for commit ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          quality_run_id=""
+          release_artifact_name="create-sentinelayer-release-${GITHUB_SHA}"
+          for _ in $(seq 1 18); do
+            while IFS= read -r candidate_run_id; do
+              [[ -z "${candidate_run_id}" || "${candidate_run_id}" == "null" ]] && continue
+              artifact_id="$(gh api \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts" \
+                --jq ".artifacts[] | select(.name==\"${release_artifact_name}\") | .id" | head -n 1 || true)"
+              if [[ -n "${artifact_id}" && "${artifact_id}" != "null" ]]; then
+                quality_run_id="${candidate_run_id}"
+                break
+              fi
+            done < <(read_success_workflow_run_ids "quality-gates.yml" "${GITHUB_SHA}")
             if [[ -n "${quality_run_id}" && "${quality_run_id}" != "null" ]]; then
               break
             fi
             sleep 10
           done
           if [[ -z "${quality_run_id}" || "${quality_run_id}" == "null" ]]; then
-            echo "::error::No successful quality-gates workflow run found for commit ${GITHUB_SHA}."
+            echo "::error::No successful quality-gates workflow run with '${release_artifact_name}' artifact found for commit ${GITHUB_SHA}."
             exit 1
           fi
 
-          pr_head_sha="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-            --jq '.[0].head.sha' 2>/dev/null || true)"
-
-          omar_sha="${GITHUB_SHA}"
-          if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
-            omar_sha="${pr_head_sha}"
-          fi
-
-          omar_run_id=""
+          omar_check_id=""
           for _ in $(seq 1 12); do
-            omar_run_id="$(read_success_workflow_run_id "omar-gate.yml" "${omar_sha}" "pull_request" "")"
-            if [[ -n "${omar_run_id}" && "${omar_run_id}" != "null" ]]; then
+            omar_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Omar Gate")"
+            if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
               break
             fi
             sleep 5
           done
-          if [[ -z "${omar_run_id}" || "${omar_run_id}" == "null" ]]; then
-            echo "::error::No successful Omar Gate workflow run found for commit ${omar_sha}."
+
+          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+            pr_head_sha="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[0].head.sha' 2>/dev/null || true)"
+            if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
+              for _ in $(seq 1 12); do
+                omar_check_id="$(read_success_check_run_id "${pr_head_sha}" "Omar Gate")"
+                if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
+                  break
+                fi
+                sleep 5
+              done
+            fi
+          fi
+          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+            echo "::error::No successful Omar Gate check run found for commit ${GITHUB_SHA} or its linked PR head."
             exit 1
           fi
 
-          release_artifact_name="create-sentinelayer-release-${GITHUB_SHA}"
-          artifact_id="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/actions/runs/${quality_run_id}/artifacts" \
-            --jq ".artifacts[] | select(.name==\"${release_artifact_name}\") | .id" | head -n 1 || true)"
-
-          if [[ -z "${artifact_id}" || "${artifact_id}" == "null" ]]; then
-            echo "::error::Missing release artifact '${release_artifact_name}' in quality run ${quality_run_id}."
-            exit 1
+          publish_enabled="true"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            publish_enabled="false"
+            if [[ "${DISPATCH_PUBLISH_INPUT}" == "true" ]]; then
+              publish_enabled="true"
+            fi
           fi
+
+          {
+            echo "## Release Preflight"
+            echo "- event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- quality_check_id: \`${quality_check_id}\`"
+            echo "- quality_run_id: \`${quality_run_id}\`"
+            echo "- omar_check_id: \`${omar_check_id}\`"
+            echo "- publish_enabled: \`${publish_enabled}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
           echo "quality_run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "release_artifact_name=${release_artifact_name}" >> "${GITHUB_OUTPUT}"
-          echo "Release preflight passed (Quality Summary + Omar Gate/Security Scan + release artifact promotion)."
+          echo "publish_enabled=${publish_enabled}" >> "${GITHUB_OUTPUT}"
+          echo "Release preflight passed (Quality Summary + Omar Gate + promoted release artifact)."
 
   verify:
     name: Release Verify
@@ -245,7 +291,7 @@ jobs:
 
   publish:
     name: Publish To npm
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.quality_preflight.outputs.publish_enabled == 'true' }}
     needs: [verify, omar_release_gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -253,6 +299,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: read
     steps:
       - name: Download verified tarball artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -282,6 +329,18 @@ jobs:
           TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
           test -n "${TARBALL}" || (echo "Missing tarball artifact" && exit 1)
           echo "path=${TARBALL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify build provenance attestation before publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "${{ steps.tarball.outputs.path }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --source-ref "${GITHUB_REF}" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com"
 
       - name: Publish to npm
         run: npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public

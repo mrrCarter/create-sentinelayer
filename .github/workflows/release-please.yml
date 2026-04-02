@@ -28,57 +28,60 @@ jobs:
             exit 1
           fi
 
-          read_success_workflow_run_id() {
-            local workflow_file="$1"
-            local sha="$2"
-            local event_name="$3"
-            local branch_name="$4"
-            local query="/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&event=${event_name}&per_page=20"
-            if [[ -n "${branch_name}" ]]; then
-              query="${query}&branch=${branch_name}"
-            fi
+          read_success_check_run_id() {
+            local sha="$1"
+            local check_name="$2"
             gh api \
               -H 'Accept: application/vnd.github+json' \
-              "${query}" \
-              --jq '.workflow_runs[] | select(.conclusion=="success") | .id' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
+              --jq ".check_runs[] | select(.name==\"${check_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
               | head -n 1 || true
           }
 
-          quality_run_id=""
+          quality_check_id=""
           for _ in $(seq 1 18); do
-            quality_run_id="$(read_success_workflow_run_id "quality-gates.yml" "${GITHUB_SHA}" "push" "main")"
-            if [[ -n "${quality_run_id}" && "${quality_run_id}" != "null" ]]; then
+            quality_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Quality Summary")"
+            if [[ -n "${quality_check_id}" && "${quality_check_id}" != "null" ]]; then
               break
             fi
             sleep 10
           done
-          if [[ -z "${quality_run_id}" || "${quality_run_id}" == "null" ]]; then
-            echo "::error::No successful quality-gates workflow run found for ${GITHUB_SHA}."
+          if [[ -z "${quality_check_id}" || "${quality_check_id}" == "null" ]]; then
+            echo "::error::No successful Quality Summary check run found for commit ${GITHUB_SHA}."
             exit 1
           fi
 
-          pr_head_sha="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-            --jq '.[0].head.sha' 2>/dev/null || true)"
-
-          omar_sha="${GITHUB_SHA}"
-          if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
-            omar_sha="${pr_head_sha}"
-          fi
-
-          omar_run_id=""
+          omar_check_id=""
           for _ in $(seq 1 12); do
-            omar_run_id="$(read_success_workflow_run_id "omar-gate.yml" "${omar_sha}" "pull_request" "")"
-            if [[ -n "${omar_run_id}" && "${omar_run_id}" != "null" ]]; then
+            omar_check_id="$(read_success_check_run_id "${GITHUB_SHA}" "Omar Gate")"
+            if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
               break
             fi
             sleep 5
           done
-          if [[ -z "${omar_run_id}" || "${omar_run_id}" == "null" ]]; then
-            echo "::error::No successful Omar Gate workflow run found for commit ${omar_sha}."
+
+          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+            pr_head_sha="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[0].head.sha' 2>/dev/null || true)"
+            if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
+              for _ in $(seq 1 12); do
+                omar_check_id="$(read_success_check_run_id "${pr_head_sha}" "Omar Gate")"
+                if [[ -n "${omar_check_id}" && "${omar_check_id}" != "null" ]]; then
+                  break
+                fi
+                sleep 5
+              done
+            fi
+          fi
+
+          if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
+            echo "::error::No successful Omar Gate check run found for commit ${GITHUB_SHA} or its linked PR head."
             exit 1
           fi
+
+          echo "Release-please preflight passed with Quality Summary check ${quality_check_id} and Omar Gate check ${omar_check_id}."
 
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
