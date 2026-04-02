@@ -250,6 +250,7 @@ The CLI now includes an audit swarm orchestrator with a built-in 13-agent regist
 - `sl audit performance`
 - `sl audit compliance`
 - `sl audit documentation`
+- `sl audit package --run-id <id>` (or omit `--run-id` to package latest run)
 - `sl audit local` (legacy compatibility path for `/audit`)
 
 Artifacts are written to:
@@ -263,6 +264,9 @@ Artifacts are written to:
 - `.sentinelayer/audits/<run-id>/agents/PERFORMANCE_AGENT_REPORT.md` (performance specialist)
 - `.sentinelayer/audits/<run-id>/agents/COMPLIANCE_AGENT_REPORT.md` (compliance specialist)
 - `.sentinelayer/audits/<run-id>/agents/DOCUMENTATION_AGENT_REPORT.md` (documentation specialist)
+- `.sentinelayer/audits/<run-id>/DD_PACKAGE_MANIFEST.json`
+- `.sentinelayer/audits/<run-id>/DD_FINDINGS_INDEX.json`
+- `.sentinelayer/audits/<run-id>/DD_EXEC_SUMMARY.md`
 
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
@@ -556,6 +560,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer audit performance` runs the performance specialist agent and writes a dedicated `PERFORMANCE_AGENT_REPORT.md`
 - `create-sentinelayer audit compliance` runs the compliance specialist agent and writes a dedicated `COMPLIANCE_AGENT_REPORT.md`
 - `create-sentinelayer audit documentation` runs the documentation specialist agent and writes a dedicated `DOCUMENTATION_AGENT_REPORT.md`
+- `create-sentinelayer audit package [--run-id <id>]` builds/rebuilds unified DD package artifacts from the requested (or latest) run
 - `create-sentinelayer audit local --path <repo>` runs legacy readiness + scan audit and writes `.sentinelayer/reports/audit-*.md`
 - `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
 - `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview

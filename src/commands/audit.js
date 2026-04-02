@@ -4,7 +4,9 @@ import process from "node:process";
 import pc from "picocolors";
 
 import { runAuditOrchestrator } from "../audit/orchestrator.js";
+import { loadAuditRunReport, resolveAuditRunDirectory, writeDdPackage } from "../audit/package.js";
 import { loadAuditRegistry, selectAuditAgents } from "../audit/registry.js";
+import { resolveOutputRoot } from "../config/service.js";
 import { buildLegacyArgs } from "./legacy-args.js";
 
 function shouldEmitJson(options, command) {
@@ -27,6 +29,9 @@ function printAuditSummary(result) {
   console.log(pc.gray(`Run: ${result.runId}`));
   console.log(pc.gray(`Report: ${result.reportMarkdownPath}`));
   console.log(pc.gray(`JSON: ${result.reportJsonPath}`));
+  if (result.ddPackage?.executiveSummaryPath) {
+    console.log(pc.gray(`DD package: ${result.ddPackage.executiveSummaryPath}`));
+  }
   console.log(
     `Summary: P0=${result.summary.P0} P1=${result.summary.P1} P2=${result.summary.P2} P3=${result.summary.P3}`
   );
@@ -81,6 +86,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: result.maxParallel,
         summary: result.summary,
         agentCount: result.agentResults.length,
+        ddPackageManifestPath: result.ddPackage?.manifestPath || "",
+        ddPackageFindingsPath: result.ddPackage?.findingsIndexPath || "",
+        ddPackageSummaryPath: result.ddPackage?.executiveSummaryPath || "",
       };
 
       if (emitJson) {
@@ -91,6 +99,55 @@ export function registerAuditCommand(program, invokeLegacy) {
 
       if (result.summary.blocking) {
         process.exitCode = 2;
+      }
+    });
+
+  audit
+    .command("package")
+    .description("Build or rebuild a unified DD package from an audit run")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--run-id <id>", "Audit run id (defaults to latest run under output root)")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const runDirectory = await resolveAuditRunDirectory({
+        outputRoot,
+        runId: options.runId,
+      });
+      const { report } = await loadAuditRunReport(runDirectory);
+      const ddPackage = await writeDdPackage({
+        report,
+        runDirectory,
+      });
+
+      const payload = {
+        command: "audit package",
+        targetPath,
+        outputRoot,
+        runId: report.runId,
+        runDirectory,
+        reportPath: path.join(runDirectory, "AUDIT_REPORT.md"),
+        reportJsonPath: path.join(runDirectory, "AUDIT_REPORT.json"),
+        ddPackageManifestPath: ddPackage.manifestPath,
+        ddPackageFindingsPath: ddPackage.findingsIndexPath,
+        ddPackageSummaryPath: ddPackage.executiveSummaryPath,
+        findingsIndexCount: ddPackage.findingsIndexCount,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Audit DD package complete"));
+        console.log(pc.gray(`Run: ${payload.runId}`));
+        console.log(pc.gray(`Manifest: ${payload.ddPackageManifestPath}`));
+        console.log(pc.gray(`Summary: ${payload.ddPackageSummaryPath}`));
       }
     });
 
