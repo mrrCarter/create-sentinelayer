@@ -9,6 +9,7 @@ import {
   runLocalReviewScan,
   writeReviewReport,
 } from "../review/local-review.js";
+import { runAiReviewLayer } from "../review/ai-review.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -49,11 +50,24 @@ function resolveModeFromOptions(options = {}, { defaultMode = "full" } = {}) {
 export function registerReviewCommand(program) {
   const review = program
     .command("review")
-    .description("Run layered deterministic local review in full, diff, or staged mode")
+    .description("Run deterministic local review with optional AI reasoning layer")
     .argument("[targetPath]", "Target workspace path", ".")
     .option("--path <path>", "Target workspace path override")
     .option("--diff", "Alias for --mode diff")
     .option("--staged", "Alias for --mode staged")
+    .option("--ai", "Enable AI reasoning layer over deterministic findings")
+    .option("--ai-dry-run", "Run AI layer in dry-run mode (no provider call)")
+    .option("--provider <name>", "AI provider override (openai|anthropic|google)")
+    .option("--model <id>", "AI model override")
+    .option("--api-key <key>", "Optional explicit API key override")
+    .option("--session-id <id>", "AI cost/telemetry session id override")
+    .option("--ai-max-findings <n>", "Max number of structured AI findings", "20")
+    .option("--max-cost <usd>", "Max AI cost budget for this review session", "1.0")
+    .option("--max-tokens <n>", "Max AI output token budget (0 disables)", "0")
+    .option("--max-runtime-ms <n>", "Max AI runtime budget in ms (0 disables)", "0")
+    .option("--max-tool-calls <n>", "Max AI tool-call budget (0 disables)", "0")
+    .option("--max-no-progress <n>", "Max no-progress streak before stop", "3")
+    .option("--warn-at-percent <n>", "Warning threshold percentage for enabled budgets", "80")
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
@@ -72,6 +86,34 @@ export function registerReviewCommand(program) {
         outputDir: options.outputDir,
       });
 
+      let aiLayer = null;
+      if (options.ai) {
+        aiLayer = await runAiReviewLayer({
+          targetPath: deterministic.targetPath,
+          mode: deterministic.mode,
+          runId: deterministic.runId,
+          runDirectory: deterministic.artifacts.runDirectory,
+          deterministic,
+          outputDir: options.outputDir,
+          provider: options.provider,
+          model: options.model,
+          apiKey: options.apiKey,
+          sessionId: options.sessionId,
+          maxFindings: options.aiMaxFindings,
+          maxCostUsd: options.maxCost,
+          maxOutputTokens: options.maxTokens,
+          maxRuntimeMs: options.maxRuntimeMs,
+          maxToolCalls: options.maxToolCalls,
+          maxNoProgress: options.maxNoProgress,
+          warningThresholdPercent: options.warnAtPercent,
+          dryRun: Boolean(options.aiDryRun),
+          env: process.env,
+        });
+      }
+
+      const summary = aiLayer ? aiLayer.combinedSummary : deterministic.summary;
+      const blocking = Boolean(summary.blocking) || Boolean(aiLayer?.budget?.blocking);
+
       const payload = {
         command: "review",
         targetPath: deterministic.targetPath,
@@ -82,11 +124,33 @@ export function registerReviewCommand(program) {
         reportJsonPath: deterministic.artifacts.jsonPath,
         scannedFiles: deterministic.scope.scannedFiles,
         scopedFiles: deterministic.scope.scannedRelativeFiles,
-        p0: deterministic.summary.P0,
-        p1: deterministic.summary.P1,
-        p2: deterministic.summary.P2,
-        p3: deterministic.summary.P3,
-        blocking: deterministic.summary.blocking,
+        p0: summary.P0,
+        p1: summary.P1,
+        p2: summary.P2,
+        p3: summary.P3,
+        blocking,
+        deterministicSummary: deterministic.summary,
+        ai: aiLayer
+          ? {
+              enabled: true,
+              dryRun: aiLayer.dryRun,
+              parser: aiLayer.parser,
+              summary: aiLayer.summary,
+              provider: aiLayer.provider,
+              model: aiLayer.model,
+              findingCount: aiLayer.findings.length,
+              reportPath: aiLayer.artifacts.reportMarkdownPath,
+              reportJsonPath: aiLayer.artifacts.reportJsonPath,
+              promptPath: aiLayer.artifacts.promptPath,
+              usage: aiLayer.usage,
+              pricingFound: aiLayer.pricingFound,
+              budget: aiLayer.budget,
+              cost: aiLayer.cost,
+              telemetry: aiLayer.telemetry,
+            }
+          : {
+              enabled: false,
+            },
       };
 
       if (emitJson) {
@@ -97,15 +161,23 @@ export function registerReviewCommand(program) {
         console.log(pc.gray(`Mode: ${deterministic.mode}`));
         console.log(pc.gray(`Report: ${deterministic.artifacts.markdownPath}`));
         console.log(pc.gray(`JSON: ${deterministic.artifacts.jsonPath}`));
+        if (aiLayer) {
+          console.log(
+            pc.gray(
+              `AI: ${aiLayer.provider}/${aiLayer.model} findings=${aiLayer.findings.length} dry_run=${aiLayer.dryRun ? "yes" : "no"}`
+            )
+          );
+          console.log(pc.gray(`AI report: ${aiLayer.artifacts.reportMarkdownPath}`));
+        }
         console.log(`Files scanned: ${deterministic.scope.scannedFiles}`);
         console.log(
-          `Findings: P0=${deterministic.summary.P0} P1=${deterministic.summary.P1} P2=${deterministic.summary.P2} P3=${deterministic.summary.P3}`
+          `Findings: P0=${summary.P0} P1=${summary.P1} P2=${summary.P2} P3=${summary.P3}`
         );
       }
 
-      if (deterministic.summary.blocking) {
+      if (blocking) {
         if (!emitJson) {
-          console.log(pc.red("Blocking findings detected (P0/P1 > 0)."));
+          console.log(pc.red("Blocking findings detected (P0/P1 > 0 or budget stop)."));
         }
         process.exitCode = 2;
       }

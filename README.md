@@ -184,6 +184,25 @@ For compatibility, lightweight scan mode remains available:
 - `sl review scan --mode full|diff|staged`
 - `.sentinelayer/reports/review-scan-<mode>-<timestamp>.md`
 
+## AI review layers (Phase 9.3 slice)
+
+The `review` command can now add budget-governed AI reasoning on top of deterministic findings:
+
+- `sl review --ai --provider openai --model gpt-5.3-codex`
+- `sl review --ai --ai-dry-run` (no provider call; deterministic synthetic output)
+- `sl review --ai --max-cost 1.0 --max-tokens 0 --max-runtime-ms 0 --max-tool-calls 0`
+
+AI artifacts are persisted in the same run folder:
+
+- `.sentinelayer/reviews/<run-id>/REVIEW_AI_PROMPT.txt`
+- `.sentinelayer/reviews/<run-id>/REVIEW_AI.md`
+- `.sentinelayer/reviews/<run-id>/REVIEW_AI.json`
+
+AI usage, cost, and stop-class telemetry are appended to:
+
+- `.sentinelayer/cost-history.json`
+- `.sentinelayer/observability/run-events.jsonl`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -480,6 +499,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
+- `create-sentinelayer review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings
 - `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
