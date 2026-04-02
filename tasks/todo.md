@@ -94,7 +94,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 4.3 spec binding/version linkage. (merged as #51)
 - PR 5.1 plugin architecture foundation. (merged as #50)
 - PR 5.2 plugin load-order governance. (merged as #55)
-- PR 5.3 custom policy packs.
+- PR 5.3 custom policy packs. (in progress on `roadmap/pr-5-3-policy-pack-runtime`)
 - PR 6.1 MCP server mode schema/registry. (merged as #48)
 - PR 6.2 VS Code bridge scaffolds. (merged as #56)
 

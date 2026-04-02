@@ -22,6 +22,7 @@ import { registerPluginCommand } from "./commands/plugin.js";
 import { registerAiCommand } from "./commands/ai.js";
 import { registerReviewCommand } from "./commands/review.js";
 import { registerChatCommand } from "./commands/chat.js";
+import { registerPolicyCommand } from "./commands/policy.js";
 
 const COMMAND_SET = new Set([
   "init",
@@ -44,6 +45,7 @@ const COMMAND_SET = new Set([
   "ai",
   "review",
   "chat",
+  "policy",
 ]);
 
 function shouldBypassCommander(rawArgs) {
@@ -103,6 +105,7 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
   registerAiCommand(program);
   registerReviewCommand(program);
   registerChatCommand(program);
+  registerPolicyCommand(program);
 
   return program;
 }

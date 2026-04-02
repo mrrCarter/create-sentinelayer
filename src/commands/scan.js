@@ -15,6 +15,10 @@ import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
 import {
+  applyPolicyPackToScanProfile,
+  resolveActivePolicyPack,
+} from "../policy/packs.js";
+import {
   buildSecretSetupInstructions,
   buildSecurityReviewWorkflow,
   DEFAULT_SCAN_WORKFLOW_PATH,
@@ -287,6 +291,10 @@ export function registerScanCommand(program) {
       const hasE2EHint = normalizeE2EHint(options.hasE2eTests);
       const playwrightMode = normalizePlaywrightMode(options.playwrightMode);
       const nonInteractive = Boolean(options.nonInteractive);
+      const activePolicy = await resolveActivePolicyPack({
+        cwd: targetPath,
+        env: process.env,
+      });
 
       const initialProfile = inferScanProfile({
         specMarkdown,
@@ -304,9 +312,10 @@ export function registerScanCommand(program) {
         hasE2ETests: resolvedE2EHint,
         playwrightMode,
       });
+      const appliedProfile = applyPolicyPackToScanProfile(profile, activePolicy.selected);
       const workflowMarkdown = buildSecurityReviewWorkflow({
         secretName: options.secretName,
-        profile,
+        profile: appliedProfile,
       });
 
       await fsp.mkdir(path.dirname(workflowPath), { recursive: true });
@@ -318,7 +327,13 @@ export function registerScanCommand(program) {
         targetPath,
         specPath,
         workflowPath,
-        profile,
+        profile: appliedProfile,
+        policyPack: activePolicy.selected
+          ? {
+              id: activePolicy.selected.id,
+              source: activePolicy.selected.source,
+            }
+          : null,
         instructions,
       };
 
@@ -330,10 +345,17 @@ export function registerScanCommand(program) {
       console.log(pc.bold("Security review workflow generated"));
       console.log(pc.gray(`Spec: ${specPath}`));
       console.log(pc.gray(`Workflow: ${workflowPath}`));
-      console.log(pc.gray(`scan_mode=${profile.scanMode}, severity_gate=${profile.severityGate}`));
       console.log(
-        pc.gray(`playwright_mode=${profile.playwrightMode}, sbom_mode=${profile.sbomMode}`)
+        pc.gray(`scan_mode=${appliedProfile.scanMode}, severity_gate=${appliedProfile.severityGate}`)
       );
+      console.log(
+        pc.gray(
+          `playwright_mode=${appliedProfile.playwrightMode}, sbom_mode=${appliedProfile.sbomMode}`
+        )
+      );
+      if (activePolicy.selected) {
+        console.log(pc.gray(`policy_pack=${activePolicy.selected.id} (${activePolicy.selected.source})`));
+      }
       instructions.forEach((line) => console.log(line));
     });
 
@@ -369,11 +391,16 @@ export function registerScanCommand(program) {
 
       const specMarkdown = await fsp.readFile(specPath, "utf-8");
       const workflowMarkdown = await fsp.readFile(workflowPath, "utf-8");
-      const expectedProfile = inferScanProfile({
+      const activePolicy = await resolveActivePolicyPack({
+        cwd: targetPath,
+        env: process.env,
+      });
+      const inferredProfile = inferScanProfile({
         specMarkdown,
         hasE2ETests: normalizeE2EHint(options.hasE2eTests),
         playwrightMode: normalizePlaywrightMode(options.playwrightMode),
       });
+      const expectedProfile = applyPolicyPackToScanProfile(inferredProfile, activePolicy.selected);
 
       const validation = validateSecurityReviewWorkflow({
         workflowMarkdown,
@@ -390,6 +417,12 @@ export function registerScanCommand(program) {
         expected: validation.expected,
         actual: validation.actual,
         mismatches: validation.mismatches,
+        policyPack: activePolicy.selected
+          ? {
+              id: activePolicy.selected.id,
+              source: activePolicy.selected.source,
+            }
+          : null,
       };
 
       if (shouldEmitJson(options, command)) {
@@ -444,11 +477,18 @@ export function registerScanCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const specPath = resolveSpecPath(targetPath, options.specFile);
       const specMarkdown = await fsp.readFile(specPath, "utf-8");
-      const profile = inferScanProfile({
-        specMarkdown,
-        hasE2ETests: normalizeE2EHint(options.hasE2eTests),
-        playwrightMode: normalizePlaywrightMode(options.playwrightMode),
+      const activePolicy = await resolveActivePolicyPack({
+        cwd: targetPath,
+        env: process.env,
       });
+      const profile = applyPolicyPackToScanProfile(
+        inferScanProfile({
+          specMarkdown,
+          hasE2ETests: normalizeE2EHint(options.hasE2eTests),
+          playwrightMode: normalizePlaywrightMode(options.playwrightMode),
+        }),
+        activePolicy.selected
+      );
 
       const config = await loadConfig({ cwd: targetPath });
       const resolvedProvider = resolveProvider({
@@ -621,6 +661,12 @@ export function registerScanCommand(program) {
         specPath,
         reportPath,
         profile,
+        policyPack: activePolicy.selected
+          ? {
+              id: activePolicy.selected.id,
+              source: activePolicy.selected.source,
+            }
+          : null,
         ai: {
           provider: response.provider,
           model: response.model,
