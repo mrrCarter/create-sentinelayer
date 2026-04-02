@@ -2395,6 +2395,42 @@ test("CLI audit performance runs specialist agent and emits dedicated performanc
   }
 });
 
+test("CLI audit compliance runs specialist agent and emits dedicated compliance report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-compliance-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "compliance"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "src", "compliance", "controls.js"),
+      "export const policy = { retentionDays: 90, audit: true };\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "compliance", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit compliance");
+    assert.match(String(payload.complianceAgentPath || ""), /[\\/]compliance\.json$/);
+    assert.match(
+      String(payload.complianceSpecialistReportPath || ""),
+      /[\\/]COMPLIANCE_AGENT_REPORT\.md$/
+    );
+
+    const complianceAgent = JSON.parse(await readFile(payload.complianceAgentPath, "utf-8"));
+    assert.equal(complianceAgent.agentId, "compliance");
+    assert.equal(Array.isArray(complianceAgent.findings), true);
+
+    const complianceMarkdown = await readFile(payload.complianceSpecialistReportPath, "utf-8");
+    assert.match(complianceMarkdown, /COMPLIANCE_AGENT_REPORT/);
+    assert.match(complianceMarkdown, /Control mapping:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {
