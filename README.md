@@ -317,6 +317,8 @@ The CLI now includes an `sl ai` surface for AIdenID identity provisioning:
 - `sl ai identity create-child <parent-identity-id> --event-budget 25 --execute --api-key <key> --org-id <id> --project-id <id>`
 - `sl ai identity lineage <identity-id> --json`
 - `sl ai identity revoke-children <parent-identity-id> --execute --api-key <key> --org-id <id> --project-id <id>`
+- `sl ai identity domain create|verify|freeze ...` (domain proof + freeze lifecycle controls)
+- `sl ai identity target create|verify|show ...` (managed target policy/proof controls)
 - `sl ai identity events <identity-id> --json` (list inbound events with cursor/limit support)
 - `sl ai identity latest <identity-id> --json` (latest event + extraction metadata)
 - `sl ai identity wait-for-otp <identity-id> --min-confidence 0.8 --timeout 60 --json`
@@ -592,6 +594,8 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - `create-sentinelayer ai identity list|show|revoke|create-child|lineage|revoke-children` manages local identity lifecycle and lineage workflows
+- `create-sentinelayer ai identity domain create|verify|freeze` manages domain proof registration and containment controls
+- `create-sentinelayer ai identity target create|verify|show` manages target policy registration and verification controls
 - `create-sentinelayer ai identity events|latest|wait-for-otp` manages extraction/event polling for OTP and verification-link retrieval
 - `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`

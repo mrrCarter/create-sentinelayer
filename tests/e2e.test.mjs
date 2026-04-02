@@ -162,16 +162,22 @@ async function startAidenIdMockApi({
     revokeCount: 0,
     childCreateCount: 0,
     revokeChildrenCount: 0,
+    domainCreateCount: 0,
+    targetCreateCount: 0,
     latestExtractionPollCount: 0,
     lastHeaders: {},
     lastPayload: null,
     lastRevokeIdentityId: "",
     lastParentIdentityId: "",
+    lastDomainId: "",
+    lastTargetId: "",
     lastEventsIdentityId: "",
     lastLatestIdentityId: "",
     events: defaultEvents,
     latestExtractionResponses: defaultLatestExtractionResponses,
     childIdentities: [],
+    domains: [],
+    targets: [],
   };
 
   const server = createServer(async (req, res) => {
@@ -319,6 +325,172 @@ async function startAidenIdMockApi({
           revokedCount: revokedIdentityIds.length,
           revokedIdentityIds,
         });
+      }
+
+      if (req.method === "POST" && pathname === "/v1/domains") {
+        state.domainCreateCount += 1;
+        state.lastHeaders = { ...req.headers };
+        const payload = await readJsonBody(req);
+        const domainId = `dom_${state.domainCreateCount}`;
+        state.lastDomainId = domainId;
+        const challengeValue =
+          String(payload?.challengeValue || "").trim() || `aidenid-domain-challenge-${state.domainCreateCount}`;
+        const domain = {
+          id: domainId,
+          projectId: "proj_test",
+          domainName: String(payload?.domainName || `domain-${state.domainCreateCount}.local`),
+          verificationStatus: "PENDING",
+          trustClass: String(payload?.trustClass || "BYOD"),
+          freezeStatus: "ACTIVE",
+          verificationMethod: String(payload?.verificationMethod || "DNS_TXT"),
+          reviewerOverride: false,
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-01T00:00:00.000Z",
+        };
+        state.domains.push({ ...domain, challengeValue });
+        return jsonResponse(res, 200, {
+          domain,
+          proofId: `proof_${domainId}`,
+          challengeValue,
+          proofStatus: "PENDING",
+          proofExpiresAt: "2026-05-02T00:00:00.000Z",
+        });
+      }
+
+      const verifyDomainMatch = pathname.match(/^\/v1\/domains\/([^/]+)\/verify$/);
+      if (req.method === "POST" && verifyDomainMatch) {
+        const domainId = decodeURIComponent(verifyDomainMatch[1] || "");
+        state.lastDomainId = domainId;
+        state.lastHeaders = { ...req.headers };
+        const payload = await readJsonBody(req);
+        const domainIndex = state.domains.findIndex((item) => item.id === domainId);
+        if (domainIndex < 0) {
+          return jsonResponse(res, 404, { error: { code: "NOT_FOUND", message: "Domain not found" } });
+        }
+        const domain = {
+          ...state.domains[domainIndex],
+          verificationStatus: "VERIFIED",
+          updatedAt: "2026-05-01T00:00:00.000Z",
+        };
+        state.domains[domainIndex] = domain;
+        return jsonResponse(res, 200, {
+          domain: {
+            ...domain,
+          },
+          proofId: `proof_${domainId}`,
+          challengeValue: String(payload?.challengeValue || domain.challengeValue),
+          proofStatus: "VERIFIED",
+          proofExpiresAt: "2026-05-02T00:00:00.000Z",
+        });
+      }
+
+      const freezeDomainMatch = pathname.match(/^\/v1\/domains\/([^/]+)\/freeze$/);
+      if (req.method === "POST" && freezeDomainMatch) {
+        const domainId = decodeURIComponent(freezeDomainMatch[1] || "");
+        state.lastDomainId = domainId;
+        state.lastHeaders = { ...req.headers };
+        const domainIndex = state.domains.findIndex((item) => item.id === domainId);
+        if (domainIndex < 0) {
+          return jsonResponse(res, 404, { error: { code: "NOT_FOUND", message: "Domain not found" } });
+        }
+        const domain = {
+          ...state.domains[domainIndex],
+          freezeStatus: "FROZEN",
+          updatedAt: "2026-05-01T00:00:00.000Z",
+        };
+        state.domains[domainIndex] = domain;
+        for (const target of state.targets) {
+          if (target.domainId === domainId) {
+            target.freezeStatus = "FROZEN";
+            target.status = "INACTIVE";
+          }
+        }
+        return jsonResponse(res, 200, domain);
+      }
+
+      if (req.method === "POST" && pathname === "/v1/targets") {
+        state.targetCreateCount += 1;
+        state.lastHeaders = { ...req.headers };
+        const payload = await readJsonBody(req);
+        const targetId = `tgt_${state.targetCreateCount}`;
+        state.lastTargetId = targetId;
+        const challengeValue = `aidenid-target-challenge-${state.targetCreateCount}`;
+        const target = {
+          id: targetId,
+          projectId: "proj_test",
+          domainId: String(payload?.domainId || "").trim() || null,
+          host: String(payload?.host || `target-${state.targetCreateCount}.local`),
+          verificationStatus: "PENDING",
+          status: "PENDING",
+          freezeStatus: "ACTIVE",
+          maintenanceWindow:
+            payload?.maintenanceWindow && typeof payload.maintenanceWindow === "object"
+              ? payload.maintenanceWindow
+              : {},
+          contact: payload?.contact && typeof payload.contact === "object" ? payload.contact : {},
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-01T00:00:00.000Z",
+          policy: {
+            allowedPaths: Array.isArray(payload?.policy?.allowedPaths) ? payload.policy.allowedPaths : ["/"],
+            allowedMethods: Array.isArray(payload?.policy?.allowedMethods)
+              ? payload.policy.allowedMethods
+              : ["GET"],
+            allowedScenarios: Array.isArray(payload?.policy?.allowedScenarios)
+              ? payload.policy.allowedScenarios
+              : ["form_boundary_fuzz"],
+            maxRps: Number(payload?.policy?.maxRps || 5),
+            maxConcurrency: Number(payload?.policy?.maxConcurrency || 5),
+            stopConditions:
+              payload?.policy?.stopConditions && typeof payload.policy.stopConditions === "object"
+                ? payload.policy.stopConditions
+                : {},
+          },
+        };
+        state.targets.push({ ...target, challengeValue });
+        return jsonResponse(res, 200, {
+          target,
+          proofId: `proof_${targetId}`,
+          challengeValue,
+          proofStatus: "PENDING",
+          proofExpiresAt: "2026-05-02T00:00:00.000Z",
+        });
+      }
+
+      const verifyTargetMatch = pathname.match(/^\/v1\/targets\/([^/]+)\/verify$/);
+      if (req.method === "POST" && verifyTargetMatch) {
+        const targetId = decodeURIComponent(verifyTargetMatch[1] || "");
+        state.lastTargetId = targetId;
+        state.lastHeaders = { ...req.headers };
+        const payload = await readJsonBody(req);
+        const targetIndex = state.targets.findIndex((item) => item.id === targetId);
+        if (targetIndex < 0) {
+          return jsonResponse(res, 404, { error: { code: "NOT_FOUND", message: "Target not found" } });
+        }
+        const target = {
+          ...state.targets[targetIndex],
+          verificationStatus: "VERIFIED",
+          status: "VERIFIED",
+          updatedAt: "2026-05-01T00:00:00.000Z",
+        };
+        state.targets[targetIndex] = target;
+        return jsonResponse(res, 200, {
+          target,
+          proofId: `proof_${targetId}`,
+          challengeValue: String(payload?.challengeValue || target.challengeValue),
+          proofStatus: "VERIFIED",
+          proofExpiresAt: "2026-05-02T00:00:00.000Z",
+        });
+      }
+
+      const getTargetMatch = pathname.match(/^\/v1\/targets\/([^/]+)$/);
+      if (req.method === "GET" && getTargetMatch) {
+        const targetId = decodeURIComponent(getTargetMatch[1] || "");
+        state.lastTargetId = targetId;
+        const target = state.targets.find((item) => item.id === targetId) || null;
+        if (!target) {
+          return jsonResponse(res, 404, { error: { code: "NOT_FOUND", message: "Target not found" } });
+        }
+        return jsonResponse(res, 200, target);
       }
 
       return jsonResponse(res, 404, {
@@ -3057,6 +3229,201 @@ test("CLI ai identity create-child, lineage, and revoke-children manage delegate
     const childShowPayload = JSON.parse(String(childShow.stdout || "").trim());
     assert.equal(childShowPayload.identity.parentIdentityId, parentIdentityId);
     assert.equal(childShowPayload.identity.status, "SQUASHED");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity domain/target governance commands manage proofs and registry context", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const createDomain = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "domain",
+        "create",
+        "swarm.customer.local",
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(createDomain.code, 0, createDomain.stderr || createDomain.stdout);
+    const createDomainPayload = JSON.parse(String(createDomain.stdout || "").trim());
+    assert.equal(createDomainPayload.command, "ai identity domain create");
+    const domainId = String(createDomainPayload.domain?.id || "");
+    assert.equal(domainId.length > 0, true);
+    assert.equal(createDomainPayload.proof.proofStatus, "PENDING");
+
+    const verifyDomain = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "domain",
+        "verify",
+        domainId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(verifyDomain.code, 0, verifyDomain.stderr || verifyDomain.stdout);
+    const verifyDomainPayload = JSON.parse(String(verifyDomain.stdout || "").trim());
+    assert.equal(verifyDomainPayload.domain.verificationStatus, "VERIFIED");
+
+    const createTarget = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "target",
+        "create",
+        "api.swarm.customer.local",
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--domain-id",
+        domainId,
+        "--allowed-paths",
+        "/auth/*,/signup",
+        "--allowed-methods",
+        "POST,GET",
+        "--allowed-scenarios",
+        "signup_burst,json_schema_fuzz",
+        "--max-rps",
+        "25",
+        "--max-concurrency",
+        "10",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(createTarget.code, 0, createTarget.stderr || createTarget.stdout);
+    const createTargetPayload = JSON.parse(String(createTarget.stdout || "").trim());
+    assert.equal(createTargetPayload.command, "ai identity target create");
+    const targetId = String(createTargetPayload.target?.id || "");
+    assert.equal(targetId.length > 0, true);
+    assert.equal(createTargetPayload.proof.proofStatus, "PENDING");
+
+    const verifyTarget = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "target",
+        "verify",
+        targetId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(verifyTarget.code, 0, verifyTarget.stderr || verifyTarget.stdout);
+    const verifyTargetPayload = JSON.parse(String(verifyTarget.stdout || "").trim());
+    assert.equal(verifyTargetPayload.target.verificationStatus, "VERIFIED");
+
+    const showTarget = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "target",
+        "show",
+        targetId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--json",
+      ],
+    });
+    assert.equal(showTarget.code, 0, showTarget.stderr || showTarget.stdout);
+    const showTargetPayload = JSON.parse(String(showTarget.stdout || "").trim());
+    assert.equal(showTargetPayload.command, "ai identity target show");
+    assert.equal(showTargetPayload.target.id, targetId);
+    assert.equal(showTargetPayload.target.status, "VERIFIED");
+
+    const freezeDomain = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "domain",
+        "freeze",
+        domainId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--reason",
+        "incident containment",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(freezeDomain.code, 0, freezeDomain.stderr || freezeDomain.stdout);
+    const freezeDomainPayload = JSON.parse(String(freezeDomain.stdout || "").trim());
+    assert.equal(freezeDomainPayload.command, "ai identity domain freeze");
+    assert.equal(freezeDomainPayload.domain.freezeStatus, "FROZEN");
+    assert.equal(mock.state.lastDomainId, domainId);
+    assert.equal(mock.state.lastTargetId, targetId);
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
