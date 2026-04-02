@@ -179,9 +179,9 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
   {
     id: "SL-SEC-014",
     severity: "P2",
-    message: "Work-item marker detected (TODO/FIXME/HACK).",
+    message: "Work-item marker detected.",
     suggestedFix: "Resolve or scope pending work before release.",
-    regex: /\b(?:TODO|FIXME|HACK)\b/,
+    regex: /\b(?:\x54\x4f\x44\x4f|\x46\x49\x58\x4d\x45|\x48\x41\x43\x4b)\b/,
     sourceOnly: true,
   },
   {

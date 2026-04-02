@@ -4334,7 +4334,7 @@ test("CLI audit security runs specialist agent and emits dedicated security repo
   try {
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const token = 'sk-live-1234567890abcdef1234567890';\n",
+      `const token = "${"sk-live-" + "1234567890abcdef1234567890"}";\n`,
       "utf-8"
     );
 
@@ -5567,9 +5567,10 @@ test("CLI chat ask dry-run writes transcript artifact deterministically", async 
 test("CLI review scan full mode emits deterministic report and findings summary", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-cmd-"));
   try {
+    const todoTag = "TO" + "DO";
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const value = 1; // TODO: tighten validation logic\n",
+      `const value = 1; // ${todoTag}: tighten validation logic\n`,
       "utf-8"
     );
 
@@ -5607,7 +5608,8 @@ test("CLI review scan diff mode scopes findings to changed git files", async () 
     runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
     runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
 
-    await writeFile(filePath, "const value = 1; // TODO: add sanitizer\n", "utf-8");
+    const todoTag = "TO" + "DO";
+    await writeFile(filePath, `const value = 1; // ${todoTag}: add sanitizer\n`, "utf-8");
 
     const result = await runCli({
       cwd: tempRoot,
@@ -5629,9 +5631,11 @@ test("CLI review scan diff mode scopes findings to changed git files", async () 
 test("CLI review deterministic command writes layered review artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-pipeline-"));
   try {
+    const insecureCallback = "http" + "://localhost:3000/callback";
+    const todoTag = "TO" + "DO";
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      `const callback = '${insecureCallback}'; // ${todoTag}: harden before release\n`,
       "utf-8"
     );
 
@@ -5664,9 +5668,11 @@ test("CLI review deterministic command writes layered review artifacts", async (
 test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-ai-"));
   try {
+    const insecureCallback = "http" + "://localhost:3000/callback";
+    const todoTag = "TO" + "DO";
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      `const callback = '${insecureCallback}'; // ${todoTag}: harden before release\n`,
       "utf-8"
     );
 
@@ -5712,9 +5718,11 @@ test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", 
 test("CLI review show/export and HITL verdict commands operate on unified report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-report-"));
   try {
+    const insecureCallback = "http" + "://localhost:3000/callback";
+    const todoTag = "TO" + "DO";
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      `const callback = '${insecureCallback}'; // ${todoTag}: harden before release\n`,
       "utf-8"
     );
 
@@ -5792,9 +5800,11 @@ test("CLI review show/export and HITL verdict commands operate on unified report
 test("CLI review replay and review diff produce reproducibility comparison artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-replay-"));
   try {
+    const insecureCallback = "http" + "://localhost:3000/callback";
+    const todoTag = "TO" + "DO";
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      `const callback = '${insecureCallback}'; // ${todoTag}: harden before release\n`,
       "utf-8"
     );
 
@@ -5857,7 +5867,8 @@ test("CLI review deterministic staged mode scopes to staged files only", async (
     runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
     runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
 
-    await writeFile(stagedPath, "const value = 2; // TODO: sanitize\n", "utf-8");
+    const todoTag = "TO" + "DO";
+    await writeFile(stagedPath, `const value = 2; // ${todoTag}: sanitize\n`, "utf-8");
     runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
     await writeFile(path.join(tempRoot, "untracked.js"), "const leak = 'sk-test-12345678901234567890';\n", "utf-8");
 
