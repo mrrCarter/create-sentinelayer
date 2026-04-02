@@ -1,0 +1,14 @@
+# Global default owner
+* @mrrCarter
+
+# Security-sensitive domains
+/src/auth/ @mrrCarter
+/src/mcp/ @mrrCarter
+/src/daemon/ @mrrCarter
+/src/commands/daemon.js @mrrCarter
+
+# CI and release controls
+/.github/workflows/ @mrrCarter
+/.github/instructions/ @mrrCarter
+/AGENTS.md @mrrCarter
+/CLAUDE.md @mrrCarter
