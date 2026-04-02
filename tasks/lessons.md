@@ -83,3 +83,4 @@
 - Coverage breadth expansion needs a curated include set: raising include count blindly can drop branch thresholds below gate; expand in batches and keep each batch reproducibly above floor.
 - When coverage thresholds are tight, validate the exact `c8` include set with full `npm run verify` before pushing so Omar loop iterations are spent on findings, not preventable CI coverage failures.
 - Command-surface regressions are best caught with registration-contract tests (subcommand tree + option flags) plus lightweight parse-level guardrail tests that fail before network/file side effects.
+- For security-critical modules, JSDoc should focus on precedence rules, token/credential handling, and failure semantics so reviewers can verify guardrails without reverse-engineering implementation details.

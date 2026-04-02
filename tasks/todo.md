@@ -189,6 +189,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 101 coverage instrumentation expansion + daemon/auth/swarm runtime test additions.
 - [x] PR 102 command unit-test layer for high-risk command modules.
 
+### Batch M - Documentation and Governance Follow-Through (2026-04-02 audit)
+- [x] PR 103 JSDoc coverage for high-risk auth/ai/mcp/cost modules.
+- [ ] PR 104 dependabot + issue templates.
+- [ ] PR 105 todo sync + release tag validation.
+
 ## Execution Board (2026-04-02)
 
 ### Omar Gate Loop (required on every PR)
@@ -204,10 +209,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-102-command-unit-tests` (current)
-2. `roadmap/pr-103-jsdoc-high-risk`
-3. `roadmap/pr-104-dependabot-templates`
-4. `roadmap/pr-105-todo-sync-release-tag`
+1. `roadmap/pr-103-jsdoc-high-risk` (current)
+2. `roadmap/pr-104-dependabot-templates`
+3. `roadmap/pr-105-todo-sync-release-tag`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -434,3 +438,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Added high-risk command contract tests for `ai`, `daemon`, `scan`, `review`, and `swarm` plus guardrail validation error coverage for conflicting flags and invalid inputs.
+
+  - PR 103 (high-risk JSDoc coverage) local evidence (branch `roadmap/pr-103-jsdoc-high-risk`):
+    - `npm run verify` (pass, e2e `84/84`; unit tests `134/134`; coverage statements `90.12%`, branches `70.08%`, functions `91.30%`, lines `90.12%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added API-surface JSDoc for high-risk modules: `auth/http`, `auth/service`, `auth/session-store`, `ai/client`, `mcp/registry`, `cost/budget`, and `cost/tracker`.

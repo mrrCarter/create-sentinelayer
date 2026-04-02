@@ -1,5 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
+/**
+ * Default timeout applied to Sentinelayer API requests when no override is provided.
+ * @type {number}
+ */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 
 function normalizeApiError(errorPayload = {}) {
@@ -18,6 +22,10 @@ function normalizeApiError(errorPayload = {}) {
 }
 
 export class SentinelayerApiError extends Error {
+  /**
+   * @param {string} message
+   * @param {{ status?: number, code?: string, requestId?: string | null }} [options]
+   */
   constructor(message, { status = 500, code = "UNKNOWN", requestId = null } = {}) {
     super(String(message || "Sentinelayer API error"));
     this.name = "SentinelayerApiError";
@@ -27,6 +35,19 @@ export class SentinelayerApiError extends Error {
   }
 }
 
+/**
+ * Execute an HTTP request against the Sentinelayer API and parse a JSON response.
+ * Throws `SentinelayerApiError` for transport errors, timeouts, API failures, and invalid JSON.
+ *
+ * @param {string} url
+ * @param {{
+ *   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+ *   headers?: Record<string, string>,
+ *   body?: unknown,
+ *   timeoutMs?: number
+ * }} [options]
+ * @returns {Promise<any>}
+ */
 export async function requestJson(
   url,
   { method = "GET", headers = {}, body, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}

@@ -41,6 +41,17 @@ function roundUsd(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
+/**
+ * Estimate cost in USD from token counts and per-million pricing inputs.
+ *
+ * @param {{
+ *   inputTokens?: number,
+ *   outputTokens?: number,
+ *   inputPerMillionUsd?: number,
+ *   outputPerMillionUsd?: number
+ * }} [options]
+ * @returns {number}
+ */
 export function estimateCostUsd({
   inputTokens = 0,
   outputTokens = 0,
@@ -58,6 +69,17 @@ export function estimateCostUsd({
   return roundUsd(inputCost + outputCost);
 }
 
+/**
+ * Estimate cost in USD using a named model pricing table entry.
+ *
+ * @param {{
+ *   modelId: string,
+ *   inputTokens?: number,
+ *   outputTokens?: number,
+ *   pricingTable?: Record<string, { inputPerMillionUsd: number, outputPerMillionUsd: number }>
+ * }} [options]
+ * @returns {number}
+ */
 export function estimateModelCost({
   modelId,
   inputTokens = 0,
@@ -82,6 +104,12 @@ export function estimateModelCost({
   });
 }
 
+/**
+ * Aggregate usage rows into a single token and cost summary.
+ *
+ * @param {Array<{ inputTokens?: number, outputTokens?: number, costUsd?: number }>} [entries]
+ * @returns {{ inputTokens: number, outputTokens: number, costUsd: number }}
+ */
 export function rollupUsage(entries = []) {
   if (!Array.isArray(entries)) {
     throw new Error("entries must be an array.");
@@ -109,6 +137,12 @@ export function rollupUsage(entries = []) {
   };
 }
 
+/**
+ * Evaluate whether cumulative cost has exceeded a configured budget.
+ *
+ * @param {{ totalCostUsd?: number, budgetUsd?: number }} [options]
+ * @returns {{ budgetUsd: number, totalCostUsd: number, remainingUsd: number, exceeded: boolean }}
+ */
 export function enforceCostBudget({ totalCostUsd = 0, budgetUsd = 0 } = {}) {
   const normalizedTotal = normalizeUsd(totalCostUsd, "totalCostUsd");
   const normalizedBudget = normalizeUsd(budgetUsd, "budgetUsd");
@@ -122,6 +156,11 @@ export function enforceCostBudget({ totalCostUsd = 0, budgetUsd = 0 } = {}) {
   };
 }
 
+/**
+ * Return the built-in model pricing catalog for diagnostics and UI display.
+ *
+ * @returns {Array<{ modelId: string, inputPerMillionUsd: number, outputPerMillionUsd: number }>}
+ */
 export function listKnownModelPricing() {
   return Object.entries(DEFAULT_MODEL_PRICING).map(([modelId, pricing]) => ({
     modelId,

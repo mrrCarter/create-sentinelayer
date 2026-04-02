@@ -59,6 +59,45 @@ function collectLimitStatusWithThreshold({
   }
 }
 
+/**
+ * Evaluate runtime/cost/token/tool/no-progress budgets and return deterministic stop/warning signals.
+ *
+ * @param {{
+ *   sessionSummary?: {
+ *     costUsd?: number,
+ *     outputTokens?: number,
+ *     noProgressStreak?: number,
+ *     durationMs?: number,
+ *     toolCalls?: number
+ *   },
+ *   maxCostUsd?: number,
+ *   maxOutputTokens?: number,
+ *   maxNoProgress?: number,
+ *   maxRuntimeMs?: number,
+ *   maxToolCalls?: number,
+ *   warningThresholdPercent?: number
+ * }} [options]
+ * @returns {{
+ *   blocking: boolean,
+ *   warnings: Array<{ code: string, message: string }>,
+ *   reasons: Array<{ code: string, message: string }>,
+ *   limits: {
+ *     maxCostUsd: number,
+ *     maxOutputTokens: number,
+ *     maxNoProgress: number,
+ *     maxRuntimeMs: number,
+ *     maxToolCalls: number,
+ *     warningThresholdPercent: number
+ *   },
+ *   usage: {
+ *     costUsd: number,
+ *     outputTokens: number,
+ *     noProgressStreak: number,
+ *     runtimeMs: number,
+ *     toolCalls: number
+ *   }
+ * }}
+ */
 export function evaluateBudget({
   sessionSummary = {},
   maxCostUsd = 1.0,

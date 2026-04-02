@@ -266,6 +266,12 @@ async function parseErrorBody(response) {
   }
 }
 
+/**
+ * Infer provider from available API-key environment variables.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {("openai" | "anthropic" | "google" | null)}
+ */
 export function detectProviderFromEnv(env = process.env) {
   for (const provider of SUPPORTED_PROVIDERS) {
     const envVar = PROVIDER_ENV_KEYS[provider];
@@ -277,6 +283,12 @@ export function detectProviderFromEnv(env = process.env) {
   return null;
 }
 
+/**
+ * Resolve provider precedence: explicit -> config -> environment -> default.
+ *
+ * @param {{ provider?: string, configProvider?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {"openai" | "anthropic" | "google"}
+ */
 export function resolveProvider({ provider, configProvider, env = process.env } = {}) {
   const explicit = normalizeProvider(provider);
   if (explicit) {
@@ -296,6 +308,12 @@ export function resolveProvider({ provider, configProvider, env = process.env } 
   return "openai";
 }
 
+/**
+ * Resolve model precedence for a provider: explicit -> config -> provider default.
+ *
+ * @param {{ provider?: string, model?: string, configModel?: string }} [options]
+ * @returns {string}
+ */
 export function resolveModel({ provider, model, configModel } = {}) {
   const normalizedProvider = resolveProvider({ provider });
   const explicit = String(model || "").trim();
@@ -309,6 +327,12 @@ export function resolveModel({ provider, model, configModel } = {}) {
   return DEFAULT_MODELS[normalizedProvider];
 }
 
+/**
+ * Resolve provider API key precedence: explicit -> provider-specific environment variable.
+ *
+ * @param {{ provider?: string, explicitApiKey?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {string}
+ */
 export function resolveApiKey({ provider, explicitApiKey, env = process.env } = {}) {
   const normalizedProvider = resolveProvider({ provider, env });
   const explicit = String(explicitApiKey || "").trim();
@@ -325,7 +349,18 @@ export function resolveApiKey({ provider, explicitApiKey, env = process.env } = 
   return value;
 }
 
+/**
+ * Lightweight multi-provider text-generation client with retry, timeout, and streaming support.
+ */
 export class MultiProviderApiClient {
+  /**
+   * @param {{
+   *   fetchImpl?: typeof fetch,
+   *   maxRetries?: number,
+   *   baseDelayMs?: number,
+   *   requestTimeoutMs?: number
+   * }} [options]
+   */
   constructor({
     fetchImpl = fetch,
     maxRetries = 2,
@@ -341,6 +376,20 @@ export class MultiProviderApiClient {
     this.requestTimeoutMs = Math.max(1000, Number(requestTimeoutMs || 0));
   }
 
+  /**
+   * Invoke an LLM request for the selected provider/model and return normalized text output.
+   *
+   * @param {{
+   *   provider?: string,
+   *   model?: string,
+   *   prompt?: string,
+   *   stream?: boolean,
+   *   apiKey?: string,
+   *   env?: NodeJS.ProcessEnv,
+   *   onChunk?: (chunk: string) => void
+   * }} [options]
+   * @returns {Promise<{ provider: string, model: string, text: string }>}
+   */
   async invoke({
     provider,
     model,
@@ -438,10 +487,21 @@ export class MultiProviderApiClient {
   }
 }
 
+/**
+ * Factory helper for `MultiProviderApiClient`.
+ *
+ * @param {ConstructorParameters<typeof MultiProviderApiClient>[0]} [options]
+ * @returns {MultiProviderApiClient}
+ */
 export function createMultiProviderApiClient(options = {}) {
   return new MultiProviderApiClient(options);
 }
 
+/**
+ * List provider identifiers currently supported by the client.
+ *
+ * @returns {string[]}
+ */
 export function listSupportedProviders() {
   return [...SUPPORTED_PROVIDERS];
 }
