@@ -8,8 +8,10 @@ import { resolveOutputRoot } from "../config/service.js";
 
 export const MCP_TOOL_REGISTRY_SCHEMA_VERSION = "1.0.0";
 export const MCP_SERVER_CONFIG_SCHEMA_VERSION = "1.0.0";
+export const AIDENID_ADAPTER_CONTRACT_SCHEMA_VERSION = "1.0.0";
 
 const serverIdRegex = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
+const inputPlaceholderRegex = /^\{\{input\.[a-zA-Z0-9_.-]+\}\}$/;
 
 const jsonSchemaObject = z.object({
   type: z.literal("object"),
@@ -61,6 +63,79 @@ const mcpRegistrySchema = z
     version: z.string().min(1),
     generated_at: z.string().optional(),
     tools: z.array(mcpToolSchema).min(1),
+  })
+  .strict();
+
+const aidenIdProvisioningBindingSchema = z
+  .object({
+    tool_name: z
+      .string()
+      .min(1)
+      .regex(/^[a-zA-Z0-9_.:-]+$/, "tool_name must contain only [a-zA-Z0-9_.:-]"),
+    operation: z.literal("provision_email"),
+    method: z.literal("POST"),
+    path: z.literal("/v1/identities"),
+    request_template: z
+      .object({
+        ttl_seconds: z.string().regex(inputPlaceholderRegex),
+        tags: z.string().regex(inputPlaceholderRegex).optional(),
+        policy: z.string().regex(inputPlaceholderRegex).optional(),
+      })
+      .strict(),
+    response_contract: z
+      .object({
+        identity_id_path: z.string().min(1),
+        email_path: z.string().min(1),
+        expires_at_path: z.string().min(1),
+      })
+      .strict(),
+    budgets: z
+      .object({
+        max_calls_per_run: z.number().int().positive().default(3),
+        max_runtime_ms: z.number().int().positive().default(20000),
+      })
+      .strict()
+      .default({
+        max_calls_per_run: 3,
+        max_runtime_ms: 20000,
+      }),
+    security: z
+      .object({
+        requires_human_approval: z.boolean().default(false),
+        kill_switch: z.enum(["enabled", "disabled"]).default("enabled"),
+        scopes: z.array(z.string().min(1)).default(["identity:create"]),
+      })
+      .strict()
+      .default({
+        requires_human_approval: false,
+        kill_switch: "enabled",
+        scopes: ["identity:create"],
+      }),
+    metadata: z.record(z.string(), z.any()).optional(),
+  })
+  .strict();
+
+const aidenIdAdapterContractSchema = z
+  .object({
+    version: z
+      .literal(AIDENID_ADAPTER_CONTRACT_SCHEMA_VERSION)
+      .default(AIDENID_ADAPTER_CONTRACT_SCHEMA_VERSION),
+    provider: z.literal("aidenid"),
+    generated_at: z.string().min(1),
+    registry_file: z.string().min(1),
+    transport: z
+      .object({
+        base_url: z.string().url(),
+        timeout_ms: z.number().int().positive().default(15000),
+        auth: z
+          .object({
+            mode: z.enum(["bearer", "api_key", "oauth2", "none"]).default("bearer"),
+            secret_ref: z.string().min(1),
+          })
+          .strict(),
+      })
+      .strict(),
+    tool_bindings: z.array(aidenIdProvisioningBindingSchema).min(1),
   })
   .strict();
 
@@ -290,6 +365,58 @@ export function buildAidenIdRegistryTemplate({ generatedAt = new Date().toISOStr
         metadata: {
           provider: "aidenid",
           adapter: "sentinelayer-cli",
+          adapter_contract_file: ".sentinelayer/mcp/aidenid-provisioning-adapter.json",
+        },
+      },
+    ],
+  };
+}
+
+export function buildAidenIdProvisioningAdapterTemplate({
+  generatedAt = new Date().toISOString(),
+  registryFile = ".sentinelayer/mcp/tool-registry.aidenid-template.json",
+} = {}) {
+  return {
+    version: AIDENID_ADAPTER_CONTRACT_SCHEMA_VERSION,
+    provider: "aidenid",
+    generated_at: generatedAt,
+    registry_file: String(registryFile || "").trim() || ".sentinelayer/mcp/tool-registry.aidenid-template.json",
+    transport: {
+      base_url: "https://api.aidenid.com",
+      timeout_ms: 15000,
+      auth: {
+        mode: "bearer",
+        secret_ref: "AIDENID_API_KEY",
+      },
+    },
+    tool_bindings: [
+      {
+        tool_name: "aidenid.provision_email",
+        operation: "provision_email",
+        method: "POST",
+        path: "/v1/identities",
+        request_template: {
+          ttl_seconds: "{{input.ttl_seconds}}",
+          tags: "{{input.tags}}",
+          policy: "{{input.policy}}",
+        },
+        response_contract: {
+          identity_id_path: "$.identity.id",
+          email_path: "$.identity.email",
+          expires_at_path: "$.identity.expires_at",
+        },
+        budgets: {
+          max_calls_per_run: 3,
+          max_runtime_ms: 20000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["identity:create"],
+        },
+        metadata: {
+          provider: "aidenid",
+          adapter: "sentinelayer-cli",
         },
       },
     ],
@@ -357,6 +484,25 @@ export function validateMcpToolRegistry(payload) {
   return parsed;
 }
 
+export function validateAidenIdAdapterContract(payload, { registryPayload } = {}) {
+  const parsed = aidenIdAdapterContractSchema.parse(payload);
+
+  if (registryPayload !== undefined) {
+    const registry = validateMcpToolRegistry(registryPayload);
+    const toolNameSet = new Set(registry.tools.map((tool) => tool.name));
+    const missingToolBindings = parsed.tool_bindings
+      .map((binding) => binding.tool_name)
+      .filter((toolName) => !toolNameSet.has(toolName));
+    if (missingToolBindings.length > 0) {
+      throw new Error(
+        `Adapter contract references tools not present in registry: ${missingToolBindings.join(", ")}`
+      );
+    }
+  }
+
+  return parsed;
+}
+
 export function validateMcpServerConfig(payload) {
   return mcpServerConfigSchema.parse(payload);
 }
@@ -402,6 +548,15 @@ export async function resolveDefaultMcpOutputPath({ cwd, outputDir, env } = {}) 
     env,
   });
   return path.join(outputRoot, "mcp", "tool-registry.schema.json");
+}
+
+export async function resolveDefaultAidenIdAdapterContractPath({ cwd, outputDir, env } = {}) {
+  const outputRoot = await resolveOutputRoot({
+    cwd,
+    outputDirOverride: outputDir,
+    env,
+  });
+  return path.join(outputRoot, "mcp", "aidenid-provisioning-adapter.json");
 }
 
 export async function resolveDefaultMcpServerConfigPath({
