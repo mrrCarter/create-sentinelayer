@@ -2299,6 +2299,39 @@ test("CLI audit security runs specialist agent and emits dedicated security repo
   }
 });
 
+test("CLI audit architecture runs specialist agent and emits dedicated architecture report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-architecture-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "architecture"), { recursive: true });
+    const largeModule = "export const line = 'architecture-hotspot';\n".repeat(420);
+    await writeFile(path.join(tempRoot, "src", "architecture", "mega-module.js"), largeModule, "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "architecture", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit architecture");
+    assert.match(String(payload.architectureAgentPath || ""), /[\\/]architecture\.json$/);
+    assert.match(
+      String(payload.architectureSpecialistReportPath || ""),
+      /[\\/]ARCHITECTURE_AGENT_REPORT\.md$/
+    );
+
+    const architectureAgent = JSON.parse(await readFile(payload.architectureAgentPath, "utf-8"));
+    assert.equal(architectureAgent.agentId, "architecture");
+    assert.equal(Array.isArray(architectureAgent.findings), true);
+
+    const architectureMarkdown = await readFile(payload.architectureSpecialistReportPath, "utf-8");
+    assert.match(architectureMarkdown, /ARCHITECTURE_AGENT_REPORT/);
+    assert.match(architectureMarkdown, /Hotspots:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {

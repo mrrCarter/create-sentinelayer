@@ -186,6 +186,68 @@ export function registerAuditCommand(program, invokeLegacy) {
     });
 
   audit
+    .command("architecture")
+    .description("Run architecture specialist agent only")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--registry-file <path>", "Optional custom audit registry file")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--dry-run", "Skip deterministic baseline and run architecture planning only")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const registry = await loadAuditRegistry({
+        registryFile: options.registryFile,
+      });
+      const selected = selectAuditAgents(registry.agents, "architecture");
+      if (selected.selected.length !== 1) {
+        throw new Error("Architecture specialist agent is unavailable in the current registry.");
+      }
+
+      const result = await runAuditOrchestrator({
+        targetPath,
+        agents: selected.selected,
+        maxParallel: 1,
+        outputDir: options.outputDir,
+        dryRun: Boolean(options.dryRun),
+      });
+      const architectureAgent =
+        result.agentResults.find((agent) => agent.agentId === "architecture") || null;
+
+      const payload = {
+        command: "audit architecture",
+        targetPath: result.targetPath,
+        runId: result.runId,
+        runDirectory: result.runDirectory,
+        reportPath: result.reportMarkdownPath,
+        reportJsonPath: result.reportJsonPath,
+        architectureAgentPath: architectureAgent?.artifactPath || null,
+        architectureSpecialistReportPath: architectureAgent?.specialistReportPath || null,
+        summary: result.summary,
+        specialistSummary: architectureAgent?.summary || null,
+        dryRun: result.dryRun,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold("Architecture specialist audit complete"));
+        console.log(pc.gray(`Run: ${result.runId}`));
+        console.log(pc.gray(`Report: ${result.reportMarkdownPath}`));
+        if (payload.architectureSpecialistReportPath) {
+          console.log(pc.gray(`Architecture report: ${payload.architectureSpecialistReportPath}`));
+        }
+        console.log(
+          `Summary: P0=${result.summary.P0} P1=${result.summary.P1} P2=${result.summary.P2} P3=${result.summary.P3}`
+        );
+      }
+
+      if (result.summary.blocking) {
+        process.exitCode = 2;
+      }
+    });
+
+  audit
     .command("local")
     .description("Compatibility mode: run legacy local readiness + policy audit")
     .option("--path <path>", "Target repository path")
