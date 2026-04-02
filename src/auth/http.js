@@ -13,6 +13,7 @@ const MAX_RETRY_AFTER_DELAY_MS = 15_000;
 const MAX_EXPONENTIAL_RETRY_DELAY_MS = 15_000;
 const MIN_JITTER_RETRY_DELAY_MS = 100;
 const DETERMINISTIC_JITTER_DENOMINATOR = 97;
+const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 
 const circuitBreakerStates = new Map();
 
@@ -212,6 +213,49 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
   return Math.max(MIN_JITTER_RETRY_DELAY_MS, jitteredDelay);
 }
 
+async function readResponseBodyWithLimit(response, maxBytes = MAX_RESPONSE_BODY_BYTES) {
+  const declaredLength = Number(response?.headers?.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
+      status: 502,
+      code: "RESPONSE_TOO_LARGE",
+    });
+  }
+  if (!response?.body || typeof response.body.getReader !== "function") {
+    const rawBody = await response.text();
+    if (Buffer.byteLength(rawBody, "utf8") > maxBytes) {
+      throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
+        status: 502,
+        code: "RESPONSE_TOO_LARGE",
+      });
+    }
+    return rawBody;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let rawBody = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
+        status: 502,
+        code: "RESPONSE_TOO_LARGE",
+      });
+    }
+    rawBody += decoder.decode(chunk, { stream: true });
+  }
+  rawBody += decoder.decode();
+  return rawBody;
+}
+
 export async function requestJson(
   url,
   {
@@ -267,7 +311,7 @@ export async function requestJson(
         signal: activeSignal,
       });
 
-      const rawBody = await response.text();
+      const rawBody = await readResponseBodyWithLimit(response);
       let json = {};
       if (rawBody.trim()) {
         try {

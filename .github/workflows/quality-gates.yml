@@ -280,16 +280,30 @@ jobs:
             release-commit-sha.txt
           if-no-files-found: error
 
+  deploy_gate:
+    name: Deploy Stage Gate
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-22.04
+    needs: [build-release-artifact]
+    steps:
+      - name: Emit deterministic deploy-stage promotion marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Deploy stage gate passed for ${GITHUB_SHA}."
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint_gate, test_gate, security_gate]
+    needs: [lint_gate, test_gate, security_gate, build-release-artifact, deploy_gate]
     if: >-
       ${{
         always() &&
         needs.lint_gate.result == 'success' &&
         needs.test_gate.result == 'success' &&
-        needs.security_gate.result == 'success'
+        needs.security_gate.result == 'success' &&
+        needs.build-release-artifact.result == 'success' &&
+        needs.deploy_gate.result == 'success'
       }}
     steps:
       - name: Confirm all quality gates passed

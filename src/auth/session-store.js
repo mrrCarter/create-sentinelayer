@@ -110,20 +110,52 @@ function resolveMachineBindingKeyPath({ homeDir } = {}) {
   return path.join(resolvedHome, ".sentinelayer", MACHINE_BINDING_KEY_FILENAME);
 }
 
+function readExistingMachineBindingKey(keyPath) {
+  try {
+    const stats = fs.lstatSync(keyPath);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error(`Refusing non-regular machine binding key path: ${keyPath}`);
+    }
+    const existing = fs.readFileSync(keyPath, "utf-8").trim();
+    return existing || null;
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 function resolveMachineBindingKey({ homeDir } = {}) {
   const keyPath = resolveMachineBindingKeyPath({ homeDir });
-  try {
-    const existing = fs.readFileSync(keyPath, "utf-8").trim();
-    if (existing) {
-      return existing;
-    }
-  } catch {
-    // Create a deterministic machine-bound secret when absent.
+  const existing = readExistingMachineBindingKey(keyPath);
+  if (existing) {
+    return existing;
   }
 
   const generated = crypto.randomBytes(32).toString("base64url");
   fs.mkdirSync(path.dirname(keyPath), { recursive: true });
-  fs.writeFileSync(keyPath, `${generated}\n`, { encoding: "utf-8", mode: 0o600 });
+  let keyFileDescriptor = null;
+  try {
+    keyFileDescriptor = fs.openSync(keyPath, "wx", 0o600);
+    fs.writeFileSync(keyFileDescriptor, `${generated}\n`, { encoding: "utf-8" });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "EEXIST") {
+      const racedExisting = readExistingMachineBindingKey(keyPath);
+      if (racedExisting) {
+        return racedExisting;
+      }
+    }
+    throw error;
+  } finally {
+    if (typeof keyFileDescriptor === "number") {
+      try {
+        fs.closeSync(keyFileDescriptor);
+      } catch {
+        // Ignore close errors during local key provisioning.
+      }
+    }
+  }
   try {
     fs.chmodSync(keyPath, 0o600);
   } catch {

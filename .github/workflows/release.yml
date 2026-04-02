@@ -45,11 +45,21 @@ jobs:
         shell: bash
         env:
           DISPATCH_PUBLISH_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.publish || '' }}
+          ALLOWED_RELEASE_DISPATCH_ACTORS: "mrrCarter"
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && ! "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
-            echo "::error::workflow_dispatch releases must run on a v* tag ref. Received '${GITHUB_REF}'."
-            exit 1
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ ! "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
+              echo "::error::workflow_dispatch releases must run on a v* tag ref. Received '${GITHUB_REF}'."
+              exit 1
+            fi
+            case ",${ALLOWED_RELEASE_DISPATCH_ACTORS}," in
+              *",${GITHUB_ACTOR},"*) ;;
+              *)
+                echo "::error::Actor '${GITHUB_ACTOR}' is not allowlisted for manual release dispatch."
+                exit 1
+                ;;
+            esac
           fi
 
           gh_api_with_timeout() {
@@ -304,6 +314,30 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: create-sentinelayer-*.tgz
+
+      - name: Verify build provenance attestation in verify stage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          verified="false"
+          for _ in $(seq 1 5); do
+            if gh attestation verify "${TARBALL}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+              --source-ref "${GITHUB_REF}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com"; then
+              verified="true"
+              break
+            fi
+            sleep 5
+          done
+          if [[ "${verified}" != "true" ]]; then
+            echo "::error::Build provenance attestation verification failed in verify stage."
+            exit 1
+          fi
 
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0

@@ -1,5 +1,6 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { WORK_ITEM_STATUSES, resolveErrorDaemonStorage } from "./error-worker.js";
