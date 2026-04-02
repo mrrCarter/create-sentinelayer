@@ -76,3 +76,4 @@
 - A practical hybrid mapper can stay deterministic-first by seeding from endpoint/error/service path tokens, then constrain semantic expansion to import-graph neighborhoods rather than scanning the entire repository context blindly.
 - Boolean normalization helpers must preserve native `false` inputs (not coerce through `value || ""`), or operator kill/maintenance toggles can silently fail and corrupt control-plane state.
 - MCP adapter contracts should be validated against the registry file they bind to; schema-only validation misses tool-name drift that breaks runtime dispatch.
+- Validate reported audit findings against the active branch before starting remediation PRs, then scope each PR to current confirmed gaps only.
