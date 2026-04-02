@@ -9,6 +9,7 @@ const ENV_MAPPING = Object.freeze({
   SENTINELAYER_API_URL: "apiUrl",
   SENTINELAYER_WEB_URL: "webUrl",
   SENTINELAYER_TOKEN: "sentinelayerToken",
+  SENTINELAYER_POLICY_PACK: "defaultPolicyPack",
   OPENAI_API_KEY: "openaiApiKey",
   ANTHROPIC_API_KEY: "anthropicApiKey",
   GOOGLE_API_KEY: "googleApiKey",

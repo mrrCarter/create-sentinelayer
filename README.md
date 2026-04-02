@@ -207,6 +207,17 @@ The CLI now includes deterministic plugin/template/policy pack governance comman
 - `sl plugin list`
 - `sl plugin order [--stage <stage>]` (deterministic load-order resolution + cycle detection)
 
+## Policy packs (Phase 5.3 slice)
+
+The CLI now includes policy-pack selection commands:
+
+- `sl policy list`
+- `sl policy use strict --scope project`
+- `sl policy use compliance-soc2 --scope global`
+
+Built-in packs: `community` (default), `strict`, `compliance-soc2`, `compliance-hipaa`.
+Policy selection is stored in config (`defaultPolicyPack`) and applied during `scan init` / `scan validate` / `scan precheck` profile resolution.
+
 ## AIdenID CLI foundation (Phase 11 foundation slice)
 
 The CLI now includes an `sl ai` surface for AIdenID identity provisioning:
@@ -465,6 +476,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
+- `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
 - `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`

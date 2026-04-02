@@ -2143,6 +2143,70 @@ test("CLI plugin commands scaffold, validate, and list manifests", async () => {
   }
 });
 
+test("CLI policy commands manage active pack selection and include plugin policy packs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-policy-cmd-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      "# SPEC - Policy Demo\n\n## Goal\nHarden release checks and scanning.\n",
+      "utf-8"
+    );
+
+    const initialList = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["policy", "list", "--path", tempRoot, "--json"],
+    });
+    assert.equal(initialList.code, 0, initialList.stderr || initialList.stdout);
+    const initialPayload = JSON.parse(String(initialList.stdout || "").trim());
+    assert.equal(initialPayload.command, "policy list");
+    assert.equal(initialPayload.activePolicyPack, "community");
+    assert.equal(initialPayload.packs.some((pack) => pack.id === "strict"), true);
+
+    const useStrict = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["policy", "use", "strict", "--path", tempRoot, "--scope", "project", "--json"],
+    });
+    assert.equal(useStrict.code, 0, useStrict.stderr || useStrict.stdout);
+    const usePayload = JSON.parse(String(useStrict.stdout || "").trim());
+    assert.equal(usePayload.command, "policy use");
+    assert.equal(usePayload.selected, "strict");
+
+    const scanInit = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["scan", "init", "--path", tempRoot, "--non-interactive", "--json"],
+    });
+    assert.equal(scanInit.code, 0, scanInit.stderr || scanInit.stdout);
+    const scanPayload = JSON.parse(String(scanInit.stdout || "").trim());
+    assert.equal(scanPayload.command, "scan init");
+    assert.equal(scanPayload.policyPack.id, "strict");
+    assert.equal(scanPayload.profile.severityGate, "P0");
+
+    const pluginPolicy = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["plugin", "init", "--id", "custom-pack", "--pack-type", "policy_pack", "--json"],
+    });
+    assert.equal(pluginPolicy.code, 0, pluginPolicy.stderr || pluginPolicy.stdout);
+
+    const listWithPlugin = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["policy", "list", "--path", tempRoot, "--json"],
+    });
+    assert.equal(listWithPlugin.code, 0, listWithPlugin.stderr || listWithPlugin.stdout);
+    const pluginListPayload = JSON.parse(String(listWithPlugin.stdout || "").trim());
+    assert.equal(
+      pluginListPayload.packs.some((pack) => pack.id === "custom-pack" && pack.source === "plugin"),
+      true
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {

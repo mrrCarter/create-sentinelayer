@@ -16,6 +16,7 @@ export const configSchema = z
     apiUrl: optionalUrl,
     webUrl: optionalUrl,
     outputDir: optionalTrimmedString,
+    defaultPolicyPack: optionalTrimmedString,
     defaultModelProvider: z.enum(["openai", "anthropic", "google"]).optional(),
     defaultModelId: optionalTrimmedString,
     sentinelayerToken: optionalTrimmedString,
