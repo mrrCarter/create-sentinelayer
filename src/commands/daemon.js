@@ -16,6 +16,14 @@ import {
   reassignAssignment,
   releaseAssignment,
 } from "../daemon/assignment-ledger.js";
+import {
+  JIRA_STATUSES,
+  commentJiraIssue,
+  listJiraIssues,
+  openJiraIssue,
+  startJiraLifecycle,
+  transitionJiraIssue,
+} from "../daemon/jira-lifecycle.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -95,6 +103,18 @@ function printAssignmentSummary(payload) {
   for (const assignment of payload.assignments) {
     console.log(
       `- ${assignment.workItemId} | ${assignment.status} | ${assignment.assignedAgentIdentity || "unassigned"} | stage=${assignment.stage} | lease_expires=${assignment.leaseExpiresAt || "n/a"}`
+    );
+  }
+}
+
+function printJiraSummary(payload) {
+  console.log(pc.bold("OMAR Jira lifecycle"));
+  console.log(pc.gray(`Lifecycle: ${payload.lifecyclePath}`));
+  console.log(pc.gray(`Events: ${payload.eventsPath}`));
+  console.log(pc.gray(`visible=${payload.visibleCount} total=${payload.totalCount}`));
+  for (const issue of payload.issues) {
+    console.log(
+      `- ${issue.issueKey} | ${issue.status} | work_item=${issue.workItemId} | assignee=${issue.assignee || "n/a"}`
     );
   }
 }
@@ -386,6 +406,246 @@ export function registerDaemonCommand(program) {
       console.log(pc.bold("Assignment reassigned"));
       console.log(
         `${reassigned.assignment.workItemId} -> ${reassigned.assignment.assignedAgentIdentity} (expires ${reassigned.assignment.leaseExpiresAt})`
+      );
+    });
+
+  const jira = daemon
+    .command("jira")
+    .description("Jira lifecycle artifacts for daemon work-item transitions and plan comments");
+
+  jira
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listJiraIssues({
+        targetPath,
+        outputDir: options.outputDir,
+        limit: 20,
+      });
+      const payload = {
+        command: "daemon jira",
+        targetPath,
+        lifecyclePath: listed.lifecyclePath,
+        eventsPath: listed.eventsPath,
+        totalCount: listed.totalCount,
+        visibleCount: listed.issues.length,
+        issues: listed.issues,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printJiraSummary(payload);
+    });
+
+  jira
+    .command("list")
+    .description("List daemon Jira lifecycle issues")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--work-item-id <id>", "Filter by work item id")
+    .option("--issue-key <key>", "Filter by issue key")
+    .option("--status <csv>", `Optional status filter (${JIRA_STATUSES.join(", ")})`)
+    .option("--limit <n>", "Maximum issues to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listJiraIssues({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId: options.workItemId,
+        issueKey: options.issueKey,
+        statuses: parseCsv(options.status),
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon jira list",
+        targetPath,
+        workItemId: options.workItemId || null,
+        issueKey: options.issueKey || null,
+        statuses: parseCsv(options.status),
+        lifecyclePath: listed.lifecyclePath,
+        eventsPath: listed.eventsPath,
+        totalCount: listed.totalCount,
+        visibleCount: listed.issues.length,
+        issues: listed.issues,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printJiraSummary(payload);
+    });
+
+  jira
+    .command("open")
+    .description("Create (or reuse) Jira lifecycle issue for a work item")
+    .argument("<workItemId>", "Queue work item id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--summary <summary>", "Issue summary override")
+    .option("--description <description>", "Issue description override")
+    .option("--labels <csv>", "Additional labels")
+    .option("--assignee <identity>", "Assignee identity")
+    .option("--issue-key <key>", "Explicit issue key override")
+    .option("--issue-key-prefix <prefix>", "Generated issue key prefix", "SLD")
+    .option("--actor <identity>", "Lifecycle actor identity", "omar-daemon")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const opened = await openJiraIssue({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        summary: options.summary,
+        description: options.description,
+        labels: parseCsv(options.labels),
+        assignee: options.assignee,
+        issueKey: options.issueKey,
+        issueKeyPrefix: options.issueKeyPrefix,
+        actor: options.actor,
+      });
+      const payload = {
+        command: "daemon jira open",
+        targetPath,
+        created: opened.created,
+        lifecyclePath: opened.lifecyclePath,
+        eventsPath: opened.eventsPath,
+        issue: opened.issue,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold(opened.created ? "Jira issue created" : "Jira issue reused"));
+      console.log(`${opened.issue.issueKey} -> work_item=${opened.issue.workItemId}`);
+    });
+
+  jira
+    .command("start")
+    .description("Create/reuse issue, post agent plan comment, and transition to IN_PROGRESS")
+    .argument("<workItemId>", "Queue work item id")
+    .requiredOption("--plan <message>", "Agent execution plan text")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--actor <identity>", "Lifecycle actor identity", "omar-daemon")
+    .option("--assignee <identity>", "Assignee identity")
+    .option("--summary <summary>", "Issue summary override")
+    .option("--description <description>", "Issue description override")
+    .option("--labels <csv>", "Additional labels")
+    .option("--issue-key <key>", "Explicit issue key override")
+    .option("--issue-key-prefix <prefix>", "Generated issue key prefix", "SLD")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const started = await startJiraLifecycle({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        actor: options.actor,
+        assignee: options.assignee,
+        summary: options.summary,
+        description: options.description,
+        labels: parseCsv(options.labels),
+        planMessage: options.plan,
+        issueKey: options.issueKey,
+        issueKeyPrefix: options.issueKeyPrefix,
+      });
+      const payload = {
+        command: "daemon jira start",
+        targetPath,
+        created: started.created,
+        lifecyclePath: started.lifecyclePath,
+        eventsPath: started.eventsPath,
+        issue: started.issue,
+        transition: started.transition,
+        comment: started.comment,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Jira lifecycle started"));
+      console.log(`${started.issue.issueKey} status=${started.issue.status}`);
+    });
+
+  jira
+    .command("comment")
+    .description("Append a Jira lifecycle comment")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--work-item-id <id>", "Work item id")
+    .option("--issue-key <key>", "Issue key")
+    .option("--actor <identity>", "Lifecycle actor identity", "omar-daemon")
+    .option("--type <type>", "Comment type label", "checkpoint")
+    .requiredOption("--message <message>", "Comment message")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const commented = await commentJiraIssue({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId: options.workItemId,
+        issueKey: options.issueKey,
+        actor: options.actor,
+        type: options.type,
+        message: options.message,
+      });
+      const payload = {
+        command: "daemon jira comment",
+        targetPath,
+        lifecyclePath: commented.lifecyclePath,
+        eventsPath: commented.eventsPath,
+        issue: commented.issue,
+        comment: commented.comment,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Jira lifecycle comment appended"));
+      console.log(`${commented.issue.issueKey} type=${commented.comment.type}`);
+    });
+
+  jira
+    .command("transition")
+    .description("Transition Jira lifecycle issue status")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--work-item-id <id>", "Work item id")
+    .option("--issue-key <key>", "Issue key")
+    .requiredOption("--to <status>", `Target status (${JIRA_STATUSES.join(", ")})`)
+    .option("--actor <identity>", "Lifecycle actor identity", "omar-daemon")
+    .option("--reason <text>", "Optional transition reason")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const transitioned = await transitionJiraIssue({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId: options.workItemId,
+        issueKey: options.issueKey,
+        toStatus: options.to,
+        actor: options.actor,
+        reason: options.reason,
+      });
+      const payload = {
+        command: "daemon jira transition",
+        targetPath,
+        lifecyclePath: transitioned.lifecyclePath,
+        eventsPath: transitioned.eventsPath,
+        issue: transitioned.issue,
+        transition: transitioned.transition,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Jira lifecycle transitioned"));
+      console.log(
+        `${transitioned.issue.issueKey} ${transitioned.transition.from} -> ${transitioned.transition.to}`
       );
     });
 

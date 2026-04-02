@@ -52,7 +52,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch H PR 12.6 security slice (`sl swarm create` pen-test mode + target policy gate + audit log/report bundle).
 - [x] Complete Batch H PR 12.7 hardening slice (`sl ai identity audit|kill-all|legal-hold` + swarm audit-chain/identity-isolation controls).
 - [x] Complete Batch J PR 13.1 daemon slice (`daemon error record|worker|queue` routed backlog foundation).
-- [x] Start Batch J PR 13.2 ledger slice (`daemon assign claim|heartbeat|release|reassign|list` global assignment queue ownership).
+- [x] Complete Batch J PR 13.2 ledger slice (`daemon assign claim|heartbeat|release|reassign|list` global assignment queue ownership).
+- [x] Start Batch J PR 13.3 Jira lifecycle slice (`daemon jira open|start|comment|transition|list` ticket-state automation).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -163,7 +164,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch J - OMAR Daemon + Enterprise Observability Overlay (P1/P2, cross-repo)
 - PR 13.1 Error event daemon worker (`admin_error_log` + stream trigger -> routed queue). (merged as #87)
-- PR 13.2 Global autonomous todo/assignment ledger (agent identity, lease, SLA timers, handoff state).
+- PR 13.2 Global autonomous todo/assignment ledger (agent identity, lease, SLA timers, handoff state). (merged as #88)
 - PR 13.3 Jira lifecycle automation (create ticket(s), agent plan comment, in-progress/blocked/done transitions).
 - PR 13.4 Runtime budget governance hardening (token/time/tool/path budgets + deterministic squash/quarantine path).
 - PR 13.5 Operator control plane UX (agent roster, stop/confirm control, budget health colors, session timers).
@@ -187,14 +188,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-13-2-global-assignment-ledger` (current)
-2. `roadmap/pr-13-3-jira-lifecycle-automation`
-3. `roadmap/pr-13-4-runtime-budget-quarantine`
-4. `roadmap/pr-13-5-operator-control-plane`
-5. `roadmap/pr-13-6-observability-artifact-lineage`
-6. `roadmap/pr-13-7-hybrid-mapping-overlay`
-7. `roadmap/pr-13-8-midnight-reliability-lane`
-8. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-13-3-jira-lifecycle-automation` (current)
+2. `roadmap/pr-13-4-runtime-budget-quarantine`
+3. `roadmap/pr-13-5-operator-control-plane`
+4. `roadmap/pr-13-6-observability-artifact-lineage`
+5. `roadmap/pr-13-7-hybrid-mapping-overlay`
+6. `roadmap/pr-13-8-midnight-reliability-lane`
+7. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -384,3 +384,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Added global assignment ledger with claim/heartbeat/release/reassign lifecycle and queue-status synchronization under `.sentinelayer/observability/error-daemon/`.
+  - PR 13.3 Jira lifecycle slice local evidence (branch `roadmap/pr-13-3-jira-lifecycle-automation`):
+    - `npm run verify` (pass, e2e `79/79`; unit tests `100/100`; coverage statements `89.69%`, branches `71.54%`, functions `97.72%`, lines `89.69%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added daemon Jira lifecycle artifacts (`jira-lifecycle.json`, `jira-events.ndjson`) with `open|start|comment|transition|list` command flow and assignment-ledger issue-key sync.

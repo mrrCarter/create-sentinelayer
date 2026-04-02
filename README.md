@@ -452,6 +452,23 @@ Tracked assignment fields include:
 - `jiraIssueKey`
 - `budgetSnapshot`
 
+## Jira lifecycle automation (Phase 13.3 slice)
+
+Daemon Jira lifecycle commands now support ticket create/start/comment/transition traces tied to work items:
+
+- `sl daemon jira open <work-item-id> --issue-key-prefix SL`
+- `sl daemon jira start <work-item-id> --plan "1) reproduce 2) patch 3) verify" --actor maya.markov@sentinelayer.local --assignee maya.markov@sentinelayer.local`
+- `sl daemon jira comment --work-item-id <work-item-id> --type checkpoint --message "patch applied"`
+- `sl daemon jira transition --work-item-id <work-item-id> --to DONE --reason "fix merged"`
+- `sl daemon jira list --status DONE --work-item-id <work-item-id> --json`
+
+Lifecycle artifacts:
+
+- `.sentinelayer/observability/error-daemon/jira-lifecycle.json` (issue state, comments, transitions)
+- `.sentinelayer/observability/error-daemon/jira-events.ndjson` (append-only lifecycle event feed)
+
+When an assignment exists for the same work item, Jira issue keys are synced into assignment ledger records for deterministic handoff continuity.
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -774,6 +791,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
 - `create-sentinelayer daemon error record|worker|queue` ingests admin errors and routes deterministic daemon queue work items
 - `create-sentinelayer daemon assign claim|heartbeat|release|reassign|list` manages shared daemon assignment leases and lifecycle states
+- `create-sentinelayer daemon jira open|start|comment|transition|list` manages Jira lifecycle evidence tied to daemon work items
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
