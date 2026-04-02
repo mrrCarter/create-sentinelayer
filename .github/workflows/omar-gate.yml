@@ -25,7 +25,6 @@ on:
           - P0
           - P1
           - P2
-          - none
       p2_max_allowed:
         description: Maximum allowed P2 findings before Omar Gate blocks merge
         required: false
@@ -126,9 +125,6 @@ jobs:
                 exit 1
               fi
               ;;
-            none)
-              echo "::notice::Omar Gate threshold enforcement disabled (severity_gate=none)."
-              ;;
             *)
               echo "::error::Invalid severity_gate value: ${severity_gate}"
               exit 1
@@ -145,8 +141,6 @@ jobs:
             threshold_line="P0=0"
           elif [ "${severity_gate}" = "P2" ]; then
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
-          elif [ "${severity_gate}" = "none" ]; then
-            threshold_line="none"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
           echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"

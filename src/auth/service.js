@@ -244,6 +244,31 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   return true;
 }
 
+function isRetryableRevokeError(error) {
+  if (!(error instanceof SentinelayerApiError)) {
+    return false;
+  }
+  const retryableStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
+  return retryableStatuses.has(Number(error.status || 0));
+}
+
+function toRotationWarning(tokenId, error) {
+  if (error instanceof SentinelayerApiError) {
+    return {
+      tokenId: normalizeString(tokenId) || null,
+      code: error.code,
+      status: error.status,
+      message: error.message,
+    };
+  }
+  return {
+    tokenId: normalizeString(tokenId) || null,
+    code: "UNKNOWN",
+    status: 500,
+    message: error instanceof Error ? error.message : String(error || "Unknown rotation error"),
+  };
+}
+
 async function rotateStoredApiTokenIfNeeded({
   session,
   thresholdDays,
@@ -278,20 +303,41 @@ async function rotateStoredApiTokenIfNeeded({
   );
 
   if (session.tokenId) {
-    try {
-      await revokeApiToken({
-        apiUrl: session.apiUrl,
-        authToken: nextSession.token,
-        tokenId: session.tokenId,
-      });
-    } catch {
-      // Ignore revoke failures; new token is already active.
+    let revokeWarning = null;
+    const maxRevokeAttempts = 3;
+    for (let attempt = 0; attempt < maxRevokeAttempts; attempt += 1) {
+      try {
+        await revokeApiToken({
+          apiUrl: session.apiUrl,
+          authToken: nextSession.token,
+          tokenId: session.tokenId,
+        });
+        revokeWarning = null;
+        break;
+      } catch (error) {
+        if (!isRetryableRevokeError(error)) {
+          throw error;
+        }
+        revokeWarning = toRotationWarning(session.tokenId, error);
+        if (attempt < maxRevokeAttempts - 1) {
+          const delayMs = Math.min(200 * 2 ** attempt, 2000);
+          await sleep(delayMs);
+        }
+      }
+    }
+    if (revokeWarning) {
+      return {
+        session: nextSession,
+        rotated: true,
+        rotationWarning: revokeWarning,
+      };
     }
   }
 
   return {
     session: nextSession,
     rotated: true,
+    rotationWarning: null,
   };
 }
 
@@ -438,6 +484,7 @@ export async function loginAndPersistSession({
  *   tokenPrefix: string | null,
  *   tokenExpiresAt: string | null,
  *   rotated: boolean,
+ *   rotationWarning: null | { tokenId: string | null, code: string, status: number, message: string },
  *   filePath: string | null
  * }>}
  */
@@ -465,6 +512,7 @@ export async function resolveActiveAuthSession({
       tokenPrefix: null,
       tokenExpiresAt: null,
       rotated: false,
+      rotationWarning: null,
       filePath: null,
     };
   }
@@ -482,6 +530,7 @@ export async function resolveActiveAuthSession({
       tokenPrefix: null,
       tokenExpiresAt: null,
       rotated: false,
+      rotationWarning: null,
       filePath: null,
     };
   }
@@ -493,6 +542,7 @@ export async function resolveActiveAuthSession({
 
   let active = stored;
   let rotated = false;
+  let rotationWarning = null;
   if (autoRotate) {
     try {
       const rotateResult = await rotateStoredApiTokenIfNeeded({
@@ -504,10 +554,12 @@ export async function resolveActiveAuthSession({
       });
       active = rotateResult.session;
       rotated = rotateResult.rotated;
-    } catch {
+      rotationWarning = rotateResult.rotationWarning || null;
+    } catch (error) {
       // Keep existing token if rotation fails.
       active = stored;
       rotated = false;
+      rotationWarning = toRotationWarning(stored.tokenId, error);
     }
   }
 
@@ -521,6 +573,7 @@ export async function resolveActiveAuthSession({
     tokenPrefix: active.tokenPrefix || null,
     tokenExpiresAt: active.tokenExpiresAt || null,
     rotated,
+    rotationWarning,
     filePath: active.filePath,
   };
 }
@@ -548,6 +601,7 @@ export async function resolveActiveAuthSession({
  *   remoteUser: any,
  *   remoteError: null | { code: string, message: string, status: number, requestId: string | null },
  *   rotated: boolean,
+ *   rotationWarning: null | { tokenId: string | null, code: string, status: number, message: string },
  *   tokenExpiresAt: string | null,
  *   tokenPrefix: string | null,
  *   tokenId: string | null,
@@ -586,6 +640,7 @@ export async function getAuthStatus({
       remoteUser: null,
       remoteError: null,
       rotated: false,
+      rotationWarning: null,
       tokenExpiresAt: null,
       tokenPrefix: null,
       tokenId: null,
@@ -625,6 +680,7 @@ export async function getAuthStatus({
     remoteUser,
     remoteError,
     rotated: session.rotated,
+    rotationWarning: session.rotationWarning || null,
     tokenExpiresAt: session.tokenExpiresAt,
     tokenPrefix: session.tokenPrefix,
     tokenId: session.tokenId,
