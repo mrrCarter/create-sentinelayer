@@ -42,6 +42,12 @@ import {
   listHybridScopeMaps,
   showHybridScopeMap,
 } from "../daemon/hybrid-mapper.js";
+import {
+  RELIABILITY_CHECK_IDS,
+  getReliabilityLaneStatus,
+  runReliabilityLane,
+  setMaintenanceBillboard,
+} from "../daemon/reliability-lane.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -230,6 +236,23 @@ function printHybridMapSummary(payload) {
   for (const map of payload.maps) {
     console.log(
       `- ${map.workItemId} | run=${map.runId} | status=${map.status || "n/a"} | seeds=${map.deterministicSeedCount || 0} | scoped=${map.scopedFileCount || 0}`
+    );
+  }
+}
+
+function printReliabilitySummary(payload) {
+  console.log(pc.bold("OMAR reliability lane"));
+  console.log(pc.gray(`Config: ${payload.configPath}`));
+  console.log(pc.gray(`Billboard: ${payload.billboardPath}`));
+  console.log(pc.gray(`Events: ${payload.eventsPath}`));
+  console.log(
+    pc.gray(
+      `maintenance=${payload.billboard?.enabled ? "ON" : "OFF"} checks=${payload.config?.checks?.length || 0} recent_runs=${payload.recentRuns?.length || 0}`
+    )
+  );
+  for (const run of payload.recentRuns || []) {
+    console.log(
+      `- ${run.runId} | ${run.overallStatus} | failures=${run.failureCount} | ${run.generatedAt}`
     );
   }
 }
@@ -1343,6 +1366,277 @@ export function registerDaemonCommand(program) {
       console.log(
         `${shown.payload.workItem.workItemId} scoped_files=${shown.payload.summary?.scopedFileCount || 0} run=${shown.payload.runId}`
       );
+    });
+
+  const reliability = daemon
+    .command("reliability")
+    .description("Midnight reliability lane controls and maintenance-billboard automation");
+
+  reliability
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--limit <n>", "Maximum recent runs to return", "10")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const status = await getReliabilityLaneStatus({
+        targetPath,
+        outputDir: options.outputDir,
+        limit: parsePositiveInteger(options.limit, "limit", 10),
+      });
+      const payload = {
+        command: "daemon reliability",
+        targetPath,
+        configPath: status.configPath,
+        billboardPath: status.billboardPath,
+        eventsPath: status.eventsPath,
+        config: status.config,
+        billboard: status.billboard,
+        runCount: status.runCount,
+        recentRuns: status.recentRuns,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printReliabilitySummary(payload);
+    });
+
+  reliability
+    .command("run")
+    .description("Run one synthetic midnight reliability lane tick")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--region <region>", "Target AWS region identifier", "us-east-1")
+    .option("--timezone <timezone>", "Timezone label for run metadata", "UTC")
+    .option(
+      "--simulate-failure <csv>",
+      `Simulate check failures (${RELIABILITY_CHECK_IDS.join(", ")})`
+    )
+    .option("--checks <csv>", "Optional subset of checks to run")
+    .option(
+      "--maintenance-auto-open <bool>",
+      "Automatically enable maintenance billboard on lane failures (true/false)",
+      "true"
+    )
+    .option(
+      "--clear-maintenance-on-pass <bool>",
+      "Clear reliability-lane maintenance billboard on passing run (true/false)",
+      "true"
+    )
+    .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const executed = await runReliabilityLane({
+        targetPath,
+        outputDir: options.outputDir,
+        region: options.region,
+        timezone: options.timezone,
+        simulateFailures: parseCsv(options.simulateFailure),
+        checks: parseCsv(options.checks),
+        autoOpenMaintenance: parseBoolean(options.maintenanceAutoOpen, true),
+        clearMaintenanceOnPass: parseBoolean(options.clearMaintenanceOnPass, true),
+        nowIso: options.nowIso,
+      });
+      const payload = {
+        command: "daemon reliability run",
+        targetPath,
+        runId: executed.runId,
+        runPath: executed.runPath,
+        configPath: executed.configPath,
+        billboardPath: executed.billboardPath,
+        eventsPath: executed.eventsPath,
+        overallStatus: executed.overallStatus,
+        checkCount: executed.checkCount,
+        failureCount: executed.failureCount,
+        checks: executed.checks,
+        maintenance: executed.maintenance,
+        worker: executed.worker,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Reliability lane run complete"));
+      console.log(
+        `${executed.runId} status=${executed.overallStatus} failures=${executed.failureCount} maintenance=${executed.maintenance.enabled ? "ON" : "OFF"}`
+      );
+      console.log(pc.gray(`Run artifact: ${executed.runPath}`));
+    });
+
+  reliability
+    .command("status")
+    .description("Show reliability lane status, config, billboard, and recent runs")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--limit <n>", "Maximum recent runs to return", "10")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const status = await getReliabilityLaneStatus({
+        targetPath,
+        outputDir: options.outputDir,
+        limit: parsePositiveInteger(options.limit, "limit", 10),
+      });
+      const payload = {
+        command: "daemon reliability status",
+        targetPath,
+        configPath: status.configPath,
+        billboardPath: status.billboardPath,
+        eventsPath: status.eventsPath,
+        config: status.config,
+        billboard: status.billboard,
+        runCount: status.runCount,
+        recentRuns: status.recentRuns,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printReliabilitySummary(payload);
+    });
+
+  const maintenance = daemon
+    .command("maintenance")
+    .description("Manual maintenance billboard controls for operator HITL visibility");
+
+  maintenance
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const status = await getReliabilityLaneStatus({
+        targetPath,
+        outputDir: options.outputDir,
+        limit: 1,
+      });
+      const payload = {
+        command: "daemon maintenance",
+        targetPath,
+        billboardPath: status.billboardPath,
+        eventsPath: status.eventsPath,
+        billboard: status.billboard,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("OMAR maintenance billboard"));
+      console.log(pc.gray(`Billboard: ${status.billboardPath}`));
+      console.log(
+        `enabled=${status.billboard.enabled ? "true" : "false"} source=${status.billboard.source || "n/a"} updated=${status.billboard.lastUpdatedAt || "n/a"}`
+      );
+      if (status.billboard.message) {
+        console.log(status.billboard.message);
+      }
+    });
+
+  maintenance
+    .command("status")
+    .description("Show current maintenance billboard state")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const status = await getReliabilityLaneStatus({
+        targetPath,
+        outputDir: options.outputDir,
+        limit: 1,
+      });
+      const payload = {
+        command: "daemon maintenance status",
+        targetPath,
+        billboardPath: status.billboardPath,
+        eventsPath: status.eventsPath,
+        billboard: status.billboard,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("OMAR maintenance billboard"));
+      console.log(pc.gray(`Billboard: ${status.billboardPath}`));
+      console.log(
+        `enabled=${status.billboard.enabled ? "true" : "false"} source=${status.billboard.source || "n/a"} updated=${status.billboard.lastUpdatedAt || "n/a"}`
+      );
+      if (status.billboard.message) {
+        console.log(status.billboard.message);
+      }
+    });
+
+  maintenance
+    .command("on")
+    .description("Enable maintenance billboard manually")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--reason <text>", "Reason for maintenance mode", "Manual maintenance window")
+    .option("--message <text>", "Billboard message")
+    .option("--actor <identity>", "Operator identity", "omar-operator")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const updated = await setMaintenanceBillboard({
+        targetPath,
+        outputDir: options.outputDir,
+        enabled: true,
+        source: "manual",
+        actor: options.actor,
+        reason: options.reason,
+        message:
+          options.message ||
+          "Maintenance mode is active while reliability lane findings are being remediated.",
+      });
+      const payload = {
+        command: "daemon maintenance on",
+        targetPath,
+        billboardPath: updated.billboardPath,
+        eventsPath: updated.eventsPath,
+        billboard: updated.billboard,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Maintenance billboard enabled"));
+      console.log(pc.gray(`Billboard: ${updated.billboardPath}`));
+    });
+
+  maintenance
+    .command("off")
+    .description("Disable maintenance billboard manually")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--reason <text>", "Reason for leaving maintenance mode", "Maintenance complete")
+    .option("--message <text>", "Optional final message to persist")
+    .option("--actor <identity>", "Operator identity", "omar-operator")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const updated = await setMaintenanceBillboard({
+        targetPath,
+        outputDir: options.outputDir,
+        enabled: false,
+        source: "manual",
+        actor: options.actor,
+        reason: options.reason,
+        message: options.message || "",
+      });
+      const payload = {
+        command: "daemon maintenance off",
+        targetPath,
+        billboardPath: updated.billboardPath,
+        eventsPath: updated.eventsPath,
+        billboard: updated.billboard,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Maintenance billboard disabled"));
+      console.log(pc.gray(`Billboard: ${updated.billboardPath}`));
     });
 
   const error = daemon
