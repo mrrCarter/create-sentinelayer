@@ -64,3 +64,4 @@
 - Treat `gh run watch` on the `Omar Gate` workflow as a required blocking merge step on every PR; do not merge from status assumptions.
 - Implement terminal markdown as a shared utility and reuse it across artifact show/preview commands (`spec`, `prompt`, `guide`) so styling changes stay centralized and testable.
 - Diff-aware spec regeneration can preserve operator intent without a stored baseline by treating section deltas as manual edits and surfacing explicit add/remove previews before write.
+- Progress/notification signals should be centralized in one reporter and always suppressed under `--quiet` (and JSON mode) to avoid corrupting machine-readable output.

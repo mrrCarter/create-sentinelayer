@@ -24,11 +24,19 @@ import { generateSpecMarkdown, resolveSpecTemplate } from "../spec/generator.js"
 import { SPEC_TEMPLATES } from "../spec/templates.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 import { renderTerminalMarkdown } from "../ui/markdown.js";
+import { createProgressReporter } from "../ui/progress.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
   const globalFromCommand =
     command && command.optsWithGlobals ? Boolean(command.optsWithGlobals().json) : false;
+  return local || globalFromCommand;
+}
+
+function isQuietMode(options, command) {
+  const local = Boolean(options && options.quiet);
+  const globalFromCommand =
+    command && command.optsWithGlobals ? Boolean(command.optsWithGlobals().quiet) : false;
   return local || globalFromCommand;
 }
 
@@ -418,56 +426,71 @@ export function registerSpecCommand(program) {
     .option("--warn-at-percent <n>", "Warning threshold percentage for enabled budgets", "80")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const outputFile = String(options.outputFile || "SPEC.md").trim() || "SPEC.md";
-      const outputPath = path.resolve(targetPath, outputFile);
-
-      const template = resolveSpecTemplate(options.template);
-      const ingest = await collectCodebaseIngest({ rootPath: targetPath });
-      const deterministicMarkdown = generateSpecMarkdown({
-        template,
-        description: options.description,
-        ingest,
-        projectPath: targetPath,
+      const emitJson = shouldEmitJson(options, command);
+      const progress = createProgressReporter({
+        quiet: emitJson || isQuietMode(options, command),
       });
+      progress.start("spec generate: collecting codebase ingest");
 
-      const aiResult = await maybeEnhanceSpecWithAi({
-        enabled: Boolean(options.ai),
-        options,
-        targetPath,
-        template,
-        description: options.description,
-        ingest,
-        baseSpecMarkdown: deterministicMarkdown,
-      });
+      try {
+        const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+        const outputFile = String(options.outputFile || "SPEC.md").trim() || "SPEC.md";
+        const outputPath = path.resolve(targetPath, outputFile);
 
-      await fsp.mkdir(path.dirname(outputPath), { recursive: true });
-      await fsp.writeFile(outputPath, `${aiResult.markdown.trimEnd()}\n`, "utf-8");
+        const template = resolveSpecTemplate(options.template);
+        const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+        progress.update(30, "spec generate: deterministic draft");
+        const deterministicMarkdown = generateSpecMarkdown({
+          template,
+          description: options.description,
+          ingest,
+          projectPath: targetPath,
+        });
 
-      const payload = {
-        command: "spec generate",
-        template: template.id,
-        targetPath,
-        outputPath,
-        summary: ingest.summary,
-        frameworks: ingest.frameworks,
-        riskSurfaces: ingest.riskSurfaces,
-        ai: aiResult.ai,
-      };
+        progress.update(65, "spec generate: optional AI refinement");
+        const aiResult = await maybeEnhanceSpecWithAi({
+          enabled: Boolean(options.ai),
+          options,
+          targetPath,
+          template,
+          description: options.description,
+          ingest,
+          baseSpecMarkdown: deterministicMarkdown,
+        });
 
-      if (shouldEmitJson(options, command)) {
-        console.log(JSON.stringify(payload, null, 2));
-      } else {
-        console.log(pc.bold("Spec generated"));
-        console.log(pc.gray(`Template: ${template.id}`));
-        console.log(pc.gray(`Output: ${outputPath}`));
-        if (aiResult.ai) {
-          printAiSummary(aiResult.ai);
+        progress.update(85, "spec generate: writing spec artifact");
+        await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+        await fsp.writeFile(outputPath, `${aiResult.markdown.trimEnd()}\n`, "utf-8");
+
+        const payload = {
+          command: "spec generate",
+          template: template.id,
+          targetPath,
+          outputPath,
+          summary: ingest.summary,
+          frameworks: ingest.frameworks,
+          riskSurfaces: ingest.riskSurfaces,
+          ai: aiResult.ai,
+        };
+
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+        } else {
+          console.log(pc.bold("Spec generated"));
+          console.log(pc.gray(`Template: ${template.id}`));
+          console.log(pc.gray(`Output: ${outputPath}`));
+          if (aiResult.ai) {
+            printAiSummary(aiResult.ai);
+          }
         }
-      }
 
-      if (aiResult.ai?.budget?.blocking) {
-        process.exitCode = 2;
+        if (aiResult.ai?.budget?.blocking) {
+          process.exitCode = 2;
+        }
+        progress.complete("spec generate complete");
+      } catch (error) {
+        progress.fail("spec generate failed");
+        throw error;
       }
     });
 
@@ -485,85 +508,101 @@ export function registerSpecCommand(program) {
     .option("--no-preserve-manual", "Allow regenerated sections to overwrite manual edits")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const specPath = resolveSpecArtifactPath(targetPath, options.file);
-      const existingMarkdown = await fsp.readFile(specPath, "utf-8");
-
-      const inferredTemplate = inferTemplateFromSpec(existingMarkdown);
-      const resolvedTemplateId =
-        String(options.template || "").trim() || inferredTemplate || "api-service";
-      const template = resolveSpecTemplate(resolvedTemplateId);
-      const ingest = await collectCodebaseIngest({ rootPath: targetPath });
-      const regeneratedMarkdown = generateSpecMarkdown({
-        template,
-        description: options.description,
-        ingest,
-        projectPath: targetPath,
+      const emitJson = shouldEmitJson(options, command);
+      const progress = createProgressReporter({
+        quiet: emitJson || isQuietMode(options, command),
       });
+      progress.start("spec regenerate: loading current spec");
 
-      const merged = mergeSpecRegeneration({
-        existingMarkdown,
-        regeneratedMarkdown,
-        preserveManual: Boolean(options.preserveManual),
-      });
-      const diff = buildLineDiff(existingMarkdown, merged.mergedMarkdown);
-      const maxDiffLines = Number.parseInt(String(options.maxDiffLines || "220"), 10);
-      const diffPreview = renderLineDiff(diff, {
-        plain: true,
-        maxLines: Number.isFinite(maxDiffLines) ? maxDiffLines : 220,
-      });
+      try {
+        const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+        const specPath = resolveSpecArtifactPath(targetPath, options.file);
+        const existingMarkdown = await fsp.readFile(specPath, "utf-8");
 
-      const shouldWrite = !options.dryRun && diff.changed;
-      if (shouldWrite) {
-        await fsp.writeFile(specPath, merged.mergedMarkdown, "utf-8");
-      }
+        progress.update(25, "spec regenerate: rebuilding deterministic spec");
+        const inferredTemplate = inferTemplateFromSpec(existingMarkdown);
+        const resolvedTemplateId =
+          String(options.template || "").trim() || inferredTemplate || "api-service";
+        const template = resolveSpecTemplate(resolvedTemplateId);
+        const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+        const regeneratedMarkdown = generateSpecMarkdown({
+          template,
+          description: options.description,
+          ingest,
+          projectPath: targetPath,
+        });
 
-      const payload = {
-        command: "spec regenerate",
-        targetPath,
-        specPath,
-        template: template.id,
-        dryRun: Boolean(options.dryRun),
-        preserveManual: Boolean(options.preserveManual),
-        changed: diff.changed,
-        wroteFile: shouldWrite,
-        summary: merged.summary,
-        diff: {
-          added: diff.added,
-          removed: diff.removed,
-          changed: diff.changed,
-          preview: diffPreview,
-        },
-      };
-
-      if (shouldEmitJson(options, command)) {
-        console.log(JSON.stringify(payload, null, 2));
-        return;
-      }
-
-      console.log(pc.bold("Spec regeneration"));
-      console.log(pc.gray(`Spec: ${specPath}`));
-      console.log(pc.gray(`Template: ${template.id}`));
-      console.log(
-        pc.gray(
-          `Summary: changed=${diff.changed} added=${diff.added} removed=${diff.removed} preserved_manual_sections=${merged.summary.preservedManualSections.length}`
-        )
-      );
-      if (options.diff) {
-        const rendered = renderLineDiff(diff, {
-          plain: Boolean(options.plain),
+        progress.update(55, "spec regenerate: preserving manual sections");
+        const merged = mergeSpecRegeneration({
+          existingMarkdown,
+          regeneratedMarkdown,
+          preserveManual: Boolean(options.preserveManual),
+        });
+        const diff = buildLineDiff(existingMarkdown, merged.mergedMarkdown);
+        const maxDiffLines = Number.parseInt(String(options.maxDiffLines || "220"), 10);
+        const diffPreview = renderLineDiff(diff, {
+          plain: true,
           maxLines: Number.isFinite(maxDiffLines) ? maxDiffLines : 220,
         });
-        if (rendered.trim()) {
-          console.log(rendered);
+
+        progress.update(80, "spec regenerate: writing changes");
+        const shouldWrite = !options.dryRun && diff.changed;
+        if (shouldWrite) {
+          await fsp.writeFile(specPath, merged.mergedMarkdown, "utf-8");
         }
-      }
-      if (options.dryRun) {
-        console.log(pc.yellow("Dry run enabled: SPEC file was not modified."));
-      } else if (shouldWrite) {
-        console.log(pc.green(`Updated ${specPath}`));
-      } else {
-        console.log(pc.gray("No file write required; generated output matches current spec."));
+
+        const payload = {
+          command: "spec regenerate",
+          targetPath,
+          specPath,
+          template: template.id,
+          dryRun: Boolean(options.dryRun),
+          preserveManual: Boolean(options.preserveManual),
+          changed: diff.changed,
+          wroteFile: shouldWrite,
+          summary: merged.summary,
+          diff: {
+            added: diff.added,
+            removed: diff.removed,
+            changed: diff.changed,
+            preview: diffPreview,
+          },
+        };
+
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          progress.complete("spec regenerate complete");
+          return;
+        }
+
+        console.log(pc.bold("Spec regeneration"));
+        console.log(pc.gray(`Spec: ${specPath}`));
+        console.log(pc.gray(`Template: ${template.id}`));
+        console.log(
+          pc.gray(
+            `Summary: changed=${diff.changed} added=${diff.added} removed=${diff.removed} preserved_manual_sections=${merged.summary.preservedManualSections.length}`
+          )
+        );
+        if (options.diff) {
+          const rendered = renderLineDiff(diff, {
+            plain: Boolean(options.plain),
+            maxLines: Number.isFinite(maxDiffLines) ? maxDiffLines : 220,
+          });
+          if (rendered.trim()) {
+            console.log(rendered);
+          }
+        }
+        if (options.dryRun) {
+          console.log(pc.yellow("Dry run enabled: SPEC file was not modified."));
+        } else if (shouldWrite) {
+          console.log(pc.green(`Updated ${specPath}`));
+        } else {
+          console.log(pc.gray("No file write required; generated output matches current spec."));
+        }
+        progress.complete("spec regenerate complete");
+      } catch (error) {
+        progress.fail("spec regenerate failed");
+        throw error;
       }
     });
 

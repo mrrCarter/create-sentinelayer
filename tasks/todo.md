@@ -83,8 +83,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch D - UX + AI Feature Layer (P1)
 - PR 2.1 Ink interactive mode. (merged as #57)
 - PR 2.2 Terminal markdown renderer. (merged as #59)
-- PR 2.3 Diff-aware regeneration. (in progress on `roadmap/pr-2-3-diff-aware-regeneration`)
-- PR 2.4 Progress/notifications.
+- PR 2.3 Diff-aware regeneration. (merged as #60)
+- PR 2.4 Progress/notifications. (in progress on `roadmap/pr-2-4-progress-notifications`)
 - PR 3.3 AI-enhanced spec generation. (merged as #44)
 - PR 3.4 AI pre-scan. (merged as #45)
 
@@ -335,6 +335,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=6`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=6`)
   - PR 2.3 (diff-aware spec regeneration with manual section preservation) local evidence (branch `roadmap/pr-2-3-diff-aware-regeneration`):
+    - `npm run verify` (pass, e2e `46/46`; coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=6`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=6`)
+  - PR 2.4 (progress + notification reporter with global `--quiet`) local evidence (branch `roadmap/pr-2-4-progress-notifications`):
     - `npm run verify` (pass, e2e `46/46`; coverage statements `89.68%`, branches `71.02%`, functions `97.72%`, lines `89.68%`)
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=6`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=6`)
