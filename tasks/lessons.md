@@ -82,3 +82,4 @@
 - Eval-gating PRs can self-block unless they include their own deterministic evidence artifact; include `tasks/evals/<pr-id>.md` when introducing or changing eval-impact rules.
 - Coverage breadth expansion needs a curated include set: raising include count blindly can drop branch thresholds below gate; expand in batches and keep each batch reproducibly above floor.
 - When coverage thresholds are tight, validate the exact `c8` include set with full `npm run verify` before pushing so Omar loop iterations are spent on findings, not preventable CI coverage failures.
+- Command-surface regressions are best caught with registration-contract tests (subcommand tree + option flags) plus lightweight parse-level guardrail tests that fail before network/file side effects.

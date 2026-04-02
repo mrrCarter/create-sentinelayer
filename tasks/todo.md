@@ -187,7 +187,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch L - Coverage Breadth and Command Tests (2026-04-02 audit)
 - [x] PR 101 coverage instrumentation expansion + daemon/auth/swarm runtime test additions.
-- [ ] PR 102 command unit-test layer for high-risk command modules.
+- [x] PR 102 command unit-test layer for high-risk command modules.
 
 ## Execution Board (2026-04-02)
 
@@ -204,11 +204,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-101-coverage-instrumentation` (current)
-2. `roadmap/pr-102-command-unit-tests`
-3. `roadmap/pr-103-jsdoc-high-risk`
-4. `roadmap/pr-104-dependabot-templates`
-5. `roadmap/pr-105-todo-sync-release-tag`
+1. `roadmap/pr-102-command-unit-tests` (current)
+2. `roadmap/pr-103-jsdoc-high-risk`
+3. `roadmap/pr-104-dependabot-templates`
+4. `roadmap/pr-105-todo-sync-release-tag`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -429,3 +428,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Expanded `c8` instrumentation scope from 8 to 24 modules and added deterministic unit coverage for `auth/session-store`, `daemon/error-worker`, `daemon/budget-governor`, and `swarm/runtime` negative/budget paths.
+
+  - PR 102 (command unit-test layer) local evidence (branch `roadmap/pr-102-command-unit-tests`):
+    - `npm run verify` (pass, e2e `84/84`; unit tests `134/134`; coverage statements `89.84%`, branches `70.08%`, functions `91.30%`, lines `89.84%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added high-risk command contract tests for `ai`, `daemon`, `scan`, `review`, and `swarm` plus guardrail validation error coverage for conflicting flags and invalid inputs.
