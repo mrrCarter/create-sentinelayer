@@ -469,6 +469,32 @@ Lifecycle artifacts:
 
 When an assignment exists for the same work item, Jira issue keys are synced into assignment ledger records for deterministic handoff continuity.
 
+## Runtime budget quarantine (Phase 13.4 slice)
+
+Daemon budget governor commands now enforce hard-limit transitions with quarantine grace and deterministic kill path:
+
+- `sl daemon budget check <work-item-id> --usage-json '{"tokensUsed":150}' --budget-json '{"maxTokens":100,"quarantineGraceSeconds":30}'`
+- `sl daemon budget status --work-item-id <work-item-id> --json`
+
+Lifecycle states:
+
+- `WITHIN_BUDGET`
+- `WARNING_THRESHOLD`
+- `HARD_LIMIT_QUARANTINED`
+- `HARD_LIMIT_SQUASHED`
+
+Governor behavior:
+
+- crossing a hard limit transitions the work item into quarantine (`action=QUARANTINE`, queue/assignment status `BLOCKED`)
+- if hard-limit usage persists past `quarantineGraceSeconds`, governor triggers deterministic kill (`action=KILL`, queue/assignment status `SQUASHED`)
+- warning thresholds (`warningThresholdPercent`) surface near-limit signals without blocking
+
+Budget artifacts:
+
+- `.sentinelayer/observability/error-daemon/budget-state.json`
+- `.sentinelayer/observability/error-daemon/budget-events.ndjson`
+- `.sentinelayer/observability/error-daemon/budget-runs/budget-check-*.json`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -792,6 +818,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer daemon error record|worker|queue` ingests admin errors and routes deterministic daemon queue work items
 - `create-sentinelayer daemon assign claim|heartbeat|release|reassign|list` manages shared daemon assignment leases and lifecycle states
 - `create-sentinelayer daemon jira open|start|comment|transition|list` manages Jira lifecycle evidence tied to daemon work items
+- `create-sentinelayer daemon budget check|status` enforces budget warning/quarantine/kill governance with reproducible artifacts
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
