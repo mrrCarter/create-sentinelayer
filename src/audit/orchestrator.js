@@ -6,6 +6,10 @@ import { resolveOutputRoot } from "../config/service.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
 import { runDeterministicReviewPipeline } from "../review/local-review.js";
 import {
+  renderArchitectureSpecialistMarkdown,
+  runArchitectureSpecialist,
+} from "./agents/architecture.js";
+import {
   renderSecuritySpecialistMarkdown,
   runSecuritySpecialist,
 } from "./agents/security.js";
@@ -229,6 +233,20 @@ export async function runAuditOrchestrator({
       await fsp.writeFile(
         specialistReportPath,
         `${renderSecuritySpecialistMarkdown(securitySpecialist).trim()}\n`,
+        "utf-8"
+      );
+    } else if (agent.id === "architecture") {
+      const architectureSpecialist = runArchitectureSpecialist({
+        findings: deterministicBaseline.findings,
+        ingest,
+      });
+      findings = architectureSpecialist.findings;
+      summary = architectureSpecialist.summary;
+      confidence = architectureSpecialist.confidence;
+      specialistReportPath = path.join(agentsDirectory, "ARCHITECTURE_AGENT_REPORT.md");
+      await fsp.writeFile(
+        specialistReportPath,
+        `${renderArchitectureSpecialistMarkdown(architectureSpecialist).trim()}\n`,
         "utf-8"
       );
     }
