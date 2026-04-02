@@ -2412,6 +2412,52 @@ test("CLI review deterministic command writes layered review artifacts", async (
   }
 });
 
+test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-ai-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "index.js"),
+      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "--ai", "--ai-dry-run", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review");
+    assert.equal(payload.ai.enabled, true);
+    assert.equal(payload.ai.dryRun, true);
+    assert.equal(payload.ai.findingCount >= 1, true);
+    assert.match(String(payload.ai.reportPath || ""), /[\\/]REVIEW_AI\.md$/);
+    assert.match(String(payload.ai.reportJsonPath || ""), /[\\/]REVIEW_AI\.json$/);
+    assert.match(String(payload.ai.promptPath || ""), /[\\/]REVIEW_AI_PROMPT\.txt$/);
+    assert.equal(payload.p2 >= payload.deterministicSummary.P2, true);
+
+    const aiReportText = await readFile(payload.ai.reportPath, "utf-8");
+    assert.match(aiReportText, /REVIEW_AI/);
+    assert.match(aiReportText, /DRY_RUN_RESPONSE/);
+
+    const aiReportJson = JSON.parse(await readFile(payload.ai.reportJsonPath, "utf-8"));
+    assert.equal(aiReportJson.dryRun, true);
+    assert.equal(aiReportJson.parser, "json");
+    assert.equal(Array.isArray(aiReportJson.findings), true);
+
+    const costHistoryText = await readFile(payload.ai.cost.filePath, "utf-8");
+    assert.match(costHistoryText, /-ai\"/);
+
+    const telemetryText = await readFile(payload.ai.telemetry.filePath, "utf-8");
+    assert.match(telemetryText, /\"eventType\":\"usage\"/);
+    assert.ok(String(payload.ai.telemetry.usageEventId || "").length > 8);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI review deterministic staged mode scopes to staged files only", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-pipeline-"));
   try {
