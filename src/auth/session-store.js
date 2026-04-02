@@ -107,10 +107,18 @@ async function readMetadata({ homeDir } = {}) {
 
 async function writeMetadata(filePath, metadata) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${JSON.stringify(metadata, null, 2)}\n`, {
+  const serialized = `${JSON.stringify(metadata, null, 2)}\n`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fsp.writeFile(tempPath, serialized, {
     encoding: "utf-8",
     mode: 0o600,
   });
+  try {
+    await fsp.chmod(tempPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  await fsp.rename(tempPath, filePath);
   try {
     await fsp.chmod(filePath, 0o600);
   } catch {

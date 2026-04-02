@@ -256,6 +256,47 @@ async function readResponseBodyWithLimit(response, maxBytes = MAX_RESPONSE_BODY_
   return rawBody;
 }
 
+function isPassThroughBody(body) {
+  if (body === undefined || body === null) {
+    return false;
+  }
+  if (typeof body === "string") {
+    return true;
+  }
+  if (body instanceof Uint8Array || body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    return true;
+  }
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+    return true;
+  }
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    return true;
+  }
+  if (typeof Blob !== "undefined" && body instanceof Blob) {
+    return true;
+  }
+  return false;
+}
+
+function serializeRequestBody(body, requestHeaders = {}) {
+  if (body === undefined) {
+    return undefined;
+  }
+  if (isPassThroughBody(body)) {
+    return body;
+  }
+  const contentType = String(
+    requestHeaders["Content-Type"] || requestHeaders["content-type"] || ""
+  )
+    .trim()
+    .toLowerCase();
+  const expectsJson = !contentType || contentType.includes("application/json") || contentType.includes("+json");
+  if (expectsJson) {
+    return JSON.stringify(body);
+  }
+  return String(body);
+}
+
 export async function requestJson(
   url,
   {
@@ -297,17 +338,20 @@ export async function requestJson(
         Accept: "application/json",
         ...headers,
       };
+      const hasExplicitContentType =
+        requestHeaders["Content-Type"] !== undefined || requestHeaders["content-type"] !== undefined;
       if (
         body !== undefined &&
-        requestHeaders["Content-Type"] === undefined &&
-        requestHeaders["content-type"] === undefined
+        !hasExplicitContentType &&
+        !isPassThroughBody(body)
       ) {
         requestHeaders["Content-Type"] = "application/json";
       }
+      const requestBody = serializeRequestBody(body, requestHeaders);
       const response = await fetchImpl(String(url), {
         method,
         headers: requestHeaders,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: requestBody,
         signal: activeSignal,
       });
 

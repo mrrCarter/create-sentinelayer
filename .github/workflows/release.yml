@@ -33,7 +33,6 @@ concurrency:
 jobs:
   verify-required-checks:
     name: Verify Required Checks
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 12
     permissions:
@@ -46,8 +45,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
+          PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
         run: |
           set -euo pipefail
+          if [[ "${PUBLISH_REQUESTED}" != "true" ]]; then
+            echo "Publish not requested; skipping required check verification."
+            exit 0
+          fi
           required_checks=("Omar Gate" "Quality Summary")
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
@@ -118,8 +122,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm pack
-          tarball="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          pack_json="$(npm pack --json)"
+          tarball="$(echo "${pack_json}" | jq -r '.[0].filename')"
+          test -n "${tarball}" || (echo "::error::Unable to resolve packed tarball filename." && exit 1)
+          printf "%s" "${tarball}" > create-sentinelayer.tarball
           sha256sum "${tarball}" > create-sentinelayer.sha256
 
       - name: Upload immutable release artifact
@@ -128,6 +134,7 @@ jobs:
           name: create-sentinelayer-release-bundle
           path: |
             create-sentinelayer-*.tgz
+            create-sentinelayer.tarball
             create-sentinelayer.sha256
 
       - name: Attest immutable release artifact provenance
@@ -170,17 +177,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd release-bundle
-          sha256sum -c create-sentinelayer.sha256
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          test -f "release-bundle/${TARBALL_NAME}" || (echo "::error::Tarball '${TARBALL_NAME}' missing from artifact bundle." && exit 1)
+          (cd release-bundle && sha256sum -c create-sentinelayer.sha256)
 
       - name: Validate packaged CLI install
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 release-bundle/create-sentinelayer-*.tgz | head -n 1)"
-          npm install --global "${TARBALL}"
-          create-sentinelayer --version
-          sentinel --version
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          TARBALL_PATH="release-bundle/${TARBALL_NAME}"
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "${TARBALL_PATH}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
 
       - name: Enforce NPM token when publish is requested
         if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT != 'true' && env.DRY_RUN != 'true'
@@ -197,8 +207,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 release-bundle/create-sentinelayer-*.tgz | head -n 1)"
-          npm publish "${TARBALL}" --access public --provenance
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          npm publish "release-bundle/${TARBALL_NAME}" --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
 

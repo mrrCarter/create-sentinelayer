@@ -35,7 +35,6 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -49,7 +48,6 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
-      id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - name: Validate Sentinelayer token secret
