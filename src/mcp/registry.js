@@ -101,13 +101,13 @@ const aidenIdProvisioningBindingSchema = z
       }),
     security: z
       .object({
-        requires_human_approval: z.boolean().default(false),
+        requires_human_approval: z.boolean().default(true),
         kill_switch: z.enum(["enabled", "disabled"]).default("enabled"),
         scopes: z.array(z.string().min(1)).default(["identity:create"]),
       })
       .strict()
       .default({
-        requires_human_approval: false,
+        requires_human_approval: true,
         kill_switch: "enabled",
         scopes: ["identity:create"],
       }),
@@ -158,11 +158,26 @@ const mcpServerTransportSchema = z.discriminatedUnion("mode", [
         .object({
           mode: z.enum(["bearer", "api_key", "oauth2", "none"]).default("bearer"),
           secret_ref: z.string().min(1).optional(),
+          audience: z.string().min(1).optional(),
         })
+        .strict()
         .optional(),
       headers: z.record(z.string(), z.string()).optional(),
     })
-    .strict(),
+    .strict()
+    .superRefine((transport, ctx) => {
+      if (!transport.auth) {
+        return;
+      }
+      const mode = transport.auth.mode;
+      if ((mode === "bearer" || mode === "oauth2") && !transport.auth.audience) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["auth", "audience"],
+          message: "audience is required when auth.mode is bearer or oauth2.",
+        });
+      }
+    }),
 ]);
 
 const mcpServerConfigSchema = z
@@ -183,13 +198,13 @@ const mcpServerConfigSchema = z
       }),
     security: z
       .object({
-        requires_human_approval: z.boolean().default(false),
+        requires_human_approval: z.boolean().default(true),
         allow_network: z.boolean().default(false),
         kill_switch: z.enum(["enabled", "disabled"]).default("enabled"),
       })
       .strict()
       .default({
-        requires_human_approval: false,
+        requires_human_approval: true,
         allow_network: false,
         kill_switch: "enabled",
       }),
@@ -358,7 +373,7 @@ export function buildAidenIdRegistryTemplate({ generatedAt = new Date().toISOStr
           max_runtime_ms: 20000,
         },
         security: {
-          requires_human_approval: false,
+          requires_human_approval: true,
           kill_switch: "enabled",
           scopes: ["identity:create"],
         },
@@ -410,7 +425,7 @@ export function buildAidenIdProvisioningAdapterTemplate({
           max_runtime_ms: 20000,
         },
         security: {
-          requires_human_approval: false,
+          requires_human_approval: true,
           kill_switch: "enabled",
           scopes: ["identity:create"],
         },
@@ -448,7 +463,7 @@ export function buildMcpServerConfigTemplate({
       max_runtime_ms: 60000,
     },
     security: {
-      requires_human_approval: false,
+      requires_human_approval: true,
       allow_network: false,
       kill_switch: "enabled",
     },

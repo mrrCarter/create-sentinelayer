@@ -77,3 +77,4 @@
 - Boolean normalization helpers must preserve native `false` inputs (not coerce through `value || ""`), or operator kill/maintenance toggles can silently fail and corrupt control-plane state.
 - MCP adapter contracts should be validated against the registry file they bind to; schema-only validation misses tool-name drift that breaks runtime dispatch.
 - Validate reported audit findings against the active branch before starting remediation PRs, then scope each PR to current confirmed gaps only.
+- For long autonomous PR chains, spawn each new PR from a fresh `origin/main` worktree; this avoids hidden local `main` divergence during `--ff-only` pulls.
