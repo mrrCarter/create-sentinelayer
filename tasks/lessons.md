@@ -85,3 +85,4 @@
 - Command-surface regressions are best caught with registration-contract tests (subcommand tree + option flags) plus lightweight parse-level guardrail tests that fail before network/file side effects.
 - For security-critical modules, JSDoc should focus on precedence rules, token/credential handling, and failure semantics so reviewers can verify guardrails without reverse-engineering implementation details.
 - Governance-only PRs (Dependabot/templates/instructions) should still run full verify + Omar loop; this catches gate interactions like eval-impact or workflow syntax drift before merge.
+- Treat release-tag findings as stateful: verify `release-please` manifest/version and open release PRs before cutting tags, so manual tags are never created against stale audit assumptions.

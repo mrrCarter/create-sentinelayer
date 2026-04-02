@@ -105,7 +105,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 2.1 Ink interactive mode. (merged as #57)
 - PR 2.2 Terminal markdown renderer. (merged as #59)
 - PR 2.3 Diff-aware regeneration. (merged as #60)
-- PR 2.4 Progress/notifications. (in progress on `roadmap/pr-2-4-progress-notifications`)
+- PR 2.4 Progress/notifications. (merged as #61)
 - PR 3.3 AI-enhanced spec generation. (merged as #44)
 - PR 3.4 AI pre-scan. (merged as #45)
 
@@ -176,8 +176,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.5 Operator control plane UX (agent roster, stop/confirm control, budget health colors, session timers). (merged as #91)
 - PR 13.6 Artifact lineage tree (`observability/` reproducibility bundles per run/agent/loop/jira linkage). (merged as #92)
 - PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping). (merged as #93)
-- PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path).
-- PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract.
+- PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path). (merged as #94)
+- PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract. (merged as #95)
 
 ### Batch K - Governance and Security Hardening Loop (2026-04-02 audit)
 - [x] PR 97 AI governance contracts (AGENTS.md, CLAUDE.md, path-scoped instructions, PR template, CODEOWNERS).
@@ -192,7 +192,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch M - Documentation and Governance Follow-Through (2026-04-02 audit)
 - [x] PR 103 JSDoc coverage for high-risk auth/ai/mcp/cost modules.
 - [x] PR 104 dependabot + issue templates.
-- [ ] PR 105 todo sync + release tag validation.
+- [x] PR 105 todo sync + release tag validation.
 
 ## Execution Board (2026-04-02)
 
@@ -209,8 +209,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-104-dependabot-templates` (current)
-2. `roadmap/pr-105-todo-sync-release-tag`
+1. `roadmap/pr-105-todo-sync-release-tag` (current)
+2. `roadmap/pr-106-split-oversized-command-files`
+3. `roadmap/pr-107-command-lazy-loading`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -449,3 +450,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Added `.github/dependabot.yml` and typed issue intake templates under `.github/ISSUE_TEMPLATE/` for reproducible bug/feature submissions.
+
+  - PR 105 (todo sync + release tag validation) findings validation:
+    - `npm run verify` (pass, e2e `84/84`; unit tests `134/134`; coverage statements `90.12%`, branches `70.08%`, functions `91.30%`, lines `90.12%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Confirmed stale roadmap rows were corrected for merged PRs `#61`, `#94`, and `#95`.
+    - Validated release state with `git ls-remote --tags origin` (no tags), `.release-please-manifest.json` (`0.1.0`), and no open release-please PR.
+    - Recorded deterministic release evidence in `tasks/release-tag-validation-2026-04-02.md`; no manual `v0.2.0` tag was cut because no `0.2.0` release commit exists on `main`.
