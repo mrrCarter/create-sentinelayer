@@ -2,55 +2,126 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { CLI_VERSION, runLegacyCliWithErrorHandling } from "./legacy-cli.js";
-import { registerInitCommand } from "./commands/init.js";
-import { registerOmarGateCommand } from "./commands/omargate.js";
-import { registerAuditCommand } from "./commands/audit.js";
-import { registerPersonaCommand } from "./commands/persona.js";
-import { registerApplyCommand } from "./commands/apply.js";
-import { registerConfigCommand } from "./commands/config.js";
-import { registerIngestCommand } from "./commands/ingest.js";
-import { registerSpecCommand } from "./commands/spec.js";
-import { registerPromptCommand } from "./commands/prompt.js";
-import { registerScanCommand } from "./commands/scan.js";
-import { registerGuideCommand } from "./commands/guide.js";
-import { registerCostCommand } from "./commands/cost.js";
-import { registerTelemetryCommand } from "./commands/telemetry.js";
-import { registerAuthCommand } from "./commands/auth.js";
-import { registerWatchCommand } from "./commands/watch.js";
-import { registerMcpCommand } from "./commands/mcp.js";
-import { registerPluginCommand } from "./commands/plugin.js";
-import { registerAiCommand } from "./commands/ai.js";
-import { registerReviewCommand } from "./commands/review.js";
-import { registerChatCommand } from "./commands/chat.js";
-import { registerPolicyCommand } from "./commands/policy.js";
-import { registerSwarmCommand } from "./commands/swarm.js";
-import { registerDaemonCommand } from "./commands/daemon.js";
 
-const COMMAND_SET = new Set([
-  "init",
-  "omargate",
-  "audit",
-  "persona",
-  "apply",
-  "config",
-  "ingest",
-  "spec",
-  "prompt",
-  "scan",
-  "guide",
-  "cost",
-  "telemetry",
-  "auth",
-  "watch",
-  "mcp",
-  "plugin",
-  "ai",
-  "review",
-  "chat",
-  "policy",
-  "swarm",
-  "daemon",
-]);
+const COMMAND_REGISTRARS = {
+  init: {
+    loader: () => import("./commands/init.js"),
+    exportName: "registerInitCommand",
+    needsLegacy: true,
+  },
+  omargate: {
+    loader: () => import("./commands/omargate.js"),
+    exportName: "registerOmarGateCommand",
+    needsLegacy: true,
+  },
+  audit: {
+    loader: () => import("./commands/audit.js"),
+    exportName: "registerAuditCommand",
+    needsLegacy: true,
+  },
+  persona: {
+    loader: () => import("./commands/persona.js"),
+    exportName: "registerPersonaCommand",
+    needsLegacy: true,
+  },
+  apply: {
+    loader: () => import("./commands/apply.js"),
+    exportName: "registerApplyCommand",
+    needsLegacy: true,
+  },
+  config: {
+    loader: () => import("./commands/config.js"),
+    exportName: "registerConfigCommand",
+    needsLegacy: false,
+  },
+  ingest: {
+    loader: () => import("./commands/ingest.js"),
+    exportName: "registerIngestCommand",
+    needsLegacy: false,
+  },
+  spec: {
+    loader: () => import("./commands/spec.js"),
+    exportName: "registerSpecCommand",
+    needsLegacy: false,
+  },
+  prompt: {
+    loader: () => import("./commands/prompt.js"),
+    exportName: "registerPromptCommand",
+    needsLegacy: false,
+  },
+  scan: {
+    loader: () => import("./commands/scan.js"),
+    exportName: "registerScanCommand",
+    needsLegacy: false,
+  },
+  guide: {
+    loader: () => import("./commands/guide.js"),
+    exportName: "registerGuideCommand",
+    needsLegacy: false,
+  },
+  cost: {
+    loader: () => import("./commands/cost.js"),
+    exportName: "registerCostCommand",
+    needsLegacy: false,
+  },
+  telemetry: {
+    loader: () => import("./commands/telemetry.js"),
+    exportName: "registerTelemetryCommand",
+    needsLegacy: false,
+  },
+  auth: {
+    loader: () => import("./commands/auth.js"),
+    exportName: "registerAuthCommand",
+    needsLegacy: false,
+  },
+  watch: {
+    loader: () => import("./commands/watch.js"),
+    exportName: "registerWatchCommand",
+    needsLegacy: false,
+  },
+  mcp: {
+    loader: () => import("./commands/mcp.js"),
+    exportName: "registerMcpCommand",
+    needsLegacy: false,
+  },
+  plugin: {
+    loader: () => import("./commands/plugin.js"),
+    exportName: "registerPluginCommand",
+    needsLegacy: false,
+  },
+  ai: {
+    loader: () => import("./commands/ai.js"),
+    exportName: "registerAiCommand",
+    needsLegacy: false,
+  },
+  review: {
+    loader: () => import("./commands/review.js"),
+    exportName: "registerReviewCommand",
+    needsLegacy: false,
+  },
+  chat: {
+    loader: () => import("./commands/chat.js"),
+    exportName: "registerChatCommand",
+    needsLegacy: false,
+  },
+  policy: {
+    loader: () => import("./commands/policy.js"),
+    exportName: "registerPolicyCommand",
+    needsLegacy: false,
+  },
+  swarm: {
+    loader: () => import("./commands/swarm.js"),
+    exportName: "registerSwarmCommand",
+    needsLegacy: false,
+  },
+  daemon: {
+    loader: () => import("./commands/daemon.js"),
+    exportName: "registerDaemonCommand",
+    needsLegacy: false,
+  },
+};
+
+const COMMAND_SET = new Set(Object.keys(COMMAND_REGISTRARS));
 
 function shouldBypassCommander(rawArgs) {
   if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
@@ -77,7 +148,33 @@ function shouldBypassCommander(rawArgs) {
   return !COMMAND_SET.has(first);
 }
 
-export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling } = {}) {
+async function registerCommands(program, { invokeLegacy, onlyCommand } = {}) {
+  const commandNames =
+    onlyCommand && COMMAND_REGISTRARS[onlyCommand]
+      ? [onlyCommand]
+      : Object.keys(COMMAND_REGISTRARS);
+
+  for (const commandName of commandNames) {
+    const descriptor = COMMAND_REGISTRARS[commandName];
+    const loaded = await descriptor.loader();
+    const registerFn = loaded[descriptor.exportName];
+    if (typeof registerFn !== "function") {
+      throw new Error(
+        `Command registrar '${descriptor.exportName}' was not exported by '${commandName}' loader.`
+      );
+    }
+    if (descriptor.needsLegacy) {
+      registerFn(program, invokeLegacy);
+    } else {
+      registerFn(program);
+    }
+  }
+}
+
+export async function buildCliProgram({
+  invokeLegacy = runLegacyCliWithErrorHandling,
+  onlyCommand = null,
+} = {}) {
   const program = new Command();
 
   program
@@ -89,29 +186,10 @@ export function buildCliProgram({ invokeLegacy = runLegacyCliWithErrorHandling }
     .option("--json", "Emit machine-readable output when supported")
     .showHelpAfterError();
 
-  registerInitCommand(program, invokeLegacy);
-  registerOmarGateCommand(program, invokeLegacy);
-  registerAuditCommand(program, invokeLegacy);
-  registerPersonaCommand(program, invokeLegacy);
-  registerApplyCommand(program, invokeLegacy);
-  registerConfigCommand(program);
-  registerIngestCommand(program);
-  registerSpecCommand(program);
-  registerPromptCommand(program);
-  registerScanCommand(program);
-  registerGuideCommand(program);
-  registerCostCommand(program);
-  registerTelemetryCommand(program);
-  registerAuthCommand(program);
-  registerWatchCommand(program);
-  registerMcpCommand(program);
-  registerPluginCommand(program);
-  registerAiCommand(program);
-  registerReviewCommand(program);
-  registerChatCommand(program);
-  registerPolicyCommand(program);
-  registerSwarmCommand(program);
-  registerDaemonCommand(program);
+  await registerCommands(program, {
+    invokeLegacy,
+    onlyCommand: onlyCommand && COMMAND_SET.has(onlyCommand) ? onlyCommand : null,
+  });
 
   return program;
 }
@@ -122,6 +200,9 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
     return;
   }
 
-  const program = buildCliProgram({ invokeLegacy: runLegacyCliWithErrorHandling });
+  const program = await buildCliProgram({
+    invokeLegacy: runLegacyCliWithErrorHandling,
+    onlyCommand: rawArgs[0],
+  });
   await program.parseAsync(["node", "create-sentinelayer", ...rawArgs]);
 }

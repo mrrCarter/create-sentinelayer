@@ -413,8 +413,8 @@ test("Unit: cost tracker estimates, aggregates, and enforces budget deterministi
   );
 });
 
-test("Unit: CLI command tree registers auth/watch/plugin/policy/ai/review/chat/swarm/daemon command groups", () => {
-  const program = buildCliProgram({ invokeLegacy: async () => {} });
+test("Unit: CLI command tree registers auth/watch/plugin/policy/ai/review/chat/swarm/daemon command groups", async () => {
+  const program = await buildCliProgram({ invokeLegacy: async () => {} });
   const commandNames = program.commands.map((command) => command.name());
   assert.equal(commandNames.includes("auth"), true);
   assert.equal(commandNames.includes("watch"), true);
