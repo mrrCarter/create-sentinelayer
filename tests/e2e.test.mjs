@@ -2929,12 +2929,16 @@ test("CLI swarm create pen-test mode writes policy-governed report and audit art
     assert.match(String(payload.reportJsonPath || ""), /[\\/]PENTEST_REPORT\.json$/);
     assert.match(String(payload.reportMarkdownPath || ""), /[\\/]PENTEST_REPORT\.md$/);
     assert.match(String(payload.auditLogPath || ""), /[\\/]audit\.jsonl$/);
+    assert.match(String(payload.identityIsolationPath || ""), /[\\/]IDENTITY_ISOLATION\.json$/);
+    assert.match(String(payload.cleanupContractPath || ""), /[\\/]CLEANUP_CONTRACT\.json$/);
     assert.equal(payload.supportedPentestScenarios.includes("auth-bypass"), true);
 
     const report = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
     assert.equal(report.scenarioId, "auth-bypass");
     assert.equal(report.target.targetId, "tgt_demo");
     assert.equal(report.summary.findingCount, 0);
+    assert.equal(report.auditChain.entryCount, 3);
+    assert.equal(typeof report.auditChain.tailEntryHash, "string");
 
     const auditEntries = String(await readFile(payload.auditLogPath, "utf-8"))
       .trim()
@@ -2943,6 +2947,8 @@ test("CLI swarm create pen-test mode writes policy-governed report and audit art
       .map((line) => JSON.parse(line));
     assert.equal(auditEntries.length, 3);
     assert.equal(auditEntries.every((entry) => entry.response.dryRun === true), true);
+    assert.equal(auditEntries.every((entry) => typeof entry.entryHash === "string"), true);
+    assert.equal(auditEntries.every((entry) => typeof entry.entryHmac === "string"), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -3477,6 +3483,130 @@ test("CLI ai identity revoke execute mode calls API and updates lifecycle status
     assert.equal(showPayload.identity.status, "REVOKED");
   } finally {
     await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity audit/kill-all/legal-hold commands enforce stale and hold controls", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-identity-harden-"));
+  try {
+    const registryPath = path.join(tempRoot, ".sentinelayer", "aidenid", "identity-registry.json");
+    await mkdir(path.dirname(registryPath), { recursive: true });
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          generatedAt: "2026-05-01T00:00:00.000Z",
+          identities: [
+            {
+              identityId: "id_stale",
+              emailAddress: "stale@aidenid.com",
+              status: "ACTIVE",
+              projectId: "proj_test",
+              expiresAt: "2026-01-01T00:00:00.000Z",
+              metadata: {
+                tags: ["campaign-red", "ops"],
+                legalHoldStatus: "NONE",
+              },
+            },
+            {
+              identityId: "id_hold",
+              emailAddress: "hold@aidenid.com",
+              status: "ACTIVE",
+              projectId: "proj_test",
+              expiresAt: "2026-01-01T00:00:00.000Z",
+              legalHoldStatus: "HOLD",
+              metadata: {
+                tags: ["campaign-red", "ops"],
+                legalHoldStatus: "HOLD",
+              },
+            },
+            {
+              identityId: "id_fresh",
+              emailAddress: "fresh@aidenid.com",
+              status: "ACTIVE",
+              projectId: "proj_test",
+              expiresAt: "2027-01-01T00:00:00.000Z",
+              metadata: {
+                tags: ["campaign-red"],
+                legalHoldStatus: "NONE",
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+
+    const audit = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "audit", "--path", tempRoot, "--stale", "--json"],
+    });
+    assert.equal(audit.code, 0, audit.stderr || audit.stdout);
+    const auditPayload = JSON.parse(String(audit.stdout || "").trim());
+    assert.equal(auditPayload.command, "ai identity audit");
+    assert.equal(auditPayload.staleOnly, true);
+    assert.equal(auditPayload.staleCount, 2);
+    assert.equal(auditPayload.identities.some((item) => item.identityId === "id_stale"), true);
+
+    const holdStatus = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "legal-hold", "status", "id_hold", "--path", tempRoot, "--json"],
+    });
+    assert.equal(holdStatus.code, 0, holdStatus.stderr || holdStatus.stdout);
+    const holdPayload = JSON.parse(String(holdStatus.stdout || "").trim());
+    assert.equal(holdPayload.command, "ai identity legal-hold status");
+    assert.equal(holdPayload.identityId, "id_hold");
+    assert.equal(holdPayload.underHold, true);
+    assert.equal(holdPayload.status, "HOLD");
+
+    const killAll = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "kill-all",
+        "--path",
+        tempRoot,
+        "--tags",
+        "campaign-red",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(killAll.code, 0, killAll.stderr || killAll.stdout);
+    const killPayload = JSON.parse(String(killAll.stdout || "").trim());
+    assert.equal(killPayload.command, "ai identity kill-all");
+    assert.equal(killPayload.execute, true);
+    assert.equal(killPayload.blockedCount, 1);
+    assert.equal(killPayload.updatedCount, 2);
+    assert.equal(killPayload.apiCalled, false);
+    assert.equal(killPayload.blockedIdentityIds.includes("id_hold"), true);
+
+    const staleShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "show", "id_stale", "--path", tempRoot, "--json"],
+    });
+    assert.equal(staleShow.code, 0, staleShow.stderr || staleShow.stdout);
+    const staleShowPayload = JSON.parse(String(staleShow.stdout || "").trim());
+    assert.equal(staleShowPayload.identity.status, "SQUASHED");
+
+    const holdShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "show", "id_hold", "--path", tempRoot, "--json"],
+    });
+    assert.equal(holdShow.code, 0, holdShow.stderr || holdShow.stdout);
+    const holdShowPayload = JSON.parse(String(holdShow.stdout || "").trim());
+    assert.equal(holdShowPayload.identity.status, "ACTIVE");
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
