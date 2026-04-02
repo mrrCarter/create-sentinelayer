@@ -71,6 +71,13 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
+function deterministicJitterFactor(sessionId, attempt) {
+  const seed = `${String(sessionId || "").trim()}:${Number(attempt || 0)}`;
+  const digest = crypto.createHash("sha256").update(seed).digest();
+  const bucket = digest[0] / 255;
+  return 0.8 + bucket * 0.4;
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -167,7 +174,7 @@ async function pollCliAuthSession({
     );
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
-    const jitterFactor = 0.8 + Math.random() * 0.4;
+    const jitterFactor = deterministicJitterFactor(sessionId, attempt);
     const remainingMs = Math.max(0, deadline - Date.now());
     const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
     await sleep(nextDelayMs);
@@ -213,10 +220,27 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   if (!normalizedTokenId) {
     return false;
   }
-  await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
-    method: "DELETE",
-    headers: toAuthHeader(authToken),
-  });
+  try {
+    await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
+      method: "DELETE",
+      headers: toAuthHeader(authToken),
+    });
+  } catch (error) {
+    if (error instanceof SentinelayerApiError) {
+      const status = Number(error.status || 0);
+      const normalizedCode = String(error.code || "").trim().toUpperCase();
+      const alreadyRevoked = status === 404 || status === 410;
+      const knownNotFoundCodes = new Set([
+        "NOT_FOUND",
+        "TOKEN_NOT_FOUND",
+        "TOKEN_ALREADY_REVOKED",
+      ]);
+      if (alreadyRevoked || knownNotFoundCodes.has(normalizedCode)) {
+        return true;
+      }
+    }
+    throw error;
+  }
   return true;
 }
 

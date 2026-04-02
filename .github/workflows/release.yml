@@ -52,6 +52,22 @@ jobs:
       - name: Run npm audit (prod deps only)
         run: npm audit --omit=dev --audit-level=high
 
+      - name: Build immutable release tarball + digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack
+          tarball="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          sha256sum "${tarball}" > create-sentinelayer.sha256
+
+      - name: Upload immutable release artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: create-sentinelayer-release-bundle
+          path: |
+            create-sentinelayer-*.tgz
+            create-sentinelayer.sha256
+
   publish:
     name: Publish
     runs-on: ubuntu-22.04
@@ -77,22 +93,27 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build release tarball
-        run: npm pack
+      - name: Download immutable release artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: create-sentinelayer-release-bundle
+          path: release-bundle
 
-      - name: Validate packaged CLI install
+      - name: Verify artifact digest
+        shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          cd release-bundle
+          sha256sum -c create-sentinelayer.sha256
+
+      - name: Validate packaged CLI install
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 release-bundle/create-sentinelayer-*.tgz | head -n 1)"
           npm install --global "${TARBALL}"
           create-sentinelayer --version
           sentinel --version
-
-      - name: Upload release tarball artifact
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
-        with:
-          name: create-sentinelayer-tarball
-          path: create-sentinelayer-*.tgz
 
       - name: Enforce NPM token when publish is requested
         if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT != 'true' && env.DRY_RUN != 'true'
@@ -106,6 +127,18 @@ jobs:
 
       - name: Publish to npm
         if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT == 'true' && env.DRY_RUN != 'true'
-        run: npm publish --access public
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 release-bundle/create-sentinelayer-*.tgz | head -n 1)"
+          npm publish "${TARBALL}" --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+
+      - name: Emit rollback runbook guidance
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger rollback workflow: \`gh workflow run rollback.yml -f version=<previous-version> -f execute=true\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Runbook: \`docs/RELEASE_ROLLBACK.md\`" >> "$GITHUB_STEP_SUMMARY"
