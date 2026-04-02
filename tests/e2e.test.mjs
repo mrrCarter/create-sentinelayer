@@ -2667,6 +2667,50 @@ test("CLI swarm plan writes deterministic execution artifacts", async () => {
   }
 });
 
+test("CLI swarm run executes governed mock runtime and writes runtime artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-run-"));
+  try {
+    await writeFile(path.join(tempRoot, "index.js"), "export const status = 'ok';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "run",
+        "--path",
+        tempRoot,
+        "--agents",
+        "security,testing",
+        "--max-steps",
+        "8",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "swarm run");
+    assert.equal(payload.engine, "mock");
+    assert.equal(payload.execute, false);
+    assert.equal(payload.completed, true);
+    assert.match(String(payload.runtimeJsonPath || ""), /[\\/]SWARM_RUNTIME\.json$/);
+    assert.match(String(payload.runtimeEventsPath || ""), /[\\/]events\.ndjson$/);
+
+    const summary = JSON.parse(await readFile(payload.runtimeJsonPath, "utf-8"));
+    assert.equal(summary.runId, payload.runtimeRunId);
+    assert.equal(summary.completed, true);
+    assert.equal(Array.isArray(summary.selectedAgents), true);
+
+    const events = String(await readFile(payload.runtimeEventsPath, "utf-8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    assert.equal(events.length >= 2, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
   try {

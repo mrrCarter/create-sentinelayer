@@ -291,6 +291,23 @@ Global budgets can be set per run:
 - `--max-tool-calls`
 - `--warning-threshold-percent`
 
+## Playwright agent runtime (Phase 12.2 slice)
+
+The swarm runtime loop can now be executed directly from CLI:
+
+- `sl swarm run --path . --agents security,testing --json` (default mock runtime, dry-run)
+- `sl swarm run --plan-file .sentinelayer/swarms/<plan-run-id>/SWARM_PLAN.json --engine playwright --execute --start-url https://example.com`
+
+Runtime artifacts are persisted under:
+
+- `.sentinelayer/swarms/<runtime-run-id>/runtime/SWARM_RUNTIME.json`
+- `.sentinelayer/swarms/<runtime-run-id>/runtime/SWARM_RUNTIME.md`
+- `.sentinelayer/swarms/<runtime-run-id>/runtime/events.ndjson`
+
+Optional Playwright actions can be provided via playbook JSON:
+
+- `--playbook-file <path>` where file contract is `{ "actions": [ ... ] }`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
