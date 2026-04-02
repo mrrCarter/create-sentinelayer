@@ -6,6 +6,12 @@ import pc from "picocolors";
 import { buildSwarmExecutionPlan, writeSwarmPlanArtifacts } from "../swarm/factory.js";
 import { loadSwarmRegistry, selectSwarmAgents } from "../swarm/registry.js";
 import { loadSwarmPlanFile, loadSwarmPlaybook, runSwarmRuntime } from "../swarm/runtime.js";
+import {
+  parseScenarioFile,
+  renderScenarioTemplate,
+  validateScenarioSpec,
+  writeScenarioTemplate,
+} from "../swarm/scenario-dsl.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -112,6 +118,89 @@ export function registerSwarmCommand(program) {
       }
     });
 
+  const scenario = swarm
+    .command("scenario")
+    .description("Create and validate swarm scenario DSL files");
+
+  scenario
+    .command("init")
+    .description("Write scenario DSL template")
+    .argument("<scenarioId>", "Scenario identifier")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--output <path>", "Output file path (default: .sentinelayer/scenarios/<scenarioId>.sls)")
+    .option("--start-url <url>", "Default start URL for template", "https://example.com")
+    .option("--json", "Emit machine-readable output")
+    .action(async (scenarioId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await writeScenarioTemplate({
+        scenarioId,
+        targetPath,
+        outputFile: options.output,
+        startUrl: options.startUrl,
+      });
+      const payload = {
+        command: "swarm scenario init",
+        scenarioId,
+        filePath: result.filePath,
+        template: renderScenarioTemplate({
+          scenarioId,
+          startUrl: options.startUrl,
+        }),
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("Swarm scenario template generated"));
+      console.log(pc.gray(`Scenario: ${scenarioId}`));
+      console.log(pc.gray(`File: ${result.filePath}`));
+    });
+
+  scenario
+    .command("validate")
+    .description("Validate scenario DSL file")
+    .option("--file <path>", "Scenario DSL file path")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      if (!normalizeString(options.file)) {
+        throw new Error("--file is required.");
+      }
+      const parsed = await parseScenarioFile(options.file);
+      const validation = validateScenarioSpec(parsed.spec);
+      const payload = {
+        command: "swarm scenario validate",
+        filePath: parsed.filePath,
+        scenarioId: parsed.spec.id,
+        startUrl: parsed.spec.startUrl,
+        actionCount: parsed.spec.actions.length,
+        valid: validation.valid,
+        errors: validation.errors,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        if (!validation.valid) {
+          process.exitCode = 2;
+        }
+        return;
+      }
+
+      if (validation.valid) {
+        console.log(pc.green("Scenario DSL valid"));
+      } else {
+        console.log(pc.red("Scenario DSL invalid"));
+        for (const error of validation.errors) {
+          console.log(`- ${error}`);
+        }
+        process.exitCode = 2;
+      }
+      console.log(pc.gray(`File: ${parsed.filePath}`));
+    });
+
   swarm
     .command("plan")
     .description("Build deterministic swarm execution plan + artifacts")
@@ -208,6 +297,7 @@ export function registerSwarmCommand(program) {
     .option("--path <path>", "Target workspace path override")
     .option("--plan-file <path>", "Existing `SWARM_PLAN.json` to execute")
     .option("--playbook-file <path>", "Optional Playwright playbook JSON ({ actions: [...] })")
+    .option("--scenario-file <path>", "Scenario DSL file (.sls) for runtime actions")
     .option("--registry-file <path>", "Optional custom swarm registry file (when building plan inline)")
     .option("--agents <ids>", "Comma-separated agent ids for inline plan mode", "security,testing,reliability")
     .option("--scenario <id>", "Scenario identifier for inline plan mode", "qa_audit")
@@ -231,7 +321,25 @@ export function registerSwarmCommand(program) {
     .action(async (targetPathArg, options, command) => {
       const emitJson = shouldEmitJson(options, command);
       const explicitTargetPath = normalizeString(options.path || targetPathArg);
-      const playbookActions = await loadSwarmPlaybook(options.playbookFile);
+      if (normalizeString(options.playbookFile) && normalizeString(options.scenarioFile)) {
+        throw new Error("Use either --playbook-file or --scenario-file, not both.");
+      }
+
+      let playbookActions = await loadSwarmPlaybook(options.playbookFile);
+      let scenarioSource = "flags";
+      let scenarioIdOverride = "";
+      let startUrlOverride = "";
+      if (normalizeString(options.scenarioFile)) {
+        const parsedScenario = await parseScenarioFile(options.scenarioFile);
+        const validation = validateScenarioSpec(parsedScenario.spec);
+        if (!validation.valid) {
+          throw new Error(`Scenario DSL invalid: ${validation.errors.join("; ")}`);
+        }
+        playbookActions = parsedScenario.spec.actions;
+        scenarioSource = "scenario_dsl";
+        scenarioIdOverride = normalizeString(parsedScenario.spec.id);
+        startUrlOverride = normalizeString(parsedScenario.spec.startUrl);
+      }
 
       let plan;
       let inlinePlanArtifacts = null;
@@ -256,7 +364,7 @@ export function registerSwarmCommand(program) {
         const selectedAgents = ensureOmarIncluded(registry.agents, selected.selected);
         plan = buildSwarmExecutionPlan({
           targetPath,
-          scenario: options.scenario,
+          scenario: scenarioIdOverride || options.scenario,
           objective: options.objective,
           agents: selectedAgents,
           maxParallel: parseMaxParallel(options.maxParallel),
@@ -286,7 +394,7 @@ export function registerSwarmCommand(program) {
         engine: options.engine,
         execute: Boolean(options.execute),
         maxSteps: parseMaxSteps(options.maxSteps),
-        startUrl: options.startUrl,
+        startUrl: startUrlOverride || options.startUrl,
         playbookActions,
         outputDir: options.outputDir,
         env: process.env,
@@ -298,6 +406,8 @@ export function registerSwarmCommand(program) {
         runtimeRunId: runtime.runId,
         planRunId: runtime.planRunId,
         scenario: runtime.scenario,
+        scenarioSource,
+        scenarioFile: normalizeString(options.scenarioFile),
         engine: runtime.engine,
         execute: runtime.execute,
         completed: runtime.completed,
