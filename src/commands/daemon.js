@@ -37,6 +37,11 @@ import {
   normalizeOperatorStopMode,
 } from "../daemon/operator-control.js";
 import { buildArtifactLineageIndex, listArtifactLineage } from "../daemon/artifact-lineage.js";
+import {
+  buildHybridScopeMap,
+  listHybridScopeMaps,
+  showHybridScopeMap,
+} from "../daemon/hybrid-mapper.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -213,6 +218,18 @@ function printLineageSummary(payload) {
   for (const item of payload.workItems) {
     console.log(
       `- ${item.workItemId} | ${item.severity} | ${item.workItemStatus} | agent=${item.links?.agentIdentity || "unassigned"} | jira=${item.links?.jiraIssueKey || "n/a"} | budget=${item.links?.budgetLifecycleState || "WITHIN_BUDGET"} | operator_snapshot=${item.links?.latestOperatorSnapshotRunId || "n/a"}`
+    );
+  }
+}
+
+function printHybridMapSummary(payload) {
+  console.log(pc.bold("OMAR hybrid mapping overlay"));
+  console.log(pc.gray(`Index: ${payload.mapIndexPath}`));
+  console.log(pc.gray(`Events: ${payload.mapEventsPath}`));
+  console.log(pc.gray(`visible=${payload.visibleCount} total=${payload.totalCount}`));
+  for (const map of payload.maps) {
+    console.log(
+      `- ${map.workItemId} | run=${map.runId} | status=${map.status || "n/a"} | seeds=${map.deterministicSeedCount || 0} | scoped=${map.scopedFileCount || 0}`
     );
   }
 }
@@ -1176,6 +1193,155 @@ export function registerDaemonCommand(program) {
       console.log(pc.gray(`Index: ${listed.lineageIndexPath}`));
       console.log(
         `${record.workItemId} status=${record.workItemStatus} jira=${record.links?.jiraIssueKey || "n/a"} agent=${record.links?.agentIdentity || "unassigned"}`
+      );
+    });
+
+  const map = daemon
+    .command("map")
+    .description("Hybrid deterministic + semantic codebase mapping overlay for work-item impact scope");
+
+  map
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--work-item-id <id>", "Optional work item filter")
+    .option("--limit <n>", "Maximum map entries to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listHybridScopeMaps({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId: options.workItemId,
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon map",
+        targetPath,
+        mapIndexPath: listed.mapIndexPath,
+        mapEventsPath: listed.mapEventsPath,
+        generatedAt: listed.generatedAt,
+        totalCount: listed.totalCount,
+        visibleCount: listed.maps.length,
+        maps: listed.maps,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printHybridMapSummary(payload);
+    });
+
+  map
+    .command("scope")
+    .description("Build one hybrid scope map for a daemon work item")
+    .argument("<workItemId>", "Queue work item id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--max-files <n>", "Maximum scoped files to emit", "40")
+    .option("--graph-depth <n>", "Import-graph expansion depth", "2")
+    .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const mapped = await buildHybridScopeMap({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        maxFiles: parsePositiveInteger(options.maxFiles, "max-files", 40),
+        graphDepth: parsePositiveInteger(options.graphDepth, "graph-depth", 2),
+        nowIso: options.nowIso,
+      });
+      const payload = {
+        command: "daemon map scope",
+        targetPath,
+        runId: mapped.runId,
+        runPath: mapped.runPath,
+        mapIndexPath: mapped.mapIndexPath,
+        mapEventsPath: mapped.mapEventsPath,
+        strategy: mapped.strategy,
+        summary: mapped.summary,
+        workItem: mapped.workItem,
+        scopedFiles: mapped.scopedFiles,
+        importGraph: mapped.importGraph,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Hybrid scope map generated"));
+      console.log(pc.gray(`Run: ${mapped.runId}`));
+      console.log(pc.gray(`Artifact: ${mapped.runPath}`));
+      console.log(
+        `${mapped.workItem.workItemId} scoped_files=${mapped.summary.scopedFileCount} graph_nodes=${mapped.summary.graphNodeCount}`
+      );
+    });
+
+  map
+    .command("list")
+    .description("List hybrid scope map records")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--work-item-id <id>", "Optional work item filter")
+    .option("--limit <n>", "Maximum map entries to return", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const listed = await listHybridScopeMaps({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId: options.workItemId,
+        limit: parsePositiveInteger(options.limit, "limit", 50),
+      });
+      const payload = {
+        command: "daemon map list",
+        targetPath,
+        mapIndexPath: listed.mapIndexPath,
+        mapEventsPath: listed.mapEventsPath,
+        generatedAt: listed.generatedAt,
+        totalCount: listed.totalCount,
+        visibleCount: listed.maps.length,
+        maps: listed.maps,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printHybridMapSummary(payload);
+    });
+
+  map
+    .command("show")
+    .description("Show one hybrid scope map artifact by work item (or explicit run)")
+    .argument("<workItemId>", "Queue work item id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+    .option("--run-id <id>", "Optional explicit map run id")
+    .option("--json", "Emit machine-readable output")
+    .action(async (workItemId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const shown = await showHybridScopeMap({
+        targetPath,
+        outputDir: options.outputDir,
+        workItemId,
+        runId: options.runId,
+      });
+      const payload = {
+        command: "daemon map show",
+        targetPath,
+        mapIndexPath: shown.mapIndexPath,
+        mapEventsPath: shown.mapEventsPath,
+        mapPath: shown.mapPath,
+        map: shown.map,
+        payload: shown.payload,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold("Hybrid scope map"));
+      console.log(pc.gray(`Artifact: ${shown.mapPath}`));
+      console.log(
+        `${shown.payload.workItem.workItemId} scoped_files=${shown.payload.summary?.scopedFileCount || 0} run=${shown.payload.runId}`
       );
     });
 
