@@ -14,6 +14,10 @@ import {
   runComplianceSpecialist,
 } from "./agents/compliance.js";
 import {
+  renderDocumentationSpecialistMarkdown,
+  runDocumentationSpecialist,
+} from "./agents/documentation.js";
+import {
   renderPerformanceSpecialistMarkdown,
   runPerformanceSpecialist,
 } from "./agents/performance.js";
@@ -304,6 +308,20 @@ export async function runAuditOrchestrator({
       await fsp.writeFile(
         specialistReportPath,
         `${renderComplianceSpecialistMarkdown(complianceSpecialist).trim()}\n`,
+        "utf-8"
+      );
+    } else if (agent.id === "documentation") {
+      const documentationSpecialist = runDocumentationSpecialist({
+        findings: deterministicBaseline.findings,
+        ingest,
+      });
+      findings = documentationSpecialist.findings;
+      summary = documentationSpecialist.summary;
+      confidence = documentationSpecialist.confidence;
+      specialistReportPath = path.join(agentsDirectory, "DOCUMENTATION_AGENT_REPORT.md");
+      await fsp.writeFile(
+        specialistReportPath,
+        `${renderDocumentationSpecialistMarkdown(documentationSpecialist).trim()}\n`,
         "utf-8"
       );
     }

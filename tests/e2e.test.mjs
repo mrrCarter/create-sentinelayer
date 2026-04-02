@@ -2431,6 +2431,41 @@ test("CLI audit compliance runs specialist agent and emits dedicated compliance 
   }
 });
 
+test("CLI audit documentation runs specialist agent and emits dedicated documentation report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-documentation-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "docs"), { recursive: true });
+    const largeModule = "export function task(){ return 'doc-gap'; }\n".repeat(340);
+    await writeFile(path.join(tempRoot, "src", "docs", "runtime.js"), largeModule, "utf-8");
+    await mkdir(path.join(tempRoot, "docs"), { recursive: true });
+    await writeFile(path.join(tempRoot, "docs", "overview.md"), "# Overview\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "documentation", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit documentation");
+    assert.match(String(payload.documentationAgentPath || ""), /[\\/]documentation\.json$/);
+    assert.match(
+      String(payload.documentationSpecialistReportPath || ""),
+      /[\\/]DOCUMENTATION_AGENT_REPORT\.md$/
+    );
+
+    const documentationAgent = JSON.parse(await readFile(payload.documentationAgentPath, "utf-8"));
+    assert.equal(documentationAgent.agentId, "documentation");
+    assert.equal(Array.isArray(documentationAgent.findings), true);
+
+    const documentationMarkdown = await readFile(payload.documentationSpecialistReportPath, "utf-8");
+    assert.match(documentationMarkdown, /DOCUMENTATION_AGENT_REPORT/);
+    assert.match(documentationMarkdown, /Documentation inventory:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {
