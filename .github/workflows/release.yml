@@ -17,15 +17,47 @@ permissions:
   id-token: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-prod
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  quality_preflight:
+    name: Quality Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate quality-gate check for tag releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "Not a tag release ref; skipping quality preflight check."
+            exit 0
+          fi
+
+          check_conclusion="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+            --jq '.check_runs[] | select(.name=="Quality Summary") | .conclusion' | head -n 1 || true)"
+
+          if [[ "${check_conclusion}" != "success" ]]; then
+            echo "::error::Quality Summary is not successful for commit ${GITHUB_SHA}. Found conclusion='${check_conclusion:-missing}'."
+            exit 1
+          fi
+
+          echo "Quality Summary check is successful for ${GITHUB_SHA}."
+
   verify:
     name: Release Verify
+    needs: quality_preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -46,7 +78,12 @@ jobs:
         run: npm run verify
 
       - name: Build release tarball
-        run: npm pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          sha256sum "${TARBALL}" | tee release-sha256.txt
 
       - name: Validate packaged CLI install
         run: |
@@ -60,7 +97,9 @@ jobs:
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: create-sentinelayer-tarball
-          path: create-sentinelayer-*.tgz
+          path: |
+            create-sentinelayer-*.tgz
+            release-sha256.txt
           if-no-files-found: error
 
   omar_release_gate:
@@ -123,15 +162,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - name: Download verified tarball artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
+          name: create-sentinelayer-tarball
+          path: .
 
       - name: Validate NPM publish token secret
         shell: bash
@@ -141,10 +176,22 @@ jobs:
           set -euo pipefail
           test -n "${NPM_TOKEN}" || (echo "Missing NPM_TOKEN" && exit 1)
 
-      - name: Install dependencies (no lifecycle scripts)
-        run: npm ci --ignore-scripts
+      - name: Verify tarball digest before publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum --check release-sha256.txt
+
+      - name: Resolve tarball path
+        id: tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          test -n "${TARBALL}" || (echo "Missing tarball artifact" && exit 1)
+          echo "path=${TARBALL}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

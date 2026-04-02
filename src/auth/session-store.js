@@ -6,6 +6,7 @@ import process from "node:process";
 
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
+const FILE_TOKEN_ENCRYPTION_VERSION = 1;
 
 function nowIso() {
   return new Date().toISOString();
@@ -52,8 +53,78 @@ function normalizeMetadata(raw = {}) {
     createdAt: String(raw.createdAt || "").trim() || nowIso(),
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
-    token: String(raw.token || "").trim() || null,
+    tokenEncVersion: Number(raw.tokenEncVersion || 0) || null,
+    tokenCiphertext: String(raw.tokenCiphertext || "").trim() || null,
+    tokenIv: String(raw.tokenIv || "").trim() || null,
+    tokenTag: String(raw.tokenTag || "").trim() || null,
+    tokenSalt: String(raw.tokenSalt || "").trim() || null,
+    token: null,
   };
+}
+
+function resolveEncryptionPassphrase(apiUrl) {
+  const explicit = String(process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  let username = "";
+  try {
+    username = String(os.userInfo().username || "").trim();
+  } catch {
+    username = "";
+  }
+
+  const host = String(os.hostname() || "").trim();
+  return `${username}:${host}:${String(apiUrl || "").trim().toLowerCase()}`;
+}
+
+function encryptFileToken({ token, apiUrl }) {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const passphrase = resolveEncryptionPassphrase(apiUrl);
+  const key = crypto.scryptSync(passphrase, salt, 32);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(String(token || ""), "utf-8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    tokenEncVersion: FILE_TOKEN_ENCRYPTION_VERSION,
+    tokenCiphertext: encrypted.toString("base64"),
+    tokenIv: iv.toString("base64"),
+    tokenTag: tag.toString("base64"),
+    tokenSalt: salt.toString("base64"),
+  };
+}
+
+function decryptFileToken(metadata) {
+  const encVersion = Number(metadata?.tokenEncVersion || 0);
+  if (encVersion !== FILE_TOKEN_ENCRYPTION_VERSION) {
+    return null;
+  }
+
+  const ciphertext = String(metadata?.tokenCiphertext || "").trim();
+  const iv = String(metadata?.tokenIv || "").trim();
+  const tag = String(metadata?.tokenTag || "").trim();
+  const salt = String(metadata?.tokenSalt || "").trim();
+  const apiUrl = String(metadata?.apiUrl || "").trim();
+
+  if (!ciphertext || !iv || !tag || !salt || !apiUrl) {
+    return null;
+  }
+
+  try {
+    const key = crypto.scryptSync(resolveEncryptionPassphrase(apiUrl), Buffer.from(salt, "base64"), 32);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64"));
+    decipher.setAuthTag(Buffer.from(tag, "base64"));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(ciphertext, "base64")),
+      decipher.final(),
+    ]);
+    return decrypted.toString("utf-8");
+  } catch {
+    return null;
+  }
 }
 
 async function loadKeytarClient() {
@@ -138,13 +209,14 @@ export async function readStoredSession({ homeDir } = {}) {
     };
   }
 
-  if (!metadata.token) {
+  const decryptedToken = decryptFileToken(metadata);
+  if (!decryptedToken) {
     return null;
   }
   return {
     ...metadata,
     filePath,
-    token: metadata.token,
+    token: decryptedToken,
     storage: "file",
   };
 }
@@ -208,12 +280,26 @@ export async function writeStoredSession(
     nextMetadata.storage = "keyring";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
+    nextMetadata.tokenEncVersion = null;
+    nextMetadata.tokenCiphertext = null;
+    nextMetadata.tokenIv = null;
+    nextMetadata.tokenTag = null;
+    nextMetadata.tokenSalt = null;
     nextMetadata.token = null;
   } else {
+    const encryptedToken = encryptFileToken({
+      token: normalizedToken,
+      apiUrl: normalizedApiUrl,
+    });
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
-    nextMetadata.token = normalizedToken;
+    nextMetadata.tokenEncVersion = encryptedToken.tokenEncVersion;
+    nextMetadata.tokenCiphertext = encryptedToken.tokenCiphertext;
+    nextMetadata.tokenIv = encryptedToken.tokenIv;
+    nextMetadata.tokenTag = encryptedToken.tokenTag;
+    nextMetadata.tokenSalt = encryptedToken.tokenSalt;
+    nextMetadata.token = null;
   }
 
   await writeMetadata(filePath, nextMetadata);

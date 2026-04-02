@@ -1,0 +1,92 @@
+name: Release Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "Published create-sentinelayer version to deprecate (for example: 0.1.0)"
+        required: true
+        type: string
+      replacement_version:
+        description: "Optional replacement version hint"
+        required: false
+        type: string
+      reason:
+        description: "Rollback/deprecation reason shown to npm users"
+        required: true
+        default: "Security rollback: do not install this version."
+        type: string
+      dry_run:
+        description: "Preview rollback command without performing npm deprecate"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  rollback:
+    name: Deprecate Published Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-publish
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Validate NPM token secret
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${NPM_TOKEN}" || (echo "Missing NPM_TOKEN" && exit 1)
+
+      - name: Build rollback message
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(echo "${{ inputs.package_version }}" | xargs)"
+          reason="$(echo "${{ inputs.reason }}" | xargs)"
+          replacement="$(echo "${{ inputs.replacement_version }}" | xargs)"
+          test -n "${version}" || (echo "package_version is required" && exit 1)
+          test -n "${reason}" || (echo "reason is required" && exit 1)
+          message="${reason}"
+          if [ -n "${replacement}" ]; then
+            message="${message} Please use create-sentinelayer@${replacement}."
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "message=${message}" >> "${GITHUB_OUTPUT}"
+
+      - name: Dry-run rollback
+        if: ${{ inputs.dry_run == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Dry-run: npm deprecate create-sentinelayer@${{ steps.metadata.outputs.version }} \"${{ steps.metadata.outputs.message }}\""
+
+      - name: Execute rollback deprecation
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: npm deprecate "create-sentinelayer@${{ steps.metadata.outputs.version }}" "${{ steps.metadata.outputs.message }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Emit rollback summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Rollback Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- package: \`create-sentinelayer\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- version: \`${{ steps.metadata.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- dry_run: \`${{ inputs.dry_run }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- message: \`${{ steps.metadata.outputs.message }}\`" >> "$GITHUB_STEP_SUMMARY"

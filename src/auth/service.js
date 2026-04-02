@@ -130,8 +130,8 @@ async function pollCliAuthSession({
   pollIntervalSeconds,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
-  const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
   const deadline = Date.now() + timeout;
+  let attempt = 0;
 
   while (Date.now() < deadline) {
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
@@ -146,8 +146,17 @@ async function pollCliAuthSession({
     if (status === "approved" && payload.auth_token) {
       return payload;
     }
-
-    await sleep(pollIntervalMs);
+    const serverPollIntervalMs = Math.max(
+      250,
+      Math.round(Number(payload.poll_interval_seconds || pollIntervalSeconds || 2) * 1000)
+    );
+    const backoffMultiplier = 2 ** Math.min(attempt, 5);
+    const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
+    const jitterFactor = 0.8 + Math.random() * 0.4;
+    const remainingMs = Math.max(0, deadline - Date.now());
+    const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
+    await sleep(nextDelayMs);
+    attempt += 1;
   }
 
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {
