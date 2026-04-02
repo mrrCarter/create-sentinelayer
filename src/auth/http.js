@@ -240,12 +240,20 @@ export async function requestJson(
         : controller.signal;
 
     try {
+      const requestHeaders = {
+        Accept: "application/json",
+        ...headers,
+      };
+      if (
+        body !== undefined &&
+        requestHeaders["Content-Type"] === undefined &&
+        requestHeaders["content-type"] === undefined
+      ) {
+        requestHeaders["Content-Type"] = "application/json";
+      }
       const response = await fetchImpl(String(url), {
         method,
-        headers: {
-          "Content-Type": "application/json",
-          ...headers,
-        },
+        headers: requestHeaders,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: activeSignal,
       });
@@ -284,7 +292,12 @@ export async function requestJson(
       if (normalizedError.code === "CLIENT_ABORTED") {
         throw normalizedError;
       }
-      registerCircuitFailure(circuitScope);
+      const shouldRecordCircuitFailure =
+        shouldRetry(normalizedError) &&
+        !(timedOut && normalizedError.code === "TIMEOUT");
+      if (shouldRecordCircuitFailure) {
+        registerCircuitFailure(circuitScope);
+      }
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
         await sleep(getRetryDelayMs(attemptIndex, retryBackoffMs, normalizedError.retryAfterMs));
         continue;

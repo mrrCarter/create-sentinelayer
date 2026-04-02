@@ -135,3 +135,59 @@ test("Unit auth http: caller abort is non-retryable and returned as CLIENT_ABORT
   );
   assert.equal(callCount, 1);
 });
+
+test("Unit auth http: requestJson omits JSON content-type for body-less GET", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+
+  let seenHeaders = null;
+  const fetchImpl = async (_url, init) => {
+    seenHeaders = init.headers;
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await requestJson("https://api.example.com/test", {
+    method: "GET",
+    fetchImpl,
+  });
+  assert.equal(typeof seenHeaders, "object");
+  assert.equal(seenHeaders.Accept, "application/json");
+  assert.equal(Object.prototype.hasOwnProperty.call(seenHeaders, "Content-Type"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(seenHeaders, "content-type"), false);
+});
+
+test("Unit auth http: local timeout does not open circuit breaker", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+
+  const neverResolvingFetch = async (_url, init) =>
+    new Promise((_resolve, reject) => {
+      const error = new Error("request timed out");
+      error.name = "AbortError";
+      init.signal.addEventListener("abort", () => reject(error), { once: true });
+    });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          method: "GET",
+          maxAttempts: 1,
+          timeoutMs: 1,
+          fetchImpl: neverResolvingFetch,
+        }),
+      (error) => error instanceof SentinelayerApiError && error.code === "TIMEOUT"
+    );
+  }
+
+  const successPayload = await requestJson("https://api.example.com/test", {
+    method: "GET",
+    maxAttempts: 1,
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+  });
+  assert.equal(successPayload.ok, true);
+});

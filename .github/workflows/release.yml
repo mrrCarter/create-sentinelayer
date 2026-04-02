@@ -391,8 +391,29 @@ jobs:
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || (echo "::error::Missing OIDC token request context." && exit 1)
           test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" || (echo "::error::Missing OIDC token request token." && exit 1)
 
-      - name: Publish to npm
-        run: npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public
+      - name: Publish canary tag to npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public --tag next
+
+      - name: Verify canary dist-tag resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          next_version="$(npm view create-sentinelayer@next version | tr -d '\r' | xargs)"
+          if [[ "${next_version}" != "${release_version}" ]]; then
+            echo "::error::Canary verification failed: expected next=${release_version}, got ${next_version:-missing}."
+            exit 1
+          fi
+
+      - name: Promote release to latest dist-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          npm dist-tag add "create-sentinelayer@${release_version}" latest
 
   rollback_on_failure:
     name: Rollback Hook
