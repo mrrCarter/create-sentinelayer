@@ -317,11 +317,21 @@ async function rotateStoredApiTokenIfNeeded({
     return { session, rotated: false };
   }
 
+  const rotationSeed = `${session.tokenId || "no-token-id"}:${session.tokenExpiresAt || "no-expiry"}:${
+    tokenLabel || "auto"
+  }:${tokenTtlDays || DEFAULT_API_TOKEN_TTL_DAYS}`;
+  const rotationIdempotencyKey = buildIdempotencyKey(
+    rotationSeed,
+    "token-rotate",
+    session.user?.id || session.tokenId || "session"
+  );
+
   const issued = await issueApiToken({
     apiUrl: session.apiUrl,
     authToken: session.token,
     tokenLabel,
     tokenTtlDays,
+    idempotencyKey: rotationIdempotencyKey,
   });
 
   const nextSession = await writeStoredSession(

@@ -242,7 +242,11 @@ jobs:
               }
               NODE
               npm ci --ignore-scripts --prefer-offline=false
-              npm pack >/dev/null
+              if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+                NPM_CONFIG_IGNORE_SCRIPTS=true npm pack >/dev/null
+              else
+                npm pack >/dev/null
+              fi
             )
             ls -1 "${workspace}"/create-sentinelayer-*.tgz | head -n 1
           }
@@ -338,6 +342,45 @@ jobs:
       cancel-in-progress: true
     environment: production
     steps:
+      - name: Assert production environment protection policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          policy_snapshot="$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/environments/production" \
+            --jq '[
+              ([.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers | length)] | max // 0),
+              ([.protection_rules[]? | select(.type=="required_reviewers") | .prevent_self_review] | max // false),
+              (.deployment_branch_policy.protected_branches // false),
+              (.deployment_branch_policy.custom_branch_policies // false)
+            ] | @tsv' \
+            | tr -d '\r' || true)"
+          reviewer_count=""
+          prevent_self_review=""
+          protected_branches=""
+          custom_branch_policies=""
+          IFS=$'\t' read -r reviewer_count prevent_self_review protected_branches custom_branch_policies <<< "${policy_snapshot}"
+          case "${reviewer_count}" in
+            ''|*[!0-9]*)
+              echo "::error::Unable to resolve required reviewer protection for environment 'production'."
+              exit 1
+              ;;
+          esac
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::Environment 'production' must require at least one reviewer."
+            exit 1
+          fi
+          if [[ "${prevent_self_review}" != "true" ]]; then
+            echo "::error::Environment 'production' must enforce prevent_self_review=true."
+            exit 1
+          fi
+          if [[ "${protected_branches}" != "true" || "${custom_branch_policies}" != "false" ]]; then
+            echo "::error::Environment 'production' must enforce protected branch deployments only."
+            exit 1
+          fi
+
       - name: Download staged release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

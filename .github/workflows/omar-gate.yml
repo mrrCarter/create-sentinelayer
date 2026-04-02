@@ -55,10 +55,18 @@ jobs:
         run: |
           set -euo pipefail
           trusted="false"
+          allowlisted_same_repo_pr_actors="mrrCarter"
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
             trusted="true"
           elif [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${GITHUB_REPOSITORY}" ]]; then
-            trusted="true"
+            case ",${allowlisted_same_repo_pr_actors}," in
+              *",${GITHUB_ACTOR},"*)
+                trusted="true"
+                ;;
+              *)
+                trusted="false"
+                ;;
+            esac
           fi
           echo "trusted=${trusted}" >> "${GITHUB_OUTPUT}"
       - name: Enforce manual invocation allowlist
