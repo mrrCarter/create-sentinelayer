@@ -10,6 +10,7 @@ import {
   renderGuideExport,
   SUPPORTED_GUIDE_EXPORT_FORMATS,
 } from "../guide/generator.js";
+import { renderTerminalMarkdown } from "../ui/markdown.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -138,6 +139,36 @@ export function registerGuideCommand(program) {
       console.log(pc.gray(`Format: ${format}`));
       console.log(pc.gray(`Output: ${outputPath}`));
       console.log(pc.gray(`Issues: ${guideDoc.tickets.length}`));
+    });
+
+  guide
+    .command("show")
+    .description("Render an existing BUILD_GUIDE artifact in terminal markdown")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--file <path>", "Guide file path relative to --path", "BUILD_GUIDE.md")
+    .option("--plain", "Disable terminal markdown styling")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const guidePath = path.resolve(targetPath, String(options.file || "BUILD_GUIDE.md").trim());
+      if (!fs.existsSync(guidePath)) {
+        throw new Error(`Guide artifact not found: ${guidePath}`);
+      }
+
+      const markdown = await fsp.readFile(guidePath, "utf-8");
+      const payload = {
+        command: "guide show",
+        guidePath,
+        lineCount: markdown.split(/\r?\n/).length,
+        preview: markdown,
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(renderTerminalMarkdown(markdown, { plain: Boolean(options.plain) }));
     });
 }
 

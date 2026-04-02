@@ -62,3 +62,4 @@
 
 - Keep an explicit execution board with exact next branch names to avoid branch drift during long autonomous runs.
 - Treat `gh run watch` on the `Omar Gate` workflow as a required blocking merge step on every PR; do not merge from status assumptions.
+- Implement terminal markdown as a shared utility and reuse it across artifact show/preview commands (`spec`, `prompt`, `guide`) so styling changes stay centralized and testable.

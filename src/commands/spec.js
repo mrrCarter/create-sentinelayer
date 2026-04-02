@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
@@ -16,6 +17,7 @@ import { collectCodebaseIngest } from "../ingest/engine.js";
 import { generateSpecMarkdown, resolveSpecTemplate } from "../spec/generator.js";
 import { SPEC_TEMPLATES } from "../spec/templates.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
+import { renderTerminalMarkdown } from "../ui/markdown.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -38,6 +40,21 @@ function parsePercent(rawValue, field) {
     throw new Error(`${field} must be between 0 and 100.`);
   }
   return normalized;
+}
+
+function resolveSpecArtifactPath(targetPath, explicitPath) {
+  const explicit = String(explicitPath || "").trim();
+  if (explicit) {
+    return path.resolve(targetPath, explicit);
+  }
+
+  const candidates = [path.join(targetPath, "SPEC.md"), path.join(targetPath, "docs", "spec.md")];
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (found) {
+    return found;
+  }
+
+  throw new Error("No spec artifact found. Generate one with 'spec generate' or pass --file.");
 }
 
 function estimateTokenCount(text) {
@@ -446,6 +463,37 @@ export function registerSpecCommand(program) {
       if (aiResult.ai?.budget?.blocking) {
         process.exitCode = 2;
       }
+    });
+
+  spec
+    .command("show")
+    .description("Render an existing SPEC artifact in terminal markdown")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--file <path>", "Spec file path relative to --path")
+    .option("--plain", "Disable terminal markdown styling")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const specPath = resolveSpecArtifactPath(targetPath, options.file);
+      const markdown = await fsp.readFile(specPath, "utf-8");
+
+      if (shouldEmitJson(options, command)) {
+        console.log(
+          JSON.stringify(
+            {
+              command: "spec show",
+              specPath,
+              lineCount: markdown.split(/\r?\n/).length,
+              preview: markdown,
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
+      console.log(renderTerminalMarkdown(markdown, { plain: Boolean(options.plain) }));
     });
 }
 
