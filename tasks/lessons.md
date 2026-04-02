@@ -75,3 +75,4 @@
 - Reproducibility artifacts become operationally useful only after indexing cross-file linkage (`loopRunId`, `jiraIssueKey`, budget state, operator snapshots) into a single lineage index keyed by `workItemId`.
 - A practical hybrid mapper can stay deterministic-first by seeding from endpoint/error/service path tokens, then constrain semantic expansion to import-graph neighborhoods rather than scanning the entire repository context blindly.
 - Boolean normalization helpers must preserve native `false` inputs (not coerce through `value || ""`), or operator kill/maintenance toggles can silently fail and corrupt control-plane state.
+- MCP adapter contracts should be validated against the registry file they bind to; schema-only validation misses tool-name drift that breaks runtime dispatch.

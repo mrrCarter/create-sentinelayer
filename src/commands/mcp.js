@@ -5,14 +5,17 @@ import pc from "picocolors";
 import { ZodError } from "zod";
 
 import {
+  buildAidenIdProvisioningAdapterTemplate,
   buildAidenIdRegistryTemplate,
   buildMcpToolRegistrySchema,
   buildMcpServerConfigTemplate,
   buildVsCodeMcpBridgeTemplate,
   readJsonFile,
+  resolveDefaultAidenIdAdapterContractPath,
   resolveDefaultMcpOutputPath,
   resolveDefaultMcpServerConfigPath,
   resolveDefaultVsCodeBridgePath,
+  validateAidenIdAdapterContract,
   stringifyJson,
   validateMcpServerConfig,
   validateMcpToolRegistry,
@@ -123,6 +126,44 @@ export function registerMcpCommand(program) {
     });
 
   registry
+    .command("init-aidenid-adapter")
+    .description("Write an AIdenID provisioning adapter contract bound to the MCP registry template")
+    .option(
+      "--registry-file <path>",
+      "Registry file path referenced by adapter contract",
+      ".sentinelayer/mcp/tool-registry.aidenid-template.json"
+    )
+    .option("--path <path>", "Destination file path override")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--force", "Overwrite destination file if it already exists")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const defaultPath = await resolveDefaultAidenIdAdapterContractPath({
+        cwd: process.cwd(),
+        outputDir: options.outputDir,
+        env: process.env,
+      });
+      const outputPath = normalizeOutputPath(options.path, defaultPath);
+      const template = buildAidenIdProvisioningAdapterTemplate({
+        registryFile: options.registryFile,
+      });
+      validateAidenIdAdapterContract(template);
+      const writtenPath = await writeJsonFile(outputPath, template, { force: Boolean(options.force) });
+      const payload = {
+        command: "mcp registry init-aidenid-adapter",
+        outputPath: writtenPath,
+        bindingCount: template.tool_bindings.length,
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Wrote AIdenID adapter contract template: ${writtenPath}`));
+      console.log(pc.gray("Next: validate with registry cross-check before runtime wiring."));
+    });
+
+  registry
     .command("validate")
     .description("Validate an MCP tool registry JSON payload against Sentinelayer contract")
     .requiredOption("--file <path>", "Registry JSON file to validate")
@@ -166,6 +207,71 @@ export function registerMcpCommand(program) {
       console.log(pc.gray(`File: ${loaded.path}`));
       for (const name of toolNames) {
         console.log(`- ${name}`);
+      }
+    });
+
+  registry
+    .command("validate-aidenid-adapter")
+    .description(
+      "Validate an AIdenID adapter contract and optionally cross-check tool bindings against an MCP registry file"
+    )
+    .requiredOption("--file <path>", "AIdenID adapter contract JSON file to validate")
+    .option("--registry-file <path>", "Optional MCP registry JSON file for tool binding cross-check")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const inputPath = path.resolve(process.cwd(), String(options.file || "").trim());
+      const loaded = await readJsonFile(inputPath);
+      const registryFile = String(options.registryFile || "").trim();
+      const loadedRegistry = registryFile
+        ? await readJsonFile(path.resolve(process.cwd(), registryFile))
+        : null;
+
+      let parsed;
+      try {
+        parsed = validateAidenIdAdapterContract(loaded.data, {
+          registryPayload: loadedRegistry ? loadedRegistry.data : undefined,
+        });
+      } catch (error) {
+        const payload = {
+          command: "mcp registry validate-aidenid-adapter",
+          valid: false,
+          filePath: loaded.path,
+          registryFilePath: loadedRegistry ? loadedRegistry.path : null,
+          error: zodIssueSummary(error),
+        };
+        if (shouldEmitJson(options, command)) {
+          console.log(JSON.stringify(payload, null, 2));
+        } else {
+          console.log(pc.red(`AIdenID adapter contract invalid: ${payload.error}`));
+          console.log(pc.gray(`File: ${loaded.path}`));
+          if (payload.registryFilePath) {
+            console.log(pc.gray(`Registry: ${payload.registryFilePath}`));
+          }
+        }
+        process.exitCode = 2;
+        return;
+      }
+
+      const payload = {
+        command: "mcp registry validate-aidenid-adapter",
+        valid: true,
+        filePath: loaded.path,
+        registryFilePath: loadedRegistry ? loadedRegistry.path : null,
+        provider: parsed.provider,
+        bindingCount: parsed.tool_bindings.length,
+        tools: parsed.tool_bindings.map((binding) => binding.tool_name),
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`AIdenID adapter contract valid (${parsed.tool_bindings.length} bindings)`));
+      console.log(pc.gray(`File: ${loaded.path}`));
+      if (payload.registryFilePath) {
+        console.log(pc.gray(`Registry cross-check: ${payload.registryFilePath}`));
+      }
+      for (const toolName of payload.tools) {
+        console.log(`- ${toolName}`);
       }
     });
 

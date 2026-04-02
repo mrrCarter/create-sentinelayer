@@ -3524,6 +3524,7 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
   try {
     const schemaPath = path.join(tempRoot, "artifacts", "mcp-tool-registry.schema.json");
     const templatePath = path.join(tempRoot, "artifacts", "mcp-tool-registry.aidenid-template.json");
+    const adapterPath = path.join(tempRoot, "artifacts", "mcp-aidenid-provisioning-adapter.json");
     const serverPath = path.join(tempRoot, "artifacts", "mcp-server.local-aidenid.json");
     const vscodeBridgePath = path.join(tempRoot, "artifacts", ".vscode", "mcp.json");
 
@@ -3550,6 +3551,25 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(templateWritePayload.command, "mcp registry init-aidenid");
     assert.equal(templateWritePayload.toolCount, 1);
 
+    const adapterWriteResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "mcp",
+        "registry",
+        "init-aidenid-adapter",
+        "--registry-file",
+        templatePath,
+        "--path",
+        adapterPath,
+        "--json",
+      ],
+    });
+    assert.equal(adapterWriteResult.code, 0, adapterWriteResult.stderr || adapterWriteResult.stdout);
+    const adapterWritePayload = JSON.parse(String(adapterWriteResult.stdout || "").trim());
+    assert.equal(adapterWritePayload.command, "mcp registry init-aidenid-adapter");
+    assert.equal(adapterWritePayload.bindingCount, 1);
+
     const validateResult = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
@@ -3561,6 +3581,31 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(validatePayload.valid, true);
     assert.equal(validatePayload.toolCount, 1);
     assert.equal(validatePayload.tools.includes("aidenid.provision_email"), true);
+
+    const adapterValidateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "mcp",
+        "registry",
+        "validate-aidenid-adapter",
+        "--file",
+        adapterPath,
+        "--registry-file",
+        templatePath,
+        "--json",
+      ],
+    });
+    assert.equal(
+      adapterValidateResult.code,
+      0,
+      adapterValidateResult.stderr || adapterValidateResult.stdout
+    );
+    const adapterValidatePayload = JSON.parse(String(adapterValidateResult.stdout || "").trim());
+    assert.equal(adapterValidatePayload.command, "mcp registry validate-aidenid-adapter");
+    assert.equal(adapterValidatePayload.valid, true);
+    assert.equal(adapterValidatePayload.bindingCount, 1);
+    assert.equal(adapterValidatePayload.tools.includes("aidenid.provision_email"), true);
 
     const serverInitResult = await runCli({
       cwd: tempRoot,
