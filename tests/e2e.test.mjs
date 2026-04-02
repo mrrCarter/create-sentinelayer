@@ -160,14 +160,18 @@ async function startAidenIdMockApi({
   const state = {
     requestCount: 0,
     revokeCount: 0,
+    childCreateCount: 0,
+    revokeChildrenCount: 0,
     latestExtractionPollCount: 0,
     lastHeaders: {},
     lastPayload: null,
     lastRevokeIdentityId: "",
+    lastParentIdentityId: "",
     lastEventsIdentityId: "",
     lastLatestIdentityId: "",
     events: defaultEvents,
     latestExtractionResponses: defaultLatestExtractionResponses,
+    childIdentities: [],
   };
 
   const server = createServer(async (req, res) => {
@@ -201,6 +205,36 @@ async function startAidenIdMockApi({
         });
       }
 
+      const createChildMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/children$/);
+      if (req.method === "POST" && createChildMatch) {
+        state.childCreateCount += 1;
+        state.lastHeaders = { ...req.headers };
+        state.lastParentIdentityId = decodeURIComponent(createChildMatch[1] || "");
+        const childPayload = await readJsonBody(req);
+        const childId = `id_child_${state.childCreateCount}`;
+        const childIdentity = {
+          id: childId,
+          parentIdentityId: state.lastParentIdentityId,
+          emailAddress: `${childId}@aidenid.com`,
+          status: "ACTIVE",
+          expiresAt: "2026-05-01T00:00:00.000Z",
+          projectId: "proj_test",
+          policy: {
+            receiveMode: String(childPayload?.policy?.receiveMode || "EDGE_ACCEPT"),
+            allowWebhooks:
+              typeof childPayload?.policy?.allowWebhooks === "boolean"
+                ? childPayload.policy.allowWebhooks
+                : true,
+            extractionTypes: Array.isArray(childPayload?.policy?.extractionTypes)
+              ? childPayload.policy.extractionTypes
+              : ["otp", "link"],
+          },
+          eventBudget: childPayload?.eventBudget ?? null,
+        };
+        state.childIdentities.push(childIdentity);
+        return jsonResponse(res, 200, childIdentity);
+      }
+
       const eventsMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/events$/);
       if (req.method === "GET" && eventsMatch) {
         state.lastEventsIdentityId = decodeURIComponent(eventsMatch[1] || "");
@@ -229,6 +263,61 @@ async function startAidenIdMockApi({
         }
         return jsonResponse(res, 200, {
           extraction,
+        });
+      }
+
+      const lineageMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/lineage$/);
+      if (req.method === "GET" && lineageMatch) {
+        const requestedIdentityId = decodeURIComponent(lineageMatch[1] || "");
+        const requestedChild = state.childIdentities.find((item) => item.id === requestedIdentityId) || null;
+        const rootIdentityId = requestedChild ? requestedChild.parentIdentityId : requestedIdentityId;
+        const children = state.childIdentities.filter((item) => item.parentIdentityId === rootIdentityId);
+        const nodes = [
+          {
+            identityId: rootIdentityId,
+            parentIdentityId: null,
+            emailAddress: "scan@aidenid.com",
+            status: "ACTIVE",
+            expiresAt: "2026-05-01T00:00:00.000Z",
+            depth: 0,
+          },
+          ...children.map((child) => ({
+            identityId: child.id,
+            parentIdentityId: rootIdentityId,
+            emailAddress: child.emailAddress,
+            status: child.status,
+            expiresAt: child.expiresAt,
+            depth: 1,
+          })),
+        ];
+        const edges = children.map((child) => ({
+          parentIdentityId: rootIdentityId,
+          childIdentityId: child.id,
+        }));
+        return jsonResponse(res, 200, {
+          rootIdentityId,
+          nodes,
+          edges,
+        });
+      }
+
+      const revokeChildrenMatch = pathname.match(/^\/v1\/identities\/([^/]+)\/revoke-children$/);
+      if (req.method === "POST" && revokeChildrenMatch) {
+        state.revokeChildrenCount += 1;
+        state.lastHeaders = { ...req.headers };
+        const parentIdentityId = decodeURIComponent(revokeChildrenMatch[1] || "");
+        const revokedIdentityIds = state.childIdentities
+          .filter((item) => item.parentIdentityId === parentIdentityId && item.status !== "SQUASHED")
+          .map((item) => item.id);
+        for (const child of state.childIdentities) {
+          if (revokedIdentityIds.includes(child.id)) {
+            child.status = "SQUASHED";
+          }
+        }
+        return jsonResponse(res, 200, {
+          parentIdentityId,
+          revokedCount: revokedIdentityIds.length,
+          revokedIdentityIds,
         });
       }
 
@@ -2833,6 +2922,141 @@ test("CLI ai identity revoke execute mode calls API and updates lifecycle status
     assert.equal(show.code, 0, show.stderr || show.stdout);
     const showPayload = JSON.parse(String(show.stdout || "").trim());
     assert.equal(showPayload.identity.status, "REVOKED");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity create-child, lineage, and revoke-children manage delegated identities", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const parentIdentityId = String(provisionPayload.identity?.id || "");
+    assert.equal(parentIdentityId.length > 0, true);
+
+    const createChild = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "create-child",
+        parentIdentityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--alias-template",
+        "child-agent",
+        "--event-budget",
+        "25",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(createChild.code, 0, createChild.stderr || createChild.stdout);
+    const createChildPayload = JSON.parse(String(createChild.stdout || "").trim());
+    assert.equal(createChildPayload.command, "ai identity create-child");
+    assert.equal(createChildPayload.parentIdentityId, parentIdentityId);
+    const childIdentityId = String(createChildPayload.childIdentity?.id || "");
+    assert.equal(childIdentityId.length > 0, true);
+    assert.equal(mock.state.childCreateCount, 1);
+
+    const lineage = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "lineage",
+        childIdentityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--json",
+      ],
+    });
+    assert.equal(lineage.code, 0, lineage.stderr || lineage.stdout);
+    const lineagePayload = JSON.parse(String(lineage.stdout || "").trim());
+    assert.equal(lineagePayload.command, "ai identity lineage");
+    assert.equal(lineagePayload.rootIdentityId, parentIdentityId);
+    assert.equal(lineagePayload.nodeCount >= 2, true);
+    assert.equal(lineagePayload.edgeCount >= 1, true);
+    assert.match(String(lineagePayload.tree || ""), new RegExp(parentIdentityId));
+    assert.match(String(lineagePayload.tree || ""), new RegExp(childIdentityId));
+
+    const revokeChildren = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "revoke-children",
+        parentIdentityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(revokeChildren.code, 0, revokeChildren.stderr || revokeChildren.stdout);
+    const revokeChildrenPayload = JSON.parse(String(revokeChildren.stdout || "").trim());
+    assert.equal(revokeChildrenPayload.command, "ai identity revoke-children");
+    assert.equal(revokeChildrenPayload.revokedCount, 1);
+    assert.deepEqual(revokeChildrenPayload.revokedIdentityIds, [childIdentityId]);
+    assert.equal(mock.state.revokeChildrenCount, 1);
+
+    const childShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "show", childIdentityId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(childShow.code, 0, childShow.stderr || childShow.stdout);
+    const childShowPayload = JSON.parse(String(childShow.stdout || "").trim());
+    assert.equal(childShowPayload.identity.parentIdentityId, parentIdentityId);
+    assert.equal(childShowPayload.identity.status, "SQUASHED");
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

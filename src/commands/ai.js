@@ -6,11 +6,15 @@ import process from "node:process";
 import pc from "picocolors";
 
 import {
+  buildChildIdentityPayload,
   buildProvisionEmailPayload,
+  createChildIdentity,
   getLatestIdentityExtraction,
+  getIdentityLineage,
   listIdentityEvents,
   normalizeAidenIdApiUrl,
   provisionEmailIdentity,
+  revokeIdentityChildren,
   revokeIdentity,
   resolveAidenIdCredentials,
 } from "../ai/aidenid.js";
@@ -74,6 +78,26 @@ function meetsConfidenceThreshold(extraction = {}, minConfidence = 0.8) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function renderLineageRows(lineage = {}) {
+  const nodes = Array.isArray(lineage.nodes) ? lineage.nodes : [];
+  return [...nodes]
+    .sort((left, right) => {
+      const leftDepth = Number(left.depth);
+      const rightDepth = Number(right.depth);
+      if (leftDepth !== rightDepth) {
+        return leftDepth - rightDepth;
+      }
+      return String(left.identityId || "").localeCompare(String(right.identityId || ""));
+    })
+    .map((node) => {
+      const depth = Number.isFinite(Number(node.depth)) ? Math.max(0, Number(node.depth)) : 0;
+      const indent = "  ".repeat(depth);
+      const status = String(node.status || "UNKNOWN");
+      const email = String(node.emailAddress || "unknown-email");
+      return `${indent}- ${String(node.identityId || "unknown-id")} | ${status} | ${email}`;
+    });
 }
 
 async function writeArtifact(filePath, payload) {
@@ -488,6 +512,437 @@ export function registerAiCommand(program) {
       console.log(pc.gray(`Registry: ${updated.registryPath}`));
       console.log(pc.gray(`Response: ${responsePath}`));
       console.log(`${updated.identity.identityId} | ${updated.identity.status}`);
+    });
+
+  identity
+    .command("create-child")
+    .description("Create a child identity under a parent (dry-run by default)")
+    .argument("<parentIdentityId>", "Parent identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--alias-template <value>", "Optional alias template")
+    .option("--ttl-hours <hours>", "Identity TTL in hours", "24")
+    .option("--tags <csv>", "Comma-separated tags")
+    .option("--domain-pool-id <id>", "Optional domain pool id")
+    .option("--receive-mode <mode>", "Identity receive mode", "EDGE_ACCEPT")
+    .option("--extraction-types <csv>", "Comma-separated extraction types", "otp,link")
+    .option("--allow-webhooks", "Allow webhook delivery", true)
+    .option("--no-allow-webhooks", "Disable webhook delivery")
+    .option("--event-budget <count>", "Optional inbound event budget envelope")
+    .option("--idempotency-key <key>", "Explicit idempotency key override")
+    .option("--execute", "Execute live API call")
+    .option("--json", "Emit machine-readable output")
+    .action(async (parentIdentityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const idempotencyKey = normalizeIdempotencyKey(options.idempotencyKey);
+      const ttlHours = parsePositiveInteger(options.ttlHours, "ttlHours", 24);
+      const eventBudget =
+        options.eventBudget === undefined || options.eventBudget === null || String(options.eventBudget).trim() === ""
+          ? null
+          : parsePositiveInteger(options.eventBudget, "eventBudget", 1);
+
+      const payload = buildChildIdentityPayload({
+        aliasTemplate: options.aliasTemplate,
+        ttlHours,
+        tags: options.tags,
+        domainPoolId: options.domainPoolId,
+        receiveMode: options.receiveMode,
+        allowWebhooks: Boolean(options.allowWebhooks),
+        extractionTypes: options.extractionTypes,
+        eventBudget,
+      });
+
+      const { identity: parentIdentity } = await getIdentityById({
+        outputRoot,
+        identityId: parentIdentityId,
+      });
+
+      const artifactsDir = path.join(outputRoot, "aidenid", "create-child");
+      const stamp = stableTimestampForFile();
+      const requestPath = path.join(
+        artifactsDir,
+        `request-${encodeURIComponent(parentIdentityId)}-${stamp}.json`
+      );
+      await writeArtifact(requestPath, {
+        generatedAt: new Date().toISOString(),
+        apiUrl,
+        idempotencyKey,
+        parentIdentityId,
+        payload,
+      });
+
+      const resolvedCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || parentIdentity?.orgId,
+        projectId: options.projectId || parentIdentity?.projectId,
+        env: process.env,
+        requireAll: false,
+      });
+
+      if (!options.execute) {
+        const result = {
+          command: "ai identity create-child",
+          execute: false,
+          apiUrl,
+          idempotencyKey,
+          parentIdentityId,
+          requestPath,
+          payload,
+          credentialsMissing: resolvedCredentials.missing,
+          parentIdentityTracked: Boolean(parentIdentity),
+          curlPreview: [
+            `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(parentIdentityId)}/children \\`,
+            `  -H \"Authorization: Bearer $AIDENID_API_KEY\" \\`,
+            `  -H \"X-Org-Id: $AIDENID_ORG_ID\" \\`,
+            `  -H \"X-Project-Id: $AIDENID_PROJECT_ID\" \\`,
+            `  -H \"Idempotency-Key: ${idempotencyKey}\" \\`,
+            `  -H \"Content-Type: application/json\" \\`,
+            `  --data @${String(requestPath || "").replace(/\\/g, "/")}`,
+          ].join("\n"),
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+
+        console.log(pc.bold("AIdenID child identity request artifact created (dry-run)"));
+        console.log(pc.gray(`Request: ${requestPath}`));
+        if (!parentIdentity) {
+          console.log(pc.yellow(`Parent identity '${parentIdentityId}' is not present in local registry.`));
+        }
+        if (resolvedCredentials.missing.length > 0) {
+          console.log(
+            pc.yellow(`Missing credentials for live execute: ${resolvedCredentials.missing.join(", ")}`)
+          );
+        }
+        console.log(result.curlPreview);
+        return;
+      }
+
+      const requiredCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || parentIdentity?.orgId,
+        projectId: options.projectId || parentIdentity?.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+
+      const execution = await createChildIdentity({
+        apiUrl,
+        apiKey: requiredCredentials.apiKey,
+        orgId: requiredCredentials.orgId,
+        projectId: requiredCredentials.projectId,
+        parentIdentityId,
+        idempotencyKey,
+        payload,
+      });
+
+      const responsePath = path.join(
+        artifactsDir,
+        `response-${encodeURIComponent(parentIdentityId)}-${stamp}.json`
+      );
+      await writeArtifact(responsePath, {
+        receivedAt: new Date().toISOString(),
+        apiUrl,
+        idempotencyKey,
+        parentIdentityId,
+        response: execution.response,
+      });
+
+      const registryUpdate = await recordProvisionedIdentity({
+        outputRoot,
+        response: execution.response || {},
+        context: {
+          source: "create-child",
+          apiUrl,
+          orgId: requiredCredentials.orgId,
+          projectId: requiredCredentials.projectId,
+          idempotencyKey,
+          parentIdentityId,
+          eventBudget,
+        },
+      });
+      const childIdentity = execution.response || {};
+      const result = {
+        command: "ai identity create-child",
+        execute: true,
+        parentIdentityId,
+        apiUrl,
+        idempotencyKey,
+        requestPath,
+        responsePath,
+        childIdentity: {
+          id: String(childIdentity.id || "").trim() || null,
+          parentIdentityId: String(childIdentity.parentIdentityId || parentIdentityId).trim() || null,
+          emailAddress: String(childIdentity.emailAddress || "").trim() || null,
+          status: String(childIdentity.status || "").trim() || null,
+          expiresAt: childIdentity.expiresAt || null,
+          projectId: childIdentity.projectId || null,
+        },
+        response: execution.response,
+        identityRegistryPath: registryUpdate.registryPath,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID child identity created"));
+      console.log(pc.gray(`Request: ${requestPath}`));
+      console.log(pc.gray(`Response: ${responsePath}`));
+      console.log(
+        `${result.childIdentity.id || "unknown-id"} | parent=${result.childIdentity.parentIdentityId || "n/a"}`
+      );
+    });
+
+  identity
+    .command("lineage")
+    .description("Show parent/child lineage for an identity")
+    .argument("<identityId>", "Identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const { registryPath, identity: trackedIdentity } = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      const credentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity?.orgId,
+        projectId: options.projectId || trackedIdentity?.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+
+      const execution = await getIdentityLineage({
+        apiUrl,
+        apiKey: credentials.apiKey,
+        orgId: credentials.orgId,
+        projectId: credentials.projectId,
+        identityId,
+      });
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "lineage");
+      const outputPath = path.join(
+        artifactsDir,
+        `lineage-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(outputPath, {
+        generatedAt: new Date().toISOString(),
+        identityId,
+        response: execution.response,
+      });
+
+      const rows = renderLineageRows({
+        nodes: execution.nodes,
+      });
+      const payload = {
+        command: "ai identity lineage",
+        identityId,
+        registryPath,
+        outputPath,
+        rootIdentityId: execution.rootIdentityId,
+        nodeCount: execution.nodes.length,
+        edgeCount: execution.edges.length,
+        nodes: execution.nodes,
+        edges: execution.edges,
+        tree: rows.join("\n"),
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID identity lineage"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Artifact: ${outputPath}`));
+      console.log(`root=${execution.rootIdentityId} nodes=${execution.nodes.length} edges=${execution.edges.length}`);
+      for (const row of rows) {
+        console.log(row);
+      }
+    });
+
+  identity
+    .command("revoke-children")
+    .description("Revoke all descendants under a parent identity (dry-run by default)")
+    .argument("<identityId>", "Parent identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--idempotency-key <key>", "Explicit idempotency key override")
+    .option("--execute", "Execute live revoke API call")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const idempotencyKey = normalizeIdempotencyKey(options.idempotencyKey);
+      const { registryPath, identity: trackedIdentity } = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "revoke-children");
+      const requestPath = path.join(
+        artifactsDir,
+        `request-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(requestPath, {
+        generatedAt: new Date().toISOString(),
+        apiUrl,
+        idempotencyKey,
+        identityId,
+      });
+
+      const resolvedCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity?.orgId,
+        projectId: options.projectId || trackedIdentity?.projectId,
+        env: process.env,
+        requireAll: false,
+      });
+
+      if (!options.execute) {
+        const payload = {
+          command: "ai identity revoke-children",
+          execute: false,
+          identityId,
+          registryPath,
+          requestPath,
+          credentialsMissing: resolvedCredentials.missing,
+          parentIdentityTracked: Boolean(trackedIdentity),
+          curlPreview: [
+            `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(identityId)}/revoke-children \\`,
+            `  -H \"Authorization: Bearer $AIDENID_API_KEY\" \\`,
+            `  -H \"X-Org-Id: $AIDENID_ORG_ID\" \\`,
+            `  -H \"X-Project-Id: $AIDENID_PROJECT_ID\" \\`,
+            `  -H \"Idempotency-Key: ${idempotencyKey}\"`,
+          ].join("\n"),
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        console.log(pc.bold("AIdenID revoke-children request artifact created (dry-run)"));
+        console.log(pc.gray(`Registry: ${registryPath}`));
+        console.log(pc.gray(`Request: ${requestPath}`));
+        if (!trackedIdentity) {
+          console.log(pc.yellow(`Parent identity '${identityId}' is not present in local registry.`));
+        }
+        if (resolvedCredentials.missing.length > 0) {
+          console.log(
+            pc.yellow(`Missing credentials for live execute: ${resolvedCredentials.missing.join(", ")}`)
+          );
+        }
+        console.log(payload.curlPreview);
+        return;
+      }
+
+      const requiredCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity?.orgId,
+        projectId: options.projectId || trackedIdentity?.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+
+      const execution = await revokeIdentityChildren({
+        apiUrl,
+        apiKey: requiredCredentials.apiKey,
+        orgId: requiredCredentials.orgId,
+        projectId: requiredCredentials.projectId,
+        identityId,
+        idempotencyKey,
+      });
+      const responsePath = path.join(
+        artifactsDir,
+        `response-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(responsePath, {
+        receivedAt: new Date().toISOString(),
+        apiUrl,
+        idempotencyKey,
+        identityId,
+        response: execution.response,
+      });
+
+      const localUpdatedIdentityIds = [];
+      for (const revokedIdentityId of execution.revokedIdentityIds) {
+        try {
+          const updated = await updateIdentityStatus({
+            outputRoot,
+            identityId: revokedIdentityId,
+            status: "SQUASHED",
+            revokedAt: new Date().toISOString(),
+            metadataPatch: {
+              revokeChildrenRequestIdempotencyKey: idempotencyKey,
+              parentIdentityId: execution.parentIdentityId,
+            },
+          });
+          if (updated.identity) {
+            localUpdatedIdentityIds.push(updated.identity.identityId);
+          }
+        } catch {
+          // Skip identities that are not tracked locally.
+        }
+      }
+
+      const payload = {
+        command: "ai identity revoke-children",
+        execute: true,
+        identityId,
+        parentIdentityId: execution.parentIdentityId,
+        registryPath,
+        requestPath,
+        responsePath,
+        revokedCount: execution.revokedCount,
+        revokedIdentityIds: execution.revokedIdentityIds,
+        localUpdatedIdentityIds,
+        response: execution.response,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID child identities revoked"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Response: ${responsePath}`));
+      console.log(
+        `parent=${execution.parentIdentityId} revoked=${execution.revokedCount} localUpdated=${localUpdatedIdentityIds.length}`
+      );
     });
 
   identity
