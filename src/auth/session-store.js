@@ -10,6 +10,7 @@ const KEYRING_SERVICE = "sentinelayer-cli";
 const FILE_TOKEN_ENCRYPTION_VERSION = 2;
 const LEGACY_FILE_TOKEN_ENCRYPTION_VERSION = 1;
 const MACHINE_BINDING_KEY_FILENAME = "machine-binding.key";
+const MIN_FILE_TOKEN_KEY_BYTES = 32;
 
 function nowIso() {
   return new Date().toISOString();
@@ -62,6 +63,7 @@ function normalizeMetadata(raw = {}) {
     tokenIv: String(raw.tokenIv || "").trim() || null,
     tokenTag: String(raw.tokenTag || "").trim() || null,
     tokenSalt: String(raw.tokenSalt || "").trim() || null,
+    tokenKeyCreatedAt: String(raw.tokenKeyCreatedAt || "").trim() || null,
     token: null,
   };
 }
@@ -73,6 +75,34 @@ function isTruthy(value) {
 
 function fileTokenStorageAllowed() {
   return isTruthy(process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE);
+}
+
+function normalizeBase64Secret(raw) {
+  const normalized = String(raw || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  const base64Like = normalized.replace(/-/g, "+").replace(/_/g, "/");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64Like)) {
+    return null;
+  }
+  const padded = base64Like.padEnd(Math.ceil(base64Like.length / 4) * 4, "=");
+  try {
+    const decoded = Buffer.from(padded, "base64");
+    if (!decoded.length) {
+      return null;
+    }
+    const canonical = decoded.toString("base64");
+    if (canonical.replace(/=+$/g, "") !== padded.replace(/=+$/g, "")) {
+      return null;
+    }
+    return {
+      normalized: canonical,
+      bytes: decoded.length,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function resolveMachineBindingKeyPath({ homeDir } = {}) {
@@ -110,12 +140,17 @@ function resolveLegacyEncryptionPassphrase() {
     );
   }
 
-  if (explicit.length < 24) {
-    throw new Error(
-      "SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY must be at least 24 characters."
-    );
+  const parsed = normalizeBase64Secret(explicit);
+  const allowLegacyWeakKey = isTruthy(process.env.SENTINELAYER_ALLOW_LEGACY_FILE_TOKEN_KEY);
+  if (!parsed || parsed.bytes < MIN_FILE_TOKEN_KEY_BYTES) {
+    if (!allowLegacyWeakKey) {
+      throw new Error(
+        "SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY must be base64-encoded random key material of at least 32 bytes (example: `openssl rand -base64 32`)."
+      );
+    }
+    return explicit;
   }
-  return explicit;
+  return parsed.normalized;
 }
 
 function resolveEncryptionMaterial({ apiUrl, homeDir, keyId = null }) {
@@ -160,6 +195,7 @@ function encryptFileToken({ token, apiUrl, homeDir }) {
   return {
     tokenEncVersion: FILE_TOKEN_ENCRYPTION_VERSION,
     tokenKeyId: material.keyId,
+    tokenKeyCreatedAt: nowIso(),
     tokenCiphertext: encrypted.toString("base64"),
     tokenIv: iv.toString("base64"),
     tokenTag: tag.toString("base64"),
@@ -377,6 +413,7 @@ export async function writeStoredSession(
     nextMetadata.tokenIv = null;
     nextMetadata.tokenTag = null;
     nextMetadata.tokenSalt = null;
+    nextMetadata.tokenKeyCreatedAt = null;
     nextMetadata.token = null;
   } else {
     if (!fileTokenStorageAllowed()) {
@@ -398,6 +435,7 @@ export async function writeStoredSession(
     nextMetadata.tokenIv = encryptedToken.tokenIv;
     nextMetadata.tokenTag = encryptedToken.tokenTag;
     nextMetadata.tokenSalt = encryptedToken.tokenSalt;
+    nextMetadata.tokenKeyCreatedAt = encryptedToken.tokenKeyCreatedAt;
     nextMetadata.token = null;
   }
 

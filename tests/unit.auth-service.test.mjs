@@ -18,6 +18,8 @@ import {
 } from "../src/auth/service.js";
 import { readStoredSession, resolveCredentialsFilePath, writeStoredSession } from "../src/auth/session-store.js";
 
+const TEST_FILE_TOKEN_KEY_B64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -209,7 +211,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
   const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
   const previousAllowFileStorage = process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
-  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = "unit-test-file-token-encryption-key-2026";
+  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = TEST_FILE_TOKEN_KEY_B64;
   process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
   process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = "true";
 
@@ -330,7 +332,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
   const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
   const previousAllowFileStorage = process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
-  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = "unit-test-file-token-encryption-key-2026";
+  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = TEST_FILE_TOKEN_KEY_B64;
   process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
   process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = "true";
 
@@ -439,7 +441,7 @@ test("Unit auth service: rotation exposes revoke warning metadata when old token
   const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
   const previousAllowFileStorage = process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
-  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = "unit-test-file-token-encryption-key-2026";
+  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = TEST_FILE_TOKEN_KEY_B64;
   process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
   process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = "true";
 

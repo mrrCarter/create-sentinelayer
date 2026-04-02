@@ -51,6 +51,18 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Resolve trusted secret context
+        id: trust
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted="false"
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            trusted="true"
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${GITHUB_REPOSITORY}" ]]; then
+            trusted="true"
+          fi
+          echo "trusted=${trusted}" >> "${GITHUB_OUTPUT}"
       - name: Enforce manual invocation allowlist
         if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
@@ -70,6 +82,7 @@ jobs:
               ;;
           esac
       - name: Validate Sentinelayer token secret
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
@@ -77,13 +90,21 @@ jobs:
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
       - name: Validate OpenAI key secret for Omar LLM scan
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+      - name: Skip Omar Gate on untrusted pull_request refs
+        if: ${{ steps.trust.outputs.trusted != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning::Skipping Omar Gate because this run is not in a trusted secret context."
       - name: Run Omar Gate
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
         with:
@@ -101,6 +122,7 @@ jobs:
           codex_only: "false"
           llm_failure_policy: block
       - name: Enforce Omar reviewer merge thresholds
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         env:
           P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
@@ -142,6 +164,7 @@ jobs:
               ;;
           esac
       - name: Emit Omar run summary
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         run: |
           set -euo pipefail

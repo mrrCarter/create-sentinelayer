@@ -565,7 +565,7 @@ async function runCli({ cwd, env, args = [] }) {
     ...env,
     SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY:
       String(env?.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY || "").trim() ||
-      "test-only-sentinelayer-file-token-encryption-key-2026",
+      "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
     SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE:
       String(env?.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE || "").trim() || "true",
     SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE:

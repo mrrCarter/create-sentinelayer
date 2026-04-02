@@ -81,17 +81,12 @@ jobs:
           fi
 
       - name: Run gitleaks secret scan gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="8.24.2"
-          archive="gitleaks_${version}_linux_x64.tar.gz"
-          archive_sha256="fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e"
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" -o "${archive}"
-          printf '%s  %s\n' "${archive_sha256}" "${archive}" | sha256sum --check --status
-          tar -xzf "${archive}" gitleaks
-          chmod +x gitleaks
-          ./gitleaks detect --source . --no-git --redact --exit-code 1 --report-format json --report-path gitleaks-report.json
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
       - name: Upload security artifacts
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
@@ -197,6 +192,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [security_gate]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -265,6 +264,11 @@ jobs:
           cp "${tarball_a}" "./${tarball_name}"
           printf '%s  %s\n' "${digest_a}" "${tarball_name}" > release-sha256.txt
           echo "${GITHUB_SHA}" > release-commit-sha.txt
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: create-sentinelayer-*.tgz
 
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0

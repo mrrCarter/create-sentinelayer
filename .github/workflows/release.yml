@@ -340,7 +340,15 @@ jobs:
 
   publish:
     name: Publish To npm
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.quality_preflight.outputs.publish_enabled == 'true' }}
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.quality_preflight.outputs.publish_enabled == 'true' &&
+        needs.quality_preflight.result == 'success' &&
+        needs.verify.result == 'success' &&
+        needs.omar_release_gate.result == 'success' &&
+        needs.manual_approval.result == 'success'
+      }}
     needs: [quality_preflight, verify, omar_release_gate, manual_approval]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
@@ -350,6 +358,15 @@ jobs:
       id-token: write
       attestations: read
     steps:
+      - name: Assert upstream release gate chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.quality_preflight.result }}" = "success"
+          test "${{ needs.verify.result }}" = "success"
+          test "${{ needs.omar_release_gate.result }}" = "success"
+          test "${{ needs.manual_approval.result }}" = "success"
+
       - name: Download verified tarball artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
