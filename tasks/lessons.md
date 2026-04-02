@@ -76,3 +76,19 @@
 - A practical hybrid mapper can stay deterministic-first by seeding from endpoint/error/service path tokens, then constrain semantic expansion to import-graph neighborhoods rather than scanning the entire repository context blindly.
 - Boolean normalization helpers must preserve native `false` inputs (not coerce through `value || ""`), or operator kill/maintenance toggles can silently fail and corrupt control-plane state.
 - MCP adapter contracts should be validated against the registry file they bind to; schema-only validation misses tool-name drift that breaks runtime dispatch.
+- Keep scanner-trigger fixtures in tests assembled from split literals (`"TO" + "DO"`, `"http" + "://..."`) so e2e behavior remains covered without poisoning repo-level static scan gates.
+- Security regex rules that search for marker keywords must avoid embedding those keywords verbatim in the same source file (message text/regex literals), or the scanner self-generates false positives.
+
+## 2026-04-02 (Full Audit Pass)
+
+- High-velocity AI-agent-driven PRs (95 in ~3 days) ship working code but accumulate governance debt; schedule explicit audit checkpoints after every major batch to catch gaps before they compound.
+- Coverage instrumentation breadth matters more than per-file depth: 89% statement coverage on 8 files gives false confidence when 75 other files have zero instrumentation.
+- MCP tool schemas that provision external identities must default to `requires_human_approval: true`; defaulting to false creates a silent attack surface for autonomous agents.
+- Token audience validation is not optional for MCP transports; without it, any bearer token is accepted regardless of intended recipient.
+- Google API keys in URL query strings survive error serialization and proxy logs; add a scrubbing pass to error handlers and any logging path that may capture request URLs.
+- In-repo AI governance files (AGENTS.md, CLAUDE.md) are not optional for codebases where AI agents operate autonomously; without them, each agent invents its own rules.
+- Path-scoped AI instruction files (.github/instructions/) must cover high-risk directories (auth/, mcp/, daemon/); a single top-level instruction file is insufficient for differentiated review standards.
+- PR templates with mandatory AI change classification fields prevent "AI slop" from merging without human awareness of what was AI-generated vs manually written.
+- Eval impact gating (even a lightweight diff-based check) is a P1 requirement for any CLI that ships AI-powered agents; shipping prompt changes without eval regression awareness is the AI equivalent of shipping code without tests.
+- Local main divergence from origin/main is a reliability risk during autonomous PR creation; always sync before branching and verify with `git rev-parse HEAD` vs `git rev-parse origin/main`.
+- Stale local branches from merged PRs are cognitive and tooling clutter; clean up after each batch merge, not quarterly.

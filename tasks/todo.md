@@ -106,7 +106,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 2.1 Ink interactive mode. (merged as #57)
 - PR 2.2 Terminal markdown renderer. (merged as #59)
 - PR 2.3 Diff-aware regeneration. (merged as #60)
-- PR 2.4 Progress/notifications. (in progress on `roadmap/pr-2-4-progress-notifications`)
+- PR 2.4 Progress/notifications. (merged as #61)
 - PR 3.3 AI-enhanced spec generation. (merged as #44)
 - PR 3.4 AI pre-scan. (merged as #45)
 
@@ -177,8 +177,27 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.5 Operator control plane UX (agent roster, stop/confirm control, budget health colors, session timers). (merged as #91)
 - PR 13.6 Artifact lineage tree (`observability/` reproducibility bundles per run/agent/loop/jira linkage). (merged as #92)
 - PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping). (merged as #93)
-- PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path).
-- PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract.
+- PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path). (merged as #94)
+- PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract. (merged as #95)
+
+### Batch K - Governance & Security Hardening (P1/P2, from 2026-04-02 audit)
+- [x] PR 97 AI governance contracts (AGENTS.md, CLAUDE.md, path-scoped instructions, PR template, CODEOWNERS). Fixes P2-6, P2-7, P2-8. (merged as #97)
+- [x] PR 98 MCP security hardening (approval defaults + audience validation). Fixes P2-2, P2-3. (merged as #98)
+- [x] PR 99 API key security + .env defense (log-scrubbing + gitignore). Fixes P2-4, P2-9. (merged as #99)
+- [x] PR 100 Eval impact gating foundation (diff-based prompt/model change detection in CI). Fixes P1-1. (merged as #100)
+
+### Batch L - Test Coverage Expansion (P2, from 2026-04-02 audit)
+- [x] PR 101 Coverage instrumentation expansion (.c8rc.json from 8 to all src, branch coverage 75%+). Fixes P2-1. (merged as #101)
+- [x] PR 102 Command unit test layer (ai, daemon, scan, review, swarm command tests). Fixes P2-1. (merged as #102)
+
+### Batch M - Documentation & Housekeeping (P2/P3, from 2026-04-02 audit)
+- [x] PR 103 JSDoc for high-risk modules (auth/, ai/, mcp/, cost/). Fixes P2-5. (merged as #103)
+- [x] PR 104 Dependabot + issue templates. Fixes P3-5. (merged as #104)
+- [x] PR 105 Todo sync + release tag cut. Fixes P3-3, P3-4. (merged as #111)
+
+### Batch N - Structural Improvements (P3, optional, from 2026-04-02 audit)
+- [x] PR 106 Split oversized command files (ai.js 2691 LOC, daemon.js 1782 LOC). Fixes P3-7. (merged as #112)
+- [ ] PR 107 Command lazy-loading (dynamic import per command, startup <200ms). Fixes P3-6. (PR #113 open)
 
 ## Execution Board (2026-04-02)
 
@@ -195,7 +214,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-96-p2-burn-down` (current)
+1. `roadmap/pr-96-p2-burn-down` (current, 25 hardening commits, PR #96 open)
+2. `roadmap/pr-107-command-lazy-loading` (PR #113 open, Omar Gate green)
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -410,3 +430,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Added hybrid deterministic+semantic mapping overlay artifacts under `observability/error-daemon/mapping/` with import-graph expansion, semantic token scoring, and `map scope|list|show` command surface.
+  - PR 96 P2 burn-down validation rerun (branch `roadmap/pr-96-p2-burn-down`):
+    - `npm run verify` (pass, e2e `84/84`; unit tests `119/119`; coverage statements `89.69%`, branches `71.54%`, functions `97.72%`, lines `89.69%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`)
+    - Burned down deterministic false positives by replacing direct fixture literals in `tests/e2e.test.mjs` with split-literal assembly and hardening SL-SEC-014 self-reference in `src/review/local-review.js`.
