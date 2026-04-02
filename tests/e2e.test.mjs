@@ -2233,6 +2233,121 @@ test("CLI telemetry record/show writes structured run events and blocking stop c
   }
 });
 
+test("CLI daemon error record/worker/queue routes admin errors into deterministic queue", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-e2e-"));
+  try {
+    const recordOne = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P2",
+        "--message",
+        "Runtime timed out",
+        "--stack",
+        "TimeoutError at runtime_run_service.py:112",
+        "--json",
+      ],
+    });
+    assert.equal(recordOne.code, 0, recordOne.stderr || recordOne.stdout);
+    const recordOnePayload = JSON.parse(String(recordOne.stdout || "").trim());
+    assert.equal(recordOnePayload.command, "daemon error record");
+    assert.equal(recordOnePayload.event.severity, "P2");
+
+    const recordTwo = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Repeated runtime timeout",
+        "--stack",
+        "TimeoutError at runtime_run_service.py:112",
+        "--json",
+      ],
+    });
+    assert.equal(recordTwo.code, 0, recordTwo.stderr || recordTwo.stdout);
+
+    const recordThree = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-web",
+        "--endpoint",
+        "/admin/overview",
+        "--error-code",
+        "SSE_STREAM_DISCONNECT",
+        "--severity",
+        "P3",
+        "--message",
+        "Stream disconnected",
+        "--json",
+      ],
+    });
+    assert.equal(recordThree.code, 0, recordThree.stderr || recordThree.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--max-events", "20", "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+    const workerPayload = JSON.parse(String(worker.stdout || "").trim());
+    assert.equal(workerPayload.command, "daemon error worker");
+    assert.equal(workerPayload.processedCount, 3);
+    assert.equal(workerPayload.queuedCount, 2);
+    assert.equal(workerPayload.dedupedCount, 1);
+    assert.equal(workerPayload.queueDepth, 2);
+    assert.equal(workerPayload.workerState.streamOffset, 3);
+
+    const queue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queue.code, 0, queue.stderr || queue.stdout);
+    const queuePayload = JSON.parse(String(queue.stdout || "").trim());
+    assert.equal(queuePayload.command, "daemon error queue");
+    assert.equal(queuePayload.totalCount, 2);
+    assert.equal(queuePayload.visibleCount, 2);
+    const runtimeQueueItem = queuePayload.items.find((item) => item.endpoint === "/v1/runtime/runs");
+    assert.ok(runtimeQueueItem);
+    assert.equal(runtimeQueueItem.severity, "P1");
+    assert.equal(runtimeQueueItem.occurrenceCount, 2);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {
