@@ -10,6 +10,13 @@ import {
   writeReviewReport,
 } from "../review/local-review.js";
 import { runAiReviewLayer } from "../review/ai-review.js";
+import {
+  buildUnifiedReviewReport,
+  exportUnifiedReviewReport,
+  loadUnifiedReviewReport,
+  recordReviewDecision,
+  writeUnifiedReviewArtifacts,
+} from "../review/report.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -45,6 +52,71 @@ function resolveModeFromOptions(options = {}, { defaultMode = "full" } = {}) {
     return modeFromFlags;
   }
   return defaultMode;
+}
+
+function resolveTargetPath(targetPathArg, options = {}) {
+  return path.resolve(process.cwd(), String(options.path || targetPathArg || "."));
+}
+
+function printUnifiedSummary(report) {
+  console.log(pc.bold("Unified review report"));
+  console.log(pc.gray(`Run: ${report.runId}`));
+  console.log(pc.gray(`Mode: ${report.mode}`));
+  console.log(
+    `Findings: P0=${report.summary.P0} P1=${report.summary.P1} P2=${report.summary.P2} P3=${report.summary.P3}`
+  );
+  for (const finding of report.findings || []) {
+    const verdict = finding.adjudication?.verdict || "pending";
+    console.log(
+      `- [${finding.severity}] ${finding.findingId} ${finding.file}:${finding.line} (${verdict}) ${finding.message}`
+    );
+  }
+}
+
+function registerVerdictCommand(review, verdict) {
+  review
+    .command(`${verdict} <findingId>`)
+    .description(`Record HITL verdict '${verdict}' for a unified review finding`)
+    .option("--run-id <id>", "Explicit review run id")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--note <text>", "Optional human note for this verdict", "")
+    .option("--actor <id>", "Operator identifier for audit trail", "")
+    .option("--json", "Emit machine-readable output")
+    .action(async (findingId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = resolveTargetPath(".", options);
+      const result = await recordReviewDecision({
+        targetPath,
+        runId: options.runId,
+        outputDir: options.outputDir,
+        findingId,
+        verdict,
+        note: options.note,
+        actor: options.actor,
+        env: process.env,
+      });
+
+      const payload = {
+        command: `review ${verdict}`,
+        runId: result.runId,
+        runDirectory: result.runDirectory,
+        findingId: result.findingId,
+        decision: result.decision,
+        reportPath: result.reportMarkdownPath,
+        reportJsonPath: result.reportJsonPath,
+        decisionsPath: result.decisionsPath,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold(`Recorded verdict '${verdict}'`));
+        console.log(pc.gray(`Run: ${result.runId}`));
+        console.log(pc.gray(`Finding: ${result.findingId}`));
+        console.log(pc.gray(`Report: ${result.reportMarkdownPath}`));
+      }
+    });
 }
 
 export function registerReviewCommand(program) {
@@ -111,7 +183,20 @@ export function registerReviewCommand(program) {
         });
       }
 
-      const summary = aiLayer ? aiLayer.combinedSummary : deterministic.summary;
+      const unified = await buildUnifiedReviewReport({
+        targetPath: deterministic.targetPath,
+        mode: deterministic.mode,
+        runId: deterministic.runId,
+        deterministic,
+        aiLayer,
+      });
+      const unifiedArtifacts = await writeUnifiedReviewArtifacts({
+        runDirectory: deterministic.artifacts.runDirectory,
+        report: unified.report,
+        markdown: unified.markdown,
+      });
+
+      const summary = unified.report.summary;
       const blocking = Boolean(summary.blocking) || Boolean(aiLayer?.budget?.blocking);
 
       const payload = {
@@ -122,8 +207,11 @@ export function registerReviewCommand(program) {
         runDirectory: deterministic.artifacts.runDirectory,
         reportPath: deterministic.artifacts.markdownPath,
         reportJsonPath: deterministic.artifacts.jsonPath,
+        reportUnifiedPath: unifiedArtifacts.reportMarkdownPath,
+        reportUnifiedJsonPath: unifiedArtifacts.reportJsonPath,
         scannedFiles: deterministic.scope.scannedFiles,
         scopedFiles: deterministic.scope.scannedRelativeFiles,
+        findingCount: unified.report.findings.length,
         p0: summary.P0,
         p1: summary.P1,
         p2: summary.P2,
@@ -161,6 +249,8 @@ export function registerReviewCommand(program) {
         console.log(pc.gray(`Mode: ${deterministic.mode}`));
         console.log(pc.gray(`Report: ${deterministic.artifacts.markdownPath}`));
         console.log(pc.gray(`JSON: ${deterministic.artifacts.jsonPath}`));
+        console.log(pc.gray(`Unified report: ${unifiedArtifacts.reportMarkdownPath}`));
+        console.log(pc.gray(`Unified JSON: ${unifiedArtifacts.reportJsonPath}`));
         if (aiLayer) {
           console.log(
             pc.gray(
@@ -182,6 +272,86 @@ export function registerReviewCommand(program) {
         process.exitCode = 2;
       }
     });
+
+  review
+    .command("show")
+    .description("Show latest or specified unified review report")
+    .option("--run-id <id>", "Explicit review run id")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = resolveTargetPath(".", options);
+      const loaded = await loadUnifiedReviewReport({
+        targetPath,
+        runId: options.runId,
+        outputDir: options.outputDir,
+        env: process.env,
+      });
+
+      const payload = {
+        command: "review show",
+        runId: loaded.report.runId,
+        runDirectory: loaded.runDirectory,
+        reportPath: loaded.reportMarkdownPath,
+        reportJsonPath: loaded.reportJsonPath,
+        decisionsPath: loaded.decisionsPath,
+        report: loaded.report,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.gray(`Report: ${loaded.reportMarkdownPath}`));
+      printUnifiedSummary(loaded.report);
+    });
+
+  review
+    .command("export")
+    .description("Export unified review report in md/json/sarif/github-annotations format")
+    .option("--run-id <id>", "Explicit review run id")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--format <format>", "Export format (sarif|json|md|github-annotations)", "md")
+    .option("--output-file <path>", "Optional custom export output path")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = resolveTargetPath(".", options);
+      const exported = await exportUnifiedReviewReport({
+        targetPath,
+        runId: options.runId,
+        outputDir: options.outputDir,
+        format: options.format,
+        outputFile: options.outputFile,
+        env: process.env,
+      });
+
+      const payload = {
+        command: "review export",
+        runId: exported.runId,
+        runDirectory: exported.runDirectory,
+        format: exported.format,
+        outputPath: exported.outputPath,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("Review report exported"));
+      console.log(pc.gray(`Run: ${exported.runId}`));
+      console.log(pc.gray(`Format: ${exported.format}`));
+      console.log(pc.gray(`Output: ${exported.outputPath}`));
+    });
+
+  registerVerdictCommand(review, "accept");
+  registerVerdictCommand(review, "reject");
+  registerVerdictCommand(review, "defer");
 
   review
     .command("scan")

@@ -94,15 +94,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 4.3 spec binding/version linkage. (merged as #51)
 - PR 5.1 plugin architecture foundation. (merged as #50)
 - PR 5.2 plugin load-order governance. (merged as #55)
-- PR 5.3 custom policy packs. (in progress on `roadmap/pr-5-3-policy-pack-runtime`)
+- PR 5.3 custom policy packs. (merged as #62)
 - PR 6.1 MCP server mode schema/registry. (merged as #48)
 - PR 6.2 VS Code bridge scaffolds. (merged as #56)
 
 ### Batch F - Local Omar Gate (P1)
 - PR 9.1 reviewer sandbox + isolation runtime. (merged as #53)
 - PR 9.2 deterministic review pipeline. (merged as #54)
-- PR 9.3 AI review layers. (in progress on `roadmap/pr-9-3-ai-review-layers`)
-- PR 9.4 unified report + reconciliation.
+- PR 9.3 AI review layers. (merged as #63)
+- PR 9.4 unified report + reconciliation. (in progress on `roadmap/pr-9-4-review-report-reconciliation`)
 - PR 9.5 replay + reproducibility.
 
 ### Batch G - Audit Swarm (P2)
