@@ -2540,6 +2540,58 @@ test("CLI review show/export and HITL verdict commands operate on unified report
   }
 });
 
+test("CLI review replay and review diff produce reproducibility comparison artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-replay-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "index.js"),
+      "const callback = 'http://localhost:3000/callback'; // TODO: harden before release\n",
+      "utf-8"
+    );
+
+    const initial = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "--ai", "--ai-dry-run", "--json"],
+    });
+    assert.equal(initial.code, 0, initial.stderr || initial.stdout);
+    const initialPayload = JSON.parse(String(initial.stdout || "").trim());
+    assert.ok(String(initialPayload.runId || "").startsWith("review-"));
+
+    const replay = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "replay", initialPayload.runId, "--ai-dry-run", "--json"],
+    });
+    assert.equal(replay.code, 0, replay.stderr || replay.stdout);
+    const replayPayload = JSON.parse(String(replay.stdout || "").trim());
+    assert.equal(replayPayload.command, "review replay");
+    assert.ok(String(replayPayload.replayRunId || "").startsWith("review-"));
+    assert.ok(String(replayPayload.comparisonPath || "").includes("REVIEW_COMPARISON_"));
+    const replayComparison = JSON.parse(await readFile(replayPayload.comparisonPath, "utf-8"));
+    assert.equal(replayComparison.baseRunId, initialPayload.runId);
+    assert.equal(replayComparison.candidateRunId, replayPayload.replayRunId);
+
+    const diff = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "diff", initialPayload.runId, replayPayload.replayRunId, "--json"],
+    });
+    assert.equal(diff.code, 0, diff.stderr || diff.stdout);
+    const diffPayload = JSON.parse(String(diff.stdout || "").trim());
+    assert.equal(diffPayload.command, "review diff");
+    assert.equal(diffPayload.baseRunId, initialPayload.runId);
+    assert.equal(diffPayload.candidateRunId, replayPayload.replayRunId);
+
+    const diffArtifact = JSON.parse(await readFile(diffPayload.outputPath, "utf-8"));
+    assert.equal(diffArtifact.baseRunId, initialPayload.runId);
+    assert.equal(diffArtifact.candidateRunId, replayPayload.replayRunId);
+    assert.equal(typeof diffPayload.deterministicEquivalent, "boolean");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI review deterministic staged mode scopes to staged files only", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-pipeline-"));
   try {

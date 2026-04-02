@@ -225,6 +225,18 @@ Reconciliation behavior:
 - assigns confidence (`100%` deterministic, model-derived for AI)
 - persists HITL decisions in `.sentinelayer/reviews/<run-id>/REVIEW_DECISIONS.json`
 
+## Review replay + diff (Phase 9.5 slice)
+
+Reproducibility commands:
+
+- `sl review replay <run-id>`
+- `sl review diff <base-run-id> <candidate-run-id>`
+
+Run metadata and comparison artifacts:
+
+- `.sentinelayer/reviews/<run-id>/REVIEW_RUN_CONTEXT.json`
+- `.sentinelayer/reviews/<run-id>/REVIEW_COMPARISON_<base>_vs_<candidate>.json`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -523,6 +535,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
 - `create-sentinelayer review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings
 - `create-sentinelayer review show|export|accept|reject|defer ...` manages reconciled unified reports and HITL adjudication
+- `create-sentinelayer review replay|diff ...` runs reproducibility replay and run-to-run drift comparisons
 - `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`

@@ -102,8 +102,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 9.1 reviewer sandbox + isolation runtime. (merged as #53)
 - PR 9.2 deterministic review pipeline. (merged as #54)
 - PR 9.3 AI review layers. (merged as #63)
-- PR 9.4 unified report + reconciliation. (in progress on `roadmap/pr-9-4-review-report-reconciliation`)
-- PR 9.5 replay + reproducibility.
+- PR 9.4 unified report + reconciliation. (merged as #64)
+- PR 9.5 replay + reproducibility. (in progress on `roadmap/pr-9-5-review-replay-reproducibility`)
 
 ### Batch G - Audit Swarm (P2)
 - PR 10.1 orchestrator + registry.
