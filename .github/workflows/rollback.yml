@@ -44,12 +44,12 @@ jobs:
     name: Deprecate Published Version
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != true && 'npm-publish' || 'security-review' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'false' && 'npm-publish' || 'security-review' }}
     steps:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.11.1"
           registry-url: "https://registry.npmjs.org"
 
       - name: Resolve rollback parameters
@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            version="$(npm view create-sentinelayer version | tr -d '\r' | xargs)"
+            version="$(timeout 20s npm view create-sentinelayer version | tr -d '\r' | xargs)"
             reason="Scheduled rollback drill: validate rollback workflow (dry-run only)."
             replacement=""
             dry_run="true"
@@ -100,7 +100,11 @@ jobs:
           fallback_version="$(TARGET_VERSION="${target_version}" node - <<'NODE'
           const { execSync } = require("node:child_process");
           const target = process.env.TARGET_VERSION || "";
-          const raw = execSync("npm view create-sentinelayer versions --json", { encoding: "utf8" });
+          const raw = execSync("npm view create-sentinelayer versions --json", {
+            encoding: "utf8",
+            timeout: 20000,
+            maxBuffer: 10 * 1024 * 1024,
+          });
           const parsed = JSON.parse(raw);
           const versions = Array.isArray(parsed) ? parsed : [String(parsed || "")];
           const normalized = versions.filter(Boolean);
@@ -127,18 +131,18 @@ jobs:
           set -euo pipefail
           expected_version="${{ steps.metadata.outputs.version }}"
           fallback_version="${{ steps.fallback.outputs.fallback_version }}"
-          resolved_version="$(npm view "create-sentinelayer@${expected_version}" version | tr -d '\r' | xargs)"
+          resolved_version="$(timeout 20s npm view "create-sentinelayer@${expected_version}" version | tr -d '\r' | xargs)"
           test -n "${resolved_version}" || (echo "Unable to resolve package version in npm registry." && exit 1)
           if [[ "${resolved_version}" != "${expected_version}" ]]; then
             echo "::error::Rollback readiness failed: expected version '${expected_version}', registry returned '${resolved_version}'."
             exit 1
           fi
-          fallback_resolved="$(npm view "create-sentinelayer@${fallback_version}" version | tr -d '\r' | xargs)"
+          fallback_resolved="$(timeout 20s npm view "create-sentinelayer@${fallback_version}" version | tr -d '\r' | xargs)"
           if [[ "${fallback_resolved}" != "${fallback_version}" ]]; then
             echo "::error::Rollback readiness failed: fallback version '${fallback_version}' is not resolvable."
             exit 1
           fi
-          deprecated_state="$(npm view "create-sentinelayer@${expected_version}" deprecated 2>/dev/null | tr -d '\r' | xargs || true)"
+          deprecated_state="$(timeout 20s npm view "create-sentinelayer@${expected_version}" deprecated 2>/dev/null | tr -d '\r' | xargs || true)"
           echo "Rollback readiness assertion passed for create-sentinelayer@${expected_version}."
           echo "Current deprecate marker: ${deprecated_state:-<none>}."
           echo "Fallback candidate for latest promotion: ${fallback_version}."
@@ -179,7 +183,7 @@ jobs:
           set -euo pipefail
           fallback_version="${{ steps.fallback.outputs.fallback_version }}"
           npm dist-tag add "create-sentinelayer@${fallback_version}" latest
-          promoted_latest="$(npm view create-sentinelayer@latest version | tr -d '\r' | xargs)"
+          promoted_latest="$(timeout 20s npm view create-sentinelayer@latest version | tr -d '\r' | xargs)"
           if [[ "${promoted_latest}" != "${fallback_version}" ]]; then
             echo "::error::Rollback latest promotion failed: expected latest=${fallback_version}, got ${promoted_latest:-missing}."
             exit 1

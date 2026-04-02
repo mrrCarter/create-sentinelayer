@@ -260,7 +260,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.11.1"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -270,7 +270,14 @@ jobs:
         run: |
           set -euo pipefail
           release_version="${GITHUB_REF_NAME#v}"
-          published_version="$(npm view "create-sentinelayer@${release_version}" version 2>/dev/null | tr -d '\r' | xargs || true)"
+          published_version=""
+          for attempt in 1 2 3; do
+            published_version="$(timeout 20s npm view "create-sentinelayer@${release_version}" version 2>/dev/null | tr -d '\r' | xargs || true)"
+            if [[ -n "${published_version}" || "${attempt}" -eq 3 ]]; then
+              break
+            fi
+            sleep "$((attempt * 3))"
+          done
           already_published="false"
           if [[ "${published_version}" == "${release_version}" ]]; then
             already_published="true"
@@ -513,7 +520,14 @@ jobs:
         run: |
           set -euo pipefail
           release_version="${GITHUB_REF_NAME#v}"
-          next_version="$(npm view create-sentinelayer@next version | tr -d '\r' | xargs)"
+          next_version=""
+          for attempt in 1 2 3; do
+            next_version="$(timeout 20s npm view create-sentinelayer@next version | tr -d '\r' | xargs || true)"
+            if [[ -n "${next_version}" || "${attempt}" -eq 3 ]]; then
+              break
+            fi
+            sleep "$((attempt * 3))"
+          done
           if [[ "${next_version}" != "${release_version}" ]]; then
             echo "::error::Canary verification failed: expected next=${release_version}, got ${next_version:-missing}."
             exit 1
