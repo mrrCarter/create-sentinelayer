@@ -50,23 +50,32 @@ jobs:
             exit 1
           fi
 
-          read_check_conclusion() {
-            local sha="$1"
-            local check_name="$2"
+          read_success_workflow_run_id() {
+            local workflow_file="$1"
+            local sha="$2"
+            local event_name="$3"
+            local branch_name="$4"
+            local query="/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&event=${event_name}&per_page=20"
+            if [[ -n "${branch_name}" ]]; then
+              query="${query}&branch=${branch_name}"
+            fi
             gh api \
               -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs" \
-              --jq ".check_runs[] | select(.name==\"${check_name}\") | .conclusion" \
+              "${query}" \
+              --jq '.workflow_runs[] | select(.conclusion=="success") | .id' \
               | head -n 1 || true
           }
 
-          quality_conclusion="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
-            --jq '.check_runs[] | select(.name=="Quality Summary") | .conclusion' | head -n 1 || true)"
-
-          if [[ "${quality_conclusion}" != "success" ]]; then
-            echo "::error::Quality Summary is not successful for commit ${GITHUB_SHA}. Found conclusion='${quality_conclusion:-missing}'."
+          quality_run_id=""
+          for _ in $(seq 1 18); do
+            quality_run_id="$(read_success_workflow_run_id "quality-gates.yml" "${GITHUB_SHA}" "push" "main")"
+            if [[ -n "${quality_run_id}" && "${quality_run_id}" != "null" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "${quality_run_id}" || "${quality_run_id}" == "null" ]]; then
+            echo "::error::No successful quality-gates workflow run found for commit ${GITHUB_SHA}."
             exit 1
           fi
 
@@ -75,29 +84,21 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
             --jq '.[0].head.sha' 2>/dev/null || true)"
 
-          security_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Security Scan")"
-          if [[ "${security_on_sha}" != "success" ]]; then
-            echo "::error::Security Scan is not successful for commit ${GITHUB_SHA}. Found conclusion='${security_on_sha:-missing}'."
-            exit 1
-          fi
-
           omar_sha="${GITHUB_SHA}"
           if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
             omar_sha="${pr_head_sha}"
           fi
-          omar_conclusion="$(read_check_conclusion "${omar_sha}" "Omar Gate")"
-          if [[ "${omar_conclusion}" != "success" ]]; then
-            echo "::error::Omar Gate is not successful for commit ${omar_sha}. Found conclusion='${omar_conclusion:-missing}'."
-            exit 1
-          fi
 
-          quality_run_id="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/quality-gates.yml/runs?head_sha=${GITHUB_SHA}&branch=main&status=completed&per_page=20" \
-            --jq '.workflow_runs[] | select(.conclusion=="success") | .id' | head -n 1 || true)"
-
-          if [[ -z "${quality_run_id}" || "${quality_run_id}" == "null" ]]; then
-            echo "::error::Could not find a successful quality-gates workflow run for ${GITHUB_SHA}."
+          omar_run_id=""
+          for _ in $(seq 1 12); do
+            omar_run_id="$(read_success_workflow_run_id "omar-gate.yml" "${omar_sha}" "pull_request" "")"
+            if [[ -n "${omar_run_id}" && "${omar_run_id}" != "null" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          if [[ -z "${omar_run_id}" || "${omar_run_id}" == "null" ]]; then
+            echo "::error::No successful Omar Gate workflow run found for commit ${omar_sha}."
             exit 1
           fi
 

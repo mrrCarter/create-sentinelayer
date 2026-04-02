@@ -92,6 +92,49 @@ function isNearExpiry(tokenExpiresAt, thresholdDays) {
   return expiryEpoch - Date.now() <= thresholdMs;
 }
 
+function createAuthAbortError() {
+  return new SentinelayerApiError("CLI authentication was canceled.", {
+    status: 499,
+    code: "CLI_AUTH_ABORTED",
+  });
+}
+
+function throwIfAborted(signal) {
+  if (signal && typeof signal === "object" && signal.aborted) {
+    throw createAuthAbortError();
+  }
+}
+
+function resolveRandom(randomFn) {
+  if (typeof randomFn !== "function") {
+    return Math.random;
+  }
+  return randomFn;
+}
+
+async function sleepWithSignal(delayMs, signal) {
+  throwIfAborted(signal);
+  if (!signal || typeof signal !== "object") {
+    await sleep(delayMs);
+    return;
+  }
+
+  let abortListener;
+  try {
+    await Promise.race([
+      sleep(delayMs),
+      new Promise((_, reject) => {
+        abortListener = () => reject(createAuthAbortError());
+        signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    ]);
+  } finally {
+    if (abortListener) {
+      signal.removeEventListener("abort", abortListener);
+    }
+  }
+}
+
 export async function resolveApiUrl({
   cwd = process.cwd(),
   env = process.env,
@@ -136,15 +179,20 @@ async function pollCliAuthSession({
   timeoutMs,
   pollIntervalSeconds,
   idempotencyKey = null,
+  signal = null,
+  randomFn = Math.random,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
   let attempt = 0;
+  const random = resolveRandom(randomFn);
 
   while (Date.now() < deadline) {
+    throwIfAborted(signal);
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
       headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+      signal,
       body: {
         session_id: sessionId,
         challenge,
@@ -161,10 +209,12 @@ async function pollCliAuthSession({
     );
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
-    const jitterFactor = 0.8 + Math.random() * 0.4;
+    const jitterValue = Number(random());
+    const safeJitter = Number.isFinite(jitterValue) ? jitterValue : 0.5;
+    const jitterFactor = 0.8 + Math.min(1, Math.max(0, safeJitter)) * 0.4;
     const remainingMs = Math.max(0, deadline - Date.now());
     const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
-    await sleep(nextDelayMs);
+    await sleepWithSignal(nextDelayMs, signal);
     attempt += 1;
   }
 
@@ -294,6 +344,8 @@ export async function loginAndPersistSession({
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   ide = DEFAULT_IDE_NAME,
   cliVersion = "",
+  signal = null,
+  randomFn = Math.random,
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
@@ -325,6 +377,8 @@ export async function loginAndPersistSession({
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
     idempotencyKey: buildIdempotencyKey(`${String(session.session_id || "").trim()}:${challenge}`, "cli-auth-poll"),
+    signal,
+    randomFn,
   });
 
   const approvalToken = String(approval.auth_token || "").trim();

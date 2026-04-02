@@ -203,6 +203,7 @@ export async function requestJson(
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     maxAttempts = DEFAULT_REQUEST_MAX_ATTEMPTS,
     retryBackoffMs = DEFAULT_REQUEST_RETRY_BACKOFF_MS,
+    signal = null,
     fetchImpl = fetch,
   } = {}
 ) {
@@ -220,6 +221,10 @@ export async function requestJson(
   for (let attemptIndex = 0; attemptIndex < attempts; attemptIndex += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), normalizedTimeoutMs);
+    const activeSignal =
+      signal && typeof signal === "object"
+        ? AbortSignal.any([controller.signal, signal])
+        : controller.signal;
 
     try {
       const response = await fetchImpl(String(url), {
@@ -229,7 +234,7 @@ export async function requestJson(
           ...headers,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
+        signal: activeSignal,
       });
 
       const rawBody = await response.text();
