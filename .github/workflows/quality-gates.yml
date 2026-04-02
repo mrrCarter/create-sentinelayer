@@ -13,6 +13,10 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   syntax-matrix:
     name: Syntax & Sanity (Node ${{ matrix.node }})
@@ -21,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["18", "20"]
+        node: ["18.20.8", "20.11.1"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -33,7 +37,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Validate CLI syntax
         run: npm run check
@@ -41,10 +45,11 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
-  unit-coverage:
-    name: Unit Coverage (>=80%)
+  security-scan:
+    name: Security Scan
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 12
+    needs: [lint_gate, unit-coverage, e2e-packaging]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -52,11 +57,64 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.11.1"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Generate deterministic dependency SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+          test -s sbom.cdx.json || (echo "Failed to generate sbom.cdx.json" && exit 1)
+
+      - name: Enforce deterministic dependency policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f package-lock.json || (echo "Missing package-lock.json" && exit 1)
+          if rg -n --glob 'package-lock.json' -- '"resolved":\s*"file:'; then
+            echo "::error::Local file:// dependency resolution is not allowed in quality gate."
+            exit 1
+          fi
+
+      - name: Run gitleaks secret scan gate
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        if: always()
+        with:
+          name: security-scan-artifacts
+          path: |
+            sbom.cdx.json
+            gitleaks-report.json
+          if-no-files-found: ignore
+
+  unit-coverage:
+    name: Unit Coverage (>=80%)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [syntax-matrix]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
 
       - name: Enforce unit coverage thresholds
         run: npm run test:coverage
@@ -72,6 +130,7 @@ jobs:
     name: E2E & Package
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    needs: [syntax-matrix]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -79,11 +138,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.11.1"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run E2E tests
         run: npm run test:e2e
@@ -91,16 +150,300 @@ jobs:
       - name: Validate package tarball
         run: npm pack --dry-run
 
+  lint_gate:
+    name: Lint Stage Gate
+    runs-on: ubuntu-22.04
+    needs: [syntax-matrix]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run lint/static syntax gate
+        run: npm run check
+
+  test_gate:
+    name: Test Stage Gate
+    runs-on: ubuntu-22.04
+    needs: [lint_gate, unit-coverage, e2e-packaging]
+    steps:
+      - name: Confirm test stage
+        run: echo "Test stage passed."
+
+  security_gate:
+    name: Security Stage Gate
+    runs-on: ubuntu-22.04
+    needs: [security-scan]
+    steps:
+      - name: Confirm security stage
+        run: echo "Security stage passed."
+
+  build-release-artifact:
+    name: Build Release Artifact
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [security_gate]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Build reproducible release tarball artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_once() {
+            local workspace="$1"
+            git archive --format=tar HEAD | tar -xf - -C "${workspace}"
+            (
+              cd "${workspace}"
+              expected_registry="https://registry.npmjs.org/"
+              resolved_registry="$(npm config get registry | tr -d '\r' | xargs)"
+              if [[ "${resolved_registry}" != "${expected_registry}" ]]; then
+                echo "::error::Unexpected npm registry '${resolved_registry}'. Expected '${expected_registry}'."
+                exit 1
+              fi
+              node - <<'NODE'
+              const fs = require("node:fs");
+              const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+              const packages = lock && typeof lock === "object" ? lock.packages || {} : {};
+              const missingIntegrity = [];
+              for (const [pkgPath, meta] of Object.entries(packages)) {
+                if (pkgPath === "" || !meta || typeof meta !== "object") {
+                  continue;
+                }
+                if (meta.resolved && !meta.integrity) {
+                  missingIntegrity.push(pkgPath);
+                }
+              }
+              if (missingIntegrity.length > 0) {
+                console.error(
+                  `Missing package-lock integrity for ${missingIntegrity.length} entries (example: ${missingIntegrity[0]}).`
+                );
+                process.exit(1);
+              }
+              NODE
+              npm ci --ignore-scripts --prefer-offline=false
+              if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+                NPM_CONFIG_IGNORE_SCRIPTS=true npm pack >/dev/null
+              else
+                npm pack >/dev/null
+              fi
+            )
+            ls -1 "${workspace}"/create-sentinelayer-*.tgz | head -n 1
+          }
+
+          work_a="$(mktemp -d)"
+          work_b="$(mktemp -d)"
+          tarball_a="$(build_once "${work_a}")"
+          tarball_b="$(build_once "${work_b}")"
+
+          digest_a="$(sha256sum "${tarball_a}" | awk '{print $1}')"
+          digest_b="$(sha256sum "${tarball_b}" | awk '{print $1}')"
+
+          if [[ "${digest_a}" != "${digest_b}" ]]; then
+            echo "::error::Reproducibility check failed: tarball digests differ (${digest_a} != ${digest_b})."
+            exit 1
+          fi
+
+          tarball_name="$(basename "${tarball_a}")"
+          cp "${tarball_a}" "./${tarball_name}"
+          printf '%s  %s\n' "${digest_a}" "${tarball_name}" > release-sha256.txt
+          echo "${GITHUB_SHA}" > release-commit-sha.txt
+          npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+          test -s sbom.cdx.json || (echo "::error::Failed to generate sbom.cdx.json in build-release-artifact." && exit 1)
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: create-sentinelayer-*.tgz
+
+      - name: Upload release tarball artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: ${{ github.event_name == 'pull_request' && format('create-sentinelayer-pr-{0}', github.sha) || format('create-sentinelayer-release-{0}', github.sha) }}
+          path: |
+            create-sentinelayer-*.tgz
+            release-sha256.txt
+            release-commit-sha.txt
+            sbom.cdx.json
+          if-no-files-found: error
+
+  pr_deploy_smoke_gate:
+    name: PR Deploy Smoke Gate
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-22.04
+    needs: [build-release-artifact]
+    timeout-minutes: 15
+    environment: security-review
+    steps:
+      - name: Download staged release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ format('create-sentinelayer-pr-{0}', github.sha) }}
+          path: .
+
+      - name: Verify PR smoke artifact integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-commit-sha.txt || (echo "::error::Missing release-commit-sha.txt." && exit 1)
+          packed_sha="$(cat release-commit-sha.txt | tr -d '\r' | xargs)"
+          if [[ "${packed_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::PR smoke artifact commit mismatch: expected ${GITHUB_SHA}, got ${packed_sha:-missing}."
+            exit 1
+          fi
+          sha256sum --check release-sha256.txt
+
+      - name: Execute PR smoke install gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          test -n "${TARBALL}" || (echo "::error::Missing release tarball for PR smoke gate." && exit 1)
+          bash ./scripts/deploy/canary.sh --tarball "${TARBALL}"
+
+      - name: Emit PR smoke gate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## PR Deploy Smoke Gate"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- environment: \`security-review\`"
+            echo "- strategy: \`smoke-install\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  deploy_gate:
+    name: Deploy Stage Gate
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    needs: [build-release-artifact]
+    timeout-minutes: 15
+    concurrency:
+      group: quality-prod-deploy
+      cancel-in-progress: true
+    environment: production
+    steps:
+      - name: Assert production environment protection policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          policy_snapshot="$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/environments/production" \
+            --jq '[
+              ([.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers | length)] | max // 0),
+              ([.protection_rules[]? | select(.type=="required_reviewers") | .prevent_self_review] | max // false),
+              (.deployment_branch_policy.protected_branches // false),
+              (.deployment_branch_policy.custom_branch_policies // false)
+            ] | @tsv' \
+            | tr -d '\r' || true)"
+          reviewer_count=""
+          prevent_self_review=""
+          protected_branches=""
+          custom_branch_policies=""
+          IFS=$'\t' read -r reviewer_count prevent_self_review protected_branches custom_branch_policies <<< "${policy_snapshot}"
+          case "${reviewer_count}" in
+            ''|*[!0-9]*)
+              echo "::error::Unable to resolve required reviewer protection for environment 'production'."
+              exit 1
+              ;;
+          esac
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::Environment 'production' must require at least one reviewer."
+            exit 1
+          fi
+          if [[ "${prevent_self_review}" != "true" ]]; then
+            echo "::error::Environment 'production' must enforce prevent_self_review=true."
+            exit 1
+          fi
+          if [[ "${protected_branches}" != "true" || "${custom_branch_policies}" != "false" ]]; then
+            echo "::error::Environment 'production' must enforce protected branch deployments only."
+            exit 1
+          fi
+
+      - name: Download staged release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ format('create-sentinelayer-release-{0}', github.sha) }}
+          path: .
+
+      - name: Verify deploy input artifact integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-commit-sha.txt || (echo "::error::Missing release-commit-sha.txt." && exit 1)
+          packed_sha="$(cat release-commit-sha.txt | tr -d '\r' | xargs)"
+          if [[ "${packed_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy gate artifact commit mismatch: expected ${GITHUB_SHA}, got ${packed_sha:-missing}."
+            exit 1
+          fi
+          sha256sum --check release-sha256.txt
+
+      - name: Execute production deploy canary and health gate
+        shell: bash
+        env:
+          DEPLOY_HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTHCHECK_URL || '' }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DEPLOY_HEALTHCHECK_URL}" ]]; then
+            echo "::error::DEPLOY_HEALTHCHECK_URL must be configured for production deploy gate."
+            exit 1
+          fi
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          test -n "${TARBALL}" || (echo "::error::Missing release tarball for deploy stage gate." && exit 1)
+          bash ./scripts/deploy/canary.sh --tarball "${TARBALL}" --healthcheck-url "${DEPLOY_HEALTHCHECK_URL}"
+
+      - name: Emit deploy gate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Deploy Stage Gate"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- environment: \`production\`"
+            echo "- strategy: \`canary\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [syntax-matrix, unit-coverage, e2e-packaging]
+    needs: [lint_gate, test_gate, security_gate, build-release-artifact, pr_deploy_smoke_gate, deploy_gate]
     if: >-
       ${{
         always() &&
-        needs.syntax-matrix.result == 'success' &&
-        needs.unit-coverage.result == 'success' &&
-        needs.e2e-packaging.result == 'success'
+        needs.lint_gate.result == 'success' &&
+        needs.test_gate.result == 'success' &&
+        needs.security_gate.result == 'success' &&
+        needs.build-release-artifact.result == 'success' &&
+        (
+          (github.event_name == 'pull_request' && needs.pr_deploy_smoke_gate.result == 'success' && needs.deploy_gate.result == 'skipped') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.pr_deploy_smoke_gate.result == 'skipped' && needs.deploy_gate.result == 'success')
+        )
       }}
     steps:
       - name: Confirm all quality gates passed

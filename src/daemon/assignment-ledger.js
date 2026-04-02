@@ -1,10 +1,15 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { WORK_ITEM_STATUSES, resolveErrorDaemonStorage } from "./error-worker.js";
 
 const LEDGER_SCHEMA_VERSION = "1.0.0";
 const QUEUE_SCHEMA_VERSION = "1.0.0";
+const FILE_LOCK_ACQUIRE_TIMEOUT_MS = 5000;
+const FILE_LOCK_RETRY_DELAY_MS = 50;
+const FILE_LOCK_STALE_WINDOW_MS = 5 * 60 * 1000;
 
 export const ASSIGNMENT_STATUSES = Object.freeze([
   "QUEUED",
@@ -160,14 +165,83 @@ async function loadJsonFile(filePath, defaultFactory) {
   }
 }
 
-async function writeJsonFile(filePath, payload = {}) {
+async function acquireFileLock(filePath, nowEpochMs = Date.now()) {
+  const lockPath = `${filePath}.lock`;
+  const deadlineEpoch = nowEpochMs + FILE_LOCK_ACQUIRE_TIMEOUT_MS;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+  while (true) {
+    try {
+      const lockHandle = await fsp.open(lockPath, "wx", 0o600);
+      await lockHandle.writeFile(
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), filePath })}\n`,
+        "utf-8"
+      );
+      return {
+        lockPath,
+        async release() {
+          try {
+            await lockHandle.close();
+          } finally {
+            await fsp.rm(lockPath, { force: true });
+          }
+        },
+      };
+    } catch (error) {
+      if (!(error && typeof error === "object" && error.code === "EEXIST")) {
+        throw error;
+      }
+      let recoveredStaleLock = false;
+      try {
+        const rawLock = await fsp.readFile(lockPath, "utf-8");
+        const parsedLock = JSON.parse(String(rawLock || "").split(/\r?\n/, 1)[0] || "{}");
+        const createdEpoch = Date.parse(String(parsedLock.createdAt || ""));
+        if (Number.isFinite(createdEpoch) && Date.now() - createdEpoch >= FILE_LOCK_STALE_WINDOW_MS) {
+          await fsp.rm(lockPath, { force: true });
+          recoveredStaleLock = true;
+        }
+      } catch {
+        // If lock metadata cannot be read/parsing fails, retain conservative wait behavior.
+      }
+      if (recoveredStaleLock) {
+        continue;
+      }
+      if (Date.now() >= deadlineEpoch) {
+        throw new Error(`Timed out acquiring ledger lock '${lockPath}'.`);
+      }
+      await sleep(FILE_LOCK_RETRY_DELAY_MS);
+    }
+  }
+}
+
+async function withFileLock(filePath, operation) {
+  const lock = await acquireFileLock(filePath);
+  try {
+    return await operation();
+  } finally {
+    await lock.release();
+  }
+}
+
+async function writeJsonFile(filePath, payload = {}) {
+  return withFileLock(filePath, async () => {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fsp.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    await fsp.rename(tempPath, filePath);
+  });
 }
 
 async function appendEvent(filePath, payload = {}) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.appendFile(filePath, `${JSON.stringify(payload)}\n`, "utf-8");
+  return withFileLock(filePath, async () => {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.appendFile(filePath, `${JSON.stringify(payload)}\n`, {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+  });
 }
 
 async function loadLedger(ledgerPath, nowIso = new Date().toISOString()) {

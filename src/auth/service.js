@@ -18,6 +18,12 @@ export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
+const LOOPBACK_API_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function isTruthy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
 
 function normalizeApiUrl(rawValue) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
@@ -26,6 +32,25 @@ function normalizeApiUrl(rawValue) {
     parsed = new URL(candidate);
   } catch {
     throw new Error(`Invalid API URL '${candidate}'.`);
+  }
+  const protocol = String(parsed.protocol || "").toLowerCase();
+  const hostname = String(parsed.hostname || "").trim().toLowerCase();
+  const insecureOverrideRequested = isTruthy(process.env.SENTINELAYER_ALLOW_INSECURE_API_URL);
+  const isLoopbackHost = LOOPBACK_API_HOSTS.has(hostname);
+  if (insecureOverrideRequested && isTruthy(process.env.CI)) {
+    throw new Error("SENTINELAYER_ALLOW_INSECURE_API_URL cannot be enabled in CI environments.");
+  }
+  if (insecureOverrideRequested && !isLoopbackHost) {
+    throw new Error(
+      "SENTINELAYER_ALLOW_INSECURE_API_URL is restricted to loopback API hosts (localhost, 127.0.0.1, ::1)."
+    );
+  }
+  const allowInsecureHttp = isLoopbackHost;
+  if (protocol !== "https:" && !(protocol === "http:" && allowInsecureHttp)) {
+    throw new Error("API URL must use https:// unless targeting a loopback host.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("API URL must not include embedded credentials.");
   }
   parsed.pathname = "/";
   parsed.search = "";
@@ -68,6 +93,22 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
+function buildIdempotencyKey(seedValue, scope = "auth", sessionNonce = "") {
+  const normalizedSeed = String(seedValue || "").trim();
+  if (!normalizedSeed) {
+    throw new Error("seedValue is required for idempotency key generation.");
+  }
+  const normalizedScope = String(scope || "auth").trim().toLowerCase();
+  const scopePrefix = normalizedScope.replace(/[^a-z0-9-]/g, "").slice(0, 24) || "auth";
+  const nonce = String(sessionNonce || "global").trim() || "global";
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${scopePrefix}:${nonce}:${normalizedSeed}`)
+    .digest("hex")
+    .slice(0, 48);
+  return `${scopePrefix}-${digest}`;
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -84,6 +125,49 @@ function isNearExpiry(tokenExpiresAt, thresholdDays) {
   }
   const thresholdMs = Number(thresholdDays || DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS) * 24 * 60 * 60 * 1000;
   return expiryEpoch - Date.now() <= thresholdMs;
+}
+
+function createAuthAbortError() {
+  return new SentinelayerApiError("CLI authentication was canceled.", {
+    status: 499,
+    code: "CLI_AUTH_ABORTED",
+  });
+}
+
+function throwIfAborted(signal) {
+  if (signal && typeof signal === "object" && signal.aborted) {
+    throw createAuthAbortError();
+  }
+}
+
+function resolveRandom(randomFn) {
+  if (typeof randomFn !== "function") {
+    return Math.random;
+  }
+  return randomFn;
+}
+
+async function sleepWithSignal(delayMs, signal) {
+  throwIfAborted(signal);
+  if (!signal || typeof signal !== "object") {
+    await sleep(delayMs);
+    return;
+  }
+
+  let abortListener;
+  try {
+    await Promise.race([
+      sleep(delayMs),
+      new Promise((_, reject) => {
+        abortListener = () => reject(createAuthAbortError());
+        signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    ]);
+  } finally {
+    if (abortListener) {
+      signal.removeEventListener("abort", abortListener);
+    }
+  }
 }
 
 export async function resolveApiUrl({
@@ -111,9 +195,10 @@ export async function resolveApiUrl({
   return normalizeApiUrl(DEFAULT_API_URL);
 }
 
-async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {
+async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, idempotencyKey = null }) {
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"), {
     method: "POST",
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
     body: {
       challenge,
       ide: String(ide || DEFAULT_IDE_NAME),
@@ -128,14 +213,21 @@ async function pollCliAuthSession({
   challenge,
   timeoutMs,
   pollIntervalSeconds,
+  idempotencyKey = null,
+  signal = null,
+  randomFn = Math.random,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
-  const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
   const deadline = Date.now() + timeout;
+  let attempt = 0;
+  const random = resolveRandom(randomFn);
 
   while (Date.now() < deadline) {
+    throwIfAborted(signal);
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+      signal,
       body: {
         session_id: sessionId,
         challenge,
@@ -146,8 +238,19 @@ async function pollCliAuthSession({
     if (status === "approved" && payload.auth_token) {
       return payload;
     }
-
-    await sleep(pollIntervalMs);
+    const serverPollIntervalMs = Math.max(
+      250,
+      Math.round(Number(payload.poll_interval_seconds || pollIntervalSeconds || 2) * 1000)
+    );
+    const backoffMultiplier = 2 ** Math.min(attempt, 5);
+    const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
+    const jitterValue = Number(random());
+    const safeJitter = Number.isFinite(jitterValue) ? jitterValue : 0.5;
+    const jitterFactor = 0.8 + Math.min(1, Math.max(0, safeJitter)) * 0.4;
+    const remainingMs = Math.max(0, deadline - Date.now());
+    const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
+    await sleepWithSignal(nextDelayMs, signal);
+    attempt += 1;
   }
 
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {
@@ -168,13 +271,17 @@ async function issueApiToken({
   authToken,
   tokenLabel,
   tokenTtlDays,
+  idempotencyKey = null,
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
   );
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/api-tokens"), {
     method: "POST",
-    headers: toAuthHeader(authToken),
+    headers: {
+      ...toAuthHeader(authToken),
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
       scope: "github_app_bridge",
@@ -210,11 +317,21 @@ async function rotateStoredApiTokenIfNeeded({
     return { session, rotated: false };
   }
 
+  const rotationSeed = `${session.tokenId || "no-token-id"}:${session.tokenExpiresAt || "no-expiry"}:${
+    tokenLabel || "auto"
+  }:${tokenTtlDays || DEFAULT_API_TOKEN_TTL_DAYS}`;
+  const rotationIdempotencyKey = buildIdempotencyKey(
+    rotationSeed,
+    "token-rotate",
+    session.user?.id || session.tokenId || "session"
+  );
+
   const issued = await issueApiToken({
     apiUrl: session.apiUrl,
     authToken: session.token,
     tokenLabel,
     tokenTtlDays,
+    idempotencyKey: rotationIdempotencyKey,
   });
 
   const nextSession = await writeStoredSession(
@@ -229,21 +346,58 @@ async function rotateStoredApiTokenIfNeeded({
     { homeDir }
   );
 
+  let rotateWarning = null;
   if (session.tokenId) {
+    const revokeAttempts = [{ authToken: session.token }];
+    if (nextSession.token && nextSession.token !== session.token) {
+      revokeAttempts.push({ authToken: nextSession.token });
+    }
+    let revokeError = null;
     try {
-      await revokeApiToken({
-        apiUrl: session.apiUrl,
-        authToken: nextSession.token,
-        tokenId: session.tokenId,
-      });
-    } catch {
-      // Ignore revoke failures; new token is already active.
+      let revoked = false;
+      for (const attempt of revokeAttempts) {
+        try {
+          await revokeApiToken({
+            apiUrl: session.apiUrl,
+            authToken: attempt.authToken,
+            tokenId: session.tokenId,
+          });
+          revoked = true;
+          break;
+        } catch (error) {
+          revokeError = error;
+          const status = error instanceof SentinelayerApiError ? Number(error.status || 0) : 0;
+          const isAuthFailure = status === 401 || status === 403;
+          if (!isAuthFailure) {
+            break;
+          }
+        }
+      }
+      if (!revoked && revokeError) {
+        throw revokeError;
+      }
+    } catch (error) {
+      rotateWarning =
+        error instanceof SentinelayerApiError
+          ? {
+              code: error.code,
+              message: error.message,
+              status: error.status,
+              requestId: error.requestId,
+            }
+          : {
+              code: "TOKEN_REVOKE_FAILED",
+              message: error instanceof Error ? error.message : String(error || "Token revoke failed"),
+              status: 500,
+              requestId: null,
+            };
     }
   }
 
   return {
     session: nextSession,
     rotated: true,
+    rotateWarning,
   };
 }
 
@@ -257,15 +411,20 @@ export async function loginAndPersistSession({
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   ide = DEFAULT_IDE_NAME,
   cliVersion = "",
+  signal = null,
+  randomFn = Math.random,
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
   const challenge = generateChallenge();
+  const idempotencyNonce = crypto.randomBytes(16).toString("hex");
+  const startIdempotencyKey = buildIdempotencyKey(challenge, "cli-auth-start", idempotencyNonce);
   const session = await startCliAuthSession({
     apiUrl,
     challenge,
     ide,
     cliVersion,
+    idempotencyKey: startIdempotencyKey,
   });
 
   const authorizeUrl = String(session.authorize_url || "").trim();
@@ -285,6 +444,13 @@ export async function loginAndPersistSession({
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
+    idempotencyKey: buildIdempotencyKey(
+      `${String(session.session_id || "").trim()}:${challenge}`,
+      "cli-auth-poll",
+      idempotencyNonce
+    ),
+    signal,
+    randomFn,
   });
 
   const approvalToken = String(approval.auth_token || "").trim();
@@ -301,6 +467,11 @@ export async function loginAndPersistSession({
     authToken: approvalToken,
     tokenLabel,
     tokenTtlDays,
+    idempotencyKey: buildIdempotencyKey(
+      `${String(session.session_id || "").trim()}:${challenge}`,
+      "cli-auth-issue-token",
+      idempotencyNonce
+    ),
   });
 
   const stored = await writeStoredSession(
@@ -352,6 +523,7 @@ export async function resolveActiveAuthSession({
       tokenPrefix: null,
       tokenExpiresAt: null,
       rotated: false,
+      rotateWarning: null,
       filePath: null,
     };
   }
@@ -369,6 +541,7 @@ export async function resolveActiveAuthSession({
       tokenPrefix: null,
       tokenExpiresAt: null,
       rotated: false,
+      rotateWarning: null,
       filePath: null,
     };
   }
@@ -380,6 +553,7 @@ export async function resolveActiveAuthSession({
 
   let active = stored;
   let rotated = false;
+  let rotateWarning = null;
   if (autoRotate) {
     try {
       const rotateResult = await rotateStoredApiTokenIfNeeded({
@@ -391,10 +565,25 @@ export async function resolveActiveAuthSession({
       });
       active = rotateResult.session;
       rotated = rotateResult.rotated;
-    } catch {
+      rotateWarning = rotateResult.rotateWarning || null;
+    } catch (error) {
       // Keep existing token if rotation fails.
       active = stored;
       rotated = false;
+      rotateWarning =
+        error instanceof SentinelayerApiError
+          ? {
+              code: error.code,
+              message: error.message,
+              status: error.status,
+              requestId: error.requestId,
+            }
+          : {
+              code: "TOKEN_ROTATE_FAILED",
+              message: error instanceof Error ? error.message : String(error || "Token rotation failed"),
+              status: 500,
+              requestId: null,
+            };
     }
   }
 
@@ -408,6 +597,7 @@ export async function resolveActiveAuthSession({
     tokenPrefix: active.tokenPrefix || null,
     tokenExpiresAt: active.tokenExpiresAt || null,
     rotated,
+    rotateWarning,
     filePath: active.filePath,
   };
 }
@@ -447,6 +637,7 @@ export async function getAuthStatus({
       tokenExpiresAt: null,
       tokenPrefix: null,
       tokenId: null,
+      rotateWarning: null,
       filePath: null,
     };
   }
@@ -486,6 +677,7 @@ export async function getAuthStatus({
     tokenExpiresAt: session.tokenExpiresAt,
     tokenPrefix: session.tokenPrefix,
     tokenId: session.tokenId,
+    rotateWarning: session.rotateWarning || null,
     filePath: session.filePath,
   };
 }

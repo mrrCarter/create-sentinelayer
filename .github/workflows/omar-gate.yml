@@ -19,13 +19,11 @@ on:
       severity_gate:
         description: Severity threshold that blocks merge
         required: false
-        default: P2
+        default: P1
         type: choice
         options:
-          - P0
           - P1
           - P2
-          - none
       p2_max_allowed:
         description: Maximum allowed P2 findings before Omar Gate blocks merge
         required: false
@@ -36,7 +34,6 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -44,16 +41,54 @@ env:
 jobs:
   omar_gate:
     name: Omar Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: security-review
     permissions:
       contents: read
       checks: write
       pull-requests: write
-      id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Resolve trusted secret context
+        id: trust
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted="false"
+          allowlisted_same_repo_pr_actors="mrrCarter"
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            trusted="true"
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${GITHUB_REPOSITORY}" ]]; then
+            case ",${allowlisted_same_repo_pr_actors}," in
+              *",${GITHUB_ACTOR},"*)
+                trusted="true"
+                ;;
+              *)
+                trusted="false"
+                ;;
+            esac
+          fi
+          echo "trusted=${trusted}" >> "${GITHUB_OUTPUT}"
+      - name: Enforce manual invocation allowlist
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          ALLOWED_OMAR_DISPATCH_ACTORS: "mrrCarter"
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Manual Omar Gate dispatch is allowed only on refs/heads/main. Received '${GITHUB_REF}'."
+            exit 1
+          fi
+          case ",${ALLOWED_OMAR_DISPATCH_ACTORS}," in
+            *",${GITHUB_ACTOR},"*) ;;
+            *)
+              echo "::error::Actor '${GITHUB_ACTOR}' is not allowlisted for manual Omar Gate dispatch."
+              exit 1
+              ;;
+          esac
       - name: Validate Sentinelayer token secret
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
@@ -61,13 +96,30 @@ jobs:
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
       - name: Validate OpenAI key secret for Omar LLM scan
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+      - name: Setup Node for untrusted pull_request gate
+        if: ${{ steps.trust.outputs.trusted != 'true' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Run minimal untrusted pull_request gate
+        if: ${{ steps.trust.outputs.trusted != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm run check
+          echo "::notice::Untrusted pull_request gate passed without secret-backed Omar scan."
       - name: Run Omar Gate
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
         with:
@@ -78,13 +130,9 @@ jobs:
           sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "true"
-          codex_only: "false"
           llm_failure_policy: block
       - name: Enforce Omar reviewer merge thresholds
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         env:
           P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
@@ -104,12 +152,6 @@ jobs:
           case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
           case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
           case "${severity_gate}" in
-            P0)
-              if [ "${p0}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
-                exit 1
-              fi
-              ;;
             P1)
               if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
                 echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
@@ -126,27 +168,21 @@ jobs:
                 exit 1
               fi
               ;;
-            none)
-              echo "::notice::Omar Gate threshold enforcement disabled (severity_gate=none)."
-              ;;
             *)
               echo "::error::Invalid severity_gate value: ${severity_gate}"
               exit 1
               ;;
           esac
       - name: Emit Omar run summary
+        if: ${{ steps.trust.outputs.trusted == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
           p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
           threshold_line="P0=0, P1=0"
-          if [ "${severity_gate}" = "P0" ]; then
-            threshold_line="P0=0"
-          elif [ "${severity_gate}" = "P2" ]; then
+          if [ "${severity_gate}" = "P2" ]; then
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
-          elif [ "${severity_gate}" = "none" ]; then
-            threshold_line="none"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
           echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"

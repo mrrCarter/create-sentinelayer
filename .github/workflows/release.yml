@@ -1,72 +1,563 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish to npm (requires NPM_TOKEN)"
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to npm after protected-environment approval"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-prod
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  quality_preflight:
+    name: Quality Preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      quality_run_id: ${{ steps.preflight.outputs.quality_run_id }}
+      release_artifact_name: ${{ steps.preflight.outputs.release_artifact_name }}
+      publish_enabled: ${{ steps.preflight.outputs.publish_enabled }}
+    permissions:
+      contents: read
+      checks: read
+      actions: read
     env:
-      NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
-      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate release preflight gates
+        id: preflight
+        shell: bash
+        env:
+          DISPATCH_PUBLISH_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.publish || '' }}
+          ALLOWED_RELEASE_DISPATCH_ACTORS: "mrrCarter"
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ ! "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
+              echo "::error::workflow_dispatch releases must run on a v* tag ref. Received '${GITHUB_REF}'."
+              exit 1
+            fi
+            case ",${ALLOWED_RELEASE_DISPATCH_ACTORS}," in
+              *",${GITHUB_ACTOR},"*) ;;
+              *)
+                echo "::error::Actor '${GITHUB_ACTOR}' is not allowlisted for manual release dispatch."
+                exit 1
+                ;;
+            esac
+          fi
+
+          gh_api_with_timeout() {
+            local endpoint="$1"
+            shift
+            local attempt=1
+            local max_attempts=4
+            while (( attempt <= max_attempts )); do
+              if timeout 20s gh api -H 'Accept: application/vnd.github+json' "${endpoint}" "$@"; then
+                return 0
+              fi
+              if (( attempt == max_attempts )); then
+                echo "::error::gh api request failed after ${max_attempts} attempts: ${endpoint}" >&2
+                return 1
+              fi
+              sleep "$((attempt + (RANDOM % 2)))"
+              attempt="$((attempt + 1))"
+            done
+          }
+
+          read_success_workflow_run_ids() {
+            local workflow_file="$1"
+            local sha="$2"
+            gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&per_page=50" \
+              --jq '.workflow_runs[] | select(.conclusion=="success" and .event=="push" and .head_branch=="main") | .id' \
+              || true
+          }
+
+          read_latest_check_run_result() {
+            local sha="$1"
+            local check_name="$2"
+            gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
+              --jq ".check_runs | map(select(.name==\"${check_name}\")) | sort_by(.started_at // .completed_at // .id) | last | [(.id|tostring), (.status // \"\"), (.conclusion // \"\")] | @tsv" \
+              || true
+          }
+
+          wait_for_latest_check_success() {
+            local sha="$1"
+            local check_name="$2"
+            local attempts="$3"
+            local sleep_seconds="$4"
+            local result=""
+            for _ in $(seq 1 "${attempts}"); do
+              result="$(read_latest_check_run_result "${sha}" "${check_name}")"
+              if [[ -n "${result}" ]]; then
+                IFS=$'\t' read -r check_id check_status check_conclusion <<< "${result}"
+                if [[ "${check_status}" == "completed" && "${check_conclusion}" == "success" ]]; then
+                  printf '%s\n' "${check_id}"
+                  return 0
+                fi
+              fi
+              sleep "${sleep_seconds}"
+            done
+            printf '\n'
+          }
+
+          assert_environment_policy() {
+            local environment_name="$1"
+            local policy_snapshot
+            policy_snapshot="$(gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/environments/${environment_name}" \
+              --jq '[
+                ([.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers | length)] | max // 0),
+                ([.protection_rules[]? | select(.type=="required_reviewers") | .prevent_self_review] | max // false),
+                (.deployment_branch_policy.protected_branches // false),
+                (.deployment_branch_policy.custom_branch_policies // false)
+              ] | @tsv' \
+              | tr -d '\r' || true)"
+            local reviewer_count=""
+            local prevent_self_review=""
+            local protected_branches=""
+            local custom_branch_policies=""
+            IFS=$'\t' read -r reviewer_count prevent_self_review protected_branches custom_branch_policies <<< "${policy_snapshot}"
+            case "${reviewer_count}" in
+              ''|*[!0-9]*)
+                echo "::error::Unable to resolve required reviewer protection for environment '${environment_name}'."
+                exit 1
+                ;;
+            esac
+            if [[ "${reviewer_count}" -lt 1 ]]; then
+              echo "::error::Environment '${environment_name}' must require at least one reviewer."
+              exit 1
+            fi
+            if [[ "${prevent_self_review}" != "true" ]]; then
+              echo "::error::Environment '${environment_name}' must enforce prevent_self_review=true."
+              exit 1
+            fi
+            if [[ "${protected_branches}" != "true" || "${custom_branch_policies}" != "false" ]]; then
+              echo "::error::Environment '${environment_name}' must enforce protected branch deployments only."
+              exit 1
+            fi
+          }
+
+          assert_environment_policy "release-approval"
+          assert_environment_policy "npm-publish"
+          assert_environment_policy "production"
+
+          quality_run_id=""
+          release_artifact_name="create-sentinelayer-release-${GITHUB_SHA}"
+          for _ in $(seq 1 18); do
+            while IFS= read -r candidate_run_id; do
+              [[ -z "${candidate_run_id}" || "${candidate_run_id}" == "null" ]] && continue
+              artifact_id="$(gh_api_with_timeout \
+                "/repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts" \
+                --jq ".artifacts[] | select(.name==\"${release_artifact_name}\") | .id" | head -n 1 || true)"
+              if [[ -n "${artifact_id}" && "${artifact_id}" != "null" ]]; then
+                quality_run_id="${candidate_run_id}"
+                break
+              fi
+            done < <(read_success_workflow_run_ids "quality-gates.yml" "${GITHUB_SHA}")
+            if [[ -n "${quality_run_id}" && "${quality_run_id}" != "null" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "${quality_run_id}" || "${quality_run_id}" == "null" ]]; then
+            echo "::error::No successful quality-gates workflow run with '${release_artifact_name}' artifact found for commit ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          quality_check_id="$(gh_api_with_timeout \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${quality_run_id}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name=="Quality Summary" and .status=="completed" and .conclusion=="success") | .id' \
+            | head -n 1 || true)"
+          if [[ -z "${quality_check_id}" || "${quality_check_id}" == "null" ]]; then
+            echo "::error::Selected quality run '${quality_run_id}' does not contain a successful Quality Summary job."
+            exit 1
+          fi
+
+          omar_check_id="$(wait_for_latest_check_success "${GITHUB_SHA}" "Omar Gate" 12 5)"
+
+          if [[ -z "${omar_check_id}" ]]; then
+            pr_head_sha="$(gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[0].head.sha' 2>/dev/null || true)"
+            if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
+              omar_check_id="$(wait_for_latest_check_success "${pr_head_sha}" "Omar Gate" 12 5)"
+            fi
+          fi
+          if [[ -z "${omar_check_id}" ]]; then
+            echo "::error::No successful Omar Gate check run found for commit ${GITHUB_SHA} or its linked PR head."
+            exit 1
+          fi
+
+          publish_enabled="true"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            publish_enabled="false"
+            if [[ "${DISPATCH_PUBLISH_INPUT}" == "true" ]]; then
+              publish_enabled="true"
+            fi
+          fi
+
+          {
+            echo "## Release Preflight"
+            echo "- event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- quality_check_id: \`${quality_check_id}\`"
+            echo "- quality_run_id: \`${quality_run_id}\`"
+            echo "- omar_check_id: \`${omar_check_id}\`"
+            echo "- publish_enabled: \`${publish_enabled}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "quality_run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "release_artifact_name=${release_artifact_name}" >> "${GITHUB_OUTPUT}"
+          echo "publish_enabled=${publish_enabled}" >> "${GITHUB_OUTPUT}"
+          echo "Release preflight passed (Quality Summary + Omar Gate + promoted release artifact)."
+
+  verify:
+    name: Release Verify
+    needs: quality_preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      already_published: ${{ steps.publish_guard.outputs.already_published }}
+      release_version: ${{ steps.publish_guard.outputs.release_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate tag version matches package version
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -e "const fs=require('node:fs'); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); process.stdout.write(String(pkg.version||''));")"
+          if [[ -z "${package_version}" ]]; then
+            echo "::error::Unable to resolve package version from package.json."
+            exit 1
+          fi
+          if [[ "${tag_version}" != "${package_version}" ]]; then
+            echo "::error::Tag/package mismatch: tag=v${tag_version}, package.json=${package_version}."
+            exit 1
+          fi
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.11.1"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Guard duplicate publish version
+        id: publish_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          published_version=""
+          for attempt in 1 2 3; do
+            published_version="$(timeout 20s npm view "create-sentinelayer@${release_version}" version 2>/dev/null | tr -d '\r' | xargs || true)"
+            if [[ -n "${published_version}" || "${attempt}" -eq 3 ]]; then
+              break
+            fi
+            sleep "$((attempt * 3))"
+          done
+          already_published="false"
+          if [[ "${published_version}" == "${release_version}" ]]; then
+            already_published="true"
+            echo "::notice::Version ${release_version} is already published to npm. Publish stage will be skipped."
+          fi
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
+          echo "already_published=${already_published}" >> "${GITHUB_OUTPUT}"
 
-      - name: Validate package
-        run: npm run verify
+      - name: Download promoted release artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "${{ needs.quality_preflight.outputs.quality_run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ needs.quality_preflight.outputs.release_artifact_name }}" \
+            --dir .
 
-      - name: Build release tarball
-        run: npm pack
+      - name: Verify artifact commit binding and digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-commit-sha.txt || (echo "Missing release-commit-sha.txt" && exit 1)
+          packed_sha="$(cat release-commit-sha.txt | tr -d '\r' | xargs)"
+          if [[ "${packed_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Promoted artifact commit mismatch: expected ${GITHUB_SHA}, got ${packed_sha:-missing}."
+            exit 1
+          fi
+          sha256sum --check release-sha256.txt
 
       - name: Validate packaged CLI install
+        shell: bash
         run: |
           set -euo pipefail
           TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
-          npm install --global "${TARBALL}"
-          create-sentinelayer --version
-          sentinel --version
+          install_succeeded="false"
+          for attempt in 1 2 3; do
+            if timeout 120s npm install --global "${TARBALL}"; then
+              install_succeeded="true"
+              break
+            fi
+            if [[ "${attempt}" -eq 3 ]]; then
+              echo "::error::Global install from ${TARBALL} failed after ${attempt} attempts."
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
+          if [[ "${install_succeeded}" != "true" ]]; then
+            echo "::error::Global install did not complete successfully."
+            exit 1
+          fi
+          timeout 30s create-sentinelayer --version
+          timeout 30s sentinel --version
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: create-sentinelayer-*.tgz
+
+      - name: Verify build provenance attestation in verify stage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          verified="false"
+          for _ in $(seq 1 5); do
+            if gh attestation verify "${TARBALL}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+              --source-ref "${GITHUB_REF}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com"; then
+              verified="true"
+              break
+            fi
+            sleep 5
+          done
+          if [[ "${verified}" != "true" ]]; then
+            echo "::error::Build provenance attestation verification failed in verify stage."
+            exit 1
+          fi
 
       - name: Upload release tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: create-sentinelayer-tarball
-          path: create-sentinelayer-*.tgz
+          path: |
+            create-sentinelayer-*.tgz
+            release-sha256.txt
+          if-no-files-found: error
 
-      - name: Publish skipped (missing NPM_TOKEN)
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT != 'true'
-        run: |
-          echo "NPM_TOKEN is not configured. Skipping npm publish."
-          echo "Set repository/org secret NPM_TOKEN and rerun with publish=true."
+  omar_release_gate:
+    name: Omar Release Gate
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    environment: security-review
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Publish to npm
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT == 'true'
-        run: npm publish --access public
+      - name: Validate Sentinelayer token secret
+        shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
+
+      - name: Validate OpenAI key secret for Omar LLM scan
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+
+      - name: Run Omar Gate
+        uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+        with:
+          github_token: ${{ github.token }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_managed_llm: "false"
+          scan_mode: deep
+          severity_gate: P1
+          model: gpt-5.3-codex
+          codex_model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
+          llm_failure_policy: block
+
+  manual_approval:
+    name: Manual Release Approval
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.quality_preflight.outputs.publish_enabled == 'true' &&
+        needs.verify.outputs.already_published != 'true'
+      }}
+    needs: [quality_preflight, verify, omar_release_gate]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    environment: release-approval
+    steps:
+      - name: Confirm release publish intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Manual release approval granted for ${GITHUB_REF}."
+
+  publish:
+    name: Publish To npm
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.quality_preflight.outputs.publish_enabled == 'true' &&
+        needs.verify.outputs.already_published != 'true' &&
+        needs.quality_preflight.result == 'success' &&
+        needs.verify.result == 'success' &&
+        needs.omar_release_gate.result == 'success' &&
+        needs.manual_approval.result == 'success'
+      }}
+    needs: [quality_preflight, verify, omar_release_gate, manual_approval]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    steps:
+      - name: Assert upstream release gate chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.quality_preflight.result }}" = "success"
+          test "${{ needs.verify.result }}" = "success"
+          test "${{ needs.omar_release_gate.result }}" = "success"
+          test "${{ needs.manual_approval.result }}" = "success"
+
+      - name: Download verified tarball artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: create-sentinelayer-tarball
+          path: .
+
+      - name: Verify tarball digest before publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum --check release-sha256.txt
+
+      - name: Resolve tarball path
+        id: tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          test -n "${TARBALL}" || (echo "Missing tarball artifact" && exit 1)
+          echo "path=${TARBALL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify build provenance attestation before publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "${{ steps.tarball.outputs.path }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --source-ref "${GITHUB_REF}" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com"
+
+      - name: Assert OIDC trusted publishing context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || (echo "::error::Missing OIDC token request context." && exit 1)
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" || (echo "::error::Missing OIDC token request token." && exit 1)
+
+      - name: Publish canary tag to npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public --tag next
+
+      - name: Verify canary dist-tag resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          next_version=""
+          for attempt in 1 2 3; do
+            next_version="$(timeout 20s npm view create-sentinelayer@next version | tr -d '\r' | xargs || true)"
+            if [[ -n "${next_version}" || "${attempt}" -eq 3 ]]; then
+              break
+            fi
+            sleep "$((attempt * 3))"
+          done
+          if [[ "${next_version}" != "${release_version}" ]]; then
+            echo "::error::Canary verification failed: expected next=${release_version}, got ${next_version:-missing}."
+            exit 1
+          fi
+
+      - name: Promote release to latest dist-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          npm dist-tag add "create-sentinelayer@${release_version}" latest
+
+  rollback_on_failure:
+    name: Rollback Hook
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && needs.quality_preflight.outputs.publish_enabled == 'true' }}
+    needs: [quality_preflight, verify, omar_release_gate, manual_approval, publish]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Emit rollback runbook summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="${GITHUB_REF_NAME#v}"
+          rollback_reason="Automatic rollback hook: release workflow failed for ${GITHUB_REF_NAME}."
+          {
+            echo "## Release Rollback Hook"
+            echo "- failed_ref: \`${GITHUB_REF}\`"
+            echo "- failed_sha: \`${GITHUB_SHA}\`"
+            echo "- package_version: \`${package_version}\`"
+            echo "- rollback_workflow: \`.github/workflows/rollback.yml\`"
+            echo "- suggested_command: \`gh workflow run rollback.yml --repo ${GITHUB_REPOSITORY} -f package_version=${package_version} -f reason='${rollback_reason}' -f dry_run=true\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

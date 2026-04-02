@@ -16,7 +16,9 @@ import {
   revokeAuthToken,
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
-import { readStoredSession, resolveCredentialsFilePath } from "../src/auth/session-store.js";
+import { readStoredSession, resolveCredentialsFilePath, writeStoredSession } from "../src/auth/session-store.js";
+
+const TEST_FILE_TOKEN_KEY_B64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -39,12 +41,15 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function startAuthRuntimeMockApi() {
+async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
   const state = {
     pollCalls: 0,
     tokenIssueCalls: 0,
     tokenDeleteIds: [],
     statusCalls: 0,
+    startIdempotencyKeys: [],
+    pollIdempotencyKeys: [],
+    tokenIssueIdempotencyKeys: [],
   };
   const runtimeEvents = [
     {
@@ -78,6 +83,7 @@ async function startAuthRuntimeMockApi() {
 
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/start") {
         await readJsonBody(req);
+        state.startIdempotencyKeys.push(String(req.headers["idempotency-key"] || ""));
         return jsonResponse(res, 200, {
           session_id: "sess_1",
           authorize_url: "http://127.0.0.1/cli-auth?session_id=sess_1",
@@ -88,6 +94,7 @@ async function startAuthRuntimeMockApi() {
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/poll") {
         await readJsonBody(req);
         state.pollCalls += 1;
+        state.pollIdempotencyKeys.push(String(req.headers["idempotency-key"] || ""));
         if (state.pollCalls === 1) {
           return jsonResponse(res, 200, { status: "pending" });
         }
@@ -119,6 +126,7 @@ async function startAuthRuntimeMockApi() {
       if (req.method === "POST" && pathname === "/api/v1/auth/api-tokens") {
         await readJsonBody(req);
         state.tokenIssueCalls += 1;
+        state.tokenIssueIdempotencyKeys.push(String(req.headers["idempotency-key"] || ""));
         return jsonResponse(res, 200, {
           id: `token_${state.tokenIssueCalls}`,
           token: `api_token_${state.tokenIssueCalls}`,
@@ -128,6 +136,11 @@ async function startAuthRuntimeMockApi() {
       }
 
       if (req.method === "DELETE" && pathname.startsWith("/api/v1/auth/api-tokens/")) {
+        if (failTokenDelete) {
+          return jsonResponse(res, 500, {
+            error: { code: "REVOKE_BLOCKED", message: "token revoke failed" },
+          });
+        }
         state.tokenDeleteIds.push(pathname.split("/").pop() || "");
         return jsonResponse(res, 200, { ok: true });
       }
@@ -194,7 +207,13 @@ async function startAuthRuntimeMockApi() {
 
 test("Unit auth service: login/status/runtime/list/logout flow remains deterministic", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  const previousFileKey = process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+  const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+  const previousAllowFileStorage = process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = TEST_FILE_TOKEN_KEY_B64;
+  process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
+  process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = "true";
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   const mock = await startAuthRuntimeMockApi();
@@ -223,6 +242,13 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(storedSession?.token, "api_token_1");
     assert.equal(storedSession?.tokenId, "token_1");
     assert.equal(storedSession?.storage, "file");
+    assert.equal(mock.state.startIdempotencyKeys.length, 1);
+    assert.match(mock.state.startIdempotencyKeys[0], /^cli-auth-start-[a-f0-9]{48}$/);
+    assert.equal(mock.state.pollIdempotencyKeys.length, 2);
+    assert.equal(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
+    assert.match(mock.state.pollIdempotencyKeys[0], /^cli-auth-poll-[a-f0-9]{48}$/);
+    assert.equal(mock.state.tokenIssueIdempotencyKeys.length, 1);
+    assert.match(mock.state.tokenIssueIdempotencyKeys[0], /^cli-auth-issue-token-[a-f0-9]{48}$/);
 
     const activeSession = await resolveActiveAuthSession({
       cwd: tempRoot,
@@ -280,6 +306,21 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     } else {
       process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
     }
+    if (previousFileKey === undefined) {
+      delete process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+    } else {
+      process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = previousFileKey;
+    }
+    if (previousAllowCiFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = previousAllowCiFileStorage;
+    }
+    if (previousAllowFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = previousAllowFileStorage;
+    }
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -287,7 +328,13 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
 test("Unit auth service: session metadata listing and explicit revoke are deterministic", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  const previousFileKey = process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+  const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+  const previousAllowFileStorage = process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = TEST_FILE_TOKEN_KEY_B64;
+  process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
+  process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = "true";
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   const mock = await startAuthRuntimeMockApi();
@@ -337,6 +384,21 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
     } else {
       process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
     }
+    if (previousFileKey === undefined) {
+      delete process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+    } else {
+      process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = previousFileKey;
+    }
+    if (previousAllowCiFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = previousAllowCiFileStorage;
+    }
+    if (previousAllowFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = previousAllowFileStorage;
+    }
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -369,6 +431,84 @@ test("Unit auth service: env and project config token precedence is deterministi
     assert.equal(projectSession?.source, "config");
     assert.equal(projectSession?.token, "project_token");
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: rotation exposes revoke warning metadata when old token revoke fails", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  const previousFileKey = process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+  const previousAllowCiFileStorage = process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+  const previousAllowFileStorage = process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+  process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = TEST_FILE_TOKEN_KEY_B64;
+  process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = "true";
+  process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = "true";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({ failTokenDelete: true });
+
+  try {
+    const login = await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+
+    await writeStoredSession(
+      {
+        apiUrl: mock.apiUrl,
+        token: "api_token_1",
+        tokenId: login.tokenId,
+        tokenPrefix: login.tokenPrefix,
+        tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        user: login.user,
+      },
+      { homeDir: tempRoot }
+    );
+
+    const active = await resolveActiveAuthSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      autoRotate: true,
+      rotateThresholdDays: 7,
+    });
+
+    assert.equal(active?.rotated, true);
+    assert.equal(active?.token, "api_token_2");
+    assert.equal(Boolean(active?.rotateWarning), true);
+    assert.equal(active?.rotateWarning?.code, "REVOKE_BLOCKED");
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    if (previousFileKey === undefined) {
+      delete process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY;
+    } else {
+      process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY = previousFileKey;
+    }
+    if (previousAllowCiFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_CI_FILE_TOKEN_STORAGE = previousAllowCiFileStorage;
+    }
+    if (previousAllowFileStorage === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE = previousAllowFileStorage;
+    }
+    await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

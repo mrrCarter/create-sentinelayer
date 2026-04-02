@@ -7,14 +7,157 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  checks: read
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Install pinned GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="2.89.0"
+          archive="gh_${gh_version}_linux_amd64.tar.gz"
+          checksums="gh_${gh_version}_checksums.txt"
+          base_url="https://github.com/cli/cli/releases/download/v${gh_version}"
+
+          curl -fsSLo "${archive}" "${base_url}/${archive}"
+          curl -fsSLo "${checksums}" "${base_url}/${checksums}"
+          grep " ${archive}$" "${checksums}" | sha256sum --check --
+
+          tar -xzf "${archive}"
+          install_dir="${RUNNER_TEMP}/gh-${gh_version}"
+          mkdir -p "${install_dir}"
+          mv "gh_${gh_version}_linux_amd64/bin/gh" "${install_dir}/gh"
+          chmod +x "${install_dir}/gh"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+          "${install_dir}/gh" --version
+
+      - name: Validate release-please preflight gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Release Please must run from refs/heads/main. Received '${GITHUB_REF}'."
+            exit 1
+          fi
+
+          gh_api_with_timeout() {
+            local endpoint="$1"
+            shift
+            local attempt=1
+            local max_attempts=4
+            while (( attempt <= max_attempts )); do
+              if timeout 20s gh api -H 'Accept: application/vnd.github+json' "${endpoint}" "$@"; then
+                return 0
+              fi
+              if (( attempt == max_attempts )); then
+                echo "::error::gh api request failed after ${max_attempts} attempts: ${endpoint}" >&2
+                return 1
+              fi
+              sleep "$((attempt + (RANDOM % 2)))"
+              attempt="$((attempt + 1))"
+            done
+          }
+
+          read_success_workflow_run_ids() {
+            local workflow_file="$1"
+            local sha="$2"
+            local event="$3"
+            local branch="$4"
+            gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&event=${event}&per_page=50" \
+              --arg branch "${branch}" \
+              --jq '.workflow_runs[] | select(.conclusion=="success") | select(($branch | length) == 0 or .head_branch == $branch) | .id' \
+              || true
+          }
+
+          find_first_success_run_id() {
+            local workflow_file="$1"
+            local sha="$2"
+            local event="$3"
+            local branch="$4"
+            local attempts="$5"
+            local sleep_seconds="$6"
+            local run_id=""
+            for _ in $(seq 1 "${attempts}"); do
+              run_id="$(read_success_workflow_run_ids "${workflow_file}" "${sha}" "${event}" "${branch}" | head -n 1 || true)"
+              if [[ -n "${run_id}" && "${run_id}" != "null" ]]; then
+                printf '%s\n' "${run_id}"
+                return 0
+              fi
+              sleep "${sleep_seconds}"
+            done
+            printf '\n'
+          }
+
+          find_success_omar_run_for_pr_head() {
+            local sha="$1"
+            local pr_number="$2"
+            local attempts="$3"
+            local sleep_seconds="$4"
+            local run_id=""
+            for _ in $(seq 1 "${attempts}"); do
+              run_id="$(gh_api_with_timeout \
+                "/repos/${GITHUB_REPOSITORY}/actions/workflows/omar-gate.yml/runs?head_sha=${sha}&status=completed&event=pull_request&per_page=50" \
+                --argjson pr_number "${pr_number}" \
+                --jq '.workflow_runs[] | select(.conclusion=="success") | select(([.pull_requests[]?.number] | index($pr_number)) != null) | .id' \
+                | head -n 1 || true)"
+              if [[ -n "${run_id}" && "${run_id}" != "null" ]]; then
+                printf '%s\n' "${run_id}"
+                return 0
+              fi
+              sleep "${sleep_seconds}"
+            done
+            printf '\n'
+          }
+
+          quality_run_id="$(find_first_success_run_id "quality-gates.yml" "${GITHUB_SHA}" "push" "main" 18 10)"
+          if [[ -z "${quality_run_id}" ]]; then
+            echo "::error::No successful quality-gates workflow run found for commit ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          pr_number="$(gh_api_with_timeout \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].number' 2>/dev/null || true)"
+          pr_head_sha="$(gh_api_with_timeout \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].head.sha' 2>/dev/null || true)"
+
+          omar_run_id="$(find_first_success_run_id "omar-gate.yml" "${GITHUB_SHA}" "workflow_dispatch" "main" 3 5)"
+          if [[ -z "${omar_run_id}" ]]; then
+            case "${pr_number}" in
+              ''|*[!0-9]*)
+                echo "::error::Unable to resolve linked pull request metadata for commit ${GITHUB_SHA}; cannot bind Omar Gate run deterministically."
+                exit 1
+                ;;
+            esac
+            if [[ -z "${pr_head_sha}" || "${pr_head_sha}" == "null" ]]; then
+              echo "::error::Unable to resolve linked pull request head SHA for commit ${GITHUB_SHA}."
+              exit 1
+            fi
+            omar_run_id="$(find_success_omar_run_for_pr_head "${pr_head_sha}" "${pr_number}" 18 5)"
+          fi
+
+          if [[ -z "${omar_run_id}" ]]; then
+            echo "::error::No successful omar-gate workflow run found for commit ${GITHUB_SHA} or linked pull request head."
+            exit 1
+          fi
+
+          echo "Release-please preflight passed with quality-gates run ${quality_run_id} and omar-gate run ${omar_run_id}."
+
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:
