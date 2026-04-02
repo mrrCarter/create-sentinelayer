@@ -53,11 +53,28 @@ jobs:
             exit 1
           fi
 
+          gh_api_with_timeout() {
+            local endpoint="$1"
+            shift
+            local attempt=1
+            local max_attempts=4
+            while (( attempt <= max_attempts )); do
+              if timeout 20s gh api -H 'Accept: application/vnd.github+json' "${endpoint}" "$@"; then
+                return 0
+              fi
+              if (( attempt == max_attempts )); then
+                echo "::error::gh api request failed after ${max_attempts} attempts: ${endpoint}" >&2
+                return 1
+              fi
+              sleep "$((attempt + (RANDOM % 2)))"
+              attempt="$((attempt + 1))"
+            done
+          }
+
           read_success_workflow_run_ids() {
             local workflow_file="$1"
             local sha="$2"
-            gh api \
-              -H 'Accept: application/vnd.github+json' \
+            gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&per_page=50" \
               --jq '.workflow_runs[] | select(.conclusion=="success" and .event=="push" and .head_branch=="main") | .id' \
               || true
@@ -66,12 +83,33 @@ jobs:
           read_success_check_run_id() {
             local sha="$1"
             local check_name="$2"
-            gh api \
-              -H 'Accept: application/vnd.github+json' \
+            gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
               --jq ".check_runs[] | select(.name==\"${check_name}\") | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
               | head -n 1 || true
           }
+
+          assert_environment_has_required_reviewers() {
+            local environment_name="$1"
+            local reviewer_count
+            reviewer_count="$(gh_api_with_timeout \
+              "/repos/${GITHUB_REPOSITORY}/environments/${environment_name}" \
+              --jq '[.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers | length)] | max // 0' \
+              | tr -d '\r' | xargs || true)"
+            case "${reviewer_count}" in
+              ''|*[!0-9]*)
+                echo "::error::Unable to resolve required reviewer protection for environment '${environment_name}'."
+                exit 1
+                ;;
+            esac
+            if [[ "${reviewer_count}" -lt 1 ]]; then
+              echo "::error::Environment '${environment_name}' must require at least one reviewer."
+              exit 1
+            fi
+          }
+
+          assert_environment_has_required_reviewers "release-approval"
+          assert_environment_has_required_reviewers "npm-publish"
 
           quality_check_id=""
           for _ in $(seq 1 18); do
@@ -91,8 +129,7 @@ jobs:
           for _ in $(seq 1 18); do
             while IFS= read -r candidate_run_id; do
               [[ -z "${candidate_run_id}" || "${candidate_run_id}" == "null" ]] && continue
-              artifact_id="$(gh api \
-                -H 'Accept: application/vnd.github+json' \
+              artifact_id="$(gh_api_with_timeout \
                 "/repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts" \
                 --jq ".artifacts[] | select(.name==\"${release_artifact_name}\") | .id" | head -n 1 || true)"
               if [[ -n "${artifact_id}" && "${artifact_id}" != "null" ]]; then
@@ -120,8 +157,7 @@ jobs:
           done
 
           if [[ -z "${omar_check_id}" || "${omar_check_id}" == "null" ]]; then
-            pr_head_sha="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
+            pr_head_sha="$(gh_api_with_timeout \
               "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
               --jq '.[0].head.sha' 2>/dev/null || true)"
             if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
@@ -264,22 +300,13 @@ jobs:
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
 
-      - name: Validate OpenAI key secret for Omar LLM scan
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
-
       - name: Run Omar Gate
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
         with:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: "false"
+          sentinelayer_managed_llm: "true"
           scan_mode: deep
           severity_gate: P1
           model: gpt-5.3-codex
@@ -321,14 +348,6 @@ jobs:
           name: create-sentinelayer-tarball
           path: .
 
-      - name: Validate NPM publish token secret
-        shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "${NPM_TOKEN}" || (echo "Missing NPM_TOKEN" && exit 1)
-
       - name: Verify tarball digest before publish
         shell: bash
         run: |
@@ -356,10 +375,15 @@ jobs:
             --source-ref "${GITHUB_REF}" \
             --cert-oidc-issuer "https://token.actions.githubusercontent.com"
 
+      - name: Assert OIDC trusted publishing context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || (echo "::error::Missing OIDC token request context." && exit 1)
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" || (echo "::error::Missing OIDC token request token." && exit 1)
+
       - name: Publish to npm
         run: npm publish "${{ steps.tarball.outputs.path }}" --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   rollback_on_failure:
     name: Rollback Hook

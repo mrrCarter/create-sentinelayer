@@ -193,7 +193,7 @@ jobs:
 
   build-release-artifact:
     name: Build Release Artifact
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [security_gate]
@@ -243,7 +243,7 @@ jobs:
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
-          name: create-sentinelayer-release-${{ github.sha }}
+          name: ${{ github.event_name == 'pull_request' && format('create-sentinelayer-pr-{0}', github.sha) || format('create-sentinelayer-release-{0}', github.sha) }}
           path: |
             create-sentinelayer-*.tgz
             release-sha256.txt
