@@ -2264,6 +2264,41 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
   }
 });
 
+test("CLI audit security runs specialist agent and emits dedicated security report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-security-"));
+  try {
+    await writeFile(
+      path.join(tempRoot, "index.js"),
+      "const token = 'sk-live-1234567890abcdef1234567890';\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "security", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit security");
+    assert.match(String(payload.securityAgentPath || ""), /[\\/]security\.json$/);
+    assert.match(
+      String(payload.securitySpecialistReportPath || ""),
+      /[\\/]SECURITY_AGENT_REPORT\.md$/
+    );
+
+    const securityAgent = JSON.parse(await readFile(payload.securityAgentPath, "utf-8"));
+    assert.equal(securityAgent.agentId, "security");
+    assert.equal(Array.isArray(securityAgent.findings), true);
+
+    const securityMarkdown = await readFile(payload.securitySpecialistReportPath, "utf-8");
+    assert.match(securityMarkdown, /SECURITY_AGENT_REPORT/);
+    assert.match(securityMarkdown, /Risk score:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {

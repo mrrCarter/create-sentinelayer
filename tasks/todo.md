@@ -106,8 +106,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 9.5 replay + reproducibility. (merged as #65)
 
 ### Batch G - Audit Swarm (P2)
-- PR 10.1 orchestrator + registry. (in progress on `roadmap/pr-10-1-audit-orchestrator-registry`)
-- PR 10.2-10.7 specialist agents.
+- PR 10.1 orchestrator + registry. (merged as #66)
+- PR 10.2 security specialist agent. (in progress on `roadmap/pr-10-2-security-specialist-agent`)
+- PR 10.3-10.7 specialist agents.
 - PR 10.8 unified DD package.
 - PR 10.9 drift/replay.
 
