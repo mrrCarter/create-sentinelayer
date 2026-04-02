@@ -2875,6 +2875,168 @@ test("CLI daemon budget check/status enforces quarantine then deterministic kill
   }
 });
 
+test("CLI daemon control snapshot and stop enforce operator visibility + confirm gate", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-control-e2e-"));
+  try {
+    const record = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Runtime timeout",
+        "--json",
+      ],
+    });
+    assert.equal(record.code, 0, record.stderr || record.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+
+    const queue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queue.code, 0, queue.stderr || queue.stdout);
+    const queuePayload = JSON.parse(String(queue.stdout || "").trim());
+    const workItemId = String(queuePayload.items[0]?.workItemId || "");
+    assert.equal(workItemId.length > 0, true);
+
+    const claim = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "assign",
+        "claim",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--agent",
+        "maya.markov@sentinelayer.local",
+        "--json",
+      ],
+    });
+    assert.equal(claim.code, 0, claim.stderr || claim.stdout);
+
+    const budgetCheck = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "budget",
+        "check",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--usage-json",
+        "{\"tokensUsed\":90}",
+        "--budget-json",
+        "{\"maxTokens\":100,\"warningThresholdPercent\":80}",
+        "--now-iso",
+        "2026-04-02T00:00:20.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(budgetCheck.code, 0, budgetCheck.stderr || budgetCheck.stdout);
+
+    const snapshot = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "control",
+        "snapshot",
+        "--path",
+        tempRoot,
+        "--now-iso",
+        "2026-04-02T00:00:30.000Z",
+        "--json",
+      ],
+    });
+    assert.equal(snapshot.code, 0, snapshot.stderr || snapshot.stdout);
+    const snapshotPayload = JSON.parse(String(snapshot.stdout || "").trim());
+    assert.equal(snapshotPayload.command, "daemon control snapshot");
+    assert.equal(snapshotPayload.visibleWorkItems, 1);
+    assert.equal(snapshotPayload.workItems[0].workItemId, workItemId);
+    assert.equal(snapshotPayload.workItems[0].budgetHealthColor, "YELLOW");
+    assert.equal(snapshotPayload.agentRoster.length, 1);
+    assert.equal(snapshotPayload.agentRoster[0].agentIdentity, "maya.markov@sentinelayer.local");
+
+    const stopMissingConfirm = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "control",
+        "stop",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--mode",
+        "QUARANTINE",
+        "--reason",
+        "manual quarantine",
+        "--json",
+      ],
+    });
+    assert.notEqual(stopMissingConfirm.code, 0);
+    assert.match(String(stopMissingConfirm.stderr || stopMissingConfirm.stdout), /requires --confirm/i);
+
+    const stop = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "control",
+        "stop",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--mode",
+        "QUARANTINE",
+        "--reason",
+        "manual quarantine",
+        "--confirm",
+        "--json",
+      ],
+    });
+    assert.equal(stop.code, 0, stop.stderr || stop.stdout);
+    const stopPayload = JSON.parse(String(stop.stdout || "").trim());
+    assert.equal(stopPayload.command, "daemon control stop");
+    assert.equal(stopPayload.targetStatus, "BLOCKED");
+
+    const blockedQueue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--status", "BLOCKED", "--json"],
+    });
+    assert.equal(blockedQueue.code, 0, blockedQueue.stderr || blockedQueue.stdout);
+    const blockedQueuePayload = JSON.parse(String(blockedQueue.stdout || "").trim());
+    assert.equal(blockedQueuePayload.visibleCount, 1);
+    assert.equal(blockedQueuePayload.items[0].workItemId, workItemId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {
