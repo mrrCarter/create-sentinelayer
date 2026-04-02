@@ -16,6 +16,7 @@ import {
   revokeAuthToken,
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
+import { SentinelayerApiError } from "../src/auth/http.js";
 import { readStoredSession, resolveCredentialsFilePath } from "../src/auth/session-store.js";
 
 function jsonResponse(res, status, payload) {
@@ -39,13 +40,27 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function startAuthRuntimeMockApi() {
+async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
   const state = {
     pollCalls: 0,
     tokenIssueCalls: 0,
     tokenDeleteIds: [],
     statusCalls: 0,
   };
+  const defaultPollResponses = [
+    { status: "pending" },
+    {
+      status: "approved",
+      auth_token: "auth_token_web_1",
+      user: {
+        id: "user_1",
+        github_username: "demo-user",
+        email: "demo@example.com",
+      },
+    },
+  ];
+  const resolvedPollResponses =
+    Array.isArray(pollResponses) && pollResponses.length > 0 ? pollResponses : defaultPollResponses;
   const runtimeEvents = [
     {
       event_id: "evt_1",
@@ -88,18 +103,8 @@ async function startAuthRuntimeMockApi() {
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/poll") {
         await readJsonBody(req);
         state.pollCalls += 1;
-        if (state.pollCalls === 1) {
-          return jsonResponse(res, 200, { status: "pending" });
-        }
-        return jsonResponse(res, 200, {
-          status: "approved",
-          auth_token: "auth_token_web_1",
-          user: {
-            id: "user_1",
-            github_username: "demo-user",
-            email: "demo@example.com",
-          },
-        });
+        const pollIndex = Math.min(state.pollCalls - 1, resolvedPollResponses.length - 1);
+        return jsonResponse(res, 200, resolvedPollResponses[pollIndex]);
       }
 
       if (req.method === "GET" && pathname === "/api/v1/auth/me") {
@@ -369,6 +374,56 @@ test("Unit auth service: env and project config token precedence is deterministi
     assert.equal(projectSession?.source, "config");
     assert.equal(projectSession?.token, "project_token");
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login fails fast for denied polling status", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        status: "denied",
+        message: "Operator denied CLI login.",
+        request_id: "req-denied-123",
+      },
+    ],
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 5000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.equal(error.code, "CLI_AUTH_DENIED");
+        assert.equal(error.status, 403);
+        assert.equal(error.requestId, "req-denied-123");
+        return true;
+      }
+    );
+    assert.equal(mock.state.pollCalls, 1);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

@@ -78,6 +78,31 @@ function deterministicJitterFactor(sessionId, attempt) {
   return 0.8 + bucket * 0.4;
 }
 
+const TERMINAL_CLI_AUTH_POLL_STATUSES = new Map([
+  ["denied", { httpStatus: 403, code: "CLI_AUTH_DENIED", message: "CLI authentication was denied." }],
+  ["rejected", { httpStatus: 403, code: "CLI_AUTH_REJECTED", message: "CLI authentication was rejected." }],
+  ["declined", { httpStatus: 403, code: "CLI_AUTH_DECLINED", message: "CLI authentication was declined." }],
+  ["expired", { httpStatus: 410, code: "CLI_AUTH_EXPIRED", message: "CLI authentication request expired." }],
+  ["cancelled", { httpStatus: 409, code: "CLI_AUTH_CANCELLED", message: "CLI authentication was cancelled." }],
+  ["canceled", { httpStatus: 409, code: "CLI_AUTH_CANCELLED", message: "CLI authentication was cancelled." }],
+  ["failed", { httpStatus: 502, code: "CLI_AUTH_FAILED", message: "CLI authentication failed." }],
+  ["error", { httpStatus: 502, code: "CLI_AUTH_ERROR", message: "CLI authentication failed." }],
+]);
+
+function getAuthPollRequestId(payload = {}) {
+  const candidate = payload.request_id ?? payload.requestId;
+  const normalized = String(candidate || "").trim();
+  return normalized || null;
+}
+
+function describePollStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (!normalized) {
+    return "unknown";
+  }
+  return normalized;
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -166,6 +191,26 @@ async function pollCliAuthSession({
     const status = String(payload.status || "pending").trim().toLowerCase();
     if (status === "approved" && payload.auth_token) {
       return payload;
+    }
+    if (TERMINAL_CLI_AUTH_POLL_STATUSES.has(status)) {
+      const terminalConfig = TERMINAL_CLI_AUTH_POLL_STATUSES.get(status);
+      const reason = String(payload.message || payload.error || payload.reason || "").trim();
+      const message = reason ? `${terminalConfig.message} ${reason}` : terminalConfig.message;
+      throw new SentinelayerApiError(message, {
+        status: terminalConfig.httpStatus,
+        code: terminalConfig.code,
+        requestId: getAuthPollRequestId(payload),
+      });
+    }
+    if (status !== "pending") {
+      throw new SentinelayerApiError(
+        `Unexpected CLI authentication session status '${describePollStatus(status)}'.`,
+        {
+          status: 502,
+          code: "CLI_AUTH_UNEXPECTED_STATUS",
+          requestId: getAuthPollRequestId(payload),
+        }
+      );
     }
 
     const serverPollIntervalMs = Math.max(

@@ -46,12 +46,31 @@ jobs:
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
           PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           if [[ "${PUBLISH_REQUESTED}" != "true" ]]; then
             echo "Publish not requested; skipping required check verification."
             exit 0
           fi
+          resolved_sha="${TARGET_SHA}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_name="${GITHUB_REF_VALUE#refs/tags/}"
+            if [[ -n "${tag_name}" ]]; then
+              ref_json="$(gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
+              ref_type="$(echo "${ref_json}" | jq -r '.object.type')"
+              ref_sha="$(echo "${ref_json}" | jq -r '.object.sha')"
+              if [[ "${ref_type}" == "tag" ]]; then
+                tag_json="$(gh api "repos/${REPO}/git/tags/${ref_sha}")"
+                resolved_sha="$(echo "${tag_json}" | jq -r '.object.sha')"
+              elif [[ "${ref_type}" == "commit" ]]; then
+                resolved_sha="${ref_sha}"
+              fi
+            fi
+          fi
+          TARGET_SHA="${resolved_sha}"
+          echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
           required_checks=("Omar Gate" "Quality Summary")
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
@@ -109,8 +128,19 @@ jobs:
           node-version: "20.11.1"
           cache: npm
 
+      - name: Pin npm registry and snapshot lock hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config set registry "https://registry.npmjs.org/"
+          sha256sum package-lock.json > package-lock.sha256
+
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Snapshot production dependency graph
+        shell: bash
+        run: npm ls --omit=dev --json > npm-prod-tree.json
 
       - name: Validate package
         run: npm run verify
@@ -136,6 +166,8 @@ jobs:
             create-sentinelayer-*.tgz
             create-sentinelayer.tarball
             create-sentinelayer.sha256
+            package-lock.sha256
+            npm-prod-tree.json
 
       - name: Attest immutable release artifact provenance
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
@@ -154,18 +186,11 @@ jobs:
       PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
       DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20.11.1"
           registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
 
       - name: Download immutable release artifact
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
