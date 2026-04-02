@@ -33,15 +33,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch F PR 9.0 foundation slice (`sl watch run-events` runtime stream + reproducible watch artifacts).
 - [x] Complete Batch E PR 4.2 foundation slice (`watch history` session/readback for reproducible handoffs).
 - [x] Complete Batch E PR 6.1 foundation slice (`mcp schema|registry` contract + AIdenID template scaffold).
-- [ ] Complete Batch E PR 6.2 foundation slice (`mcp server|bridge` runtime config + VS Code MCP bridge scaffolds).
+- [x] Complete Batch E PR 6.2 foundation slice (`mcp server|bridge` runtime config + VS Code MCP bridge scaffolds).
 - [x] Complete workflow correction PR (Omar Gate only path: removed multi-agent watchdog workflow and aligned threshold enforcement with active gate mode).
 - [x] Complete Batch E PR 5.1 foundation slice (plugin manifest scaffold/validate/list command set).
-- [ ] Complete Batch E PR 5.2 foundation slice (plugin pack boundaries + deterministic load-order governance).
+- [x] Complete Batch E PR 5.2 foundation slice (plugin pack boundaries + deterministic load-order governance).
 - [x] Complete Batch E PR 4.3 foundation slice (session inventory metadata + explicit token revocation controls).
 - [x] Complete Batch H PR 11.1 foundation slice (`sl ai provision-email` command surface with dry-run/live execute and artifact trail).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
-- [ ] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
-- [ ] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
+- [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
+- [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
 
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
@@ -76,28 +76,31 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch C - Quality & Cost Safety Baseline (P0/P1)
 - PR 8.3 Test suite + CI pipeline hardening (moved earlier). (merged as #39)
 - PR 3.1 Multi-provider API client contract. (merged as #40)
-- PR 3.2 Token/cost budget guardrails.
-- PR 3.5 CLI observability contract (run events + usage ledger + stop-class schema).
-- PR 3.6 Deterministic stop governors (token/cost/runtime/tool-call hard stops + warning thresholds + terminal stop reasons).
+- PR 3.2 Token/cost budget guardrails. (merged as #41)
+- PR 3.5 CLI observability contract (run events + usage ledger + stop-class schema). (merged as #42)
+- PR 3.6 Deterministic stop governors (token/cost/runtime/tool-call hard stops + warning thresholds + terminal stop reasons). (merged as #43)
 
 ### Batch D - UX + AI Feature Layer (P1)
-- PR 2.1 Ink interactive mode.
+- PR 2.1 Ink interactive mode. (merged as #57)
 - PR 2.2 Terminal markdown renderer.
 - PR 2.3 Diff-aware regeneration.
 - PR 2.4 Progress/notifications.
-- PR 3.3 AI-enhanced spec generation.
-- PR 3.4 AI pre-scan.
+- PR 3.3 AI-enhanced spec generation. (merged as #44)
+- PR 3.4 AI pre-scan. (merged as #45)
 
 ### Batch E - State, Extensibility, Integrations (P2)
-- PR 4.1 sessions/auth persistence foundation (`sl auth login|status|logout`, long-lived API token flow).
-- PR 4.2 runtime history/watch bindings (session-aware event watch + run artifact trail).
-- PR 4.3 spec binding/version linkage.
-- PR 5.1/5.2/5.3 plugin + template + policy packs.
-- PR 6.1/6.2 MCP server mode + VS Code bridge.
+- PR 4.1 sessions/auth persistence foundation (`sl auth login|status|logout`, long-lived API token flow). (merged as #46)
+- PR 4.2 runtime history/watch bindings (session-aware event watch + run artifact trail). (merged as #47)
+- PR 4.3 spec binding/version linkage. (merged as #51)
+- PR 5.1 plugin architecture foundation. (merged as #50)
+- PR 5.2 plugin load-order governance. (merged as #55)
+- PR 5.3 custom policy packs.
+- PR 6.1 MCP server mode schema/registry. (merged as #48)
+- PR 6.2 VS Code bridge scaffolds. (merged as #56)
 
 ### Batch F - Local Omar Gate (P1)
-- PR 9.1 reviewer sandbox + isolation runtime.
-- PR 9.2 deterministic review pipeline.
+- PR 9.1 reviewer sandbox + isolation runtime. (merged as #53)
+- PR 9.2 deterministic review pipeline. (merged as #54)
 - PR 9.3 AI review layers.
 - PR 9.4 unified report + reconciliation.
 - PR 9.5 replay + reproducibility.
@@ -109,7 +112,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 10.9 drift/replay.
 
 ### Batch H - Identity + QA Swarm (P1/P2)
-- PR 11.1-11.6 AIdenID identity engine.
+- PR 11.1 AIdenID SDK integration/auth. (merged as #52)
+- PR 11.2-11.6 AIdenID identity engine follow-on.
 - PR 12.1-12.7 QA swarm runtime, DSL, dashboard, security mode.
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
@@ -138,6 +142,59 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 13.7 Hybrid codebase mapping overlay (deterministic ingest + on-demand semantic graph for impact scoping).
 - PR 13.8 Scheduled reliability lane (midnight synthetic jobs + maintenance billboard + resolution clear path).
 - PR 13.9 MCP tool registry schema + AIdenID provisioning adapter contract.
+
+## Execution Board (2026-04-02)
+
+### Omar Gate Loop (required on every PR)
+1. `git checkout main && git pull --ff-only`
+2. `git checkout -b <branch-name>`
+3. Implement one PR id scope only, then run `npm run verify`.
+4. Run local gates: `node bin/create-sentinelayer.js /omargate deep --path . --json` and `node bin/create-sentinelayer.js /audit --path . --json`.
+5. Push and open PR: `git push -u origin <branch-name>` and `gh pr create --fill`.
+6. Watch Omar Gate only:
+   - `$runId = gh run list --workflow "Omar Gate" --branch <branch-name> --limit 1 --json databaseId --jq ".[0].databaseId"`
+   - `gh run watch $runId --exit-status`
+7. If Omar Gate fails or reports blocking findings, fix P0-P2 scope issues, push, and repeat step 6 until green.
+8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
+
+### Exact Next PR Branch Order
+1. `roadmap/pr-2-2-terminal-markdown-renderer`
+2. `roadmap/pr-2-3-diff-aware-regeneration`
+3. `roadmap/pr-2-4-progress-notifications`
+4. `roadmap/pr-5-3-policy-pack-runtime`
+5. `roadmap/pr-9-3-ai-review-layers`
+6. `roadmap/pr-9-4-review-report-reconciliation`
+7. `roadmap/pr-9-5-review-replay-reproducibility`
+8. `roadmap/pr-10-1-audit-orchestrator-registry`
+9. `roadmap/pr-10-2-security-specialist-agent`
+10. `roadmap/pr-10-3-architecture-specialist-agent`
+11. `roadmap/pr-10-4-testing-specialist-agent`
+12. `roadmap/pr-10-5-performance-specialist-agent`
+13. `roadmap/pr-10-6-compliance-specialist-agent`
+14. `roadmap/pr-10-7-documentation-specialist-agent`
+15. `roadmap/pr-10-8-unified-dd-package`
+16. `roadmap/pr-10-9-audit-drift-replay`
+17. `roadmap/pr-11-2-identity-lifecycle-cli`
+18. `roadmap/pr-11-3-otp-verification-extraction`
+19. `roadmap/pr-11-4-child-identity-lineage`
+20. `roadmap/pr-11-5-domain-target-management`
+21. `roadmap/pr-11-6-ephemeral-callback-domains`
+22. `roadmap/pr-12-1-swarm-orchestrator-factory`
+23. `roadmap/pr-12-2-playwright-agent-runtime`
+24. `roadmap/pr-12-3-scenario-dsl`
+25. `roadmap/pr-12-4-realtime-swarm-dashboard`
+26. `roadmap/pr-12-5-swarm-execution-report`
+27. `roadmap/pr-12-6-security-pentest-mode`
+28. `roadmap/pr-12-7-swarm-identity-hardening`
+29. `roadmap/pr-13-1-error-event-daemon-worker`
+30. `roadmap/pr-13-2-global-assignment-ledger`
+31. `roadmap/pr-13-3-jira-lifecycle-automation`
+32. `roadmap/pr-13-4-runtime-budget-quarantine`
+33. `roadmap/pr-13-5-operator-control-plane`
+34. `roadmap/pr-13-6-observability-artifact-lineage`
+35. `roadmap/pr-13-7-hybrid-mapping-overlay`
+36. `roadmap/pr-13-8-midnight-reliability-lane`
+37. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
