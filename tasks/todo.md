@@ -44,7 +44,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch H PR 11.4 foundation slice (`sl ai identity create-child|lineage|revoke-children` delegated lineage controls).
 - [x] Complete Batch H PR 11.5 foundation slice (`sl ai identity domain|target` governance flows).
 - [x] Complete Batch H PR 11.6 foundation slice (`sl ai identity site create|list` callback-site workflows).
-- [ ] Start Batch H PR 12.1 foundation slice (`sl swarm registry|plan` OMAR-led orchestrator factory).
+- [x] Complete Batch H PR 12.1 foundation slice (`sl swarm registry|plan` OMAR-led orchestrator factory).
+- [ ] Start Batch H PR 12.2 foundation slice (`sl swarm run` governed runtime loop + optional Playwright adapter).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -129,8 +130,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 11.4 child identities/lineage. (merged as #77)
 - PR 11.5 domain/target management. (merged as #78)
 - PR 11.6 AIdenID site lifecycle follow-on. (merged as #79)
-- PR 12.1 swarm orchestrator factory. (in progress on `roadmap/pr-12-1-swarm-orchestrator-factory`)
-- PR 12.2-12.7 QA swarm runtime, DSL, dashboard, security mode.
+- PR 12.1 swarm orchestrator factory. (merged as #80)
+- PR 12.2 Playwright agent runtime. (in progress on `roadmap/pr-12-2-playwright-agent-runtime`)
+- PR 12.3-12.7 QA swarm DSL, dashboard, reporting, security mode.
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
 - [ ] Phase 2: add low-latency interactive chat mode with streaming progress UX (AWS/GH CLI style) while preserving deterministic command mode.
@@ -174,22 +176,21 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-12-1-swarm-orchestrator-factory` (current)
-2. `roadmap/pr-12-2-playwright-agent-runtime`
-3. `roadmap/pr-12-3-scenario-dsl`
-4. `roadmap/pr-12-4-realtime-swarm-dashboard`
-5. `roadmap/pr-12-5-swarm-execution-report`
-6. `roadmap/pr-12-6-security-pentest-mode`
-7. `roadmap/pr-12-7-swarm-identity-hardening`
-8. `roadmap/pr-13-1-error-event-daemon-worker`
-9. `roadmap/pr-13-2-global-assignment-ledger`
-10. `roadmap/pr-13-3-jira-lifecycle-automation`
-11. `roadmap/pr-13-4-runtime-budget-quarantine`
-12. `roadmap/pr-13-5-operator-control-plane`
-13. `roadmap/pr-13-6-observability-artifact-lineage`
-14. `roadmap/pr-13-7-hybrid-mapping-overlay`
-15. `roadmap/pr-13-8-midnight-reliability-lane`
-16. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-12-2-playwright-agent-runtime` (current)
+2. `roadmap/pr-12-3-scenario-dsl`
+3. `roadmap/pr-12-4-realtime-swarm-dashboard`
+4. `roadmap/pr-12-5-swarm-execution-report`
+5. `roadmap/pr-12-6-security-pentest-mode`
+6. `roadmap/pr-12-7-swarm-identity-hardening`
+7. `roadmap/pr-13-1-error-event-daemon-worker`
+8. `roadmap/pr-13-2-global-assignment-ledger`
+9. `roadmap/pr-13-3-jira-lifecycle-automation`
+10. `roadmap/pr-13-4-runtime-budget-quarantine`
+11. `roadmap/pr-13-5-operator-control-plane`
+12. `roadmap/pr-13-6-observability-artifact-lineage`
+13. `roadmap/pr-13-7-hybrid-mapping-overlay`
+14. `roadmap/pr-13-8-midnight-reliability-lane`
+15. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -337,6 +338,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - PR 11.6 foundation slice completion:
     - #79 merged (`feat(ai): phase 11.6 ephemeral callback domain workflows`).
     - Added `ai identity site create|list` with deterministic site-registry artifacts.
+  - PR 12.1 foundation slice completion:
+    - #80 merged (`feat(swarm): phase 12.1 orchestrator factory`).
+    - Added `swarm registry|plan` with OMAR-led 13-agent registry, deterministic assignment planning, and swarm plan artifacts.
   - PR 9.1 extension slice completion:
     - #53 merged (`feat(review): phase 9.1 deterministic local scan command`).
     - Added `review scan --mode full|diff` deterministic local review scan flow with reproducible report artifacts.
