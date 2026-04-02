@@ -194,6 +194,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 104 dependabot + issue templates.
 - [x] PR 105 todo sync + release tag validation.
 
+### Batch N - Structural Follow-Through (2026-04-02 audit)
+- [x] PR 106 split oversized command files (`src/commands/ai.js`, `src/commands/daemon.js`) into modular slices.
+- [ ] PR 107 command lazy-loading.
+
 ## Execution Board (2026-04-02)
 
 ### Omar Gate Loop (required on every PR)
@@ -209,9 +213,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-105-todo-sync-release-tag` (current)
-2. `roadmap/pr-106-split-oversized-command-files`
-3. `roadmap/pr-107-command-lazy-loading`
+1. `roadmap/pr-106-split-oversized-command-files` (current)
+2. `roadmap/pr-107-command-lazy-loading`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -458,3 +461,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - Confirmed stale roadmap rows were corrected for merged PRs `#61`, `#94`, and `#95`.
     - Validated release state with `git ls-remote --tags origin` (no tags), `.release-please-manifest.json` (`0.1.0`), and no open release-please PR.
     - Recorded deterministic release evidence in `tasks/release-tag-validation-2026-04-02.md`; no manual `v0.2.0` tag was cut because no `0.2.0` release commit exists on `main`.
+
+  - PR 106 (split oversized command files) local evidence (branch `roadmap/pr-106-split-oversized-command-files`):
+    - `npm run verify` (pass, e2e `84/84`; unit tests `134/134`; coverage statements `90.12%`, branches `70.08%`, functions `91.30%`, lines `90.12%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Reduced top-level command file size by converting `src/commands/ai.js` and `src/commands/daemon.js` into thin orchestrators and extracting grouped logic into `src/commands/ai/*` and `src/commands/daemon/*`.
+    - Preserved existing command contracts and options while keeping behavior stable under full e2e and unit verification.

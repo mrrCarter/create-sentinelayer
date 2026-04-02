@@ -86,3 +86,5 @@
 - For security-critical modules, JSDoc should focus on precedence rules, token/credential handling, and failure semantics so reviewers can verify guardrails without reverse-engineering implementation details.
 - Governance-only PRs (Dependabot/templates/instructions) should still run full verify + Omar loop; this catches gate interactions like eval-impact or workflow syntax drift before merge.
 - Treat release-tag findings as stateful: verify `release-please` manifest/version and open release PRs before cutting tags, so manual tags are never created against stale audit assumptions.
+- For mechanical file splits, extract contiguous command blocks and keep a thin orchestrator entrypoint; this minimizes behavior drift while reducing top-level file size.
+- When `npm run check` only validates entry files, run explicit `node --check` on newly added module files before full test runs to catch extraction syntax regressions early.
