@@ -15,6 +15,7 @@ This runbook defines the rollback path for npm releases of `create-sentinelayer`
    - `package_version` (published version to deprecate)
    - `reason` (user-visible deprecation reason)
    - optional `replacement_version`
+   - `target_environment` (`production` or `staging`)
    - `dry_run=true` first
 3. Execute dry-run and review summary output:
    - confirms target version resolves
@@ -23,7 +24,7 @@ This runbook defines the rollback path for npm releases of `create-sentinelayer`
 4. Re-run with `dry_run=false` to execute full rollback path:
    - deprecate bad package version on npm
    - promote fallback package version to `latest` dist-tag
-   - execute environment rollback command
+   - execute checked-in environment rollback script
    - run healthcheck verification
 5. Post incident note with:
    - deprecate command result
@@ -36,6 +37,7 @@ This runbook defines the rollback path for npm releases of `create-sentinelayer`
 
 - Uses `npm-publish` environment gate.
 - Requires `NPM_TOKEN` secret.
-- Requires `ROLLBACK_DEPLOY_COMMAND` secret for deterministic environment rollback execution.
+- Uses deterministic rollback script: `scripts/deploy/rollback.sh`.
+- Optional: `ROLLBACK_WEBHOOK_URL` secret to call downstream rollback automation.
 - Requires `ROLLBACK_HEALTHCHECK_URL` repository variable for post-rollback health validation.
 - Emits deterministic workflow summary for audit evidence.

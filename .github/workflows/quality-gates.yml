@@ -280,18 +280,65 @@ jobs:
             release-commit-sha.txt
           if-no-files-found: error
 
-  deploy_gate:
-    name: Deploy Stage Gate
-    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request' }}
+  pr_deploy_smoke_gate:
+    name: PR Deploy Smoke Gate
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-22.04
     needs: [build-release-artifact]
     timeout-minutes: 15
-    environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'security-review' }}
+    environment: security-review
     steps:
       - name: Download staged release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ github.event_name == 'pull_request' && format('create-sentinelayer-pr-{0}', github.sha) || format('create-sentinelayer-release-{0}', github.sha) }}
+          name: ${{ format('create-sentinelayer-pr-{0}', github.sha) }}
+          path: .
+
+      - name: Verify PR smoke artifact integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-commit-sha.txt || (echo "::error::Missing release-commit-sha.txt." && exit 1)
+          packed_sha="$(cat release-commit-sha.txt | tr -d '\r' | xargs)"
+          if [[ "${packed_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::PR smoke artifact commit mismatch: expected ${GITHUB_SHA}, got ${packed_sha:-missing}."
+            exit 1
+          fi
+          sha256sum --check release-sha256.txt
+
+      - name: Execute PR smoke install gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          test -n "${TARBALL}" || (echo "::error::Missing release tarball for PR smoke gate." && exit 1)
+          bash ./scripts/deploy/canary.sh --tarball "${TARBALL}"
+
+      - name: Emit PR smoke gate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## PR Deploy Smoke Gate"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- event: \`${GITHUB_EVENT_NAME}\`"
+            echo "- ref: \`${GITHUB_REF}\`"
+            echo "- environment: \`security-review\`"
+            echo "- strategy: \`smoke-install\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  deploy_gate:
+    name: Deploy Stage Gate
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    needs: [build-release-artifact]
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Download staged release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ format('create-sentinelayer-release-{0}', github.sha) }}
           path: .
 
       - name: Verify deploy input artifact integrity
@@ -306,37 +353,19 @@ jobs:
           fi
           sha256sum --check release-sha256.txt
 
-      - name: Execute deterministic deploy canary and health gate
+      - name: Execute production deploy canary and health gate
         shell: bash
         env:
-          DEPLOY_STRATEGY: ${{ vars.DEPLOY_STRATEGY || 'canary' }}
-          DEPLOY_CANARY_COMMAND: ${{ vars.DEPLOY_CANARY_COMMAND || '' }}
           DEPLOY_HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTHCHECK_URL || '' }}
         run: |
           set -euo pipefail
-          if [[ "${DEPLOY_STRATEGY}" != "canary" ]]; then
-            echo "::error::Unsupported deploy strategy '${DEPLOY_STRATEGY}'. Expected 'canary'."
+          if [[ -z "${DEPLOY_HEALTHCHECK_URL}" ]]; then
+            echo "::error::DEPLOY_HEALTHCHECK_URL must be configured for production deploy gate."
             exit 1
           fi
           TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
           test -n "${TARBALL}" || (echo "::error::Missing release tarball for deploy stage gate." && exit 1)
-          timeout 120s npm install --global "${TARBALL}"
-          timeout 30s create-sentinelayer --version
-          timeout 30s sentinel --version
-
-          if [[ -n "${DEPLOY_CANARY_COMMAND}" ]]; then
-            timeout 600s bash -lc "${DEPLOY_CANARY_COMMAND}"
-          else
-            echo "::notice::DEPLOY_CANARY_COMMAND is not configured; CLI smoke install verification used as canary fallback."
-          fi
-
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            if [[ -z "${DEPLOY_HEALTHCHECK_URL}" ]]; then
-              echo "::error::DEPLOY_HEALTHCHECK_URL must be configured for production deploy gate."
-              exit 1
-            fi
-            timeout 30s curl --fail --silent --show-error "${DEPLOY_HEALTHCHECK_URL}" > /dev/null
-          fi
+          bash ./scripts/deploy/canary.sh --tarball "${TARBALL}" --healthcheck-url "${DEPLOY_HEALTHCHECK_URL}"
 
       - name: Emit deploy gate summary
         shell: bash
@@ -347,14 +376,14 @@ jobs:
             echo "- commit: \`${GITHUB_SHA}\`"
             echo "- event: \`${GITHUB_EVENT_NAME}\`"
             echo "- ref: \`${GITHUB_REF}\`"
-            echo "- environment: \`${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'security-review' }}\`"
-            echo "- strategy: \`${{ vars.DEPLOY_STRATEGY || 'canary' }}\`"
+            echo "- environment: \`production\`"
+            echo "- strategy: \`canary\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint_gate, test_gate, security_gate, build-release-artifact, deploy_gate]
+    needs: [lint_gate, test_gate, security_gate, build-release-artifact, pr_deploy_smoke_gate, deploy_gate]
     if: >-
       ${{
         always() &&
@@ -362,7 +391,10 @@ jobs:
         needs.test_gate.result == 'success' &&
         needs.security_gate.result == 'success' &&
         needs.build-release-artifact.result == 'success' &&
-        needs.deploy_gate.result == 'success'
+        (
+          (github.event_name == 'pull_request' && needs.pr_deploy_smoke_gate.result == 'success' && needs.deploy_gate.result == 'skipped') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.pr_deploy_smoke_gate.result == 'skipped' && needs.deploy_gate.result == 'success')
+        )
       }}
     steps:
       - name: Confirm all quality gates passed

@@ -21,6 +21,14 @@ on:
         required: false
         default: true
         type: boolean
+      target_environment:
+        description: "Rollback environment target"
+        required: false
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
   schedule:
     - cron: "30 5 * * 1"
 
@@ -54,15 +62,18 @@ jobs:
             reason="Scheduled rollback drill: validate rollback workflow (dry-run only)."
             replacement=""
             dry_run="true"
+            target_environment="staging"
           else
             version="$(echo "${{ inputs.package_version }}" | xargs)"
             reason="$(echo "${{ inputs.reason }}" | xargs)"
             replacement="$(echo "${{ inputs.replacement_version }}" | xargs)"
             dry_run="$(echo "${{ inputs.dry_run }}" | tr '[:upper:]' '[:lower:]' | xargs)"
+            target_environment="$(echo "${{ inputs.target_environment }}" | tr '[:upper:]' '[:lower:]' | xargs)"
           fi
           test -n "${version}" || (echo "package_version is required" && exit 1)
           test -n "${reason}" || (echo "reason is required" && exit 1)
           [[ "${dry_run}" == "true" || "${dry_run}" == "false" ]] || (echo "Invalid dry_run value '${dry_run}'" && exit 1)
+          [[ "${target_environment}" == "production" || "${target_environment}" == "staging" ]] || (echo "Invalid target_environment value '${target_environment}'" && exit 1)
           message="${reason}"
           if [ -n "${replacement}" ]; then
             message="${message} Please use create-sentinelayer@${replacement}."
@@ -71,6 +82,7 @@ jobs:
           echo "message=${message}" >> "${GITHUB_OUTPUT}"
           echo "dry_run=${dry_run}" >> "${GITHUB_OUTPUT}"
           echo "replacement=${replacement}" >> "${GITHUB_OUTPUT}"
+          echo "target_environment=${target_environment}" >> "${GITHUB_OUTPUT}"
 
       - name: Dry-run rollback
         if: ${{ steps.metadata.outputs.dry_run == 'true' }}
@@ -144,12 +156,11 @@ jobs:
         if: ${{ steps.metadata.outputs.dry_run != 'true' }}
         shell: bash
         env:
-          ROLLBACK_DEPLOY_COMMAND: ${{ secrets.ROLLBACK_DEPLOY_COMMAND }}
           ROLLBACK_HEALTHCHECK_URL: ${{ vars.ROLLBACK_HEALTHCHECK_URL || '' }}
         run: |
           set -euo pipefail
           test -n "${{ steps.fallback.outputs.fallback_version }}" || (echo "::error::Missing fallback rollback version." && exit 1)
-          test -n "${ROLLBACK_DEPLOY_COMMAND}" || (echo "::error::Missing ROLLBACK_DEPLOY_COMMAND secret." && exit 1)
+          test -f "./scripts/deploy/rollback.sh" || (echo "::error::Missing rollback script at ./scripts/deploy/rollback.sh." && exit 1)
           test -n "${ROLLBACK_HEALTHCHECK_URL}" || (echo "::error::Missing ROLLBACK_HEALTHCHECK_URL repo variable." && exit 1)
 
       - name: Execute rollback deprecation
@@ -178,12 +189,14 @@ jobs:
         if: ${{ steps.metadata.outputs.dry_run != 'true' }}
         shell: bash
         env:
-          ROLLBACK_DEPLOY_COMMAND: ${{ secrets.ROLLBACK_DEPLOY_COMMAND }}
+          ROLLBACK_WEBHOOK_URL: ${{ secrets.ROLLBACK_WEBHOOK_URL }}
           ROLLBACK_HEALTHCHECK_URL: ${{ vars.ROLLBACK_HEALTHCHECK_URL || '' }}
         run: |
           set -euo pipefail
           fallback_version="${{ steps.fallback.outputs.fallback_version }}"
-          timeout 900s bash -lc "${ROLLBACK_DEPLOY_COMMAND} ${fallback_version}"
+          timeout 900s bash ./scripts/deploy/rollback.sh \
+            --version "${fallback_version}" \
+            --environment "${{ steps.metadata.outputs.target_environment }}"
           timeout 30s curl --fail --silent --show-error "${ROLLBACK_HEALTHCHECK_URL}" > /dev/null
 
       - name: Emit rollback summary
@@ -194,6 +207,7 @@ jobs:
           echo "- package: \`create-sentinelayer\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- version: \`${{ steps.metadata.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- fallback_version: \`${{ steps.fallback.outputs.fallback_version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- target_environment: \`${{ steps.metadata.outputs.target_environment }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- dry_run: \`${{ steps.metadata.outputs.dry_run }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- message: \`${{ steps.metadata.outputs.message }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- workflow_mode: \`${{ github.event_name }}\`" >> "$GITHUB_STEP_SUMMARY"

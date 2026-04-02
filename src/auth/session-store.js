@@ -314,9 +314,33 @@ async function loadKeytarClient() {
   }
 }
 
+async function assertSecureMetadataFile(filePath) {
+  const stats = await fsp.lstat(filePath);
+  if (stats.isSymbolicLink()) {
+    throw new Error("Credentials metadata path must not be a symbolic link.");
+  }
+  if (!stats.isFile()) {
+    throw new Error("Credentials metadata path must resolve to a regular file.");
+  }
+  if (process.platform === "win32") {
+    return;
+  }
+  const mode = stats.mode & 0o777;
+  if ((mode & 0o077) === 0) {
+    return;
+  }
+  await fsp.chmod(filePath, 0o600);
+  const refreshed = await fsp.stat(filePath);
+  const refreshedMode = refreshed.mode & 0o777;
+  if ((refreshedMode & 0o077) !== 0) {
+    throw new Error("Credentials metadata file permissions must be owner-only (0600).");
+  }
+}
+
 async function readMetadata({ homeDir } = {}) {
   const filePath = resolveCredentialsFilePath({ homeDir });
   try {
+    await assertSecureMetadataFile(filePath);
     const raw = await fsp.readFile(filePath, "utf-8");
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {

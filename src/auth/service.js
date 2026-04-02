@@ -35,12 +35,19 @@ function normalizeApiUrl(rawValue) {
   }
   const protocol = String(parsed.protocol || "").toLowerCase();
   const hostname = String(parsed.hostname || "").trim().toLowerCase();
-  const allowInsecureHttp =
-    isTruthy(process.env.SENTINELAYER_ALLOW_INSECURE_API_URL) || LOOPBACK_API_HOSTS.has(hostname);
-  if (protocol !== "https:" && !(protocol === "http:" && allowInsecureHttp)) {
+  const insecureOverrideRequested = isTruthy(process.env.SENTINELAYER_ALLOW_INSECURE_API_URL);
+  const isLoopbackHost = LOOPBACK_API_HOSTS.has(hostname);
+  if (insecureOverrideRequested && isTruthy(process.env.CI)) {
+    throw new Error("SENTINELAYER_ALLOW_INSECURE_API_URL cannot be enabled in CI environments.");
+  }
+  if (insecureOverrideRequested && !isLoopbackHost) {
     throw new Error(
-      "API URL must use https:// unless targeting a loopback host or SENTINELAYER_ALLOW_INSECURE_API_URL=true is set for explicit local development."
+      "SENTINELAYER_ALLOW_INSECURE_API_URL is restricted to loopback API hosts (localhost, 127.0.0.1, ::1)."
     );
+  }
+  const allowInsecureHttp = isLoopbackHost;
+  if (protocol !== "https:" && !(protocol === "http:" && allowInsecureHttp)) {
+    throw new Error("API URL must use https:// unless targeting a loopback host.");
   }
   if (parsed.username || parsed.password) {
     throw new Error("API URL must not include embedded credentials.");
