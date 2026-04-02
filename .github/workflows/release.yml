@@ -157,6 +157,7 @@ jobs:
 
           assert_environment_policy "release-approval"
           assert_environment_policy "npm-publish"
+          assert_environment_policy "production"
 
           quality_run_id=""
           release_artifact_name="create-sentinelayer-release-${GITHUB_SHA}"
