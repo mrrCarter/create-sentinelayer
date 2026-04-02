@@ -25,6 +25,17 @@ const BUILTIN_AUDIT_AGENTS = Object.freeze([
     escalationTargets: ["security", "performance"],
   },
   {
+    id: "performance",
+    persona: "Arjun Mehta",
+    domain: "Performance",
+    tools: ["read", "grep", "profiler-hints"],
+    permissionMode: "plan",
+    maxTurns: 6,
+    confidenceFloor: 0.8,
+    evidenceRequirements: ["latency_paths", "runtime_assumptions"],
+    escalationTargets: ["architecture", "reliability"],
+  },
+  {
     id: "frontend",
     persona: "Jules Tanaka",
     domain: "Frontend",

@@ -10,6 +10,10 @@ import {
   runArchitectureSpecialist,
 } from "./agents/architecture.js";
 import {
+  renderPerformanceSpecialistMarkdown,
+  runPerformanceSpecialist,
+} from "./agents/performance.js";
+import {
   renderSecuritySpecialistMarkdown,
   runSecuritySpecialist,
 } from "./agents/security.js";
@@ -265,6 +269,20 @@ export async function runAuditOrchestrator({
       await fsp.writeFile(
         specialistReportPath,
         `${renderTestingSpecialistMarkdown(testingSpecialist).trim()}\n`,
+        "utf-8"
+      );
+    } else if (agent.id === "performance") {
+      const performanceSpecialist = runPerformanceSpecialist({
+        findings: deterministicBaseline.findings,
+        ingest,
+      });
+      findings = performanceSpecialist.findings;
+      summary = performanceSpecialist.summary;
+      confidence = performanceSpecialist.confidence;
+      specialistReportPath = path.join(agentsDirectory, "PERFORMANCE_AGENT_REPORT.md");
+      await fsp.writeFile(
+        specialistReportPath,
+        `${renderPerformanceSpecialistMarkdown(performanceSpecialist).trim()}\n`,
         "utf-8"
       );
     }

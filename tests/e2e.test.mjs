@@ -2362,6 +2362,39 @@ test("CLI audit testing runs specialist agent and emits dedicated testing report
   }
 });
 
+test("CLI audit performance runs specialist agent and emits dedicated performance report", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-performance-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "performance"), { recursive: true });
+    const hotspotModule = "export function tick(){ return Date.now(); }\n".repeat(340);
+    await writeFile(path.join(tempRoot, "src", "performance", "runtime.js"), hotspotModule, "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "performance", "--path", tempRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit performance");
+    assert.match(String(payload.performanceAgentPath || ""), /[\\/]performance\.json$/);
+    assert.match(
+      String(payload.performanceSpecialistReportPath || ""),
+      /[\\/]PERFORMANCE_AGENT_REPORT\.md$/
+    );
+
+    const performanceAgent = JSON.parse(await readFile(payload.performanceAgentPath, "utf-8"));
+    assert.equal(performanceAgent.agentId, "performance");
+    assert.equal(Array.isArray(performanceAgent.findings), true);
+
+    const performanceMarkdown = await readFile(payload.performanceSpecialistReportPath, "utf-8");
+    assert.match(performanceMarkdown, /PERFORMANCE_AGENT_REPORT/);
+    assert.match(performanceMarkdown, /Runtime hotspots:/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email dry-run writes deterministic request artifact", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   try {

@@ -16,6 +16,7 @@ test("Unit audit registry: built-in agent registry includes expected orchestrato
   assert.equal(agents.length >= 13, true);
   assert.equal(agents.some((agent) => agent.id === "security"), true);
   assert.equal(agents.some((agent) => agent.id === "architecture"), true);
+  assert.equal(agents.some((agent) => agent.id === "performance"), true);
   assert.equal(agents.some((agent) => agent.id === "testing"), true);
 });
 
