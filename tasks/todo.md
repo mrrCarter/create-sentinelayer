@@ -114,11 +114,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 10.6 compliance specialist agent. (merged as #71)
 - PR 10.7 documentation specialist agent. (merged as #72)
 - PR 10.8 unified DD package. (merged as #73)
-- PR 10.9 drift/replay. (in progress on `roadmap/pr-10-9-audit-drift-replay`)
+- PR 10.9 drift/replay. (merged as #74)
 
 ### Batch H - Identity + QA Swarm (P1/P2)
 - PR 11.1 AIdenID SDK integration/auth. (merged as #52)
-- PR 11.2-11.6 AIdenID identity engine follow-on.
+- PR 11.2 identity lifecycle CLI. (in progress on `roadmap/pr-11-2-identity-lifecycle-cli`)
+- PR 11.3-11.6 AIdenID identity engine follow-on.
 - PR 12.1-12.7 QA swarm runtime, DSL, dashboard, security mode.
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
@@ -163,28 +164,27 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-10-9-audit-drift-replay`
-2. `roadmap/pr-11-2-identity-lifecycle-cli`
-3. `roadmap/pr-11-3-otp-verification-extraction`
-4. `roadmap/pr-11-4-child-identity-lineage`
-5. `roadmap/pr-11-5-domain-target-management`
-6. `roadmap/pr-11-6-ephemeral-callback-domains`
-7. `roadmap/pr-12-1-swarm-orchestrator-factory`
-8. `roadmap/pr-12-2-playwright-agent-runtime`
-9. `roadmap/pr-12-3-scenario-dsl`
-10. `roadmap/pr-12-4-realtime-swarm-dashboard`
-11. `roadmap/pr-12-5-swarm-execution-report`
-12. `roadmap/pr-12-6-security-pentest-mode`
-13. `roadmap/pr-12-7-swarm-identity-hardening`
-14. `roadmap/pr-13-1-error-event-daemon-worker`
-15. `roadmap/pr-13-2-global-assignment-ledger`
-16. `roadmap/pr-13-3-jira-lifecycle-automation`
-17. `roadmap/pr-13-4-runtime-budget-quarantine`
-18. `roadmap/pr-13-5-operator-control-plane`
-19. `roadmap/pr-13-6-observability-artifact-lineage`
-20. `roadmap/pr-13-7-hybrid-mapping-overlay`
-21. `roadmap/pr-13-8-midnight-reliability-lane`
-22. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-11-2-identity-lifecycle-cli`
+2. `roadmap/pr-11-3-otp-verification-extraction`
+3. `roadmap/pr-11-4-child-identity-lineage`
+4. `roadmap/pr-11-5-domain-target-management`
+5. `roadmap/pr-11-6-ephemeral-callback-domains`
+6. `roadmap/pr-12-1-swarm-orchestrator-factory`
+7. `roadmap/pr-12-2-playwright-agent-runtime`
+8. `roadmap/pr-12-3-scenario-dsl`
+9. `roadmap/pr-12-4-realtime-swarm-dashboard`
+10. `roadmap/pr-12-5-swarm-execution-report`
+11. `roadmap/pr-12-6-security-pentest-mode`
+12. `roadmap/pr-12-7-swarm-identity-hardening`
+13. `roadmap/pr-13-1-error-event-daemon-worker`
+14. `roadmap/pr-13-2-global-assignment-ledger`
+15. `roadmap/pr-13-3-jira-lifecycle-automation`
+16. `roadmap/pr-13-4-runtime-budget-quarantine`
+17. `roadmap/pr-13-5-operator-control-plane`
+18. `roadmap/pr-13-6-observability-artifact-lineage`
+19. `roadmap/pr-13-7-hybrid-mapping-overlay`
+20. `roadmap/pr-13-8-midnight-reliability-lane`
+21. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.

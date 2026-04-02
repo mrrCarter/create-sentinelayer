@@ -133,8 +133,10 @@ async function startMockApi({
 async function startAidenIdMockApi() {
   const state = {
     requestCount: 0,
+    revokeCount: 0,
     lastHeaders: {},
     lastPayload: null,
+    lastRevokeIdentityId: "",
   };
 
   const server = createServer(async (req, res) => {
@@ -148,6 +150,18 @@ async function startAidenIdMockApi() {
           emailAddress: "scan@aidenid.com",
           status: "ACTIVE",
           expiresAt: "2026-05-01T00:00:00.000Z",
+          projectId: "proj_test",
+        });
+      }
+      const revokeMatch = req.url && req.url.match(/^\/v1\/identities\/([^/]+)\/revoke$/);
+      if (req.method === "POST" && revokeMatch) {
+        state.revokeCount += 1;
+        state.lastHeaders = { ...req.headers };
+        state.lastRevokeIdentityId = decodeURIComponent(revokeMatch[1] || "");
+        return jsonResponse(res, 200, {
+          id: state.lastRevokeIdentityId,
+          status: "REVOKED",
+          revokedAt: "2026-05-01T00:00:00.000Z",
           projectId: "proj_test",
         });
       }
@@ -2626,6 +2640,132 @@ test("CLI ai provision-email execute mode posts to AIdenID API with scoped heade
     assert.ok(String(mock.state.lastHeaders["idempotency-key"] || "").length > 0);
     assert.equal(mock.state.lastPayload.ttlHours, 24);
     assert.equal(mock.state.lastPayload.policy.receiveMode, "EDGE_ACCEPT");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity list/show reads locally tracked lifecycle records", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const identityId = String(provisionPayload.identity?.id || "");
+    assert.equal(identityId.length > 0, true);
+
+    const list = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "list", "--path", tempRoot, "--json"],
+    });
+    assert.equal(list.code, 0, list.stderr || list.stdout);
+    const listPayload = JSON.parse(String(list.stdout || "").trim());
+    assert.equal(listPayload.command, "ai identity list");
+    assert.equal(listPayload.count >= 1, true);
+    assert.equal(listPayload.identities.some((item) => item.identityId === identityId), true);
+
+    const show = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "show", identityId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(show.code, 0, show.stderr || show.stdout);
+    const showPayload = JSON.parse(String(show.stdout || "").trim());
+    assert.equal(showPayload.command, "ai identity show");
+    assert.equal(showPayload.identity.identityId, identityId);
+    assert.equal(showPayload.identity.status, "ACTIVE");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity revoke execute mode calls API and updates lifecycle status", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const identityId = String(provisionPayload.identity?.id || "");
+    assert.equal(identityId.length > 0, true);
+
+    const revoke = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "revoke",
+        identityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(revoke.code, 0, revoke.stderr || revoke.stdout);
+    const revokePayload = JSON.parse(String(revoke.stdout || "").trim());
+    assert.equal(revokePayload.command, "ai identity revoke");
+    assert.equal(revokePayload.execute, true);
+    assert.equal(revokePayload.identity.identityId, identityId);
+    assert.equal(revokePayload.identity.status, "REVOKED");
+    assert.equal(mock.state.revokeCount, 1);
+    assert.equal(mock.state.lastRevokeIdentityId, identityId);
+
+    const show = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "show", identityId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(show.code, 0, show.stderr || show.stdout);
+    const showPayload = JSON.parse(String(show.stdout || "").trim());
+    assert.equal(showPayload.identity.status, "REVOKED");
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

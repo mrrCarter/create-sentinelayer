@@ -311,6 +311,13 @@ The CLI now includes an `sl ai` surface for AIdenID identity provisioning:
 
 - `sl ai provision-email --json` (dry-run artifact generation)
 - `sl ai provision-email --execute --api-key <key> --org-id <id> --project-id <id>` (live API call)
+- `sl ai identity list --json` (list locally tracked identities)
+- `sl ai identity show <identity-id> --json`
+- `sl ai identity revoke <identity-id> --execute --api-key <key> --org-id <id> --project-id <id>`
+
+Identity lifecycle records are persisted to:
+
+- `.sentinelayer/aidenid/identity-registry.json`
 
 Credential env fallbacks for live execution:
 
@@ -576,6 +583,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
 - `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
+- `create-sentinelayer ai identity list|show|revoke` manages local identity lifecycle records and optional live revoke calls
 - `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
 - `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
 - `create-sentinelayer review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings

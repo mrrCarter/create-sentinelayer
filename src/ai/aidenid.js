@@ -215,3 +215,52 @@ export async function provisionEmailIdentity({
     requestHeaders,
   };
 }
+
+export async function revokeIdentity({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  idempotencyKey,
+  identityId,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedIdentityId = String(identityId || "").trim();
+  if (!normalizedIdentityId) {
+    throw new Error("identityId is required.");
+  }
+
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/revoke`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+    }
+  );
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID revoke request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}
