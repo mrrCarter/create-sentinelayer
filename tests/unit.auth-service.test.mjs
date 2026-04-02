@@ -45,6 +45,9 @@ async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
     tokenIssueCalls: 0,
     tokenDeleteIds: [],
     statusCalls: 0,
+    startIdempotencyKeys: [],
+    pollIdempotencyKeys: [],
+    tokenIssueIdempotencyKeys: [],
   };
   const runtimeEvents = [
     {
@@ -78,6 +81,7 @@ async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
 
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/start") {
         await readJsonBody(req);
+        state.startIdempotencyKeys.push(String(req.headers["idempotency-key"] || ""));
         return jsonResponse(res, 200, {
           session_id: "sess_1",
           authorize_url: "http://127.0.0.1/cli-auth?session_id=sess_1",
@@ -88,6 +92,7 @@ async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/poll") {
         await readJsonBody(req);
         state.pollCalls += 1;
+        state.pollIdempotencyKeys.push(String(req.headers["idempotency-key"] || ""));
         if (state.pollCalls === 1) {
           return jsonResponse(res, 200, { status: "pending" });
         }
@@ -119,6 +124,7 @@ async function startAuthRuntimeMockApi({ failTokenDelete = false } = {}) {
       if (req.method === "POST" && pathname === "/api/v1/auth/api-tokens") {
         await readJsonBody(req);
         state.tokenIssueCalls += 1;
+        state.tokenIssueIdempotencyKeys.push(String(req.headers["idempotency-key"] || ""));
         return jsonResponse(res, 200, {
           id: `token_${state.tokenIssueCalls}`,
           token: `api_token_${state.tokenIssueCalls}`,
@@ -232,6 +238,13 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(storedSession?.token, "api_token_1");
     assert.equal(storedSession?.tokenId, "token_1");
     assert.equal(storedSession?.storage, "file");
+    assert.equal(mock.state.startIdempotencyKeys.length, 1);
+    assert.match(mock.state.startIdempotencyKeys[0], /^cli-auth-start-[a-f0-9]{48}$/);
+    assert.equal(mock.state.pollIdempotencyKeys.length, 2);
+    assert.equal(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
+    assert.match(mock.state.pollIdempotencyKeys[0], /^cli-auth-poll-[a-f0-9]{48}$/);
+    assert.equal(mock.state.tokenIssueIdempotencyKeys.length, 1);
+    assert.match(mock.state.tokenIssueIdempotencyKeys[0], /^cli-auth-issue-token-[a-f0-9]{48}$/);
 
     const activeSession = await resolveActiveAuthSession({
       cwd: tempRoot,

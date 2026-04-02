@@ -68,11 +68,20 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
-function buildIdempotencyKey(_seedValue, scope = "auth") {
+function buildIdempotencyKey(seedValue, scope = "auth", sessionNonce = "") {
+  const normalizedSeed = String(seedValue || "").trim();
+  if (!normalizedSeed) {
+    throw new Error("seedValue is required for idempotency key generation.");
+  }
   const normalizedScope = String(scope || "auth").trim().toLowerCase();
   const scopePrefix = normalizedScope.replace(/[^a-z0-9-]/g, "").slice(0, 24) || "auth";
-  const entropy = crypto.randomUUID().replace(/-/g, "");
-  return `${scopePrefix}-${entropy}`;
+  const nonce = String(sessionNonce || "global").trim() || "global";
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${scopePrefix}:${nonce}:${normalizedSeed}`)
+    .digest("hex")
+    .slice(0, 48);
+  return `${scopePrefix}-${digest}`;
 }
 
 function defaultTokenLabel() {
@@ -351,7 +360,8 @@ export async function loginAndPersistSession({
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
   const challenge = generateChallenge();
-  const startIdempotencyKey = buildIdempotencyKey(challenge, "cli-auth-start");
+  const idempotencyNonce = crypto.randomBytes(16).toString("hex");
+  const startIdempotencyKey = buildIdempotencyKey(challenge, "cli-auth-start", idempotencyNonce);
   const session = await startCliAuthSession({
     apiUrl,
     challenge,
@@ -377,7 +387,11 @@ export async function loginAndPersistSession({
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
-    idempotencyKey: buildIdempotencyKey(`${String(session.session_id || "").trim()}:${challenge}`, "cli-auth-poll"),
+    idempotencyKey: buildIdempotencyKey(
+      `${String(session.session_id || "").trim()}:${challenge}`,
+      "cli-auth-poll",
+      idempotencyNonce
+    ),
     signal,
     randomFn,
   });
@@ -396,7 +410,11 @@ export async function loginAndPersistSession({
     authToken: approvalToken,
     tokenLabel,
     tokenTtlDays,
-    idempotencyKey: buildIdempotencyKey(`${String(session.session_id || "").trim()}:${challenge}`, "cli-auth-issue-token"),
+    idempotencyKey: buildIdempotencyKey(
+      `${String(session.session_id || "").trim()}:${challenge}`,
+      "cli-auth-issue-token",
+      idempotencyNonce
+    ),
   });
 
   const stored = await writeStoredSession(

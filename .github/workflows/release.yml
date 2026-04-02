@@ -59,7 +59,7 @@ jobs:
             gh api \
               -H 'Accept: application/vnd.github+json' \
               "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${sha}&status=completed&per_page=50" \
-              --jq '.workflow_runs[] | select(.conclusion=="success") | .id' \
+              --jq '.workflow_runs[] | select(.conclusion=="success" and .event=="push" and .head_branch=="main") | .id' \
               || true
           }
 
