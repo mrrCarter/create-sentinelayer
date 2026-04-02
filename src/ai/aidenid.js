@@ -42,6 +42,22 @@ function normalizeTtlHours(rawValue, fallbackValue = 24) {
   return Math.round(normalized);
 }
 
+function normalizePositiveInteger(rawValue, field, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const normalized = Number(rawValue);
+  if (!Number.isFinite(normalized) || normalized < min || normalized > max) {
+    throw new Error(`${field} must be between ${min} and ${max}.`);
+  }
+  return Math.round(normalized);
+}
+
+function normalizeIdentityId(rawValue) {
+  const normalized = String(rawValue || "").trim();
+  if (!normalized) {
+    throw new Error("identityId is required.");
+  }
+  return normalized;
+}
+
 function normalizeAliasTemplate(rawValue) {
   const normalized = String(rawValue || "").trim();
   return normalized || null;
@@ -159,6 +175,79 @@ function buildProvisionHeaders({ apiKey, orgId, projectId, idempotencyKey }) {
   };
 }
 
+function buildReadHeaders({ apiKey, orgId, projectId }) {
+  return {
+    Accept: "application/json",
+    Authorization: `Bearer ${String(apiKey || "").trim()}`,
+    "X-Org-Id": String(orgId || "").trim(),
+    "X-Project-Id": String(projectId || "").trim(),
+  };
+}
+
+function normalizeExtractionPayload(payload = {}) {
+  if (!payload || typeof payload !== "object") {
+    return {
+      otp: null,
+      primaryActionUrl: null,
+      confidence: null,
+      source: "UNKNOWN",
+      extractedAt: null,
+      raw: payload,
+    };
+  }
+
+  const rawOtp = payload.otp ?? payload.code ?? payload.oneTimeCode ?? null;
+  const rawPrimaryActionUrl =
+    payload.primaryActionUrl ?? payload.primary_action_url ?? payload.verificationUrl ?? payload.link ?? null;
+  const rawConfidence = payload.confidence ?? payload.score ?? payload.extractionConfidence ?? null;
+  const numericConfidence = Number(rawConfidence);
+  const normalizedConfidence = Number.isFinite(numericConfidence) ? numericConfidence : null;
+  const rawSource = payload.source ?? payload.extractionSource ?? payload.engine ?? payload.method ?? null;
+
+  return {
+    otp: String(rawOtp || "").trim() || null,
+    primaryActionUrl: String(rawPrimaryActionUrl || "").trim() || null,
+    confidence: normalizedConfidence,
+    source: String(rawSource || "").trim() || "UNKNOWN",
+    extractedAt: String(payload.extractedAt || payload.createdAt || payload.timestamp || "").trim() || null,
+    raw: payload,
+  };
+}
+
+function normalizeEventsResponse(payload = {}) {
+  if (Array.isArray(payload)) {
+    return {
+      events: payload,
+      nextCursor: null,
+      previousCursor: null,
+    };
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return {
+      events: [],
+      nextCursor: null,
+      previousCursor: null,
+    };
+  }
+
+  const events = Array.isArray(payload.events)
+    ? payload.events
+    : Array.isArray(payload.items)
+      ? payload.items
+      : Array.isArray(payload.data)
+        ? payload.data
+        : [];
+
+  return {
+    events,
+    nextCursor:
+      String(payload.nextCursor || payload.next_cursor || payload.cursor || payload.next || "").trim() || null,
+    previousCursor:
+      String(payload.previousCursor || payload.previous_cursor || payload.prev || "").trim() || null,
+  };
+}
+
 async function parseErrorBody(response) {
   try {
     const payload = await response.json();
@@ -229,10 +318,7 @@ export async function revokeIdentity({
     throw new Error("fetchImpl must be a function.");
   }
 
-  const normalizedIdentityId = String(identityId || "").trim();
-  if (!normalizedIdentityId) {
-    throw new Error("identityId is required.");
-  }
+  const normalizedIdentityId = normalizeIdentityId(identityId);
 
   const normalizedApiUrl = normalizeApiUrl(apiUrl);
   const requestHeaders = buildProvisionHeaders({
@@ -262,5 +348,115 @@ export async function revokeIdentity({
     apiUrl: normalizedApiUrl,
     response: body,
     requestHeaders,
+  };
+}
+
+export async function listIdentityEvents({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  identityId,
+  cursor = "",
+  limit = 50,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedIdentityId = normalizeIdentityId(identityId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const normalizedLimit = normalizePositiveInteger(limit, "limit", { min: 1, max: 500 });
+  const normalizedCursor = String(cursor || "").trim();
+  const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
+
+  const endpoint = new URL(
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/events`
+  );
+  endpoint.searchParams.set("limit", String(normalizedLimit));
+  if (normalizedCursor) {
+    endpoint.searchParams.set("cursor", normalizedCursor);
+  }
+
+  const response = await fetchImpl(endpoint.toString(), {
+    method: "GET",
+    headers: requestHeaders,
+  });
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID identity events request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  const normalized = normalizeEventsResponse(body);
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+    events: normalized.events,
+    nextCursor: normalized.nextCursor,
+    previousCursor: normalized.previousCursor,
+  };
+}
+
+export async function getLatestIdentityExtraction({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  identityId,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedIdentityId = normalizeIdentityId(identityId);
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
+
+  const response = await fetchImpl(
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/latest-extraction`,
+    {
+      method: "GET",
+      headers: requestHeaders,
+    }
+  );
+
+  if (response.status === 404) {
+    return {
+      apiUrl: normalizedApiUrl,
+      response: null,
+      requestHeaders,
+      extraction: normalizeExtractionPayload({}),
+      notFound: true,
+    };
+  }
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID latest extraction request failed with status ${response.status}${
+        details ? `: ${details}` : ""
+      }`
+    );
+  }
+
+  const body = await response.json();
+  const extractionPayload =
+    body && typeof body === "object" && body.extraction && typeof body.extraction === "object"
+      ? body.extraction
+      : body;
+
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+    extraction: normalizeExtractionPayload(extractionPayload),
+    notFound: false,
   };
 }

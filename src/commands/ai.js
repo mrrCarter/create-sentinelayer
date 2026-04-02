@@ -7,6 +7,8 @@ import pc from "picocolors";
 
 import {
   buildProvisionEmailPayload,
+  getLatestIdentityExtraction,
+  listIdentityEvents,
   normalizeAidenIdApiUrl,
   provisionEmailIdentity,
   revokeIdentity,
@@ -42,9 +44,36 @@ function parsePositiveInteger(rawValue, field, fallbackValue) {
   return Math.round(normalized);
 }
 
+function parseConfidenceThreshold(rawValue, fallbackValue = 0.8) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallbackValue;
+  }
+  const normalized = Number(rawValue);
+  if (!Number.isFinite(normalized) || normalized < 0 || normalized > 1) {
+    throw new Error("minConfidence must be between 0 and 1.");
+  }
+  return normalized;
+}
+
 function normalizeIdempotencyKey(rawValue) {
   const normalized = String(rawValue || "").trim();
   return normalized || randomUUID();
+}
+
+function hasExtractionSignal(extraction = {}) {
+  return Boolean(String(extraction.otp || "").trim() || String(extraction.primaryActionUrl || "").trim());
+}
+
+function meetsConfidenceThreshold(extraction = {}, minConfidence = 0.8) {
+  const normalizedConfidence = Number(extraction.confidence);
+  if (!Number.isFinite(normalizedConfidence)) {
+    return minConfidence <= 0;
+  }
+  return normalizedConfidence >= minConfidence;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function writeArtifact(filePath, payload) {
@@ -459,5 +488,366 @@ export function registerAiCommand(program) {
       console.log(pc.gray(`Registry: ${updated.registryPath}`));
       console.log(pc.gray(`Response: ${responsePath}`));
       console.log(`${updated.identity.identityId} | ${updated.identity.status}`);
+    });
+
+  identity
+    .command("events")
+    .description("List inbound events for a tracked identity")
+    .argument("<identityId>", "Identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--cursor <cursor>", "Pagination cursor")
+    .option("--limit <count>", "Max events to fetch per page", "50")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const limit = parsePositiveInteger(options.limit, "limit", 50);
+      const { registryPath, identity: trackedIdentity } = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      if (!trackedIdentity) {
+        throw new Error(`Identity '${identityId}' is not present in local registry.`);
+      }
+
+      const credentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity.orgId,
+        projectId: options.projectId || trackedIdentity.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+
+      const execution = await listIdentityEvents({
+        apiUrl,
+        apiKey: credentials.apiKey,
+        orgId: credentials.orgId,
+        projectId: credentials.projectId,
+        identityId,
+        cursor: options.cursor,
+        limit,
+      });
+
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "events");
+      const outputPath = path.join(
+        artifactsDir,
+        `events-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(outputPath, {
+        generatedAt: new Date().toISOString(),
+        identityId,
+        cursor: String(options.cursor || "").trim() || null,
+        limit,
+        response: execution.response,
+      });
+
+      const payload = {
+        command: "ai identity events",
+        identityId,
+        registryPath,
+        outputPath,
+        cursor: String(options.cursor || "").trim() || null,
+        nextCursor: execution.nextCursor,
+        previousCursor: execution.previousCursor,
+        count: execution.events.length,
+        events: execution.events,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID identity events"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Artifact: ${outputPath}`));
+      console.log(pc.gray(`Events: ${execution.events.length}`));
+      if (execution.nextCursor) {
+        console.log(pc.gray(`nextCursor=${execution.nextCursor}`));
+      }
+      for (const item of execution.events) {
+        const eventId = String(item.eventId || item.id || item.messageId || "event");
+        const eventType = String(item.eventType || item.type || item.category || "unknown");
+        const eventAt = String(item.receivedAt || item.createdAt || item.timestamp || "unknown-time");
+        console.log(`- ${eventId} | ${eventType} | ${eventAt}`);
+      }
+    });
+
+  identity
+    .command("latest")
+    .description("Show latest extraction and most recent event for an identity")
+    .argument("<identityId>", "Identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const { registryPath, identity: trackedIdentity } = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      if (!trackedIdentity) {
+        throw new Error(`Identity '${identityId}' is not present in local registry.`);
+      }
+
+      const credentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity.orgId,
+        projectId: options.projectId || trackedIdentity.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+
+      const [latestExtraction, latestEventBatch] = await Promise.all([
+        getLatestIdentityExtraction({
+          apiUrl,
+          apiKey: credentials.apiKey,
+          orgId: credentials.orgId,
+          projectId: credentials.projectId,
+          identityId,
+        }),
+        listIdentityEvents({
+          apiUrl,
+          apiKey: credentials.apiKey,
+          orgId: credentials.orgId,
+          projectId: credentials.projectId,
+          identityId,
+          limit: 1,
+        }),
+      ]);
+      const latestEvent = latestEventBatch.events[0] || null;
+
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "latest");
+      const outputPath = path.join(
+        artifactsDir,
+        `latest-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(outputPath, {
+        generatedAt: new Date().toISOString(),
+        identityId,
+        latestEvent,
+        extraction: latestExtraction.extraction,
+        extractionResponse: latestExtraction.response,
+      });
+
+      const payload = {
+        command: "ai identity latest",
+        identityId,
+        registryPath,
+        outputPath,
+        latestEvent,
+        extraction: latestExtraction.extraction,
+        extractionAvailable: hasExtractionSignal(latestExtraction.extraction),
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID latest identity signal"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Artifact: ${outputPath}`));
+      console.log(
+        `source=${payload.extraction.source} confidence=${
+          Number.isFinite(Number(payload.extraction.confidence))
+            ? Number(payload.extraction.confidence).toFixed(3)
+            : "n/a"
+        }`
+      );
+      if (payload.extraction.otp) {
+        console.log(`otp=${payload.extraction.otp}`);
+      }
+      if (payload.extraction.primaryActionUrl) {
+        console.log(`primaryActionUrl=${payload.extraction.primaryActionUrl}`);
+      }
+      if (latestEvent) {
+        console.log(
+          `latestEvent=${String(latestEvent.eventId || latestEvent.id || "event")} type=${String(
+            latestEvent.eventType || latestEvent.type || "unknown"
+          )}`
+        );
+      }
+    });
+
+  identity
+    .command("wait-for-otp")
+    .description("Poll latest extraction until OTP/link appears and confidence passes threshold")
+    .argument("<identityId>", "Identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--interval-seconds <seconds>", "Polling interval in seconds", "2")
+    .option("--timeout <seconds>", "Polling timeout in seconds", "60")
+    .option("--min-confidence <value>", "Minimum confidence threshold (0-1)", "0.8")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const intervalSeconds = parsePositiveInteger(
+        options.intervalSeconds,
+        "intervalSeconds",
+        2
+      );
+      const timeoutSeconds = parsePositiveInteger(options.timeout, "timeout", 60);
+      const minConfidence = parseConfidenceThreshold(options.minConfidence, 0.8);
+      const { registryPath, identity: trackedIdentity } = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      if (!trackedIdentity) {
+        throw new Error(`Identity '${identityId}' is not present in local registry.`);
+      }
+
+      const credentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity.orgId,
+        projectId: options.projectId || trackedIdentity.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+
+      const stamp = stableTimestampForFile();
+      const artifactsDir = path.join(outputRoot, "aidenid", "wait-for-otp");
+      const outputPath = path.join(
+        artifactsDir,
+        `wait-for-otp-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      const startedAt = Date.now();
+      const deadlineAt = startedAt + timeoutSeconds * 1000;
+      const attempts = [];
+      let lastExtraction = null;
+      let success = null;
+
+      while (Date.now() <= deadlineAt) {
+        const execution = await getLatestIdentityExtraction({
+          apiUrl,
+          apiKey: credentials.apiKey,
+          orgId: credentials.orgId,
+          projectId: credentials.projectId,
+          identityId,
+        });
+        lastExtraction = execution.extraction;
+
+        const hasSignal = hasExtractionSignal(execution.extraction);
+        const confidenceSatisfied = meetsConfidenceThreshold(execution.extraction, minConfidence);
+        const pollAt = new Date().toISOString();
+
+        attempts.push({
+          attempt: attempts.length + 1,
+          polledAt: pollAt,
+          source: execution.extraction.source,
+          confidence: execution.extraction.confidence,
+          hasSignal,
+          confidenceSatisfied,
+          notFound: Boolean(execution.notFound),
+        });
+
+        if (hasSignal && confidenceSatisfied) {
+          success = {
+            foundAt: pollAt,
+            extraction: execution.extraction,
+            source: execution.extraction.source,
+            confidence: execution.extraction.confidence,
+          };
+          break;
+        }
+
+        if (Date.now() >= deadlineAt) {
+          break;
+        }
+        await delay(intervalSeconds * 1000);
+      }
+
+      const finishedAtIso = new Date().toISOString();
+      const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      const artifactPayload = {
+        generatedAt: finishedAtIso,
+        identityId,
+        registryPath,
+        timeoutSeconds,
+        intervalSeconds,
+        minConfidence,
+        elapsedSeconds,
+        attempts,
+        result: success
+          ? {
+              status: "FOUND",
+              ...success,
+            }
+          : {
+              status: "TIMEOUT",
+              extraction: lastExtraction,
+            },
+      };
+      await writeArtifact(outputPath, artifactPayload);
+
+      if (!success) {
+        throw new Error(
+          `Timed out waiting for OTP/link for identity '${identityId}' within ${timeoutSeconds}s (artifact: ${outputPath}).`
+        );
+      }
+
+      const payload = {
+        command: "ai identity wait-for-otp",
+        identityId,
+        registryPath,
+        outputPath,
+        timeoutSeconds,
+        intervalSeconds,
+        minConfidence,
+        attempts: attempts.length,
+        extraction: success.extraction,
+        source: success.source,
+        confidence: success.confidence,
+        foundAt: success.foundAt,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID OTP/link extracted"));
+      console.log(pc.gray(`Registry: ${registryPath}`));
+      console.log(pc.gray(`Artifact: ${outputPath}`));
+      console.log(`source=${success.source} confidence=${String(success.confidence ?? "n/a")}`);
+      if (success.extraction.otp) {
+        console.log(`otp=${success.extraction.otp}`);
+      }
+      if (success.extraction.primaryActionUrl) {
+        console.log(`primaryActionUrl=${success.extraction.primaryActionUrl}`);
+      }
     });
 }

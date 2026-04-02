@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   buildProvisionEmailPayload,
+  getLatestIdentityExtraction,
+  listIdentityEvents,
   normalizeAidenIdApiUrl,
   provisionEmailIdentity,
   revokeIdentity,
@@ -189,5 +191,137 @@ test("Unit AIdenID helper: revoke request sends scoped headers and parses respon
         }),
       }),
     /status 409/
+  );
+});
+
+test("Unit AIdenID helper: events request sends scoped headers and normalizes payload", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          events: [
+            { eventId: "evt_1", eventType: "email.received", receivedAt: "2026-05-01T00:00:00.000Z" },
+          ],
+          nextCursor: "cursor_2",
+        };
+      },
+    };
+  };
+
+  const execution = await listIdentityEvents({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    identityId: "id_123",
+    cursor: "cursor_1",
+    limit: 25,
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].url, /\/v1\/identities\/id_123\/events\?/);
+  assert.match(requests[0].url, /limit=25/);
+  assert.match(requests[0].url, /cursor=cursor_1/);
+  assert.equal(requests[0].init.method, "GET");
+  assert.equal(requests[0].init.headers["Authorization"], "Bearer k_test");
+  assert.equal(execution.events.length, 1);
+  assert.equal(execution.nextCursor, "cursor_2");
+
+  await assert.rejects(
+    () =>
+      listIdentityEvents({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        identityId: "id_123",
+        fetchImpl: async () => ({
+          ok: false,
+          status: 500,
+          async json() {
+            return { error: { code: "internal" } };
+          },
+        }),
+      }),
+    /status 500/
+  );
+});
+
+test("Unit AIdenID helper: latest extraction request parses extraction and supports not-found", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          extraction: {
+            otp: "123456",
+            primaryActionUrl: "https://example.com/verify",
+            confidence: 0.95,
+            source: "RULES",
+          },
+        };
+      },
+    };
+  };
+
+  const execution = await getLatestIdentityExtraction({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    identityId: "id_123",
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.aidenid.com/v1/identities/id_123/latest-extraction");
+  assert.equal(requests[0].init.method, "GET");
+  assert.equal(execution.extraction.otp, "123456");
+  assert.equal(execution.extraction.primaryActionUrl, "https://example.com/verify");
+  assert.equal(execution.extraction.source, "RULES");
+  assert.equal(execution.notFound, false);
+
+  const notFound = await getLatestIdentityExtraction({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    identityId: "id_123",
+    fetchImpl: async () => ({
+      ok: false,
+      status: 404,
+      async json() {
+        return { error: { code: "not_found" } };
+      },
+    }),
+  });
+  assert.equal(notFound.notFound, true);
+  assert.equal(notFound.extraction.otp, null);
+
+  await assert.rejects(
+    () =>
+      getLatestIdentityExtraction({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        identityId: "id_123",
+        fetchImpl: async () => ({
+          ok: false,
+          status: 429,
+          async json() {
+            return { error: { code: "rate_limited" } };
+          },
+        }),
+      }),
+    /status 429/
   );
 });
