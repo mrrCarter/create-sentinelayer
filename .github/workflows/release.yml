@@ -8,13 +8,11 @@ on:
         required: false
         default: false
         type: boolean
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: read
   id-token: write
+  attestations: write
 
 concurrency:
   group: release-prod
@@ -28,32 +26,48 @@ jobs:
     name: Quality Preflight
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    environment: release-approval
     permissions:
       contents: read
       checks: read
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Validate quality-gate check for tag releases
+      - name: Validate release preflight gates
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
-            echo "Not a tag release ref; skipping quality preflight check."
-            exit 0
-          fi
-
-          check_conclusion="$(gh api \
+          quality_conclusion="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
             --jq '.check_runs[] | select(.name=="Quality Summary") | .conclusion' | head -n 1 || true)"
 
-          if [[ "${check_conclusion}" != "success" ]]; then
-            echo "::error::Quality Summary is not successful for commit ${GITHUB_SHA}. Found conclusion='${check_conclusion:-missing}'."
+          if [[ "${quality_conclusion}" != "success" ]]; then
+            echo "::error::Quality Summary is not successful for commit ${GITHUB_SHA}. Found conclusion='${quality_conclusion:-missing}'."
             exit 1
           fi
 
-          echo "Quality Summary check is successful for ${GITHUB_SHA}."
+          pr_head_sha="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].head.sha' 2>/dev/null || true)"
+
+          if [[ -z "${pr_head_sha}" || "${pr_head_sha}" == "null" ]]; then
+            echo "::error::Unable to resolve PR head commit for ${GITHUB_SHA}; cannot verify Omar Gate."
+            exit 1
+          fi
+
+          omar_conclusion="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${pr_head_sha}/check-runs" \
+            --jq '.check_runs[] | select(.name=="Omar Gate") | .conclusion' | head -n 1 || true)"
+
+          if [[ "${omar_conclusion}" != "success" ]]; then
+            echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
+            exit 1
+          fi
+
+          echo "Release preflight passed (Quality Summary + Omar Gate)."
 
   verify:
     name: Release Verify
@@ -92,6 +106,11 @@ jobs:
           npm install --global "${TARBALL}"
           create-sentinelayer --version
           sentinel --version
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: create-sentinelayer-*.tgz
 
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0

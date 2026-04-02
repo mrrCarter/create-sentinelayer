@@ -854,12 +854,11 @@ Prerequisites:
 
 Release options:
 
-1. Merge to `main` and let `Release Please` open/update the release PR and tag.
-2. Push a tag like `v0.1.1` to run verification + artifact packaging only.
-3. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
-4. Run `Release` manually with `publish=true` to publish from the previously verified tarball artifact.
-5. `NPM_TOKEN` is fail-closed: publish exits with error when the secret is missing.
-6. Rollback path: run `.github/workflows/rollback.yml` (see [`docs/RELEASE_ROLLBACK.md`](docs/RELEASE_ROLLBACK.md)).
+1. Run `Release Please` manually (`.github/workflows/release-please.yml`) after merge checks pass.
+2. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
+3. Run `Release` manually with `publish=true` to publish from the previously verified tarball artifact.
+4. `NPM_TOKEN` is fail-closed: publish exits with error when the secret is missing.
+5. Rollback path: run `.github/workflows/rollback.yml` (see [`docs/RELEASE_ROLLBACK.md`](docs/RELEASE_ROLLBACK.md)).
 
 ## Local verification
 

@@ -64,19 +64,18 @@ function normalizeMetadata(raw = {}) {
 
 function resolveEncryptionPassphrase(apiUrl) {
   const explicit = String(process.env.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY || "").trim();
-  if (explicit) {
-    return explicit;
+  if (!explicit) {
+    throw new Error(
+      "Missing SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY for encrypted file token storage. Configure a high-entropy key or enable OS keyring."
+    );
   }
 
-  let username = "";
-  try {
-    username = String(os.userInfo().username || "").trim();
-  } catch {
-    username = "";
+  if (explicit.length < 24) {
+    throw new Error(
+      "SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY must be at least 24 characters."
+    );
   }
-
-  const host = String(os.hostname() || "").trim();
-  return `${username}:${host}:${String(apiUrl || "").trim().toLowerCase()}`;
+  return explicit;
 }
 
 function encryptFileToken({ token, apiUrl }) {

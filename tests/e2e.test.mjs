@@ -561,10 +561,16 @@ async function startAidenIdMockApi({
 }
 
 async function runCli({ cwd, env, args = [] }) {
+  const runtimeEnv = {
+    ...env,
+    SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY:
+      String(env?.SENTINELAYER_FILE_TOKEN_ENCRYPTION_KEY || "").trim() ||
+      "test-only-sentinelayer-file-token-encryption-key-2026",
+  };
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env,
+      env: runtimeEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
 

@@ -1,12 +1,12 @@
 name: Release Please
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -14,7 +14,43 @@ env:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Validate release-please preflight gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          quality_conclusion="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+            --jq '.check_runs[] | select(.name=="Quality Summary") | .conclusion' | head -n 1 || true)"
+
+          if [[ "${quality_conclusion}" != "success" ]]; then
+            echo "::error::Quality Summary is not successful for commit ${GITHUB_SHA}. Found conclusion='${quality_conclusion:-missing}'."
+            exit 1
+          fi
+
+          pr_head_sha="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].head.sha' 2>/dev/null || true)"
+
+          if [[ -z "${pr_head_sha}" || "${pr_head_sha}" == "null" ]]; then
+            echo "::error::Unable to resolve PR head commit for ${GITHUB_SHA}; cannot verify Omar Gate."
+            exit 1
+          fi
+
+          omar_conclusion="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${pr_head_sha}/check-runs" \
+            --jq '.check_runs[] | select(.name=="Omar Gate") | .conclusion' | head -n 1 || true)"
+
+          if [[ "${omar_conclusion}" != "success" ]]; then
+            echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
+            exit 1
+          fi
+
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:
