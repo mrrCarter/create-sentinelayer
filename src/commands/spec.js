@@ -14,6 +14,12 @@ import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
+import {
+  buildLineDiff,
+  inferTemplateFromSpec,
+  mergeSpecRegeneration,
+  renderLineDiff,
+} from "../spec/regenerate.js";
 import { generateSpecMarkdown, resolveSpecTemplate } from "../spec/generator.js";
 import { SPEC_TEMPLATES } from "../spec/templates.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
@@ -462,6 +468,102 @@ export function registerSpecCommand(program) {
 
       if (aiResult.ai?.budget?.blocking) {
         process.exitCode = 2;
+      }
+    });
+
+  spec
+    .command("regenerate")
+    .description("Regenerate SPEC.md, preserve manual edits, and show line diff before overwrite")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--file <path>", "Spec file path relative to --path")
+    .option("--template <templateId>", "Template id override (defaults to template inferred from SPEC.md)")
+    .option("--description <text>", "Optional goal override for regenerated deterministic sections")
+    .option("--dry-run", "Preview merged SPEC and diff without writing file")
+    .option("--no-diff", "Disable terminal diff output")
+    .option("--plain", "Disable colorized diff output")
+    .option("--max-diff-lines <n>", "Max diff lines to print (0 = unlimited)", "220")
+    .option("--no-preserve-manual", "Allow regenerated sections to overwrite manual edits")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const specPath = resolveSpecArtifactPath(targetPath, options.file);
+      const existingMarkdown = await fsp.readFile(specPath, "utf-8");
+
+      const inferredTemplate = inferTemplateFromSpec(existingMarkdown);
+      const resolvedTemplateId =
+        String(options.template || "").trim() || inferredTemplate || "api-service";
+      const template = resolveSpecTemplate(resolvedTemplateId);
+      const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+      const regeneratedMarkdown = generateSpecMarkdown({
+        template,
+        description: options.description,
+        ingest,
+        projectPath: targetPath,
+      });
+
+      const merged = mergeSpecRegeneration({
+        existingMarkdown,
+        regeneratedMarkdown,
+        preserveManual: Boolean(options.preserveManual),
+      });
+      const diff = buildLineDiff(existingMarkdown, merged.mergedMarkdown);
+      const maxDiffLines = Number.parseInt(String(options.maxDiffLines || "220"), 10);
+      const diffPreview = renderLineDiff(diff, {
+        plain: true,
+        maxLines: Number.isFinite(maxDiffLines) ? maxDiffLines : 220,
+      });
+
+      const shouldWrite = !options.dryRun && diff.changed;
+      if (shouldWrite) {
+        await fsp.writeFile(specPath, merged.mergedMarkdown, "utf-8");
+      }
+
+      const payload = {
+        command: "spec regenerate",
+        targetPath,
+        specPath,
+        template: template.id,
+        dryRun: Boolean(options.dryRun),
+        preserveManual: Boolean(options.preserveManual),
+        changed: diff.changed,
+        wroteFile: shouldWrite,
+        summary: merged.summary,
+        diff: {
+          added: diff.added,
+          removed: diff.removed,
+          changed: diff.changed,
+          preview: diffPreview,
+        },
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("Spec regeneration"));
+      console.log(pc.gray(`Spec: ${specPath}`));
+      console.log(pc.gray(`Template: ${template.id}`));
+      console.log(
+        pc.gray(
+          `Summary: changed=${diff.changed} added=${diff.added} removed=${diff.removed} preserved_manual_sections=${merged.summary.preservedManualSections.length}`
+        )
+      );
+      if (options.diff) {
+        const rendered = renderLineDiff(diff, {
+          plain: Boolean(options.plain),
+          maxLines: Number.isFinite(maxDiffLines) ? maxDiffLines : 220,
+        });
+        if (rendered.trim()) {
+          console.log(rendered);
+        }
+      }
+      if (options.dryRun) {
+        console.log(pc.yellow("Dry run enabled: SPEC file was not modified."));
+      } else if (shouldWrite) {
+        console.log(pc.green(`Updated ${specPath}`));
+      } else {
+        console.log(pc.gray("No file write required; generated output matches current spec."));
       }
     });
 

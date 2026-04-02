@@ -1042,6 +1042,84 @@ test("CLI spec commands expose templates and generate SPEC.md offline", async ()
   }
 });
 
+test("CLI spec regenerate preserves manual edits, supports dry-run, and emits deterministic diff summary", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-spec-regenerate-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "spec-regenerate-demo",
+          version: "0.0.1",
+          dependencies: { express: "^4.19.0" },
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+    await writeFile(path.join(tempRoot, "src", "index.ts"), "export const v = 1;\n", "utf-8");
+
+    const generateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "spec",
+        "generate",
+        "--path",
+        tempRoot,
+        "--template",
+        "api-service",
+        "--description",
+        "Initial generated goal.",
+        "--json",
+      ],
+    });
+    assert.equal(generateResult.code, 0, generateResult.stderr || generateResult.stdout);
+    const generatePayload = JSON.parse(String(generateResult.stdout || "").trim());
+    const specPath = String(generatePayload.outputPath || "");
+
+    const generatedSpec = await readFile(specPath, "utf-8");
+    const manualSpec = generatedSpec.replace(
+      /## Goal[\s\S]*?(?=\n##\s)/,
+      ["## Goal", "Manual operator goal override for this sprint.", "", ""].join("\n")
+    );
+    await writeFile(specPath, manualSpec, "utf-8");
+
+    const dryRunResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "regenerate", "--path", tempRoot, "--dry-run", "--json"],
+    });
+    assert.equal(dryRunResult.code, 0, dryRunResult.stderr || dryRunResult.stdout);
+    const dryRunPayload = JSON.parse(String(dryRunResult.stdout || "").trim());
+    assert.equal(dryRunPayload.command, "spec regenerate");
+    assert.equal(dryRunPayload.dryRun, true);
+    assert.equal(dryRunPayload.preserveManual, true);
+    assert.equal(dryRunPayload.summary.preservedManualSections.includes("Goal"), true);
+    assert.equal(dryRunPayload.diff.changed, true);
+
+    const postDryRunSpec = await readFile(specPath, "utf-8");
+    assert.match(postDryRunSpec, /Manual operator goal override for this sprint\./);
+
+    const writeResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "regenerate", "--path", tempRoot, "--json"],
+    });
+    assert.equal(writeResult.code, 0, writeResult.stderr || writeResult.stdout);
+    const writePayload = JSON.parse(String(writeResult.stdout || "").trim());
+    assert.equal(writePayload.command, "spec regenerate");
+    assert.equal(writePayload.wroteFile, true);
+
+    const updatedSpec = await readFile(specPath, "utf-8");
+    assert.match(updatedSpec, /Manual operator goal override for this sprint\./);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI prompt commands generate and preview agent-targeted prompts from spec", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-prompt-"));
   try {
