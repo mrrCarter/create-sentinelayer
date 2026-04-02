@@ -13,6 +13,10 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   syntax-matrix:
     name: Syntax & Sanity (Node ${{ matrix.node }})
@@ -45,6 +49,7 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-22.04
     timeout-minutes: 12
+    needs: [unit-coverage, e2e-packaging]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -75,6 +80,7 @@ jobs:
     name: Unit Coverage (>=80%)
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    needs: [syntax-matrix]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -102,6 +108,7 @@ jobs:
     name: E2E & Package
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    needs: [syntax-matrix]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -126,7 +133,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [syntax-matrix, unit-coverage, e2e-packaging, security-scan]
+    needs: [security-scan]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

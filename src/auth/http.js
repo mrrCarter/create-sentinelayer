@@ -7,6 +7,7 @@ const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_RETRY_AFTER_DELAY_MS = 15_000;
 
 const circuitBreakerState = {
   consecutiveFailures: 0,
@@ -29,12 +30,13 @@ function normalizeApiError(errorPayload = {}) {
 }
 
 export class SentinelayerApiError extends Error {
-  constructor(message, { status = 500, code = "UNKNOWN", requestId = null } = {}) {
+  constructor(message, { status = 500, code = "UNKNOWN", requestId = null, retryAfterMs = null } = {}) {
     super(String(message || "Sentinelayer API error"));
     this.name = "SentinelayerApiError";
     this.status = Number(status || 500);
     this.code = String(code || "UNKNOWN");
     this.requestId = requestId ? String(requestId) : null;
+    this.retryAfterMs = Number.isFinite(Number(retryAfterMs)) ? Number(retryAfterMs) : null;
   }
 }
 
@@ -103,7 +105,32 @@ function shouldRetry(error) {
   return RETRYABLE_STATUS_CODES.has(Number(error.status || 0));
 }
 
-function getRetryDelayMs(attemptIndex, retryBackoffMs) {
+function parseRetryAfterDelayMs(rawValue) {
+  const normalized = String(rawValue || "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    const seconds = Number(normalized);
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return null;
+    }
+    return Math.min(Math.round(seconds * 1000), MAX_RETRY_AFTER_DELAY_MS);
+  }
+
+  const retryEpoch = Date.parse(normalized);
+  if (!Number.isFinite(retryEpoch)) {
+    return null;
+  }
+  const delayMs = Math.max(0, retryEpoch - Date.now());
+  return Math.min(delayMs, MAX_RETRY_AFTER_DELAY_MS);
+}
+
+function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
+  if (Number.isFinite(Number(retryAfterMs)) && Number(retryAfterMs) > 0) {
+    return Math.min(Math.round(Number(retryAfterMs)), MAX_RETRY_AFTER_DELAY_MS);
+  }
   const base = normalizePositiveInteger(retryBackoffMs, DEFAULT_REQUEST_RETRY_BACKOFF_MS);
   const delay = base * (2 ** Math.max(0, attemptIndex));
   return Math.min(delay, 2_000);
@@ -161,10 +188,12 @@ export async function requestJson(
 
       if (!response.ok) {
         const apiError = normalizeApiError(json && typeof json === "object" ? json.error : {});
+        const retryAfterMs = parseRetryAfterDelayMs(response.headers.get("retry-after"));
         throw new SentinelayerApiError(apiError.message, {
           status: response.status,
           code: apiError.code,
           requestId: apiError.requestId,
+          retryAfterMs,
         });
       }
 
@@ -173,7 +202,7 @@ export async function requestJson(
     } catch (error) {
       const normalizedError = normalizeUnknownError(error);
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
-        await sleep(getRetryDelayMs(attemptIndex, retryBackoffMs));
+        await sleep(getRetryDelayMs(attemptIndex, retryBackoffMs, normalizedError.retryAfterMs));
         continue;
       }
 

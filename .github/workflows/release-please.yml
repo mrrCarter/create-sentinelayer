@@ -21,6 +21,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Release Please must run from refs/heads/main. Received '${GITHUB_REF}'."
+            exit 1
+          fi
 
           read_check_conclusion() {
             local sha="$1"

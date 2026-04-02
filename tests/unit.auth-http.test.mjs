@@ -73,3 +73,35 @@ test("Unit auth http: circuit breaker opens after repeated failures", async () =
 
   assert.equal(callCount, 3);
 });
+
+test("Unit auth http: surfaces Retry-After delay metadata on retryable responses", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+
+  const fetchImpl = async () =>
+    new Response(
+      JSON.stringify({
+        error: { code: "RATE_LIMITED", message: "retry later" },
+      }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": "2",
+        },
+      }
+    );
+
+  await assert.rejects(
+    () =>
+      requestJson("https://api.example.com/test", {
+        method: "GET",
+        maxAttempts: 1,
+        fetchImpl,
+      }),
+    (error) =>
+      error instanceof SentinelayerApiError &&
+      error.code === "RATE_LIMITED" &&
+      error.status === 429 &&
+      error.retryAfterMs === 2000
+  );
+});

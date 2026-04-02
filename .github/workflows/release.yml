@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       publish:
@@ -117,6 +120,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Validate tag version matches package version
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -e "const fs=require('node:fs'); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); process.stdout.write(String(pkg.version||''));")"
+          if [[ -z "${package_version}" ]]; then
+            echo "::error::Unable to resolve package version from package.json."
+            exit 1
+          fi
+          if [[ "${tag_version}" != "${package_version}" ]]; then
+            echo "::error::Tag/package mismatch: tag=v${tag_version}, package.json=${package_version}."
+            exit 1
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -171,7 +190,7 @@ jobs:
 
   omar_release_gate:
     name: Omar Release Gate
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -220,7 +239,7 @@ jobs:
 
   publish:
     name: Publish To npm
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     needs: [verify, omar_release_gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
