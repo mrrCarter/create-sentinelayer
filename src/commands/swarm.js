@@ -7,6 +7,11 @@ import { buildSwarmExecutionPlan, writeSwarmPlanArtifacts } from "../swarm/facto
 import { loadSwarmRegistry, selectSwarmAgents } from "../swarm/registry.js";
 import { loadSwarmPlanFile, loadSwarmPlaybook, runSwarmRuntime } from "../swarm/runtime.js";
 import {
+  loadSwarmDashboardSnapshot,
+  renderSwarmDashboard,
+  watchSwarmDashboard,
+} from "../swarm/dashboard.js";
+import {
   parseScenarioFile,
   renderScenarioTemplate,
   validateScenarioSpec,
@@ -34,6 +39,14 @@ function parseMaxSteps(rawValue) {
     throw new Error("max-steps must be an integer >= 1.");
   }
   return Math.floor(normalized);
+}
+
+function parsePollSeconds(rawValue, fieldName) {
+  const normalized = Number(rawValue || 0);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    throw new Error(`${fieldName} must be a positive number.`);
+  }
+  return normalized;
 }
 
 function parsePositiveNumber(rawValue, fieldName) {
@@ -288,6 +301,78 @@ export function registerSwarmCommand(program) {
       }
 
       printSwarmSummary(payload);
+    });
+
+  swarm
+    .command("dashboard")
+    .description("Show or watch runtime swarm dashboard snapshots from artifact streams")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--run-id <id>", "Runtime run id (defaults to latest swarm-runtime run)")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--watch", "Stream dashboard snapshots until completion/idle timeout")
+    .option("--poll-seconds <n>", "Polling interval for --watch", "2")
+    .option("--max-idle-seconds <n>", "Idle timeout for --watch", "20")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+
+      if (!options.watch) {
+        const snapshot = await loadSwarmDashboardSnapshot({
+          targetPath,
+          outputDir: options.outputDir,
+          runId: options.runId,
+          env: process.env,
+        });
+        const payload = {
+          command: "swarm dashboard",
+          mode: "snapshot",
+          ...snapshot,
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        console.log(pc.bold("Swarm dashboard snapshot"));
+        console.log(renderSwarmDashboard(snapshot));
+        return;
+      }
+
+      const streamedSnapshots = [];
+      const watchResult = await watchSwarmDashboard({
+        targetPath,
+        outputDir: options.outputDir,
+        runId: options.runId,
+        pollSeconds: parsePollSeconds(options.pollSeconds, "poll-seconds"),
+        maxIdleSeconds: parsePollSeconds(options.maxIdleSeconds, "max-idle-seconds"),
+        env: process.env,
+        onSnapshot: async (snapshot) => {
+          streamedSnapshots.push(snapshot);
+          if (!emitJson) {
+            console.log("");
+            console.log(pc.bold(`Swarm dashboard update @ ${snapshot.generatedAt}`));
+            console.log(renderSwarmDashboard(snapshot));
+          }
+        },
+      });
+
+      const payload = {
+        command: "swarm dashboard",
+        mode: "watch",
+        snapshotCount: streamedSnapshots.length,
+        stopReason: watchResult.stopReason,
+        finalSnapshot: watchResult.finalSnapshot,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log("");
+      console.log(pc.bold("Swarm dashboard watch complete"));
+      console.log(pc.gray(`Snapshots: ${payload.snapshotCount}`));
+      console.log(pc.gray(`Stop reason: ${payload.stopReason}`));
     });
 
   swarm
