@@ -341,6 +341,20 @@ Machine-readable output:
 
 Dashboard data includes per-agent status rows, usage counters, stop class, and recent timeline events.
 
+## Swarm execution report (Phase 12.5 slice)
+
+You can package runtime artifacts into a deterministic execution report bundle:
+
+- `sl swarm report --run-id <runtime-run-id>`
+- `sl swarm report --json`
+
+Report artifacts:
+
+- `.sentinelayer/swarms/<runtime-run-id>/runtime/SWARM_EXECUTION_REPORT.json`
+- `.sentinelayer/swarms/<runtime-run-id>/runtime/SWARM_EXECUTION_REPORT.md`
+
+The report links runtime usage, stop class, per-agent status summary, recent events, and plan/runtime artifact paths.
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:

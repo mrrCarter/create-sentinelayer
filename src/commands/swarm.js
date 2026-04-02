@@ -11,6 +11,7 @@ import {
   renderSwarmDashboard,
   watchSwarmDashboard,
 } from "../swarm/dashboard.js";
+import { buildSwarmExecutionReport } from "../swarm/report.js";
 import {
   parseScenarioFile,
   renderScenarioTemplate,
@@ -373,6 +374,55 @@ export function registerSwarmCommand(program) {
       console.log(pc.bold("Swarm dashboard watch complete"));
       console.log(pc.gray(`Snapshots: ${payload.snapshotCount}`));
       console.log(pc.gray(`Stop reason: ${payload.stopReason}`));
+    });
+
+  swarm
+    .command("report")
+    .description("Build deterministic swarm execution report bundle from runtime artifacts")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--run-id <id>", "Runtime run id (defaults to latest swarm-runtime run)")
+    .option("--plan-file <path>", "Optional explicit SWARM_PLAN.json path")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const report = await buildSwarmExecutionReport({
+        targetPath,
+        outputDir: options.outputDir,
+        runId: options.runId,
+        planFile: options.planFile,
+        env: process.env,
+      });
+      const payload = {
+        command: "swarm report",
+        runtimeRunId: report.runtimeRunId,
+        planRunId: report.planRunId,
+        scenario: report.scenario,
+        completed: report.completed,
+        stop: report.stop,
+        usage: report.usage,
+        eventCount: report.eventCount,
+        agentSummary: report.agentSummary,
+        reportJsonPath: report.reportJsonPath,
+        reportMarkdownPath: report.reportMarkdownPath,
+        runtimeJsonPath: report.runtimeJsonPath,
+        runtimeEventsPath: report.runtimeEventsPath,
+        planJsonPath: report.planJsonPath,
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("Swarm execution report generated"));
+      console.log(pc.gray(`Runtime run: ${payload.runtimeRunId}`));
+      console.log(pc.gray(`Report JSON: ${payload.reportJsonPath}`));
+      console.log(pc.gray(`Report Markdown: ${payload.reportMarkdownPath}`));
+      console.log(
+        `Usage: output_tokens=${payload.usage.outputTokens || 0} tool_calls=${payload.usage.toolCalls || 0} duration_ms=${payload.usage.durationMs || 0} cost_usd=${payload.usage.costUsd || 0}`
+      );
     });
 
   swarm

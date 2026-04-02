@@ -2825,6 +2825,38 @@ test("CLI swarm dashboard snapshot/watch reads runtime artifacts in realtime mod
   }
 });
 
+test("CLI swarm report builds deterministic execution report from runtime artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-report-"));
+  try {
+    const runResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["swarm", "run", "--path", tempRoot, "--agents", "security,testing", "--max-steps", "8", "--json"],
+    });
+    assert.equal(runResult.code, 0, runResult.stderr || runResult.stdout);
+    const runPayload = JSON.parse(String(runResult.stdout || "").trim());
+
+    const reportResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["swarm", "report", "--path", tempRoot, "--run-id", runPayload.runtimeRunId, "--json"],
+    });
+    assert.equal(reportResult.code, 0, reportResult.stderr || reportResult.stdout);
+    const payload = JSON.parse(String(reportResult.stdout || "").trim());
+    assert.equal(payload.command, "swarm report");
+    assert.equal(payload.runtimeRunId, runPayload.runtimeRunId);
+    assert.match(String(payload.reportJsonPath || ""), /[\\/]SWARM_EXECUTION_REPORT\.json$/);
+    assert.match(String(payload.reportMarkdownPath || ""), /[\\/]SWARM_EXECUTION_REPORT\.md$/);
+    assert.equal(payload.completed, true);
+
+    const report = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
+    assert.equal(report.runtimeRunId, runPayload.runtimeRunId);
+    assert.equal(Array.isArray(report.agentRows), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
   try {
