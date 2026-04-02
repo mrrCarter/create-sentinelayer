@@ -53,19 +53,20 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
             --jq '.[0].head.sha' 2>/dev/null || true)"
 
+          security_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Security Scan")"
+          if [[ "${security_on_sha}" != "success" ]]; then
+            echo "::error::Security Scan is not successful for commit ${GITHUB_SHA}. Found conclusion='${security_on_sha:-missing}'."
+            exit 1
+          fi
+
+          omar_sha="${GITHUB_SHA}"
           if [[ -n "${pr_head_sha}" && "${pr_head_sha}" != "null" ]]; then
-            omar_conclusion="$(read_check_conclusion "${pr_head_sha}" "Omar Gate")"
-            if [[ "${omar_conclusion}" != "success" ]]; then
-              echo "::error::Omar Gate is not successful for PR head commit ${pr_head_sha}. Found conclusion='${omar_conclusion:-missing}'."
-              exit 1
-            fi
-          else
-            omar_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Omar Gate")"
-            security_on_sha="$(read_check_conclusion "${GITHUB_SHA}" "Security Scan")"
-            if [[ "${omar_on_sha}" != "success" && "${security_on_sha}" != "success" ]]; then
-              echo "::error::Direct-main release-please requires Omar Gate or Security Scan success on ${GITHUB_SHA}. Found Omar='${omar_on_sha:-missing}', Security='${security_on_sha:-missing}'."
-              exit 1
-            fi
+            omar_sha="${pr_head_sha}"
+          fi
+          omar_conclusion="$(read_check_conclusion "${omar_sha}" "Omar Gate")"
+          if [[ "${omar_conclusion}" != "success" ]]; then
+            echo "::error::Omar Gate is not successful for commit ${omar_sha}. Found conclusion='${omar_conclusion:-missing}'."
+            exit 1
           fi
 
       - name: Run release-please

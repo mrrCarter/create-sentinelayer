@@ -133,8 +133,20 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [syntax-matrix]
     steps:
-      - name: Confirm lint stage
-        run: echo "Lint stage passed."
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run lint/static syntax gate
+        run: npm run check
 
   test_gate:
     name: Test Stage Gate
@@ -168,17 +180,37 @@ jobs:
           node-version: "20"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build release tarball artifact
+      - name: Build reproducible release tarball artifact
         shell: bash
         run: |
           set -euo pipefail
-          npm pack
-          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
-          test -n "${TARBALL}" || (echo "Missing packed tarball" && exit 1)
-          sha256sum "${TARBALL}" | tee release-sha256.txt
+          build_once() {
+            local workspace="$1"
+            git archive --format=tar HEAD | tar -xf - -C "${workspace}"
+            (
+              cd "${workspace}"
+              npm ci --ignore-scripts
+              npm pack >/dev/null
+            )
+            ls -1 "${workspace}"/create-sentinelayer-*.tgz | head -n 1
+          }
+
+          work_a="$(mktemp -d)"
+          work_b="$(mktemp -d)"
+          tarball_a="$(build_once "${work_a}")"
+          tarball_b="$(build_once "${work_b}")"
+
+          digest_a="$(sha256sum "${tarball_a}" | awk '{print $1}')"
+          digest_b="$(sha256sum "${tarball_b}" | awk '{print $1}')"
+
+          if [[ "${digest_a}" != "${digest_b}" ]]; then
+            echo "::error::Reproducibility check failed: tarball digests differ (${digest_a} != ${digest_b})."
+            exit 1
+          fi
+
+          tarball_name="$(basename "${tarball_a}")"
+          cp "${tarball_a}" "./${tarball_name}"
+          printf '%s  %s\n' "${digest_a}" "${tarball_name}" > release-sha256.txt
           echo "${GITHUB_SHA}" > release-commit-sha.txt
 
       - name: Upload release tarball artifact

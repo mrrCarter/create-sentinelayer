@@ -260,12 +260,12 @@ export async function requestJson(
       return json;
     } catch (error) {
       const normalizedError = normalizeUnknownError(error);
+      registerCircuitFailure(circuitScope);
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
         await sleep(getRetryDelayMs(attemptIndex, retryBackoffMs, normalizedError.retryAfterMs));
         continue;
       }
 
-      registerCircuitFailure(circuitScope);
       throw normalizedError;
     } finally {
       clearTimeout(timeout);
@@ -273,7 +273,6 @@ export async function requestJson(
     }
   }
 
-  registerCircuitFailure(circuitScope);
   throw new SentinelayerApiError("Request failed after retry attempts.", {
     status: 503,
     code: "MAX_RETRIES_EXHAUSTED",

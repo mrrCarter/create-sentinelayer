@@ -51,6 +51,24 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Enforce manual invocation allowlist
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          ALLOWED_OMAR_DISPATCH_ACTORS: "mrrCarter"
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Manual Omar Gate dispatch is allowed only on refs/heads/main. Received '${GITHUB_REF}'."
+            exit 1
+          fi
+          case ",${ALLOWED_OMAR_DISPATCH_ACTORS}," in
+            *",${GITHUB_ACTOR},"*) ;;
+            *)
+              echo "::error::Actor '${GITHUB_ACTOR}' is not allowlisted for manual Omar Gate dispatch."
+              exit 1
+              ;;
+          esac
       - name: Validate Sentinelayer token secret
         shell: bash
         env:
