@@ -536,6 +536,27 @@ Lineage artifacts:
 - `.sentinelayer/observability/error-daemon/lineage/lineage-index.json`
 - `.sentinelayer/observability/error-daemon/lineage/lineage-events.ndjson`
 
+## Hybrid mapping overlay (Phase 13.7 slice)
+
+Daemon hybrid mapping commands now combine deterministic signal routing with on-demand import-graph expansion and semantic scoring:
+
+- `sl daemon map scope <work-item-id> --max-files 40 --graph-depth 2 --json`
+- `sl daemon map list --work-item-id <work-item-id> --json`
+- `sl daemon map show <work-item-id> --json`
+
+Hybrid scope map output includes:
+
+- deterministic seed files from endpoint/error/service token matches
+- import-graph overlay (`graphDepth`) from seed files
+- semantic scoring from endpoint/signal token matches in file content
+- ranked scoped file set with per-file reasons (`deterministic_path_match`, `semantic_content_match`, `import_graph_distance`)
+
+Hybrid mapping artifacts:
+
+- `.sentinelayer/observability/error-daemon/mapping/hybrid-map-index.json`
+- `.sentinelayer/observability/error-daemon/mapping/hybrid-map-events.ndjson`
+- `.sentinelayer/observability/error-daemon/mapping/runs/hybrid-map-*.json`
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
@@ -862,6 +883,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `create-sentinelayer daemon budget check|status` enforces budget warning/quarantine/kill governance with reproducible artifacts
 - `create-sentinelayer daemon control|snapshot|stop` provides operator roster snapshots and explicit confirmed stop controls
 - `create-sentinelayer daemon lineage build|list|show` indexes reproducible work-item artifact lineage across queue/assignment/jira/budget/operator runs
+- `create-sentinelayer daemon map scope|list|show` builds hybrid deterministic+semantic impact scopes with import-graph overlay for daemon work items
 - `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)

@@ -73,3 +73,4 @@
 - Budget enforcement is safer as a two-stage control (`HARD_LIMIT_QUARANTINED` then `HARD_LIMIT_SQUASHED` after a grace window) so operators can inspect/override before deterministic kill while still guaranteeing bounded runtime.
 - Operator kill-switch actions should be explicit and auditable: require `--confirm`, persist a dedicated operator event stream, and mirror queue+assignment status updates so dashboard state and enforcement state cannot drift.
 - Reproducibility artifacts become operationally useful only after indexing cross-file linkage (`loopRunId`, `jiraIssueKey`, budget state, operator snapshots) into a single lineage index keyed by `workItemId`.
+- A practical hybrid mapper can stay deterministic-first by seeding from endpoint/error/service path tokens, then constrain semantic expansion to import-graph neighborhoods rather than scanning the entire repository context blindly.

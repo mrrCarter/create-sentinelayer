@@ -3193,6 +3193,142 @@ test("CLI daemon lineage build/list/show produces reproducible artifact linkage 
   }
 });
 
+test("CLI daemon map scope/list/show builds hybrid deterministic+semantic impact map", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-map-e2e-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "routes"), { recursive: true });
+    await mkdir(path.join(tempRoot, "src", "services"), { recursive: true });
+    await mkdir(path.join(tempRoot, "src", "graph"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({ name: "daemon-map-e2e", version: "0.0.1", type: "module" }, null, 2),
+      "utf-8"
+    );
+    await writeFile(
+      path.join(tempRoot, "src", "routes", "runtime-runs.js"),
+      [
+        "import { runRuntimeScan } from \"../services/runtime-service.js\";",
+        "export function registerRuntimeRoutes(app) {",
+        "  app.get(\"/v1/runtime/runs\", runRuntimeScan);",
+        "}",
+      ].join("\n"),
+      "utf-8"
+    );
+    await writeFile(
+      path.join(tempRoot, "src", "services", "runtime-service.js"),
+      [
+        "import { buildSemanticOverlay } from \"../graph/semantic-map.js\";",
+        "export function runRuntimeScan(req, res) {",
+        "  const overlay = buildSemanticOverlay(req.path || \"/v1/runtime/runs\");",
+        "  res.json({ ok: true, overlay });",
+        "}",
+      ].join("\n"),
+      "utf-8"
+    );
+    await writeFile(
+      path.join(tempRoot, "src", "graph", "semantic-map.js"),
+      [
+        "export function buildSemanticOverlay(endpoint) {",
+        "  return `${endpoint}:semantic`;",
+        "}",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const record = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "error",
+        "record",
+        "--path",
+        tempRoot,
+        "--service",
+        "sentinelayer-api",
+        "--endpoint",
+        "/v1/runtime/runs",
+        "--error-code",
+        "RUNTIME_TIMEOUT",
+        "--severity",
+        "P1",
+        "--message",
+        "Runtime timeout",
+        "--json",
+      ],
+    });
+    assert.equal(record.code, 0, record.stderr || record.stdout);
+
+    const worker = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "worker", "--path", tempRoot, "--json"],
+    });
+    assert.equal(worker.code, 0, worker.stderr || worker.stdout);
+
+    const queue = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "error", "queue", "--path", tempRoot, "--json"],
+    });
+    assert.equal(queue.code, 0, queue.stderr || queue.stdout);
+    const queuePayload = JSON.parse(String(queue.stdout || "").trim());
+    const workItemId = String(queuePayload.items[0]?.workItemId || "");
+    assert.equal(workItemId.length > 0, true);
+
+    const mapScope = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "map",
+        "scope",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--max-files",
+        "8",
+        "--graph-depth",
+        "2",
+        "--json",
+      ],
+    });
+    assert.equal(mapScope.code, 0, mapScope.stderr || mapScope.stdout);
+    const mapScopePayload = JSON.parse(String(mapScope.stdout || "").trim());
+    assert.equal(mapScopePayload.command, "daemon map scope");
+    assert.equal(mapScopePayload.workItem.workItemId, workItemId);
+    assert.equal(mapScopePayload.summary.scopedFileCount > 0, true);
+    assert.equal(
+      mapScopePayload.scopedFiles.some((file) => file.path === "src/routes/runtime-runs.js"),
+      true
+    );
+
+    const mapShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "map", "show", workItemId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(mapShow.code, 0, mapShow.stderr || mapShow.stdout);
+    const mapShowPayload = JSON.parse(String(mapShow.stdout || "").trim());
+    assert.equal(mapShowPayload.command, "daemon map show");
+    assert.equal(mapShowPayload.payload.workItem.workItemId, workItemId);
+    assert.equal(Array.isArray(mapShowPayload.payload.scopedFiles), true);
+
+    const mapList = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "map", "list", "--path", tempRoot, "--work-item-id", workItemId, "--json"],
+    });
+    assert.equal(mapList.code, 0, mapList.stderr || mapList.stdout);
+    const mapListPayload = JSON.parse(String(mapList.stdout || "").trim());
+    assert.equal(mapListPayload.command, "daemon map list");
+    assert.equal(mapListPayload.visibleCount, 1);
+    assert.equal(mapListPayload.maps[0].workItemId, workItemId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI watch history lists persisted runtime watch summaries deterministically", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-watch-history-"));
   try {
