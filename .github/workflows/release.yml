@@ -190,7 +190,7 @@ jobs:
 
   omar_release_gate:
     name: Omar Release Gate
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -239,7 +239,7 @@ jobs:
 
   publish:
     name: Publish To npm
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: [verify, omar_release_gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -5,14 +5,13 @@ export const DEFAULT_REQUEST_MAX_ATTEMPTS = 3;
 export const DEFAULT_REQUEST_RETRY_BACKOFF_MS = 250;
 const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
+const CIRCUIT_BREAKER_STALE_WINDOW_MS = CIRCUIT_BREAKER_COOLDOWN_MS * 4;
+const MAX_CIRCUIT_BREAKER_BUCKETS = 64;
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRY_AFTER_DELAY_MS = 15_000;
 
-const circuitBreakerState = {
-  consecutiveFailures: 0,
-  openedAtEpochMs: 0,
-};
+const circuitBreakerStates = new Map();
 
 function normalizeApiError(errorPayload = {}) {
   if (!errorPayload || typeof errorPayload !== "object" || Array.isArray(errorPayload)) {
@@ -67,32 +66,91 @@ function normalizeUnknownError(error) {
   );
 }
 
-function resetCircuitBreaker() {
-  circuitBreakerState.consecutiveFailures = 0;
-  circuitBreakerState.openedAtEpochMs = 0;
+function resolveCircuitBreakerScope(url) {
+  try {
+    return new URL(String(url)).origin;
+  } catch {
+    return "global";
+  }
+}
+
+function createCircuitBreakerState(nowEpochMs = Date.now()) {
+  return {
+    consecutiveFailures: 0,
+    openedAtEpochMs: 0,
+    touchedAtEpochMs: nowEpochMs,
+  };
+}
+
+function getCircuitBreakerState(scope, nowEpochMs = Date.now()) {
+  const normalizedScope = String(scope || "global");
+  const existing = circuitBreakerStates.get(normalizedScope);
+  if (existing) {
+    existing.touchedAtEpochMs = nowEpochMs;
+    return existing;
+  }
+  const created = createCircuitBreakerState(nowEpochMs);
+  circuitBreakerStates.set(normalizedScope, created);
+  return created;
+}
+
+function pruneCircuitBreakerStates(nowEpochMs = Date.now()) {
+  for (const [scope, state] of circuitBreakerStates.entries()) {
+    if (nowEpochMs - Number(state.touchedAtEpochMs || 0) > CIRCUIT_BREAKER_STALE_WINDOW_MS) {
+      circuitBreakerStates.delete(scope);
+    }
+  }
+  if (circuitBreakerStates.size <= MAX_CIRCUIT_BREAKER_BUCKETS) {
+    return;
+  }
+  const entries = Array.from(circuitBreakerStates.entries()).sort(
+    (a, b) => Number(a[1].touchedAtEpochMs || 0) - Number(b[1].touchedAtEpochMs || 0)
+  );
+  for (const [scope] of entries) {
+    circuitBreakerStates.delete(scope);
+    if (circuitBreakerStates.size <= MAX_CIRCUIT_BREAKER_BUCKETS) {
+      break;
+    }
+  }
+}
+
+function resetCircuitBreaker(scope = null, nowEpochMs = Date.now()) {
+  if (!scope) {
+    circuitBreakerStates.clear();
+    return;
+  }
+  const state = getCircuitBreakerState(scope, nowEpochMs);
+  state.consecutiveFailures = 0;
+  state.openedAtEpochMs = 0;
+  state.touchedAtEpochMs = nowEpochMs;
+  pruneCircuitBreakerStates(nowEpochMs);
 }
 
 export function __resetAuthHttpCircuitBreakerForTests() {
   resetCircuitBreaker();
 }
 
-function registerCircuitFailure(nowEpochMs = Date.now()) {
-  circuitBreakerState.consecutiveFailures += 1;
+function registerCircuitFailure(scope, nowEpochMs = Date.now()) {
+  const state = getCircuitBreakerState(scope, nowEpochMs);
+  state.consecutiveFailures += 1;
+  state.touchedAtEpochMs = nowEpochMs;
   if (
-    circuitBreakerState.consecutiveFailures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD &&
-    !circuitBreakerState.openedAtEpochMs
+    state.consecutiveFailures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD &&
+    !state.openedAtEpochMs
   ) {
-    circuitBreakerState.openedAtEpochMs = nowEpochMs;
+    state.openedAtEpochMs = nowEpochMs;
   }
+  pruneCircuitBreakerStates(nowEpochMs);
 }
 
-function isCircuitOpen(nowEpochMs = Date.now()) {
-  if (!circuitBreakerState.openedAtEpochMs) {
+function isCircuitOpen(scope, nowEpochMs = Date.now()) {
+  const state = getCircuitBreakerState(scope, nowEpochMs);
+  if (!state.openedAtEpochMs) {
     return false;
   }
-  const elapsedMs = nowEpochMs - circuitBreakerState.openedAtEpochMs;
+  const elapsedMs = nowEpochMs - state.openedAtEpochMs;
   if (elapsedMs >= CIRCUIT_BREAKER_COOLDOWN_MS) {
-    resetCircuitBreaker();
+    resetCircuitBreaker(scope, nowEpochMs);
     return false;
   }
   return true;
@@ -148,7 +206,8 @@ export async function requestJson(
     fetchImpl = fetch,
   } = {}
 ) {
-  if (isCircuitOpen()) {
+  const circuitScope = resolveCircuitBreakerScope(url);
+  if (isCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Upstream circuit breaker is open. Retry after cooldown.", {
       status: 503,
       code: "CIRCUIT_OPEN",
@@ -197,7 +256,7 @@ export async function requestJson(
         });
       }
 
-      resetCircuitBreaker();
+      resetCircuitBreaker(circuitScope);
       return json;
     } catch (error) {
       const normalizedError = normalizeUnknownError(error);
@@ -206,7 +265,7 @@ export async function requestJson(
         continue;
       }
 
-      registerCircuitFailure();
+      registerCircuitFailure(circuitScope);
       throw normalizedError;
     } finally {
       clearTimeout(timeout);
@@ -214,7 +273,7 @@ export async function requestJson(
     }
   }
 
-  registerCircuitFailure();
+  registerCircuitFailure(circuitScope);
   throw new SentinelayerApiError("Request failed after retry attempts.", {
     status: 503,
     code: "MAX_RETRIES_EXHAUSTED",

@@ -79,6 +79,22 @@ jobs:
           set -euo pipefail
           echo "Dry-run: npm deprecate create-sentinelayer@${{ steps.metadata.outputs.version }} \"${{ steps.metadata.outputs.message }}\""
 
+      - name: Assert rollback readiness checks
+        if: ${{ steps.metadata.outputs.dry_run == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_version="${{ steps.metadata.outputs.version }}"
+          resolved_version="$(npm view "create-sentinelayer@${expected_version}" version | tr -d '\r' | xargs)"
+          test -n "${resolved_version}" || (echo "Unable to resolve package version in npm registry." && exit 1)
+          if [[ "${resolved_version}" != "${expected_version}" ]]; then
+            echo "::error::Rollback readiness failed: expected version '${expected_version}', registry returned '${resolved_version}'."
+            exit 1
+          fi
+          deprecated_state="$(npm view "create-sentinelayer@${expected_version}" deprecated 2>/dev/null | tr -d '\r' | xargs || true)"
+          echo "Rollback readiness assertion passed for create-sentinelayer@${expected_version}."
+          echo "Current deprecate marker: ${deprecated_state:-<none>}."
+
       - name: Validate NPM token secret
         if: ${{ steps.metadata.outputs.dry_run != 'true' }}
         shell: bash

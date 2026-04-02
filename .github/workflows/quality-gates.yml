@@ -49,7 +49,7 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-22.04
     timeout-minutes: 12
-    needs: [unit-coverage, e2e-packaging]
+    needs: [test_gate]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -128,12 +128,36 @@ jobs:
       - name: Validate package tarball
         run: npm pack --dry-run
 
+  lint_gate:
+    name: Lint Stage Gate
+    runs-on: ubuntu-22.04
+    needs: [syntax-matrix]
+    steps:
+      - name: Confirm lint stage
+        run: echo "Lint stage passed."
+
+  test_gate:
+    name: Test Stage Gate
+    runs-on: ubuntu-22.04
+    needs: [lint_gate, unit-coverage, e2e-packaging]
+    steps:
+      - name: Confirm test stage
+        run: echo "Test stage passed."
+
+  security_gate:
+    name: Security Stage Gate
+    runs-on: ubuntu-22.04
+    needs: [security-scan]
+    steps:
+      - name: Confirm security stage
+        run: echo "Security stage passed."
+
   build-release-artifact:
     name: Build Release Artifact
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [security-scan]
+    needs: [security_gate]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -170,14 +194,13 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [syntax-matrix, security-scan, unit-coverage, e2e-packaging]
+    needs: [lint_gate, test_gate, security_gate]
     if: >-
       ${{
         always() &&
-        needs.syntax-matrix.result == 'success' &&
-        needs.security-scan.result == 'success' &&
-        needs.unit-coverage.result == 'success' &&
-        needs.e2e-packaging.result == 'success'
+        needs.lint_gate.result == 'success' &&
+        needs.test_gate.result == 'success' &&
+        needs.security_gate.result == 'success'
       }}
     steps:
       - name: Confirm all quality gates passed

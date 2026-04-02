@@ -68,6 +68,12 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
+function buildIdempotencyKey(seedValue, scope = "auth") {
+  const normalizedSeed = String(seedValue || "").trim();
+  const normalizedScope = String(scope || "auth").trim().toLowerCase();
+  return crypto.createHash("sha256").update(`${normalizedScope}:${normalizedSeed}`).digest("hex").slice(0, 64);
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -111,9 +117,10 @@ export async function resolveApiUrl({
   return normalizeApiUrl(DEFAULT_API_URL);
 }
 
-async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {
+async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, idempotencyKey = null }) {
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"), {
     method: "POST",
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
     body: {
       challenge,
       ide: String(ide || DEFAULT_IDE_NAME),
@@ -128,6 +135,7 @@ async function pollCliAuthSession({
   challenge,
   timeoutMs,
   pollIntervalSeconds,
+  idempotencyKey = null,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
@@ -136,6 +144,7 @@ async function pollCliAuthSession({
   while (Date.now() < deadline) {
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
       body: {
         session_id: sessionId,
         challenge,
@@ -177,13 +186,17 @@ async function issueApiToken({
   authToken,
   tokenLabel,
   tokenTtlDays,
+  idempotencyKey = null,
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
   );
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/api-tokens"), {
     method: "POST",
-    headers: toAuthHeader(authToken),
+    headers: {
+      ...toAuthHeader(authToken),
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
       scope: "github_app_bridge",
@@ -285,11 +298,13 @@ export async function loginAndPersistSession({
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
   const challenge = generateChallenge();
+  const startIdempotencyKey = buildIdempotencyKey(challenge, "cli-auth-start");
   const session = await startCliAuthSession({
     apiUrl,
     challenge,
     ide,
     cliVersion,
+    idempotencyKey: startIdempotencyKey,
   });
 
   const authorizeUrl = String(session.authorize_url || "").trim();
@@ -309,6 +324,7 @@ export async function loginAndPersistSession({
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
+    idempotencyKey: buildIdempotencyKey(`${String(session.session_id || "").trim()}:${challenge}`, "cli-auth-poll"),
   });
 
   const approvalToken = String(approval.auth_token || "").trim();
@@ -325,6 +341,7 @@ export async function loginAndPersistSession({
     authToken: approvalToken,
     tokenLabel,
     tokenTtlDays,
+    idempotencyKey: buildIdempotencyKey(`${String(session.session_id || "").trim()}:${challenge}`, "cli-auth-issue-token"),
   });
 
   const stored = await writeStoredSession(
