@@ -2763,6 +2763,68 @@ test("CLI swarm scenario init/validate enables scenario-file runtime execution",
   }
 });
 
+test("CLI swarm dashboard snapshot/watch reads runtime artifacts in realtime mode", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-dashboard-"));
+  try {
+    const runResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "run",
+        "--path",
+        tempRoot,
+        "--agents",
+        "security,testing",
+        "--max-steps",
+        "8",
+        "--json",
+      ],
+    });
+    assert.equal(runResult.code, 0, runResult.stderr || runResult.stdout);
+    const runPayload = JSON.parse(String(runResult.stdout || "").trim());
+
+    const snapshotResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["swarm", "dashboard", "--path", tempRoot, "--run-id", runPayload.runtimeRunId, "--json"],
+    });
+    assert.equal(snapshotResult.code, 0, snapshotResult.stderr || snapshotResult.stdout);
+    const snapshotPayload = JSON.parse(String(snapshotResult.stdout || "").trim());
+    assert.equal(snapshotPayload.command, "swarm dashboard");
+    assert.equal(snapshotPayload.mode, "snapshot");
+    assert.equal(snapshotPayload.runId, runPayload.runtimeRunId);
+    assert.equal(Array.isArray(snapshotPayload.agentRows), true);
+    assert.equal(snapshotPayload.agentRows.some((row) => row.agentId === "omar"), true);
+
+    const watchResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "dashboard",
+        "--path",
+        tempRoot,
+        "--run-id",
+        runPayload.runtimeRunId,
+        "--watch",
+        "--poll-seconds",
+        "0.2",
+        "--max-idle-seconds",
+        "1",
+        "--json",
+      ],
+    });
+    assert.equal(watchResult.code, 0, watchResult.stderr || watchResult.stdout);
+    const watchPayload = JSON.parse(String(watchResult.stdout || "").trim());
+    assert.equal(watchPayload.command, "swarm dashboard");
+    assert.equal(watchPayload.mode, "watch");
+    assert.equal(watchPayload.finalSnapshot.runId, runPayload.runtimeRunId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit dry-run orchestrates selected agents and writes report artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-run-"));
   try {

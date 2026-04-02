@@ -327,6 +327,20 @@ DSL commands:
 - `action wait <ms>`
 - `action screenshot "<relative-path>"`
 
+## Realtime swarm dashboard (Phase 12.4 slice)
+
+The CLI now supports runtime swarm dashboard snapshots and watch streaming:
+
+- `sl swarm dashboard --run-id <runtime-run-id>`
+- `sl swarm dashboard --watch --run-id <runtime-run-id> --poll-seconds 2 --max-idle-seconds 20`
+
+Machine-readable output:
+
+- `sl swarm dashboard --json`
+- `sl swarm dashboard --watch --json`
+
+Dashboard data includes per-agent status rows, usage counters, stop class, and recent timeline events.
+
 ## MCP registry schema foundation (Phase 6 foundation slice)
 
 The CLI now includes deterministic MCP registry commands:
