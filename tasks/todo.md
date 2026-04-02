@@ -48,7 +48,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch H PR 12.2 foundation slice (`sl swarm run` governed runtime loop + optional Playwright adapter).
 - [x] Complete Batch H PR 12.3 foundation slice (`sl swarm scenario init|validate` DSL contract + runtime binding).
 - [x] Complete Batch H PR 12.4 foundation slice (`sl swarm dashboard` realtime swarm status snapshots + watch loop).
-- [ ] Start Batch H PR 12.5 foundation slice (`sl swarm report` deterministic execution package).
+- [x] Complete Batch H PR 12.5 foundation slice (`sl swarm report` deterministic execution package).
+- [ ] Start Batch H PR 12.6 security slice (`sl swarm create` pen-test mode + target policy gate + audit log/report bundle).
 - [x] Complete Batch F PR 9.1 extension slice (`review scan --mode full|diff` deterministic local reviewer workflow).
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
@@ -137,8 +138,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 12.2 Playwright agent runtime. (merged as #81)
 - PR 12.3 scenario DSL. (merged as #82)
 - PR 12.4 realtime swarm dashboard. (merged as #83)
-- PR 12.5 swarm execution report. (in progress on `roadmap/pr-12-5-swarm-execution-report`)
-- PR 12.6-12.7 QA swarm security mode + identity hardening.
+- PR 12.5 swarm execution report. (merged as #84)
+- PR 12.6 security & pen-test mode. (in progress on `roadmap/pr-12-6-security-pentest-mode`)
+- PR 12.7 swarm identity hardening.
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
 - [ ] Phase 2: add low-latency interactive chat mode with streaming progress UX (AWS/GH CLI style) while preserving deterministic command mode.
@@ -182,18 +184,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-12-5-swarm-execution-report` (current)
-2. `roadmap/pr-12-6-security-pentest-mode`
-3. `roadmap/pr-12-7-swarm-identity-hardening`
-4. `roadmap/pr-13-1-error-event-daemon-worker`
-5. `roadmap/pr-13-2-global-assignment-ledger`
-6. `roadmap/pr-13-3-jira-lifecycle-automation`
-7. `roadmap/pr-13-4-runtime-budget-quarantine`
-8. `roadmap/pr-13-5-operator-control-plane`
-9. `roadmap/pr-13-6-observability-artifact-lineage`
-10. `roadmap/pr-13-7-hybrid-mapping-overlay`
-11. `roadmap/pr-13-8-midnight-reliability-lane`
-12. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
+1. `roadmap/pr-12-6-security-pentest-mode` (current)
+2. `roadmap/pr-12-7-swarm-identity-hardening`
+3. `roadmap/pr-13-1-error-event-daemon-worker`
+4. `roadmap/pr-13-2-global-assignment-ledger`
+5. `roadmap/pr-13-3-jira-lifecycle-automation`
+6. `roadmap/pr-13-4-runtime-budget-quarantine`
+7. `roadmap/pr-13-5-operator-control-plane`
+8. `roadmap/pr-13-6-observability-artifact-lineage`
+9. `roadmap/pr-13-7-hybrid-mapping-overlay`
+10. `roadmap/pr-13-8-midnight-reliability-lane`
+11. `roadmap/pr-13-9-mcp-aidenid-registry-contract`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.

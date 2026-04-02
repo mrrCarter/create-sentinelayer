@@ -18,6 +18,7 @@ import {
   validateScenarioSpec,
   writeScenarioTemplate,
 } from "../swarm/scenario-dsl.js";
+import { listBuiltinPentestScenarios, runSwarmPentest } from "../swarm/pentest.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -97,6 +98,19 @@ function printRuntimeSummary(payload = {}) {
   );
 }
 
+function printPentestSummary(payload = {}) {
+  console.log(pc.bold("Swarm pen-test complete"));
+  console.log(pc.gray(`Run: ${payload.runId}`));
+  console.log(pc.gray(`Report JSON: ${payload.reportJsonPath}`));
+  console.log(pc.gray(`Report Markdown: ${payload.reportMarkdownPath}`));
+  console.log(pc.gray(`Audit log: ${payload.auditLogPath}`));
+  console.log(`Target: ${payload.target.url} (${payload.target.targetId})`);
+  console.log(`Scenario: ${payload.scenarioId}`);
+  console.log(
+    `Findings: P0=${payload.summary.P0} P1=${payload.summary.P1} P2=${payload.summary.P2} P3=${payload.summary.P3}`
+  );
+}
+
 export function registerSwarmCommand(program) {
   const swarm = program
     .command("swarm")
@@ -129,6 +143,71 @@ export function registerSwarmCommand(program) {
       console.log(pc.gray(`Source: ${registry.registrySource}`));
       for (const agent of registry.agents) {
         console.log(`- ${agent.id} (${agent.persona}) :: ${agent.domain} [${agent.role}]`);
+      }
+    });
+
+  swarm
+    .command("create")
+    .description("Create a governed swarm run (Phase 12.6 pen-test mode)")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--scenario <id>", "Scenario identifier (`pen-test` or built-in pen-test scenario)", "pen-test")
+    .option(
+      "--pen-test-scenario <id>",
+      "Built-in pen-test scenario when --scenario pen-test",
+      "auth-bypass"
+    )
+    .option("--target <url>", "Target URL to test")
+    .option("--target-id <id>", "Approved AIdenID target id")
+    .option("--execute", "Execute live HTTP probes (default is dry-run logging)")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      if (!normalizeString(options.target)) {
+        throw new Error("--target is required.");
+      }
+      if (!normalizeString(options.targetId)) {
+        throw new Error("--target-id is required.");
+      }
+
+      const report = await runSwarmPentest({
+        targetPath,
+        outputDir: options.outputDir,
+        targetId: options.targetId,
+        targetUrl: options.target,
+        scenario: options.scenario,
+        pentestScenario: options.penTestScenario,
+        execute: Boolean(options.execute),
+        env: process.env,
+      });
+
+      const payload = {
+        command: "swarm create",
+        mode: "pen-test",
+        runId: report.runId,
+        scenario: report.scenario,
+        scenarioId: report.scenarioId,
+        execute: report.execute,
+        target: report.target,
+        summary: report.summary,
+        checkCount: report.checkCount,
+        requestCount: report.requestCount,
+        reportJsonPath: report.reportJsonPath,
+        reportMarkdownPath: report.reportMarkdownPath,
+        auditLogPath: report.auditLogPath,
+        requestPlanPath: report.requestPlanPath,
+        supportedPentestScenarios: listBuiltinPentestScenarios().map((item) => item.id),
+      };
+
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        printPentestSummary(payload);
+      }
+
+      if (report.summary.blocking) {
+        process.exitCode = 2;
       }
     });
 
