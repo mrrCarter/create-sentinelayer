@@ -71,6 +71,10 @@ function isTruthy(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function fileTokenStorageAllowed() {
+  return isTruthy(process.env.SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE);
+}
+
 function resolveMachineBindingKeyPath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
   return path.join(resolvedHome, ".sentinelayer", MACHINE_BINDING_KEY_FILENAME);
@@ -375,6 +379,11 @@ export async function writeStoredSession(
     nextMetadata.tokenSalt = null;
     nextMetadata.token = null;
   } else {
+    if (!fileTokenStorageAllowed()) {
+      throw new Error(
+        "OS keyring is unavailable. Set SENTINELAYER_ALLOW_FILE_TOKEN_STORAGE=true only for explicit local fallback."
+      );
+    }
     const encryptedToken = encryptFileToken({
       token: normalizedToken,
       apiUrl: normalizedApiUrl,

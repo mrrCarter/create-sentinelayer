@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish to npm (requires NPM_TOKEN and environment approval)"
+        description: "Publish to npm after protected-environment approval"
         required: false
         default: false
         type: boolean
@@ -29,7 +29,6 @@ jobs:
     name: Quality Preflight
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    environment: release-approval
     outputs:
       quality_run_id: ${{ steps.preflight.outputs.quality_run_id }}
       release_artifact_name: ${{ steps.preflight.outputs.release_artifact_name }}

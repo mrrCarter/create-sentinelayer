@@ -216,7 +216,33 @@ jobs:
             git archive --format=tar HEAD | tar -xf - -C "${workspace}"
             (
               cd "${workspace}"
-              npm ci --ignore-scripts
+              expected_registry="https://registry.npmjs.org/"
+              resolved_registry="$(npm config get registry | tr -d '\r' | xargs)"
+              if [[ "${resolved_registry}" != "${expected_registry}" ]]; then
+                echo "::error::Unexpected npm registry '${resolved_registry}'. Expected '${expected_registry}'."
+                exit 1
+              fi
+              node - <<'NODE'
+              const fs = require("node:fs");
+              const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+              const packages = lock && typeof lock === "object" ? lock.packages || {} : {};
+              const missingIntegrity = [];
+              for (const [pkgPath, meta] of Object.entries(packages)) {
+                if (pkgPath === "" || !meta || typeof meta !== "object") {
+                  continue;
+                }
+                if (meta.resolved && !meta.integrity) {
+                  missingIntegrity.push(pkgPath);
+                }
+              }
+              if (missingIntegrity.length > 0) {
+                console.error(
+                  `Missing package-lock integrity for ${missingIntegrity.length} entries (example: ${missingIntegrity[0]}).`
+                );
+                process.exit(1);
+              }
+              NODE
+              npm ci --ignore-scripts --prefer-offline=false
               npm pack >/dev/null
             )
             ls -1 "${workspace}"/create-sentinelayer-*.tgz | head -n 1
