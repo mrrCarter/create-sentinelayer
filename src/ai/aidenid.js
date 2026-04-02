@@ -901,3 +901,45 @@ export async function getTarget({
     requestHeaders,
   };
 }
+
+export async function createTemporarySite({
+  apiUrl,
+  apiKey,
+  orgId,
+  projectId,
+  idempotencyKey,
+  payload,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl must be a function.");
+  }
+
+  const normalizedApiUrl = normalizeApiUrl(apiUrl);
+  const requestHeaders = buildProvisionHeaders({
+    apiKey,
+    orgId,
+    projectId,
+    idempotencyKey,
+  });
+
+  const response = await fetchImpl(`${normalizedApiUrl}/v1/sites`, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify(payload || {}),
+  });
+
+  if (!response.ok) {
+    const details = await parseErrorBody(response);
+    throw new Error(
+      `AIdenID site create request failed with status ${response.status}${details ? `: ${details}` : ""}`
+    );
+  }
+
+  const body = await response.json();
+  return {
+    apiUrl: normalizedApiUrl,
+    response: body,
+    requestHeaders,
+  };
+}

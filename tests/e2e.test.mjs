@@ -164,6 +164,7 @@ async function startAidenIdMockApi({
     revokeChildrenCount: 0,
     domainCreateCount: 0,
     targetCreateCount: 0,
+    siteCreateCount: 0,
     latestExtractionPollCount: 0,
     lastHeaders: {},
     lastPayload: null,
@@ -178,6 +179,7 @@ async function startAidenIdMockApi({
     childIdentities: [],
     domains: [],
     targets: [],
+    sites: [],
   };
 
   const server = createServer(async (req, res) => {
@@ -491,6 +493,41 @@ async function startAidenIdMockApi({
           return jsonResponse(res, 404, { error: { code: "NOT_FOUND", message: "Target not found" } });
         }
         return jsonResponse(res, 200, target);
+      }
+
+      if (req.method === "POST" && pathname === "/v1/sites") {
+        state.siteCreateCount += 1;
+        state.lastHeaders = { ...req.headers };
+        const payload = await readJsonBody(req);
+        const siteId = `site_${state.siteCreateCount}`;
+        const domain = state.domains.find((item) => item.id === String(payload?.domainId || "").trim()) || null;
+        const domainName = String(domain?.domainName || "domain.local");
+        const subdomainPrefix = String(payload?.subdomainPrefix || "cb");
+        const callbackPath = String(payload?.callbackPath || "/callback");
+        const host = `${subdomainPrefix}.${domainName}`;
+        const site = {
+          id: siteId,
+          projectId: "proj_test",
+          identityId: String(payload?.identityId || ""),
+          domainId: String(payload?.domainId || ""),
+          host,
+          callbackPath,
+          callbackUrl: `https://${host}${callbackPath}`,
+          status: "ACTIVE",
+          dnsCleanupStatus: "PENDING",
+          dnsCleanupContract:
+            payload?.dnsCleanupContract && typeof payload.dnsCleanupContract === "object"
+              ? payload.dnsCleanupContract
+              : {},
+          expiresAt: "2026-05-02T00:00:00.000Z",
+          teardownReason: null,
+          teardownAt: null,
+          metadata: payload?.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-01T00:00:00.000Z",
+        };
+        state.sites.push(site);
+        return jsonResponse(res, 200, site);
       }
 
       return jsonResponse(res, 404, {
@@ -3424,6 +3461,115 @@ test("CLI ai identity domain/target governance commands manage proofs and regist
     assert.equal(freezeDomainPayload.domain.freezeStatus, "FROZEN");
     assert.equal(mock.state.lastDomainId, domainId);
     assert.equal(mock.state.lastTargetId, targetId);
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai identity site create/list manages temporary callback domains", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
+  const mock = await startAidenIdMockApi();
+  try {
+    const provision = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "provision-email",
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(provision.code, 0, provision.stderr || provision.stdout);
+    const provisionPayload = JSON.parse(String(provision.stdout || "").trim());
+    const identityId = String(provisionPayload.identity?.id || "");
+    assert.equal(identityId.length > 0, true);
+
+    const createDomain = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "domain",
+        "create",
+        "site.customer.local",
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(createDomain.code, 0, createDomain.stderr || createDomain.stdout);
+    const createDomainPayload = JSON.parse(String(createDomain.stdout || "").trim());
+    const domainId = String(createDomainPayload.domain?.id || "");
+    assert.equal(domainId.length > 0, true);
+
+    const createSite = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "site",
+        "create",
+        identityId,
+        "--path",
+        tempRoot,
+        "--api-url",
+        mock.apiUrl,
+        "--api-key",
+        "k_test",
+        "--org-id",
+        "org_test",
+        "--project-id",
+        "proj_test",
+        "--domain-id",
+        domainId,
+        "--subdomain-prefix",
+        "cbsuccess",
+        "--callback-path",
+        "/callback/otp",
+        "--ttl-hours",
+        "24",
+        "--execute",
+        "--json",
+      ],
+    });
+    assert.equal(createSite.code, 0, createSite.stderr || createSite.stdout);
+    const createSitePayload = JSON.parse(String(createSite.stdout || "").trim());
+    assert.equal(createSitePayload.command, "ai identity site create");
+    assert.equal(createSitePayload.identityId, identityId);
+    assert.match(String(createSitePayload.site.callbackUrl || ""), /^https:\/\/cbsuccess\./);
+    assert.equal(mock.state.siteCreateCount, 1);
+
+    const listSitesResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["ai", "identity", "site", "list", "--path", tempRoot, "--identity-id", identityId, "--json"],
+    });
+    assert.equal(listSitesResult.code, 0, listSitesResult.stderr || listSitesResult.stdout);
+    const listSitesPayload = JSON.parse(String(listSitesResult.stdout || "").trim());
+    assert.equal(listSitesPayload.command, "ai identity site list");
+    assert.equal(listSitesPayload.count, 1);
+    assert.equal(listSitesPayload.sites[0].identityId, identityId);
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

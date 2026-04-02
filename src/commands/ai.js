@@ -10,6 +10,7 @@ import {
   buildProvisionEmailPayload,
   createChildIdentity,
   createDomain,
+  createTemporarySite,
   createTarget,
   getLatestIdentityExtraction,
   getIdentityLineage,
@@ -30,6 +31,7 @@ import {
   recordDomainProofResponse,
   recordTargetProofResponse,
 } from "../ai/domain-target-store.js";
+import { listSites, recordTemporarySite } from "../ai/site-store.js";
 import {
   getIdentityById,
   listIdentities,
@@ -339,6 +341,7 @@ export function registerAiCommand(program) {
   const identity = ai.command("identity").description("AIdenID identity lifecycle commands");
   const domain = identity.command("domain").description("AIdenID domain governance commands");
   const target = identity.command("target").description("AIdenID target governance commands");
+  const site = identity.command("site").description("AIdenID temporary callback domain commands");
 
   domain
     .command("create")
@@ -1175,6 +1178,198 @@ export function registerAiCommand(program) {
           execution.response?.verificationStatus || "UNKNOWN"
         )}`
       );
+    });
+
+  site
+    .command("create")
+    .description("Create an ephemeral callback site linked to an identity (dry-run by default)")
+    .argument("<identityId>", "Identity id")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--domain-id <id>", "Domain id used for callback host")
+    .option("--subdomain-prefix <value>", "Subdomain prefix", "cb")
+    .option("--callback-path <value>", "Callback path", "/callback")
+    .option("--ttl-hours <hours>", "Site TTL in hours", "24")
+    .option("--dns-cleanup-contract-json <json>", "JSON cleanup contract", "{}")
+    .option("--metadata-json <json>", "JSON metadata", "{}")
+    .option("--idempotency-key <key>", "Explicit idempotency key override")
+    .option("--execute", "Execute live API call")
+    .option("--json", "Emit machine-readable output")
+    .action(async (identityId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const idempotencyKey = normalizeIdempotencyKey(options.idempotencyKey);
+      const ttlHours = parsePositiveInteger(options.ttlHours, "ttlHours", 24);
+      const domainId = String(options.domainId || "").trim();
+      if (!domainId) {
+        throw new Error("domainId is required. Use --domain-id <id>.");
+      }
+      const trackedIdentity = await getIdentityById({
+        outputRoot,
+        identityId,
+      });
+      const payload = {
+        identityId,
+        domainId,
+        subdomainPrefix: String(options.subdomainPrefix || "cb").trim() || "cb",
+        callbackPath: String(options.callbackPath || "/callback").trim() || "/callback",
+        ttlHours,
+        dnsCleanupContract: parseJsonObject(options.dnsCleanupContractJson, "dnsCleanupContractJson"),
+        metadata: parseJsonObject(options.metadataJson, "metadataJson"),
+      };
+
+      const artifactsDir = path.join(outputRoot, "aidenid", "site-create");
+      const stamp = stableTimestampForFile();
+      const requestPath = path.join(artifactsDir, `request-${encodeURIComponent(identityId)}-${stamp}.json`);
+      await writeArtifact(requestPath, {
+        generatedAt: new Date().toISOString(),
+        apiUrl,
+        idempotencyKey,
+        payload,
+      });
+
+      const resolvedCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity.identity?.orgId,
+        projectId: options.projectId || trackedIdentity.identity?.projectId,
+        env: process.env,
+        requireAll: false,
+      });
+      if (!options.execute) {
+        const result = {
+          command: "ai identity site create",
+          execute: false,
+          identityId,
+          apiUrl,
+          idempotencyKey,
+          requestPath,
+          payload,
+          credentialsMissing: resolvedCredentials.missing,
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(pc.bold("AIdenID site create artifact generated (dry-run)"));
+        console.log(pc.gray(`Request: ${requestPath}`));
+        if (resolvedCredentials.missing.length > 0) {
+          console.log(
+            pc.yellow(`Missing credentials for live execute: ${resolvedCredentials.missing.join(", ")}`)
+          );
+        }
+        return;
+      }
+
+      const requiredCredentials = resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId || trackedIdentity.identity?.orgId,
+        projectId: options.projectId || trackedIdentity.identity?.projectId,
+        env: process.env,
+        requireAll: true,
+      });
+      const execution = await createTemporarySite({
+        apiUrl,
+        apiKey: requiredCredentials.apiKey,
+        orgId: requiredCredentials.orgId,
+        projectId: requiredCredentials.projectId,
+        idempotencyKey,
+        payload,
+      });
+      const responsePath = path.join(
+        artifactsDir,
+        `response-${encodeURIComponent(identityId)}-${stamp}.json`
+      );
+      await writeArtifact(responsePath, {
+        receivedAt: new Date().toISOString(),
+        apiUrl,
+        idempotencyKey,
+        response: execution.response,
+      });
+
+      const registryUpdate = await recordTemporarySite({
+        outputRoot,
+        site: execution.response || {},
+        context: {
+          source: "site-create",
+          idempotencyKey,
+          identityId,
+          domainId,
+          projectId: requiredCredentials.projectId,
+        },
+      });
+      const result = {
+        command: "ai identity site create",
+        execute: true,
+        identityId,
+        apiUrl,
+        idempotencyKey,
+        requestPath,
+        responsePath,
+        site: execution.response || null,
+        registryPath: registryUpdate.registryPath,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(pc.bold("AIdenID temporary site created"));
+      console.log(pc.gray(`Response: ${responsePath}`));
+      console.log(
+        `${String(result.site?.id || "unknown-site")} | ${String(result.site?.callbackUrl || result.site?.host || "unknown-host")}`
+      );
+    });
+
+  site
+    .command("list")
+    .description("List locally tracked temporary callback sites")
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--identity-id <id>", "Optional identity filter")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+      const listing = await listSites({
+        outputRoot,
+        identityId: options.identityId,
+      });
+      const payload = {
+        command: "ai identity site list",
+        registryPath: listing.registryPath,
+        count: listing.sites.length,
+        sites: listing.sites,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("AIdenID temporary sites"));
+      console.log(pc.gray(`Registry: ${listing.registryPath}`));
+      if (listing.sites.length === 0) {
+        console.log(pc.gray("No tracked temporary sites."));
+        return;
+      }
+      for (const item of listing.sites) {
+        console.log(
+          `- ${item.siteId} | ${item.identityId || "unknown-identity"} | ${item.status} | ${item.callbackUrl || item.host || "unknown-host"}`
+        );
+      }
     });
 
   identity

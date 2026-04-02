@@ -6,6 +6,7 @@ import {
   buildProvisionEmailPayload,
   createChildIdentity,
   createDomain,
+  createTemporarySite,
   createTarget,
   freezeDomain,
   getLatestIdentityExtraction,
@@ -659,6 +660,62 @@ test("Unit AIdenID helper: domain and target governance routes parse expected pa
           status: 409,
           async json() {
             return { error: { code: "verification_challenge_mismatch" } };
+          },
+        }),
+      }),
+    /status 409/
+  );
+});
+
+test("Unit AIdenID helper: temporary site create route parses expected payload", async () => {
+  const execution = await createTemporarySite({
+    apiUrl: "https://api.aidenid.com",
+    apiKey: "k_test",
+    orgId: "org_123",
+    projectId: "proj_123",
+    idempotencyKey: "idem-site-create",
+    payload: {
+      identityId: "id_123",
+      domainId: "dom_1",
+      subdomainPrefix: "cb",
+      callbackPath: "/callback",
+      ttlHours: 24,
+      dnsCleanupContract: { provider: "cloudflare" },
+      metadata: { scenario: "otp" },
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "site_1",
+          identityId: "id_123",
+          domainId: "dom_1",
+          host: "cb.domain.local",
+          callbackPath: "/callback",
+          callbackUrl: "https://cb.domain.local/callback",
+          status: "ACTIVE",
+          dnsCleanupStatus: "PENDING",
+        };
+      },
+    }),
+  });
+  assert.equal(execution.response.id, "site_1");
+
+  await assert.rejects(
+    () =>
+      createTemporarySite({
+        apiUrl: "https://api.aidenid.com",
+        apiKey: "k_test",
+        orgId: "org_123",
+        projectId: "proj_123",
+        idempotencyKey: "idem-site-create",
+        payload: {},
+        fetchImpl: async () => ({
+          ok: false,
+          status: 409,
+          async json() {
+            return { error: { code: "domain_not_verified" } };
           },
         }),
       }),
