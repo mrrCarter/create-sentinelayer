@@ -513,8 +513,14 @@ jobs:
     name: Deploy
     runs-on: ubuntu-22.04
     timeout-minutes: 8
-    needs: [release-readiness, deploy-readiness]
+    needs: [build-artifact, release-readiness, deploy-readiness]
     steps:
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-deploy-stage/build-artifact
+
       - name: Download release-readiness proof
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
@@ -533,12 +539,15 @@ jobs:
           set -euo pipefail
           release_summary="quality-deploy-stage/release-readiness/release-readiness.summary.json"
           deploy_summary="quality-deploy-stage/deploy-readiness/deploy-readiness.summary.json"
+          artifact_manifest="quality-deploy-stage/build-artifact/quality-build.manifest.json"
           test -f "${release_summary}" || (echo "::error::Missing ${release_summary}." && exit 1)
           test -f "${deploy_summary}" || (echo "::error::Missing ${deploy_summary}." && exit 1)
+          test -f "${artifact_manifest}" || (echo "::error::Missing ${artifact_manifest}." && exit 1)
           release_commit="$(jq -r '.commitSha // ""' "${release_summary}")"
           deploy_commit="$(jq -r '.commitSha // ""' "${deploy_summary}")"
-          if [[ "${release_commit}" != "${GITHUB_SHA}" ]] || [[ "${deploy_commit}" != "${GITHUB_SHA}" ]]; then
-            echo "::error::Deploy gate artifact commit mismatch (release=${release_commit}, deploy=${deploy_commit}, expected=${GITHUB_SHA})."
+          build_commit="$(jq -r '.commitSha // ""' "${artifact_manifest}")"
+          if [[ "${release_commit}" != "${GITHUB_SHA}" ]] || [[ "${deploy_commit}" != "${GITHUB_SHA}" ]] || [[ "${build_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy gate artifact commit mismatch (release=${release_commit}, deploy=${deploy_commit}, build=${build_commit}, expected=${GITHUB_SHA})."
             exit 1
           fi
           cat > quality-deploy-stage/deploy.summary.json <<EOF

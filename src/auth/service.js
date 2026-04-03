@@ -100,6 +100,20 @@ function deterministicJitterFactor(sessionId, attempt) {
   return 0.8 + bucket * 0.4;
 }
 
+function buildPollIdempotencyKey({ sessionId, pollClientId, attempt, nonce }) {
+  return crypto
+    .createHash("sha256")
+    .update(
+      [
+        String(sessionId || "").trim(),
+        String(pollClientId || "").trim(),
+        String(attempt || 0),
+        String(nonce || "").trim(),
+      ].join(":")
+    )
+    .digest("hex");
+}
+
 function throwIfAbortRequested(signal) {
   if (!signal || typeof signal !== "object" || !signal.aborted) {
     return;
@@ -270,12 +284,17 @@ async function pollCliAuthSession({
     1,
     Math.min(MAX_AUTH_POLL_ATTEMPTS, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS))
   );
-  const pollIdempotencyPrefix = `${normalizedSessionId}:poll:${normalizedPollClientId}`;
+  const pollIdempotencyNonce = crypto.randomBytes(16).toString("hex");
   let attempt = 0;
 
   while (Date.now() < deadline && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
-    const pollIdempotencyKey = `${pollIdempotencyPrefix}:${attempt}`;
+    const pollIdempotencyKey = buildPollIdempotencyKey({
+      sessionId: normalizedSessionId,
+      pollClientId: normalizedPollClientId,
+      attempt,
+      nonce: pollIdempotencyNonce,
+    });
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
       headers: {

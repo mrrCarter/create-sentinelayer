@@ -14,6 +14,7 @@ const DEFAULT_LOCK_RETRY_MS = 50;
 const STALE_LOCK_TTL_MS = 30000;
 const ATOMIC_RENAME_RETRY_LIMIT = 6;
 const ATOMIC_RENAME_RETRY_BASE_MS = 25;
+const ATOMIC_RECONCILE_RETRY_LIMIT = 3;
 const ATOMIC_RENAME_RETRY_CODES = new Set(["EEXIST", "EPERM", "EBUSY"]);
 
 export const ASSIGNMENT_STATUSES = Object.freeze([
@@ -207,6 +208,118 @@ async function renameWithRetry(fromPath, toPath, {
   }
 }
 
+async function removeWithRetry(targetPath, {
+  maxAttempts = ATOMIC_RECONCILE_RETRY_LIMIT,
+  baseDelayMs = ATOMIC_RENAME_RETRY_BASE_MS,
+} = {}) {
+  const attempts = Math.max(1, Number(maxAttempts) || ATOMIC_RECONCILE_RETRY_LIMIT);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fsp.rm(targetPath, { force: true });
+      return;
+    } catch (error) {
+      const code = String(error?.code || "").toUpperCase();
+      if (code === "ENOENT") {
+        return;
+      }
+      const isLastAttempt = attempt >= attempts - 1;
+      if (!isAtomicRenameRetryable(error) || isLastAttempt) {
+        throw error;
+      }
+      const waitMs = Math.min(baseDelayMs * 2 ** attempt, 1000);
+      await delay(waitMs);
+    }
+  }
+}
+
+async function listAtomicBackupPaths(filePath) {
+  const directoryPath = path.dirname(filePath);
+  const basename = path.basename(filePath);
+  let directoryEntries = [];
+  try {
+    directoryEntries = await fsp.readdir(directoryPath, { withFileTypes: true });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  return directoryEntries
+    .filter(
+      (entry) =>
+        entry &&
+        typeof entry.isFile === "function" &&
+        entry.isFile() &&
+        entry.name.startsWith(`${basename}.`) &&
+        entry.name.endsWith(".bak")
+    )
+    .map((entry) => path.join(directoryPath, entry.name));
+}
+
+async function readJsonCandidate(candidatePath) {
+  let stat = null;
+  try {
+    stat = await fsp.stat(candidatePath);
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  try {
+    const payload = await readJsonFile(candidatePath);
+    return {
+      path: candidatePath,
+      payload,
+      mtimeMs: Number(stat?.mtimeMs || 0),
+      valid: true,
+    };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return {
+        path: candidatePath,
+        payload: null,
+        mtimeMs: Number(stat?.mtimeMs || 0),
+        valid: false,
+      };
+    }
+    throw error;
+  }
+}
+
+async function promoteCandidateToCanonical(candidatePath, canonicalPath) {
+  if (candidatePath === canonicalPath) {
+    return;
+  }
+  await removeWithRetry(canonicalPath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+  await renameWithRetry(candidatePath, canonicalPath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+}
+
+async function reconcileAtomicArtifacts(filePath) {
+  const fallbackPath = resolveAtomicFallbackPath(filePath);
+  const backupPaths = await listAtomicBackupPaths(filePath);
+  const candidates = await Promise.all(
+    [filePath, fallbackPath, ...backupPaths].map((candidatePath) => readJsonCandidate(candidatePath))
+  );
+  const presentCandidates = candidates.filter(Boolean);
+  if (presentCandidates.length === 0) {
+    return;
+  }
+  const validCandidates = presentCandidates.filter((candidate) => candidate.valid);
+  if (validCandidates.length === 0) {
+    return;
+  }
+  const canonicalCandidate = validCandidates.find((candidate) => candidate.path === filePath);
+  const selectedCandidate =
+    canonicalCandidate ||
+    [...validCandidates].sort((left, right) => Number(right.mtimeMs || 0) - Number(left.mtimeMs || 0))[0];
+  await promoteCandidateToCanonical(selectedCandidate.path, filePath);
+  const stalePaths = [fallbackPath, ...backupPaths];
+  for (const stalePath of stalePaths) {
+    await removeWithRetry(stalePath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+  }
+}
+
 async function readJsonFile(filePath) {
   const raw = await fsp.readFile(filePath, "utf-8");
   return JSON.parse(raw);
@@ -232,6 +345,7 @@ async function tryLoadAtomicFallbackFile(filePath, fallbackPath) {
 }
 
 async function loadJsonFile(filePath, defaultFactory) {
+  await reconcileAtomicArtifacts(filePath);
   const fallbackPath = resolveAtomicFallbackPath(filePath);
   try {
     return await readJsonFile(filePath);
@@ -327,6 +441,7 @@ async function syncDirectoryBestEffort(dirPath) {
 async function writeJsonFile(filePath, payload = {}) {
   const directoryPath = path.dirname(filePath);
   await fsp.mkdir(directoryPath, { recursive: true });
+  await reconcileAtomicArtifacts(filePath);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const fallbackPath = resolveAtomicFallbackPath(filePath);
   const payloadBody = `${JSON.stringify(payload, null, 2)}\n`;

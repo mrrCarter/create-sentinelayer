@@ -61,8 +61,8 @@ jobs:
           requires_invoker_validation="false"
           case "${EVENT_NAME}" in
             workflow_dispatch)
-              if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]] && [[ "${GITHUB_REF_VALUE}" != refs/tags/v* ]]; then
-                echo "::error::Release workflow_dispatch is restricted to refs/heads/main or refs/tags/v* (received '${GITHUB_REF_VALUE}')."
+              if [[ "${GITHUB_REF_VALUE}" != refs/tags/v* ]]; then
+                echo "::error::Release workflow_dispatch is restricted to refs/tags/v* (received '${GITHUB_REF_VALUE}')."
                 exit 1
               fi
               requires_invoker_validation="true"
