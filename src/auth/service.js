@@ -24,6 +24,8 @@ export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
 const DEFAULT_API_TOKEN_SCOPE = "cli_session";
 const PRIVILEGED_API_TOKEN_SCOPE = "github_app_bridge";
+const MIN_AUTH_POLL_INTERVAL_MS = 250;
+const MAX_AUTH_POLL_ATTEMPTS = 1200;
 const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
@@ -264,10 +266,14 @@ async function pollCliAuthSession({
   const normalizedPollClientId = String(pollClientId || "").trim() || generatePollClientId();
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
+  const maxAttempts = Math.max(
+    1,
+    Math.min(MAX_AUTH_POLL_ATTEMPTS, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS))
+  );
   const pollIdempotencyPrefix = `${normalizedSessionId}:poll:${normalizedPollClientId}`;
   let attempt = 0;
 
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
     const pollIdempotencyKey = `${pollIdempotencyPrefix}:${attempt}`;
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
@@ -319,14 +325,17 @@ async function pollCliAuthSession({
     }
 
     const serverPollIntervalMs = Math.max(
-      250,
+      MIN_AUTH_POLL_INTERVAL_MS,
       Math.round(Number(payload.poll_interval_seconds || pollIntervalSeconds || 2) * 1000)
     );
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
     const jitterFactor = deterministicJitterFactor(normalizedSessionId, attempt);
     const remainingMs = Math.max(0, deadline - Date.now());
-    const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
+    const nextDelayMs = Math.max(
+      MIN_AUTH_POLL_INTERVAL_MS,
+      Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs)
+    );
     await sleepWithAbortSignal(nextDelayMs, signal);
     attempt += 1;
   }

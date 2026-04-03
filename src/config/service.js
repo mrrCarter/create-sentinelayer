@@ -5,6 +5,7 @@ import { getConfigPaths } from "./paths.js";
 import { ensureConfigFile, readConfigFile, writeConfigFile } from "./io.js";
 import {
   configSchema,
+  findPersistedSecretKeys,
   getAllConfigKeys,
   getRuntimeSecretSchema,
   isSecretConfigKey,
@@ -166,6 +167,12 @@ export async function setConfigValue({
     ...current,
     [normalizedKey]: normalizedValue,
   };
+  const persistedSecretKeys = findPersistedSecretKeys(next);
+  if (persistedSecretKeys.length > 0) {
+    throw new Error(
+      `Config update refused: persisted plaintext secrets are blocked (${persistedSecretKeys.join(", ")}).`
+    );
+  }
 
   await writeConfigFile(targetPath, next);
 

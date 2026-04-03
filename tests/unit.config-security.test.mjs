@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import { loadConfig, setConfigValue } from "../src/config/service.js";
-import { configSchema, getRuntimeSecretSchema } from "../src/config/schema.js";
+import { configSchema, getRuntimeSecretSchema, SECRET_CONFIG_KEYS } from "../src/config/schema.js";
 
 test("Unit config security: reject plaintext secrets in project config by default", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
@@ -47,16 +47,38 @@ test("Unit config security: environment secrets still resolve without file persi
 test("Unit config security: reject config set secret keys", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
   try {
+    for (const secretKey of SECRET_CONFIG_KEYS) {
+      await assert.rejects(
+        () =>
+          setConfigValue({
+            key: secretKey,
+            value: "secret-test-value",
+            scope: "project",
+            cwd: tempRoot,
+            homeDir: tempRoot,
+          }),
+        /blocked for plaintext persistence/i
+      );
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit config security: setConfigValue fails closed when persisted payload contains secret keys", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
+  try {
+    await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "sentinelayerToken: stale_secret\n", "utf-8");
     await assert.rejects(
       () =>
         setConfigValue({
-          key: "openaiApiKey",
-          value: "sk-test",
+          key: "defaultPolicyPack",
+          value: "enterprise-dd",
           scope: "project",
           cwd: tempRoot,
           homeDir: tempRoot,
         }),
-      /blocked for plaintext persistence/i
+      /plaintext secrets .* are blocked/i
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

@@ -783,6 +783,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, authorize-production-publish]
+    if: ${{ needs.resolve-release-flags.outputs.publish_requested == 'true' }}
     environment: production
     env:
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}

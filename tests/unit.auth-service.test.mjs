@@ -596,6 +596,50 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
   }
 });
 
+test("Unit auth service: login enforces deterministic polling attempt ceiling", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [{ status: "pending" }],
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 300,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          allowFileStorageFallback: true,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.equal(error.code, "CLI_AUTH_TIMEOUT");
+        assert.equal(error.status, 408);
+        return true;
+      }
+    );
+    assert.equal(mock.state.pollCalls, 1);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth service: token rotation revoke falls back when new token cannot revoke old token", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";

@@ -257,6 +257,50 @@ jobs:
           npm config set cache "${cache_dir}"
           npm --version
 
+      - name: Validate lockfile dependency provenance metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const lockfile = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const packages = lockfile && typeof lockfile === "object" ? lockfile.packages || {} : {};
+          const missingIntegrity = [];
+          const missingResolved = [];
+          const nonRegistryResolved = [];
+          for (const [pkgPath, pkg] of Object.entries(packages)) {
+            if (pkgPath === "" || !pkg || typeof pkg !== "object") {
+              continue;
+            }
+            if (pkg.link === true) {
+              continue;
+            }
+            const resolved = String(pkg.resolved || "").trim();
+            if (!resolved) {
+              missingResolved.push(pkgPath);
+            } else if (!resolved.startsWith("https://registry.npmjs.org/")) {
+              nonRegistryResolved.push(`${pkgPath}:${resolved}`);
+            }
+            const integrity = String(pkg.integrity || "").trim();
+            if (!integrity) {
+              missingIntegrity.push(pkgPath);
+            }
+          }
+          const formatPreview = (entries) => entries.slice(0, 10).join(", ");
+          if (missingIntegrity.length > 0) {
+            console.error(`::error::Missing lockfile integrity metadata for ${missingIntegrity.length} package(s): ${formatPreview(missingIntegrity)}`);
+            process.exit(1);
+          }
+          if (missingResolved.length > 0) {
+            console.error(`::error::Missing lockfile resolved metadata for ${missingResolved.length} package(s): ${formatPreview(missingResolved)}`);
+            process.exit(1);
+          }
+          if (nonRegistryResolved.length > 0) {
+            console.error(`::error::Detected non-registry lockfile sources (${nonRegistryResolved.length}): ${formatPreview(nonRegistryResolved)}`);
+            process.exit(1);
+          }
+          NODE
+
       - name: Build package tarball and digest
         shell: bash
         run: |
