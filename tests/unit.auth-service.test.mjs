@@ -17,7 +17,11 @@ import {
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
 import { SentinelayerApiError } from "../src/auth/http.js";
-import { readStoredSession, resolveCredentialsFilePath } from "../src/auth/session-store.js";
+import {
+  readStoredSession,
+  resolveCredentialsFilePath,
+  writeStoredSession,
+} from "../src/auth/session-store.js";
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -40,11 +44,12 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
+async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthToken = "" } = {}) {
   const state = {
     pollCalls: 0,
     tokenIssueCalls: 0,
     tokenDeleteIds: [],
+    tokenDeleteAuthHeaders: [],
     statusCalls: 0,
   };
   const defaultPollResponses = [
@@ -133,6 +138,13 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
       }
 
       if (req.method === "DELETE" && pathname.startsWith("/api/v1/auth/api-tokens/")) {
+        const authHeader = String(req.headers.authorization || "");
+        state.tokenDeleteAuthHeaders.push(authHeader);
+        if (String(rejectDeleteAuthToken || "").trim() && authHeader === `Bearer ${rejectDeleteAuthToken}`) {
+          return jsonResponse(res, 401, {
+            error: { code: "AUTH_REQUIRED", message: "Token rejected for revoke endpoint" },
+          });
+        }
         state.tokenDeleteIds.push(pathname.split("/").pop() || "");
         return jsonResponse(res, 200, { ok: true });
       }
@@ -417,6 +429,70 @@ test("Unit auth service: login fails fast for denied polling status", async () =
       }
     );
     assert.equal(mock.state.pollCalls, 1);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: token rotation revoke falls back when new token cannot revoke old token", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({ rejectDeleteAuthToken: "api_token_2" });
+
+  try {
+    await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored?.token, "api_token_1");
+    await writeStoredSession(
+      {
+        apiUrl: mock.apiUrl,
+        token: stored.token,
+        tokenId: stored.tokenId,
+        tokenPrefix: stored.tokenPrefix,
+        tokenExpiresAt: "2026-04-08T00:00:00.000Z",
+        user: stored.user,
+      },
+      { homeDir: tempRoot }
+    );
+
+    const resolved = await resolveActiveAuthSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      autoRotate: true,
+      rotateThresholdDays: 30,
+      tokenLabel: "unit-test-rotated",
+      tokenTtlDays: 30,
+    });
+
+    assert.equal(resolved?.token, "api_token_2");
+    assert.equal(resolved?.rotated, true);
+    assert.equal(mock.state.tokenDeleteIds.includes("token_1"), true);
+    assert.deepEqual(mock.state.tokenDeleteAuthHeaders.slice(0, 2), [
+      "Bearer api_token_2",
+      "Bearer api_token_1",
+    ]);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

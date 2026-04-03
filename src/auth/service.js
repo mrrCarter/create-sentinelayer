@@ -260,33 +260,77 @@ async function issueApiToken({
   });
 }
 
-async function revokeApiToken({ apiUrl, authToken, tokenId }) {
+function isAuthorizationFailure(error) {
+  if (!(error instanceof SentinelayerApiError)) {
+    return false;
+  }
+  const status = Number(error.status || 0);
+  if (status === 401 || status === 403) {
+    return true;
+  }
+  const code = String(error.code || "").trim().toUpperCase();
+  return code === "AUTH_REQUIRED" || code === "FORBIDDEN" || code === "INVALID_TOKEN";
+}
+
+function resolveRevocationAuthCandidates(primaryToken, fallbackToken = "") {
+  const candidates = [];
+  for (const rawToken of [primaryToken, fallbackToken]) {
+    const normalized = String(rawToken || "").trim();
+    if (!normalized || candidates.includes(normalized)) {
+      continue;
+    }
+    candidates.push(normalized);
+  }
+  return candidates;
+}
+
+async function revokeApiToken({ apiUrl, authToken, tokenId, fallbackAuthToken = "" }) {
   const normalizedTokenId = String(tokenId || "").trim();
   if (!normalizedTokenId) {
     return false;
   }
-  try {
-    await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
-      method: "DELETE",
-      headers: toAuthHeader(authToken),
+  const authCandidates = resolveRevocationAuthCandidates(authToken, fallbackAuthToken);
+  if (authCandidates.length === 0) {
+    throw new SentinelayerApiError("No revocation auth token available.", {
+      status: 401,
+      code: "AUTH_REQUIRED",
     });
-  } catch (error) {
-    if (error instanceof SentinelayerApiError) {
-      const status = Number(error.status || 0);
-      const normalizedCode = String(error.code || "").trim().toUpperCase();
-      const alreadyRevoked = status === 404 || status === 410;
-      const knownNotFoundCodes = new Set([
-        "NOT_FOUND",
-        "TOKEN_NOT_FOUND",
-        "TOKEN_ALREADY_REVOKED",
-      ]);
-      if (alreadyRevoked || knownNotFoundCodes.has(normalizedCode)) {
-        return true;
-      }
-    }
-    throw error;
   }
-  return true;
+
+  const knownNotFoundCodes = new Set(["NOT_FOUND", "TOKEN_NOT_FOUND", "TOKEN_ALREADY_REVOKED"]);
+  let lastError = null;
+  for (let index = 0; index < authCandidates.length; index += 1) {
+    const candidateToken = authCandidates[index];
+    try {
+      await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
+        method: "DELETE",
+        headers: toAuthHeader(candidateToken),
+      });
+      return true;
+    } catch (error) {
+      lastError = error;
+      if (error instanceof SentinelayerApiError) {
+        const status = Number(error.status || 0);
+        const normalizedCode = String(error.code || "").trim().toUpperCase();
+        const alreadyRevoked = status === 404 || status === 410;
+        if (alreadyRevoked || knownNotFoundCodes.has(normalizedCode)) {
+          return true;
+        }
+        const hasFallback = index < authCandidates.length - 1;
+        if (hasFallback && isAuthorizationFailure(error)) {
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new SentinelayerApiError("Unable to revoke API token.", {
+    status: 500,
+    code: "TOKEN_REVOKE_FAILED",
+  });
 }
 
 function isRetryableRevokeError(error) {
@@ -355,6 +399,7 @@ async function rotateStoredApiTokenIfNeeded({
         await revokeApiToken({
           apiUrl: session.apiUrl,
           authToken: nextSession.token,
+          fallbackAuthToken: session.token,
           tokenId: session.tokenId,
         });
         revokeWarning = null;

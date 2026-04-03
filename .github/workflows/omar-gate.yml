@@ -19,7 +19,7 @@ on:
       severity_gate:
         description: Severity threshold that blocks merge
         required: false
-        default: P2
+        default: P1
         type: choice
         options:
           - P0

@@ -25,6 +25,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.8.2"
 
 concurrency:
   group: release-create-sentinelayer
@@ -71,44 +72,25 @@ jobs:
           fi
           TARGET_SHA="${resolved_sha}"
           echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
-          required_checks=("Omar Gate" "Quality Summary")
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
-            response="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
-            all_success=true
-            for check in "${required_checks[@]}"; do
-              match="$(echo "${response}" | jq -c --arg name "${check}" --arg sha "${TARGET_SHA}" '
-                [
-                  .check_runs[]
-                  | select(.name == $name and .head_sha == $sha)
-                  | {
-                      status: .status,
-                      conclusion: .conclusion,
-                      started_at: (.started_at // .created_at)
-                    }
-                ]
-                | sort_by(.started_at)
-                | last // empty
-              ')"
-              if [[ -z "${match}" ]]; then
-                all_success=false
-                continue
-              fi
-              status="$(echo "${match}" | jq -r '.status')"
-              conclusion="$(echo "${match}" | jq -r '.conclusion')"
-              if [[ "${status}" != "completed" ]]; then
-                all_success=false
-                continue
-              fi
-              if [[ "${conclusion}" != "success" ]]; then
-                echo "::error::Required check '${check}' concluded '${conclusion}'."
+            state="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/status" -H "Accept: application/vnd.github+json" --jq '.state')"
+            case "${state}" in
+              success)
+                echo "Required checks validated for ${TARGET_SHA}."
+                exit 0
+                ;;
+              failure|error)
+                echo "::error::Required checks did not pass for ${TARGET_SHA} (state=${state})."
                 exit 1
-              fi
-            done
-            if [[ "${all_success}" == "true" ]]; then
-              echo "Required checks validated for ${TARGET_SHA}."
-              exit 0
-            fi
+                ;;
+              pending)
+                ;;
+              *)
+                echo "::error::Unexpected combined status state '${state}' for ${TARGET_SHA}."
+                exit 1
+                ;;
+            esac
             sleep 10
           done
           echo "::error::Timed out waiting for required checks on ${TARGET_SHA}."
@@ -127,6 +109,13 @@ jobs:
         with:
           node-version: "20.11.1"
           cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          npm --version
 
       - name: Pin npm registry and snapshot lock hash
         shell: bash
@@ -213,6 +202,13 @@ jobs:
         with:
           node-version: "20.11.1"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          npm --version
 
       - name: Download immutable release artifact
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
