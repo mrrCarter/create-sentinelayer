@@ -176,9 +176,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest
+          timeout --preserve-status 120s npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest
           if [[ -n "${BAD_VERSION}" ]]; then
-            npm deprecate "${PACKAGE_NAME}@${BAD_VERSION}" "${REASON}"
+            timeout --preserve-status 120s npm deprecate "${PACKAGE_NAME}@${BAD_VERSION}" "${REASON}"
           fi
 
       - name: Emit rollback summary

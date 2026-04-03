@@ -264,7 +264,7 @@ async function pollCliAuthSession({
   const normalizedPollClientId = String(pollClientId || "").trim() || generatePollClientId();
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
-  const pollIdempotencyKeyBase = `${normalizedSessionId}:poll:${normalizedPollClientId}`;
+  const pollIdempotencyKey = `${normalizedSessionId}:poll:${normalizedPollClientId}`;
   let attempt = 0;
 
   while (Date.now() < deadline) {
@@ -272,7 +272,7 @@ async function pollCliAuthSession({
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
       headers: {
-        "Idempotency-Key": `${pollIdempotencyKeyBase}:${attempt}`,
+        "Idempotency-Key": pollIdempotencyKey,
         "X-Poll-Attempt": String(attempt),
       },
       body: {

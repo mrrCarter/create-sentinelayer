@@ -590,4 +590,18 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
 - [x] Push fourteenth-cycle fixes (`21f3919`) and rerun Omar (`run_id=23941573780`): Omar exited early because `Quality Gates` run `23941572042` failed before jobs with a workflow-parse issue in `quality-gates.yml`.
 - [x] Apply hotfix for `quality-gates` workflow parse failure by removing `runner` context from job-level `env` and deriving `NPM_CACHE_DIR` from `RUNNER_TEMP` at runtime in the pin step.
-- [ ] Push fourteenth-cycle hotfix and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push fourteenth-cycle hotfix (`54b6f29`) and rerun Omar (`run_id=23941694136`): Omar runs cleanly and reports `P2=6` with active residuals in quality-run identity anchoring, release-event mapping, rollback mutation timeout controls, auth poll idempotency semantics, and assignment-ledger event append locking.
+- [x] Fifteenth-cycle hardening applied for active residual findings:
+  - `.github/workflows/omar-gate.yml`: enforce unique Quality Summary run identity (single-candidate guard + commit check-run run-id anchor) before secret-backed Omar execution.
+  - `.github/workflows/release-please.yml`: restrict Omar verification evidence to PR-context runs (`event == pull_request`) only.
+  - `.github/workflows/release.yml`: allow `workflow_dispatch` in required-check mapping for `Quality Summary` and `Release Readiness`.
+  - `.github/workflows/rollback.yml`: add bounded `timeout --preserve-status` wrappers for `npm dist-tag add` and `npm deprecate` mutation steps.
+  - `src/auth/service.js`: restore stable poll-session idempotency key semantics.
+  - `src/daemon/assignment-ledger.js`: add explicit file-lock around event stream appends (`assignment-events.lock`).
+  - `tests/unit.auth-service.test.mjs`: update idempotency assertions for stable poll key semantics.
+- [x] Fifteenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.daemon-assignment-ledger.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push fifteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.

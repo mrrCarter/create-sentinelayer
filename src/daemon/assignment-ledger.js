@@ -7,6 +7,7 @@ import { WORK_ITEM_STATUSES, resolveErrorDaemonStorage } from "./error-worker.js
 const LEDGER_SCHEMA_VERSION = "1.0.0";
 const QUEUE_SCHEMA_VERSION = "1.0.0";
 const ASSIGNMENT_STORAGE_LOCK_FILE = "assignment-ledger.lock";
+const ASSIGNMENT_EVENTS_LOCK_FILE = "assignment-events.lock";
 const DEFAULT_LOCK_TIMEOUT_MS = 5000;
 const DEFAULT_LOCK_RETRY_MS = 50;
 const STALE_LOCK_TTL_MS = 30000;
@@ -344,14 +345,19 @@ async function syncDirectoryBestEffort(dirPath) {
 async function appendEvent(filePath, payload = {}) {
   const directoryPath = path.dirname(filePath);
   await fsp.mkdir(directoryPath, { recursive: true });
-  const handle = await fsp.open(filePath, "a");
+  const releaseEventLock = await acquireFileLock(path.join(directoryPath, ASSIGNMENT_EVENTS_LOCK_FILE));
   try {
-    await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf-8");
-    await handle.sync();
+    const handle = await fsp.open(filePath, "a");
+    try {
+      await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf-8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await syncDirectoryBestEffort(directoryPath);
   } finally {
-    await handle.close();
+    await releaseEventLock();
   }
-  await syncDirectoryBestEffort(directoryPath);
 }
 
 async function loadLedger(ledgerPath, nowIso = new Date().toISOString()) {

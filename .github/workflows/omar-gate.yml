@@ -97,12 +97,18 @@ jobs:
           deadline=$((SECONDS + 900))
           while (( SECONDS < deadline )); do
             runs_json="$(gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
-            quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
+            candidate_runs="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
                 | select(((.path // "") | split("@")[0]) == $path)
-              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | reverse
             ')"
+            candidate_count="$(echo "${candidate_runs}" | jq -r 'length')"
+            if [[ "${candidate_count}" -gt 1 ]]; then
+              echo "::error::Multiple quality-gates runs matched ${TARGET_SHA}; refusing heuristic selection."
+              exit 1
+            fi
+            quality_run="$(echo "${candidate_runs}" | jq -c '.[0] // empty')"
             if [[ -z "${quality_run}" ]]; then
               echo "Waiting for quality-gates workflow run on ${TARGET_SHA}."
               sleep 10
@@ -112,6 +118,18 @@ jobs:
             run_url="$(echo "${quality_run}" | jq -r '.html_url // ""')"
             status="$(echo "${quality_run}" | jq -r '.status')"
             conclusion="$(echo "${quality_run}" | jq -r '.conclusion // ""')"
+            check_runs_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+            anchored_check_run="$(echo "${check_runs_json}" | jq -c '
+              [.check_runs[]
+                | select((.name // "") == "Quality Summary")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            anchored_run_id="$(echo "${anchored_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
+            if [[ -n "${anchored_run_id}" ]] && [[ "${anchored_run_id}" != "${run_id}" ]]; then
+              echo "::error::Quality Summary run identity mismatch (workflow run=${run_id}, check-run anchor=${anchored_run_id})."
+              exit 1
+            fi
             if [[ "${status}" != "completed" ]]; then
               echo "quality-gates run ${run_id} status=${status}; waiting."
               sleep 10

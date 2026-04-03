@@ -147,3 +147,5 @@
 - Release required-check verification should reject ambiguous multi-run candidates and cross-anchor selected run ids with commit check-run detail URLs before trusting artifacts.
 - External action supply-chain hardening should include deterministic SHA allowlist enforcement in-workflow, not only pinned `uses:` references.
 - GitHub Actions expression contexts can fail at workflow-parse time in some `env` scopes; when in doubt, derive runner-dependent paths (for example cache dirs) from runtime shell vars like `RUNNER_TEMP` inside steps.
+- For cross-workflow gate dependencies, "latest run for SHA" is not strong enough; require unique candidate selection and anchor run IDs against commit check-run `details_url` before trusting pass status.
+- Event stream append paths should be lock-protected even when higher-level operations already use coarse locks, so concurrent writers cannot interleave JSONL records if append is reused elsewhere.
