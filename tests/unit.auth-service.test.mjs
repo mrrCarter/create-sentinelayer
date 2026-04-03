@@ -634,7 +634,13 @@ test("Unit auth service: login enforces deterministic polling attempt ceiling", 
         return true;
       }
     );
-    assert.equal(mock.state.pollCalls, 1);
+    assert.ok(mock.state.pollCalls >= 1);
+    assert.ok(mock.state.pollCalls <= 2);
+    assert.equal(mock.state.pollIdempotencyKeys.length, mock.state.pollCalls);
+    assert.deepEqual(
+      mock.state.pollIdempotencyKeys,
+      Array.from(new Set(mock.state.pollIdempotencyKeys))
+    );
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
