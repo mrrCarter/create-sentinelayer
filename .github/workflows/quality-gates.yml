@@ -258,13 +258,14 @@ jobs:
           npm --version
 
       - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts --prefer-offline
+        run: timeout --preserve-status 8m npm ci --ignore-scripts
 
       - name: Build package tarball and digest
         shell: bash
         run: |
           set -euo pipefail
           npm config set cache "${NPM_CACHE_DIR}"
+          lock_hash_expected="$(sha256sum package-lock.json | awk '{print $1}')"
           pack_json="$(npm pack --json)"
           tarball="$(echo "${pack_json}" | jq -r '.[0].filename')"
           test -n "${tarball}" || (echo "::error::Unable to resolve packed tarball filename." && exit 1)
@@ -275,8 +276,14 @@ jobs:
           git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
           pushd "${rebuild_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
-          npm config set cache "${NPM_CACHE_DIR}"
-          timeout --preserve-status 8m npm ci --ignore-scripts --offline
+          rebuild_cache_dir="$(mktemp -d)"
+          npm config set cache "${rebuild_cache_dir}"
+          timeout --preserve-status 8m npm ci --ignore-scripts
+          rebuild_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
+          if [[ "${rebuild_lock_hash}" != "${lock_hash_expected}" ]]; then
+            echo "::error::Lockfile drift detected during clean-room rebuild (expected=${lock_hash_expected}, actual=${rebuild_lock_hash})."
+            exit 1
+          fi
           rebuild_pack_json="$(npm pack --json)"
           rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
           test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)

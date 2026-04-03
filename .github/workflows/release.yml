@@ -54,28 +54,81 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
         run: |
           set -euo pipefail
-          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
-            echo "Trusted invoker validation is required for workflow_dispatch events only."
-            exit 0
-          fi
           if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
-            echo "::error::Release workflow_dispatch must originate from the canonical repository."
+            echo "::error::Release workflow must originate from canonical repository '${REPO}' (received '${EVENT_REPOSITORY}')."
             exit 1
           fi
-          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]] && [[ "${GITHUB_REF_VALUE}" != refs/tags/v* ]]; then
-            echo "::error::Release workflow_dispatch is restricted to refs/heads/main or refs/tags/v* (received '${GITHUB_REF_VALUE}')."
-            exit 1
+          requires_invoker_validation="false"
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]] && [[ "${GITHUB_REF_VALUE}" != refs/tags/v* ]]; then
+                echo "::error::Release workflow_dispatch is restricted to refs/heads/main or refs/tags/v* (received '${GITHUB_REF_VALUE}')."
+                exit 1
+              fi
+              requires_invoker_validation="true"
+              ;;
+            push)
+              if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+                requires_invoker_validation="true"
+              fi
+              ;;
+            *)
+              echo "Trusted invoker validation not required for event '${EVENT_NAME}'."
+              exit 0
+              ;;
+          esac
+          if [[ "${requires_invoker_validation}" != "true" ]]; then
+            echo "Trusted invoker validation skipped for ref '${GITHUB_REF_VALUE}'."
+            exit 0
           fi
           permission="$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
           case "${permission}" in
             admin|maintain|write)
               echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
-              ;;
-            *)
-              echo "::error::Actor '${ACTOR}' is not authorized to trigger release workflow_dispatch (permission='${permission}')."
-              exit 1
+              exit 0
               ;;
           esac
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${ACTOR}" == "github-actions[bot]" ]]; then
+            tag_name="${GITHUB_REF_VALUE#refs/tags/}"
+            tag_ref_json="$(gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
+            ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
+            ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
+            if [[ -z "${ref_sha}" ]]; then
+              echo "::error::Unable to resolve tag object SHA for '${tag_name}'."
+              exit 1
+            fi
+            target_sha="${ref_sha}"
+            if [[ "${ref_type}" == "tag" ]]; then
+              annotated_tag_json="$(gh api "repos/${REPO}/git/tags/${ref_sha}")"
+              target_sha="$(echo "${annotated_tag_json}" | jq -r '.object.sha // ""')"
+            elif [[ "${ref_type}" != "commit" ]]; then
+              echo "::error::Tag '${tag_name}' points to unsupported object type '${ref_type}'."
+              exit 1
+            fi
+            if [[ -z "${target_sha}" ]]; then
+              echo "::error::Unable to resolve commit SHA for tag '${tag_name}'."
+              exit 1
+            fi
+            release_runs_json="$(gh api "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+            release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release-please.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "push")
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .id // empty
+            ')"
+            if [[ -z "${release_run_id}" ]]; then
+              echo "::error::Tag push by github-actions[bot] requires successful release-please provenance on commit ${target_sha}."
+              exit 1
+            fi
+            echo "Trusted bot invoker '${ACTOR}' validated via release-please run ${release_run_id} on commit ${target_sha}."
+            exit 0
+          fi
+          echo "::error::Actor '${ACTOR}' is not authorized for release event '${EVENT_NAME}' on '${GITHUB_REF_VALUE}' (permission='${permission}')."
+          exit 1
 
       - name: Normalize dispatch and tag inputs
         id: flags
@@ -175,8 +228,28 @@ jobs:
         run: |
           set -euo pipefail
           branch_name="${DEFAULT_BRANCH:-main}"
-          protection_json="$(gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")"
-          configured_contexts="$(echo "${protection_json}" | jq -c '((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])')"
+          protection_status=0
+          protection_json="$(gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")" || protection_status=$?
+          if [[ "${protection_status}" -ne 0 ]]; then
+            echo "::error::Branch '${branch_name}' must have protection enabled with strict required checks."
+            exit 1
+          fi
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [[ "${strict_checks}" != "true" ]]; then
+            echo "::error::Branch protection must enforce strict required status checks for '${branch_name}'."
+            exit 1
+          fi
+          required_review_count="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')"
+          dismiss_stale_reviews="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.dismiss_stale_reviews // false')"
+          if [[ "${required_review_count}" -lt 1 ]]; then
+            echo "::error::Branch protection must require at least one approving pull request review for '${branch_name}'."
+            exit 1
+          fi
+          if [[ "${dismiss_stale_reviews}" != "true" ]]; then
+            echo "::error::Branch protection must enforce stale-review dismissal for '${branch_name}'."
+            exit 1
+          fi
+          configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
           required_contexts=("Omar Gate" "Quality Summary" "Release Readiness")
           for required_context in "${required_contexts[@]}"; do
             if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
@@ -184,6 +257,17 @@ jobs:
               exit 1
             fi
           done
+          env_json="$(gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          env_reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          env_branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
+          if [[ "${env_reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+          if [[ "${env_branch_policy_enabled}" != "true" ]]; then
+            echo "::error::release-management environment must enforce deployment branch policy."
+            exit 1
+          fi
 
       - name: Verify release commit checks
         id: verify
@@ -240,8 +324,8 @@ jobs:
           }
           allowed_events_for_check() {
             case "${1}" in
-              "Omar Gate") echo "[\"pull_request\", \"workflow_dispatch\"]" ;;
-              "Quality Summary"|"Release Readiness") echo "[\"pull_request\", \"push\", \"workflow_dispatch\"]" ;;
+              "Omar Gate") echo "[\"pull_request\"]" ;;
+              "Quality Summary"|"Release Readiness") echo "[\"pull_request\", \"push\"]" ;;
               *) return 1 ;;
             esac
           }
@@ -259,12 +343,12 @@ jobs:
                   [.workflow_runs[]
                     | select((.head_sha // "") == $sha)
                     | select(((.path // "") | split("@")[0]) == $path)
-                    | select((.event // "") == "pull_request" or (.event // "") == "workflow_dispatch")
+                    | select((.event // "") == "pull_request")
                     | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
                   ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
                 ')"
                 if [[ -z "${latest_run}" ]]; then
-                  echo "::error::No prior Omar Gate workflow run found for tag target commit ${TARGET_SHA}. Trigger Omar Gate on the source PR or via workflow_dispatch before publishing ${GITHUB_REF_VALUE}."
+                  echo "::error::No prior Omar Gate pull_request workflow run found for tag target commit ${TARGET_SHA}. Trigger Omar Gate on the source PR before publishing ${GITHUB_REF_VALUE}."
                   exit 1
                 fi
                 run_id="$(echo "${latest_run}" | jq -r '.id // ""')"
