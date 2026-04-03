@@ -67,6 +67,28 @@ jobs:
           npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
+      - name: Verify production environment protections
+        if: env.EXECUTE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/production" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          wait_timer_rule_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "wait_timer")] | length')"
+          branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::production environment must require at least one reviewer for rollback execute mode."
+            exit 1
+          fi
+          if [[ "${wait_timer_rule_count}" -lt 1 ]]; then
+            echo "::error::production environment must define a wait-timer protection for rollback execute mode."
+            exit 1
+          fi
+          if [[ "${branch_policy_enabled}" != "true" ]]; then
+            echo "::error::production environment must enforce deployment branch policy for rollback execute mode."
+            exit 1
+          fi
+
       - name: Validate rollback inputs and package availability
         shell: bash
         run: |
@@ -176,10 +198,43 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          timeout --preserve-status 120s npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest
-          if [[ -n "${BAD_VERSION}" ]]; then
-            timeout --preserve-status 120s npm deprecate "${PACKAGE_NAME}@${BAD_VERSION}" "${REASON}"
+          dist_tags_before="$(timeout --preserve-status 30s npm view "${PACKAGE_NAME}" dist-tags --json)"
+          latest_before="$(echo "${dist_tags_before}" | jq -r '.latest // ""')"
+          promoted_latest="false"
+          if [[ "${latest_before}" != "${TARGET_VERSION}" ]]; then
+            timeout --preserve-status 120s npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest
+            promoted_latest="true"
+          else
+            echo "Skipping dist-tag add; latest already points to ${TARGET_VERSION}."
           fi
+          deprecated_bad_version="false"
+          bad_version_existing_deprecation=""
+          if [[ -n "${BAD_VERSION}" ]]; then
+            bad_version_existing_deprecation="$(timeout --preserve-status 30s npm view "${PACKAGE_NAME}@${BAD_VERSION}" deprecated --json 2>/dev/null | jq -r 'if type == "string" then . else "" end' || true)"
+            if [[ "${bad_version_existing_deprecation}" != "${REASON}" ]]; then
+              timeout --preserve-status 120s npm deprecate "${PACKAGE_NAME}@${BAD_VERSION}" "${REASON}"
+              deprecated_bad_version="true"
+            else
+              echo "Skipping deprecate; ${PACKAGE_NAME}@${BAD_VERSION} already has matching deprecation reason."
+            fi
+          fi
+          dist_tags_after="$(timeout --preserve-status 30s npm view "${PACKAGE_NAME}" dist-tags --json)"
+          latest_after="$(echo "${dist_tags_after}" | jq -r '.latest // ""')"
+          bad_version_existing_deprecation_json="$(printf '%s' "${bad_version_existing_deprecation}" | jq -R .)"
+          cat > rollback-operation.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "targetVersion": "${TARGET_VERSION}",
+            "badVersion": "${BAD_VERSION}",
+            "reason": "${REASON}",
+            "latestBefore": "${latest_before}",
+            "latestAfter": "${latest_after}",
+            "promotedLatest": ${promoted_latest},
+            "deprecatedBadVersion": ${deprecated_bad_version},
+            "existingBadVersionDeprecation": ${bad_version_existing_deprecation_json}
+          }
+          EOF
 
       - name: Emit rollback summary
         shell: bash
@@ -193,3 +248,23 @@ jobs:
           else
             echo "- bad_version: \`(none)\`" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [[ "${EXECUTE}" == "true" ]]; then
+            if [[ -f rollback-operation.summary.json ]]; then
+              latest_after="$(jq -r '.latestAfter // ""' rollback-operation.summary.json)"
+              promoted_latest="$(jq -r '.promotedLatest // false' rollback-operation.summary.json)"
+              deprecated_bad_version="$(jq -r '.deprecatedBadVersion // false' rollback-operation.summary.json)"
+              echo "- latest_after: \`${latest_after}\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "- promoted_latest: \`${promoted_latest}\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "- deprecated_bad_version: \`${deprecated_bad_version}\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- rollback_operation_summary: \`(missing)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload rollback operation summary
+        if: always() && env.EXECUTE == 'true'
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: rollback-operation-summary
+          path: rollback-operation.summary.json
+          if-no-files-found: error

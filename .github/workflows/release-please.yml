@@ -191,17 +191,42 @@ jobs:
               sleep 10
               continue
             fi
-            source_pr_head_sha="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" '
+            canonical_pr_count="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
               [.[] 
                 | select((.state // "") == "closed")
                 | select((.merged_at // "") != "")
                 | select((.head.repo.full_name // "") == $repo)
-              ] | sort_by((.merged_at // "")) | last | .head.sha // empty
+                | select((.merge_commit_sha // "") == $sha)
+              ] | length
             ')"
-            if [[ -z "${source_pr_head_sha}" ]]; then
-              echo "Waiting for Omar Gate evidence for ${TARGET_SHA}; no merged same-repo PR head found yet."
+            if [[ "${canonical_pr_count}" -eq 0 ]]; then
+              echo "Waiting for canonical merged PR provenance for ${TARGET_SHA}."
               sleep 10
               continue
+            fi
+            if [[ "${canonical_pr_count}" -ne 1 ]]; then
+              echo "::error::Expected exactly one canonical merged PR for ${TARGET_SHA}, found ${canonical_pr_count}."
+              exit 1
+            fi
+            source_pr_head_sha="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
+              [.[] 
+                | select((.state // "") == "closed")
+                | select((.merged_at // "") != "")
+                | select((.head.repo.full_name // "") == $repo)
+                | select((.merge_commit_sha // "") == $sha)
+              ][0].head.sha // empty
+            ')"
+            source_pr_number="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
+              [.[] 
+                | select((.state // "") == "closed")
+                | select((.merged_at // "") != "")
+                | select((.head.repo.full_name // "") == $repo)
+                | select((.merge_commit_sha // "") == $sha)
+              ][0].number // empty
+            ')"
+            if [[ -z "${source_pr_head_sha}" ]]; then
+              echo "::error::Canonical PR mapping for ${TARGET_SHA} did not include a head SHA."
+              exit 1
             fi
             pr_check_status=0
             pr_check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${source_pr_head_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || pr_check_status=$?
@@ -248,7 +273,7 @@ jobs:
               exit 1
             fi
             echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
-            echo "Omar Gate passed for ${TARGET_SHA} via associated PR head ${source_pr_head_sha} run ${omar_run_id} (${omar_run_url})."
+            echo "Omar Gate passed for ${TARGET_SHA} via canonical PR #${source_pr_number} head ${source_pr_head_sha} run ${omar_run_id} (${omar_run_url})."
             exit 0
           done
           echo "::error::Timed out waiting for Omar Gate on ${TARGET_SHA}."

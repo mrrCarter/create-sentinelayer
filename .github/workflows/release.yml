@@ -274,7 +274,7 @@ jobs:
             exit 1
           fi
           configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
-          required_contexts=("Omar Gate" "Quality Summary" "Release Readiness")
+          required_contexts=("Omar Gate" "Quality Summary" "Release Readiness" "Deploy Readiness")
           for required_context in "${required_contexts[@]}"; do
             if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
               echo "::error::Branch protection for ${branch_name} is missing required status context '${required_context}'."
@@ -302,7 +302,7 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
-          BASE_REQUIRED_CHECKS: Omar Gate,Quality Summary,Release Readiness
+          BASE_REQUIRED_CHECKS: Omar Gate,Quality Summary,Release Readiness,Deploy Readiness
         run: |
           set -euo pipefail
           resolved_sha="${TARGET_SHA}"
@@ -335,6 +335,7 @@ jobs:
               "Omar Gate") echo "omar-gate.yml" ;;
               "Quality Summary") echo "quality-gates.yml" ;;
               "Release Readiness") echo "quality-gates.yml" ;;
+              "Deploy Readiness") echo "quality-gates.yml" ;;
               *) return 1 ;;
             esac
           }
@@ -343,6 +344,7 @@ jobs:
               "Omar Gate") echo ".github/workflows/omar-gate.yml" ;;
               "Quality Summary") echo ".github/workflows/quality-gates.yml" ;;
               "Release Readiness") echo ".github/workflows/quality-gates.yml" ;;
+              "Deploy Readiness") echo ".github/workflows/quality-gates.yml" ;;
               *) return 1 ;;
             esac
           }
@@ -350,6 +352,7 @@ jobs:
             case "${1}" in
               "Omar Gate") echo "[\"pull_request\"]" ;;
               "Quality Summary"|"Release Readiness") echo "[\"pull_request\", \"push\"]" ;;
+              "Deploy Readiness") echo "[\"pull_request\", \"push\"]" ;;
               *) return 1 ;;
             esac
           }

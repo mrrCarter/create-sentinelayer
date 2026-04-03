@@ -448,11 +448,11 @@ jobs:
             quality-readiness/sl.version.txt
           if-no-files-found: error
 
-  deploy-staging:
-    name: Deploy Staging
+  deploy-readiness:
+    name: Deploy Readiness
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [build-artifact, release-readiness]
+    needs: [build-artifact]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -474,45 +474,45 @@ jobs:
         run: |
           set -euo pipefail
           tarball="$(tr -d '\r\n' < quality-deploy/quality-build.tarball)"
-          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball identity for deploy-staging gate." && exit 1)
+          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball identity for deploy-readiness gate." && exit 1)
           artifact_path="quality-deploy/${tarball}"
           test -f "${artifact_path}" || (echo "::error::Missing quality tarball ${artifact_path}." && exit 1)
           expected_sha="$(awk 'NF {print $1; exit}' quality-deploy/quality-build.sha256)"
-          test -n "${expected_sha}" || (echo "::error::Missing quality-build.sha256 digest for deploy-staging gate." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Missing quality-build.sha256 digest for deploy-readiness gate." && exit 1)
           actual_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
           if [[ "${expected_sha}" != "${actual_sha}" ]]; then
-            echo "::error::Deploy-staging artifact digest mismatch (expected=${expected_sha}, actual=${actual_sha})."
+            echo "::error::Deploy-readiness artifact digest mismatch (expected=${expected_sha}, actual=${actual_sha})."
             exit 1
           fi
           staging_prefix="$(mktemp -d)"
           npm install --prefix "${staging_prefix}" "./${artifact_path}" --ignore-scripts
-          PATH="${staging_prefix}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-deploy/deploy-staging.version.txt
-          cat > quality-deploy/deploy-staging.summary.json <<EOF
+          PATH="${staging_prefix}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-deploy/deploy-readiness.version.txt
+          cat > quality-deploy/deploy-readiness.summary.json <<EOF
           {
             "schemaVersion": "1.0.0",
             "workflow": "quality-gates",
             "runId": "${GITHUB_RUN_ID}",
             "commitSha": "${GITHUB_SHA}",
-            "stage": "deploy-staging",
+            "stage": "deploy-readiness",
             "artifactName": "${tarball}",
             "artifactSha256": "${actual_sha}",
             "checks": ["sha256 parity", "create-sentinelayer --version"]
           }
           EOF
 
-      - name: Upload deploy-staging proof
+      - name: Upload deploy-readiness proof
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
-          name: deploy-staging-proof
+          name: deploy-readiness-proof
           path: |
-            quality-deploy/deploy-staging.summary.json
-            quality-deploy/deploy-staging.version.txt
+            quality-deploy/deploy-readiness.summary.json
+            quality-deploy/deploy-readiness.version.txt
           if-no-files-found: error
 
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-staging]
+    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness]
     if: ${{ always() }}
     steps:
       - name: Evaluate gate outcomes
@@ -526,11 +526,11 @@ jobs:
           RESULT_SECURITY_SCAN: ${{ needs.security-scan.result }}
           RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
           RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
-          RESULT_DEPLOY_STAGING: ${{ needs.deploy-staging.result }}
+          RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
         run: |
           set -euo pipefail
           failures=0
-          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_STAGING; do
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS; do
             result="${!gate}"
             name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
             echo "${name}: ${result}"
