@@ -7,10 +7,17 @@ import test from "node:test";
 import { loadConfig, setConfigValue } from "../src/config/service.js";
 import { configSchema, getRuntimeSecretSchema, SECRET_CONFIG_KEYS } from "../src/config/schema.js";
 
+const VALID_SENTINELAYER_TOKEN = "sl_env_0123456789abcdef0123456789";
+const VALID_OPENAI_KEY = "sk-test-123456789012345678901234567890";
+
 test("Unit config security: reject plaintext secrets in project config by default", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
   try {
-    await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "sentinelayerToken: project_token\n", "utf-8");
+    await writeFile(
+      path.join(tempRoot, ".sentinelayer.yml"),
+      "sentinelayerToken: sl_project_0123456789abcdef0123456789\n",
+      "utf-8"
+    );
 
     await assert.rejects(
       () =>
@@ -32,13 +39,13 @@ test("Unit config security: environment secrets still resolve without file persi
     const loaded = await loadConfig({
       cwd: tempRoot,
       env: {
-        SENTINELAYER_TOKEN: "env_token",
-        OPENAI_API_KEY: "sk-env",
+        SENTINELAYER_TOKEN: VALID_SENTINELAYER_TOKEN,
+        OPENAI_API_KEY: VALID_OPENAI_KEY,
       },
       homeDir: tempRoot,
     });
-    assert.equal(loaded.resolved.sentinelayerToken, "env_token");
-    assert.equal(loaded.resolved.openaiApiKey, "sk-env");
+    assert.equal(loaded.resolved.sentinelayerToken, VALID_SENTINELAYER_TOKEN);
+    assert.equal(loaded.resolved.openaiApiKey, VALID_OPENAI_KEY);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -68,7 +75,11 @@ test("Unit config security: reject config set secret keys", async () => {
 test("Unit config security: setConfigValue fails closed when persisted payload contains secret keys", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
   try {
-    await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "sentinelayerToken: stale_secret\n", "utf-8");
+    await writeFile(
+      path.join(tempRoot, ".sentinelayer.yml"),
+      "sentinelayerToken: sl_stale_0123456789abcdef0123456789\n",
+      "utf-8"
+    );
     await assert.rejects(
       () =>
         setConfigValue({
@@ -108,6 +119,6 @@ test("Unit config security: persisted config schema excludes secret keys while r
     /unrecognized key/i
   );
 
-  const parsed = getRuntimeSecretSchema().partial().parse({ openaiApiKey: "sk-test" });
-  assert.equal(parsed.openaiApiKey, "sk-test");
+  const parsed = getRuntimeSecretSchema().partial().parse({ openaiApiKey: VALID_OPENAI_KEY });
+  assert.equal(parsed.openaiApiKey, VALID_OPENAI_KEY);
 });

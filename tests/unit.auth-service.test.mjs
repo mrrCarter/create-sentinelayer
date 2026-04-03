@@ -393,19 +393,24 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
 test("Unit auth service: env token bypasses legacy config and legacy plaintext config is rejected", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   try {
-    await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "sentinelayerToken: project_token\n", "utf-8");
+    await writeFile(
+      path.join(tempRoot, ".sentinelayer.yml"),
+      "sentinelayerToken: sl_project_0123456789abcdef0123456789\n",
+      "utf-8"
+    );
+    const envToken = "sl_env_0123456789abcdef0123456789";
 
     const envSession = await resolveActiveAuthSession({
       cwd: tempRoot,
       env: {
-        SENTINELAYER_TOKEN: "env_token",
+        SENTINELAYER_TOKEN: envToken,
       },
       explicitApiUrl: "https://api.example.com",
       autoRotate: false,
       homeDir: tempRoot,
     });
     assert.equal(envSession?.source, "env");
-    assert.equal(envSession?.token, "env_token");
+    assert.equal(envSession?.token, envToken);
     await assert.rejects(
       () =>
         resolveActiveAuthSession({

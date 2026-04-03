@@ -94,6 +94,10 @@ function shouldExposeDebugRequestId() {
   return shouldEmitDebugErrorDetails() && process.stdout.isTTY === true && !isCiEnvironment();
 }
 
+function shouldExposeVerboseErrorDetails(options = {}) {
+  return Boolean(options.verboseErrors) || shouldExposeDebugRequestId();
+}
+
 function formatDebugRequestId(rawRequestId) {
   const requestId = String(rawRequestId || "").trim();
   if (!requestId || !shouldExposeDebugRequestId()) {
@@ -108,6 +112,22 @@ function resolveSafeApiErrorMessage(error) {
     .trim()
     .toUpperCase();
   return API_ERROR_MESSAGE_BY_CODE[code] || "Sentinelayer API request failed.";
+}
+
+function sanitizeRemoteError(remoteError, { includeDetails = false } = {}) {
+  if (!remoteError || typeof remoteError !== "object") {
+    return null;
+  }
+  const safeMessage = resolveSafeApiErrorMessage(remoteError);
+  if (!includeDetails) {
+    return { message: safeMessage };
+  }
+  return {
+    message: safeMessage,
+    code: String(remoteError.code || "UNKNOWN").trim().toUpperCase(),
+    status: Number.isFinite(remoteError.status) ? Number(remoteError.status) : null,
+    requestId: shouldExposeDebugRequestId() ? String(remoteError.requestId || "").trim() || null : null,
+  };
 }
 
 export function formatApiError(error) {
@@ -231,6 +251,7 @@ export function registerAuthCommand(program) {
     .option("--api-url <url>", "Override Sentinelayer API base URL")
     .option("--offline", "Skip remote token validation (`/auth/me`)")
     .option("--no-auto-rotate", "Disable near-expiry auto-rotation for this command")
+    .option("--verbose-errors", "Include backend error metadata in output (use only for local debugging)")
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -246,10 +267,12 @@ export function registerAuthCommand(program) {
       } catch (error) {
         throw new Error(formatApiError(error));
       }
+      const includeErrorDetails = shouldExposeVerboseErrorDetails(options);
 
       const payload = {
         command: "auth status",
         ...status,
+        remoteError: sanitizeRemoteError(status.remoteError, { includeDetails: includeErrorDetails }),
         defaultCredentialsPath: resolveCredentialsFilePath(),
       };
 
@@ -297,13 +320,16 @@ export function registerAuthCommand(program) {
       }
 
       if (status.remoteError) {
-        console.log(pc.red(`Remote validation failed: ${status.remoteError.message}`));
-        const requestId = formatDebugRequestId(status.remoteError.requestId);
-        console.log(
-          pc.gray(
-            `Error code: ${status.remoteError.code} status=${status.remoteError.status}${requestId}`
-          )
-        );
+        const safeMessage = resolveSafeApiErrorMessage(status.remoteError);
+        console.log(pc.red(`Remote validation failed: ${safeMessage}`));
+        if (includeErrorDetails) {
+          const requestId = formatDebugRequestId(status.remoteError.requestId);
+          console.log(
+            pc.gray(
+              `Error code: ${status.remoteError.code} status=${status.remoteError.status}${requestId}`
+            )
+          );
+        }
       } else {
         console.log(pc.yellow("Remote validation was skipped (`--offline`)."));
       }

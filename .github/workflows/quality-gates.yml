@@ -453,6 +453,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [build-artifact]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -484,6 +491,15 @@ jobs:
             echo "::error::Deploy-readiness artifact digest mismatch (expected=${expected_sha}, actual=${actual_sha})."
             exit 1
           fi
+          gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-deploy/deploy-readiness.attestation.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' quality-deploy/deploy-readiness.attestation.json >/dev/null; then
+            echo "::error::Deploy-readiness attestation verification is missing expected digest ${expected_sha}."
+            exit 1
+          fi
+          npm publish "./${artifact_path}" --dry-run --access public >/dev/null
           staging_prefix="$(mktemp -d)"
           npm install --prefix "${staging_prefix}" "./${artifact_path}" --ignore-scripts
           PATH="${staging_prefix}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-deploy/deploy-readiness.version.txt
@@ -496,7 +512,7 @@ jobs:
             "stage": "deploy-readiness",
             "artifactName": "${tarball}",
             "artifactSha256": "${actual_sha}",
-            "checks": ["sha256 parity", "create-sentinelayer --version"]
+            "checks": ["sha256 parity", "attestation verify", "npm publish --dry-run", "create-sentinelayer --version"]
           }
           EOF
 
@@ -507,6 +523,7 @@ jobs:
           path: |
             quality-deploy/deploy-readiness.summary.json
             quality-deploy/deploy-readiness.version.txt
+            quality-deploy/deploy-readiness.attestation.json
           if-no-files-found: error
 
   deploy:

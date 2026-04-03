@@ -5,7 +5,7 @@ on:
     inputs:
       target_version:
         description: "Known-good version to promote as latest (semver, no v-prefix)"
-        required: true
+        required: false
         type: string
       bad_version:
         description: "Optional bad version to deprecate"
@@ -21,6 +21,27 @@ on:
         required: false
         default: false
         type: boolean
+  workflow_call:
+    inputs:
+      target_version:
+        description: "Known-good version to promote as latest (semver, no v-prefix)"
+        required: false
+        type: string
+      bad_version:
+        description: "Optional bad version to deprecate"
+        required: false
+        type: string
+      reason:
+        description: "Rollback reason for npm deprecate message"
+        required: false
+        type: string
+      execute:
+        description: "Execute rollback mutations (false = validation only)"
+        required: false
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [release_rollback_requested]
 
 permissions:
   contents: read
@@ -43,10 +64,10 @@ jobs:
     timeout-minutes: 20
     environment: production
     env:
-      TARGET_VERSION: ${{ github.event.inputs.target_version }}
-      BAD_VERSION: ${{ github.event.inputs.bad_version }}
-      REASON: ${{ github.event.inputs.reason }}
-      EXECUTE: ${{ github.event.inputs.execute }}
+      RAW_TARGET_VERSION: ${{ github.event.inputs.target_version || github.event.client_payload.target_version || '' }}
+      RAW_BAD_VERSION: ${{ github.event.inputs.bad_version || github.event.client_payload.bad_version || '' }}
+      RAW_REASON: ${{ github.event.inputs.reason || github.event.client_payload.reason || '' }}
+      RAW_EXECUTE: ${{ github.event.inputs.execute || github.event.client_payload.execute || 'false' }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -66,6 +87,31 @@ jobs:
           set -euo pipefail
           npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
+
+      - name: Resolve rollback intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_version="$(echo "${RAW_TARGET_VERSION:-}" | tr -d '\r' | xargs || true)"
+          bad_version="$(echo "${RAW_BAD_VERSION:-}" | tr -d '\r' | xargs || true)"
+          reason="$(echo "${RAW_REASON:-}" | tr -d '\r' | xargs || true)"
+          execute_raw="$(echo "${RAW_EXECUTE:-false}" | tr -d '\r' | xargs || true)"
+          execute_normalized="$(echo "${execute_raw}" | tr '[:upper:]' '[:lower:]')"
+          case "${execute_normalized}" in
+            1|true|yes|on) execute="true" ;;
+            0|false|no|off|'') execute="false" ;;
+            *)
+              echo "::error::Invalid execute value '${execute_raw}'. Expected true/false."
+              exit 1
+              ;;
+          esac
+          if [[ -z "${reason}" ]]; then
+            reason="Rollback in progress due to regression"
+          fi
+          echo "TARGET_VERSION=${target_version}" >> "$GITHUB_ENV"
+          echo "BAD_VERSION=${bad_version}" >> "$GITHUB_ENV"
+          echo "REASON=${reason}" >> "$GITHUB_ENV"
+          echo "EXECUTE=${execute}" >> "$GITHUB_ENV"
 
       - name: Verify production environment protections
         if: env.EXECUTE == 'true'
@@ -93,18 +139,45 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${TARGET_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          target_version="$(echo "${TARGET_VERSION:-}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${target_version}" ]]; then
+            if [[ "${EXECUTE}" == "true" ]]; then
+              echo "::error::target_version is required when execute=true."
+              exit 1
+            fi
+            target_version="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json | jq -r '
+              if type == "string" then .
+              elif type == "object" then .latest // ""
+              else ""
+              end
+            ')"
+            if [[ -z "${target_version}" ]]; then
+              echo "::error::Unable to infer latest published version for ${PACKAGE_NAME}."
+              exit 1
+            fi
+            echo "No target_version supplied; inferred latest published version ${target_version} for validation mode."
+          fi
+          if [[ "${target_version}" == v* ]]; then
+            target_version="${target_version#v}"
+          fi
+          bad_version="$(echo "${BAD_VERSION:-}" | tr -d '\r' | xargs || true)"
+          if [[ "${bad_version}" == v* ]]; then
+            bad_version="${bad_version#v}"
+          fi
+          echo "TARGET_VERSION=${target_version}" >> "$GITHUB_ENV"
+          echo "BAD_VERSION=${bad_version}" >> "$GITHUB_ENV"
+          if [[ ! "${target_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::target_version must be semver without v-prefix."
             exit 1
           fi
           versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
-          if ! echo "${versions_json}" | jq -e --arg target "${TARGET_VERSION}" '
+          if ! echo "${versions_json}" | jq -e --arg target "${target_version}" '
             if type == "array" then any(.[]; . == $target) else . == $target end
           ' >/dev/null; then
-            echo "::error::Target version ${TARGET_VERSION} is not published for ${PACKAGE_NAME}."
+            echo "::error::Target version ${target_version} is not published for ${PACKAGE_NAME}."
             exit 1
           fi
-          if [[ -n "${BAD_VERSION}" ]] && [[ ! "${BAD_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ -n "${bad_version}" ]] && [[ ! "${bad_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::bad_version must be semver without v-prefix."
             exit 1
           fi
