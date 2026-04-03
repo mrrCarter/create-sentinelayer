@@ -90,3 +90,5 @@
 - When `npm run check` only validates entry files, run explicit `node --check` on newly added module files before full test runs to catch extraction syntax regressions early.
 - For release workflows that allow `workflow_dispatch`, force non-tag dispatches into dry-run validation mode and still enforce required-check verification so manual runs cannot bypass gate assumptions.
 - Atomic JSON writes must never delete destination files as a rename fallback; stage via `.new`, promote with bounded retry, and include startup fallback recovery to avoid transient data-loss windows.
+- Human-readable CLI auth output should avoid exposing local credential metadata paths by default; require explicit `--show-paths` opt-in while retaining full paths in JSON mode for automation.
+- Session metadata durability requires fsync on both the temp file and the parent directory after atomic rename (best-effort across platforms), otherwise power-loss windows can corrupt auth state.

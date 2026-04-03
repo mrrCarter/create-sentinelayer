@@ -480,6 +480,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Add deterministic rebuild-hash proof verification in publish path (`create-sentinelayer.sha256` vs `create-sentinelayer.rebuild.sha256`).
 - [x] Replace static broad auth token scope with validated least-privilege default (`cli_session`) and explicit scoped override path.
 - [x] Add assignment-ledger `.new` fallback recovery and test for missing-ledger restoration.
+- [x] Pin `release-please` runner image to `ubuntu-22.04` for deterministic release automation.
+- [x] Redact credential metadata paths from default `auth` terminal output; add explicit `--show-paths` opt-in.
+- [x] Harden session metadata writes with temp-file fsync + post-rename parent-directory fsync (best-effort).
 - [x] Run `npm run verify` locally.
 - [x] Run local gates: `/omargate deep` and `/audit` with `p1=0`, `p2=0`.
 - [ ] Push latest fixes to PR #114 and run `gh run watch` for Omar Gate.

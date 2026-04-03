@@ -124,20 +124,50 @@ async function readMetadata({ homeDir } = {}) {
   }
 }
 
+async function syncDirectoryBestEffort(dirPath) {
+  let directoryHandle = null;
+  try {
+    directoryHandle = await fsp.open(dirPath, "r");
+    await directoryHandle.sync();
+  } catch (error) {
+    const code = String(error?.code || "");
+    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR", "ENOENT"].includes(code)) {
+      throw error;
+    }
+  } finally {
+    if (directoryHandle) {
+      await directoryHandle.close();
+    }
+  }
+}
+
 async function writeMetadata(filePath, metadata) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
   const serialized = `${JSON.stringify(metadata, null, 2)}\n`;
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tempPath, serialized, {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  const tempHandle = await fsp.open(tempPath, "w", 0o600);
+  try {
+    await tempHandle.writeFile(serialized, { encoding: "utf-8" });
+    await tempHandle.sync();
+  } finally {
+    await tempHandle.close();
+  }
   try {
     await fsp.chmod(tempPath, 0o600);
   } catch {
     // Windows does not reliably support POSIX chmod semantics.
   }
-  await fsp.rename(tempPath, filePath);
+  let renamed = false;
+  try {
+    await fsp.rename(tempPath, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await fsp.rm(tempPath, { force: true });
+    }
+  }
+  await syncDirectoryBestEffort(directoryPath);
   try {
     await fsp.chmod(filePath, 0o600);
   } catch {

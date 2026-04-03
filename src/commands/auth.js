@@ -22,6 +22,13 @@ function shouldEmitJson(options, command) {
   return local || globalFromCommand;
 }
 
+function shouldShowPaths(options, command) {
+  const local = Boolean(options && options.showPaths);
+  const globalFromCommand =
+    command && command.optsWithGlobals ? Boolean(command.optsWithGlobals().showPaths) : false;
+  return local || globalFromCommand;
+}
+
 function parsePositiveNumber(rawValue, field, fallbackValue) {
   if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
     return fallbackValue;
@@ -86,6 +93,7 @@ export function registerAuthCommand(program) {
       "--token-scope <scope>",
       "API token scope override (default: cli_session; elevated: github_app_bridge)"
     )
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const timeoutMs = parsePositiveNumber(options.timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
@@ -122,6 +130,7 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       console.log(pc.bold("Authentication successful"));
       console.log(pc.gray(`API: ${result.apiUrl}`));
@@ -130,8 +139,10 @@ export function registerAuthCommand(program) {
       if (result.tokenExpiresAt) {
         console.log(pc.gray(`Token expiry: ${result.tokenExpiresAt}`));
       }
-      if (result.filePath) {
+      if (result.filePath && showPaths) {
         console.log(pc.gray(`Session metadata: ${result.filePath}`));
+      } else if (result.filePath) {
+        console.log(pc.gray("Session metadata saved locally (use --show-paths to display path)."));
       }
       if (!result.browserOpened && result.authorizeUrl) {
         console.log(pc.yellow("Open this URL to approve sign-in:"));
@@ -145,6 +156,7 @@ export function registerAuthCommand(program) {
     .option("--api-url <url>", "Override Sentinelayer API base URL")
     .option("--offline", "Skip remote token validation (`/auth/me`)")
     .option("--no-auto-rotate", "Disable near-expiry auto-rotation for this command")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let status;
@@ -170,6 +182,7 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       console.log(pc.bold("Authentication status"));
       console.log(pc.gray(`API: ${status.apiUrl}`));
@@ -182,8 +195,10 @@ export function registerAuthCommand(program) {
       console.log(pc.gray(`Token source: ${status.source}`));
       if (status.source === "session") {
         console.log(pc.gray(`Session storage: ${status.storage || "unknown"}`));
-        if (status.filePath) {
+        if (status.filePath && showPaths) {
           console.log(pc.gray(`Session metadata: ${status.filePath}`));
+        } else if (status.filePath) {
+          console.log(pc.gray("Session metadata present locally (use --show-paths to display path)."));
         }
       }
       if (status.tokenExpiresAt) {
@@ -219,6 +234,7 @@ export function registerAuthCommand(program) {
     .alias("list")
     .description("List persisted local session metadata for resume and auditability")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let result;
@@ -242,6 +258,8 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
+      let hiddenPathCount = 0;
 
       console.log(pc.bold("Stored sessions"));
       console.log(pc.gray(`API: ${result.apiUrl}`));
@@ -264,9 +282,14 @@ export function registerAuthCommand(program) {
         if (session.updatedAt) {
           console.log(pc.gray(`  updated_at: ${session.updatedAt}`));
         }
-        if (session.filePath) {
+        if (session.filePath && showPaths) {
           console.log(pc.gray(`  metadata: ${session.filePath}`));
+        } else if (session.filePath) {
+          hiddenPathCount += 1;
         }
+      }
+      if (hiddenPathCount > 0) {
+        console.log(pc.gray(`Metadata paths hidden for ${hiddenPathCount} session(s); use --show-paths to display.`));
       }
     });
 
@@ -275,6 +298,7 @@ export function registerAuthCommand(program) {
     .description("Revoke a remote API token and clear matching local session metadata")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
     .option("--token-id <id>", "API token id to revoke (defaults to active session token id)")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let result;
@@ -298,6 +322,7 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       console.log(pc.green(`Revoked token: ${result.tokenId}`));
       console.log(pc.gray(`API: ${result.apiUrl}`));
@@ -312,8 +337,10 @@ export function registerAuthCommand(program) {
       } else {
         console.log(pc.gray("No local session metadata matched the revoked token id."));
       }
-      if (result.filePath) {
+      if (result.filePath && showPaths) {
         console.log(pc.gray(`Session metadata path: ${result.filePath}`));
+      } else if (result.filePath) {
+        console.log(pc.gray("Session metadata was updated locally (use --show-paths to display path)."));
       }
     });
 
@@ -322,6 +349,7 @@ export function registerAuthCommand(program) {
     .description("Clear local session and optionally revoke remote API token")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
     .option("--local-only", "Clear local session only (skip remote revoke)")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let result;
@@ -345,6 +373,7 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       if (!result.hadStoredSession) {
         console.log(pc.yellow("No stored session was found."));
@@ -364,8 +393,10 @@ export function registerAuthCommand(program) {
           )
         );
       }
-      if (result.filePath) {
+      if (result.filePath && showPaths) {
         console.log(pc.gray(`Session metadata path: ${result.filePath}`));
+      } else if (result.filePath) {
+        console.log(pc.gray("Session metadata was cleared locally (use --show-paths to display path)."));
       }
     });
 }
