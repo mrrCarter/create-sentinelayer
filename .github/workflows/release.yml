@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -35,8 +37,8 @@ env:
   OMAR_PR_RUN_MAX_AGE_HOURS: "24"
 
 concurrency:
-  group: release-control-create-sentinelayer
-  cancel-in-progress: false
+  group: release-control-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', inputs.release_tag) || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   resolve-release-flags:
@@ -62,6 +64,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
           if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
@@ -170,6 +173,16 @@ jobs:
             commit_verified="$(echo "${commit_json}" | jq -r '.commit.verification.verified // false')"
             if [[ "${commit_verified}" != "true" ]]; then
               echo "::error::Tag target commit '${target_sha}' is not cryptographically verified."
+              exit 1
+            fi
+            default_branch="${DEFAULT_BRANCH:-main}"
+            default_branch_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${default_branch}" -H "Accept: application/vnd.github+json")"
+            default_branch_sha="$(echo "${default_branch_json}" | jq -r '.commit.sha // ""')"
+            test -n "${default_branch_sha}" || (echo "::error::Unable to resolve default branch head SHA for '${default_branch}'." && exit 1)
+            compare_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/compare/${target_sha}...${default_branch_sha}" -H "Accept: application/vnd.github+json")"
+            compare_status="$(echo "${compare_json}" | jq -r '.status // ""')"
+            if [[ "${compare_status}" != "ahead" ]] && [[ "${compare_status}" != "identical" ]]; then
+              echo "::error::Release tag commit ${target_sha} is not on protected default branch '${default_branch}' lineage (compare_status=${compare_status})."
               exit 1
             fi
             echo "Verified signed release provenance for tag '${tag_name}' (commit=${target_sha})."

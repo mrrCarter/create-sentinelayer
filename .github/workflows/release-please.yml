@@ -366,6 +366,68 @@ jobs:
           echo "::error::Timed out waiting for Omar Gate on ${TARGET_SHA}."
           exit 1
 
+      - name: Verify release workflow baseline run for target SHA
+        id: release_workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source scripts/release/backoff.sh
+          retry_attempt=0
+          max_backoff_retries=24
+          retry_with_backoff() {
+            local context="${1:-release-workflow}"
+            retry_attempt=$((retry_attempt + 1))
+            if (( retry_attempt > max_backoff_retries )); then
+              echo "::error::Exceeded bounded retry budget while waiting for ${context}."
+              exit 1
+            fi
+            sl_backoff_sleep "${context}" "${retry_attempt}"
+          }
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            api_status=0
+            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              echo "release workflow lookup timed out or failed (status=${api_status}); retrying."
+              retry_with_backoff "release workflow lookup"
+              continue
+            fi
+            release_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/release.yml" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "push")
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+            ')"
+            if [[ -z "${release_run}" ]]; then
+              echo "Waiting for release workflow push baseline run on ${TARGET_SHA}."
+              retry_with_backoff "release workflow missing run"
+              continue
+            fi
+            release_run_id="$(echo "${release_run}" | jq -r '.id // ""')"
+            release_run_url="$(echo "${release_run}" | jq -r '.html_url // ""')"
+            status="$(echo "${release_run}" | jq -r '.status // ""')"
+            conclusion="$(echo "${release_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              echo "release workflow run ${release_run_id} status=${status}; waiting."
+              retry_with_backoff "release workflow pending run"
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::release workflow run ${release_run_id} for ${TARGET_SHA} concluded with '${conclusion}'."
+              exit 1
+            fi
+            echo "release_run_id=${release_run_id}" >> "$GITHUB_OUTPUT"
+            echo "Release workflow baseline run passed for ${TARGET_SHA} via run ${release_run_id} (${release_run_url})."
+            exit 0
+          done
+          echo "::error::Timed out waiting for release workflow baseline run on ${TARGET_SHA}."
+          exit 1
+
       - name: Validate quality build artifact lineage
         shell: bash
         env:

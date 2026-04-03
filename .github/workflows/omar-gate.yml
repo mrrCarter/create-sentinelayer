@@ -174,29 +174,21 @@ jobs:
           done
           echo "::error::Timed out waiting for Quality Summary check on ${TARGET_SHA}."
           exit 1
-      - name: Mask scan secrets in logs
+      - name: Validate and mask scan secrets
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          echo "::add-mask::${SENTINELAYER_TOKEN}"
-          echo "::add-mask::${OPENAI_API_KEY}"
-      - name: Validate Sentinelayer token secret
-        shell: bash
-        env:
-          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
-      - name: Validate OpenAI key secret for Omar LLM scan
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+          test -n "${SENTINELAYER_TOKEN}" || (echo "::error::Missing SENTINELAYER_TOKEN" && exit 1)
+          test -n "${OPENAI_API_KEY}" || (echo "::error::Missing OPENAI_API_KEY" && exit 1)
+          if [[ -n "${SENTINELAYER_TOKEN}" ]]; then
+            echo "::add-mask::${SENTINELAYER_TOKEN}"
+          fi
+          if [[ -n "${OPENAI_API_KEY}" ]]; then
+            echo "::add-mask::${OPENAI_API_KEY}"
+          fi
       - name: Enforce pinned Omar action SHA policy
         shell: bash
         run: |
