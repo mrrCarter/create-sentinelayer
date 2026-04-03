@@ -28,7 +28,7 @@ env:
   NPM_VERSION_PIN: "10.8.2"
 
 concurrency:
-  group: release-create-sentinelayer
+  group: release-control-create-sentinelayer
   cancel-in-progress: false
 
 jobs:
@@ -170,6 +170,8 @@ jobs:
   preflight:
     name: Release Preflight (Verify + Security)
     runs-on: ubuntu-22.04
+    needs: [resolve-release-flags]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.dry_run == 'true') }}
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -194,6 +196,15 @@ jobs:
           set -euo pipefail
           npm config set registry "https://registry.npmjs.org/"
           sha256sum package-lock.json > package-lock.sha256
+
+      - name: Configure npm cache for deterministic rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${GITHUB_WORKSPACE}/.npm-cache-release"
+          mkdir -p "${cache_dir}"
+          npm config set cache "${cache_dir}"
+          echo "NPM_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -227,7 +238,8 @@ jobs:
           git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
           pushd "${rebuild_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
-          npm ci --ignore-scripts
+          npm config set cache "${NPM_CACHE_DIR}"
+          npm ci --ignore-scripts --offline
           rebuild_pack_json="$(npm pack --json)"
           rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
           test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)

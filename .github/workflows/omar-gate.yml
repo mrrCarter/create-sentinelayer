@@ -66,6 +66,46 @@ jobs:
             echo "::error::Omar Gate secrets are restricted to trusted same-repo pull requests."
             exit 1
           fi
+      - name: Wait for Quality Summary gate
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 900))
+          while (( SECONDS < deadline )); do
+            checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
+            quality_run="$(echo "${checks_json}" | jq -c '
+              [.check_runs[]
+                | select(.name == "Quality Summary")
+                | select((.app.slug // "") == "github-actions")
+                | select((.details_url // "") | contains("/actions/runs/"))
+              ] | sort_by(.started_at // .created_at) | last // empty
+            ')"
+            if [[ -z "${quality_run}" ]]; then
+              echo "Waiting for Quality Summary check run on ${TARGET_SHA}."
+              sleep 10
+              continue
+            fi
+            status="$(echo "${quality_run}" | jq -r '.status')"
+            conclusion="$(echo "${quality_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              echo "Quality Summary status=${status}; waiting."
+              sleep 10
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::Quality Summary gate must pass before Omar Gate (conclusion=${conclusion})."
+              exit 1
+            fi
+            echo "Quality Summary check passed for ${TARGET_SHA}."
+            exit 0
+          done
+          echo "::error::Timed out waiting for Quality Summary check on ${TARGET_SHA}."
+          exit 1
       - name: Validate Sentinelayer token secret
         shell: bash
         env:
