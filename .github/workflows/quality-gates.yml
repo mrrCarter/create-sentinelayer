@@ -278,10 +278,62 @@ jobs:
         with:
           subject-path: create-sentinelayer-*.tgz
 
+  release-readiness:
+    name: Release Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [build-artifact]
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-readiness
+
+      - name: Verify CLI package smoke install from quality artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(tr -d '\r\n' < quality-readiness/quality-build.tarball)"
+          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball path." && exit 1)
+          test -f "quality-readiness/${tarball}" || (echo "::error::Missing quality tarball quality-readiness/${tarball}." && exit 1)
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "quality-readiness/${tarball}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-readiness/create-sentinelayer.version.txt
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sl --version | tee quality-readiness/sl.version.txt
+          sha256="$(awk 'NF {print $1; exit}' quality-readiness/quality-build.sha256)"
+          cat > quality-readiness/release-readiness.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "artifactName": "${tarball}",
+            "artifactSha256": "${sha256}",
+            "smokeChecks": ["create-sentinelayer --version", "sl --version"]
+          }
+          EOF
+
+      - name: Upload release-readiness proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-readiness-proof
+          path: |
+            quality-readiness/release-readiness.summary.json
+            quality-readiness/create-sentinelayer.version.txt
+            quality-readiness/sl.version.txt
+          if-no-files-found: error
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact]
+    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness]
     if: ${{ always() }}
     steps:
       - name: Evaluate gate outcomes
@@ -294,10 +346,11 @@ jobs:
           RESULT_E2E_PACKAGING: ${{ needs.e2e-packaging.result }}
           RESULT_SECURITY_SCAN: ${{ needs.security-scan.result }}
           RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
         run: |
           set -euo pipefail
           failures=0
-          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT; do
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS; do
             result="${!gate}"
             name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
             echo "${name}: ${result}"

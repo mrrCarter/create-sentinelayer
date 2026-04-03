@@ -174,7 +174,7 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
-          REQUIRED_CHECKS: Omar Gate,Quality Summary
+          REQUIRED_CHECKS: Omar Gate,Quality Summary,Release Readiness
         run: |
           set -euo pipefail
           resolved_sha="${TARGET_SHA}"
@@ -205,6 +205,7 @@ jobs:
             case "${1}" in
               "Omar Gate") echo "omar-gate.yml" ;;
               "Quality Summary") echo "quality-gates.yml" ;;
+              "Release Readiness") echo "quality-gates.yml" ;;
               *) return 1 ;;
             esac
           }
@@ -212,6 +213,14 @@ jobs:
             case "${1}" in
               "Omar Gate") echo ".github/workflows/omar-gate.yml" ;;
               "Quality Summary") echo ".github/workflows/quality-gates.yml" ;;
+              "Release Readiness") echo ".github/workflows/quality-gates.yml" ;;
+              *) return 1 ;;
+            esac
+          }
+          allowed_events_for_check() {
+            case "${1}" in
+              "Omar Gate") echo "[\"pull_request\"]" ;;
+              "Quality Summary"|"Release Readiness") echo "[\"pull_request\", \"push\"]" ;;
               *) return 1 ;;
             esac
           }
@@ -229,11 +238,18 @@ jobs:
                 echo "::error::Missing workflow identity mapping for required check '${check_name}'."
                 exit 1
               fi
+              allowed_events_json="$(allowed_events_for_check "${check_name}" || true)"
+              if [[ -z "${allowed_events_json}" ]]; then
+                echo "::error::Missing allowed event mapping for required check '${check_name}'."
+                exit 1
+              fi
               runs_json="$(gh api "repos/${REPO}/actions/workflows/${workflow_file}/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
-              latest_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path "${workflow_path}" '
+              latest_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path "${workflow_path}" --arg repo "${REPO}" --argjson allowedEvents "${allowed_events_json}" '
                 [.workflow_runs[]
                   | select((.head_sha // "") == $sha)
                   | select(((.path // "") | split("@")[0]) == $path)
+                  | select((($allowedEvents | index(.event // "")) != null))
+                  | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
                 ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
               ')"
               if [[ -z "${latest_run}" ]]; then
@@ -248,6 +264,7 @@ jobs:
               fi
               status="$(echo "${latest_run}" | jq -r '.status')"
               conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"
+              event_name="$(echo "${latest_run}" | jq -r '.event // ""')"
               if [[ "${status}" != "completed" ]]; then
                 echo "Required check '${check_name}' status=${status}; waiting."
                 pending=1
@@ -263,7 +280,7 @@ jobs:
               if [[ "${check_name}" == "Omar Gate" ]]; then
                 omar_run_id="${run_id}"
               fi
-              echo "Required check '${check_name}' passed."
+              echo "Required check '${check_name}' passed (event=${event_name}, run=${run_id})."
             done
             if [[ "${pending}" -eq 0 ]]; then
               echo "target_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
@@ -292,6 +309,7 @@ jobs:
       attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
       QUALITY_RUN_ID: ${{ needs.verify-required-checks.outputs.quality_run_id }}
       TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
     steps:
@@ -385,6 +403,25 @@ jobs:
           set -euo pipefail
           test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality workflow run id from verify-required-checks." && exit 1)
           gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
+
+      - name: Verify quality-build attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json from quality workflow artifacts." && exit 1)
+          quality_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-build.manifest.json)"
+          quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
+          test -n "${quality_artifact_name}" || (echo "::error::Unable to parse quality artifact name from manifest." && exit 1)
+          test -n "${quality_sha}" || (echo "::error::Unable to parse quality artifact sha256 from manifest." && exit 1)
+          test -f "quality-proof/${quality_artifact_name}" || (echo "::error::Missing quality artifact file quality-proof/${quality_artifact_name}." && exit 1)
+          gh attestation verify "quality-proof/${quality_artifact_name}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-proof/quality-attestation.verify.json
+          if ! jq -e --arg expectedSha "${quality_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' quality-proof/quality-attestation.verify.json >/dev/null; then
+            echo "::error::Quality artifact attestation does not include expected digest ${quality_sha}."
+            exit 1
+          fi
 
       - name: Verify cross-workflow build digest lineage
         shell: bash

@@ -233,11 +233,13 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
       tokenTtlDays: 30,
+      allowFileStorageFallback: true,
       ide: "unit-test",
       cliVersion: "0.0.0-test",
     });
     assert.equal(loginResult.apiUrl, mock.apiUrl);
     assert.equal(loginResult.storage, "file");
+    assert.equal(loginResult.storageDowngraded, true);
     assert.equal(loginResult.user.githubUsername, "demo-user");
     assert.equal(mock.state.tokenIssueBodies.length, 1);
     assert.equal(mock.state.tokenIssueBodies[0].scope, "cli_session");
@@ -334,6 +336,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
       tokenTtlDays: 30,
+      allowFileStorageFallback: true,
       ide: "unit-test",
       cliVersion: "0.0.0-test",
     });
@@ -513,6 +516,7 @@ test("Unit auth service: login fails fast for denied polling status", async () =
           timeoutMs: 5000,
           tokenLabel: "unit-test-token",
           tokenTtlDays: 30,
+          allowFileStorageFallback: true,
           ide: "unit-test",
           cliVersion: "0.0.0-test",
         }),
@@ -563,6 +567,7 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
           timeoutMs: 5000,
           tokenLabel: "unit-test-token",
           tokenTtlDays: 30,
+          allowFileStorageFallback: true,
           ide: "unit-test",
           cliVersion: "0.0.0-test",
         }),
@@ -604,6 +609,7 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
       tokenTtlDays: 30,
+      allowFileStorageFallback: true,
       ide: "unit-test",
       cliVersion: "0.0.0-test",
     });
@@ -619,7 +625,7 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
         tokenExpiresAt: "2026-04-08T00:00:00.000Z",
         user: stored.user,
       },
-      { homeDir: tempRoot }
+      { homeDir: tempRoot, allowFileStorageFallback: true }
     );
 
     const resolved = await resolveActiveAuthSession({
@@ -651,6 +657,44 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
   }
 });
 
+test("Unit auth service: privileged token scope requires explicit opt-in flag", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi();
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 5000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          tokenScope: "github_app_bridge",
+          allowFileStorageFallback: true,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      /requires explicit privileged approval/i
+    );
+    assert.equal(mock.state.tokenIssueCalls, 0);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth service: login supports explicit privileged token scope override", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
@@ -669,6 +713,8 @@ test("Unit auth service: login supports explicit privileged token scope override
       tokenLabel: "unit-test-token",
       tokenTtlDays: 30,
       tokenScope: "github_app_bridge",
+      allowPrivilegedScope: true,
+      allowFileStorageFallback: true,
       ide: "unit-test",
       cliVersion: "0.0.0-test",
     });
@@ -705,6 +751,7 @@ test("Unit auth service: login rejects unknown token scope overrides", async () 
           tokenLabel: "unit-test-token",
           tokenTtlDays: 30,
           tokenScope: "global_admin",
+          allowFileStorageFallback: true,
           ide: "unit-test",
           cliVersion: "0.0.0-test",
         }),

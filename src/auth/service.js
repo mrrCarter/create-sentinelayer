@@ -165,13 +165,18 @@ function defaultTokenLabel() {
   return `sl-cli-session-${stamp}`;
 }
 
-function resolveApiTokenScope(rawScope = "") {
+function resolveApiTokenScope(rawScope = "", { allowPrivilegedScope = false } = {}) {
   const normalized = String(rawScope || "").trim().toLowerCase();
   if (!normalized) {
     return DEFAULT_API_TOKEN_SCOPE;
   }
   if (!ALLOWED_API_TOKEN_SCOPES.has(normalized)) {
     throw new Error(`tokenScope must be one of: ${[...ALLOWED_API_TOKEN_SCOPES].join(", ")}.`);
+  }
+  if (normalized === PRIVILEGED_API_TOKEN_SCOPE && !allowPrivilegedScope) {
+    throw new Error(
+      "tokenScope github_app_bridge requires explicit privileged approval. Re-run with --allow-privileged-scope."
+    );
   }
   return normalized;
 }
@@ -334,6 +339,7 @@ async function issueApiToken({
   tokenLabel,
   tokenTtlDays,
   tokenScope = "",
+  allowPrivilegedScope = false,
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
@@ -343,7 +349,7 @@ async function issueApiToken({
     headers: toAuthHeader(authToken),
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: resolveApiTokenScope(tokenScope),
+      scope: resolveApiTokenScope(tokenScope, { allowPrivilegedScope }),
       llm_credential_mode: "managed",
       expires_in_days: expiresInDays,
     },
@@ -467,6 +473,7 @@ async function rotateStoredApiTokenIfNeeded({
   tokenLabel,
   tokenTtlDays,
   tokenScope,
+  allowPrivilegedScope = false,
   homeDir,
 }) {
   if (!session || !session.token || !session.tokenExpiresAt) {
@@ -482,6 +489,7 @@ async function rotateStoredApiTokenIfNeeded({
     tokenLabel,
     tokenTtlDays,
     tokenScope,
+    allowPrivilegedScope,
   });
 
   const nextSession = await writeStoredSession(
@@ -493,7 +501,10 @@ async function rotateStoredApiTokenIfNeeded({
       tokenExpiresAt: issued.expires_at || null,
       user: session.user,
     },
-    { homeDir }
+    {
+      homeDir,
+      allowFileStorageFallback: String(session?.storage || "").trim().toLowerCase() === "file",
+    }
   );
 
   if (session.tokenId) {
@@ -548,6 +559,8 @@ async function rotateStoredApiTokenIfNeeded({
  *   tokenLabel?: string,
  *   tokenTtlDays?: number,
  *   tokenScope?: string,
+ *   allowPrivilegedScope?: boolean,
+ *   allowFileStorageFallback?: boolean,
  *   ide?: string,
  *   cliVersion?: string,
  *   signal?: AbortSignal | null,
@@ -580,6 +593,8 @@ export async function loginAndPersistSession({
   tokenLabel = "",
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   tokenScope = "",
+  allowPrivilegedScope = false,
+  allowFileStorageFallback = false,
   ide = DEFAULT_IDE_NAME,
   cliVersion = "",
   signal = null,
@@ -629,6 +644,7 @@ export async function loginAndPersistSession({
     tokenLabel,
     tokenTtlDays,
     tokenScope,
+    allowPrivilegedScope,
   });
 
   const stored = await writeStoredSession(
@@ -640,7 +656,7 @@ export async function loginAndPersistSession({
       tokenExpiresAt: issuedApiToken.expires_at || null,
       user,
     },
-    { homeDir }
+    { homeDir, allowFileStorageFallback }
   );
 
   return {
@@ -652,6 +668,7 @@ export async function loginAndPersistSession({
     tokenPrefix: stored.tokenPrefix,
     tokenExpiresAt: stored.tokenExpiresAt,
     storage: stored.storage,
+    storageDowngraded: Boolean(stored.storageDowngraded),
     filePath: stored.filePath,
   };
 }
@@ -668,6 +685,7 @@ export async function loginAndPersistSession({
  *   tokenLabel?: string,
  *   tokenTtlDays?: number,
  *   tokenScope?: string,
+ *   allowPrivilegedScope?: boolean,
  *   homeDir?: string
  * }} [options]
  * @returns {Promise<null | {
@@ -699,6 +717,7 @@ export async function resolveActiveAuthSession({
   tokenLabel = "",
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   tokenScope = "",
+  allowPrivilegedScope = false,
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
@@ -711,6 +730,7 @@ export async function resolveActiveAuthSession({
       source: "env",
       user: null,
       storage: "env",
+      storageDowngraded: false,
       tokenId: null,
       tokenPrefix: null,
       tokenExpiresAt: null,
@@ -729,6 +749,7 @@ export async function resolveActiveAuthSession({
       source: "config",
       user: null,
       storage: "config",
+      storageDowngraded: false,
       tokenId: null,
       tokenPrefix: null,
       tokenExpiresAt: null,
@@ -759,6 +780,7 @@ export async function resolveActiveAuthSession({
         tokenLabel,
         tokenTtlDays,
         tokenScope,
+        allowPrivilegedScope,
         homeDir,
       });
       active = rotateResult.session;
@@ -778,6 +800,7 @@ export async function resolveActiveAuthSession({
     source: "session",
     user: normalizeUser(active.user || {}),
     storage: active.storage,
+    storageDowngraded: Boolean(active.storageDowngraded),
     tokenId: active.tokenId || null,
     tokenPrefix: active.tokenPrefix || null,
     tokenExpiresAt: active.tokenExpiresAt || null,

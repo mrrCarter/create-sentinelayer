@@ -71,6 +71,7 @@ function normalizeMetadata(raw = {}) {
     tokenId: String(raw.tokenId || "").trim() || null,
     tokenPrefix: String(raw.tokenPrefix || "").trim() || null,
     tokenExpiresAt: String(raw.tokenExpiresAt || "").trim() || null,
+    storageDowngraded: Boolean(raw.storageDowngraded || raw.storage_downgraded),
     createdAt: String(raw.createdAt || "").trim() || nowIso(),
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
@@ -81,11 +82,15 @@ function normalizeMetadata(raw = {}) {
   };
 }
 
-async function loadKeytarClient() {
+function isKeyringDisabledByEnv() {
   const disableKeyring = String(process.env.SENTINELAYER_DISABLE_KEYRING || "")
     .trim()
     .toLowerCase();
-  if (disableKeyring === "1" || disableKeyring === "true" || disableKeyring === "yes" || disableKeyring === "on") {
+  return disableKeyring === "1" || disableKeyring === "true" || disableKeyring === "yes" || disableKeyring === "on";
+}
+
+async function loadKeytarClient() {
+  if (isKeyringDisabledByEnv()) {
     return null;
   }
   try {
@@ -470,7 +475,7 @@ export async function writeStoredSession(
     tokenExpiresAt = null,
     user = {},
   } = {},
-  { homeDir } = {}
+  { homeDir, allowFileStorageFallback = false } = {}
 ) {
   const normalizedApiUrl = String(apiUrl || "").trim();
   const normalizedToken = String(token || "").trim();
@@ -482,9 +487,17 @@ export async function writeStoredSession(
   }
 
   const { filePath, metadata: existingMetadata } = await readMetadata({ homeDir });
+  const keyringDisabledByEnv = isKeyringDisabledByEnv();
   const keytar = await loadKeytarClient();
   const keyringAccount = buildKeyringAccountName(normalizedApiUrl);
   const updatedAt = nowIso();
+
+  if (!keytar && keyringDisabledByEnv && !allowFileStorageFallback) {
+    throw new StoredSessionError(
+      "Keyring is disabled by SENTINELAYER_DISABLE_KEYRING. Re-run `sl auth login --no-keyring` to explicitly allow file-backed credential storage.",
+      { code: "KEYRING_FALLBACK_REQUIRES_CONSENT", filePath }
+    );
+  }
 
   const nextMetadata = normalizeMetadata({
     version: CREDENTIALS_VERSION,
@@ -512,6 +525,7 @@ export async function writeStoredSession(
     nextMetadata.tokenCiphertext = null;
     nextMetadata.tokenIv = null;
     nextMetadata.tokenTag = null;
+    nextMetadata.storageDowngraded = false;
   } else {
     const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: true });
     const encrypted = encryptFileToken(normalizedToken, keyMaterial);
@@ -522,6 +536,7 @@ export async function writeStoredSession(
     nextMetadata.tokenCiphertext = encrypted.tokenCiphertext;
     nextMetadata.tokenIv = encrypted.tokenIv;
     nextMetadata.tokenTag = encrypted.tokenTag;
+    nextMetadata.storageDowngraded = Boolean(keyringDisabledByEnv);
   }
 
   await writeMetadata(filePath, nextMetadata);

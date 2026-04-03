@@ -119,3 +119,6 @@
 - Retry jitter hardening should avoid both deterministic lockstep and weak RNG fallbacks; use cryptographic randomness first and deterministic hash fallback only when crypto entropy is unavailable.
 - Persisted config security should not expose bypass toggles (`allowPlaintextSecrets`) even for compatibility paths; secret keys must stay blocked at schema and write-time validation layers.
 - Polling APIs should avoid static idempotency keys across attempts; suffix keys with attempt/sequence (`session:poll:<n>`) so server-side dedupe does not mask status transitions.
+- For auth controls, treat privileged token scopes and storage-downgrade paths as explicit consent flows (`--allow-privileged-scope`, `--no-keyring`) instead of silent option/env behavior.
+- Quality pipelines need a dedicated release-readiness smoke stage (artifact install + binary checks) to avoid recurring CI governance findings even when lint/test/security/build pass.
+- Release provenance checks should validate workflow-run source event constraints and cryptographic attestation verification, not just digest lineage and workflow path matching.

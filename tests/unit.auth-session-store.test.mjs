@@ -33,10 +33,11 @@ test("Unit auth session store: file storage round-trip is deterministic when key
           isAdmin: true,
         },
       },
-      { homeDir: tempRoot }
+      { homeDir: tempRoot, allowFileStorageFallback: true }
     );
 
     assert.equal(persisted.storage, "file");
+    assert.equal(persisted.storageDowngraded, true);
     assert.equal(persisted.token, "api_token_example_1");
     assert.equal(persisted.user.githubUsername, "demo-user");
     assert.equal(persisted.user.isAdmin, true);
@@ -121,6 +122,38 @@ test("Unit auth session store: keyring metadata without keytar fails closed with
     const clearResult = await clearStoredSession({ homeDir: tempRoot });
     assert.equal(clearResult.hadSession, true);
     assert.equal(clearResult.clearedMetadata, true);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: keyring disablement requires explicit file fallback consent", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await assert.rejects(
+      () =>
+        writeStoredSession(
+          {
+            apiUrl: "https://api.sentinelayer.dev",
+            token: "api_token_example_2",
+            tokenId: "token_2",
+          },
+          { homeDir: tempRoot }
+        ),
+      (error) => {
+        assert.ok(error instanceof StoredSessionError);
+        assert.equal(error.code, "KEYRING_FALLBACK_REQUIRES_CONSENT");
+        return true;
+      }
+    );
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

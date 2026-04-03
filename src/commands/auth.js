@@ -93,6 +93,14 @@ export function registerAuthCommand(program) {
       "--token-scope <scope>",
       "API token scope override (default: cli_session; elevated: github_app_bridge)"
     )
+    .option(
+      "--allow-privileged-scope",
+      "Allow high-risk token scope overrides (required for tokenScope=github_app_bridge)"
+    )
+    .option(
+      "--no-keyring",
+      "Explicitly allow file-backed session storage when keyring is unavailable or disabled"
+    )
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -114,6 +122,8 @@ export function registerAuthCommand(program) {
           tokenLabel: options.tokenLabel,
           tokenTtlDays,
           tokenScope: options.tokenScope,
+          allowPrivilegedScope: Boolean(options.allowPrivilegedScope),
+          allowFileStorageFallback: Boolean(options.noKeyring),
           cliVersion: CLI_VERSION,
         });
       } catch (error) {
@@ -136,6 +146,13 @@ export function registerAuthCommand(program) {
       console.log(pc.gray(`API: ${result.apiUrl}`));
       console.log(pc.gray(`User: ${renderUserSummary(result.user)}`));
       console.log(pc.gray(`Storage: ${result.storage}`));
+      if (result.storageDowngraded) {
+        console.log(
+          pc.yellow(
+            "Storage downgraded to file-backed mode because keyring access is disabled; review local credential policy."
+          )
+        );
+      }
       if (result.tokenExpiresAt) {
         console.log(pc.gray(`Token expiry: ${result.tokenExpiresAt}`));
       }
@@ -195,6 +212,13 @@ export function registerAuthCommand(program) {
       console.log(pc.gray(`Token source: ${status.source}`));
       if (status.source === "session") {
         console.log(pc.gray(`Session storage: ${status.storage || "unknown"}`));
+        if (status.storageDowngraded) {
+          console.log(
+            pc.yellow(
+              "Session storage is running in downgraded file-backed mode because keyring access is disabled."
+            )
+          );
+        }
         if (status.filePath && showPaths) {
           console.log(pc.gray(`Session metadata: ${status.filePath}`));
         } else if (status.filePath) {
