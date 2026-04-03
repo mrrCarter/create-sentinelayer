@@ -29,6 +29,7 @@ const MAX_AUTH_POLL_ATTEMPTS = 1200;
 const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
 const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
 const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 2;
+const MAX_TRACKED_POLL_REQUEST_IDS = 64;
 const RETRYABLE_AUTH_POLL_CODES = new Set([
   "TIMEOUT",
   "NETWORK_ERROR",
@@ -146,9 +147,13 @@ function resolveAuthPollIntervalMs(rawPollIntervalSeconds, fallbackSeconds = 2) 
   return Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.round(candidateSeconds * 1000));
 }
 
-function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
+function resolvePollWindowBucket(attempt) {
   const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
-  const pollWindowBucket = Math.floor(normalizedAttempt / AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE);
+  return Math.floor(normalizedAttempt / AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE);
+}
+
+function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
+  const pollWindowBucket = resolvePollWindowBucket(attempt);
   return crypto
     .createHash("sha256")
     .update(
@@ -159,6 +164,60 @@ function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
       ].join(":")
     )
     .digest("hex");
+}
+
+function buildPollCorrelationId({ sessionId, pollClientId, attempt }) {
+  return crypto
+    .createHash("sha256")
+    .update(
+      [
+        String(sessionId || "").trim(),
+        String(pollClientId || "").trim(),
+        String(resolvePollWindowBucket(attempt)),
+        String(Math.max(0, Math.floor(Number(attempt) || 0))),
+      ].join(":")
+    )
+    .digest("hex");
+}
+
+function normalizeOptionalInteger(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) {
+    return null;
+  }
+  return Math.max(0, Math.floor(normalized));
+}
+
+function getAuthPollCorrelation(payload = {}) {
+  const rawPollClientId = payload.poll_client_id ?? payload.pollClientId;
+  const rawPollWindow = payload.poll_window ?? payload.pollWindow;
+  const rawPollCorrelationId = payload.poll_correlation_id ?? payload.pollCorrelationId;
+  return {
+    pollClientId: String(rawPollClientId || "").trim() || null,
+    pollWindow: normalizeOptionalInteger(rawPollWindow),
+    pollCorrelationId: String(rawPollCorrelationId || "").trim() || null,
+  };
+}
+
+function trackSeenPollRequestId(seenRequestIds, requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) {
+    return;
+  }
+  if (seenRequestIds.has(normalizedRequestId)) {
+    return;
+  }
+  seenRequestIds.add(normalizedRequestId);
+  while (seenRequestIds.size > MAX_TRACKED_POLL_REQUEST_IDS) {
+    const oldestRequestId = seenRequestIds.values().next().value;
+    if (!oldestRequestId) {
+      break;
+    }
+    seenRequestIds.delete(oldestRequestId);
+  }
 }
 
 function throwIfAbortRequested(signal) {
@@ -345,6 +404,7 @@ async function pollCliAuthSession({
   let lastKnownPollIntervalMs = resolveAuthPollIntervalMs(pollIntervalSeconds, 2);
   let consecutiveBackendFailures = 0;
   let attempt = 0;
+  const seenRequestIds = new Set();
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
@@ -358,17 +418,30 @@ async function pollCliAuthSession({
       pollClientId: normalizedPollClientId,
       attempt,
     });
+    const pollWindow = resolvePollWindowBucket(attempt);
+    const pollCorrelationId = buildPollCorrelationId({
+      sessionId: normalizedSessionId,
+      pollClientId: normalizedPollClientId,
+      attempt,
+    });
     let payload = null;
     try {
       payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
         method: "POST",
         headers: {
           "Idempotency-Key": pollIdempotencyKey,
+          "X-Poll-Client-Id": normalizedPollClientId,
+          "X-Poll-Window": String(pollWindow),
+          "X-Poll-Correlation-Id": pollCorrelationId,
           "X-Poll-Attempt": String(attempt),
         },
         body: {
           session_id: normalizedSessionId,
           challenge,
+          poll_client_id: normalizedPollClientId,
+          poll_window: pollWindow,
+          poll_correlation_id: pollCorrelationId,
+          poll_attempt: attempt,
         },
         timeoutMs: pollRequestTimeoutMs,
         signal,
@@ -406,6 +479,33 @@ async function pollCliAuthSession({
 
     const responseSessionId = getAuthPollSessionId(payload);
     const requestId = getAuthPollRequestId(payload);
+    const responseCorrelation = getAuthPollCorrelation(payload);
+    if (requestId && seenRequestIds.has(requestId)) {
+      const replayDelayMs = Math.min(
+        Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.floor(lastKnownPollIntervalMs / 2)),
+        Math.max(0, deadlineMs - resolveMonotonicNowMs())
+      );
+      if (replayDelayMs > 0) {
+        await sleepWithAbortSignal(replayDelayMs, signal);
+      }
+      attempt += 1;
+      continue;
+    }
+    if (
+      (responseCorrelation.pollClientId && responseCorrelation.pollClientId !== normalizedPollClientId) ||
+      (responseCorrelation.pollWindow !== null && responseCorrelation.pollWindow !== pollWindow) ||
+      (responseCorrelation.pollCorrelationId && responseCorrelation.pollCorrelationId !== pollCorrelationId)
+    ) {
+      const replayDelayMs = Math.min(
+        Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.floor(lastKnownPollIntervalMs / 2)),
+        Math.max(0, deadlineMs - resolveMonotonicNowMs())
+      );
+      if (replayDelayMs > 0) {
+        await sleepWithAbortSignal(replayDelayMs, signal);
+      }
+      attempt += 1;
+      continue;
+    }
     if (responseSessionId && responseSessionId !== normalizedSessionId) {
       throw new SentinelayerApiError("CLI authentication poll returned mismatched session id.", {
         status: 502,
@@ -416,6 +516,7 @@ async function pollCliAuthSession({
 
     const status = String(payload.status || "pending").trim().toLowerCase();
     if (status === "approved" && payload.auth_token) {
+      trackSeenPollRequestId(seenRequestIds, requestId);
       const normalizedRequestId = requestId || null;
       return {
         ...payload,
@@ -424,6 +525,7 @@ async function pollCliAuthSession({
       };
     }
     if (TERMINAL_CLI_AUTH_POLL_STATUSES.has(status)) {
+      trackSeenPollRequestId(seenRequestIds, requestId);
       const terminalConfig = TERMINAL_CLI_AUTH_POLL_STATUSES.get(status);
       const reason = String(payload.message || payload.error || payload.reason || "").trim();
       const message = reason ? `${terminalConfig.message} ${reason}` : terminalConfig.message;
@@ -443,6 +545,7 @@ async function pollCliAuthSession({
         }
       );
     }
+    trackSeenPollRequestId(seenRequestIds, requestId);
 
     const serverPollIntervalMs = resolveAuthPollIntervalMs(
       payload.poll_interval_seconds ?? payload.pollIntervalSeconds ?? pollIntervalSeconds,

@@ -10,12 +10,13 @@ function emptyToUndefined(value) {
 
 const optionalTrimmedString = z.preprocess(emptyToUndefined, z.string().min(1)).optional();
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url()).optional();
-const GENERIC_SECRET_PATTERN = /^[A-Za-z0-9._~:/+=-]+$/;
+const FALLBACK_SECRET_PATTERN = /^\S+$/u;
 
 function createOptionalSecretSchema({
   field,
   minLength = 20,
   maxLength = 512,
+  providerPatterns = [],
 }) {
   return z
     .preprocess(
@@ -25,11 +26,15 @@ function createOptionalSecretSchema({
         .trim()
         .min(minLength, `${field} must be at least ${minLength} characters.`)
         .max(maxLength, `${field} must be at most ${maxLength} characters.`)
-        .regex(GENERIC_SECRET_PATTERN, `${field} must not include whitespace or unsupported characters.`)
-        .refine(
-          (value) => /[A-Za-z]/.test(value) && /[0-9]/.test(value),
-          `${field} must include at least one letter and one digit.`
-        )
+        .refine((value) => {
+          for (const providerPattern of providerPatterns) {
+            if (providerPattern.test(value)) {
+              return true;
+            }
+          }
+          // Forward-compatible fallback: allow any non-whitespace token shape.
+          return FALLBACK_SECRET_PATTERN.test(value);
+        }, `${field} must match a documented provider token shape or a non-whitespace fallback token format.`)
     )
     .optional();
 }
@@ -47,18 +52,22 @@ const secretConfigShape = {
   sentinelayerToken: createOptionalSecretSchema({
     field: "sentinelayerToken",
     minLength: 24,
+    providerPatterns: [/^(?:sl_[A-Za-z0-9._~:/+=-]{20,}|[A-Fa-f0-9]{32,})$/],
   }),
   openaiApiKey: createOptionalSecretSchema({
     field: "openaiApiKey",
     minLength: 20,
+    providerPatterns: [/^sk-(?:proj-)?[A-Za-z0-9._-]{16,}$/],
   }),
   anthropicApiKey: createOptionalSecretSchema({
     field: "anthropicApiKey",
     minLength: 20,
+    providerPatterns: [/^sk-ant-[A-Za-z0-9._-]{12,}$/],
   }),
   googleApiKey: createOptionalSecretSchema({
     field: "googleApiKey",
     minLength: 20,
+    providerPatterns: [/^AIza[A-Za-z0-9_-]{20,}$/],
   }),
 };
 

@@ -100,28 +100,22 @@ jobs:
           deadline=$((SECONDS + 900))
           while (( SECONDS < deadline )); do
             api_status=0
-            check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || api_status=$?
+            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
-              echo "quality-summary check-run lookup timed out or failed (status=${api_status}); retrying."
+              echo "quality-gates run lookup timed out or failed (status=${api_status}); retrying."
               sleep 10
               continue
             fi
-            anchored_check_run="$(echo "${check_runs_json}" | jq -c '
-              [.check_runs[]
-                | select((.name // "") == "Quality Summary")
-                | select(((.details_url // "") | contains("/actions/runs/")))
-              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+            quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((["pull_request", "push"] | index(.event // "")) != null)
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
             ')"
-            anchored_run_id="$(echo "${anchored_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
-            if [[ -z "${anchored_run_id}" ]]; then
-              echo "Waiting for canonical Quality Summary check-run anchor on ${TARGET_SHA}."
-              sleep 10
-              continue
-            fi
-            run_lookup_status=0
-            quality_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${anchored_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
-            if [[ "${run_lookup_status}" -ne 0 ]]; then
-              echo "quality-gates run lookup failed for run_id=${anchored_run_id}; retrying."
+            if [[ -z "${quality_run}" ]]; then
+              echo "Waiting for canonical quality-gates run on ${TARGET_SHA}."
               sleep 10
               continue
             fi

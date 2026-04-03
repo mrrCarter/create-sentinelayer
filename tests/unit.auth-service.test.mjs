@@ -49,9 +49,11 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
   const state = {
     pollCalls: 0,
     pollBodies: [],
+    pollHeaders: [],
     pollIdempotencyKeys: [],
     tokenIssueCalls: 0,
     tokenIssueBodies: [],
+    tokenIssueAuthHeaders: [],
     tokenDeleteIds: [],
     tokenDeleteAuthHeaders: [],
     statusCalls: 0,
@@ -113,6 +115,12 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
         const body = await readJsonBody(req);
         state.pollCalls += 1;
         state.pollBodies.push(body);
+        state.pollHeaders.push({
+          pollClientId: String(req.headers["x-poll-client-id"] || "").trim(),
+          pollWindow: String(req.headers["x-poll-window"] || "").trim(),
+          pollCorrelationId: String(req.headers["x-poll-correlation-id"] || "").trim(),
+          pollAttempt: String(req.headers["x-poll-attempt"] || "").trim(),
+        });
         state.pollIdempotencyKeys.push(String(req.headers["idempotency-key"] || "").trim());
         const pollIndex = Math.min(state.pollCalls - 1, resolvedPollResponses.length - 1);
         const pollPayload = resolvedPollResponses[pollIndex] || {};
@@ -125,7 +133,21 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
           };
           return jsonResponse(res, pollHttpStatus, { error: errorBody });
         }
-        return jsonResponse(res, 200, pollPayload);
+        const responsePayload = { ...pollPayload };
+        if (responsePayload.poll_client_id === undefined && responsePayload.pollClientId === undefined) {
+          responsePayload.poll_client_id = String(body.poll_client_id || "").trim() || null;
+        }
+        if (responsePayload.poll_window === undefined && responsePayload.pollWindow === undefined) {
+          const normalizedPollWindow = Number(body.poll_window);
+          responsePayload.poll_window = Number.isFinite(normalizedPollWindow) ? Math.floor(normalizedPollWindow) : null;
+        }
+        if (
+          responsePayload.poll_correlation_id === undefined &&
+          responsePayload.pollCorrelationId === undefined
+        ) {
+          responsePayload.poll_correlation_id = String(body.poll_correlation_id || "").trim() || null;
+        }
+        return jsonResponse(res, 200, responsePayload);
       }
 
       if (req.method === "GET" && pathname === "/api/v1/auth/me") {
@@ -146,6 +168,7 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
         const body = await readJsonBody(req);
         state.tokenIssueCalls += 1;
         state.tokenIssueBodies.push(body);
+        state.tokenIssueAuthHeaders.push(String(req.headers.authorization || ""));
         return jsonResponse(res, 200, {
           id: `token_${state.tokenIssueCalls}`,
           token: `api_token_${state.tokenIssueCalls}`,
@@ -258,6 +281,24 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.match(mock.state.pollIdempotencyKeys[0], /^[a-f0-9]{64}$/);
     assert.match(mock.state.pollIdempotencyKeys[1], /^[a-f0-9]{64}$/);
     assert.equal(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
+    assert.equal(mock.state.pollBodies[0].poll_attempt, 0);
+    assert.equal(mock.state.pollBodies[1].poll_attempt, 1);
+    assert.match(String(mock.state.pollBodies[0].poll_client_id || ""), /^[0-9a-f-]{16,}$/i);
+    assert.equal(mock.state.pollBodies[0].poll_client_id, mock.state.pollBodies[1].poll_client_id);
+    assert.match(String(mock.state.pollBodies[0].poll_correlation_id || ""), /^[a-f0-9]{64}$/);
+    assert.match(String(mock.state.pollBodies[1].poll_correlation_id || ""), /^[a-f0-9]{64}$/);
+    assert.notEqual(mock.state.pollBodies[0].poll_correlation_id, mock.state.pollBodies[1].poll_correlation_id);
+    assert.equal(
+      mock.state.pollHeaders[0].pollClientId,
+      String(mock.state.pollBodies[0].poll_client_id || "").trim()
+    );
+    assert.equal(
+      mock.state.pollHeaders[0].pollCorrelationId,
+      String(mock.state.pollBodies[0].poll_correlation_id || "").trim()
+    );
+    assert.equal(mock.state.pollHeaders[0].pollAttempt, "0");
+    assert.equal(mock.state.pollHeaders[1].pollAttempt, "1");
+    assert.equal(mock.state.tokenIssueAuthHeaders[0], "Bearer auth_token_web_1");
     assert.deepEqual(
       mock.state.pollBodies.map((entry) => entry.session_id),
       ["sess_1", "sess_1"]
@@ -603,6 +644,69 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
     assert.equal(mock.state.pollCalls, 1);
     assert.equal(mock.state.pollIdempotencyKeys.length, 1);
     assert.match(mock.state.pollIdempotencyKeys[0], /^[a-f0-9]{64}$/);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login ignores stale poll correlation mismatches before approval", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        status: "approved",
+        auth_token: "stale_token",
+        user: {
+          id: "user_1",
+          github_username: "demo-user",
+          email: "demo@example.com",
+        },
+        poll_correlation_id: "mismatched-correlation",
+        request_id: "req-stale-approval-1",
+      },
+      {
+        status: "approved",
+        auth_token: "auth_token_web_1",
+        user: {
+          id: "user_1",
+          github_username: "demo-user",
+          email: "demo@example.com",
+        },
+        request_id: "req-valid-approval-1",
+      },
+    ],
+  });
+
+  try {
+    const loginResult = await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      allowFileStorageFallback: true,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+    assert.equal(loginResult.user.githubUsername, "demo-user");
+    assert.equal(mock.state.pollCalls, 2);
+    assert.equal(mock.state.tokenIssueCalls, 1);
+    assert.equal(mock.state.tokenIssueAuthHeaders[0], "Bearer auth_token_web_1");
+    assert.equal(mock.state.pollIdempotencyKeys.length, 2);
+    assert.notEqual(mock.state.pollIdempotencyKeys[0], "");
+    assert.notEqual(mock.state.pollIdempotencyKeys[1], "");
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

@@ -587,6 +587,9 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy-stage]
     if: ${{ always() }}
+    permissions:
+      contents: read
+      checks: read
     steps:
       - name: Evaluate gate outcomes
         shell: bash
@@ -620,3 +623,31 @@ jobs:
           fi
 
           echo "All quality checks passed."
+
+      - name: Assert deploy gate check contexts are published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+          required_contexts=("Deploy Readiness" "Deploy Stage")
+          for required_context in "${required_contexts[@]}"; do
+            check_run="$(echo "${check_runs_json}" | jq -c --arg context "${required_context}" '
+              [.check_runs[]
+                | select((.name // "") == $context)
+              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            if [[ -z "${check_run}" ]]; then
+              echo "::error::Missing required deploy gate check context '${required_context}' on ${TARGET_SHA}."
+              exit 1
+            fi
+            status="$(echo "${check_run}" | jq -r '.status // ""')"
+            conclusion="$(echo "${check_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]] || [[ "${conclusion}" != "success" ]]; then
+              echo "::error::Deploy gate context '${required_context}' is not successful (status=${status}, conclusion=${conclusion})."
+              exit 1
+            fi
+          done

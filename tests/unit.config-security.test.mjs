@@ -136,3 +136,13 @@ test("Unit config security: runtime secret schema accepts forward-compatible key
   assert.equal(parsed.anthropicApiKey, "sk-v2-ant-3a4b5c6d7e8f9g0h1i2j3k4l5m");
   assert.equal(parsed.googleApiKey, "AIzaSyA2b3C4d5E6f7G8h9I0j1K2l3M4");
 });
+
+test("Unit config security: runtime secret schema rejects whitespace token values", () => {
+  assert.throws(
+    () =>
+      getRuntimeSecretSchema()
+        .partial()
+        .parse({ openaiApiKey: "sk-proj-2a3b4c5d 6e7f8g9h0i1j2k3l4m" }),
+    /openaiApiKey/i
+  );
+});

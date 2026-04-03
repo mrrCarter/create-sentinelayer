@@ -113,6 +113,35 @@ jobs:
             exit 1
           fi
 
+      - name: Verify default-branch protection release controls
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          branch_name="${DEFAULT_BRANCH:-main}"
+          protection_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")"
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [[ "${strict_checks}" != "true" ]]; then
+            echo "::error::Branch protection for '${branch_name}' must enforce strict required checks."
+            exit 1
+          fi
+          required_review_count="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')"
+          if [[ "${required_review_count}" -lt 1 ]]; then
+            echo "::error::Branch protection for '${branch_name}' must require at least one approving review."
+            exit 1
+          fi
+          configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
+          required_contexts=("Omar Gate" "Quality Summary" "Release Readiness" "Deploy Readiness" "Deploy Stage")
+          for required_context in "${required_contexts[@]}"; do
+            if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
+              echo "::error::Branch protection for '${branch_name}' is missing required status context '${required_context}'."
+              exit 1
+            fi
+          done
+
       - name: Verify Quality Summary gate for target SHA
         id: quality_gate
         shell: bash
