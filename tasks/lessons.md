@@ -94,3 +94,5 @@
 - Session metadata durability requires fsync on both the temp file and the parent directory after atomic rename (best-effort across platforms), otherwise power-loss windows can corrupt auth state.
 - Cross-runtime HTTP helpers cannot assume `AbortSignal.any` exists; provide a compatibility bridge that forwards external abort signals and always unregisters listeners in `finally`.
 - Check-run name matching is insufficient for release trust boundaries; bind required checks to expected workflow file paths and matching `head_sha` before accepting pass status.
+- Secret-bearing CI jobs should assert environment protection policy (at least required reviewers) in-workflow before consuming secrets, so accidental environment misconfiguration fails closed.
+- Secret/key file writes need the same atomic durability guarantees as metadata files (temp write + fsync + rename + directory sync) to avoid partial-write corruption under crash scenarios.

@@ -486,6 +486,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Add `AbortSignal.any` compatibility guard with manual abort bridging in auth HTTP client.
 - [x] Harden release required-check verification by pinning matched checks to expected workflow file path + head SHA.
 - [x] Make daemon assignment event append path durable with file-handle fsync and directory sync.
+- [x] Pin Omar Gate runner to `ubuntu-22.04` and assert `security-review` environment required-reviewer protection before secret-backed scan.
+- [x] Add build-provenance attestation to `quality-gates` build artifact pipeline.
+- [x] Make key material writes atomic (`writeSecretFile` temp+fsync+rename+directory sync).
 - [x] Run `npm run verify` locally.
 - [x] Run local gates: `/omargate deep` and `/audit` with `p1=0`, `p2=0`.
 - [ ] Push latest fixes to PR #114 and run `gh run watch` for Omar Gate.

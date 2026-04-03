@@ -197,11 +197,33 @@ async function persistEncryptedFileTokenMetadata({
 }
 
 async function writeSecretFile(filePath, contents) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, String(contents || ""), {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempHandle = await fsp.open(tempPath, "w", 0o600);
+  try {
+    await tempHandle.writeFile(String(contents || ""), {
+      encoding: "utf-8",
+    });
+    await tempHandle.sync();
+  } finally {
+    await tempHandle.close();
+  }
+  try {
+    await fsp.chmod(tempPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  let renamed = false;
+  try {
+    await fsp.rename(tempPath, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await fsp.rm(tempPath, { force: true });
+    }
+  }
+  await syncDirectoryBestEffort(directoryPath);
   try {
     await fsp.chmod(filePath, 0o600);
   } catch {

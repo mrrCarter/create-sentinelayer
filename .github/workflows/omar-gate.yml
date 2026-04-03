@@ -45,7 +45,7 @@ concurrency:
 jobs:
   omar_gate:
     name: Omar Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: security-review
     permissions:
       contents: read
@@ -65,6 +65,24 @@ jobs:
           if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]] || [[ "${HEAD_IS_FORK}" == "true" ]]; then
             echo "::error::Omar Gate secrets are restricted to trusted same-repo pull requests."
             exit 1
+          fi
+      - name: Verify security-review environment protections
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          env_json="$(gh api "repos/${REPO}/environments/security-review" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::security-review environment must require at least one reviewer."
+            exit 1
+          fi
+          wait_timer_seconds="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "wait_timer") | (.wait_timer // 0)] | max // 0')"
+          if [[ "${wait_timer_seconds}" =~ ^[0-9]+$ ]] && [[ "${wait_timer_seconds}" -lt 1 ]]; then
+            echo "::warning::security-review environment has no wait timer configured; consider enabling a non-zero timer for additional review control."
           fi
       - name: Wait for Quality Summary gate
         if: ${{ github.event_name == 'pull_request' }}
