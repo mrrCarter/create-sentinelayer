@@ -491,5 +491,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Make key material writes atomic (`writeSecretFile` temp+fsync+rename+directory sync).
 - [x] Run `npm run verify` locally.
 - [x] Run local gates: `/omargate deep` and `/audit` with `p1=0`, `p2=0`.
-- [ ] Push latest fixes to PR #114 and run `gh run watch` for Omar Gate.
-- [ ] If Omar P2 > 2, iterate fix/push/watch until Omar reports `P2<=2`.
+- [x] Validate residual Omar findings against latest PR #114 comment (`run_id=3e9c8a42`, commit `478b710`): active P2 set is `quality-gates reproducibility bridge`, `release concurrency`, `release preflight dependency`, `config secrets schema`.
+- [x] Commit-scoped `release.yml` hardening prepared (`preflight` depends on `verify-required-checks`; ref-scoped concurrency + cancellation).
+- [x] Implement cross-workflow build-once/promote-once evidence bridge from `quality-gates` to `release` (artifact digest contract + release verification).
+- [x] Harden `src/config/schema.js` to block persisted plaintext secrets by default (explicit unsafe opt-in only) and add coverage tests.
+- [x] Run `npm run verify` and local `/omargate deep` + `/audit` after residual fixes.
+- [ ] Run `gh run watch` on Omar Gate for PR #114 and iterate fix/push/watch until Omar reports `P2<=2`.

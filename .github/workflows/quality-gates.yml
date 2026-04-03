@@ -230,6 +230,17 @@ jobs:
             echo "::error::Non-deterministic quality build hash detected (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
             exit 1
           fi
+          cat > quality-build.manifest.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "artifactName": "${tarball}",
+            "sha256": "${baseline_hash}",
+            "rebuildSha256": "${rebuild_hash}"
+          }
+          EOF
 
       - name: Upload build artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
@@ -240,6 +251,7 @@ jobs:
             quality-build.sha256
             quality-build.rebuild.sha256
             quality-build.tarball
+            quality-build.manifest.json
           if-no-files-found: error
 
       - name: Attest quality build provenance

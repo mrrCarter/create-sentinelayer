@@ -96,3 +96,8 @@
 - Check-run name matching is insufficient for release trust boundaries; bind required checks to expected workflow file paths and matching `head_sha` before accepting pass status.
 - Secret-bearing CI jobs should assert environment protection policy (at least required reviewers) in-workflow before consuming secrets, so accidental environment misconfiguration fails closed.
 - Secret/key file writes need the same atomic durability guarantees as metadata files (temp write + fsync + rename + directory sync) to avoid partial-write corruption under crash scenarios.
+
+## 2026-04-03
+
+- Before coding against Omar findings, anchor them to the exact commented commit SHA/run id; if local branch is ahead, push and rerun Omar first so remediation targets active findings, not stale annotations.
+- Reproducibility claims must cross workflow boundaries: emit immutable build digest artifacts in quality gates and re-verify the publish candidate digest in release jobs before any publish path proceeds.

@@ -382,7 +382,9 @@ test("Unit auth service: env and project config token precedence is deterministi
 
     const projectSession = await resolveActiveAuthSession({
       cwd: tempRoot,
-      env: {},
+      env: {
+        SENTINELAYER_ALLOW_PLAINTEXT_CONFIG_SECRETS: "1",
+      },
       explicitApiUrl: "https://api.example.com",
       autoRotate: false,
       homeDir: tempRoot,
