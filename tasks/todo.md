@@ -475,6 +475,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Enforce strict lint -> test -> security -> build DAG (`.github/workflows/quality-gates.yml`).
 - [x] Harden release required-check validation and rollback-readiness automation (`.github/workflows/release.yml`).
 - [x] Add assignment-ledger atomic write + storage lock safeguards (`src/daemon/assignment-ledger.js` + tests).
+- [x] Replace pinned syntax matrix patch versions with major channels (`18`, `20`) in quality gates.
+- [x] Force `workflow_dispatch` release runs into deterministic dry-run mode and always validate required checks on active release paths.
+- [x] Add deterministic rebuild-hash proof verification in publish path (`create-sentinelayer.sha256` vs `create-sentinelayer.rebuild.sha256`).
+- [x] Replace static broad auth token scope with validated least-privilege default (`cli_session`) and explicit scoped override path.
+- [x] Add assignment-ledger `.new` fallback recovery and test for missing-ledger restoration.
 - [x] Run `npm run verify` locally.
+- [x] Run local gates: `/omargate deep` and `/audit` with `p1=0`, `p2=0`.
 - [ ] Push latest fixes to PR #114 and run `gh run watch` for Omar Gate.
 - [ ] If Omar P2 > 2, iterate fix/push/watch until Omar reports `P2<=2`.

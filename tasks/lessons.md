@@ -88,3 +88,5 @@
 - Treat release-tag findings as stateful: verify `release-please` manifest/version and open release PRs before cutting tags, so manual tags are never created against stale audit assumptions.
 - For mechanical file splits, extract contiguous command blocks and keep a thin orchestrator entrypoint; this minimizes behavior drift while reducing top-level file size.
 - When `npm run check` only validates entry files, run explicit `node --check` on newly added module files before full test runs to catch extraction syntax regressions early.
+- For release workflows that allow `workflow_dispatch`, force non-tag dispatches into dry-run validation mode and still enforce required-check verification so manual runs cannot bypass gate assumptions.
+- Atomic JSON writes must never delete destination files as a rename fallback; stage via `.new`, promote with bounded retry, and include startup fallback recovery to avoid transient data-loss windows.

@@ -48,6 +48,7 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
   const state = {
     pollCalls: 0,
     tokenIssueCalls: 0,
+    tokenIssueBodies: [],
     tokenDeleteIds: [],
     tokenDeleteAuthHeaders: [],
     statusCalls: 0,
@@ -127,8 +128,9 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
       }
 
       if (req.method === "POST" && pathname === "/api/v1/auth/api-tokens") {
-        await readJsonBody(req);
+        const body = await readJsonBody(req);
         state.tokenIssueCalls += 1;
+        state.tokenIssueBodies.push(body);
         return jsonResponse(res, 200, {
           id: `token_${state.tokenIssueCalls}`,
           token: `api_token_${state.tokenIssueCalls}`,
@@ -232,6 +234,8 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(loginResult.apiUrl, mock.apiUrl);
     assert.equal(loginResult.storage, "file");
     assert.equal(loginResult.user.githubUsername, "demo-user");
+    assert.equal(mock.state.tokenIssueBodies.length, 1);
+    assert.equal(mock.state.tokenIssueBodies[0].scope, "cli_session");
 
     const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
     assert.match(credentialsPath, /[\\/]\.sentinelayer[\\/]credentials\.json$/);
@@ -562,6 +566,77 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
       "Bearer api_token_2",
       "Bearer api_token_1",
     ]);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login supports explicit privileged token scope override", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi();
+
+  try {
+    await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      tokenScope: "github_app_bridge",
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+    assert.equal(mock.state.tokenIssueBodies.length, 1);
+    assert.equal(mock.state.tokenIssueBodies[0].scope, "github_app_bridge");
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login rejects unknown token scope overrides", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi();
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 5000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          tokenScope: "global_admin",
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      /tokenScope must be one of:/
+    );
+    assert.equal(mock.state.tokenIssueCalls, 0);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

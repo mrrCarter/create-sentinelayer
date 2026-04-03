@@ -82,6 +82,10 @@ export function registerAuthCommand(program) {
       "Issued API token lifetime in days",
       String(DEFAULT_API_TOKEN_TTL_DAYS)
     )
+    .option(
+      "--token-scope <scope>",
+      "API token scope override (default: cli_session; elevated: github_app_bridge)"
+    )
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const timeoutMs = parsePositiveNumber(options.timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
@@ -101,6 +105,7 @@ export function registerAuthCommand(program) {
           timeoutMs,
           tokenLabel: options.tokenLabel,
           tokenTtlDays,
+          tokenScope: options.tokenScope,
           cliVersion: CLI_VERSION,
         });
       } catch (error) {

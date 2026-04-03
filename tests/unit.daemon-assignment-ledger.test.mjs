@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import {
   claimAssignment,
@@ -10,6 +10,7 @@ import {
   listAssignments,
   reassignAssignment,
   releaseAssignment,
+  resolveAssignmentLedgerStorage,
 } from "../src/daemon/assignment-ledger.js";
 import {
   appendAdminErrorEvent,
@@ -176,6 +177,38 @@ test("Unit daemon assignment ledger: concurrent claims serialize with a single w
     assert.equal(assignments.visibleCount, 1);
     assert.equal(assignments.assignments[0].workItemId, workItemId);
     assert.equal(assignments.assignments[0].status, "CLAIMED");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon assignment ledger: fallback .new file restores missing ledger atomically", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-assignment-fallback-"));
+  try {
+    const workItemId = await seedWorkItem(tempRoot, "/v1/admin/runtime/fallback", "LEDGER_FALLBACK");
+    await claimAssignment({
+      targetPath: tempRoot,
+      workItemId,
+      agentIdentity: "agent.fallback@sentinelayer.local",
+      leaseTtlSeconds: 600,
+    });
+
+    const storage = await resolveAssignmentLedgerStorage({ targetPath: tempRoot });
+    const originalLedger = await readFile(storage.ledgerPath, "utf-8");
+    const fallbackPath = `${storage.ledgerPath}.new`;
+    await writeFile(fallbackPath, originalLedger, "utf-8");
+    await rm(storage.ledgerPath, { force: true });
+
+    const recoveredAssignments = await listAssignments({
+      targetPath: tempRoot,
+      statuses: ["CLAIMED"],
+      limit: 10,
+    });
+
+    assert.equal(recoveredAssignments.visibleCount, 1);
+    assert.equal(recoveredAssignments.assignments[0].workItemId, workItemId);
+    await access(storage.ledgerPath);
+    await assert.rejects(() => access(fallbackPath));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

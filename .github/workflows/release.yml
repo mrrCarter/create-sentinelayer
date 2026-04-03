@@ -39,11 +39,13 @@ jobs:
     outputs:
       publish_requested: ${{ steps.flags.outputs.publish_requested }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
+      release_path_execution: ${{ steps.flags.outputs.release_path_execution }}
     steps:
       - name: Normalize dispatch and tag inputs
         id: flags
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           INPUT_PUBLISH: ${{ github.event.inputs.publish }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -56,16 +58,25 @@ jobs:
             esac
           }
           publish_requested="false"
+          release_path_execution="false"
+          dry_run="$(normalize_bool "${INPUT_DRY_RUN}")"
           if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
             publish_requested="true"
+            release_path_execution="true"
           fi
-          dry_run="$(normalize_bool "${INPUT_DRY_RUN}")"
-          if [[ "$(normalize_bool "${INPUT_PUBLISH}")" == "true" ]] && [[ "${publish_requested}" != "true" ]]; then
-            echo "::notice::Manual publish requested on non-tag ref; forcing dry-run validation."
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_path_execution="true"
+            if [[ "${dry_run}" != "true" ]]; then
+              echo "::notice::workflow_dispatch runs in validation mode; forcing dry-run."
+            fi
             dry_run="true"
+            if [[ "$(normalize_bool "${INPUT_PUBLISH}")" == "true" ]] && [[ "${publish_requested}" != "true" ]]; then
+              echo "::notice::Manual publish requested on non-tag ref; forcing dry-run validation."
+            fi
           fi
           echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+          echo "release_path_execution=${release_path_execution}" >> "$GITHUB_OUTPUT"
 
   verify-required-checks:
     name: Verify Required Checks
@@ -82,14 +93,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
-          PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}
+          RELEASE_PATH_EXECUTION: ${{ needs.resolve-release-flags.outputs.release_path_execution }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
           REQUIRED_CHECKS: Omar Gate,Quality Summary
         run: |
           set -euo pipefail
-          if [[ "${PUBLISH_REQUESTED}" != "true" ]]; then
-            echo "Publish not requested; skipping required check verification."
+          if [[ "${RELEASE_PATH_EXECUTION}" != "true" ]]; then
+            echo "Release path not active; skipping required check verification."
             exit 0
           fi
           resolved_sha="${TARGET_SHA}"
@@ -171,7 +182,7 @@ jobs:
     name: Release Preflight (Verify + Security)
     runs-on: ubuntu-22.04
     needs: [resolve-release-flags]
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.dry_run == 'true') }}
+    if: ${{ needs.resolve-release-flags.outputs.release_path_execution == 'true' }}
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -352,6 +363,20 @@ jobs:
           TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
           test -f "release-bundle/${TARBALL_NAME}" || (echo "::error::Tarball '${TARBALL_NAME}' missing from artifact bundle." && exit 1)
           (cd release-bundle && sha256sum -c create-sentinelayer.sha256)
+
+      - name: Verify deterministic rebuild proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-bundle/create-sentinelayer.rebuild.sha256 || (echo "::error::Missing create-sentinelayer.rebuild.sha256 in release bundle." && exit 1)
+          baseline_hash="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          rebuild_hash="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.rebuild.sha256)"
+          test -n "${baseline_hash}" || (echo "::error::Unable to parse baseline release hash." && exit 1)
+          test -n "${rebuild_hash}" || (echo "::error::Unable to parse rebuild release hash." && exit 1)
+          if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
+            echo "::error::Deterministic rebuild proof failed (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
+            exit 1
+          fi
 
       - name: Validate packaged CLI install
         shell: bash

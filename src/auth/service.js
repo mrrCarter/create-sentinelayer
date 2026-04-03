@@ -22,6 +22,12 @@ export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
 /** Default threshold at which stored tokens are rotated before expiry (days). */
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
+const DEFAULT_API_TOKEN_SCOPE = "cli_session";
+const PRIVILEGED_API_TOKEN_SCOPE = "github_app_bridge";
+const ALLOWED_API_TOKEN_SCOPES = new Set([
+  DEFAULT_API_TOKEN_SCOPE,
+  PRIVILEGED_API_TOKEN_SCOPE,
+]);
 
 function normalizeApiUrl(rawValue) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
@@ -145,6 +151,17 @@ function describePollStatus(status) {
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
+}
+
+function resolveApiTokenScope(rawScope = "") {
+  const normalized = String(rawScope || "").trim().toLowerCase();
+  if (!normalized) {
+    return DEFAULT_API_TOKEN_SCOPE;
+  }
+  if (!ALLOWED_API_TOKEN_SCOPES.has(normalized)) {
+    throw new Error(`tokenScope must be one of: ${[...ALLOWED_API_TOKEN_SCOPES].join(", ")}.`);
+  }
+  return normalized;
 }
 
 function isNearExpiry(tokenExpiresAt, thresholdDays) {
@@ -286,6 +303,7 @@ async function issueApiToken({
   authToken,
   tokenLabel,
   tokenTtlDays,
+  tokenScope = "",
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
@@ -295,7 +313,7 @@ async function issueApiToken({
     headers: toAuthHeader(authToken),
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: "github_app_bridge",
+      scope: resolveApiTokenScope(tokenScope),
       llm_credential_mode: "managed",
       expires_in_days: expiresInDays,
     },
@@ -418,6 +436,7 @@ async function rotateStoredApiTokenIfNeeded({
   thresholdDays,
   tokenLabel,
   tokenTtlDays,
+  tokenScope,
   homeDir,
 }) {
   if (!session || !session.token || !session.tokenExpiresAt) {
@@ -432,6 +451,7 @@ async function rotateStoredApiTokenIfNeeded({
     authToken: session.token,
     tokenLabel,
     tokenTtlDays,
+    tokenScope,
   });
 
   const nextSession = await writeStoredSession(
@@ -497,6 +517,7 @@ async function rotateStoredApiTokenIfNeeded({
  *   timeoutMs?: number,
  *   tokenLabel?: string,
  *   tokenTtlDays?: number,
+ *   tokenScope?: string,
  *   ide?: string,
  *   cliVersion?: string,
  *   signal?: AbortSignal | null,
@@ -528,6 +549,7 @@ export async function loginAndPersistSession({
   timeoutMs = DEFAULT_AUTH_TIMEOUT_MS,
   tokenLabel = "",
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
+  tokenScope = "",
   ide = DEFAULT_IDE_NAME,
   cliVersion = "",
   signal = null,
@@ -576,6 +598,7 @@ export async function loginAndPersistSession({
     authToken: approvalToken,
     tokenLabel,
     tokenTtlDays,
+    tokenScope,
   });
 
   const stored = await writeStoredSession(
@@ -614,6 +637,7 @@ export async function loginAndPersistSession({
  *   rotateThresholdDays?: number,
  *   tokenLabel?: string,
  *   tokenTtlDays?: number,
+ *   tokenScope?: string,
  *   homeDir?: string
  * }} [options]
  * @returns {Promise<null | {
@@ -644,6 +668,7 @@ export async function resolveActiveAuthSession({
   rotateThresholdDays = DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS,
   tokenLabel = "",
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
+  tokenScope = "",
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
@@ -703,6 +728,7 @@ export async function resolveActiveAuthSession({
         thresholdDays: rotateThresholdDays,
         tokenLabel,
         tokenTtlDays,
+        tokenScope,
         homeDir,
       });
       active = rotateResult.session;

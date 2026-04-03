@@ -9,6 +9,9 @@ const ASSIGNMENT_STORAGE_LOCK_FILE = "assignment-ledger.lock";
 const DEFAULT_LOCK_TIMEOUT_MS = 5000;
 const DEFAULT_LOCK_RETRY_MS = 50;
 const STALE_LOCK_TTL_MS = 30000;
+const ATOMIC_RENAME_RETRY_LIMIT = 6;
+const ATOMIC_RENAME_RETRY_BASE_MS = 25;
+const ATOMIC_RENAME_RETRY_CODES = new Set(["EEXIST", "EPERM", "EBUSY"]);
 
 export const ASSIGNMENT_STATUSES = Object.freeze([
   "QUEUED",
@@ -165,21 +168,127 @@ function normalizeQueueItem(item = {}, nowIso = new Date().toISOString()) {
   };
 }
 
-async function loadJsonFile(filePath, defaultFactory) {
+function isAtomicRenameRetryable(error) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      ATOMIC_RENAME_RETRY_CODES.has(String(error.code || "").toUpperCase())
+  );
+}
+
+function resolveAtomicFallbackPath(filePath) {
+  return `${filePath}.new`;
+}
+
+function resolveAtomicBackupPath(filePath) {
+  return `${filePath}.${process.pid}.${Date.now()}.bak`;
+}
+
+async function renameWithRetry(fromPath, toPath, {
+  maxAttempts = ATOMIC_RENAME_RETRY_LIMIT,
+  baseDelayMs = ATOMIC_RENAME_RETRY_BASE_MS,
+} = {}) {
+  const attempts = Math.max(1, Number(maxAttempts) || ATOMIC_RENAME_RETRY_LIMIT);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fsp.rename(fromPath, toPath);
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt >= attempts - 1;
+      if (!isAtomicRenameRetryable(error) || isLastAttempt) {
+        throw error;
+      }
+      const waitMs = Math.min(baseDelayMs * 2 ** attempt, 1000);
+      await delay(waitMs);
+    }
+  }
+}
+
+async function readJsonFile(filePath) {
+  const raw = await fsp.readFile(filePath, "utf-8");
+  return JSON.parse(raw);
+}
+
+async function tryLoadAtomicFallbackFile(filePath, fallbackPath) {
   try {
-    const raw = await fsp.readFile(filePath, "utf-8");
-    return JSON.parse(raw);
+    const payload = await readJsonFile(fallbackPath);
+    try {
+      await renameWithRetry(fallbackPath, filePath, { maxAttempts: 3 });
+    } catch (promoteError) {
+      if (!isAtomicRenameRetryable(promoteError)) {
+        throw promoteError;
+      }
+    }
+    return payload;
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function loadJsonFile(filePath, defaultFactory) {
+  const fallbackPath = resolveAtomicFallbackPath(filePath);
+  try {
+    return await readJsonFile(filePath);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      const fallbackPayload = await tryLoadAtomicFallbackFile(filePath, fallbackPath);
+      if (fallbackPayload) {
+        return fallbackPayload;
+      }
+      throw error;
+    }
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      const fallbackPayload = await tryLoadAtomicFallbackFile(filePath, fallbackPath);
+      if (fallbackPayload) {
+        return fallbackPayload;
+      }
       return defaultFactory();
     }
     throw error;
   }
 }
 
+async function promoteAtomicFallback(filePath, fallbackPath) {
+  const backupPath = resolveAtomicBackupPath(filePath);
+  let hasExistingDestination = false;
+  try {
+    await fsp.access(filePath);
+    hasExistingDestination = true;
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  if (hasExistingDestination) {
+    await renameWithRetry(filePath, backupPath, { maxAttempts: 3 });
+  }
+
+  try {
+    await renameWithRetry(fallbackPath, filePath, { maxAttempts: 3 });
+  } catch (error) {
+    if (hasExistingDestination) {
+      try {
+        await renameWithRetry(backupPath, filePath, { maxAttempts: 3 });
+      } catch {
+        // Keep original write failure as the primary error.
+      }
+    }
+    throw error;
+  }
+
+  if (hasExistingDestination) {
+    await fsp.rm(backupPath, { force: true });
+  }
+}
+
 async function writeJsonFile(filePath, payload = {}) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const fallbackPath = resolveAtomicFallbackPath(filePath);
   const payloadBody = `${JSON.stringify(payload, null, 2)}\n`;
   const fileHandle = await fsp.open(tempPath, "w");
   try {
@@ -189,17 +298,16 @@ async function writeJsonFile(filePath, payload = {}) {
     await fileHandle.close();
   }
   try {
-    await fsp.rename(tempPath, filePath);
+    await renameWithRetry(tempPath, filePath);
   } catch (error) {
-    if (
-      !error ||
-      typeof error !== "object" ||
-      (error.code !== "EEXIST" && error.code !== "EPERM" && error.code !== "EBUSY")
-    ) {
+    if (!isAtomicRenameRetryable(error)) {
       throw error;
     }
-    await fsp.rm(filePath, { force: true });
-    await fsp.rename(tempPath, filePath);
+    await fsp.rm(fallbackPath, { force: true });
+    await renameWithRetry(tempPath, fallbackPath, { maxAttempts: 3 });
+    await promoteAtomicFallback(filePath, fallbackPath);
+  } finally {
+    await fsp.rm(tempPath, { force: true });
   }
 }
 
