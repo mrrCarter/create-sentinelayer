@@ -129,3 +129,8 @@
 - Rollback preflight checks need fresh proof of rollback exercisability (recent successful rollback workflow run), not just existence of rollback docs/workflow files.
 - CLI auth error surfaces should default to curated, code-based safe messages and only include raw backend error detail behind an explicit debug flag.
 - Retry jitter fallback paths must incorporate per-request entropy/seed, otherwise crypto-failure fallback can synchronize backoff timing across in-process requests.
+- For tag-triggered release workflows, PR-only security checks (for example Omar Gate) should be validated via commit check-runs on the resolved tag commit rather than skipped outright.
+- GitHub Actions workflow-level permissions should remain least-privilege (`contents: read`), with `id-token`/`attestations` granted only to jobs that actually attest artifacts.
+- Third-party security action pins should be enforced by a deterministic SHA allowlist check in CI, not only by comments near the `uses:` line.
+- Polling idempotency keys should include a per-login client nonce in addition to attempt counters to avoid server-side dedupe collisions across concurrent clients/restarts.
+- CLI auth command output should never emit raw upstream backend error strings in user-visible mode, even when debug environment flags are set.

@@ -71,13 +71,6 @@ const API_ERROR_MESSAGE_BY_CODE = Object.freeze({
   TOKEN_SCOPE_INVALID: "Token scope override is invalid for this command.",
 });
 
-function isDebugErrorDetailEnabled() {
-  const normalized = String(process.env.SL_DEBUG_ERRORS || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
 function resolveSafeApiErrorMessage(error) {
   const code = String(error?.code || "UNKNOWN")
     .trim()
@@ -91,8 +84,7 @@ export function formatApiError(error) {
   }
   const safeMessage = resolveSafeApiErrorMessage(error);
   const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
-  const debugDetail = isDebugErrorDetailEnabled() ? ` detail=${error.message}` : "";
-  return `${safeMessage} [${error.code}] status=${error.status}${requestId}${debugDetail}`;
+  return `${safeMessage} [${error.code}] status=${error.status}${requestId}`;
 }
 
 function printAuthHint() {

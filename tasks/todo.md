@@ -524,7 +524,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Push second quality-gates hotfix (`4d1496f`) and rerun Omar (`run_id=23938362934`): Omar unblocked and reported active residual set `P2=5` (release-please Omar dependency, release tag gate deadlock, rollback proof recency, auth error-message exposure, auth jitter fallback correlation).
 - [x] Tenth-cycle hardening applied for active residual findings:
   - `release-please.yml`: explicit Omar Gate verification on target SHA before release mutation.
-  - `release.yml`: event-aware required-check policy for tags (omit Omar Gate), plus rollback-proof recency validation (`ROLLBACK_PROOF_MAX_AGE_DAYS`).
+  - `release.yml`: event-aware required-check policy and rollback-proof recency validation (`ROLLBACK_PROOF_MAX_AGE_DAYS`).
   - `auth/http.js`: per-request jitter seed threaded into deterministic fallback backoff hash path.
   - `commands/auth.js`: sanitized API error rendering by code with optional raw-detail opt-in via `SL_DEBUG_ERRORS`.
   - Added deterministic unit coverage for auth command error formatting (`tests/unit.auth-command-errors.test.mjs`).
@@ -533,4 +533,18 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `155/155`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push tenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push tenth-cycle fixes (`2683eae`) and rerun Omar (`run_id=23939645056`): Omar shifted to `P2=8` with active findings in `omar-gate` concurrency policy, `quality-gates` permission/pinning controls, `release` tag replay/provenance validation, auth poll idempotency collisions, auth debug leak path, and assignment-ledger `process` import.
+- [x] Eleventh-cycle hardening applied for active residual findings:
+  - `.github/workflows/omar-gate.yml`: non-cancelable PR concurrency (`cancel-in-progress: false`).
+  - `.github/workflows/quality-gates.yml`: least-privilege workflow permissions + build-artifact scoped `id-token/attestations`.
+  - `.github/workflows/quality-gates.yml`: deterministic gitleaks SHA policy gate backed by `.github/security/action-sha-allowlist.txt`.
+  - `.github/workflows/release.yml`: tag-time Omar Gate replay requirement via commit check-run verification (no skip path), plus publish-time release artifact attestation verification.
+  - `src/auth/service.js`: per-login `pollClientId` in poll idempotency keys to prevent cross-client/session collisions.
+  - `src/commands/auth.js`: remove raw backend-detail emission path entirely (including debug env mode).
+  - `src/daemon/assignment-ledger.js`: import `node:process` for backup path generation in ESM.
+  - Updated auth-service and auth-command unit coverage for new idempotency/error-redaction behavior.
+- [x] Eleventh-cycle local evidence:
+  - `npm run verify` (pass, e2e `84/84`; unit `155/155`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push eleventh-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.

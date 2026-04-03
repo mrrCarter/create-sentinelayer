@@ -195,10 +195,6 @@ jobs:
           fi
           TARGET_SHA="${resolved_sha}"
           required_checks_csv="${BASE_REQUIRED_CHECKS}"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            required_checks_csv="Quality Summary,Release Readiness"
-            echo "Tag release detected; Omar Gate is validated at merge time and omitted from tag replay checks."
-          fi
           echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
           IFS=',' read -r -a required_checks <<< "${required_checks_csv}"
           if [[ "${#required_checks[@]}" -eq 0 ]]; then
@@ -236,6 +232,38 @@ jobs:
             for required in "${required_checks[@]}"; do
               check_name="$(echo "${required}" | xargs)"
               if [[ -z "${check_name}" ]]; then
+                continue
+              fi
+              if [[ "${check_name}" == "Omar Gate" ]] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+                check_runs_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+                latest_check_run="$(echo "${check_runs_json}" | jq -c '
+                  [.check_runs[]
+                    | select((.name // "") == "Omar Gate")
+                  ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+                ')"
+                if [[ -z "${latest_check_run}" ]]; then
+                  echo "Waiting for required check '${check_name}' commit check-run on tag commit ${TARGET_SHA}."
+                  pending=1
+                  continue
+                fi
+                run_id="$(echo "${latest_check_run}" | jq -r '.id // ""')"
+                if [[ -z "${run_id}" ]]; then
+                  echo "::error::Unable to resolve check-run id for required check '${check_name}' on tag commit ${TARGET_SHA}."
+                  exit 1
+                fi
+                status="$(echo "${latest_check_run}" | jq -r '.status // ""')"
+                conclusion="$(echo "${latest_check_run}" | jq -r '.conclusion // ""')"
+                if [[ "${status}" != "completed" ]]; then
+                  echo "Required check '${check_name}' (check-run ${run_id}) status=${status}; waiting."
+                  pending=1
+                  continue
+                fi
+                if [[ "${conclusion}" != "success" ]]; then
+                  echo "::error::Required check '${check_name}' check-run ${run_id} concluded with '${conclusion}'."
+                  exit 1
+                fi
+                omar_run_id="check-run-${run_id}"
+                echo "Required check '${check_name}' passed via commit check-run ${run_id}."
                 continue
               fi
               workflow_file="$(workflow_file_for_check "${check_name}" || true)"
@@ -613,6 +641,7 @@ jobs:
       DRY_RUN: ${{ needs.resolve-release-flags.outputs.dry_run }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+      TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
       GITHUB_REF_NAME: ${{ github.ref_name }}
       GITHUB_REF_TYPE: ${{ github.ref_type }}
     steps:
@@ -634,6 +663,25 @@ jobs:
         with:
           name: create-sentinelayer-release-bundle
           path: release-bundle
+
+      - name: Verify release artifact attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          TARBALL_PATH="release-bundle/${TARBALL_NAME}"
+          test -f "${TARBALL_PATH}" || (echo "::error::Tarball '${TARBALL_NAME}' missing from release artifact bundle." && exit 1)
+          expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          gh attestation verify "${TARBALL_PATH}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/release.yml" \
+            --format json > release-bundle/release-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' release-bundle/release-attestation.verify.json >/dev/null; then
+            echo "::error::Release artifact attestation does not include expected digest ${expected_sha}."
+            exit 1
+          fi
+          echo "Release artifact attestation verified for digest ${expected_sha} (target=${TARGET_SHA})."
 
       - name: Verify artifact digest
         shell: bash

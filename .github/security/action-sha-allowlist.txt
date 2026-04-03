@@ -1,0 +1,1 @@
+gitleaks/gitleaks-action=ff98106e4c7b2bc287b24eaf42907196329070c7

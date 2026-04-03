@@ -19,7 +19,7 @@ test("Unit auth command: API errors are sanitized by default", () => {
   assert.doesNotMatch(formatted, /token=secret/i);
 });
 
-test("Unit auth command: debug mode appends raw API error details", () => {
+test("Unit auth command: debug env never appends raw API error details", () => {
   const previousDebug = process.env.SL_DEBUG_ERRORS;
   process.env.SL_DEBUG_ERRORS = "true";
   try {
@@ -30,7 +30,8 @@ test("Unit auth command: debug mode appends raw API error details", () => {
     });
     const formatted = formatApiError(error);
     assert.match(formatted, /Sentinelayer API request failed\./);
-    assert.match(formatted, /detail=internal stack trace: token=secret/);
+    assert.doesNotMatch(formatted, /detail=/);
+    assert.doesNotMatch(formatted, /internal stack trace/i);
   } finally {
     if (previousDebug === undefined) {
       delete process.env.SL_DEBUG_ERRORS;

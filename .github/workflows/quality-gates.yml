@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -198,8 +196,27 @@ jobs:
       - name: Run npm audit (full dependency graph)
         run: timeout --preserve-status 5m npm audit --audit-level=high
 
+      - name: Enforce pinned gitleaks action policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowlist_file=".github/security/action-sha-allowlist.txt"
+          test -f "${allowlist_file}" || (echo "::error::Missing ${allowlist_file}." && exit 1)
+          expected_sha="$(awk -F'=' '$1=="gitleaks/gitleaks-action" {print $2}' "${allowlist_file}" | tr -d '[:space:]')"
+          test -n "${expected_sha}" || (echo "::error::Missing gitleaks/gitleaks-action allowlist entry in ${allowlist_file}." && exit 1)
+          if [[ ! "${expected_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid gitleaks allowlist SHA '${expected_sha}'."
+            exit 1
+          fi
+          configured_sha="$(grep -E "gitleaks/gitleaks-action@[0-9a-f]{40}" .github/workflows/quality-gates.yml | head -n 1 | sed -E 's/.*@([0-9a-f]{40}).*/\1/')"
+          test -n "${configured_sha}" || (echo "::error::Unable to resolve gitleaks action SHA from quality-gates workflow." && exit 1)
+          if [[ "${configured_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Gitleaks action SHA drift detected (configured=${configured_sha}, allowlist=${expected_sha})."
+            exit 1
+          fi
+
       - name: Run gitleaks secret scan gate
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.6 (sha pinned)
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_ENABLE_COMMENTS: "false"
@@ -211,6 +228,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 12
     needs: [security-scan]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

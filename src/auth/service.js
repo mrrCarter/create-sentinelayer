@@ -84,6 +84,13 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
+function generatePollClientId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return crypto.randomBytes(16).toString("hex");
+}
+
 function deterministicJitterFactor(sessionId, attempt) {
   const seed = `${String(sessionId || "").trim()}:${Number(attempt || 0)}`;
   const digest = crypto.createHash("sha256").update(seed).digest();
@@ -244,6 +251,7 @@ async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {
 async function pollCliAuthSession({
   apiUrl,
   sessionId,
+  pollClientId,
   challenge,
   timeoutMs,
   pollIntervalSeconds,
@@ -253,13 +261,14 @@ async function pollCliAuthSession({
   if (!normalizedSessionId) {
     throw new Error("sessionId is required.");
   }
+  const normalizedPollClientId = String(pollClientId || "").trim() || generatePollClientId();
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
   let attempt = 0;
 
   while (Date.now() < deadline) {
     throwIfAbortRequested(signal);
-    const pollIdempotencyKey = `${normalizedSessionId}:poll:${attempt}`;
+    const pollIdempotencyKey = `${normalizedSessionId}:poll:${normalizedPollClientId}:${attempt}`;
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
       headers: {
@@ -602,6 +611,7 @@ export async function loginAndPersistSession({
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
   const challenge = generateChallenge();
+  const pollClientId = generatePollClientId();
   const session = await startCliAuthSession({
     apiUrl,
     challenge,
@@ -623,6 +633,7 @@ export async function loginAndPersistSession({
   const approval = await pollCliAuthSession({
     apiUrl,
     sessionId: String(session.session_id || "").trim(),
+    pollClientId,
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
