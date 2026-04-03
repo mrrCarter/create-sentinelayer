@@ -115,3 +115,5 @@
 - Omar Gate’s publish stage updates PR comments; downgrading `.github/workflows/omar-gate.yml` `pull-requests` permission to read causes a hard `403` and invalidates the full scan loop.
 - Pending deployment approvals should be submitted with a JSON body (`environment_ids` as integers) to avoid `HTTP 422` type coercion errors from form-encoded CLI flags.
 - For Omar pre-gate dependency checks, bind to the upstream workflow run identity (`actions/workflows/<file>/runs` + `head_sha` + workflow path) rather than check-run display names alone.
+- Omar findings can oscillate when a mitigation over-corrects policy (`cancel-in-progress` true vs false); prefer event-scoped controls (`pull_request` strict, non-PR relaxed) over one global toggle.
+- Retry jitter hardening should avoid both deterministic lockstep and weak RNG fallbacks; use cryptographic randomness first and deterministic hash fallback only when crypto entropy is unavailable.

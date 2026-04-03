@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { randomInt } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 export const DEFAULT_REQUEST_MAX_ATTEMPTS = 3;
@@ -231,7 +231,10 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
   try {
     jitterBucket = randomInt(0, RANDOM_JITTER_BUCKETS + 1);
   } catch {
-    jitterBucket = Math.floor(Math.random() * (RANDOM_JITTER_BUCKETS + 1));
+    const fallbackDigest = createHash("sha256")
+      .update(`${Math.max(0, attemptIndex)}:${base}:${process.pid}`)
+      .digest();
+    jitterBucket = fallbackDigest.readUInt16BE(0) % (RANDOM_JITTER_BUCKETS + 1);
   }
   const jitterRatio =
     MIN_RANDOM_JITTER_RATIO +

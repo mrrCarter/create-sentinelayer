@@ -146,6 +146,12 @@ function getAuthPollRequestId(payload = {}) {
   return normalized || null;
 }
 
+function getAuthPollSessionId(payload = {}) {
+  const candidate = payload.session_id ?? payload.sessionId;
+  const normalized = String(candidate || "").trim();
+  return normalized || null;
+}
+
 function describePollStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
   if (!normalized) {
@@ -238,20 +244,49 @@ async function pollCliAuthSession({
   pollIntervalSeconds,
   signal = null,
 }) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) {
+    throw new Error("sessionId is required.");
+  }
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
+  const pollIdempotencyKey = `${normalizedSessionId}:poll`;
+  let observedRequestId = null;
   let attempt = 0;
 
   while (Date.now() < deadline) {
     throwIfAbortRequested(signal);
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
+      headers: {
+        "Idempotency-Key": pollIdempotencyKey,
+      },
       body: {
-        session_id: sessionId,
+        session_id: normalizedSessionId,
         challenge,
       },
       signal,
     });
+
+    const responseSessionId = getAuthPollSessionId(payload);
+    const requestId = getAuthPollRequestId(payload);
+    if (responseSessionId && responseSessionId !== normalizedSessionId) {
+      throw new SentinelayerApiError("CLI authentication poll returned mismatched session id.", {
+        status: 502,
+        code: "CLI_AUTH_SESSION_MISMATCH",
+        requestId,
+      });
+    }
+    if (requestId) {
+      if (observedRequestId && observedRequestId !== requestId) {
+        throw new SentinelayerApiError("CLI authentication poll request_id changed unexpectedly.", {
+          status: 502,
+          code: "CLI_AUTH_REQUEST_ID_MISMATCH",
+          requestId,
+        });
+      }
+      observedRequestId = observedRequestId || requestId;
+    }
 
     const status = String(payload.status || "pending").trim().toLowerCase();
     if (status === "approved" && payload.auth_token) {
@@ -264,7 +299,7 @@ async function pollCliAuthSession({
       throw new SentinelayerApiError(message, {
         status: terminalConfig.httpStatus,
         code: terminalConfig.code,
-        requestId: getAuthPollRequestId(payload),
+        requestId,
       });
     }
     if (status !== "pending") {
@@ -273,7 +308,7 @@ async function pollCliAuthSession({
         {
           status: 502,
           code: "CLI_AUTH_UNEXPECTED_STATUS",
-          requestId: getAuthPollRequestId(payload),
+          requestId,
         }
       );
     }
@@ -284,7 +319,7 @@ async function pollCliAuthSession({
     );
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
-    const jitterFactor = deterministicJitterFactor(sessionId, attempt);
+    const jitterFactor = deterministicJitterFactor(normalizedSessionId, attempt);
     const remainingMs = Math.max(0, deadline - Date.now());
     const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
     await sleepWithAbortSignal(nextDelayMs, signal);

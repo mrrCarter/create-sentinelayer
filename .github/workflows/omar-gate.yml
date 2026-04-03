@@ -87,17 +87,16 @@ jobs:
             echo "::warning::security-review environment has no wait timer configured; consider enabling a non-zero timer for additional review control."
           fi
       - name: Wait for Quality Summary gate
-        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           deadline=$((SECONDS + 900))
           while (( SECONDS < deadline )); do
-            runs_json="$(gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?event=pull_request&head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+            runs_json="$(gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
             quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)

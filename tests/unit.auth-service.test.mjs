@@ -48,6 +48,8 @@ async function readJsonBody(req) {
 async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthToken = "" } = {}) {
   const state = {
     pollCalls: 0,
+    pollBodies: [],
+    pollIdempotencyKeys: [],
     tokenIssueCalls: 0,
     tokenIssueBodies: [],
     tokenDeleteIds: [],
@@ -108,8 +110,10 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
       }
 
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/poll") {
-        await readJsonBody(req);
+        const body = await readJsonBody(req);
         state.pollCalls += 1;
+        state.pollBodies.push(body);
+        state.pollIdempotencyKeys.push(String(req.headers["idempotency-key"] || "").trim());
         const pollIndex = Math.min(state.pollCalls - 1, resolvedPollResponses.length - 1);
         return jsonResponse(res, 200, resolvedPollResponses[pollIndex]);
       }
@@ -237,6 +241,12 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(loginResult.user.githubUsername, "demo-user");
     assert.equal(mock.state.tokenIssueBodies.length, 1);
     assert.equal(mock.state.tokenIssueBodies[0].scope, "cli_session");
+    assert.equal(mock.state.pollCalls, 2);
+    assert.deepEqual(mock.state.pollIdempotencyKeys, ["sess_1:poll", "sess_1:poll"]);
+    assert.deepEqual(
+      mock.state.pollBodies.map((entry) => entry.session_id),
+      ["sess_1", "sess_1"]
+    );
 
     const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
     assert.match(credentialsPath, /[\\/]\.sentinelayer[\\/]credentials\.json$/);
@@ -515,6 +525,57 @@ test("Unit auth service: login fails fast for denied polling status", async () =
       }
     );
     assert.equal(mock.state.pollCalls, 1);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login rejects mismatched poll session id", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        status: "pending",
+        session_id: "sess_mismatch",
+        request_id: "req-mismatch-123",
+      },
+    ],
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 5000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.equal(error.code, "CLI_AUTH_SESSION_MISMATCH");
+        assert.equal(error.status, 502);
+        assert.equal(error.requestId, "req-mismatch-123");
+        return true;
+      }
+    );
+    assert.equal(mock.state.pollCalls, 1);
+    assert.deepEqual(mock.state.pollIdempotencyKeys, ["sess_1:poll"]);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

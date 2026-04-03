@@ -61,30 +61,42 @@ jobs:
           publish_requested="false"
           release_path_execution="false"
           dry_run="$(normalize_bool "${INPUT_DRY_RUN}")"
-          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
-            publish_requested="true"
-            release_path_execution="true"
+          is_tag_ref="false"
+          if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+            is_tag_ref="true"
           fi
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
-            if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
-              release_path_execution="true"
-            if [[ "${dispatch_publish}" == "true" ]]; then
-              publish_requested="true"
-              if [[ "${dry_run}" == "true" ]]; then
-                echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "${is_tag_ref}" == "true" ]]; then
+                publish_requested="true"
+                release_path_execution="true"
               fi
-            fi
-          else
+              ;;
+            workflow_dispatch)
+              dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
               release_path_execution="true"
-              publish_requested="false"
-              if [[ "${dispatch_publish}" == "true" ]]; then
-                echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
+              if [[ "${is_tag_ref}" == "true" ]]; then
+                if [[ "${dispatch_publish}" == "true" ]]; then
+                  publish_requested="true"
+                  if [[ "${dry_run}" == "true" ]]; then
+                    echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
+                  fi
+                fi
+              else
+                publish_requested="false"
+                dry_run="true"
+                if [[ "${dispatch_publish}" == "true" ]]; then
+                  echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
+                fi
+                echo "::notice::workflow_dispatch on non-tag ref executes release validation only (publish disabled, dry-run forced)."
               fi
-              dry_run="true"
-              echo "::notice::workflow_dispatch on non-tag ref executes release validation only (publish disabled, dry-run forced)."
-          fi
-        fi
+              ;;
+            *)
+              if [[ "${is_tag_ref}" == "true" ]]; then
+                release_path_execution="true"
+              fi
+              ;;
+          esac
           echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
           echo "release_path_execution=${release_path_execution}" >> "$GITHUB_OUTPUT"
