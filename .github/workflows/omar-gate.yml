@@ -304,20 +304,29 @@ jobs:
           echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"
-      - name: Assert summary excludes raw secrets
+      - name: Assert workflow outputs and artifacts exclude raw secrets
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          if [[ -f "${GITHUB_STEP_SUMMARY}" ]]; then
-            if grep -F -- "${SENTINELAYER_TOKEN}" "${GITHUB_STEP_SUMMARY}" >/dev/null; then
-              echo "::error::SENTINELAYER_TOKEN leaked into workflow summary."
+          for secret_name in SENTINELAYER_TOKEN OPENAI_API_KEY; do
+            secret_value="$(printenv "${secret_name}" || true)"
+            if [[ -z "${secret_value}" ]]; then
+              continue
+            fi
+            if [[ -f "${GITHUB_STEP_SUMMARY}" ]] && grep -F -- "${secret_value}" "${GITHUB_STEP_SUMMARY}" >/dev/null; then
+              echo "::error::${secret_name} leaked into workflow summary."
               exit 1
             fi
-            if grep -F -- "${OPENAI_API_KEY}" "${GITHUB_STEP_SUMMARY}" >/dev/null; then
-              echo "::error::OPENAI_API_KEY leaked into workflow summary."
+            if grep -R -F --binary-files=without-match \
+              --exclude-dir=.git \
+              --exclude-dir=node_modules \
+              --exclude='*.tgz' \
+              --exclude='*.zip' \
+              -- "${secret_value}" . >/dev/null; then
+              echo "::error::${secret_name} detected in repository workspace/artifact outputs."
               exit 1
             fi
-          fi
+          done

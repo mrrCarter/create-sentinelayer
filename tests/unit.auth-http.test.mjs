@@ -188,6 +188,48 @@ test("Unit auth http: requestJson honors Retry-After http-date relative to serve
   }
 });
 
+test("Unit auth http: requestJson honors Retry-After http-date without Date header", async () => {
+  let attempts = 0;
+  const retryDate = new Date(Date.now() + 1100);
+
+  const mock = await startMockServer(async (_req, res) => {
+    attempts += 1;
+    if (attempts === 1) {
+      const serialized = JSON.stringify({
+        code: "TEMP_UNAVAILABLE",
+        message: "retry later",
+      });
+      res.writeHead(503, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(serialized),
+        "Retry-After": retryDate.toUTCString(),
+      });
+      res.end(serialized);
+      return;
+    }
+    const success = JSON.stringify({ ok: true, attempts });
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(success),
+    });
+    res.end(success);
+  });
+
+  try {
+    const startedAt = Date.now();
+    const response = await requestJson(`${mock.baseUrl}/retry-after-date-no-server-date`, {
+      method: "GET",
+      maxAttempts: 2,
+      retryBackoffMs: 10,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(response.ok, true);
+    assert.ok(elapsedMs >= 750, `Expected retry delay near Retry-After window, got ${elapsedMs}ms.`);
+  } finally {
+    await mock.close();
+  }
+});
+
 test("Unit auth http: requestJson preserves camelCase requestId on API errors", async () => {
   const mock = await startMockServer(async (_req, res) => {
     const payload = JSON.stringify({

@@ -562,9 +562,15 @@ async function startAidenIdMockApi({
 
 async function runCli({ cwd, env, args = [] }) {
   return new Promise((resolve, reject) => {
+    const normalizedEnv = {
+      ...env,
+      SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP:
+        String(env?.SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP || "").trim() || "1",
+      CI: "",
+    };
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env,
+      env: normalizedEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
 

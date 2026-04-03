@@ -305,7 +305,7 @@ function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
   if (Number.isFinite(responseDateEpoch)) {
     delayMs = retryEpoch - responseDateEpoch;
   } else {
-    delayMs = retryEpoch - resolveMonotonicEpochMs();
+    delayMs = retryEpoch - Date.now();
   }
   delayMs = Math.max(0, Number(delayMs || 0));
   return Math.min(delayMs, MAX_RETRY_AFTER_DELAY_MS);

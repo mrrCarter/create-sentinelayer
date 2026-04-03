@@ -198,7 +198,53 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 106 split oversized command files (`src/commands/ai.js`, `src/commands/daemon.js`) into modular slices.
 - [ ] PR 107 command lazy-loading.
 
-## Execution Board (2026-04-02)
+### Batch O - Streaming Protocol + Tool Foundation (P0, execution layer)
+- [ ] PR 115 Streaming event protocol (`src/stream/protocol.js` -- universal NDJSON envelope with agent attribution, heartbeat, progress, findings, used by ALL long-running commands).
+- [ ] PR 116 Tool contract + registry (Zod-validated interface, lazy loading, deny rules, MCP assembly -- tools are INTERNAL to SL specialist agents).
+- [ ] PR 117 FileRead tool (line numbers, offset/limit, binary detection, token budget awareness -- for internal audit/review agents).
+- [ ] PR 118 FileEdit tool (string replacement, uniqueness check, diff generation -- for internal fix agents).
+- [ ] PR 119 Shell tool (bash/powershell, security analyzer, timeout, background mode -- for internal agents running tests/linters).
+- [ ] PR 120 Grep + Glob tools (ripgrep wrapper, fast file matching -- for internal agents searching codebases).
+
+### Batch P - Agentic Loop (P0, execution layer)
+- [ ] PR 121 Permission system (plan/default/execute modes, deny/allow/ask pipeline, denial tracking).
+- [ ] PR 122 Query loop engine (LLM→tool→result state machine, concurrent read-only dispatch, budget-gated iteration).
+- [ ] PR 123 Context management (tool result persistence, time-based micro-compact, auto-compact with circuit breaker).
+
+### Batch Q - Agent Spawning (P0, execution layer)
+- [ ] PR 124 Agent definition system (Zod schema, built-in personas, custom .sentinelayer/agents/*.json).
+- [ ] PR 125 Subagent runtime (in-process isolation, worktree isolation, budget-slice clamping, tool restrictions).
+- [ ] PR 126 /audit deep integration (real subagent specialists with FileRead+Grep+Glob, unified DD package).
+
+### Batch R - Codebase Mapping + Scope (P1, execution layer)
+- [ ] PR 127 Import graph resolver (JS/TS/Python import parsing, adjacency list, depth-limited).
+- [ ] PR 128 Impact scope mapper (task→primary/secondary/tertiary files, deterministic-first resolution).
+- [ ] PR 129 Scope-aware context injection (agent system prompt filtering, path violation tracking).
+
+### Batch S - Entitlement + Interactive (P1, execution layer)
+- [ ] PR 130 Entitlement gate (subscription tier→capability mapping, sliding-window rate limiter).
+- [ ] PR 131 Interactive REPL (streaming responses, tool call indicators, permission dialogs, session transcripts).
+- [ ] PR 132 Session resume + history (session list/resume/export commands).
+
+### Batch T - Polish + Integration (P1, execution layer)
+- [ ] PR 133 Terminal markdown + multi-agent progress display (streaming render, budget gauges).
+- [ ] PR 134 `sl run` command (one-shot agentic execution with scope mapping and budget governance).
+- [ ] PR 135 `sl fix` command (autonomous error remediation with test verification and optional PR creation).
+- [ ] PR 136 Daemon upgrade (real agent execution in error remediation lane, Jira lifecycle from live agent progress).
+
+### Batch U - Scaffold & Spec Quality (P1, from 2026-04-03 feedback)
+- [ ] PR 137 Frictionless gh secret setup (auto-gitignore for .env, detect repo slug for instructions, docs link, unify workflow naming, verify after set).
+- [ ] PR 138 Deterministic IDE/agent dictionary (top 10 coding agents + IDEs, no web search, per-agent config file generation during scaffold).
+- [ ] PR 139 Flexible spec phases + greenfield fix (dynamic phase count from ingest, projectType-aware templates, no hardcoded 3-phase cap).
+- [ ] PR 140 Spec-bound pre-commit review (spec drift detection, coverage gaps, spec hash binding, SL-SPEC-001/002 findings).
+
+### Batch V - Shared Memory + Observability (P1, from 2026-04-03 feedback)
+- [ ] PR 141 Local shared memory blackboard (cross-agent findings during orchestration, append-only, 8-needle recall gate).
+- [ ] PR 142 Hybrid retrieval index (TF-IDF local, optional FAISS API delegation for enterprise, previous-run memory).
+- [ ] PR 143 Stuck-agent detection + alert channels (Slack/Telegram webhooks, smart frequency on state changes, low-token payloads).
+- [ ] PR 144 Stale ingest auto-refresh (git timestamp comparison, --refresh flag, content-hash caching).
+
+## Execution Board (2026-04-03)
 
 ### Omar Gate Loop (required on every PR)
 1. `git checkout main && git pull --ff-only`
@@ -211,6 +257,40 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
    - `gh run watch $runId --exit-status`
 7. If Omar Gate fails or reports blocking findings, fix P0-P2 scope issues, push, and repeat step 6 until green.
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
+
+### Exact Next PR Branch Order (Execution Layer)
+1. `roadmap/pr-114-p2-burn-down-clean` (current, PR #114 open)
+2. `roadmap/pr-107-command-lazy-loading` (PR #113 open)
+3. `roadmap/pr-115-streaming-event-protocol`
+4. `roadmap/pr-116-tool-contract-registry`
+5. `roadmap/pr-117-file-edit-tool`
+6. `roadmap/pr-118-file-write-tool`
+7. `roadmap/pr-119-shell-tool`
+8. `roadmap/pr-120-grep-glob-tools`
+9. `roadmap/pr-121-permission-system`
+10. `roadmap/pr-122-query-loop-engine`
+11. `roadmap/pr-123-context-management`
+12. `roadmap/pr-124-agent-definitions`
+13. `roadmap/pr-125-subagent-runtime`
+14. `roadmap/pr-126-audit-deep-integration`
+15. `roadmap/pr-127-import-graph`
+16. `roadmap/pr-128-scope-mapper`
+17. `roadmap/pr-129-scope-injection`
+18. `roadmap/pr-130-entitlement-gate`
+19. `roadmap/pr-131-interactive-repl`
+20. `roadmap/pr-132-session-resume`
+21. `roadmap/pr-133-terminal-ui`
+22. `roadmap/pr-134-sl-run`
+23. `roadmap/pr-135-sl-fix`
+24. `roadmap/pr-136-daemon-upgrade`
+25. `roadmap/pr-137-frictionless-secret-setup`
+26. `roadmap/pr-138-agent-ide-dictionary`
+27. `roadmap/pr-139-flexible-spec-phases`
+28. `roadmap/pr-140-spec-bound-review`
+29. `roadmap/pr-141-shared-memory-blackboard`
+30. `roadmap/pr-142-hybrid-retrieval-index`
+31. `roadmap/pr-143-stuck-agent-alerts`
+32. `roadmap/pr-144-stale-ingest-refresh`
 
 ### Exact Next PR Branch Order
 1. `roadmap/pr-114-p2-burn-down-clean` (current: active Omar loop to reduce P2 findings to <=2)
@@ -648,4 +728,25 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `157/157`; coverage statements `90.19%`, branches `70.45%`, functions `91.51%`, lines `90.19%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push eighteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push eighteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push nineteenth-cycle workflow hardening (`237b9ce`) and run required gate watch sequence:
+  - `gh run watch 23966066781 --exit-status` (Quality Gates: pass).
+  - Approve `security-review` pending deployment for Omar run `23966066778`.
+  - `gh run watch 23966066778 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=9`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=06975831-5845-4a29-98b4-a8df31fa9937`) and capture active `P2` set.
+- [x] Twentieth-cycle hardening applied locally for active residual findings:
+  - `scripts/ci/verify-action-shas.sh`: replace grep/sed YAML scraping with `yaml` parser traversal and fail-closed parse handling.
+  - `src/auth/http.js`: Retry-After absolute-date fallback now uses `Date.now()` wall-clock basis (not monotonic-derived pseudo-epoch).
+  - `src/auth/service.js`: localhost HTTP API endpoints now require explicit `SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true` and remain blocked when `CI=true`.
+  - `src/config/schema.js`: add strict printable ASCII secret charset guard (`SL-CONFIG-SECRET-CHARSET`) before provider-shape validation.
+  - `.github/workflows/omar-gate.yml`: broaden post-run secret-leak assertions from summary-only to workspace/artifact scan coverage.
+  - `.github/workflows/release-please.yml`: add rollback-readiness freshness gate (successful rollback run + freshness window + artifact proof).
+  - `.github/workflows/rollback.yml`: remove `repository_dispatch` trigger surface and keep manual/reusable/scheduled pathways.
+  - `.github/workflows/release.yml`: replace rollback request dispatch with `gh workflow run rollback.yml`; add quality release-input lock enforcement and remove `execute_publish` toggle path.
+  - `.github/workflows/quality-gates.yml`: emit `quality-release-input.lock.json` immutable promotion contract artifact.
+  - `.github/workflows/release-publish.yml` (new): dedicated publish workflow consuming immutable verified release bundle.
+  - Added/updated coverage in `tests/unit.auth-http.test.mjs`, `tests/unit.auth-service.test.mjs`, `tests/unit.config-security.test.mjs`, and `tests/e2e.test.mjs`.
+- [x] Twentieth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `173/173`; coverage statements `90.21%`, branches `70.57%`, functions `91.54%`, lines `90.21%`).
+- [ ] Commit/push twentieth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.

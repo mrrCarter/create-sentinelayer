@@ -25,6 +25,10 @@ function createOptionalSecretSchema({
         .trim()
         .min(minLength, `${field} must be at least ${minLength} characters.`)
         .max(maxLength, `${field} must be at most ${maxLength} characters.`)
+        .refine(
+          (value) => /^[\x21-\x7E]+$/.test(value),
+          `${field} must use printable ASCII token characters only [SL-CONFIG-SECRET-CHARSET].`
+        )
         .refine((value) => {
           for (const providerPattern of providerPatterns) {
             if (providerPattern.test(value)) {

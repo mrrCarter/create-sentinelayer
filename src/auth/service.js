@@ -38,12 +38,20 @@ const RETRYABLE_AUTH_POLL_CODES = new Set([
 ]);
 const AUTH_POLL_JITTER_TIME_BUCKET_MS = 30_000;
 const AUTH_POLL_JITTER_SALT = getSharedRequestJitterSalt("auth-poll-backoff");
+const ALLOW_INSECURE_LOCAL_HTTP_ENV = "SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP";
 const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
 ]);
 
-function normalizeApiUrl(rawValue) {
+function isEnabledFlag(rawValue) {
+  const normalized = String(rawValue || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function normalizeApiUrl(rawValue, env = process.env) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
   let parsed;
   try {
@@ -54,7 +62,15 @@ function normalizeApiUrl(rawValue) {
   const hostname = String(parsed.hostname || "").trim().toLowerCase();
   const isLocalDevEndpoint =
     hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocalDevEndpoint)) {
+  if (parsed.protocol === "http:" && isLocalDevEndpoint) {
+    const allowInsecureLocalHttp = isEnabledFlag(env?.[ALLOW_INSECURE_LOCAL_HTTP_ENV]);
+    const runningInCi = isEnabledFlag(env?.CI);
+    if (!allowInsecureLocalHttp || runningInCi) {
+      throw new Error(
+        `Invalid API URL '${candidate}': localhost HTTP requires ${ALLOW_INSECURE_LOCAL_HTTP_ENV}=true and is blocked when CI=true.`
+      );
+    }
+  } else if (parsed.protocol !== "https:") {
     throw new Error(`Invalid API URL '${candidate}': HTTPS is required for non-local endpoints.`);
   }
   parsed.pathname = "/";
@@ -91,7 +107,11 @@ function normalizeUser(user = {}) {
 }
 
 function buildApiPath(apiUrl, pathSuffix) {
-  return `${normalizeApiUrl(apiUrl)}${String(pathSuffix || "")}`;
+  const normalizedBase = String(apiUrl || "").trim().replace(/\/$/, "");
+  if (!normalizedBase) {
+    throw new Error("apiUrl is required.");
+  }
+  return `${normalizedBase}${String(pathSuffix || "")}`;
 }
 
 function generateChallenge() {
@@ -386,21 +406,21 @@ export async function resolveApiUrl({
 } = {}) {
   const overrideUrl = String(explicitApiUrl || "").trim();
   if (overrideUrl) {
-    return normalizeApiUrl(overrideUrl);
+    return normalizeApiUrl(overrideUrl, env);
   }
 
   const envUrl = String(env.SENTINELAYER_API_URL || "").trim();
   if (envUrl) {
-    return normalizeApiUrl(envUrl);
+    return normalizeApiUrl(envUrl, env);
   }
 
   const config = await loadConfig({ cwd, env, homeDir });
   const configuredApiUrl = String(config.resolved.apiUrl || "").trim();
   if (configuredApiUrl) {
-    return normalizeApiUrl(configuredApiUrl);
+    return normalizeApiUrl(configuredApiUrl, env);
   }
 
-  return normalizeApiUrl(DEFAULT_API_URL);
+  return normalizeApiUrl(DEFAULT_API_URL, env);
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {

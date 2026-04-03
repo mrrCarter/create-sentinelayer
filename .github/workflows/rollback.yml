@@ -40,8 +40,6 @@ on:
         required: false
         type: boolean
         default: false
-  repository_dispatch:
-    types: [release_rollback_requested]
   schedule:
     - cron: "23 6 * * *"
 
@@ -67,13 +65,10 @@ jobs:
     timeout-minutes: 20
     environment: production
     env:
-      RAW_TARGET_VERSION: ${{ github.event.inputs.target_version || github.event.client_payload.target_version || '' }}
-      RAW_BAD_VERSION: ${{ github.event.inputs.bad_version || github.event.client_payload.bad_version || '' }}
-      RAW_REASON: ${{ github.event.inputs.reason || github.event.client_payload.reason || '' }}
-      RAW_EXECUTE: ${{ github.event.inputs.execute || github.event.client_payload.execute || 'false' }}
-      EVENT_NAME: ${{ github.event_name }}
-      EVENT_ACTION: ${{ github.event.action || '' }}
-      EVENT_ACTOR: ${{ github.actor }}
+      RAW_TARGET_VERSION: ${{ inputs.target_version || github.event.inputs.target_version || '' }}
+      RAW_BAD_VERSION: ${{ inputs.bad_version || github.event.inputs.bad_version || '' }}
+      RAW_REASON: ${{ inputs.reason || github.event.inputs.reason || '' }}
+      RAW_EXECUTE: ${{ inputs.execute || github.event.inputs.execute || 'false' }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -93,45 +88,6 @@ jobs:
           set -euo pipefail
           npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
-
-      - name: Validate rollback trigger provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${EVENT_NAME}" != "repository_dispatch" ]]; then
-            echo "Rollback trigger provenance validation skipped for event '${EVENT_NAME}'."
-            exit 0
-          fi
-          if [[ "${EVENT_ACTION}" != "release_rollback_requested" ]]; then
-            echo "::error::Unsupported repository_dispatch action '${EVENT_ACTION}'."
-            exit 1
-          fi
-          if [[ "${EVENT_ACTOR}" != "github-actions[bot]" ]]; then
-            echo "::error::repository_dispatch rollback trigger actor '${EVENT_ACTOR}' is not trusted."
-            exit 1
-          fi
-          payload_execute="$(jq -r '.client_payload.execute // "false"' "${GITHUB_EVENT_PATH}")"
-          payload_execute_normalized="$(echo "${payload_execute}" | tr '[:upper:]' '[:lower:]')"
-          case "${payload_execute_normalized}" in
-            1|true|yes|on)
-              echo "::error::repository_dispatch rollback trigger cannot execute mutations directly."
-              exit 1
-              ;;
-          esac
-          payload_reason="$(jq -r '.client_payload.reason // ""' "${GITHUB_EVENT_PATH}")"
-          if [[ -z "${payload_reason}" ]]; then
-            echo "::error::repository_dispatch rollback trigger is missing client_payload.reason."
-            exit 1
-          fi
-          if [[ "${payload_reason}" != *"/actions/runs/"* ]]; then
-            echo "::error::repository_dispatch rollback reason must reference a source workflow run URL."
-            exit 1
-          fi
-          payload_bad_version="$(jq -r '.client_payload.bad_version // ""' "${GITHUB_EVENT_PATH}")"
-          if [[ -n "${payload_bad_version}" ]] && [[ ! "${payload_bad_version}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::repository_dispatch bad_version '${payload_bad_version}' is not semver-compatible."
-            exit 1
-          fi
 
       - name: Resolve rollback intent
         shell: bash

@@ -410,6 +410,19 @@ jobs:
             "rebuildSha256": "${rebuild_hash}"
           }
           EOF
+          cat > quality-release-input.lock.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "sourceWorkflow": "quality-gates",
+            "sourceRunId": "${GITHUB_RUN_ID}",
+            "sourceCommitSha": "${GITHUB_SHA}",
+            "artifactName": "${baseline_tarball}",
+            "artifactSha256": "${baseline_hash}",
+            "artifactRebuildSha256": "${rebuild_hash}",
+            "releaseVerifyWorkflowPath": ".github/workflows/release.yml",
+            "releasePublishWorkflowPath": ".github/workflows/release-publish.yml"
+          }
+          EOF
 
       - name: Upload build artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
@@ -421,6 +434,7 @@ jobs:
             quality-build.rebuild.sha256
             quality-build.tarball
             quality-build.manifest.json
+            quality-release-input.lock.json
             quality-build.files.baseline.txt
             quality-build.files.rebuild.txt
           if-no-files-found: error

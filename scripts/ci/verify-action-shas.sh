@@ -39,6 +39,69 @@ if [[ "${#workflow_files[@]}" -eq 0 ]]; then
   exit 1
 fi
 
+extract_uses_entries() {
+  local workflow_file="${1:-}"
+  if [[ -z "${workflow_file}" ]]; then
+    return 1
+  fi
+  node - "${workflow_file}" <<'NODE'
+const fs = require("node:fs");
+const YAML = require("yaml");
+
+const workflowFile = process.argv[2];
+if (!workflowFile) {
+  process.stderr.write("Missing workflow file path for uses extraction.\n");
+  process.exit(1);
+}
+
+let parsed;
+try {
+  const raw = fs.readFileSync(workflowFile, "utf8");
+  parsed = YAML.parse(raw);
+} catch (error) {
+  const message = error && error.message ? error.message : String(error);
+  process.stderr.write(`Failed to parse workflow YAML '${workflowFile}': ${message}\n`);
+  process.exit(1);
+}
+
+const usesValues = [];
+const visited = new Set();
+function walk(value) {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      walk(entry);
+    }
+    return;
+  }
+  if (typeof value !== "object") {
+    return;
+  }
+  if (visited.has(value)) {
+    return;
+  }
+  visited.add(value);
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "uses" && typeof child === "string") {
+      const normalized = child.trim();
+      if (normalized) {
+        usesValues.push(normalized);
+      }
+      continue;
+    }
+    walk(child);
+  }
+}
+
+walk(parsed);
+for (const usesValue of usesValues) {
+  process.stdout.write(`${usesValue}\n`);
+}
+NODE
+}
+
 failures=0
 for workflow_file in "${workflow_files[@]}"; do
   if [[ ! -f "${workflow_file}" ]]; then
@@ -47,8 +110,15 @@ for workflow_file in "${workflow_files[@]}"; do
     continue
   fi
 
-  while IFS= read -r uses_line; do
-    uses_value="$(echo "${uses_line}" | sed -E 's/^[[:space:]]*uses:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//')"
+  uses_entries_output=""
+  if ! uses_entries_output="$(extract_uses_entries "${workflow_file}")"; then
+    echo "::error file=${workflow_file}::Unable to parse workflow for pinned action verification."
+    failures=$((failures + 1))
+    continue
+  fi
+  mapfile -t uses_entries <<< "${uses_entries_output}"
+
+  for uses_value in "${uses_entries[@]}"; do
     if [[ -z "${uses_value}" ]]; then
       continue
     fi
@@ -72,7 +142,7 @@ for workflow_file in "${workflow_files[@]}"; do
       echo "::error file=${workflow_file}::SHA mismatch for '${action_key}' (workflow=${workflow_sha}, allowlist=${allowlisted_sha})."
       failures=$((failures + 1))
     fi
-  done < <(grep -E '^[[:space:]]*uses:[[:space:]]*' "${workflow_file}" || true)
+  done
 done
 
 if [[ "${failures}" -gt 0 ]]; then

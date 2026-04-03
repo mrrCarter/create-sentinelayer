@@ -119,6 +119,36 @@
 - Retry jitter hardening should avoid both deterministic lockstep and weak RNG fallbacks; use cryptographic randomness first and deterministic hash fallback only when crypto entropy is unavailable.
 - Persisted config security should not expose bypass toggles (`allowPlaintextSecrets`) even for compatibility paths; secret keys must stay blocked at schema and write-time validation layers.
 - Polling APIs should avoid static idempotency keys across attempts; suffix keys with attempt/sequence (`session:poll:<n>`) so server-side dedupe does not mask status transitions.
+
+## 2026-04-03 (Execution Layer Architecture)
+
+- The gap between a governance platform and a coding agent is exactly 3 things: tool runtime, agentic query loop, and context management. Everything else (budgets, telemetry, security review) is already stronger in the governance platform.
+- Budget enforcement must be a mandatory gate BEFORE each tool execution, not just after each LLM turn; this prevents a single expensive tool call from blowing past limits.
+- Tool concurrency classification (read-only vs write) is essential: read-only tools (FileRead, Grep, Glob) can run in parallel, write tools (FileEdit, Shell) must run serially.
+- The tool interface should use fail-closed defaults: isConcurrencySafe=false, isReadOnly=false, so new tools are serial/write until explicitly proven safe.
+- Shell security analysis should reuse existing deterministic review rules rather than building a separate pattern library; the same regex patterns that catch secrets in code catch them in shell commands.
+- Subagent isolation has three valid modes (in-process, worktree, remote); each maps to different security profiles. Audit agents need plan-mode (read-only tools), fix agents need worktree (isolated writes), pen-test agents need remote (network-restricted).
+- Domain-scoped agent context (primary/secondary/tertiary paths from ingest) is strictly superior to "search the whole repo" for precision and token efficiency; the agent knows where to look before it starts looking.
+- Entitlement tiers should map to permission modes (Free=plan, Pro=default, Team/Enterprise=execute) so the subscription itself is the security policy.
+- Context compaction must preserve the telemetry ledger reference even when compacting the conversation; this gives reproducibility that conversation-only compaction cannot.
+- The query loop's stop-condition check must happen at two points: before LLM call (prevent wasted API spend) and after tool execution (prevent tool-cost blowout). Both are necessary.
+- Token estimation via char/4 is adequate for budget governance (order-of-magnitude correct) but real token counts from API response headers should replace estimates in the telemetry record when available.
+- SL CLI is a governed tool that coding agents invoke (like aws/gh/kubectl), NOT a coding agent itself. The execution layer adds internal specialist agents with tool access, not a general-purpose REPL competing with Claude Code.
+- The streaming event protocol (`--json --stream` NDJSON) is the most important interface for external agent consumption; it must be designed BEFORE internal tools because it's the contract external agents build on.
+- Per-agent event attribution (which persona, which domain, which files) in the streaming protocol is what makes SL CLI uniquely valuable to the calling agent -- no other CLI tool tells you WHO is doing WHAT in real time.
+- Heartbeat events prevent external agents from timing out on long-running SL commands; emit them on a cadence even when no findings are produced.
+- The `run_complete` event must include the artifact report path so external agents can read the full structured output without parsing the stream.
+- Scaffold flows that write tokens to `.env` MUST also ensure `.gitignore` covers `.env`; the CLI created the secret leak vector it was supposed to prevent.
+- IDE detection must distinguish Cursor from VSCode (check `CURSOR_TRACE_ID` before falling back to `TERM_PROGRAM`); misidentification breaks per-agent config generation.
+- Coding agent selection (Claude Code, Cursor, Copilot, etc.) should be a deterministic dictionary lookup, not a web search; network failures during scaffold are unacceptable friction.
+- Spec generator must consume `projectType` (greenfield vs add_feature vs bugfix) to avoid generating greenfield templates for existing codebases; the spec generator currently ignores this field entirely.
+- Phase count must be dynamic, derived from project scope (risk surfaces, description complexity), not hardcoded at 3; enterprise projects routinely need 8-15 phases.
+- Spec-bound pre-commit review catches drift BEFORE push, reducing expensive Omar Gate round-trips; the spec hash should be the same binding mechanism the v1-action already uses.
+- Cross-agent shared memory (blackboard) is the minimum viable coordination mechanism; agents don't need shared conversation context, they need shared findings to avoid duplication.
+- The sentinelayer-api already has a production FAISS hybrid retrieval engine (dense 60% + sparse 25% + recency 10% + severity 5%) with CI-enforced recall@k >= 0.90; the CLI should delegate to it for enterprise tier rather than reimplementing.
+- Stuck-agent detection should fire on state CHANGES (stuck -> active, budget threshold crossed), not on periodic timers; periodic alerts burn attention and tokens.
+- Stale ingest detection is simple: compare ingest timestamp vs `git log -1 --format=%cI`; if ingest predates last commit, warn and offer refresh.
+- Alert payloads to Slack/Telegram must be concise (<200 chars headline + structured fields) to avoid notification fatigue; include run ID, agent persona, budget status, and findings count only.
 - For auth controls, treat privileged token scopes and storage-downgrade paths as explicit consent flows (`--allow-privileged-scope`, `--no-keyring`) instead of silent option/env behavior.
 - Quality pipelines need a dedicated release-readiness smoke stage (artifact install + binary checks) to avoid recurring CI governance findings even when lint/test/security/build pass.
 - Release provenance checks should validate workflow-run source event constraints and cryptographic attestation verification, not just digest lineage and workflow path matching.
@@ -161,3 +191,7 @@
 - Deterministic build-proof lanes are stronger when both packs are produced from isolated clean git clones and validated by both digest parity and packed-file-list parity.
 - Release tag trust gates should verify both annotated tag object signatures (when present) and target commit verification before allowing publish-path execution.
 - Time-sensitive polling tests should assert deterministic ceilings/invariants (`<= max attempts`, unique idempotency keys), not exact poll-call counts that can vary by scheduler timing.
+- Workflow policy scanners that parse YAML with line regexes are brittle; use structural YAML parsing (`yaml`/AST-style traversal) and fail closed on parse errors.
+- `Retry-After` absolute-date handling must use wall-clock deltas (`retry_epoch - Date.now()`), while monotonic clocks should stay scoped to elapsed-time budgets only.
+- Localhost plaintext API allowances should require explicit opt-in (`SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true`) and be rejected under `CI=true` to prevent silent insecure transport in automation environments.
+- Release-control trigger surfaces should prefer explicit `workflow_dispatch` and `workflow_call`; avoid `repository_dispatch` for high-risk rollback/publish paths unless there is a strict provenance need that cannot be satisfied otherwise.

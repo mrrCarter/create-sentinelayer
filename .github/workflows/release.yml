@@ -10,16 +10,6 @@ on:
         description: "Semver tag to release (vX.Y.Z)"
         required: true
         type: string
-      execute_publish:
-        description: "Execute production publish (false = verification only)"
-        required: false
-        default: false
-        type: boolean
-      dry_run:
-        description: "Run npm publish --dry-run when execute_publish=true"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -263,8 +253,6 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE_VALUE: ${{ github.ref_type }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
-          INPUT_EXECUTE_PUBLISH: ${{ inputs.execute_publish || 'false' }}
-          INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           FALLBACK_SHA: ${{ github.sha }}
@@ -306,14 +294,8 @@ jobs:
                 exit 1
               fi
               release_path_execution="true"
-              requested_manual_publish="$(normalize_bool "${INPUT_EXECUTE_PUBLISH:-false}")"
-              requested_dry_run="$(normalize_bool "${INPUT_DRY_RUN:-false}")"
-              publish_requested="${requested_manual_publish}"
-              if [[ "${publish_requested}" == "true" ]]; then
-                dry_run="${requested_dry_run}"
-              else
-                dry_run="true"
-              fi
+              publish_requested="false"
+              dry_run="true"
               ;;
             *)
               release_path_execution="false"
@@ -863,11 +845,17 @@ jobs:
         run: |
           set -euo pipefail
           test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json from quality workflow artifacts." && exit 1)
+          test -f quality-proof/quality-release-input.lock.json || (echo "::error::Missing quality-release-input.lock.json from quality workflow artifacts." && exit 1)
           quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
           quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
           quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
           quality_run_id_manifest="$(jq -r '.runId // ""' quality-proof/quality-build.manifest.json)"
           quality_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-build.manifest.json)"
+          lock_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-release-input.lock.json)"
+          lock_artifact_sha="$(jq -r '.artifactSha256 // ""' quality-proof/quality-release-input.lock.json)"
+          lock_artifact_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' quality-proof/quality-release-input.lock.json)"
+          lock_source_commit_sha="$(jq -r '.sourceCommitSha // ""' quality-proof/quality-release-input.lock.json)"
+          lock_source_run_id="$(jq -r '.sourceRunId // ""' quality-proof/quality-release-input.lock.json)"
           deploy_summary_path="quality-proof/deploy-stage-proof/deploy.summary.json"
           deploy_artifact_name="$(jq -r '.artifactName // ""' "${deploy_summary_path}")"
           deploy_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_summary_path}")"
@@ -880,13 +868,26 @@ jobs:
           test -n "${quality_rebuild_sha}" || (echo "::error::Unable to parse quality rebuild hash." && exit 1)
           test -n "${release_artifact_name}" || (echo "::error::Unable to parse release artifact name." && exit 1)
           test -n "${quality_artifact_name}" || (echo "::error::Unable to parse quality artifact name." && exit 1)
+          test -n "${lock_artifact_name}" || (echo "::error::Unable to parse lock artifact name." && exit 1)
+          test -n "${lock_artifact_sha}" || (echo "::error::Unable to parse lock artifact sha256." && exit 1)
+          test -n "${lock_artifact_rebuild_sha}" || (echo "::error::Unable to parse lock artifact rebuild sha256." && exit 1)
+          test -n "${lock_source_commit_sha}" || (echo "::error::Unable to parse lock source commit." && exit 1)
+          test -n "${lock_source_run_id}" || (echo "::error::Unable to parse lock source run id." && exit 1)
           test -n "${package_version}" || (echo "::error::Unable to parse package version from package.json." && exit 1)
           if [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
             echo "::error::Quality workflow reproducibility proof mismatch (baseline=${quality_sha}, rebuild=${quality_rebuild_sha})."
             exit 1
           fi
+          if [[ "${lock_artifact_sha}" != "${quality_sha}" ]] || [[ "${lock_artifact_rebuild_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality release-input lock digest mismatch (lock=${lock_artifact_sha}/${lock_artifact_rebuild_sha}, quality=${quality_sha}/${quality_rebuild_sha})."
+            exit 1
+          fi
           if [[ "${quality_artifact_name}" != "${release_artifact_name}" ]]; then
             echo "::error::Artifact identity mismatch between quality (${quality_artifact_name}) and release (${release_artifact_name})."
+            exit 1
+          fi
+          if [[ "${lock_artifact_name}" != "${quality_artifact_name}" ]]; then
+            echo "::error::Quality release-input lock artifact mismatch (lock=${lock_artifact_name}, quality=${quality_artifact_name})."
             exit 1
           fi
           if [[ "${deploy_artifact_name}" != "${quality_artifact_name}" ]]; then
@@ -916,8 +917,16 @@ jobs:
             echo "::error::Quality workflow commit (${quality_commit_sha}) does not match release target (${TARGET_SHA})."
             exit 1
           fi
+          if [[ "${lock_source_commit_sha}" != "${quality_commit_sha}" ]]; then
+            echo "::error::Quality release-input lock commit mismatch (lock=${lock_source_commit_sha}, quality=${quality_commit_sha})."
+            exit 1
+          fi
           if [[ -n "${quality_run_id_manifest}" ]] && [[ "${quality_run_id_manifest}" != "${QUALITY_RUN_ID}" ]]; then
             echo "::error::Quality manifest run id (${quality_run_id_manifest}) does not match selected run (${QUALITY_RUN_ID})."
+            exit 1
+          fi
+          if [[ "${lock_source_run_id}" != "${quality_run_id_manifest}" ]]; then
+            echo "::error::Quality release-input lock run id mismatch (lock=${lock_source_run_id}, quality=${quality_run_id_manifest})."
             exit 1
           fi
           echo "Verified release artifact lineage for ${package_name}@${package_version}."
@@ -934,6 +943,7 @@ jobs:
             package-lock.sha256
             npm-prod-tree.json
             quality-proof/quality-build.manifest.json
+            quality-proof/quality-release-input.lock.json
             quality-proof/quality-attestation.verify.json
             quality-proof/deploy-stage-proof/deploy.summary.json
 
@@ -1040,7 +1050,9 @@ jobs:
         run: |
           set -euo pipefail
           manifest_path="release-bundle/quality-proof/quality-build.manifest.json"
+          lock_path="release-bundle/quality-proof/quality-release-input.lock.json"
           test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
+          test -f "${lock_path}" || (echo "::error::Missing quality release-input lock ${lock_path} in release artifact bundle." && exit 1)
           tarball_name="$(tr -d '\r\n' < release-bundle/create-sentinelayer.tarball)"
           expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
           test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
@@ -1049,14 +1061,36 @@ jobs:
           manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
           manifest_commit="$(jq -r '.commitSha // ""' "${manifest_path}")"
           manifest_run_id="$(jq -r '.runId // ""' "${manifest_path}")"
+          lock_artifact="$(jq -r '.artifactName // ""' "${lock_path}")"
+          lock_sha="$(jq -r '.artifactSha256 // ""' "${lock_path}")"
+          lock_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${lock_path}")"
+          lock_commit="$(jq -r '.sourceCommitSha // ""' "${lock_path}")"
+          lock_run_id="$(jq -r '.sourceRunId // ""' "${lock_path}")"
           test -n "${manifest_artifact}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
           test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          test -n "${lock_artifact}" || (echo "::error::Missing artifactName in ${lock_path}." && exit 1)
+          test -n "${lock_sha}" || (echo "::error::Missing artifactSha256 in ${lock_path}." && exit 1)
+          test -n "${lock_rebuild_sha}" || (echo "::error::Missing artifactRebuildSha256 in ${lock_path}." && exit 1)
+          test -n "${lock_commit}" || (echo "::error::Missing sourceCommitSha in ${lock_path}." && exit 1)
+          test -n "${lock_run_id}" || (echo "::error::Missing sourceRunId in ${lock_path}." && exit 1)
           if [[ "${manifest_artifact}" != "${tarball_name}" ]]; then
             echo "::error::Release artifact identity mismatch (manifest=${manifest_artifact}, promoted=${tarball_name})."
             exit 1
           fi
           if [[ "${manifest_sha}" != "${expected_sha}" ]]; then
             echo "::error::Release artifact digest mismatch (manifest=${manifest_sha}, promoted=${expected_sha})."
+            exit 1
+          fi
+          if [[ "${lock_artifact}" != "${manifest_artifact}" ]] || [[ "${lock_sha}" != "${manifest_sha}" ]] || [[ "${lock_rebuild_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Release-input lock mismatch (lock=${lock_artifact}/${lock_sha}/${lock_rebuild_sha}, manifest=${manifest_artifact}/${manifest_sha})."
+            exit 1
+          fi
+          if [[ "${lock_commit}" != "${manifest_commit}" ]]; then
+            echo "::error::Release-input lock commit mismatch (lock=${lock_commit}, manifest=${manifest_commit})."
+            exit 1
+          fi
+          if [[ "${lock_run_id}" != "${manifest_run_id}" ]]; then
+            echo "::error::Release-input lock run mismatch (lock=${lock_run_id}, manifest=${manifest_run_id})."
             exit 1
           fi
           if [[ -n "${TARGET_SHA}" ]] && [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then
@@ -1195,6 +1229,7 @@ jobs:
     if: ${{ always() && needs.resolve-release-flags.outputs.publish_requested == 'true' && (needs.verify-required-checks.result == 'failure' || needs.preflight.result == 'failure' || needs.rollback-readiness.result == 'failure' || needs.authorize-production-publish.result == 'failure' || needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
     permissions:
       contents: write
+      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1210,19 +1245,15 @@ jobs:
             bad_version="${RELEASE_TAG#v}"
           fi
           reason="Automated rollback validation requested from failed release workflow (${RUN_URL})."
-          payload="$(jq -nc --arg badVersion "${bad_version}" --arg reason "${reason}" '
-            {
-              event_type: "release_rollback_requested",
-              client_payload: {
-                bad_version: $badVersion,
-                reason: $reason,
-                execute: false
-              }
-            }
-          ')"
-          timeout --preserve-status 30s gh api "repos/${REPO}/dispatches" \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            --input - <<<"${payload}"
-          echo "Requested automated rollback validation (bad_version='${bad_version}')."
+          run_args=(
+            workflow run rollback.yml
+            --repo "${REPO}"
+            -f execute=false
+            -f reason="${reason}"
+          )
+          if [[ -n "${bad_version}" ]]; then
+            run_args+=(-f bad_version="${bad_version}")
+          fi
+          timeout --preserve-status 30s gh "${run_args[@]}"
+          echo "Requested automated rollback validation via workflow_dispatch (bad_version='${bad_version}')."
 

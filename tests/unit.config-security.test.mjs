@@ -176,3 +176,16 @@ test("Unit config security: runtime secret schema rejects whitespace token value
     /openaiApiKey/i
   );
 });
+
+test("Unit config security: runtime secret schema rejects control and zero-width characters", () => {
+  const zeroWidthOpenAi = "sk-proj-2a3b4c5d6e7f8g9h0i1j2\u200bk3l4m";
+  const controlSentinel = "sl_env_0123456789abc\tdef0123456789";
+  assert.throws(
+    () => getRuntimeSecretSchema().partial().parse({ openaiApiKey: zeroWidthOpenAi }),
+    /SL-CONFIG-SECRET-CHARSET/i
+  );
+  assert.throws(
+    () => getRuntimeSecretSchema().partial().parse({ sentinelayerToken: controlSentinel }),
+    /SL-CONFIG-SECRET-CHARSET/i
+  );
+});

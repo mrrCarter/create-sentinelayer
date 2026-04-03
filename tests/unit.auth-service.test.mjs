@@ -259,7 +259,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
   try {
     const loginResult = await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -314,7 +314,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const activeSession = await resolveActiveAuthSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       autoRotate: false,
@@ -324,7 +324,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const authStatus = await getAuthStatus({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       checkRemote: true,
@@ -350,7 +350,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const logoutResult = await logoutSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       revokeRemote: true,
@@ -383,7 +383,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
   try {
     await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -397,7 +397,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
 
     const listed = await listStoredAuthSessions({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
     });
@@ -408,7 +408,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
 
     const revoked = await revokeAuthToken({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
     });
@@ -456,7 +456,7 @@ test("Unit auth service: env token bypasses legacy config and legacy plaintext c
       () =>
         resolveActiveAuthSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           explicitApiUrl: "https://api.example.com",
           autoRotate: false,
           homeDir: tempRoot,
@@ -473,9 +473,40 @@ test("Unit auth service: reject insecure non-local HTTP API URL overrides", asyn
     () =>
       resolveApiUrl({
         explicitApiUrl: "http://api.example.com",
-        env: {},
+        env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       }),
     /HTTPS is required/i
+  );
+});
+
+test("Unit auth service: localhost HTTP API URL requires explicit opt-in flag", async () => {
+  await assert.rejects(
+    () =>
+      resolveApiUrl({
+        explicitApiUrl: "http://127.0.0.1:9443",
+        env: {},
+      }),
+    /SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP/i
+  );
+});
+
+test("Unit auth service: localhost HTTP API URL is allowed only outside CI", async () => {
+  const resolved = await resolveApiUrl({
+    explicitApiUrl: "http://127.0.0.1:9443",
+    env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true" },
+  });
+  assert.equal(resolved, "http://127.0.0.1:9443");
+
+  await assert.rejects(
+    () =>
+      resolveApiUrl({
+        explicitApiUrl: "http://127.0.0.1:9443",
+        env: {
+          SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true",
+          CI: "true",
+        },
+      }),
+    /blocked when CI=true/i
   );
 });
 
@@ -515,7 +546,7 @@ test("Unit auth service: keyring-backed metadata without keyring fails closed an
       () =>
         resolveActiveAuthSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: "https://api.sentinelayer.dev",
           autoRotate: false,
@@ -530,7 +561,7 @@ test("Unit auth service: keyring-backed metadata without keyring fails closed an
 
     const logoutResult = await logoutSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: "https://api.sentinelayer.dev",
       revokeRemote: true,
@@ -568,7 +599,7 @@ test("Unit auth service: login fails fast for denied polling status", async () =
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
@@ -622,7 +653,7 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
@@ -689,7 +720,7 @@ test("Unit auth service: login ignores stale poll correlation mismatches before 
   try {
     const loginResult = await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -741,7 +772,7 @@ test("Unit auth service: login fails closed after repeated polling backend outag
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
@@ -789,7 +820,7 @@ test("Unit auth service: login enforces deterministic polling attempt ceiling", 
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
@@ -832,7 +863,7 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
   try {
     await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -860,7 +891,7 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
 
     const resolved = await resolveActiveAuthSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       autoRotate: true,
@@ -899,7 +930,7 @@ test("Unit auth service: privileged token scope requires explicit opt-in flag", 
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
@@ -935,7 +966,7 @@ test("Unit auth service: login supports explicit privileged token scope override
   try {
     await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -973,7 +1004,7 @@ test("Unit auth service: login rejects unknown token scope overrides", async () 
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
