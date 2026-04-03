@@ -79,6 +79,44 @@ function deterministicJitterFactor(sessionId, attempt) {
   return 0.8 + bucket * 0.4;
 }
 
+function throwIfAbortRequested(signal) {
+  if (!signal || typeof signal !== "object" || !signal.aborted) {
+    return;
+  }
+  throw new SentinelayerApiError("CLI authentication polling canceled by caller.", {
+    status: 499,
+    code: "CLI_AUTH_ABORTED",
+  });
+}
+
+async function sleepWithAbortSignal(delayMs, signal) {
+  throwIfAbortRequested(signal);
+  if (!signal || typeof signal !== "object") {
+    await sleep(delayMs);
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    let timer = null;
+    const onAbort = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      signal.removeEventListener("abort", onAbort);
+      reject(
+        new SentinelayerApiError("CLI authentication polling canceled by caller.", {
+          status: 499,
+          code: "CLI_AUTH_ABORTED",
+        })
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(0, Number(delayMs) || 0));
+  });
+}
+
 const TERMINAL_CLI_AUTH_POLL_STATUSES = new Map([
   ["denied", { httpStatus: 403, code: "CLI_AUTH_DENIED", message: "CLI authentication was denied." }],
   ["rejected", { httpStatus: 403, code: "CLI_AUTH_REJECTED", message: "CLI authentication was rejected." }],
@@ -175,18 +213,21 @@ async function pollCliAuthSession({
   challenge,
   timeoutMs,
   pollIntervalSeconds,
+  signal = null,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
   let attempt = 0;
 
   while (Date.now() < deadline) {
+    throwIfAbortRequested(signal);
     const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
       method: "POST",
       body: {
         session_id: sessionId,
         challenge,
       },
+      signal,
     });
 
     const status = String(payload.status || "pending").trim().toLowerCase();
@@ -223,7 +264,7 @@ async function pollCliAuthSession({
     const jitterFactor = deterministicJitterFactor(sessionId, attempt);
     const remainingMs = Math.max(0, deadline - Date.now());
     const nextDelayMs = Math.max(250, Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs));
-    await sleep(nextDelayMs);
+    await sleepWithAbortSignal(nextDelayMs, signal);
     attempt += 1;
   }
 
@@ -458,6 +499,7 @@ async function rotateStoredApiTokenIfNeeded({
  *   tokenTtlDays?: number,
  *   ide?: string,
  *   cliVersion?: string,
+ *   signal?: AbortSignal | null,
  *   homeDir?: string
  * }} [options]
  * @returns {Promise<{
@@ -488,6 +530,7 @@ export async function loginAndPersistSession({
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   ide = DEFAULT_IDE_NAME,
   cliVersion = "",
+  signal = null,
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
@@ -516,6 +559,7 @@ export async function loginAndPersistSession({
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
+    signal,
   });
 
   const approvalToken = String(approval.auth_token || "").trim();

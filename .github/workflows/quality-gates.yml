@@ -207,8 +207,24 @@ jobs:
           pack_json="$(npm pack --json)"
           tarball="$(echo "${pack_json}" | jq -r '.[0].filename')"
           test -n "${tarball}" || (echo "::error::Unable to resolve packed tarball filename." && exit 1)
-          sha256sum "${tarball}" > quality-build.sha256
+          baseline_hash="$(sha256sum "${tarball}" | awk '{print $1}')"
+          printf "%s\n" "${baseline_hash}" > quality-build.sha256
           printf "%s\n" "${tarball}" > quality-build.tarball
+          rebuild_dir="$(mktemp -d)"
+          git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
+          pushd "${rebuild_dir}" >/dev/null
+          npm config set registry "https://registry.npmjs.org/"
+          npm ci --ignore-scripts
+          rebuild_pack_json="$(npm pack --json)"
+          rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
+          test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)
+          rebuild_hash="$(sha256sum "${rebuild_tarball}" | awk '{print $1}')"
+          popd >/dev/null
+          printf "%s\n" "${rebuild_hash}" > quality-build.rebuild.sha256
+          if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
+            echo "::error::Non-deterministic quality build hash detected (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
+            exit 1
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
@@ -217,6 +233,7 @@ jobs:
           path: |
             create-sentinelayer-*.tgz
             quality-build.sha256
+            quality-build.rebuild.sha256
             quality-build.tarball
           if-no-files-found: error
 

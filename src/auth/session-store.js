@@ -6,6 +6,8 @@ import process from "node:process";
 
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
+const FILE_TOKEN_KEY_BYTES = 32;
+const FILE_TOKEN_IV_BYTES = 12;
 
 export class StoredSessionError extends Error {
   constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
@@ -33,6 +35,11 @@ function resolveHomeDir(homeDir) {
 export function resolveCredentialsFilePath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
   return path.join(resolvedHome, ".sentinelayer", "credentials.json");
+}
+
+function resolveCredentialsKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer", "credentials.key");
 }
 
 function buildKeyringAccountName(apiUrl) {
@@ -68,6 +75,9 @@ function normalizeMetadata(raw = {}) {
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
     token: String(raw.token || "").trim() || null,
+    tokenCiphertext: String(raw.tokenCiphertext || "").trim() || null,
+    tokenIv: String(raw.tokenIv || "").trim() || null,
+    tokenTag: String(raw.tokenTag || "").trim() || null,
   };
 }
 
@@ -135,6 +145,101 @@ async function writeMetadata(filePath, metadata) {
   }
 }
 
+async function persistEncryptedFileTokenMetadata({
+  filePath,
+  metadata,
+  token,
+  homeDir,
+} = {}) {
+  const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: true });
+  const encrypted = encryptFileToken(token, keyMaterial);
+  const updatedMetadata = normalizeMetadata({
+    ...metadata,
+    storage: "file",
+    token: null,
+    tokenCiphertext: encrypted.tokenCiphertext,
+    tokenIv: encrypted.tokenIv,
+    tokenTag: encrypted.tokenTag,
+    updatedAt: nowIso(),
+  });
+  await writeMetadata(filePath, updatedMetadata);
+  return updatedMetadata;
+}
+
+async function writeSecretFile(filePath, contents) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await fsp.writeFile(filePath, String(contents || ""), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  try {
+    await fsp.chmod(filePath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+}
+
+async function loadFileTokenKey({ homeDir, createIfMissing = false } = {}) {
+  const keyPath = resolveCredentialsKeyPath({ homeDir });
+  try {
+    const raw = await fsp.readFile(keyPath, "utf-8");
+    const material = Buffer.from(String(raw || "").trim(), "base64");
+    if (material.length !== FILE_TOKEN_KEY_BYTES) {
+      throw new StoredSessionError(
+        "Stored file-token encryption key is invalid. Re-authenticate with `sl auth login`.",
+        { code: "FILE_TOKEN_KEY_INVALID", filePath: keyPath }
+      );
+    }
+    return material;
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT" && createIfMissing) {
+      const generated = crypto.randomBytes(FILE_TOKEN_KEY_BYTES);
+      await writeSecretFile(keyPath, `${generated.toString("base64")}\n`);
+      return generated;
+    }
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      throw new StoredSessionError(
+        "Stored file-token encryption key is missing. Re-authenticate with `sl auth login`.",
+        { code: "FILE_TOKEN_KEY_MISSING", filePath: keyPath }
+      );
+    }
+    throw error;
+  }
+}
+
+function encryptFileToken(token, keyMaterial) {
+  const iv = crypto.randomBytes(FILE_TOKEN_IV_BYTES);
+  const cipher = crypto.createCipheriv("aes-256-gcm", keyMaterial, iv);
+  const ciphertext = Buffer.concat([cipher.update(String(token || ""), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    tokenCiphertext: ciphertext.toString("base64"),
+    tokenIv: iv.toString("base64"),
+    tokenTag: tag.toString("base64"),
+  };
+}
+
+function decryptFileToken({ tokenCiphertext, tokenIv, tokenTag }, keyMaterial) {
+  try {
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      keyMaterial,
+      Buffer.from(String(tokenIv || ""), "base64")
+    );
+    decipher.setAuthTag(Buffer.from(String(tokenTag || ""), "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(String(tokenCiphertext || ""), "base64")),
+      decipher.final(),
+    ]);
+    return plaintext.toString("utf8");
+  } catch {
+    throw new StoredSessionError(
+      "Stored file-backed session token could not be decrypted. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_DECRYPT_FAILED" }
+    );
+  }
+}
+
 /**
  * Load the active stored session, resolving keyring-backed tokens when configured.
  *
@@ -199,7 +304,26 @@ export async function readStoredSession({ homeDir } = {}) {
     };
   }
 
-  if (!metadata.token) {
+  let token = null;
+  if (metadata.tokenCiphertext && metadata.tokenIv && metadata.tokenTag) {
+    const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: false });
+    token = decryptFileToken(
+      {
+        tokenCiphertext: metadata.tokenCiphertext,
+        tokenIv: metadata.tokenIv,
+        tokenTag: metadata.tokenTag,
+      },
+      keyMaterial
+    );
+  } else if (metadata.token) {
+    token = metadata.token;
+    await persistEncryptedFileTokenMetadata({
+      filePath,
+      metadata,
+      token,
+      homeDir,
+    });
+  } else {
     throw new StoredSessionError(
       "Stored file-backed session token is missing. Re-authenticate with `sl auth login`.",
       { code: "FILE_TOKEN_MISSING", filePath }
@@ -208,7 +332,7 @@ export async function readStoredSession({ homeDir } = {}) {
   return {
     ...metadata,
     filePath,
-    token: metadata.token,
+    token,
     storage: "file",
   };
 }
@@ -333,11 +457,19 @@ export async function writeStoredSession(
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
     nextMetadata.token = null;
+    nextMetadata.tokenCiphertext = null;
+    nextMetadata.tokenIv = null;
+    nextMetadata.tokenTag = null;
   } else {
+    const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: true });
+    const encrypted = encryptFileToken(normalizedToken, keyMaterial);
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
-    nextMetadata.token = normalizedToken;
+    nextMetadata.token = null;
+    nextMetadata.tokenCiphertext = encrypted.tokenCiphertext;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
   }
 
   await writeMetadata(filePath, nextMetadata);

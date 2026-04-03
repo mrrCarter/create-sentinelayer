@@ -41,6 +41,11 @@ test("Unit auth session store: file storage round-trip is deterministic when key
     assert.equal(persisted.user.githubUsername, "demo-user");
     assert.equal(persisted.user.isAdmin, true);
 
+    const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    const rawCredentials = await readFile(credentialsPath, "utf-8");
+    assert.ok(rawCredentials.includes("\"tokenCiphertext\""));
+    assert.equal(rawCredentials.includes("api_token_example_1"), false);
+
     const stored = await readStoredSession({ homeDir: tempRoot });
     assert.equal(stored?.token, "api_token_example_1");
     assert.equal(stored?.tokenId, "token_1");

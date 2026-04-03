@@ -53,6 +53,19 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Enforce trusted PR source for secret-backed scan
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]] || [[ "${HEAD_IS_FORK}" == "true" ]]; then
+            echo "::error::Omar Gate secrets are restricted to trusted same-repo pull requests."
+            exit 1
+          fi
       - name: Validate Sentinelayer token secret
         shell: bash
         env:
