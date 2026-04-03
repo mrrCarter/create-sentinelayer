@@ -46,7 +46,6 @@ jobs:
       BAD_VERSION: ${{ github.event.inputs.bad_version }}
       REASON: ${{ github.event.inputs.reason }}
       EXECUTE: ${{ github.event.inputs.execute }}
-      NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - name: Checkout
@@ -105,7 +104,7 @@ jobs:
         if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT == 'true'
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest

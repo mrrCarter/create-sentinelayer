@@ -66,22 +66,23 @@ jobs:
             release_path_execution="true"
           fi
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            release_path_execution="true"
             dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
-            if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${dispatch_publish}" == "true" ]]; then
-              publish_requested="true"
-              if [[ "${dry_run}" == "true" ]]; then
-                echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
+            if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+              release_path_execution="true"
+              if [[ "${dispatch_publish}" == "true" ]]; then
+                publish_requested="true"
+                if [[ "${dry_run}" == "true" ]]; then
+                  echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
+                fi
               fi
             else
+              release_path_execution="false"
               publish_requested="false"
               if [[ "${dispatch_publish}" == "true" ]]; then
-                echo "::notice::Manual publish requested on non-tag ref; forcing dry-run validation."
+                echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
               fi
               dry_run="true"
-            fi
-            if [[ "${dispatch_publish}" != "true" ]] && [[ "${dry_run}" != "true" ]]; then
-              echo "::notice::workflow_dispatch validation run enabled (publish=false)."
+              echo "::notice::workflow_dispatch on non-tag ref does not execute release path jobs."
             fi
           fi
           echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
@@ -146,7 +147,14 @@ jobs:
           fi
           quality_run_id=""
           omar_run_id=""
-          expected_workflow_path_for_check() {
+          workflow_file_for_check() {
+            case "${1}" in
+              "Omar Gate") echo "omar-gate.yml" ;;
+              "Quality Summary") echo "quality-gates.yml" ;;
+              *) return 1 ;;
+            esac
+          }
+          workflow_path_for_check() {
             case "${1}" in
               "Omar Gate") echo ".github/workflows/omar-gate.yml" ;;
               "Quality Summary") echo ".github/workflows/quality-gates.yml" ;;
@@ -155,55 +163,33 @@ jobs:
           }
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
-            checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
             pending=0
             for required in "${required_checks[@]}"; do
               check_name="$(echo "${required}" | xargs)"
               if [[ -z "${check_name}" ]]; then
                 continue
               fi
-              mismatched_count="$(echo "${checks_json}" | jq -r --arg name "${check_name}" '
-                [.check_runs[]
-                  | select(.name == $name)
-                  | select((.app.slug // "") != "github-actions" or ((.details_url // "") | contains("/actions/runs/") | not))
-                ] | length
-              ')"
-              if [[ "${mismatched_count}" != "0" ]]; then
-                echo "::error::Detected ${mismatched_count} untrusted producer run(s) for required check '${check_name}'."
+              workflow_file="$(workflow_file_for_check "${check_name}" || true)"
+              workflow_path="$(workflow_path_for_check "${check_name}" || true)"
+              if [[ -z "${workflow_file}" ]] || [[ -z "${workflow_path}" ]]; then
+                echo "::error::Missing workflow identity mapping for required check '${check_name}'."
                 exit 1
               fi
-              latest_run="$(echo "${checks_json}" | jq -c --arg name "${check_name}" '
-                [.check_runs[]
-                  | select(.name == $name)
-                  | select((.app.slug // "") == "github-actions")
-                  | select((.details_url // "") | contains("/actions/runs/"))
-                ] | sort_by(.started_at // .created_at) | last // empty
+              runs_json="$(gh api "repos/${REPO}/actions/workflows/${workflow_file}/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+              latest_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path "${workflow_path}" '
+                [.workflow_runs[]
+                  | select((.head_sha // "") == $sha)
+                  | select(((.path // "") | split("@")[0]) == $path)
+                ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
               ')"
               if [[ -z "${latest_run}" ]]; then
                 echo "Waiting for required check '${check_name}' on ${TARGET_SHA}."
                 pending=1
                 continue
               fi
-              details_url="$(echo "${latest_run}" | jq -r '.details_url // ""')"
-              run_id="$(echo "${details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+).*$#\1#p')"
+              run_id="$(echo "${latest_run}" | jq -r '.id // ""')"
               if [[ -z "${run_id}" ]]; then
                 echo "::error::Unable to resolve workflow run id for required check '${check_name}'."
-                exit 1
-              fi
-              run_json="$(gh api "repos/${REPO}/actions/runs/${run_id}" -H "Accept: application/vnd.github+json")"
-              expected_workflow_path="$(expected_workflow_path_for_check "${check_name}" || true)"
-              if [[ -z "${expected_workflow_path}" ]]; then
-                echo "::error::Missing workflow identity mapping for required check '${check_name}'."
-                exit 1
-              fi
-              run_workflow_path="$(echo "${run_json}" | jq -r '.path // ""' | cut -d'@' -f1)"
-              run_head_sha="$(echo "${run_json}" | jq -r '.head_sha // ""')"
-              if [[ "${run_workflow_path}" != "${expected_workflow_path}" ]]; then
-                echo "::error::Required check '${check_name}' originated from unexpected workflow path '${run_workflow_path}' (expected '${expected_workflow_path}')."
-                exit 1
-              fi
-              if [[ "${run_head_sha}" != "${TARGET_SHA}" ]]; then
-                echo "::error::Required check '${check_name}' head_sha '${run_head_sha}' does not match target '${TARGET_SHA}'."
                 exit 1
               fi
               status="$(echo "${latest_run}" | jq -r '.status')"
@@ -441,7 +427,6 @@ jobs:
     needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
     environment: production
     env:
-      NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}
       DRY_RUN: ${{ needs.resolve-release-flags.outputs.dry_run }}
@@ -551,7 +536,7 @@ jobs:
           TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
           npm publish "release-bundle/${TARBALL_NAME}" --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Emit rollback runbook guidance
         shell: bash

@@ -7,6 +7,8 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  checks: read
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -23,7 +25,49 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      checks: read
+      actions: read
     steps:
+      - name: Verify Quality Summary gate for target SHA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
+            latest_quality_run="$(echo "${checks_json}" | jq -c '
+              [.check_runs[]
+                | select(.name == "Quality Summary")
+                | select((.app.slug // "") == "github-actions")
+                | select((.details_url // "") | contains("/actions/runs/"))
+              ] | sort_by(.started_at // .created_at) | last // empty
+            ')"
+            if [[ -z "${latest_quality_run}" ]]; then
+              echo "Waiting for Quality Summary on ${TARGET_SHA}."
+              sleep 10
+              continue
+            fi
+            status="$(echo "${latest_quality_run}" | jq -r '.status')"
+            conclusion="$(echo "${latest_quality_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              echo "Quality Summary status=${status}; waiting."
+              sleep 10
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::Quality Summary concluded with '${conclusion}' for ${TARGET_SHA}."
+              exit 1
+            fi
+            echo "Quality Summary passed for ${TARGET_SHA}."
+            exit 0
+          done
+          echo "::error::Timed out waiting for Quality Summary on ${TARGET_SHA}."
+          exit 1
+
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:

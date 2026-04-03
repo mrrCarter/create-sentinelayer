@@ -14,6 +14,7 @@ import {
   loginAndPersistSession,
   logoutSession,
   revokeAuthToken,
+  resolveApiUrl,
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
 import { SentinelayerApiError } from "../src/auth/http.js";
@@ -393,6 +394,17 @@ test("Unit auth service: env token bypasses legacy config and legacy plaintext c
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("Unit auth service: reject insecure non-local HTTP API URL overrides", async () => {
+  await assert.rejects(
+    () =>
+      resolveApiUrl({
+        explicitApiUrl: "http://api.example.com",
+        env: {},
+      }),
+    /HTTPS is required/i
+  );
 });
 
 test("Unit auth service: keyring-backed metadata without keyring fails closed and logout clears local state", async () => {

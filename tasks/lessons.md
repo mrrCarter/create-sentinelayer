@@ -105,3 +105,7 @@
 - Eliminate latent security backdoors (for example env-only plaintext-secret opt-ins) when hardening config persistence; security exceptions should not be toggleable through ambient process env alone.
 - Eval-impact diff baselines should derive from explicit merge-base resolution against the target branch, never `HEAD~1` fallback, to keep PR and squash-history behavior deterministic.
 - Release workflows need both a single-flight concurrency lock and a controlled tagged `workflow_dispatch` publish path; forcing all manual dispatches to dry-run triggers governance drift findings.
+- Treat Omar P2 churn as an iterative moving target: after each fix batch, re-anchor to the newest comment before coding again, because prior findings can disappear while new governance findings surface.
+- Required-check trust for release gating is stronger when sourced from workflow-run APIs (`actions/workflows/*/runs` filtered by `head_sha` + workflow path) rather than check-run name ordering.
+- Release-automation jobs that mutate repo state (`release-please`) should explicitly verify upstream quality gates on the same SHA before execution.
+- Auth endpoint normalization should fail closed for non-HTTPS remote hosts while allowing explicit localhost HTTP for deterministic local test infrastructure.

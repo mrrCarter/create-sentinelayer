@@ -37,6 +37,12 @@ function normalizeApiUrl(rawValue) {
   } catch {
     throw new Error(`Invalid API URL '${candidate}'.`);
   }
+  const hostname = String(parsed.hostname || "").trim().toLowerCase();
+  const isLocalDevEndpoint =
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocalDevEndpoint)) {
+    throw new Error(`Invalid API URL '${candidate}': HTTPS is required for non-local endpoints.`);
+  }
   parsed.pathname = "/";
   parsed.search = "";
   parsed.hash = "";

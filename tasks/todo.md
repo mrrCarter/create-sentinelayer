@@ -502,4 +502,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Rework release controls for single-flight promotion (`concurrency` lock) and controlled manual publish path from tagged dispatches.
 - [x] Harden Retry-After HTTP-date handling with monotonic/server-date-aware delay parsing and coverage test.
 - [x] Remove env-based plaintext secret persistence override; keep config secret persistence blocked by default and update auth/config tests.
-- [ ] Push second-cycle residual fixes and run `gh run watch` on Omar Gate for PR #114 until Omar reports `P2<=2`.
+- [x] Push second-cycle fixes (`4a53d73`) and run `gh run watch` (`run_id=23932048297`): Omar remains `P2=6` with new set (`HTTPS API URL`, `rollback token scope`, `release-please gate dependency`, `quality network timeout controls`, `non-tag dispatch release path`, `release check-run race`).
+- [x] Third-cycle hardening applied for all six new findings: HTTPS-only non-local API URLs, rollback token step-scoping, release-please quality-gate dependency check, quality workflow network step timeouts, non-tag dispatch release-path disable, workflow-run-based required-check verification.
+- [ ] Push third-cycle residual fixes and run `gh run watch` on Omar Gate for PR #114 until Omar reports `P2<=2`.
