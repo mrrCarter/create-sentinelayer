@@ -16,6 +16,7 @@ const MIN_JITTER_RETRY_DELAY_MS = 100;
 const RANDOM_JITTER_BUCKETS = 1000;
 const MIN_RANDOM_JITTER_RATIO = 0.25;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
+const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 
 const circuitBreakerStates = new Map();
 let requestJitterFallbackCounter = 0;
@@ -441,7 +442,8 @@ export async function requestJson(
         signal: activeSignal,
       });
 
-      const rawBody = await readResponseBodyWithLimit(response);
+      const responseBodyLimit = response.ok ? MAX_RESPONSE_BODY_BYTES : MAX_ERROR_RESPONSE_BODY_BYTES;
+      const rawBody = await readResponseBodyWithLimit(response, responseBodyLimit);
       let json = {};
       if (rawBody.trim()) {
         try {

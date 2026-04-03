@@ -51,19 +51,53 @@ jobs:
           set -euo pipefail
           base_sha="${BEFORE_SHA}"
           if [[ -z "${base_sha}" ]] || [[ "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
-            base_sha="$(git rev-parse "${TARGET_SHA}^" 2>/dev/null || true)"
+            base_sha="$(timeout --preserve-status 10s git rev-parse "${TARGET_SHA}^" 2>/dev/null || true)"
           fi
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
           if [[ -z "${base_sha}" ]]; then
             echo "release_relevant=true" >> "$GITHUB_OUTPUT"
+            echo "changed_file_count=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed_files="$(git diff --name-only "${base_sha}" "${TARGET_SHA}")"
+          changed_files="$(timeout --preserve-status 20s git diff --name-only "${base_sha}" "${TARGET_SHA}")"
+          changed_file_count="$(printf "%s\n" "${changed_files}" | sed '/^$/d' | wc -l | xargs)"
+          echo "changed_file_count=${changed_file_count}" >> "$GITHUB_OUTPUT"
           if grep -Eq '^(src/|bin/|scripts/|package\.json$|package-lock\.json$|\.release-please-config\.json$|\.release-please-manifest\.json$)' <<< "${changed_files}"; then
             echo "release_relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "release_relevant=false" >> "$GITHUB_OUTPUT"
             echo "No release-relevant files detected between ${base_sha} and ${TARGET_SHA}; skipping release mutation."
           fi
+
+      - name: Emit release-intent scope manifest
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.release_scope.outputs.base_sha }}
+          TARGET_SHA: ${{ github.sha }}
+          RELEASE_RELEVANT: ${{ steps.release_scope.outputs.release_relevant }}
+          CHANGED_FILE_COUNT: ${{ steps.release_scope.outputs.changed_file_count }}
+        run: |
+          set -euo pipefail
+          changed_count="$(echo "${CHANGED_FILE_COUNT:-0}" | tr -d '\r' | xargs || true)"
+          case "${changed_count}" in ''|*[!0-9]*) changed_count="0" ;; esac
+          cat > release-intent.scope.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release-please",
+            "runId": "${GITHUB_RUN_ID}",
+            "baseSha": "${BASE_SHA}",
+            "targetSha": "${TARGET_SHA}",
+            "releaseRelevant": ${RELEASE_RELEVANT:-false},
+            "changedFileCount": ${changed_count}
+          }
+          EOF
+
+      - name: Upload release-intent scope manifest
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-intent-scope
+          path: release-intent.scope.json
+          if-no-files-found: error
 
       - name: Verify release-management environment protections
         shell: bash

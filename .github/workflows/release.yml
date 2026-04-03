@@ -218,6 +218,7 @@ jobs:
     name: Verify Required Checks
     runs-on: ubuntu-22.04
     needs: [resolve-release-flags]
+    if: ${{ needs.resolve-release-flags.outputs.release_path_execution == 'true' }}
     environment: release-management
     timeout-minutes: 12
     outputs:

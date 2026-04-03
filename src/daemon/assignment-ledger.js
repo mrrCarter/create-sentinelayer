@@ -273,18 +273,54 @@ async function promoteAtomicFallback(filePath, fallbackPath) {
   try {
     await renameWithRetry(fallbackPath, filePath, { maxAttempts: 3 });
   } catch (error) {
+    let restoreError = null;
     if (hasExistingDestination) {
       try {
         await renameWithRetry(backupPath, filePath, { maxAttempts: 3 });
-      } catch {
-        // Keep original write failure as the primary error.
+      } catch (innerError) {
+        restoreError = innerError;
       }
+    }
+    if (restoreError) {
+      const ambiguousRecoveryError = new Error(
+        `Atomic write recovery failed for ${path.basename(filePath)}: destination promotion and backup restore both failed.`
+      );
+      ambiguousRecoveryError.code = "ATOMIC_RECOVERY_AMBIGUOUS";
+      ambiguousRecoveryError.cause = error;
+      ambiguousRecoveryError.restoreCause = restoreError;
+      throw ambiguousRecoveryError;
     }
     throw error;
   }
 
   if (hasExistingDestination) {
-    await fsp.rm(backupPath, { force: true });
+    try {
+      await fsp.rm(backupPath, { force: true });
+    } catch (error) {
+      const cleanupError = new Error(
+        `Atomic write recovery left backup cleanup unresolved for ${path.basename(filePath)}.`
+      );
+      cleanupError.code = "ATOMIC_BACKUP_CLEANUP_FAILED";
+      cleanupError.cause = error;
+      throw cleanupError;
+    }
+  }
+}
+
+async function syncDirectoryBestEffort(dirPath) {
+  let directoryHandle = null;
+  try {
+    directoryHandle = await fsp.open(dirPath, "r");
+    await directoryHandle.sync();
+  } catch (error) {
+    const code = String(error?.code || "");
+    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR", "ENOENT"].includes(code)) {
+      throw error;
+    }
+  } finally {
+    if (directoryHandle) {
+      await directoryHandle.close();
+    }
   }
 }
 
@@ -323,23 +359,6 @@ async function writeJsonFile(filePath, payload = {}) {
     await fsp.chmod(filePath, 0o600);
   } catch {
     // Windows does not reliably support POSIX chmod semantics.
-  }
-}
-
-async function syncDirectoryBestEffort(dirPath) {
-  let directoryHandle = null;
-  try {
-    directoryHandle = await fsp.open(dirPath, "r");
-    await directoryHandle.sync();
-  } catch (error) {
-    const code = String(error?.code || "");
-    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR", "ENOENT"].includes(code)) {
-      throw error;
-    }
-  } finally {
-    if (directoryHandle) {
-      await directoryHandle.close();
-    }
   }
 }
 
