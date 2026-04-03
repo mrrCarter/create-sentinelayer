@@ -588,4 +588,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push fourteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push fourteenth-cycle fixes (`21f3919`) and rerun Omar (`run_id=23941573780`): Omar exited early because `Quality Gates` run `23941572042` failed before jobs with a workflow-parse issue in `quality-gates.yml`.
+- [x] Apply hotfix for `quality-gates` workflow parse failure by removing `runner` context from job-level `env` and deriving `NPM_CACHE_DIR` from `RUNNER_TEMP` at runtime in the pin step.
+- [ ] Push fourteenth-cycle hotfix and continue Omar loop until PR #114 reaches `P2<=2`.

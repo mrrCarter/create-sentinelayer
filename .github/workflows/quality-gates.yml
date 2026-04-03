@@ -233,7 +233,6 @@ jobs:
       TZ: UTC
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-      NPM_CACHE_DIR: ${{ runner.temp }}/npm-cache-quality
     permissions:
       contents: read
       id-token: write
@@ -252,8 +251,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/npm-cache-quality"
+          echo "NPM_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
           npm install --global "npm@${NPM_VERSION_PIN}"
-          npm config set cache "${NPM_CACHE_DIR}"
+          npm config set cache "${cache_dir}"
           npm --version
 
       - name: Install dependencies
