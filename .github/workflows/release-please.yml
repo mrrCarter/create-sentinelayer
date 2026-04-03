@@ -141,40 +141,114 @@ jobs:
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             api_status=0
-            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=50" -H "Accept: application/vnd.github+json")" || api_status=$?
+            check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
-              echo "omar-gate lookup timed out or failed (status=${api_status}); retrying."
+              echo "omar-gate check-run lookup timed out or failed (status=${api_status}); retrying."
               sleep 10
               continue
             fi
-            latest_omar_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/omar-gate.yml" --arg repo "${REPO}" '
-              [.workflow_runs[]
-                | select((.head_sha // "") == $sha)
-                | select(((.path // "") | split("@")[0]) == $path)
-                | select((.event // "") == "pull_request")
-                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
-              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+            anchored_check_run="$(echo "${check_runs_json}" | jq -c '
+              [.check_runs[]
+                | select((.name // "") == "Omar Gate")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
             ')"
-            if [[ -z "${latest_omar_run}" ]]; then
-              echo "Waiting for Omar Gate workflow run on ${TARGET_SHA}."
+            if [[ -n "${anchored_check_run}" ]]; then
+              omar_run_id="$(echo "${anchored_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
+              status="$(echo "${anchored_check_run}" | jq -r '.status // ""')"
+              conclusion="$(echo "${anchored_check_run}" | jq -r '.conclusion // ""')"
+              if [[ "${status}" != "completed" ]]; then
+                echo "Omar Gate check-run on ${TARGET_SHA} status=${status}; waiting."
+                sleep 10
+                continue
+              fi
+              if [[ "${conclusion}" != "success" ]]; then
+                echo "::error::Omar Gate check-run concluded with '${conclusion}' for ${TARGET_SHA}."
+                exit 1
+              fi
+              run_lookup_status=0
+              omar_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${omar_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
+              if [[ "${run_lookup_status}" -ne 0 ]]; then
+                echo "Unable to resolve Omar workflow run metadata for run_id=${omar_run_id}; retrying."
+                sleep 10
+                continue
+              fi
+              run_head_sha="$(echo "${omar_run}" | jq -r '.head_sha // ""')"
+              run_path="$(echo "${omar_run}" | jq -r '((.path // "") | split("@")[0])')"
+              omar_run_url="$(echo "${omar_run}" | jq -r '.html_url // ""')"
+              if [[ "${run_head_sha}" != "${TARGET_SHA}" ]] || [[ "${run_path}" != ".github/workflows/omar-gate.yml" ]]; then
+                echo "::error::Omar Gate check-run anchor mismatch for ${TARGET_SHA} (run=${omar_run_id}, head_sha=${run_head_sha}, path=${run_path})."
+                exit 1
+              fi
+              echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
+              echo "Omar Gate passed for ${TARGET_SHA} via check-run and workflow run ${omar_run_id} (${omar_run_url})."
+              exit 0
+            fi
+            pr_lookup_status=0
+            commit_prs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/pulls" -H "Accept: application/vnd.github+json")" || pr_lookup_status=$?
+            if [[ "${pr_lookup_status}" -ne 0 ]]; then
+              echo "Unable to resolve associated pull requests for ${TARGET_SHA}; retrying."
               sleep 10
               continue
             fi
-            omar_run_id="$(echo "${latest_omar_run}" | jq -r '.id // ""')"
-            omar_run_url="$(echo "${latest_omar_run}" | jq -r '.html_url // ""')"
-            status="$(echo "${latest_omar_run}" | jq -r '.status // ""')"
-            conclusion="$(echo "${latest_omar_run}" | jq -r '.conclusion // ""')"
-            if [[ "${status}" != "completed" ]]; then
-              echo "omar-gate run ${omar_run_id} status=${status}; waiting."
+            source_pr_head_sha="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" '
+              [.[] 
+                | select((.state // "") == "closed")
+                | select((.merged_at // "") != "")
+                | select((.head.repo.full_name // "") == $repo)
+              ] | sort_by((.merged_at // "")) | last | .head.sha // empty
+            ')"
+            if [[ -z "${source_pr_head_sha}" ]]; then
+              echo "Waiting for Omar Gate evidence for ${TARGET_SHA}; no merged same-repo PR head found yet."
               sleep 10
               continue
             fi
-            if [[ "${conclusion}" != "success" ]]; then
-              echo "::error::Omar Gate concluded with '${conclusion}' for ${TARGET_SHA} (run=${omar_run_id})."
+            pr_check_status=0
+            pr_check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${source_pr_head_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || pr_check_status=$?
+            if [[ "${pr_check_status}" -ne 0 ]]; then
+              echo "Unable to resolve Omar check-runs for source PR head ${source_pr_head_sha}; retrying."
+              sleep 10
+              continue
+            fi
+            pr_omar_check_run="$(echo "${pr_check_runs_json}" | jq -c '
+              [.check_runs[]
+                | select((.name // "") == "Omar Gate")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            if [[ -z "${pr_omar_check_run}" ]]; then
+              echo "Waiting for Omar Gate check-run on associated PR head ${source_pr_head_sha}."
+              sleep 10
+              continue
+            fi
+            pr_status="$(echo "${pr_omar_check_run}" | jq -r '.status // ""')"
+            pr_conclusion="$(echo "${pr_omar_check_run}" | jq -r '.conclusion // ""')"
+            if [[ "${pr_status}" != "completed" ]]; then
+              echo "Omar Gate check-run on PR head ${source_pr_head_sha} status=${pr_status}; waiting."
+              sleep 10
+              continue
+            fi
+            if [[ "${pr_conclusion}" != "success" ]]; then
+              echo "::error::Omar Gate check-run for source PR head ${source_pr_head_sha} concluded with '${pr_conclusion}'."
+              exit 1
+            fi
+            omar_run_id="$(echo "${pr_omar_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
+            run_lookup_status=0
+            omar_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${omar_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
+            if [[ "${run_lookup_status}" -ne 0 ]]; then
+              echo "Unable to resolve Omar workflow run metadata for fallback run_id=${omar_run_id}; retrying."
+              sleep 10
+              continue
+            fi
+            run_head_sha="$(echo "${omar_run}" | jq -r '.head_sha // ""')"
+            run_path="$(echo "${omar_run}" | jq -r '((.path // "") | split("@")[0])')"
+            omar_run_url="$(echo "${omar_run}" | jq -r '.html_url // ""')"
+            if [[ "${run_head_sha}" != "${source_pr_head_sha}" ]] || [[ "${run_path}" != ".github/workflows/omar-gate.yml" ]]; then
+              echo "::error::Fallback Omar provenance mismatch (run=${omar_run_id}, head_sha=${run_head_sha}, expected_head=${source_pr_head_sha}, path=${run_path})."
               exit 1
             fi
             echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
-            echo "Omar Gate passed for ${TARGET_SHA} via run ${omar_run_id} (${omar_run_url})."
+            echo "Omar Gate passed for ${TARGET_SHA} via associated PR head ${source_pr_head_sha} run ${omar_run_id} (${omar_run_url})."
             exit 0
           done
           echo "::error::Timed out waiting for Omar Gate on ${TARGET_SHA}."

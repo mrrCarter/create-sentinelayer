@@ -27,16 +27,12 @@ const secretConfigShape = {
   googleApiKey: optionalTrimmedString,
 };
 
+export const PERSISTED_CONFIG_KEYS = Object.freeze(Object.keys(persistedConfigShape));
 export const SECRET_CONFIG_KEYS = Object.freeze(Object.keys(secretConfigShape));
 
 export const persistedConfigSchema = z.object(persistedConfigShape).strict();
 export const runtimeSecretSchema = z.object(secretConfigShape).strict();
 export const configSchema = persistedConfigSchema;
-
-export const CONFIG_KEYS = Object.freeze([
-  ...Object.keys(persistedConfigShape),
-  ...SECRET_CONFIG_KEYS,
-]);
 
 export function isSecretConfigKey(key) {
   return SECRET_CONFIG_KEYS.includes(String(key || "").trim());
@@ -55,4 +51,10 @@ export function getPersistedConfigSchema() {
 
 export function getRuntimeSecretSchema() {
   return runtimeSecretSchema;
+}
+
+export function getAllConfigKeys({ includeSecrets = false } = {}) {
+  return includeSecrets
+    ? [...PERSISTED_CONFIG_KEYS, ...SECRET_CONFIG_KEYS]
+    : [...PERSISTED_CONFIG_KEYS];
 }

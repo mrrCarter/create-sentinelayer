@@ -245,9 +245,9 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(mock.state.tokenIssueBodies[0].scope, "cli_session");
     assert.equal(mock.state.pollCalls, 2);
     assert.equal(mock.state.pollIdempotencyKeys.length, 2);
-    const firstPollKeyMatch = mock.state.pollIdempotencyKeys[0].match(/^sess_1:poll:([A-Za-z0-9-]+)$/);
+    const firstPollKeyMatch = mock.state.pollIdempotencyKeys[0].match(/^sess_1:poll:([A-Za-z0-9-]+):0$/);
     assert.ok(firstPollKeyMatch, `Unexpected first poll idempotency key ${mock.state.pollIdempotencyKeys[0]}.`);
-    assert.equal(mock.state.pollIdempotencyKeys[1], `sess_1:poll:${firstPollKeyMatch[1]}`);
+    assert.equal(mock.state.pollIdempotencyKeys[1], `sess_1:poll:${firstPollKeyMatch[1]}:1`);
     assert.deepEqual(
       mock.state.pollBodies.map((entry) => entry.session_id),
       ["sess_1", "sess_1"]
@@ -584,7 +584,7 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
     );
     assert.equal(mock.state.pollCalls, 1);
     assert.equal(mock.state.pollIdempotencyKeys.length, 1);
-    assert.match(mock.state.pollIdempotencyKeys[0], /^sess_1:poll:[A-Za-z0-9-]+$/);
+    assert.match(mock.state.pollIdempotencyKeys[0], /^sess_1:poll:[A-Za-z0-9-]+:0$/);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

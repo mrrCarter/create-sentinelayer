@@ -152,3 +152,7 @@
 - Required-check provenance for release gating should reject `workflow_dispatch` as authoritative evidence for protected checks; accept only protected `pull_request`/`push` lineage.
 - Trusted invoker controls must cover both manual dispatch and tag-push release paths; if bot actors are allowed, require deterministic provenance linkage to a successful upstream release-control workflow on the same commit.
 - Reproducibility checks need a clean-room second install with an isolated empty npm cache (no `--offline` warm-cache reuse) plus lockfile hash parity validation, otherwise cache state can mask non-determinism.
+- In workflow dependency gates, deterministic selection should be anchored to commit check-run `details_url` run IDs instead of failing on multiple candidate workflow runs for the same SHA.
+- Release provenance gates need a squash-merge fallback path (`target commit -> merged PR head -> Omar check-run`) so release automation does not deadlock on commits without direct same-SHA PR runs.
+- Config key enumeration should default to persisted non-secret keys and require explicit opt-in for secret-bearing key namespaces to prevent accidental generic key disclosure.
+- File-lock reliability for daemon ledgers should include owner-token metadata, lock-file fsync, ownership-aware release, and stale-lock reclaim with metadata compare-before-remove semantics.

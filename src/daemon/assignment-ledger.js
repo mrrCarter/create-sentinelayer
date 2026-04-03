@@ -1,4 +1,5 @@
 import fsp from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
@@ -436,29 +437,104 @@ function delay(ms) {
   });
 }
 
+function buildLockMetadata(ownerToken, staleMs) {
+  const nowMs = Date.now();
+  const ttlMs = Math.max(1000, Number(staleMs) || STALE_LOCK_TTL_MS);
+  return {
+    schemaVersion: "1.0.0",
+    ownerToken,
+    pid: process.pid,
+    createdAt: new Date(nowMs).toISOString(),
+    expiresAt: new Date(nowMs + ttlMs).toISOString(),
+  };
+}
+
+function parseLockMetadata(raw) {
+  if (!raw || typeof raw !== "string") {
+    return null;
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  return {
+    ownerToken: normalizeString(parsed.ownerToken),
+    createdAt: normalizeString(parsed.createdAt),
+    expiresAt: normalizeString(parsed.expiresAt),
+  };
+}
+
+async function readLockMetadata(lockPath) {
+  try {
+    const raw = await fsp.readFile(lockPath, "utf-8");
+    return parseLockMetadata(raw);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+    return null;
+  }
+}
+
+function isExpiredLockMetadata(lockMetadata, nowMs = Date.now()) {
+  if (!lockMetadata) {
+    return true;
+  }
+  const expiresAtMs = Date.parse(normalizeString(lockMetadata.expiresAt));
+  if (Number.isFinite(expiresAtMs)) {
+    return nowMs >= expiresAtMs;
+  }
+  const createdAtMs = Date.parse(normalizeString(lockMetadata.createdAt));
+  if (!Number.isFinite(createdAtMs)) {
+    return true;
+  }
+  return nowMs - createdAtMs >= STALE_LOCK_TTL_MS;
+}
+
+async function writeLockMetadata(handle, lockMetadata) {
+  await handle.truncate(0);
+  await handle.writeFile(`${JSON.stringify(lockMetadata)}\n`, "utf-8");
+  await handle.sync();
+}
+
+async function releaseOwnedLock(lockPath, ownerToken) {
+  const currentLockMetadata = await readLockMetadata(lockPath);
+  if (!currentLockMetadata) {
+    return false;
+  }
+  if (currentLockMetadata.ownerToken && currentLockMetadata.ownerToken !== ownerToken) {
+    return false;
+  }
+  await fsp.rm(lockPath, { force: true });
+  await syncDirectoryBestEffort(path.dirname(lockPath));
+  return true;
+}
+
 async function acquireFileLock(lockPath, {
   timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
   retryMs = DEFAULT_LOCK_RETRY_MS,
   staleMs = STALE_LOCK_TTL_MS,
 } = {}) {
   const deadline = Date.now() + Math.max(100, Number(timeoutMs) || DEFAULT_LOCK_TIMEOUT_MS);
+  const ownerToken = `${process.pid}-${Date.now()}-${randomUUID()}`;
   while (Date.now() < deadline) {
     let handle = null;
     try {
       await fsp.mkdir(path.dirname(lockPath), { recursive: true });
       handle = await fsp.open(lockPath, "wx");
-      await handle.writeFile(
-        `${JSON.stringify({
-          pid: process.pid,
-          createdAt: new Date().toISOString(),
-        })}\n`,
-        "utf-8"
-      );
+      const lockMetadata = buildLockMetadata(ownerToken, staleMs);
+      await writeLockMetadata(handle, lockMetadata);
+      await syncDirectoryBestEffort(path.dirname(lockPath));
       return async () => {
         try {
           await handle.close();
         } finally {
-          await fsp.rm(lockPath, { force: true });
+          await releaseOwnedLock(lockPath, ownerToken);
         }
       };
     } catch (error) {
@@ -469,9 +545,19 @@ async function acquireFileLock(lockPath, {
         throw error;
       }
       try {
-        const stats = await fsp.stat(lockPath);
-        if (Date.now() - Number(stats.mtimeMs || 0) > staleMs) {
-          await fsp.rm(lockPath, { force: true });
+        const observedLockMetadata = await readLockMetadata(lockPath);
+        if (isExpiredLockMetadata(observedLockMetadata, Date.now())) {
+          const observedOwnerToken = normalizeString(observedLockMetadata?.ownerToken);
+          const observedExpiresAt = normalizeString(observedLockMetadata?.expiresAt);
+          const reloadedLockMetadata = await readLockMetadata(lockPath);
+          const reloadedOwnerToken = normalizeString(reloadedLockMetadata?.ownerToken);
+          const reloadedExpiresAt = normalizeString(reloadedLockMetadata?.expiresAt);
+          const lockStateUnchanged = observedOwnerToken === reloadedOwnerToken &&
+            observedExpiresAt === reloadedExpiresAt;
+          if (lockStateUnchanged) {
+            await fsp.rm(lockPath, { force: true });
+            await syncDirectoryBestEffort(path.dirname(lockPath));
+          }
           continue;
         }
       } catch (statError) {

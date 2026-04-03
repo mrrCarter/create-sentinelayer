@@ -149,6 +149,9 @@ test("Unit: config service exposes writable/editable guards and default output r
     const keys = listConfigKeys();
     assert.equal(Array.isArray(keys), true);
     assert.equal(keys.includes("apiUrl"), true);
+    assert.equal(keys.includes("openaiApiKey"), false);
+    const allKeys = listConfigKeys({ includeSecrets: true });
+    assert.equal(allKeys.includes("openaiApiKey"), true);
 
     await assert.rejects(
       () =>

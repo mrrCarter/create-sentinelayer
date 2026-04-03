@@ -213,3 +213,35 @@ test("Unit daemon assignment ledger: fallback .new file restores missing ledger 
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit daemon assignment ledger: stale lock metadata is reclaimed before claim writes", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-assignment-stale-lock-"));
+  try {
+    const workItemId = await seedWorkItem(tempRoot, "/v1/admin/runtime/lock-reclaim", "LEDGER_LOCK_STALE");
+    const storage = await resolveAssignmentLedgerStorage({ targetPath: tempRoot });
+    const staleLockPath = path.join(storage.baseDir, "assignment-ledger.lock");
+    await writeFile(
+      staleLockPath,
+      `${JSON.stringify({
+        schemaVersion: "1.0.0",
+        ownerToken: "stale-owner",
+        pid: 1234,
+        createdAt: "2000-01-01T00:00:00.000Z",
+        expiresAt: "2000-01-01T00:00:01.000Z",
+      })}\n`,
+      "utf-8"
+    );
+
+    const claimed = await claimAssignment({
+      targetPath: tempRoot,
+      workItemId,
+      agentIdentity: "agent.reclaimer@sentinelayer.local",
+      leaseTtlSeconds: 600,
+    });
+
+    assert.equal(claimed.assignment.status, "CLAIMED");
+    await assert.rejects(() => access(staleLockPath));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

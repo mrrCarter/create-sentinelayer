@@ -615,4 +615,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push sixteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push sixteenth-cycle fixes (`a50f99f`) and rerun Omar (`run_id=23942528275`): Omar reports active `P2=6` with residual findings in quality-anchor tie-break (`omar-gate`), poll idempotency attempt keys (`auth/service`), config key exposure (`config/schema`), assignment lock metadata robustness (`assignment-ledger`), and release-please Omar provenance fallback.
+- [x] Seventeenth-cycle hardening applied for active residual findings:
+  - `.github/workflows/omar-gate.yml`: Quality Summary dependency now resolves from canonical commit check-run anchor (`Quality Summary` details_url run id), then validates workflow run path/head SHA identity.
+  - `.github/workflows/release-please.yml`: Omar provenance gate now validates commit `Omar Gate` check-run first and adds fallback lineage (`target commit -> merged PR head -> Omar check-run`) for squash/merge commits without direct same-SHA PR runs.
+  - `src/auth/service.js`: poll idempotency key now includes attempt ordinal (`...:<attempt>`) while preserving poll-session nonce and session challenge verification.
+  - `src/config/schema.js` + `src/config/service.js`: replaced generic `CONFIG_KEYS` exposure with `PERSISTED_CONFIG_KEYS` + explicit `getAllConfigKeys({ includeSecrets })`; default key enumeration no longer includes secret-bearing keys.
+  - `src/daemon/assignment-ledger.js`: file-lock metadata now includes owner token + expiry, fsync on lock metadata writes, ownership-aware release, and stale-lock reclaim with metadata compare-before-remove.
+  - Added/updated coverage in `tests/unit.auth-service.test.mjs`, `tests/unit.core.test.mjs`, and `tests/unit.daemon-assignment-ledger.test.mjs`.
+- [x] Seventeenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs tests/unit.core.test.mjs tests/unit.daemon-assignment-ledger.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `157/157`; coverage statements `90.19%`, branches `70.45%`, functions `91.51%`, lines `90.19%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push seventeenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.

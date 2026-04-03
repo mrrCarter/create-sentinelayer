@@ -4,8 +4,8 @@ import path from "node:path";
 import { getConfigPaths } from "./paths.js";
 import { ensureConfigFile, readConfigFile, writeConfigFile } from "./io.js";
 import {
-  CONFIG_KEYS,
   configSchema,
+  getAllConfigKeys,
   getRuntimeSecretSchema,
   isSecretConfigKey,
   SECRET_CONFIG_KEYS,
@@ -24,10 +24,11 @@ const ENV_MAPPING = Object.freeze({
 const WRITABLE_SCOPES = new Set(["global", "project"]);
 const LAYER_SCOPES = new Set(["global", "project", "env", "resolved"]);
 
-function normalizeKey(key) {
+function normalizeKey(key, { includeSecrets = false } = {}) {
   const normalized = String(key || "").trim();
-  if (!CONFIG_KEYS.includes(normalized)) {
-    throw new Error(`Unknown config key '${normalized}'. Allowed keys: ${CONFIG_KEYS.join(", ")}`);
+  const allowedKeys = getAllConfigKeys({ includeSecrets });
+  if (!allowedKeys.includes(normalized)) {
+    throw new Error(`Unknown config key '${normalized}'. Allowed keys: ${allowedKeys.join(", ")}`);
   }
   return normalized;
 }
@@ -125,7 +126,7 @@ export function getLayer(config, scope) {
 }
 
 export function findConfigSource(config, key) {
-  const normalizedKey = normalizeKey(key);
+  const normalizedKey = normalizeKey(key, { includeSecrets: true });
   if (Object.prototype.hasOwnProperty.call(config.layers.env, normalizedKey)) {
     return "env";
   }
@@ -150,7 +151,7 @@ export async function setConfigValue({
     throw new Error(`Cannot write scope '${normalizedScope}'. Use global or project.`);
   }
 
-  const normalizedKey = normalizeKey(key);
+  const normalizedKey = normalizeKey(key, { includeSecrets: true });
   if (isSecretConfigKey(normalizedKey)) {
     throw new Error(
       `Config key '${normalizedKey}' is blocked for plaintext persistence. Use environment variables or keyring-backed auth sessions instead.`
@@ -192,8 +193,8 @@ export async function ensureEditableConfigPath({ scope = "project", cwd = proces
   };
 }
 
-export function listConfigKeys() {
-  return [...CONFIG_KEYS];
+export function listConfigKeys({ includeSecrets = false } = {}) {
+  return getAllConfigKeys({ includeSecrets });
 }
 
 export async function resolveOutputRoot({
