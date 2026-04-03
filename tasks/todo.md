@@ -574,4 +574,18 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push thirteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push thirteenth-cycle fixes (`26d1611`) and rerun Omar (`run_id=23941133816`): Omar shifted to `P2=6` with active findings in action secret handoff, release check-run identity hardening, quality reproducibility cache provenance, and auth poll idempotency semantics.
+- [x] Fourteenth-cycle hardening applied for active residual findings:
+  - `src/auth/service.js`: restore per-attempt poll idempotency suffix (`...:<attempt>`) while keeping explicit `X-Poll-Attempt` header.
+  - `tests/unit.auth-service.test.mjs`: update poll idempotency assertions for attempt-scoped keys.
+  - `.github/workflows/quality-gates.yml`: pin + reuse dedicated npm cache path and force isolated rebuild install from offline cache to reduce registry nondeterminism.
+  - `.github/workflows/release.yml`: enforce branch-protection required context contract, require unambiguous single-run match for required checks, and anchor workflow-run ids against commit check-run details URL.
+  - `.github/workflows/release.yml`: scope `publish` job to explicit `production` environment.
+  - `.github/workflows/omar-gate.yml`: add deterministic allowlist SHA gate for `mrrCarter/sentinelayer-v1-action`.
+  - `.github/security/action-sha-allowlist.txt`: register pinned Omar action SHA.
+- [x] Fourteenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push fourteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.

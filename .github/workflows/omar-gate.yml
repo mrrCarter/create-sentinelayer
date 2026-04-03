@@ -149,6 +149,24 @@ jobs:
           set -euo pipefail
           echo "::add-mask::${SENTINELAYER_TOKEN}"
           echo "::add-mask::${OPENAI_API_KEY}"
+      - name: Enforce pinned Omar action SHA policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowlist_file=".github/security/action-sha-allowlist.txt"
+          test -f "${allowlist_file}" || (echo "::error::Missing ${allowlist_file}." && exit 1)
+          expected_sha="$(awk -F'=' '$1=="mrrCarter/sentinelayer-v1-action" {print $2}' "${allowlist_file}" | tr -d '[:space:]')"
+          test -n "${expected_sha}" || (echo "::error::Missing mrrCarter/sentinelayer-v1-action allowlist entry in ${allowlist_file}." && exit 1)
+          if [[ ! "${expected_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid Omar action allowlist SHA '${expected_sha}'."
+            exit 1
+          fi
+          configured_sha="$(grep -E "mrrCarter/sentinelayer-v1-action@[0-9a-f]{40}" .github/workflows/omar-gate.yml | head -n 1 | sed -E 's/.*@([0-9a-f]{40}).*/\1/')"
+          test -n "${configured_sha}" || (echo "::error::Unable to resolve Omar action SHA from .github/workflows/omar-gate.yml." && exit 1)
+          if [[ "${configured_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Omar action SHA drift detected (configured=${configured_sha}, allowlist=${expected_sha})."
+            exit 1
+          fi
       - name: Run Omar Gate
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018

@@ -1,1 +1,2 @@
 gitleaks/gitleaks-action=ff98106e4c7b2bc287b24eaf42907196329070c7
+mrrCarter/sentinelayer-v1-action=14ca51c75ca81fdb6e6b7668d417d6a5abc39018

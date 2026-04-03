@@ -233,6 +233,7 @@ jobs:
       TZ: UTC
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
+      NPM_CACHE_DIR: ${{ runner.temp }}/npm-cache-quality
     permissions:
       contents: read
       id-token: write
@@ -252,15 +253,17 @@ jobs:
         run: |
           set -euo pipefail
           npm install --global "npm@${NPM_VERSION_PIN}"
+          npm config set cache "${NPM_CACHE_DIR}"
           npm --version
 
       - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts
+        run: timeout --preserve-status 8m npm ci --ignore-scripts --prefer-offline
 
       - name: Build package tarball and digest
         shell: bash
         run: |
           set -euo pipefail
+          npm config set cache "${NPM_CACHE_DIR}"
           pack_json="$(npm pack --json)"
           tarball="$(echo "${pack_json}" | jq -r '.[0].filename')"
           test -n "${tarball}" || (echo "::error::Unable to resolve packed tarball filename." && exit 1)
@@ -271,7 +274,8 @@ jobs:
           git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
           pushd "${rebuild_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
-          timeout --preserve-status 8m npm ci --ignore-scripts
+          npm config set cache "${NPM_CACHE_DIR}"
+          timeout --preserve-status 8m npm ci --ignore-scripts --offline
           rebuild_pack_json="$(npm pack --json)"
           rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
           test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)

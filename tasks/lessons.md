@@ -143,3 +143,6 @@
 - File-backed session encryption keys need lifecycle coupling: rotate keys on new login/legacy rekey paths and delete key files when file sessions are cleared or migrated to keyring.
 - Release automation workflows should combine event/path trigger scoping with an in-job changed-file gate to avoid unnecessary release-control churn.
 - Tag-release required-check validation should resolve prior successful Omar workflow runs on the target commit and fail fast with guidance when missing, instead of polling for tag-native runs that cannot exist.
+- Auth poll reliability findings can swing between "static key" and "collision risk"; the stable compromise is per-attempt idempotency keys plus explicit attempt telemetry headers and matching unit assertions.
+- Release required-check verification should reject ambiguous multi-run candidates and cross-anchor selected run ids with commit check-run detail URLs before trusting artifacts.
+- External action supply-chain hardening should include deterministic SHA allowlist enforcement in-workflow, not only pinned `uses:` references.
