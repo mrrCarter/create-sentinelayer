@@ -43,6 +43,7 @@ jobs:
           fi
 
       - name: Verify Quality Summary gate for target SHA
+        id: quality_gate
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,35 +53,60 @@ jobs:
           set -euo pipefail
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
-            checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
-            latest_quality_run="$(echo "${checks_json}" | jq -c '
-              [.check_runs[]
-                | select(.name == "Quality Summary")
-                | select((.app.slug // "") == "github-actions")
-                | select((.details_url // "") | contains("/actions/runs/"))
-              ] | sort_by(.started_at // .created_at) | last // empty
+            runs_json="$(gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+            latest_quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
             ')"
             if [[ -z "${latest_quality_run}" ]]; then
-              echo "Waiting for Quality Summary on ${TARGET_SHA}."
+              echo "Waiting for quality-gates workflow run on ${TARGET_SHA}."
               sleep 10
               continue
             fi
+            quality_run_id="$(echo "${latest_quality_run}" | jq -r '.id // ""')"
+            quality_run_url="$(echo "${latest_quality_run}" | jq -r '.html_url // ""')"
             status="$(echo "${latest_quality_run}" | jq -r '.status')"
             conclusion="$(echo "${latest_quality_run}" | jq -r '.conclusion // ""')"
             if [[ "${status}" != "completed" ]]; then
-              echo "Quality Summary status=${status}; waiting."
+              echo "quality-gates run ${quality_run_id} status=${status}; waiting."
               sleep 10
               continue
             fi
             if [[ "${conclusion}" != "success" ]]; then
-              echo "::error::Quality Summary concluded with '${conclusion}' for ${TARGET_SHA}."
+              echo "::error::Quality Summary concluded with '${conclusion}' for ${TARGET_SHA} (run=${quality_run_id})."
               exit 1
             fi
-            echo "Quality Summary passed for ${TARGET_SHA}."
+            echo "quality_run_id=${quality_run_id}" >> "$GITHUB_OUTPUT"
+            echo "Quality Summary passed for ${TARGET_SHA} via run ${quality_run_id} (${quality_run_url})."
             exit 0
           done
           echo "::error::Timed out waiting for Quality Summary on ${TARGET_SHA}."
           exit 1
+
+      - name: Validate quality build artifact lineage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALITY_RUN_ID: ${{ steps.quality_gate.outputs.quality_run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality_run_id from Quality Summary gate step." && exit 1)
+          gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
+          test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json artifact from quality run ${QUALITY_RUN_ID}." && exit 1)
+          quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
+          quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
+          quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
+          if [[ -z "${quality_commit_sha}" ]] || [[ "${quality_commit_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Quality artifact commit (${quality_commit_sha}) does not match target SHA (${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ -z "${quality_sha}" ]] || [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality artifact reproducibility proof mismatch (sha256=${quality_sha}, rebuild=${quality_rebuild_sha})."
+            exit 1
+          fi
 
       - name: Run release-please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4

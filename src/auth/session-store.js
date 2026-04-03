@@ -39,7 +39,7 @@ export function resolveCredentialsFilePath({ homeDir } = {}) {
 
 function resolveCredentialsKeyPath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
-  return path.join(resolvedHome, ".sentinelayer", "credentials.key");
+  return path.join(resolvedHome, ".sentinelayer-secrets", "credentials.key");
 }
 
 function buildKeyringAccountName(apiUrl) {

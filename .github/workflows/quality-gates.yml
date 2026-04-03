@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           lock_hash_before="$(sha256sum package-lock.json | awk '{print $1}')"
-          timeout 8m npm ci --ignore-scripts
+          timeout --preserve-status 8m npm ci --ignore-scripts
           lock_hash_after="$(sha256sum package-lock.json | awk '{print $1}')"
           if [[ "${lock_hash_before}" != "${lock_hash_after}" ]]; then
             echo "::error::package-lock.json mutated during dependency installation."
@@ -115,7 +115,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: timeout 8m npm ci --ignore-scripts
+        run: timeout --preserve-status 8m npm ci --ignore-scripts
 
       - name: Validate CLI syntax
         run: npm run check
@@ -139,7 +139,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: timeout 8m npm ci --ignore-scripts
+        run: timeout --preserve-status 8m npm ci --ignore-scripts
 
       - name: Enforce unit coverage thresholds
         run: npm run test:coverage
@@ -167,7 +167,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: timeout 8m npm ci --ignore-scripts
+        run: timeout --preserve-status 8m npm ci --ignore-scripts
 
       - name: Run E2E tests
         run: npm run test:e2e
@@ -190,13 +190,13 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: timeout 8m npm ci --ignore-scripts
+        run: timeout --preserve-status 8m npm ci --ignore-scripts
 
       - name: Run npm audit (prod deps only)
-        run: timeout 5m npm audit --omit=dev --audit-level=high
+        run: timeout --preserve-status 5m npm audit --omit=dev --audit-level=high
 
       - name: Run npm audit (full dependency graph)
-        run: timeout 5m npm audit --audit-level=high
+        run: timeout --preserve-status 5m npm audit --audit-level=high
 
       - name: Run gitleaks secret scan gate
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
@@ -222,7 +222,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: timeout 8m npm ci --ignore-scripts
+        run: timeout --preserve-status 8m npm ci --ignore-scripts
 
       - name: Build package tarball and digest
         shell: bash
@@ -238,7 +238,7 @@ jobs:
           git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
           pushd "${rebuild_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
-          timeout 8m npm ci --ignore-scripts
+          timeout --preserve-status 8m npm ci --ignore-scripts
           rebuild_pack_json="$(npm pack --json)"
           rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
           test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)

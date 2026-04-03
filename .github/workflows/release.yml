@@ -113,11 +113,12 @@ jobs:
                 fi
               else
                 publish_requested="false"
+                release_path_execution="false"
                 dry_run="true"
                 if [[ "${dispatch_publish}" == "true" ]]; then
                   echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
                 fi
-                echo "::notice::workflow_dispatch on non-tag ref executes release validation only (publish disabled, dry-run forced)."
+                echo "::notice::workflow_dispatch on non-tag ref skips release path jobs (publish disabled, dry-run forced)."
               fi
               ;;
             *)

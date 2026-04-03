@@ -291,12 +291,17 @@ async function writeJsonFile(filePath, payload = {}) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const fallbackPath = resolveAtomicFallbackPath(filePath);
   const payloadBody = `${JSON.stringify(payload, null, 2)}\n`;
-  const fileHandle = await fsp.open(tempPath, "w");
+  const fileHandle = await fsp.open(tempPath, "w", 0o600);
   try {
     await fileHandle.writeFile(payloadBody, "utf-8");
     await fileHandle.sync();
   } finally {
     await fileHandle.close();
+  }
+  try {
+    await fsp.chmod(tempPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
   }
   try {
     await renameWithRetry(tempPath, filePath);
@@ -311,6 +316,11 @@ async function writeJsonFile(filePath, payload = {}) {
     await fsp.rm(tempPath, { force: true });
   }
   await syncDirectoryBestEffort(directoryPath);
+  try {
+    await fsp.chmod(filePath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
 }
 
 async function syncDirectoryBestEffort(dirPath) {

@@ -250,7 +250,6 @@ async function pollCliAuthSession({
   }
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadline = Date.now() + timeout;
-  let observedRequestId = null;
   let attempt = 0;
 
   while (Date.now() < deadline) {
@@ -276,16 +275,6 @@ async function pollCliAuthSession({
         code: "CLI_AUTH_SESSION_MISMATCH",
         requestId,
       });
-    }
-    if (requestId) {
-      if (observedRequestId && observedRequestId !== requestId) {
-        throw new SentinelayerApiError("CLI authentication poll request_id changed unexpectedly.", {
-          status: 502,
-          code: "CLI_AUTH_REQUEST_ID_MISMATCH",
-          requestId,
-        });
-      }
-      observedRequestId = observedRequestId || requestId;
     }
 
     const status = String(payload.status || "pending").trim().toLowerCase();
