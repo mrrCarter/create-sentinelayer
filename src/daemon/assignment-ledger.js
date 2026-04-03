@@ -286,7 +286,8 @@ async function promoteAtomicFallback(filePath, fallbackPath) {
 }
 
 async function writeJsonFile(filePath, payload = {}) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const fallbackPath = resolveAtomicFallbackPath(filePath);
   const payloadBody = `${JSON.stringify(payload, null, 2)}\n`;
@@ -309,6 +310,7 @@ async function writeJsonFile(filePath, payload = {}) {
   } finally {
     await fsp.rm(tempPath, { force: true });
   }
+  await syncDirectoryBestEffort(directoryPath);
 }
 
 async function syncDirectoryBestEffort(dirPath) {

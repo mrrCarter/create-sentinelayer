@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { randomInt } from "node:crypto";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 export const DEFAULT_REQUEST_MAX_ATTEMPTS = 3;
@@ -12,7 +13,8 @@ const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_RETRY_AFTER_DELAY_MS = 15_000;
 const MAX_EXPONENTIAL_RETRY_DELAY_MS = 15_000;
 const MIN_JITTER_RETRY_DELAY_MS = 100;
-const DETERMINISTIC_JITTER_DENOMINATOR = 97;
+const RANDOM_JITTER_BUCKETS = 1000;
+const MIN_RANDOM_JITTER_RATIO = 0.25;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 
 const circuitBreakerStates = new Map();
@@ -225,8 +227,15 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
   if (exponentialCap <= MIN_JITTER_RETRY_DELAY_MS) {
     return exponentialCap;
   }
-  const jitterSeed = ((Math.max(0, attemptIndex) + 1) * 17) % DETERMINISTIC_JITTER_DENOMINATOR;
-  const jitterRatio = jitterSeed / DETERMINISTIC_JITTER_DENOMINATOR;
+  let jitterBucket = 0;
+  try {
+    jitterBucket = randomInt(0, RANDOM_JITTER_BUCKETS + 1);
+  } catch {
+    jitterBucket = Math.floor(Math.random() * (RANDOM_JITTER_BUCKETS + 1));
+  }
+  const jitterRatio =
+    MIN_RANDOM_JITTER_RATIO +
+    (jitterBucket / RANDOM_JITTER_BUCKETS) * (1 - MIN_RANDOM_JITTER_RATIO);
   const jitteredDelay = Math.round(exponentialCap * jitterRatio);
   return Math.max(MIN_JITTER_RETRY_DELAY_MS, jitteredDelay);
 }

@@ -97,31 +97,32 @@ jobs:
           set -euo pipefail
           deadline=$((SECONDS + 900))
           while (( SECONDS < deadline )); do
-            checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
-            quality_run="$(echo "${checks_json}" | jq -c '
-              [.check_runs[]
-                | select(.name == "Quality Summary")
-                | select((.app.slug // "") == "github-actions")
-                | select((.details_url // "") | contains("/actions/runs/"))
-              ] | sort_by(.started_at // .created_at) | last // empty
+            runs_json="$(gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?event=pull_request&head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+            quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
             ')"
             if [[ -z "${quality_run}" ]]; then
-              echo "Waiting for Quality Summary check run on ${TARGET_SHA}."
+              echo "Waiting for quality-gates workflow run on ${TARGET_SHA}."
               sleep 10
               continue
             fi
+            run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
+            run_url="$(echo "${quality_run}" | jq -r '.html_url // ""')"
             status="$(echo "${quality_run}" | jq -r '.status')"
             conclusion="$(echo "${quality_run}" | jq -r '.conclusion // ""')"
             if [[ "${status}" != "completed" ]]; then
-              echo "Quality Summary status=${status}; waiting."
+              echo "quality-gates run ${run_id} status=${status}; waiting."
               sleep 10
               continue
             fi
             if [[ "${conclusion}" != "success" ]]; then
-              echo "::error::Quality Summary gate must pass before Omar Gate (conclusion=${conclusion})."
+              echo "::error::Quality Summary gate must pass before Omar Gate (run=${run_id}, conclusion=${conclusion}, url=${run_url})."
               exit 1
             fi
-            echo "Quality Summary check passed for ${TARGET_SHA}."
+            echo "Quality Summary gate passed via workflow run ${run_id} (${run_url})."
             exit 0
           done
           echo "::error::Timed out waiting for Quality Summary check on ${TARGET_SHA}."

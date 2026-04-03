@@ -506,4 +506,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Third-cycle hardening applied for all six new findings: HTTPS-only non-local API URLs, rollback token step-scoping, release-please quality-gate dependency check, quality workflow network step timeouts, non-tag dispatch release-path disable, workflow-run-based required-check verification.
 - [x] Push third-cycle fixes (`ab231bb`) and run `gh run watch` (`run_id=23932381636`): Omar reduced to `P2=5` (`omar-gate perms`, `quality immutable-build model`, `release production-gate recognition`, `release recency binding`, `lockfile integrity policy`).
 - [x] Fourth-cycle hardening applied for three deterministic residuals: least-privilege Omar workflow permissions, lockfile immutability enforcement in quality gates, and explicit protected production authorization job before publish.
-- [ ] Push fourth-cycle residual fixes and run `gh run watch` on Omar Gate for PR #114 until Omar reports `P2<=2`.
+- [x] Push fourth-cycle residual fixes (`2c2268d`) and run `gh run watch` (`run_id=23932609696`): Omar scan failed during publish step due `pull-requests` read permission (`403` updating PR comment).
+- [x] Restore Omar Gate PR comment permissions (`d6b235c`) and rerun `gh run watch` (`run_id=23932837347`): Omar executes successfully and reports `P2=6`.
+- [x] Fifth-cycle hardening applied for active residual findings: quality gate identity pinning in Omar workflow, quality workflow non-cancel concurrency, release dispatch required-check enforcement + artifact identity binding, randomized retry jitter entropy, and assignment-ledger parent-directory fsync.
+- [ ] Push fifth-cycle fixes and continue Omar loop runs until PR #114 reaches `P2<=2`.

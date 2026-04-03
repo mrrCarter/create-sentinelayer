@@ -69,22 +69,22 @@ jobs:
             dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
             if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
               release_path_execution="true"
-              if [[ "${dispatch_publish}" == "true" ]]; then
-                publish_requested="true"
-                if [[ "${dry_run}" == "true" ]]; then
-                  echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
-                fi
+            if [[ "${dispatch_publish}" == "true" ]]; then
+              publish_requested="true"
+              if [[ "${dry_run}" == "true" ]]; then
+                echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
               fi
-            else
-              release_path_execution="false"
+            fi
+          else
+              release_path_execution="true"
               publish_requested="false"
               if [[ "${dispatch_publish}" == "true" ]]; then
                 echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
               fi
               dry_run="true"
-              echo "::notice::workflow_dispatch on non-tag ref does not execute release path jobs."
-            fi
+              echo "::notice::workflow_dispatch on non-tag ref executes release validation only (publish disabled, dry-run forced)."
           fi
+        fi
           echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
           echo "release_path_execution=${release_path_execution}" >> "$GITHUB_OUTPUT"
@@ -110,19 +110,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
-          RELEASE_PATH_EXECUTION: ${{ needs.resolve-release-flags.outputs.release_path_execution }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
           REQUIRED_CHECKS: Omar Gate,Quality Summary
         run: |
           set -euo pipefail
-          if [[ "${RELEASE_PATH_EXECUTION}" != "true" ]]; then
-            echo "target_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
-            echo "quality_run_id=" >> "$GITHUB_OUTPUT"
-            echo "omar_run_id=" >> "$GITHUB_OUTPUT"
-            echo "Release path not active; skipping required check verification."
-            exit 0
-          fi
           resolved_sha="${TARGET_SHA}"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             tag_name="${GITHUB_REF_VALUE#refs/tags/}"
@@ -340,13 +332,35 @@ jobs:
           quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
           quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
           quality_run_id_manifest="$(jq -r '.runId // ""' quality-proof/quality-build.manifest.json)"
+          quality_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-build.manifest.json)"
+          release_artifact_name="$(tr -d '\r\n' < create-sentinelayer.tarball)"
+          package_name="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).name")"
+          package_version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
           baseline_hash="$(awk 'NF {print $1; exit}' create-sentinelayer.sha256)"
           test -n "${baseline_hash}" || (echo "::error::Unable to parse release baseline hash." && exit 1)
           test -n "${quality_sha}" || (echo "::error::Unable to parse quality baseline hash." && exit 1)
           test -n "${quality_rebuild_sha}" || (echo "::error::Unable to parse quality rebuild hash." && exit 1)
+          test -n "${release_artifact_name}" || (echo "::error::Unable to parse release artifact name." && exit 1)
+          test -n "${quality_artifact_name}" || (echo "::error::Unable to parse quality artifact name." && exit 1)
+          test -n "${package_version}" || (echo "::error::Unable to parse package version from package.json." && exit 1)
           if [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
             echo "::error::Quality workflow reproducibility proof mismatch (baseline=${quality_sha}, rebuild=${quality_rebuild_sha})."
             exit 1
+          fi
+          if [[ "${quality_artifact_name}" != "${release_artifact_name}" ]]; then
+            echo "::error::Artifact identity mismatch between quality (${quality_artifact_name}) and release (${release_artifact_name})."
+            exit 1
+          fi
+          if [[ "${release_artifact_name}" != *"-${package_version}.tgz" ]]; then
+            echo "::error::Release artifact '${release_artifact_name}' is not bound to package.json version '${package_version}'."
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            expected_tag="v${package_version}"
+            if [[ "${GITHUB_REF_NAME:-}" != "${expected_tag}" ]]; then
+              echo "::error::Tag '${GITHUB_REF_NAME:-}' does not match package version '${package_version}' (expected ${expected_tag})."
+              exit 1
+            fi
           fi
           if [[ "${baseline_hash}" != "${quality_sha}" ]]; then
             echo "::error::Release baseline hash (${baseline_hash}) does not match quality workflow hash (${quality_sha})."
@@ -360,6 +374,7 @@ jobs:
             echo "::error::Quality manifest run id (${quality_run_id_manifest}) does not match selected run (${QUALITY_RUN_ID})."
             exit 1
           fi
+          echo "Verified release artifact lineage for ${package_name}@${package_version}."
 
       - name: Upload immutable release artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0

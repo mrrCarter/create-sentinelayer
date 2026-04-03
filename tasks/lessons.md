@@ -112,3 +112,6 @@
 - Keep GitHub Actions token scopes least-privilege by default (`pull-requests: read` unless write is strictly required by a concrete step), especially in third-party action workflows.
 - Enforce lockfile immutability as a deterministic gate by hashing `package-lock.json` before/after dependency install; fail when install mutates lock state.
 - Some Omar P2 findings are architectural (single immutable build promoted across all quality stages); treat them as dedicated refactor tracks rather than incremental line edits.
+- Omar Gate’s publish stage updates PR comments; downgrading `.github/workflows/omar-gate.yml` `pull-requests` permission to read causes a hard `403` and invalidates the full scan loop.
+- Pending deployment approvals should be submitted with a JSON body (`environment_ids` as integers) to avoid `HTTP 422` type coercion errors from form-encoded CLI flags.
+- For Omar pre-gate dependency checks, bind to the upstream workflow run identity (`actions/workflows/<file>/runs` + `head_sha` + workflow path) rather than check-run display names alone.
