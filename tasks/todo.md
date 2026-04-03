@@ -496,4 +496,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Implement cross-workflow build-once/promote-once evidence bridge from `quality-gates` to `release` (artifact digest contract + release verification).
 - [x] Harden `src/config/schema.js` to block persisted plaintext secrets by default (explicit unsafe opt-in only) and add coverage tests.
 - [x] Run `npm run verify` and local `/omargate deep` + `/audit` after residual fixes.
-- [ ] Run `gh run watch` on Omar Gate for PR #114 and iterate fix/push/watch until Omar reports `P2<=2`.
+- [x] Run `gh run watch` for Omar Gate run `23931011060` and capture residual `P2=6` findings (config opt-in, eval-impact base fallback, release rollback/manual path/concurrency, Retry-After clock skew).
+- [x] Add deterministic eval-impact merge-base fallback (`quality-gates.yml`) and fail-closed behavior when merge base cannot be resolved.
+- [x] Add rollback workflow contract (`.github/workflows/rollback.yml`) and release preflight rollback automation validation.
+- [x] Rework release controls for single-flight promotion (`concurrency` lock) and controlled manual publish path from tagged dispatches.
+- [x] Harden Retry-After HTTP-date handling with monotonic/server-date-aware delay parsing and coverage test.
+- [x] Remove env-based plaintext secret persistence override; keep config secret persistence blocked by default and update auth/config tests.
+- [ ] Push second-cycle residual fixes and run `gh run watch` on Omar Gate for PR #114 until Omar reports `P2<=2`.

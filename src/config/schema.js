@@ -11,8 +11,6 @@ function emptyToUndefined(value) {
 const optionalTrimmedString = z.preprocess(emptyToUndefined, z.string().min(1)).optional();
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url()).optional();
 
-export const PLAINTEXT_CONFIG_SECRETS_ENV = "SENTINELAYER_ALLOW_PLAINTEXT_CONFIG_SECRETS";
-
 const persistedConfigShape = {
   apiUrl: optionalUrl,
   webUrl: optionalUrl,
@@ -45,13 +43,6 @@ export function findPersistedSecretKeys(value) {
     return [];
   }
   return SECRET_CONFIG_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(value, key));
-}
-
-export function isPlaintextConfigSecretsOptInEnabled(env = process.env) {
-  const normalized = String(env?.[PLAINTEXT_CONFIG_SECRETS_ENV] || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 export function getPersistedConfigSchema({ allowPlaintextSecrets = false } = {}) {

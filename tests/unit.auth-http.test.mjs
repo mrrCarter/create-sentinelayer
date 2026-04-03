@@ -90,3 +90,47 @@ test("Unit auth http: requestJson serializes object payloads as JSON by default"
     await mock.close();
   }
 });
+
+test("Unit auth http: requestJson honors Retry-After http-date relative to server date", async () => {
+  let attempts = 0;
+  const serverDate = new Date();
+  const retryDate = new Date(serverDate.getTime() + 1200);
+
+  const mock = await startMockServer(async (_req, res) => {
+    attempts += 1;
+    if (attempts === 1) {
+      const serialized = JSON.stringify({
+        code: "TEMP_UNAVAILABLE",
+        message: "retry later",
+      });
+      res.writeHead(503, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(serialized),
+        Date: serverDate.toUTCString(),
+        "Retry-After": retryDate.toUTCString(),
+      });
+      res.end(serialized);
+      return;
+    }
+    const success = JSON.stringify({ ok: true, attempts });
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(success),
+    });
+    res.end(success);
+  });
+
+  try {
+    const startedAt = Date.now();
+    const response = await requestJson(`${mock.baseUrl}/retry-after-date`, {
+      method: "GET",
+      maxAttempts: 2,
+      retryBackoffMs: 10,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(response.ok, true);
+    assert.ok(elapsedMs >= 900, `Expected retry delay near Retry-After window, got ${elapsedMs}ms.`);
+  } finally {
+    await mock.close();
+  }
+});

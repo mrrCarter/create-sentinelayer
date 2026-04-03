@@ -1,0 +1,127 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: "Known-good version to promote as latest (semver, no v-prefix)"
+        required: true
+        type: string
+      bad_version:
+        description: "Optional bad version to deprecate"
+        required: false
+        type: string
+      reason:
+        description: "Rollback reason for npm deprecate message"
+        required: false
+        default: "Rollback in progress due to regression"
+        type: string
+      execute:
+        description: "Execute rollback mutations (false = validation only)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.8.2"
+  PACKAGE_NAME: create-sentinelayer
+
+concurrency:
+  group: rollback-control-create-sentinelayer
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Rollback Validation and Promote
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    environment: production
+    env:
+      TARGET_VERSION: ${{ github.event.inputs.target_version }}
+      BAD_VERSION: ${{ github.event.inputs.bad_version }}
+      REASON: ${{ github.event.inputs.reason }}
+      EXECUTE: ${{ github.event.inputs.execute }}
+      NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
+      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          npm --version
+
+      - name: Validate rollback inputs and package availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${TARGET_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::target_version must be semver without v-prefix."
+            exit 1
+          fi
+          versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
+          if ! echo "${versions_json}" | jq -e --arg target "${TARGET_VERSION}" '
+            if type == "array" then any(.[]; . == $target) else . == $target end
+          ' >/dev/null; then
+            echo "::error::Target version ${TARGET_VERSION} is not published for ${PACKAGE_NAME}."
+            exit 1
+          fi
+          if [[ -n "${BAD_VERSION}" ]] && [[ ! "${BAD_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::bad_version must be semver without v-prefix."
+            exit 1
+          fi
+
+      - name: Smoke-check target version install
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "${PACKAGE_NAME}@${TARGET_VERSION}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
+
+      - name: Require NPM token for execute mode
+        if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT != 'true'
+        shell: bash
+        run: |
+          echo "::error::NPM_TOKEN is required when execute=true."
+          exit 1
+
+      - name: Promote target version and deprecate bad version
+        if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT == 'true'
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+        run: |
+          set -euo pipefail
+          npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest
+          if [[ -n "${BAD_VERSION}" ]]; then
+            npm deprecate "${PACKAGE_NAME}@${BAD_VERSION}" "${REASON}"
+          fi
+
+      - name: Emit rollback summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
+          echo "- execute: \`${EXECUTE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- target_version: \`${TARGET_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${BAD_VERSION}" ]]; then
+            echo "- bad_version: \`${BAD_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- bad_version: \`(none)\`" >> "$GITHUB_STEP_SUMMARY"
+          fi

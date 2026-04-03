@@ -101,3 +101,7 @@
 
 - Before coding against Omar findings, anchor them to the exact commented commit SHA/run id; if local branch is ahead, push and rerun Omar first so remediation targets active findings, not stale annotations.
 - Reproducibility claims must cross workflow boundaries: emit immutable build digest artifacts in quality gates and re-verify the publish candidate digest in release jobs before any publish path proceeds.
+- Environment-protected Omar runs can remain `waiting` indefinitely; check `/pending_deployments`, approve explicitly, then run `gh run watch --exit-status` as the blocking loop gate.
+- Eliminate latent security backdoors (for example env-only plaintext-secret opt-ins) when hardening config persistence; security exceptions should not be toggleable through ambient process env alone.
+- Eval-impact diff baselines should derive from explicit merge-base resolution against the target branch, never `HEAD~1` fallback, to keep PR and squash-history behavior deterministic.
+- Release workflows need both a single-flight concurrency lock and a controlled tagged `workflow_dispatch` publish path; forcing all manual dispatches to dry-run triggers governance drift findings.

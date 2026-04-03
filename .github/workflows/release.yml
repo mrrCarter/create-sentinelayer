@@ -29,8 +29,8 @@ env:
   NPM_VERSION_PIN: "10.8.2"
 
 concurrency:
-  group: release-control-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-control-create-sentinelayer
+  cancel-in-progress: false
 
 jobs:
   resolve-release-flags:
@@ -61,18 +61,27 @@ jobs:
           publish_requested="false"
           release_path_execution="false"
           dry_run="$(normalize_bool "${INPUT_DRY_RUN}")"
-          if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
             publish_requested="true"
             release_path_execution="true"
           fi
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             release_path_execution="true"
-            if [[ "${dry_run}" != "true" ]]; then
-              echo "::notice::workflow_dispatch runs in validation mode; forcing dry-run."
+            dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
+            if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${dispatch_publish}" == "true" ]]; then
+              publish_requested="true"
+              if [[ "${dry_run}" == "true" ]]; then
+                echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
+              fi
+            else
+              publish_requested="false"
+              if [[ "${dispatch_publish}" == "true" ]]; then
+                echo "::notice::Manual publish requested on non-tag ref; forcing dry-run validation."
+              fi
+              dry_run="true"
             fi
-            dry_run="true"
-            if [[ "$(normalize_bool "${INPUT_PUBLISH}")" == "true" ]] && [[ "${publish_requested}" != "true" ]]; then
-              echo "::notice::Manual publish requested on non-tag ref; forcing dry-run validation."
+            if [[ "${dispatch_publish}" != "true" ]] && [[ "${dry_run}" != "true" ]]; then
+              echo "::notice::workflow_dispatch validation run enabled (publish=false)."
             fi
           fi
           echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
@@ -247,6 +256,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate rollback automation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/RELEASE_ROLLBACK.md || (echo "::error::Missing rollback runbook docs/RELEASE_ROLLBACK.md." && exit 1)
+          test -f .github/workflows/rollback.yml || (echo "::error::Missing rollback workflow .github/workflows/rollback.yml." && exit 1)
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

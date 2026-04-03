@@ -6,7 +6,6 @@ import { ensureConfigFile, readConfigFile, writeConfigFile } from "./io.js";
 import {
   CONFIG_KEYS,
   configSchema,
-  isPlaintextConfigSecretsOptInEnabled,
   isSecretConfigKey,
 } from "./schema.js";
 
@@ -74,10 +73,9 @@ function normalizeLayerScope(scope, { allowResolved = true } = {}) {
 
 export async function loadConfig({ cwd = process.cwd(), env = process.env, homeDir } = {}) {
   const paths = getConfigPaths({ cwd, homeDir });
-  const allowPlaintextSecrets = isPlaintextConfigSecretsOptInEnabled(env);
   const [globalConfig, projectConfig] = await Promise.all([
-    readConfigFile(paths.global, { allowPlaintextSecrets }),
-    readConfigFile(paths.project, { allowPlaintextSecrets }),
+    readConfigFile(paths.global),
+    readConfigFile(paths.project),
   ]);
 
   const envConfig = buildEnvLayer(env);
@@ -121,7 +119,6 @@ export async function setConfigValue({
   value,
   scope = "project",
   cwd = process.cwd(),
-  env = process.env,
   homeDir,
 } = {}) {
   const normalizedScope = normalizeLayerScope(scope, { allowResolved: false });
@@ -130,23 +127,22 @@ export async function setConfigValue({
   }
 
   const normalizedKey = normalizeKey(key);
-  const allowPlaintextSecrets = isPlaintextConfigSecretsOptInEnabled(env);
-  if (isSecretConfigKey(normalizedKey) && !allowPlaintextSecrets) {
+  if (isSecretConfigKey(normalizedKey)) {
     throw new Error(
-      `Config key '${normalizedKey}' is blocked for plaintext persistence. Use environment variables or set SENTINELAYER_ALLOW_PLAINTEXT_CONFIG_SECRETS=1 for explicit legacy override.`
+      `Config key '${normalizedKey}' is blocked for plaintext persistence. Use environment variables or keyring-backed auth sessions instead.`
     );
   }
   const normalizedValue = normalizeValueForKey(normalizedKey, value);
 
   const paths = getConfigPaths({ cwd, homeDir });
   const targetPath = paths[normalizedScope];
-  const current = await readConfigFile(targetPath, { allowPlaintextSecrets });
+  const current = await readConfigFile(targetPath);
   const next = {
     ...current,
     [normalizedKey]: normalizedValue,
   };
 
-  await writeConfigFile(targetPath, next, { allowPlaintextSecrets });
+  await writeConfigFile(targetPath, next);
 
   return {
     scope: normalizedScope,

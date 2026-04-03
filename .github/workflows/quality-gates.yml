@@ -56,23 +56,33 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             base_sha="${PR_BASE_SHA}"
             head_sha="${PR_HEAD_SHA}"
+            target_branch="${PR_BASE_REF}"
           else
             base_sha="${PUSH_BEFORE_SHA}"
             head_sha="${PUSH_HEAD_SHA}"
+            target_branch="${DEFAULT_BRANCH}"
           fi
           if [ -z "${head_sha}" ]; then
-            head_sha="HEAD"
+            head_sha="${PUSH_HEAD_SHA:-HEAD}"
           fi
           if [ -z "${base_sha}" ] || [ "${base_sha}" = "0000000000000000000000000000000000000000" ]; then
-            base_sha="HEAD~1"
+            target_branch="${target_branch:-main}"
+            git fetch --no-tags --prune --depth=200 origin "${target_branch}"
+            base_sha="$(git merge-base "origin/${target_branch}" "${head_sha}")"
+            if [ -z "${base_sha}" ]; then
+              echo "::error::Unable to resolve deterministic merge-base for eval-impact (target=${target_branch}, head=${head_sha})."
+              exit 1
+            fi
           fi
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
 

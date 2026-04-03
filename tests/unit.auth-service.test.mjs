@@ -363,7 +363,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
   }
 });
 
-test("Unit auth service: env and project config token precedence is deterministic", async () => {
+test("Unit auth service: env token bypasses legacy config and legacy plaintext config is rejected", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   try {
     await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "sentinelayerToken: project_token\n", "utf-8");
@@ -379,18 +379,17 @@ test("Unit auth service: env and project config token precedence is deterministi
     });
     assert.equal(envSession?.source, "env");
     assert.equal(envSession?.token, "env_token");
-
-    const projectSession = await resolveActiveAuthSession({
-      cwd: tempRoot,
-      env: {
-        SENTINELAYER_ALLOW_PLAINTEXT_CONFIG_SECRETS: "1",
-      },
-      explicitApiUrl: "https://api.example.com",
-      autoRotate: false,
-      homeDir: tempRoot,
-    });
-    assert.equal(projectSession?.source, "config");
-    assert.equal(projectSession?.token, "project_token");
+    await assert.rejects(
+      () =>
+        resolveActiveAuthSession({
+          cwd: tempRoot,
+          env: {},
+          explicitApiUrl: "https://api.example.com",
+          autoRotate: false,
+          homeDir: tempRoot,
+        }),
+      /plaintext secrets .* blocked/i
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

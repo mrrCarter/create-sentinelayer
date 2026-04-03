@@ -4,7 +4,6 @@ import path from "node:path";
 import { parse, stringify } from "yaml";
 
 import {
-  PLAINTEXT_CONFIG_SECRETS_ENV,
   findPersistedSecretKeys,
   getPersistedConfigSchema,
 } from "./schema.js";
@@ -17,7 +16,7 @@ function assertNoPlaintextSecrets({ parsed, filePath, allowPlaintextSecrets }) {
   throw new Error(
     `Invalid config at ${filePath}: plaintext secrets (${secretKeys.join(
       ", "
-    )}) are blocked. Use environment variables/keyring, or set ${PLAINTEXT_CONFIG_SECRETS_ENV}=1 for explicit legacy override.`
+    )}) are blocked. Use environment variables or keyring-backed auth sessions instead.`
   );
 }
 

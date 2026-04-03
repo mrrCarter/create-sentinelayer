@@ -176,7 +176,18 @@ function shouldRetry(error) {
   return RETRYABLE_STATUS_CODES.has(Number(error.status || 0));
 }
 
-function parseRetryAfterDelayMs(rawValue) {
+function resolveMonotonicEpochMs() {
+  if (
+    typeof globalThis.performance === "object" &&
+    Number.isFinite(Number(globalThis.performance.timeOrigin)) &&
+    typeof globalThis.performance.now === "function"
+  ) {
+    return Number(globalThis.performance.timeOrigin) + Number(globalThis.performance.now());
+  }
+  return Date.now();
+}
+
+function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
   const normalized = String(rawValue || "").trim();
   if (!normalized) {
     return null;
@@ -194,7 +205,14 @@ function parseRetryAfterDelayMs(rawValue) {
   if (!Number.isFinite(retryEpoch)) {
     return null;
   }
-  const delayMs = Math.max(0, retryEpoch - Date.now());
+  const responseDateEpoch = Date.parse(String(responseDateHeader || "").trim());
+  let delayMs = null;
+  if (Number.isFinite(responseDateEpoch)) {
+    delayMs = retryEpoch - responseDateEpoch;
+  } else {
+    delayMs = retryEpoch - resolveMonotonicEpochMs();
+  }
+  delayMs = Math.max(0, Number(delayMs || 0));
   return Math.min(delayMs, MAX_RETRY_AFTER_DELAY_MS);
 }
 
@@ -407,7 +425,10 @@ export async function requestJson(
 
       if (!response.ok) {
         const apiError = normalizeApiError(json && typeof json === "object" ? json.error : {});
-        const retryAfterMs = parseRetryAfterDelayMs(response.headers.get("retry-after"));
+        const retryAfterMs = parseRetryAfterDelayMs(
+          response.headers.get("retry-after"),
+          response.headers.get("date")
+        );
         throw new SentinelayerApiError(apiError.message, {
           status: response.status,
           code: apiError.code,
