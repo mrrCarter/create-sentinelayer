@@ -561,4 +561,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push twelfth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push twelfth-cycle fixes (`b8eb28e`) and rerun Omar (`run_id=23940593375`): Omar holds at `P2=5` with active findings in `quality-gates` npm parity, `release-please` trigger scope, `release` tag Omar deadlock handling, and auth/session request-id/key-rotation controls.
+- [x] Validate `tasks/audit-report-2026-04-02.md` against active Omar findings for PR #114 (confirmed residual set is current and actionable).
+- [x] Thirteenth-cycle hardening applied for active residual findings:
+  - `src/auth/session-store.js`: enforce file-token key rotation coupling (`fileTokenKeyVersion` + rekey on legacy reads/login) and delete key file on file-session clear / keyring migration.
+  - `src/commands/auth.js`: redact upstream `requestId` by default and emit only debug-tail diagnostics when `SL_DEBUG_ERRORS=1`.
+  - `.github/workflows/quality-gates.yml`: pin npm CLI version (`10.8.2`) + deterministic locale/tz env in build-artifact reproducibility stage.
+  - `.github/workflows/release-please.yml`: add push path-scoping and release-intent changed-file gate before mutating release PR state.
+  - `.github/workflows/release.yml`: replace tag-time Omar polling deadlock path with fail-fast prior-run resolution on target commit.
+- [x] Thirteenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-session-store.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push thirteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.

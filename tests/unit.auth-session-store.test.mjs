@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import {
   clearStoredSession,
@@ -43,9 +43,12 @@ test("Unit auth session store: file storage round-trip is deterministic when key
     assert.equal(persisted.user.isAdmin, true);
 
     const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    const keyPath = path.join(tempRoot, ".sentinelayer-secrets", "credentials.key");
     const rawCredentials = await readFile(credentialsPath, "utf-8");
     assert.ok(rawCredentials.includes("\"tokenCiphertext\""));
+    assert.ok(rawCredentials.includes("\"fileTokenKeyVersion\": 1"));
     assert.equal(rawCredentials.includes("api_token_example_1"), false);
+    const firstKeyMaterial = await readFile(keyPath, "utf-8");
 
     const stored = await readStoredSession({ homeDir: tempRoot });
     assert.equal(stored?.token, "api_token_example_1");
@@ -56,6 +59,18 @@ test("Unit auth session store: file storage round-trip is deterministic when key
     assert.equal(metadata?.token, null);
     assert.equal(metadata?.tokenId, "token_1");
     assert.equal(metadata?.user.email, "demo@example.com");
+    assert.equal(metadata?.fileTokenKeyVersion, 1);
+
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: "api_token_example_2",
+        tokenId: "token_2",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+    const secondKeyMaterial = await readFile(keyPath, "utf-8");
+    assert.notEqual(secondKeyMaterial.trim(), firstKeyMaterial.trim());
 
     const clearResult = await clearStoredSession({ homeDir: tempRoot });
     assert.equal(clearResult.hadSession, true);
@@ -63,6 +78,7 @@ test("Unit auth session store: file storage round-trip is deterministic when key
 
     const postClear = await readStoredSession({ homeDir: tempRoot });
     assert.equal(postClear, null);
+    await assert.rejects(() => access(keyPath), { code: "ENOENT" });
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

@@ -139,3 +139,7 @@
 - Release-automation polling loops should wrap each network-bound `gh api`/artifact command with explicit per-call timeouts in addition to job-level timeout budgets.
 - Rollback execute paths must verify release lineage (tag -> commit -> quality manifest digest -> attestation) before npm mutation commands (`dist-tag`/`deprecate`) run.
 - Required-check event filters should include sanctioned manual pathways (`workflow_dispatch`) where the same control can run outside PR events, otherwise release gates can deadlock despite valid successful runs.
+- Auth CLI output should redact upstream correlation identifiers by default; if debugging is needed, expose only a short request-id tail behind an explicit debug flag.
+- File-backed session encryption keys need lifecycle coupling: rotate keys on new login/legacy rekey paths and delete key files when file sessions are cleared or migrated to keyring.
+- Release automation workflows should combine event/path trigger scoping with an in-job changed-file gate to avoid unnecessary release-control churn.
+- Tag-release required-check validation should resolve prior successful Omar workflow runs on the target commit and fail fast with guidance when missing, instead of polling for tag-native runs that cannot exist.

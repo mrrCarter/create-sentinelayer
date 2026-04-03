@@ -71,6 +71,24 @@ const API_ERROR_MESSAGE_BY_CODE = Object.freeze({
   TOKEN_SCOPE_INVALID: "Token scope override is invalid for this command.",
 });
 
+const DEBUG_ERROR_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function shouldExposeDebugRequestId() {
+  const raw = String(process.env.SL_DEBUG_ERRORS || "")
+    .trim()
+    .toLowerCase();
+  return DEBUG_ERROR_FLAG_VALUES.has(raw);
+}
+
+function formatDebugRequestId(rawRequestId) {
+  const requestId = String(rawRequestId || "").trim();
+  if (!requestId || !shouldExposeDebugRequestId()) {
+    return "";
+  }
+  const tail = requestId.length > 8 ? requestId.slice(-8) : requestId;
+  return ` request_id=...${tail}`;
+}
+
 function resolveSafeApiErrorMessage(error) {
   const code = String(error?.code || "UNKNOWN")
     .trim()
@@ -83,7 +101,7 @@ export function formatApiError(error) {
     return error instanceof Error ? error.message : String(error || "Unknown error");
   }
   const safeMessage = resolveSafeApiErrorMessage(error);
-  const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
+  const requestId = formatDebugRequestId(error.requestId);
   return `${safeMessage} [${error.code}] status=${error.status}${requestId}`;
 }
 
@@ -263,11 +281,10 @@ export function registerAuthCommand(program) {
 
       if (status.remoteError) {
         console.log(pc.red(`Remote validation failed: ${status.remoteError.message}`));
+        const requestId = formatDebugRequestId(status.remoteError.requestId);
         console.log(
           pc.gray(
-            `Error code: ${status.remoteError.code} status=${status.remoteError.status}${
-              status.remoteError.requestId ? ` request_id=${status.remoteError.requestId}` : ""
-            }`
+            `Error code: ${status.remoteError.code} status=${status.remoteError.status}${requestId}`
           )
         );
       } else {

@@ -12,6 +12,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.8.2"
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -228,6 +229,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 12
     needs: [security-scan]
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     permissions:
       contents: read
       id-token: write
@@ -241,6 +246,13 @@ jobs:
         with:
           node-version: "20"
           cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          npm --version
 
       - name: Install dependencies
         run: timeout --preserve-status 8m npm ci --ignore-scripts

@@ -8,6 +8,7 @@ const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
 const FILE_TOKEN_KEY_BYTES = 32;
 const FILE_TOKEN_IV_BYTES = 12;
+const FILE_TOKEN_KEY_VERSION = 1;
 
 export class StoredSessionError extends Error {
   constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
@@ -79,6 +80,8 @@ function normalizeMetadata(raw = {}) {
     tokenCiphertext: String(raw.tokenCiphertext || "").trim() || null,
     tokenIv: String(raw.tokenIv || "").trim() || null,
     tokenTag: String(raw.tokenTag || "").trim() || null,
+    fileTokenKeyVersion: Number(raw.fileTokenKeyVersion || 0),
+    fileTokenKeyRotatedAt: String(raw.fileTokenKeyRotatedAt || "").trim() || null,
   };
 }
 
@@ -185,9 +188,13 @@ async function persistEncryptedFileTokenMetadata({
   metadata,
   token,
   homeDir,
+  rotateKey = false,
 } = {}) {
-  const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: true });
+  const keyMaterial = rotateKey
+    ? await rotateFileTokenKey({ homeDir })
+    : await loadFileTokenKey({ homeDir, createIfMissing: true });
   const encrypted = encryptFileToken(token, keyMaterial);
+  const rotatedAt = nowIso();
   const updatedMetadata = normalizeMetadata({
     ...metadata,
     storage: "file",
@@ -195,7 +202,9 @@ async function persistEncryptedFileTokenMetadata({
     tokenCiphertext: encrypted.tokenCiphertext,
     tokenIv: encrypted.tokenIv,
     tokenTag: encrypted.tokenTag,
-    updatedAt: nowIso(),
+    fileTokenKeyVersion: FILE_TOKEN_KEY_VERSION,
+    fileTokenKeyRotatedAt: rotatedAt,
+    updatedAt: rotatedAt,
   });
   await writeMetadata(filePath, updatedMetadata);
   return updatedMetadata;
@@ -250,9 +259,7 @@ async function loadFileTokenKey({ homeDir, createIfMissing = false } = {}) {
     return material;
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT" && createIfMissing) {
-      const generated = crypto.randomBytes(FILE_TOKEN_KEY_BYTES);
-      await writeSecretFile(keyPath, `${generated.toString("base64")}\n`);
-      return generated;
+      return rotateFileTokenKey({ homeDir });
     }
     if (error && typeof error === "object" && error.code === "ENOENT") {
       throw new StoredSessionError(
@@ -262,6 +269,32 @@ async function loadFileTokenKey({ homeDir, createIfMissing = false } = {}) {
     }
     throw error;
   }
+}
+
+async function rotateFileTokenKey({ homeDir } = {}) {
+  const keyPath = resolveCredentialsKeyPath({ homeDir });
+  const generated = crypto.randomBytes(FILE_TOKEN_KEY_BYTES);
+  await writeSecretFile(keyPath, `${generated.toString("base64")}\n`);
+  return generated;
+}
+
+async function deleteFileTokenKey({ homeDir } = {}) {
+  const keyPath = resolveCredentialsKeyPath({ homeDir });
+  try {
+    await fsp.rm(keyPath);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+function requiresFileTokenRekey(metadata = {}) {
+  if (String(metadata.storage || "").trim() !== "file") {
+    return false;
+  }
+  const version = Number(metadata.fileTokenKeyVersion || 0);
+  return !Number.isFinite(version) || version < FILE_TOKEN_KEY_VERSION;
 }
 
 function encryptFileToken(token, keyMaterial) {
@@ -362,6 +395,7 @@ export async function readStoredSession({ homeDir } = {}) {
   }
 
   let token = null;
+  let resolvedMetadata = metadata;
   if (metadata.tokenCiphertext && metadata.tokenIv && metadata.tokenTag) {
     const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: false });
     token = decryptFileToken(
@@ -372,13 +406,23 @@ export async function readStoredSession({ homeDir } = {}) {
       },
       keyMaterial
     );
+    if (requiresFileTokenRekey(metadata)) {
+      resolvedMetadata = await persistEncryptedFileTokenMetadata({
+        filePath,
+        metadata,
+        token,
+        homeDir,
+        rotateKey: true,
+      });
+    }
   } else if (metadata.token) {
     token = metadata.token;
-    await persistEncryptedFileTokenMetadata({
+    resolvedMetadata = await persistEncryptedFileTokenMetadata({
       filePath,
       metadata,
       token,
       homeDir,
+      rotateKey: true,
     });
   } else {
     throw new StoredSessionError(
@@ -387,7 +431,7 @@ export async function readStoredSession({ homeDir } = {}) {
     );
   }
   return {
-    ...metadata,
+    ...resolvedMetadata,
     filePath,
     token,
     storage: "file",
@@ -499,7 +543,7 @@ export async function writeStoredSession(
     );
   }
 
-  const nextMetadata = normalizeMetadata({
+  let nextMetadata = normalizeMetadata({
     version: CREDENTIALS_VERSION,
     apiUrl: normalizedApiUrl,
     tokenId,
@@ -525,21 +569,29 @@ export async function writeStoredSession(
     nextMetadata.tokenCiphertext = null;
     nextMetadata.tokenIv = null;
     nextMetadata.tokenTag = null;
+    nextMetadata.fileTokenKeyVersion = 0;
+    nextMetadata.fileTokenKeyRotatedAt = null;
     nextMetadata.storageDowngraded = false;
+    if (String(existingMetadata?.storage || "").trim() === "file") {
+      await deleteFileTokenKey({ homeDir });
+    }
+    await writeMetadata(filePath, nextMetadata);
   } else {
-    const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: true });
-    const encrypted = encryptFileToken(normalizedToken, keyMaterial);
-    nextMetadata.storage = "file";
-    nextMetadata.keyringService = KEYRING_SERVICE;
-    nextMetadata.keyringAccount = "";
-    nextMetadata.token = null;
-    nextMetadata.tokenCiphertext = encrypted.tokenCiphertext;
-    nextMetadata.tokenIv = encrypted.tokenIv;
-    nextMetadata.tokenTag = encrypted.tokenTag;
-    nextMetadata.storageDowngraded = Boolean(keyringDisabledByEnv);
+    nextMetadata = await persistEncryptedFileTokenMetadata({
+      filePath,
+      metadata: {
+        ...nextMetadata,
+        storage: "file",
+        keyringService: KEYRING_SERVICE,
+        keyringAccount: "",
+        token: null,
+        storageDowngraded: Boolean(keyringDisabledByEnv),
+      },
+      token: normalizedToken,
+      homeDir,
+      rotateKey: true,
+    });
   }
-
-  await writeMetadata(filePath, nextMetadata);
 
   return {
     ...nextMetadata,
@@ -561,6 +613,8 @@ export async function clearStoredSession({ homeDir } = {}) {
     if (keytar && metadata.keyringAccount) {
       await keytar.deletePassword(metadata.keyringService || KEYRING_SERVICE, metadata.keyringAccount);
     }
+  } else if (metadata && metadata.storage === "file") {
+    await deleteFileTokenKey({ homeDir });
   }
 
   try {

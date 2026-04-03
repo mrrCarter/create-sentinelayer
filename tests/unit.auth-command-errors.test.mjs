@@ -14,23 +14,24 @@ test("Unit auth command: API errors are sanitized by default", () => {
   assert.match(formatted, /Sentinelayer API request failed\./);
   assert.match(formatted, /\[INTERNAL_ERROR\]/);
   assert.match(formatted, /status=500/);
-  assert.match(formatted, /request_id=req_123/);
+  assert.doesNotMatch(formatted, /request_id=/);
   assert.doesNotMatch(formatted, /internal stack trace/i);
   assert.doesNotMatch(formatted, /token=secret/i);
 });
 
-test("Unit auth command: debug env never appends raw API error details", () => {
+test("Unit auth command: debug env emits only request-id tail", () => {
   const previousDebug = process.env.SL_DEBUG_ERRORS;
   process.env.SL_DEBUG_ERRORS = "true";
   try {
     const error = new SentinelayerApiError("internal stack trace: token=secret", {
       status: 429,
       code: "RATE_LIMITED",
-      requestId: "req_debug",
+      requestId: "req_debug_trace_abcdef12",
     });
     const formatted = formatApiError(error);
     assert.match(formatted, /Sentinelayer API request failed\./);
-    assert.doesNotMatch(formatted, /detail=/);
+    assert.match(formatted, /request_id=\.\.\.abcdef12/);
+    assert.doesNotMatch(formatted, /req_debug_trace_abcdef12/);
     assert.doesNotMatch(formatted, /internal stack trace/i);
   } finally {
     if (previousDebug === undefined) {

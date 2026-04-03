@@ -235,35 +235,36 @@ jobs:
                 continue
               fi
               if [[ "${check_name}" == "Omar Gate" ]] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-                check_runs_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
-                latest_check_run="$(echo "${check_runs_json}" | jq -c '
-                  [.check_runs[]
-                    | select((.name // "") == "Omar Gate")
-                  ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+                runs_json="$(gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+                latest_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/omar-gate.yml" --arg repo "${REPO}" '
+                  [.workflow_runs[]
+                    | select((.head_sha // "") == $sha)
+                    | select(((.path // "") | split("@")[0]) == $path)
+                    | select((.event // "") == "pull_request" or (.event // "") == "workflow_dispatch")
+                    | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                  ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
                 ')"
-                if [[ -z "${latest_check_run}" ]]; then
-                  echo "Waiting for required check '${check_name}' commit check-run on tag commit ${TARGET_SHA}."
-                  pending=1
-                  continue
-                fi
-                run_id="$(echo "${latest_check_run}" | jq -r '.id // ""')"
-                if [[ -z "${run_id}" ]]; then
-                  echo "::error::Unable to resolve check-run id for required check '${check_name}' on tag commit ${TARGET_SHA}."
+                if [[ -z "${latest_run}" ]]; then
+                  echo "::error::No prior Omar Gate workflow run found for tag target commit ${TARGET_SHA}. Trigger Omar Gate on the source PR or via workflow_dispatch before publishing ${GITHUB_REF_VALUE}."
                   exit 1
                 fi
-                status="$(echo "${latest_check_run}" | jq -r '.status // ""')"
-                conclusion="$(echo "${latest_check_run}" | jq -r '.conclusion // ""')"
+                run_id="$(echo "${latest_run}" | jq -r '.id // ""')"
+                if [[ -z "${run_id}" ]]; then
+                  echo "::error::Unable to resolve workflow run id for required check '${check_name}' on tag commit ${TARGET_SHA}."
+                  exit 1
+                fi
+                status="$(echo "${latest_run}" | jq -r '.status // ""')"
+                conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"
                 if [[ "${status}" != "completed" ]]; then
-                  echo "Required check '${check_name}' (check-run ${run_id}) status=${status}; waiting."
-                  pending=1
-                  continue
+                  echo "::error::Required check '${check_name}' workflow run ${run_id} is ${status}; wait for completion before running release on tag ${GITHUB_REF_VALUE}."
+                  exit 1
                 fi
                 if [[ "${conclusion}" != "success" ]]; then
-                  echo "::error::Required check '${check_name}' check-run ${run_id} concluded with '${conclusion}'."
+                  echo "::error::Required check '${check_name}' workflow run ${run_id} concluded with '${conclusion}'."
                   exit 1
                 fi
-                omar_run_id="check-run-${run_id}"
-                echo "Required check '${check_name}' passed via commit check-run ${run_id}."
+                omar_run_id="${run_id}"
+                echo "Required check '${check_name}' passed via prior workflow run ${run_id}."
                 continue
               fi
               workflow_file="$(workflow_file_for_check "${check_name}" || true)"
