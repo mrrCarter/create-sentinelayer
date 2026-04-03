@@ -117,3 +117,5 @@
 - For Omar pre-gate dependency checks, bind to the upstream workflow run identity (`actions/workflows/<file>/runs` + `head_sha` + workflow path) rather than check-run display names alone.
 - Omar findings can oscillate when a mitigation over-corrects policy (`cancel-in-progress` true vs false); prefer event-scoped controls (`pull_request` strict, non-PR relaxed) over one global toggle.
 - Retry jitter hardening should avoid both deterministic lockstep and weak RNG fallbacks; use cryptographic randomness first and deterministic hash fallback only when crypto entropy is unavailable.
+- Persisted config security should not expose bypass toggles (`allowPlaintextSecrets`) even for compatibility paths; secret keys must stay blocked at schema and write-time validation layers.
+- Polling APIs should avoid static idempotency keys across attempts; suffix keys with attempt/sequence (`session:poll:<n>`) so server-side dedupe does not mask status transitions.

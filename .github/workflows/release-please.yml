@@ -28,6 +28,20 @@ jobs:
       checks: read
       actions: read
     steps:
+      - name: Verify release-management environment protections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          env_json="$(gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+
       - name: Verify Quality Summary gate for target SHA
         shell: bash
         env:

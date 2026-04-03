@@ -42,6 +42,35 @@ jobs:
       dry_run: ${{ steps.flags.outputs.dry_run }}
       release_path_execution: ${{ steps.flags.outputs.release_path_execution }}
     steps:
+      - name: Validate trusted release invoker
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
+            echo "Trusted invoker validation is required for workflow_dispatch events only."
+            exit 0
+          fi
+          if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
+            echo "::error::Release workflow_dispatch must originate from the canonical repository."
+            exit 1
+          fi
+          permission="$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
+          case "${permission}" in
+            admin|maintain|write)
+              echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
+              ;;
+            *)
+              echo "::error::Actor '${ACTOR}' is not authorized to trigger release workflow_dispatch (permission='${permission}')."
+              exit 1
+              ;;
+          esac
+
       - name: Normalize dispatch and tag inputs
         id: flags
         shell: bash

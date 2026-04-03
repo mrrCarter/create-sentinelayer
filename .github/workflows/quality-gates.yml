@@ -176,7 +176,7 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-22.04
     timeout-minutes: 12
-    needs: [eval-impact, syntax-matrix, unit-coverage, e2e-packaging]
+    needs: [syntax-matrix, unit-coverage, e2e-packaging]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

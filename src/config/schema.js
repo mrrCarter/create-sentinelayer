@@ -45,6 +45,6 @@ export function findPersistedSecretKeys(value) {
   return SECRET_CONFIG_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
-export function getPersistedConfigSchema({ allowPlaintextSecrets = false } = {}) {
-  return allowPlaintextSecrets ? configSchema : persistedConfigSchema;
+export function getPersistedConfigSchema() {
+  return persistedConfigSchema;
 }

@@ -10,8 +10,11 @@ import {
 
 function assertNoPlaintextSecrets({ parsed, filePath, allowPlaintextSecrets }) {
   const secretKeys = findPersistedSecretKeys(parsed);
-  if (!secretKeys.length || allowPlaintextSecrets) {
+  if (!secretKeys.length) {
     return;
+  }
+  if (allowPlaintextSecrets) {
+    // Backward-compatible option is retained but no longer bypasses persisted secret validation.
   }
   throw new Error(
     `Invalid config at ${filePath}: plaintext secrets (${secretKeys.join(
@@ -30,7 +33,7 @@ function parseConfigObject(raw, filePath, { allowPlaintextSecrets = false } = {}
   }
 
   assertNoPlaintextSecrets({ parsed, filePath, allowPlaintextSecrets });
-  const normalized = getPersistedConfigSchema({ allowPlaintextSecrets }).safeParse(parsed);
+  const normalized = getPersistedConfigSchema().safeParse(parsed);
   if (!normalized.success) {
     throw new Error(`Invalid config at ${filePath}: ${normalized.error.issues[0]?.message || "schema error"}`);
   }
@@ -55,7 +58,7 @@ export async function readConfigFile(filePath, { allowPlaintextSecrets = false }
 
 export async function writeConfigFile(filePath, data, { allowPlaintextSecrets = false } = {}) {
   assertNoPlaintextSecrets({ parsed: data || {}, filePath, allowPlaintextSecrets });
-  const normalized = getPersistedConfigSchema({ allowPlaintextSecrets }).parse(data || {});
+  const normalized = getPersistedConfigSchema().parse(data || {});
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   await fsp.writeFile(filePath, stringify(normalized), "utf-8");
 }

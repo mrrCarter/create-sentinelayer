@@ -242,7 +242,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(mock.state.tokenIssueBodies.length, 1);
     assert.equal(mock.state.tokenIssueBodies[0].scope, "cli_session");
     assert.equal(mock.state.pollCalls, 2);
-    assert.deepEqual(mock.state.pollIdempotencyKeys, ["sess_1:poll", "sess_1:poll"]);
+    assert.deepEqual(mock.state.pollIdempotencyKeys, ["sess_1:poll:0", "sess_1:poll:1"]);
     assert.deepEqual(
       mock.state.pollBodies.map((entry) => entry.session_id),
       ["sess_1", "sess_1"]
@@ -575,7 +575,7 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
       }
     );
     assert.equal(mock.state.pollCalls, 1);
-    assert.deepEqual(mock.state.pollIdempotencyKeys, ["sess_1:poll"]);
+    assert.deepEqual(mock.state.pollIdempotencyKeys, ["sess_1:poll:0"]);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
