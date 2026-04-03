@@ -307,7 +307,7 @@ jobs:
           test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball path." && exit 1)
           test -f "quality-readiness/${tarball}" || (echo "::error::Missing quality tarball quality-readiness/${tarball}." && exit 1)
           prefix_dir="$(mktemp -d)"
-          npm install --prefix "${prefix_dir}" "quality-readiness/${tarball}" --ignore-scripts
+          npm install --prefix "${prefix_dir}" "./quality-readiness/${tarball}" --ignore-scripts
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-readiness/create-sentinelayer.version.txt
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" sl --version | tee quality-readiness/sl.version.txt
           sha256="$(awk 'NF {print $1; exit}' quality-readiness/quality-build.sha256)"

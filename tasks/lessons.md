@@ -123,3 +123,4 @@
 - Quality pipelines need a dedicated release-readiness smoke stage (artifact install + binary checks) to avoid recurring CI governance findings even when lint/test/security/build pass.
 - Release provenance checks should validate workflow-run source event constraints and cryptographic attestation verification, not just digest lineage and workflow path matching.
 - In GitHub Actions, `actions/setup-node` with `cache: npm` requires a checked-out workspace with `package-lock.json`; new jobs should checkout before setup-node to avoid immediate gate failure.
+- In CI smoke installs, local tarball paths passed to `npm install` must be prefixed with `./` (or absolute path); otherwise npm can reinterpret `path/file.tgz` as a GitHub shorthand and fail with git SSH errors.

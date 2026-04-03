@@ -519,4 +519,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Ninth-cycle hardening prepared locally: auth privileged-scope explicit opt-in (`--allow-privileged-scope`), keyring downgrade explicit consent (`--no-keyring`) + metadata flag, quality `release-readiness` smoke stage, release required-check event/source filtering, and attestation verification gate in preflight.
 - [x] Push ninth-cycle fixes (`3b4faec`) and rerun Omar (`run_id=23936484487`): Omar blocked early because quality-gates run `23936484488` failed in new `Release Readiness` job (`setup-node` cache executed before checkout).
 - [x] Apply quality-gates hotfix: add explicit checkout step before `setup-node` in `Release Readiness` job.
-- [ ] Push quality-gates hotfix and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push quality-gates hotfix (`cfe4a62`) and rerun Omar (`run_id=23937429580`): Omar blocked again because `npm install` treated `quality-readiness/<tarball>` as a GitHub shorthand (missing local `./` prefix).
+- [x] Apply second quality-gates hotfix: force local tarball install path to `./quality-readiness/<tarball>` in `Release Readiness` smoke stage.
+- [ ] Push second quality-gates hotfix and continue Omar loop until PR #114 reaches `P2<=2`.
