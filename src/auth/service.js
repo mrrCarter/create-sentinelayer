@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import open from "open";
 
 import { loadConfig } from "../config/service.js";
-import { SentinelayerApiError, requestJson } from "./http.js";
+import { getSharedRequestJitterSalt, SentinelayerApiError, requestJson } from "./http.js";
 import {
   clearStoredSession,
   readStoredSession,
@@ -36,6 +36,8 @@ const RETRYABLE_AUTH_POLL_CODES = new Set([
   "MAX_RETRIES_EXHAUSTED",
   "CIRCUIT_OPEN",
 ]);
+const AUTH_POLL_JITTER_TIME_BUCKET_MS = 30_000;
+const AUTH_POLL_JITTER_SALT = getSharedRequestJitterSalt("auth-poll-backoff");
 const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
@@ -103,8 +105,33 @@ function generatePollClientId() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-function deterministicJitterFactor(sessionId, attempt) {
-  const seed = `${String(sessionId || "").trim()}:${Number(attempt || 0)}`;
+function resolveMonotonicJitterBucket(attempt, consecutiveFailures) {
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  const normalizedFailures = Math.max(0, Math.floor(Number(consecutiveFailures) || 0));
+  let monotonicEpochMs = Date.now();
+  if (
+    typeof globalThis.performance === "object" &&
+    Number.isFinite(Number(globalThis.performance.timeOrigin)) &&
+    typeof globalThis.performance.now === "function"
+  ) {
+    monotonicEpochMs = Number(globalThis.performance.timeOrigin) + Number(globalThis.performance.now());
+  }
+  const shiftedEpochMs =
+    monotonicEpochMs + normalizedAttempt * 100 + normalizedFailures * 25;
+  return Math.floor(shiftedEpochMs / AUTH_POLL_JITTER_TIME_BUCKET_MS);
+}
+
+function deterministicJitterFactor(sessionId, attempt, consecutiveFailures = 0) {
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  const normalizedFailures = Math.max(0, Math.floor(Number(consecutiveFailures) || 0));
+  const monotonicBucket = resolveMonotonicJitterBucket(normalizedAttempt, normalizedFailures);
+  const seed = [
+    String(sessionId || "").trim(),
+    String(normalizedAttempt),
+    String(normalizedFailures),
+    AUTH_POLL_JITTER_SALT,
+    String(monotonicBucket),
+  ].join(":");
   const digest = crypto.createHash("sha256").update(seed).digest();
   const bucket = digest[0] / 255;
   return 0.8 + bucket * 0.4;
@@ -132,7 +159,11 @@ function resolveAuthPollBackendCooldownMs({
 }) {
   const normalizedBase = Math.max(MIN_AUTH_POLL_INTERVAL_MS, Number(pollIntervalMs) || MIN_AUTH_POLL_INTERVAL_MS);
   const failureMultiplier = 2 ** Math.min(Math.max(0, Number(consecutiveFailures) - 1), 5);
-  const jitterFactor = deterministicJitterFactor(sessionId, Number(attempt || 0) + Number(consecutiveFailures || 0));
+  const jitterFactor = deterministicJitterFactor(
+    sessionId,
+    Number(attempt || 0),
+    Number(consecutiveFailures || 0)
+  );
   const cooldownMs = Math.round(normalizedBase * failureMultiplier * jitterFactor);
   return Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.min(MAX_AUTH_POLL_BACKEND_BACKOFF_MS, cooldownMs));
 }

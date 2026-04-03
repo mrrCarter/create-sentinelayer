@@ -231,8 +231,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          install_with_retry() {
+            local package_spec="${1}"
+            local prefix_dir="${2}"
+            local attempts=0
+            local max_attempts=2
+            local status=0
+            while (( attempts < max_attempts )); do
+              attempts=$((attempts + 1))
+              status=0
+              timeout --preserve-status 120s npm install --prefix "${prefix_dir}" "${package_spec}" --ignore-scripts || status=$?
+              if [[ "${status}" -eq 0 ]]; then
+                return 0
+              fi
+              if (( attempts >= max_attempts )); then
+                break
+              fi
+              sleep $((attempts * 2))
+            done
+            echo "::error::Failed to install '${package_spec}' after ${max_attempts} attempts (status=${status})."
+            exit 1
+          }
           prefix_dir="$(mktemp -d)"
-          npm install --prefix "${prefix_dir}" "${PACKAGE_NAME}@${TARGET_VERSION}" --ignore-scripts
+          install_with_retry "${PACKAGE_NAME}@${TARGET_VERSION}" "${prefix_dir}"
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
 
@@ -526,11 +547,32 @@ jobs:
             exit 1
           fi
 
+          install_with_retry() {
+            local package_spec="${1}"
+            local prefix_dir="${2}"
+            local attempts=0
+            local max_attempts=2
+            local status=0
+            while (( attempts < max_attempts )); do
+              attempts=$((attempts + 1))
+              status=0
+              timeout --preserve-status 120s npm install --prefix "${prefix_dir}" "${package_spec}" --ignore-scripts || status=$?
+              if [[ "${status}" -eq 0 ]]; then
+                return 0
+              fi
+              if (( attempts >= max_attempts )); then
+                break
+              fi
+              sleep $((attempts * 2))
+            done
+            echo "::error::Failed to install '${package_spec}' after ${max_attempts} attempts (status=${status})."
+            exit 1
+          }
           prefix_latest="$(mktemp -d)"
-          npm install --prefix "${prefix_latest}" "${PACKAGE_NAME}@${latest_version}" --ignore-scripts
+          install_with_retry "${PACKAGE_NAME}@${latest_version}" "${prefix_latest}"
           PATH="${prefix_latest}/node_modules/.bin:${PATH}" create-sentinelayer --version
           prefix_previous="$(mktemp -d)"
-          npm install --prefix "${prefix_previous}" "${PACKAGE_NAME}@${previous_version}" --ignore-scripts
+          install_with_retry "${PACKAGE_NAME}@${previous_version}" "${prefix_previous}"
           PATH="${prefix_previous}/node_modules/.bin:${PATH}" sentinel --version
           cat > rollback-drill.summary.json <<EOF
           {

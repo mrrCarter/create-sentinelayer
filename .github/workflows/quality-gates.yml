@@ -705,3 +705,65 @@ jobs:
 
           echo "All quality checks passed."
 
+  verify-gate-graph:
+    name: Verify Gate Graph
+    runs-on: ubuntu-22.04
+    needs: [quality-summary]
+    if: ${{ always() }}
+    permissions:
+      actions: read
+    steps:
+      - name: Validate gate graph completion for this run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          jobs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" -H "Accept: application/vnd.github+json")"
+          assert_exact_success() {
+            local job_name="${1}"
+            local total_count
+            total_count="$(echo "${jobs_json}" | jq -r --arg name "${job_name}" '[.jobs[] | select((.name // "") == $name)] | length')"
+            if [[ "${total_count}" -lt 1 ]]; then
+              echo "::error::Missing required gate job '${job_name}' in run ${RUN_ID}."
+              exit 1
+            fi
+            local success_count
+            success_count="$(echo "${jobs_json}" | jq -r --arg name "${job_name}" '[.jobs[] | select((.name // "") == $name) | select((.status // "") == "completed") | select((.conclusion // "") == "success")] | length')"
+            if [[ "${success_count}" != "${total_count}" ]]; then
+              echo "::error::Gate job '${job_name}' did not complete successfully in run ${RUN_ID} (success=${success_count}, total=${total_count})."
+              exit 1
+            fi
+          }
+          assert_regex_success() {
+            local job_name_pattern="${1}"
+            local min_count="${2}"
+            local total_count
+            total_count="$(echo "${jobs_json}" | jq -r --arg pattern "${job_name_pattern}" '[.jobs[] | select(((.name // "") | test($pattern)))] | length')"
+            if [[ "${total_count}" -lt "${min_count}" ]]; then
+              echo "::error::Expected at least ${min_count} jobs matching /${job_name_pattern}/ in run ${RUN_ID}, found ${total_count}."
+              exit 1
+            fi
+            local success_count
+            success_count="$(echo "${jobs_json}" | jq -r --arg pattern "${job_name_pattern}" '[.jobs[] | select(((.name // "") | test($pattern))) | select((.status // "") == "completed") | select((.conclusion // "") == "success")] | length')"
+            if [[ "${success_count}" != "${total_count}" ]]; then
+              echo "::error::One or more jobs matching /${job_name_pattern}/ did not succeed in run ${RUN_ID} (success=${success_count}, total=${total_count})."
+              exit 1
+            fi
+          }
+          assert_exact_success "Lint"
+          assert_exact_success "Eval Impact Gate"
+          assert_regex_success "^Syntax & Sanity \\(Node .+\\)$" 2
+          assert_exact_success "Unit Coverage (>=80%)"
+          assert_exact_success "E2E Tests"
+          assert_exact_success "Security Scan"
+          assert_exact_success "Build Artifact"
+          assert_exact_success "Release Readiness"
+          assert_exact_success "Deploy Readiness"
+          assert_exact_success "Deploy Stage"
+          assert_exact_success "Deploy"
+          assert_exact_success "Quality Summary"
+          echo "Gate graph verification passed for run ${RUN_ID}."
+

@@ -133,8 +133,14 @@ jobs:
             echo "::error::Branch protection for '${branch_name}' must require at least one approving review."
             exit 1
           fi
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
           configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
-          required_contexts=("Omar Gate" "Quality Summary" "Release Readiness" "Deploy Readiness" "Deploy Stage")
+          mapfile -t required_contexts < <(jq -r '.requiredContexts[]?.name // empty' "${required_context_manifest}")
+          if [[ "${#required_contexts[@]}" -eq 0 ]]; then
+            echo "::error::No required contexts defined in ${required_context_manifest}."
+            exit 1
+          fi
           for required_context in "${required_contexts[@]}"; do
             if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
               echo "::error::Branch protection for '${branch_name}' is missing required status context '${required_context}'."
@@ -375,6 +381,11 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          if ! grep -Eq '^[[:space:]]+branches:' .github/workflows/release.yml; then
+            echo "Release workflow push trigger is tag-only; skipping same-SHA baseline run assertion for ${TARGET_SHA}."
+            echo "release_run_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           source scripts/release/backoff.sh
           retry_attempt=0
           max_backoff_retries=24

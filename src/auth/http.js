@@ -22,6 +22,7 @@ const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 const circuitBreakerStates = new Map();
 let requestJitterFallbackCounter = 0;
 const REQUEST_JITTER_STARTUP_SECRET = initializeRequestJitterStartupSecret();
+const REQUEST_JITTER_SHARED_SALT = initializeSharedRequestJitterSalt();
 
 function initializeRequestJitterStartupSecret() {
   try {
@@ -29,6 +30,24 @@ function initializeRequestJitterStartupSecret() {
   } catch {
     return null;
   }
+}
+
+function initializeSharedRequestJitterSalt() {
+  if (REQUEST_JITTER_STARTUP_SECRET) {
+    return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
+      .update("shared-retry-jitter-salt")
+      .digest("hex");
+  }
+  return createHash("sha256")
+    .update(["shared-retry-jitter-fallback", String(process.pid), String(resolveMonotonicEpochMs())].join(":"))
+    .digest("hex");
+}
+
+export function getSharedRequestJitterSalt(scope = "global") {
+  const normalizedScope = String(scope || "global").trim().toLowerCase() || "global";
+  return createHash("sha256")
+    .update(`${REQUEST_JITTER_SHARED_SALT}:${normalizedScope}`)
+    .digest("hex");
 }
 
 function normalizeApiError(errorPayload = {}) {

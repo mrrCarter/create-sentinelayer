@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -94,7 +92,7 @@ jobs:
           permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
           trusted_actor="false"
           case "${permission}" in
-            admin|maintain|write)
+            admin|maintain)
               trusted_actor="true"
               echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
               ;;
@@ -354,8 +352,14 @@ jobs:
             echo "::error::Branch protection must enforce stale-review dismissal for '${branch_name}'."
             exit 1
           fi
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
           configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
-          required_contexts=("Omar Gate" "Quality Summary" "Release Readiness" "Deploy Readiness" "Deploy Stage")
+          mapfile -t required_contexts < <(jq -r '.requiredContexts[]?.name // empty' "${required_context_manifest}")
+          if [[ "${#required_contexts[@]}" -eq 0 ]]; then
+            echo "::error::No required contexts defined in ${required_context_manifest}."
+            exit 1
+          fi
           for required_context in "${required_contexts[@]}"; do
             if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
               echo "::error::Branch protection for ${branch_name} is missing required status context '${required_context}'."
@@ -383,7 +387,6 @@ jobs:
           TARGET_SHA: ${{ needs.resolve-release-flags.outputs.target_sha || github.sha }}
           GITHUB_REF_VALUE: ${{ needs.resolve-release-flags.outputs.release_ref_value || github.ref }}
           GITHUB_REF_TYPE: ${{ needs.resolve-release-flags.outputs.release_ref_type || github.ref_type }}
-          BASE_REQUIRED_CHECKS: Omar Gate,Quality Summary,Release Readiness,Deploy Readiness,Deploy Stage
           MAX_OMAR_PR_RUN_AGE_HOURS: ${{ env.OMAR_PR_RUN_MAX_AGE_HOURS }}
         run: |
           set -euo pipefail
@@ -414,7 +417,9 @@ jobs:
             fi
           fi
           TARGET_SHA="${resolved_sha}"
-          required_checks_csv="${BASE_REQUIRED_CHECKS}"
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
+          required_checks_csv="$(jq -r '[.requiredContexts[]?.name] | map(select(length > 0)) | join(",")' "${required_context_manifest}")"
           echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
           IFS=',' read -r -a required_checks <<< "${required_checks_csv}"
           if [[ "${#required_checks[@]}" -eq 0 ]]; then
@@ -424,32 +429,13 @@ jobs:
           quality_run_id=""
           omar_run_id=""
           workflow_file_for_check() {
-            case "${1}" in
-              "Omar Gate") echo "omar-gate.yml" ;;
-              "Quality Summary") echo "quality-gates.yml" ;;
-              "Release Readiness") echo "quality-gates.yml" ;;
-              "Deploy Readiness") echo "quality-gates.yml" ;;
-              "Deploy Stage") echo "quality-gates.yml" ;;
-              *) return 1 ;;
-            esac
+            jq -r --arg name "${1}" '.requiredContexts[] | select(.name == $name) | .workflowFile // empty' "${required_context_manifest}" | head -n 1
           }
           workflow_path_for_check() {
-            case "${1}" in
-              "Omar Gate") echo ".github/workflows/omar-gate.yml" ;;
-              "Quality Summary") echo ".github/workflows/quality-gates.yml" ;;
-              "Release Readiness") echo ".github/workflows/quality-gates.yml" ;;
-              "Deploy Readiness") echo ".github/workflows/quality-gates.yml" ;;
-              "Deploy Stage") echo ".github/workflows/quality-gates.yml" ;;
-              *) return 1 ;;
-            esac
+            jq -r --arg name "${1}" '.requiredContexts[] | select(.name == $name) | .workflowPath // empty' "${required_context_manifest}" | head -n 1
           }
           allowed_events_for_check() {
-            case "${1}" in
-              "Omar Gate") echo "[\"pull_request\"]" ;;
-              "Quality Summary"|"Release Readiness") echo "[\"pull_request\", \"push\"]" ;;
-              "Deploy Readiness"|"Deploy Stage") echo "[\"pull_request\", \"push\"]" ;;
-              *) return 1 ;;
-            esac
+            jq -c --arg name "${1}" '.requiredContexts[] | select(.name == $name) | (.allowedEvents // [])' "${required_context_manifest}" | head -n 1
           }
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do

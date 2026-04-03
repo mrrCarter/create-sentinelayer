@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { requestJson } from "../src/auth/http.js";
+import { getSharedRequestJitterSalt, requestJson } from "../src/auth/http.js";
 
 async function startMockServer(handler) {
   const server = createServer(handler);
@@ -61,6 +61,15 @@ test("Unit auth http: requestJson preserves string payloads for custom content t
   } finally {
     await mock.close();
   }
+});
+
+test("Unit auth http: shared jitter salt is deterministic per scope and distinct across scopes", () => {
+  const saltA = getSharedRequestJitterSalt("auth-poll-backoff");
+  const saltB = getSharedRequestJitterSalt("auth-poll-backoff");
+  const otherSalt = getSharedRequestJitterSalt("network-retry");
+  assert.match(saltA, /^[a-f0-9]{64}$/);
+  assert.equal(saltA, saltB);
+  assert.notEqual(saltA, otherSalt);
 });
 
 test("Unit auth http: requestJson serializes object payloads as JSON by default", async () => {
