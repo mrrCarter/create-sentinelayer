@@ -32,9 +32,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve-release-flags:
+    name: Resolve Release Flags
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    outputs:
+      publish_requested: ${{ steps.flags.outputs.publish_requested }}
+      dry_run: ${{ steps.flags.outputs.dry_run }}
+    steps:
+      - name: Normalize dispatch and tag inputs
+        id: flags
+        shell: bash
+        env:
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          normalize_bool() {
+            case "$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)" in
+              true|1|yes|on) echo "true" ;;
+              *) echo "false" ;;
+            esac
+          }
+          publish_requested="false"
+          if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+            publish_requested="true"
+          fi
+          if [[ "$(normalize_bool "${INPUT_PUBLISH}")" == "true" ]]; then
+            publish_requested="true"
+          fi
+          dry_run="$(normalize_bool "${INPUT_DRY_RUN}")"
+          echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+
   verify-required-checks:
     name: Verify Required Checks
     runs-on: ubuntu-22.04
+    needs: [resolve-release-flags]
     timeout-minutes: 12
     permissions:
       contents: read
@@ -46,7 +81,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
-          PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
+          PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
           REQUIRED_CHECKS: Omar Gate,Quality Summary
@@ -87,7 +122,23 @@ jobs:
               if [[ -z "${check_name}" ]]; then
                 continue
               fi
-              latest_run="$(echo "${checks_json}" | jq -c --arg name "${check_name}" '[.check_runs[] | select(.name == $name)] | sort_by(.started_at // .created_at) | last // empty')"
+              mismatched_count="$(echo "${checks_json}" | jq -r --arg name "${check_name}" '
+                [.check_runs[]
+                  | select(.name == $name)
+                  | select((.app.slug // "") != "github-actions" or ((.details_url // "") | contains("/actions/runs/") | not))
+                ] | length
+              ')"
+              if [[ "${mismatched_count}" != "0" ]]; then
+                echo "::error::Detected ${mismatched_count} untrusted producer run(s) for required check '${check_name}'."
+                exit 1
+              fi
+              latest_run="$(echo "${checks_json}" | jq -c --arg name "${check_name}" '
+                [.check_runs[]
+                  | select(.name == $name)
+                  | select((.app.slug // "") == "github-actions")
+                  | select((.details_url // "") | contains("/actions/runs/"))
+                ] | sort_by(.started_at // .created_at) | last // empty
+              ')"
               if [[ -z "${latest_run}" ]]; then
                 echo "Waiting for required check '${check_name}' on ${TARGET_SHA}."
                 pending=1
@@ -208,8 +259,8 @@ jobs:
     name: Rollback Readiness
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [verify-required-checks, preflight]
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
+    needs: [resolve-release-flags, verify-required-checks, preflight]
+    if: ${{ needs.resolve-release-flags.outputs.publish_requested == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -250,13 +301,13 @@ jobs:
     name: Publish
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [verify-required-checks, preflight, rollback-readiness]
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
     environment: production
     env:
       NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
-      PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
-      DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
+      PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}
+      DRY_RUN: ${{ needs.resolve-release-flags.outputs.dry_run }}
     steps:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

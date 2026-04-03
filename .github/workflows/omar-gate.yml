@@ -67,6 +67,15 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+      - name: Mask scan secrets in logs
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${SENTINELAYER_TOKEN}"
+          echo "::add-mask::${OPENAI_API_KEY}"
       - name: Run Omar Gate
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
@@ -141,3 +150,20 @@ jobs:
           echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Assert summary excludes raw secrets
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -f "${GITHUB_STEP_SUMMARY}" ]]; then
+            if grep -F -- "${SENTINELAYER_TOKEN}" "${GITHUB_STEP_SUMMARY}" >/dev/null; then
+              echo "::error::SENTINELAYER_TOKEN leaked into workflow summary."
+              exit 1
+            fi
+            if grep -F -- "${OPENAI_API_KEY}" "${GITHUB_STEP_SUMMARY}" >/dev/null; then
+              echo "::error::OPENAI_API_KEY leaked into workflow summary."
+              exit 1
+            fi
+          fi

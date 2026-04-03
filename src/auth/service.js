@@ -10,6 +10,7 @@ import {
   clearStoredSession,
   readStoredSession,
   readStoredSessionMetadata,
+  StoredSessionError,
   writeStoredSession,
 } from "./session-store.js";
 
@@ -358,6 +359,19 @@ function toRotationWarning(tokenId, error) {
   };
 }
 
+function toStoredSessionApiError(error) {
+  if (error instanceof SentinelayerApiError) {
+    return error;
+  }
+  if (error instanceof StoredSessionError) {
+    return new SentinelayerApiError(error.message, {
+      status: 401,
+      code: error.code || "STORED_SESSION_INVALID",
+    });
+  }
+  return error;
+}
+
 async function rotateStoredApiTokenIfNeeded({
   session,
   thresholdDays,
@@ -625,7 +639,12 @@ export async function resolveActiveAuthSession({
     };
   }
 
-  const stored = await readStoredSession({ homeDir });
+  let stored = null;
+  try {
+    stored = await readStoredSession({ homeDir });
+  } catch (error) {
+    throw toStoredSessionApiError(error);
+  }
   if (!stored) {
     return null;
   }
@@ -874,11 +893,16 @@ export async function revokeAuthToken({
   let matchedStoredSession = false;
   let clearedLocal = false;
   let filePath = null;
-  const stored = await readStoredSession({ homeDir });
+  let stored = null;
+  try {
+    stored = await readStoredSession({ homeDir });
+  } catch (error) {
+    throw toStoredSessionApiError(error);
+  }
   if (stored && String(stored.tokenId || "").trim() === targetTokenId) {
     matchedStoredSession = true;
     const cleared = await clearStoredSession({ homeDir });
-    clearedLocal = Boolean(cleared.hadSession);
+    clearedLocal = Boolean(cleared.clearedMetadata);
     filePath = cleared.filePath || null;
   }
 
@@ -918,7 +942,21 @@ export async function logoutSession({
   explicitApiUrl = "",
   revokeRemote = true,
 } = {}) {
-  const stored = await readStoredSession({ homeDir });
+  let stored = null;
+  try {
+    stored = await readStoredSession({ homeDir });
+  } catch (error) {
+    if (error instanceof StoredSessionError) {
+      const cleared = await clearStoredSession({ homeDir });
+      return {
+        hadStoredSession: Boolean(cleared.hadSession),
+        revokedRemote: false,
+        clearedLocal: Boolean(cleared.clearedMetadata),
+        filePath: cleared.filePath,
+      };
+    }
+    throw error;
+  }
   if (!stored) {
     return {
       hadStoredSession: false,
@@ -946,7 +984,7 @@ export async function logoutSession({
   return {
     hadStoredSession: true,
     revokedRemote,
-    clearedLocal: cleared.hadSession,
+    clearedLocal: cleared.clearedMetadata,
     filePath: cleared.filePath,
   };
 }

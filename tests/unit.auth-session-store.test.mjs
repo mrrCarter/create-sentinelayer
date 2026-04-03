@@ -9,6 +9,7 @@ import {
   readStoredSession,
   readStoredSessionMetadata,
   resolveCredentialsFilePath,
+  StoredSessionError,
   writeStoredSession,
 } from "../src/auth/session-store.js";
 
@@ -52,6 +53,7 @@ test("Unit auth session store: file storage round-trip is deterministic when key
 
     const clearResult = await clearStoredSession({ homeDir: tempRoot });
     assert.equal(clearResult.hadSession, true);
+    assert.equal(clearResult.clearedMetadata, true);
 
     const postClear = await readStoredSession({ homeDir: tempRoot });
     assert.equal(postClear, null);
@@ -65,7 +67,7 @@ test("Unit auth session store: file storage round-trip is deterministic when key
   }
 });
 
-test("Unit auth session store: keyring metadata without keytar returns null and clears locally", async () => {
+test("Unit auth session store: keyring metadata without keytar fails closed with remediation error", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
 
@@ -97,8 +99,14 @@ test("Unit auth session store: keyring metadata without keytar returns null and 
       "utf-8"
     );
 
-    const stored = await readStoredSession({ homeDir: tempRoot });
-    assert.equal(stored, null);
+    await assert.rejects(
+      () => readStoredSession({ homeDir: tempRoot }),
+      (error) => {
+        assert.ok(error instanceof StoredSessionError);
+        assert.equal(error.code, "KEYRING_UNAVAILABLE");
+        return true;
+      }
+    );
 
     const metadata = await readStoredSessionMetadata({ homeDir: tempRoot });
     assert.equal(metadata?.storage, "keyring");
@@ -107,6 +115,7 @@ test("Unit auth session store: keyring metadata without keytar returns null and 
 
     const clearResult = await clearStoredSession({ homeDir: tempRoot });
     assert.equal(clearResult.hadSession, true);
+    assert.equal(clearResult.clearedMetadata, true);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

@@ -7,6 +7,15 @@ import process from "node:process";
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
 
+export class StoredSessionError extends Error {
+  constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
+    super(String(message || "Stored session error"));
+    this.name = "StoredSessionError";
+    this.code = String(code || "STORED_SESSION_ERROR");
+    this.filePath = filePath ? String(filePath) : null;
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -159,16 +168,28 @@ export async function readStoredSession({ homeDir } = {}) {
   }
 
   if (metadata.storage === "keyring") {
+    if (!metadata.keyringAccount) {
+      throw new StoredSessionError(
+        "Stored keyring session metadata is missing keyringAccount. Re-authenticate with `sl auth login`.",
+        { code: "KEYRING_ACCOUNT_MISSING", filePath }
+      );
+    }
     const keytar = await loadKeytarClient();
-    if (!keytar || !metadata.keyringAccount) {
-      return null;
+    if (!keytar) {
+      throw new StoredSessionError(
+        "Stored session requires keyring access, but keyring is unavailable. Re-authenticate with `sl auth login --no-keyring` or enable keyring support.",
+        { code: "KEYRING_UNAVAILABLE", filePath }
+      );
     }
     const token = await keytar.getPassword(
       metadata.keyringService || KEYRING_SERVICE,
       metadata.keyringAccount
     );
     if (!token) {
-      return null;
+      throw new StoredSessionError(
+        "Stored keyring session token is missing. Re-authenticate with `sl auth login`.",
+        { code: "KEYRING_TOKEN_MISSING", filePath }
+      );
     }
     return {
       ...metadata,
@@ -179,7 +200,10 @@ export async function readStoredSession({ homeDir } = {}) {
   }
 
   if (!metadata.token) {
-    return null;
+    throw new StoredSessionError(
+      "Stored file-backed session token is missing. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_MISSING", filePath }
+    );
   }
   return {
     ...metadata,
@@ -329,7 +353,7 @@ export async function writeStoredSession(
  * Remove local session metadata and keyring credentials for the active account.
  *
  * @param {{ homeDir?: string }} [options]
- * @returns {Promise<{ filePath: string, hadSession: boolean }>}
+ * @returns {Promise<{ filePath: string, hadSession: boolean, clearedMetadata: boolean }>}
  */
 export async function clearStoredSession({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
@@ -341,13 +365,26 @@ export async function clearStoredSession({ homeDir } = {}) {
   }
 
   try {
-    await fsp.rm(filePath, { force: true });
-  } catch {
-    // Ignore cleanup errors.
+    await fsp.rm(filePath);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  let clearedMetadata = true;
+  try {
+    await fsp.access(filePath);
+    clearedMetadata = false;
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
   }
 
   return {
     filePath,
     hadSession: Boolean(metadata),
+    clearedMetadata,
   };
 }

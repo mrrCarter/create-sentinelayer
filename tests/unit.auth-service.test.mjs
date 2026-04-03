@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
   getAuthStatus,
@@ -386,6 +386,75 @@ test("Unit auth service: env and project config token precedence is deterministi
     assert.equal(projectSession?.source, "config");
     assert.equal(projectSession?.token, "project_token");
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: keyring-backed metadata without keyring fails closed and logout clears local state", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  try {
+    const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    await mkdir(path.dirname(credentialsPath), { recursive: true });
+    await writeFile(
+      credentialsPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          apiUrl: "https://api.sentinelayer.dev",
+          storage: "keyring",
+          keyringService: "sentinelayer-cli",
+          keyringAccount: "default-simulated",
+          user: {
+            id: "user_1",
+            github_username: "demo-user",
+            email: "demo@example.com",
+            is_admin: false,
+          },
+          createdAt: "2026-04-02T00:00:00.000Z",
+          updatedAt: "2026-04-02T00:00:00.000Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+
+    await assert.rejects(
+      () =>
+        resolveActiveAuthSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: "https://api.sentinelayer.dev",
+          autoRotate: false,
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.equal(error.code, "KEYRING_UNAVAILABLE");
+        assert.equal(error.status, 401);
+        return true;
+      }
+    );
+
+    const logoutResult = await logoutSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: "https://api.sentinelayer.dev",
+      revokeRemote: true,
+    });
+    assert.equal(logoutResult.hadStoredSession, true);
+    assert.equal(logoutResult.revokedRemote, false);
+    assert.equal(logoutResult.clearedLocal, true);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
