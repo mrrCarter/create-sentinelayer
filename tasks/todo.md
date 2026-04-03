@@ -517,4 +517,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Eighth-cycle hardening applied and pushed (`e6a4661`): `security-scan` now depends on `eval-impact`, `configSchema` persisted keys split from runtime secret schema, release preflight + required-check jobs pinned to `release-management`, and workflow_dispatch ref guards tightened.
 - [x] Rerun Omar (`run_id=23935232366`): residual findings shifted to `P2=5` (`auth privileged-scope consent`, `keyring-disable fallback consent`, `quality release-readiness stage`, `release check provenance event filter`, `attestation verification`).
 - [x] Ninth-cycle hardening prepared locally: auth privileged-scope explicit opt-in (`--allow-privileged-scope`), keyring downgrade explicit consent (`--no-keyring`) + metadata flag, quality `release-readiness` smoke stage, release required-check event/source filtering, and attestation verification gate in preflight.
-- [ ] Push ninth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push ninth-cycle fixes (`3b4faec`) and rerun Omar (`run_id=23936484487`): Omar blocked early because quality-gates run `23936484488` failed in new `Release Readiness` job (`setup-node` cache executed before checkout).
+- [x] Apply quality-gates hotfix: add explicit checkout step before `setup-node` in `Release Readiness` job.
+- [ ] Push quality-gates hotfix and continue Omar loop until PR #114 reaches `P2<=2`.

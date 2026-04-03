@@ -122,3 +122,4 @@
 - For auth controls, treat privileged token scopes and storage-downgrade paths as explicit consent flows (`--allow-privileged-scope`, `--no-keyring`) instead of silent option/env behavior.
 - Quality pipelines need a dedicated release-readiness smoke stage (artifact install + binary checks) to avoid recurring CI governance findings even when lint/test/security/build pass.
 - Release provenance checks should validate workflow-run source event constraints and cryptographic attestation verification, not just digest lineage and workflow path matching.
+- In GitHub Actions, `actions/setup-node` with `cache: npm` requires a checked-out workspace with `package-lock.json`; new jobs should checkout before setup-node to avoid immediate gate failure.
