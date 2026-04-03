@@ -372,6 +372,52 @@ jobs:
             exit 1
           fi
 
+      - name: Validate deploy-stage promotion proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_RUN_ID: ${{ steps.quality_gate.outputs.quality_run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality_run_id from Quality Summary gate step." && exit 1)
+          timeout --preserve-status 120s gh run download "${QUALITY_RUN_ID}" --name deploy-stage-proof --dir quality-proof/deploy-stage
+          deploy_summary_path="quality-proof/deploy-stage/deploy.summary.json"
+          test -f "${deploy_summary_path}" || (echo "::error::Missing deploy-stage proof ${deploy_summary_path} from quality run ${QUALITY_RUN_ID}." && exit 1)
+          deploy_commit_sha="$(jq -r '.commitSha // ""' "${deploy_summary_path}")"
+          deploy_stage_name="$(jq -r '.stage // ""' "${deploy_summary_path}")"
+          if [[ "${deploy_commit_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Deploy-stage proof commit (${deploy_commit_sha}) does not match target SHA (${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ "${deploy_stage_name}" != "deploy-stage-promotion-gate" ]]; then
+            echo "::error::Deploy-stage proof stage must be deploy-stage-promotion-gate (received '${deploy_stage_name}')."
+            exit 1
+          fi
+
+      - name: Assert release workflow publishes immutable promoted artifact only
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          const offenders = [];
+          for (const [index, line] of content.split(/\r?\n/).entries()) {
+            if (/^\s*#/.test(line)) {
+              continue;
+            }
+            if (/npm\s+pack\b/.test(line)) {
+              offenders.push(index + 1);
+            }
+          }
+          if (offenders.length > 0) {
+            console.error(`::error::release.yml must avoid package rebuild commands and publish only immutable quality artifacts (lines: ${offenders.join(", ")}).`);
+            process.exit(1);
+          }
+          NODE
+
       - name: Run release-please
         if: steps.release_scope.outputs.release_relevant == 'true'
         timeout-minutes: 5

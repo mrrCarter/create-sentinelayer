@@ -551,17 +551,23 @@ jobs:
           release_commit="$(jq -r '.commitSha // ""' "${release_summary}")"
           deploy_commit="$(jq -r '.commitSha // ""' "${deploy_summary}")"
           build_commit="$(jq -r '.commitSha // ""' "${artifact_manifest}")"
+          build_artifact_name="$(jq -r '.artifactName // ""' "${artifact_manifest}")"
+          build_artifact_sha="$(jq -r '.sha256 // ""' "${artifact_manifest}")"
           if [[ "${release_commit}" != "${GITHUB_SHA}" ]] || [[ "${deploy_commit}" != "${GITHUB_SHA}" ]] || [[ "${build_commit}" != "${GITHUB_SHA}" ]]; then
             echo "::error::Deploy gate artifact commit mismatch (release=${release_commit}, deploy=${deploy_commit}, build=${build_commit}, expected=${GITHUB_SHA})."
             exit 1
           fi
+          test -n "${build_artifact_name}" || (echo "::error::Missing artifactName in ${artifact_manifest}." && exit 1)
+          test -n "${build_artifact_sha}" || (echo "::error::Missing sha256 in ${artifact_manifest}." && exit 1)
           cat > quality-deploy-stage/deploy.summary.json <<EOF
           {
             "schemaVersion": "1.0.0",
             "workflow": "quality-gates",
             "runId": "${GITHUB_RUN_ID}",
             "commitSha": "${GITHUB_SHA}",
-            "stage": "deploy-stage",
+            "stage": "deploy-stage-promotion-gate",
+            "artifactName": "${build_artifact_name}",
+            "artifactSha256": "${build_artifact_sha}",
             "inputs": [
               "release-readiness.summary.json",
               "deploy-readiness.summary.json"

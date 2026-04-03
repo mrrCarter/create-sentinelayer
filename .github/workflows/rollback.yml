@@ -419,13 +419,15 @@ jobs:
           path: rollback-operation.summary.json
           if-no-files-found: error
 
-  rollback-drill:
-    name: Rollback Drill
+  rollback-readiness-drill:
+    name: Rollback Readiness Drill
     if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -462,6 +464,68 @@ jobs:
           ')"
           test -n "${latest_version}" || (echo "::error::Unable to resolve latest version for ${PACKAGE_NAME}." && exit 1)
           test -n "${previous_version}" || (echo "::error::Unable to resolve previous version for ${PACKAGE_NAME} rollback drill." && exit 1)
+
+          release_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/releases/tags/v${latest_version}" -H "Accept: application/vnd.github+json")"
+          release_target="$(echo "${release_json}" | jq -r '.target_commitish // ""')"
+          test -n "${release_target}" || (echo "::error::Unable to resolve release target commit for v${latest_version}." && exit 1)
+          latest_target_sha="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${release_target}" --jq '.sha // \"\"' -H "Accept: application/vnd.github+json")"
+          test -n "${latest_target_sha}" || (echo "::error::Unable to resolve commit SHA for release target '${release_target}'." && exit 1)
+
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${latest_target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+          quality_run="$(echo "${runs_json}" | jq -c --arg sha "${latest_target_sha}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select((.head_sha // "") == $sha)
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${quality_run}" ]]; then
+            echo "::error::No successful quality-gates lineage run found for latest release commit ${latest_target_sha}."
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
+          test -n "${quality_run_id}" || (echo "::error::Unable to resolve quality-gates run id for release commit ${latest_target_sha}." && exit 1)
+          timeout --preserve-status 120s gh run download "${quality_run_id}" --name quality-build-package --dir rollback-drill-quality-proof
+          manifest_path="rollback-drill-quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality-build.manifest.json from quality run ${quality_run_id}." && exit 1)
+          manifest_commit_sha="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_artifact_name="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_rebuild_sha="$(jq -r '.rebuildSha256 // ""' "${manifest_path}")"
+          test -n "${manifest_commit_sha}" || (echo "::error::Missing commitSha in ${manifest_path}." && exit 1)
+          test -n "${manifest_artifact_name}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
+          test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          test -n "${manifest_rebuild_sha}" || (echo "::error::Missing rebuildSha256 in ${manifest_path}." && exit 1)
+          if [[ "${manifest_commit_sha}" != "${latest_target_sha}" ]]; then
+            echo "::error::Rollback drill quality manifest commit (${manifest_commit_sha}) does not match target SHA (${latest_target_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${manifest_rebuild_sha}" ]]; then
+            echo "::error::Rollback drill quality manifest reproducibility mismatch (sha256=${manifest_sha}, rebuild=${manifest_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_artifact_name}" != *"-${latest_version}.tgz" ]]; then
+            echo "::error::Rollback drill quality artifact '${manifest_artifact_name}' does not match latest version ${latest_version}."
+            exit 1
+          fi
+          artifact_path="rollback-drill-quality-proof/${manifest_artifact_name}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality artifact ${artifact_path} for rollback drill." && exit 1)
+          artifact_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${artifact_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Rollback drill quality artifact digest mismatch (artifact=${artifact_sha}, manifest=${manifest_sha})."
+            exit 1
+          fi
+          timeout --preserve-status 60s gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > rollback-drill-quality-proof/quality-attestation.verify.json
+          if ! jq -e --arg expectedSha "${manifest_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' rollback-drill-quality-proof/quality-attestation.verify.json >/dev/null; then
+            echo "::error::Rollback drill quality attestation missing expected digest ${manifest_sha}."
+            exit 1
+          fi
+
           prefix_latest="$(mktemp -d)"
           npm install --prefix "${prefix_latest}" "${PACKAGE_NAME}@${latest_version}" --ignore-scripts
           PATH="${prefix_latest}/node_modules/.bin:${PATH}" create-sentinelayer --version
@@ -474,6 +538,11 @@ jobs:
             "packageName": "${PACKAGE_NAME}",
             "latestVersion": "${latest_version}",
             "previousVersion": "${previous_version}",
+            "targetSha": "${latest_target_sha}",
+            "qualityRunId": "${quality_run_id}",
+            "qualityArtifactName": "${manifest_artifact_name}",
+            "qualityArtifactSha256": "${manifest_sha}",
+            "attestationVerified": true,
             "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
