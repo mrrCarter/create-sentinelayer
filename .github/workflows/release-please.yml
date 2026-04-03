@@ -147,7 +147,7 @@ jobs:
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
                 | select(((.path // "") | split("@")[0]) == $path)
-                | select((.event // "") == "push")
+                | select((["push", "pull_request"] | index(.event // "")) != null)
               ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
             ')"
             if [[ -z "${latest_quality_run}" ]]; then

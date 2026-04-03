@@ -42,6 +42,8 @@ on:
         default: false
   repository_dispatch:
     types: [release_rollback_requested]
+  schedule:
+    - cron: "23 6 * * *"
 
 permissions:
   contents: read
@@ -60,6 +62,7 @@ concurrency:
 jobs:
   rollback:
     name: Rollback Validation and Promote
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     environment: production
@@ -414,4 +417,70 @@ jobs:
         with:
           name: rollback-operation-summary
           path: rollback-operation.summary.json
+          if-no-files-found: error
+
+  rollback-drill:
+    name: Rollback Drill
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          npm --version
+
+      - name: Validate rollback drill install path
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
+          latest_version="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json | jq -r '
+            if type == "string" then .
+            elif type == "object" then .latest // ""
+            else ""
+            end
+          ')"
+          previous_version="$(echo "${versions_json}" | jq -r --arg latest "${latest_version}" '
+            if type == "array" then
+              (map(select(. != $latest)) | last // empty)
+            elif type == "string" then
+              (if . == $latest then empty else . end)
+            else
+              empty
+            end
+          ')"
+          test -n "${latest_version}" || (echo "::error::Unable to resolve latest version for ${PACKAGE_NAME}." && exit 1)
+          test -n "${previous_version}" || (echo "::error::Unable to resolve previous version for ${PACKAGE_NAME} rollback drill." && exit 1)
+          prefix_latest="$(mktemp -d)"
+          npm install --prefix "${prefix_latest}" "${PACKAGE_NAME}@${latest_version}" --ignore-scripts
+          PATH="${prefix_latest}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          prefix_previous="$(mktemp -d)"
+          npm install --prefix "${prefix_previous}" "${PACKAGE_NAME}@${previous_version}" --ignore-scripts
+          PATH="${prefix_previous}/node_modules/.bin:${PATH}" sentinel --version
+          cat > rollback-drill.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "latestVersion": "${latest_version}",
+            "previousVersion": "${previous_version}",
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload rollback drill summary
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: rollback-drill-summary
+          path: rollback-drill.summary.json
           if-no-files-found: error

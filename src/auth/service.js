@@ -230,6 +230,17 @@ function describePollStatus(status) {
   return normalized;
 }
 
+function resolveMonotonicNowMs() {
+  if (
+    typeof globalThis.performance === "object" &&
+    Number.isFinite(Number(globalThis.performance.timeOrigin)) &&
+    typeof globalThis.performance.now === "function"
+  ) {
+    return Number(globalThis.performance.timeOrigin) + Number(globalThis.performance.now());
+  }
+  return Date.now();
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -326,7 +337,7 @@ async function pollCliAuthSession({
   }
   const normalizedPollClientId = String(pollClientId || "").trim() || generatePollClientId();
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
-  const deadline = Date.now() + timeout;
+  const deadlineMs = resolveMonotonicNowMs() + timeout;
   const maxAttempts = Math.max(
     1,
     Math.min(MAX_AUTH_POLL_ATTEMPTS, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS))
@@ -335,7 +346,7 @@ async function pollCliAuthSession({
   let consecutiveBackendFailures = 0;
   let attempt = 0;
 
-  while (Date.now() < deadline && attempt < maxAttempts) {
+  while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
     const pollIdempotencyKey = buildPollIdempotencyKey({
       sessionId: normalizedSessionId,
@@ -372,7 +383,7 @@ async function pollCliAuthSession({
           }
         );
       }
-      const remainingMs = Math.max(0, deadline - Date.now());
+      const remainingMs = Math.max(0, deadlineMs - resolveMonotonicNowMs());
       const cooldownMs = Math.min(
         remainingMs,
         resolveAuthPollBackendCooldownMs({
@@ -430,7 +441,7 @@ async function pollCliAuthSession({
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
     const jitterFactor = deterministicJitterFactor(normalizedSessionId, attempt);
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = Math.max(0, deadlineMs - resolveMonotonicNowMs());
     const nextDelayMs = Math.max(
       MIN_AUTH_POLL_INTERVAL_MS,
       Math.min(Math.round(baseDelayMs * jitterFactor), remainingMs)
