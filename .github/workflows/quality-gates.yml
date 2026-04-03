@@ -34,8 +34,17 @@ jobs:
           node-version: "20"
           cache: npm
 
-      - name: Install dependencies
-        run: timeout 8m npm ci --ignore-scripts
+      - name: Install dependencies (lockfile immutable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_hash_before="$(sha256sum package-lock.json | awk '{print $1}')"
+          timeout 8m npm ci --ignore-scripts
+          lock_hash_after="$(sha256sum package-lock.json | awk '{print $1}')"
+          if [[ "${lock_hash_before}" != "${lock_hash_after}" ]]; then
+            echo "::error::package-lock.json mutated during dependency installation."
+            exit 1
+          fi
 
       - name: Run lint/syntax gate
         run: npm run check

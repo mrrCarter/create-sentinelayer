@@ -420,12 +420,25 @@ jobs:
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
           echo "Rollback readiness validated against ${package_name}@${previous_version}."
 
+  authorize-production-publish:
+    name: Authorize Production Publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
+    if: ${{ needs.resolve-release-flags.outputs.publish_requested == 'true' && needs.resolve-release-flags.outputs.dry_run != 'true' }}
+    environment: production
+    steps:
+      - name: Confirm protected publish approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Production publish authorization approved."
+
   publish:
     name: Publish
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
-    environment: production
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, authorize-production-publish]
     env:
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}

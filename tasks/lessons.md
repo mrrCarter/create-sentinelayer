@@ -109,3 +109,6 @@
 - Required-check trust for release gating is stronger when sourced from workflow-run APIs (`actions/workflows/*/runs` filtered by `head_sha` + workflow path) rather than check-run name ordering.
 - Release-automation jobs that mutate repo state (`release-please`) should explicitly verify upstream quality gates on the same SHA before execution.
 - Auth endpoint normalization should fail closed for non-HTTPS remote hosts while allowing explicit localhost HTTP for deterministic local test infrastructure.
+- Keep GitHub Actions token scopes least-privilege by default (`pull-requests: read` unless write is strictly required by a concrete step), especially in third-party action workflows.
+- Enforce lockfile immutability as a deterministic gate by hashing `package-lock.json` before/after dependency install; fail when install mutates lock state.
+- Some Omar P2 findings are architectural (single immutable build promoted across all quality stages); treat them as dedicated refactor tracks rather than incremental line edits.
