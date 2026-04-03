@@ -221,7 +221,7 @@ jobs:
           }
           allowed_events_for_check() {
             case "${1}" in
-              "Omar Gate") echo "[\"pull_request\"]" ;;
+              "Omar Gate") echo "[\"pull_request\", \"workflow_dispatch\"]" ;;
               "Quality Summary"|"Release Readiness") echo "[\"pull_request\", \"push\"]" ;;
               *) return 1 ;;
             esac

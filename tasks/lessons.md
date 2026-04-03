@@ -134,3 +134,8 @@
 - Third-party security action pins should be enforced by a deterministic SHA allowlist check in CI, not only by comments near the `uses:` line.
 - Polling idempotency keys should include a per-login client nonce in addition to attempt counters to avoid server-side dedupe collisions across concurrent clients/restarts.
 - CLI auth command output should never emit raw upstream backend error strings in user-visible mode, even when debug environment flags are set.
+- API error normalization should capture both snake_case and camelCase request-id fields (`request_id`, `requestId`) to preserve trace correlation across heterogeneous backend serializers.
+- For idempotent poll endpoints, reuse one stable idempotency key per logical poll session and carry retry attempt count in a separate observability header rather than mutating the idempotency key per retry.
+- Release-automation polling loops should wrap each network-bound `gh api`/artifact command with explicit per-call timeouts in addition to job-level timeout budgets.
+- Rollback execute paths must verify release lineage (tag -> commit -> quality manifest digest -> attestation) before npm mutation commands (`dist-tag`/`deprecate`) run.
+- Required-check event filters should include sanctioned manual pathways (`workflow_dispatch`) where the same control can run outside PR events, otherwise release gates can deadlock despite valid successful runs.

@@ -134,3 +134,34 @@ test("Unit auth http: requestJson honors Retry-After http-date relative to serve
     await mock.close();
   }
 });
+
+test("Unit auth http: requestJson preserves camelCase requestId on API errors", async () => {
+  const mock = await startMockServer(async (_req, res) => {
+    const payload = JSON.stringify({
+      error: {
+        code: "AUTH_REQUIRED",
+        message: "login required",
+        requestId: "req_camel_123",
+      },
+    });
+    res.writeHead(401, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  });
+
+  try {
+    await assert.rejects(
+      () => requestJson(`${mock.baseUrl}/camel-request-id`, { method: "GET", maxAttempts: 1 }),
+      (error) => {
+        assert.equal(error?.code, "AUTH_REQUIRED");
+        assert.equal(error?.status, 401);
+        assert.equal(error?.requestId, "req_camel_123");
+        return true;
+      }
+    );
+  } finally {
+    await mock.close();
+  }
+});

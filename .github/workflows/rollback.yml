@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 env:
@@ -47,6 +48,8 @@ jobs:
       REASON: ${{ github.event.inputs.reason }}
       EXECUTE: ${{ github.event.inputs.execute }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -92,6 +95,72 @@ jobs:
           npm install --prefix "${prefix_dir}" "${PACKAGE_NAME}@${TARGET_VERSION}" --ignore-scripts
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
+
+      - name: Validate target release lineage evidence
+        if: env.EXECUTE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/releases/tags/v${TARGET_VERSION}" -H "Accept: application/vnd.github+json")"
+          release_target="$(echo "${release_json}" | jq -r '.target_commitish // ""')"
+          test -n "${release_target}" || (echo "::error::Unable to resolve target commit for release tag v${TARGET_VERSION}." && exit 1)
+          target_sha="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${release_target}" --jq '.sha // ""' -H "Accept: application/vnd.github+json")"
+          test -n "${target_sha}" || (echo "::error::Unable to resolve commit SHA for release target '${release_target}'." && exit 1)
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+          quality_run="$(echo "${runs_json}" | jq -c --arg sha "${target_sha}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select((.head_sha // "") == $sha)
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${quality_run}" ]]; then
+            echo "::error::No successful quality-gates lineage run found for release commit ${target_sha}."
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
+          test -n "${quality_run_id}" || (echo "::error::Unable to resolve quality-gates run id for release commit ${target_sha}." && exit 1)
+          timeout --preserve-status 120s gh run download "${quality_run_id}" --name quality-build-package --dir rollback-quality-proof
+          manifest_path="rollback-quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality-build.manifest.json from quality run ${quality_run_id}." && exit 1)
+          manifest_commit_sha="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_artifact_name="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_rebuild_sha="$(jq -r '.rebuildSha256 // ""' "${manifest_path}")"
+          test -n "${manifest_commit_sha}" || (echo "::error::Missing commitSha in ${manifest_path}." && exit 1)
+          test -n "${manifest_artifact_name}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
+          test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          test -n "${manifest_rebuild_sha}" || (echo "::error::Missing rebuildSha256 in ${manifest_path}." && exit 1)
+          if [[ "${manifest_commit_sha}" != "${target_sha}" ]]; then
+            echo "::error::Quality manifest commit (${manifest_commit_sha}) does not match target SHA (${target_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${manifest_rebuild_sha}" ]]; then
+            echo "::error::Quality manifest reproducibility mismatch (sha256=${manifest_sha}, rebuild=${manifest_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_artifact_name}" != *"-${TARGET_VERSION}.tgz" ]]; then
+            echo "::error::Quality artifact '${manifest_artifact_name}' does not match target version ${TARGET_VERSION}."
+            exit 1
+          fi
+          artifact_path="rollback-quality-proof/${manifest_artifact_name}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality artifact ${artifact_path}." && exit 1)
+          artifact_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${artifact_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Quality artifact digest mismatch (artifact=${artifact_sha}, manifest=${manifest_sha})."
+            exit 1
+          fi
+          timeout --preserve-status 60s gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > rollback-quality-proof/quality-attestation.verify.json
+          if ! jq -e --arg expectedSha "${manifest_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' rollback-quality-proof/quality-attestation.verify.json >/dev/null; then
+            echo "::error::Quality attestation missing expected digest ${manifest_sha} for rollback target ${TARGET_VERSION}."
+            exit 1
+          fi
+          echo "Rollback lineage proof validated for ${PACKAGE_NAME}@${TARGET_VERSION} (commit=${target_sha}, quality_run=${quality_run_id})."
 
       - name: Require NPM token for execute mode
         if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT != 'true'

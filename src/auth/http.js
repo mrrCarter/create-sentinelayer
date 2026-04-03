@@ -31,7 +31,11 @@ function normalizeApiError(errorPayload = {}) {
   return {
     code: String(errorPayload.code || "UNKNOWN"),
     message: String(errorPayload.message || "Unknown API error"),
-    requestId: errorPayload.request_id ? String(errorPayload.request_id) : null,
+    requestId: errorPayload.request_id
+      ? String(errorPayload.request_id)
+      : errorPayload.requestId
+        ? String(errorPayload.requestId)
+        : null,
   };
 }
 

@@ -35,7 +35,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          env_json="$(gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
           reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           if [[ "${reviewer_count}" -lt 1 ]]; then
             echo "::error::release-management environment must require at least one reviewer."
@@ -53,7 +53,13 @@ jobs:
           set -euo pipefail
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
-            runs_json="$(gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+            api_status=0
+            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              echo "quality-gates lookup timed out or failed (status=${api_status}); retrying."
+              sleep 10
+              continue
+            fi
             latest_quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
@@ -96,7 +102,13 @@ jobs:
           set -euo pipefail
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
-            runs_json="$(gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=50" -H "Accept: application/vnd.github+json")"
+            api_status=0
+            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=50" -H "Accept: application/vnd.github+json")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              echo "omar-gate lookup timed out or failed (status=${api_status}); retrying."
+              sleep 10
+              continue
+            fi
             latest_omar_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/omar-gate.yml" --arg repo "${REPO}" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
@@ -139,7 +151,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality_run_id from Quality Summary gate step." && exit 1)
-          gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
+          timeout --preserve-status 120s gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
           test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json artifact from quality run ${QUALITY_RUN_ID}." && exit 1)
           quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
           quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
@@ -154,6 +166,7 @@ jobs:
           fi
 
       - name: Run release-please
+        timeout-minutes: 5
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

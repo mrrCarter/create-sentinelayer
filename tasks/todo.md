@@ -547,4 +547,18 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `155/155`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push eleventh-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push eleventh-cycle fixes (`3ed2021`) and rerun Omar (`run_id=23940213618`): Omar reduced to `P2=5` (release-please timeout hardening, release Omar event mapping, rollback lineage gate, auth requestId normalization, auth poll idempotency semantics).
+- [x] Twelfth-cycle hardening applied for active residual findings:
+  - `src/auth/http.js`: preserve both `request_id` and `requestId` from upstream API error payloads.
+  - `tests/unit.auth-http.test.mjs`: add regression coverage for camelCase `requestId` propagation.
+  - `src/auth/service.js`: stabilize poll idempotency key per login attempt-set (`sessionId + pollClientId`) and expose attempt index via `X-Poll-Attempt`.
+  - `tests/unit.auth-service.test.mjs`: update idempotency expectations for stable-key retries.
+  - `.github/workflows/release-please.yml`: add explicit `timeout --preserve-status` wrappers for network-bound `gh api`/`gh run download` operations plus step-level timeout for `release-please-action`.
+  - `.github/workflows/release.yml`: allow `workflow_dispatch` Omar events in required-check mapping to prevent manual-run deadlocks.
+  - `.github/workflows/rollback.yml`: add execute-path rollback lineage gate (release tag -> commit -> quality manifest/artifact digest -> attestation verification) before any npm mutation.
+- [x] Twelfth-cycle local evidence:
+  - `node --test tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push twelfth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
