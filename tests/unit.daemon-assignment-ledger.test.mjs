@@ -142,3 +142,41 @@ test("Unit daemon assignment ledger: claim rejects active lease collisions", asy
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit daemon assignment ledger: concurrent claims serialize with a single winner", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-assignment-concurrent-"));
+  try {
+    const workItemId = await seedWorkItem(tempRoot, "/v1/admin/runtime", "LEDGER_RACE");
+    const attempts = await Promise.allSettled([
+      claimAssignment({
+        targetPath: tempRoot,
+        workItemId,
+        agentIdentity: "agent.one@sentinelayer.local",
+        leaseTtlSeconds: 600,
+      }),
+      claimAssignment({
+        targetPath: tempRoot,
+        workItemId,
+        agentIdentity: "agent.two@sentinelayer.local",
+        leaseTtlSeconds: 600,
+      }),
+    ]);
+
+    const winners = attempts.filter((entry) => entry.status === "fulfilled");
+    const losers = attempts.filter((entry) => entry.status === "rejected");
+    assert.equal(winners.length, 1);
+    assert.equal(losers.length, 1);
+    assert.match(String(losers[0].reason?.message || ""), /currently leased/);
+
+    const assignments = await listAssignments({
+      targetPath: tempRoot,
+      statuses: ["CLAIMED"],
+      limit: 10,
+    });
+    assert.equal(assignments.visibleCount, 1);
+    assert.equal(assignments.assignments[0].workItemId, workItemId);
+    assert.equal(assignments.assignments[0].status, "CLAIMED");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

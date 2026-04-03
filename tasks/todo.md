@@ -468,3 +468,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Reduced top-level command file size by converting `src/commands/ai.js` and `src/commands/daemon.js` into thin orchestrators and extracting grouped logic into `src/commands/ai/*` and `src/commands/daemon/*`.
     - Preserved existing command contracts and options while keeping behavior stable under full e2e and unit verification.
+
+## PR 114 Omar P2 Burn-Down Loop (2026-04-03)
+- [x] Validate `tasks/audit-report-2026-04-02.md` findings against current PR #114 Omar output.
+- [x] Fix Omar workflow policy/concurrency findings (`.github/workflows/omar-gate.yml`).
+- [x] Enforce strict lint -> test -> security -> build DAG (`.github/workflows/quality-gates.yml`).
+- [x] Harden release required-check validation and rollback-readiness automation (`.github/workflows/release.yml`).
+- [x] Add assignment-ledger atomic write + storage lock safeguards (`src/daemon/assignment-ledger.js` + tests).
+- [x] Run `npm run verify` locally.
+- [ ] Push latest fixes to PR #114 and run `gh run watch` for Omar Gate.
+- [ ] If Omar P2 > 2, iterate fix/push/watch until Omar reports `P2<=2`.

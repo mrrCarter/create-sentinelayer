@@ -49,6 +49,7 @@ jobs:
           PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
+          REQUIRED_CHECKS: Omar Gate,Quality Summary
         run: |
           set -euo pipefail
           if [[ "${PUBLISH_REQUESTED}" != "true" ]]; then
@@ -72,25 +73,43 @@ jobs:
           fi
           TARGET_SHA="${resolved_sha}"
           echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
+          IFS=',' read -r -a required_checks <<< "${REQUIRED_CHECKS}"
+          if [[ "${#required_checks[@]}" -eq 0 ]]; then
+            echo "::error::No required checks configured."
+            exit 1
+          fi
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
-            state="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/status" -H "Accept: application/vnd.github+json" --jq '.state')"
-            case "${state}" in
-              success)
-                echo "Required checks validated for ${TARGET_SHA}."
-                exit 0
-                ;;
-              failure|error)
-                echo "::error::Required checks did not pass for ${TARGET_SHA} (state=${state})."
+            checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
+            pending=0
+            for required in "${required_checks[@]}"; do
+              check_name="$(echo "${required}" | xargs)"
+              if [[ -z "${check_name}" ]]; then
+                continue
+              fi
+              latest_run="$(echo "${checks_json}" | jq -c --arg name "${check_name}" '[.check_runs[] | select(.name == $name)] | sort_by(.started_at // .created_at) | last // empty')"
+              if [[ -z "${latest_run}" ]]; then
+                echo "Waiting for required check '${check_name}' on ${TARGET_SHA}."
+                pending=1
+                continue
+              fi
+              status="$(echo "${latest_run}" | jq -r '.status')"
+              conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"
+              if [[ "${status}" != "completed" ]]; then
+                echo "Required check '${check_name}' status=${status}; waiting."
+                pending=1
+                continue
+              fi
+              if [[ "${conclusion}" != "success" ]]; then
+                echo "::error::Required check '${check_name}' concluded with '${conclusion}'."
                 exit 1
-                ;;
-              pending)
-                ;;
-              *)
-                echo "::error::Unexpected combined status state '${state}' for ${TARGET_SHA}."
-                exit 1
-                ;;
-            esac
+              fi
+              echo "Required check '${check_name}' passed."
+            done
+            if [[ "${pending}" -eq 0 ]]; then
+              echo "Required checks validated for ${TARGET_SHA}."
+              exit 0
+            fi
             sleep 10
           done
           echo "::error::Timed out waiting for required checks on ${TARGET_SHA}."
@@ -185,11 +204,53 @@ jobs:
         with:
           subject-path: create-sentinelayer-*.tgz
 
+  rollback-readiness:
+    name: Rollback Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [verify-required-checks, preflight]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Validate rollback runbook and prior published package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/RELEASE_ROLLBACK.md || (echo "::error::Missing rollback runbook docs/RELEASE_ROLLBACK.md." && exit 1)
+          package_name="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).name")"
+          current_version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
+          versions_json="$(npm view "${package_name}" versions --json)"
+          previous_version="$(echo "${versions_json}" | jq -r --arg current "${current_version}" '
+            if type == "array" then
+              (map(select(. != $current)) | last // empty)
+            elif type == "string" then
+              (if . == $current then empty else . end)
+            else
+              empty
+            end
+          ')"
+          if [[ -z "${previous_version}" ]]; then
+            echo "::error::No previous published package version available to validate rollback readiness."
+            exit 1
+          fi
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "${package_name}@${previous_version}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          echo "Rollback readiness validated against ${package_name}@${previous_version}."
+
   publish:
     name: Publish
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [verify-required-checks, preflight]
+    needs: [verify-required-checks, preflight, rollback-readiness]
     environment: production
     env:
       NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}

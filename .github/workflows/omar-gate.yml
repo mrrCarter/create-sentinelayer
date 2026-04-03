@@ -22,7 +22,6 @@ on:
         default: P1
         type: choice
         options:
-          - P0
           - P1
           - P2
       p2_max_allowed:
@@ -38,6 +37,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: omar-gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   omar_gate:
@@ -101,12 +104,6 @@ jobs:
           case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
           case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
           case "${severity_gate}" in
-            P0)
-              if [ "${p0}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
-                exit 1
-              fi
-              ;;
             P1)
               if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
                 echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
@@ -135,9 +132,7 @@ jobs:
           severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
           p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
           threshold_line="P0=0, P1=0"
-          if [ "${severity_gate}" = "P0" ]; then
-            threshold_line="P0=0"
-          elif [ "${severity_gate}" = "P2" ]; then
+          if [ "${severity_gate}" = "P2" ]; then
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
