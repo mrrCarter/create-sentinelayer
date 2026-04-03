@@ -92,3 +92,5 @@
 - Atomic JSON writes must never delete destination files as a rename fallback; stage via `.new`, promote with bounded retry, and include startup fallback recovery to avoid transient data-loss windows.
 - Human-readable CLI auth output should avoid exposing local credential metadata paths by default; require explicit `--show-paths` opt-in while retaining full paths in JSON mode for automation.
 - Session metadata durability requires fsync on both the temp file and the parent directory after atomic rename (best-effort across platforms), otherwise power-loss windows can corrupt auth state.
+- Cross-runtime HTTP helpers cannot assume `AbortSignal.any` exists; provide a compatibility bridge that forwards external abort signals and always unregisters listeners in `finally`.
+- Check-run name matching is insufficient for release trust boundaries; bind required checks to expected workflow file paths and matching `head_sha` before accepting pass status.

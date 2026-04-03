@@ -125,6 +125,13 @@ jobs:
             echo "::error::No required checks configured."
             exit 1
           fi
+          expected_workflow_path_for_check() {
+            case "${1}" in
+              "Omar Gate") echo ".github/workflows/omar-gate.yml" ;;
+              "Quality Summary") echo ".github/workflows/quality-gates.yml" ;;
+              *) return 1 ;;
+            esac
+          }
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             checks_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs" -H "Accept: application/vnd.github+json")"
@@ -155,6 +162,28 @@ jobs:
                 echo "Waiting for required check '${check_name}' on ${TARGET_SHA}."
                 pending=1
                 continue
+              fi
+              details_url="$(echo "${latest_run}" | jq -r '.details_url // ""')"
+              run_id="$(echo "${details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+).*$#\1#p')"
+              if [[ -z "${run_id}" ]]; then
+                echo "::error::Unable to resolve workflow run id for required check '${check_name}'."
+                exit 1
+              fi
+              run_json="$(gh api "repos/${REPO}/actions/runs/${run_id}" -H "Accept: application/vnd.github+json")"
+              expected_workflow_path="$(expected_workflow_path_for_check "${check_name}" || true)"
+              if [[ -z "${expected_workflow_path}" ]]; then
+                echo "::error::Missing workflow identity mapping for required check '${check_name}'."
+                exit 1
+              fi
+              run_workflow_path="$(echo "${run_json}" | jq -r '.path // ""' | cut -d'@' -f1)"
+              run_head_sha="$(echo "${run_json}" | jq -r '.head_sha // ""')"
+              if [[ "${run_workflow_path}" != "${expected_workflow_path}" ]]; then
+                echo "::error::Required check '${check_name}' originated from unexpected workflow path '${run_workflow_path}' (expected '${expected_workflow_path}')."
+                exit 1
+              fi
+              if [[ "${run_head_sha}" != "${TARGET_SHA}" ]]; then
+                echo "::error::Required check '${check_name}' head_sha '${run_head_sha}' does not match target '${TARGET_SHA}'."
+                exit 1
               fi
               status="$(echo "${latest_run}" | jq -r '.status')"
               conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"

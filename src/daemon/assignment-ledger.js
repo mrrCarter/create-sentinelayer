@@ -311,9 +311,34 @@ async function writeJsonFile(filePath, payload = {}) {
   }
 }
 
+async function syncDirectoryBestEffort(dirPath) {
+  let directoryHandle = null;
+  try {
+    directoryHandle = await fsp.open(dirPath, "r");
+    await directoryHandle.sync();
+  } catch (error) {
+    const code = String(error?.code || "");
+    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR", "ENOENT"].includes(code)) {
+      throw error;
+    }
+  } finally {
+    if (directoryHandle) {
+      await directoryHandle.close();
+    }
+  }
+}
+
 async function appendEvent(filePath, payload = {}) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.appendFile(filePath, `${JSON.stringify(payload)}\n`, "utf-8");
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const handle = await fsp.open(filePath, "a");
+  try {
+    await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf-8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await syncDirectoryBestEffort(directoryPath);
 }
 
 async function loadLedger(ledgerPath, nowIso = new Date().toISOString()) {

@@ -483,6 +483,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Pin `release-please` runner image to `ubuntu-22.04` for deterministic release automation.
 - [x] Redact credential metadata paths from default `auth` terminal output; add explicit `--show-paths` opt-in.
 - [x] Harden session metadata writes with temp-file fsync + post-rename parent-directory fsync (best-effort).
+- [x] Add `AbortSignal.any` compatibility guard with manual abort bridging in auth HTTP client.
+- [x] Harden release required-check verification by pinning matched checks to expected workflow file path + head SHA.
+- [x] Make daemon assignment event append path durable with file-handle fsync and directory sync.
 - [x] Run `npm run verify` locally.
 - [x] Run local gates: `/omargate deep` and `/audit` with `p1=0`, `p2=0`.
 - [ ] Push latest fixes to PR #114 and run `gh run watch` for Omar Gate.

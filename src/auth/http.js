@@ -297,6 +297,46 @@ function serializeRequestBody(body, requestHeaders = {}) {
   return String(body);
 }
 
+function composeRequestAbortSignal(controller, signal) {
+  if (!signal || typeof signal !== "object") {
+    return {
+      activeSignal: controller.signal,
+      cleanup: () => {},
+    };
+  }
+
+  if (typeof AbortSignal === "function" && typeof AbortSignal.any === "function") {
+    return {
+      activeSignal: AbortSignal.any([controller.signal, signal]),
+      cleanup: () => {},
+    };
+  }
+
+  if (
+    typeof signal.addEventListener !== "function" ||
+    typeof signal.removeEventListener !== "function"
+  ) {
+    return {
+      activeSignal: controller.signal,
+      cleanup: () => {},
+    };
+  }
+
+  const onAbort = () => {
+    controller.abort();
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) {
+    controller.abort();
+  }
+  return {
+    activeSignal: controller.signal,
+    cleanup: () => {
+      signal.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 export async function requestJson(
   url,
   {
@@ -328,10 +368,7 @@ export async function requestJson(
       timedOut = true;
       controller.abort();
     }, normalizedTimeoutMs);
-    const activeSignal =
-      signal && typeof signal === "object"
-        ? AbortSignal.any([controller.signal, signal])
-        : controller.signal;
+    const { activeSignal, cleanup } = composeRequestAbortSignal(controller, signal);
 
     try {
       const requestHeaders = {
@@ -400,6 +437,7 @@ export async function requestJson(
 
       throw normalizedError;
     } finally {
+      cleanup();
       clearTimeout(timeout);
       await sleep(0);
     }
