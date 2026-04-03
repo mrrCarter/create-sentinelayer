@@ -225,6 +225,36 @@ jobs:
           }
           NODE
 
+      - name: Assert production dual-control publish contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          if (!/\n  authorize-production-publish:\s*\n[\s\S]*?environment:\s*production/m.test(content)) {
+            console.error("::error::Missing authorize-production-publish production environment gate.");
+            process.exit(1);
+          }
+          if (!/\n  publish:\s*\n[\s\S]*?environment:\s*production/m.test(content)) {
+            console.error("::error::Missing publish production environment gate.");
+            process.exit(1);
+          }
+          const publishNeedsMatch = content.match(/publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!publishNeedsMatch) {
+            console.error("::error::Unable to resolve publish.needs for dual-control verification.");
+            process.exit(1);
+          }
+          const publishNeeds = publishNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!publishNeeds.includes("authorize-production-publish")) {
+            console.error("::error::publish must depend on authorize-production-publish for dual-control approval.");
+            process.exit(1);
+          }
+          NODE
+
       - name: Normalize release tag inputs
         id: flags
         shell: bash

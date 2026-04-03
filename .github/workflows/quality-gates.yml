@@ -1,5 +1,5 @@
 name: Quality Gates
-# Deployment gate chain is enforced in this workflow:
+# Release-safety deploy simulation gate chain (no external deployment mutation) is enforced in this workflow:
 # lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> deploy -> quality-summary
 
 on:
@@ -647,6 +647,10 @@ jobs:
           release_commit="$(jq -r '.commitSha // ""' "${release_summary}")"
           deploy_commit="$(jq -r '.commitSha // ""' "${deploy_summary}")"
           build_commit="$(jq -r '.commitSha // ""' "${artifact_manifest}")"
+          release_artifact_name="$(jq -r '.artifactName // ""' "${release_summary}")"
+          release_artifact_sha="$(jq -r '.artifactSha256 // ""' "${release_summary}")"
+          deploy_artifact_name="$(jq -r '.artifactName // ""' "${deploy_summary}")"
+          deploy_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_summary}")"
           build_artifact_name="$(jq -r '.artifactName // ""' "${artifact_manifest}")"
           build_artifact_sha="$(jq -r '.sha256 // ""' "${artifact_manifest}")"
           if [[ "${release_commit}" != "${GITHUB_SHA}" ]] || [[ "${deploy_commit}" != "${GITHUB_SHA}" ]] || [[ "${build_commit}" != "${GITHUB_SHA}" ]]; then
@@ -655,6 +659,14 @@ jobs:
           fi
           test -n "${build_artifact_name}" || (echo "::error::Missing artifactName in ${artifact_manifest}." && exit 1)
           test -n "${build_artifact_sha}" || (echo "::error::Missing sha256 in ${artifact_manifest}." && exit 1)
+          if [[ "${release_artifact_name}" != "${build_artifact_name}" ]] || [[ "${deploy_artifact_name}" != "${build_artifact_name}" ]]; then
+            echo "::error::Deploy gate artifact identity mismatch (release=${release_artifact_name}, deploy=${deploy_artifact_name}, build=${build_artifact_name})."
+            exit 1
+          fi
+          if [[ "${release_artifact_sha}" != "${build_artifact_sha}" ]] || [[ "${deploy_artifact_sha}" != "${build_artifact_sha}" ]]; then
+            echo "::error::Deploy gate artifact digest mismatch (release=${release_artifact_sha}, deploy=${deploy_artifact_sha}, build=${build_artifact_sha})."
+            exit 1
+          fi
           cat > quality-deploy-stage/deploy.summary.json <<EOF
           {
             "schemaVersion": "1.0.0",
@@ -694,7 +706,7 @@ jobs:
             echo "::error::deploy-stage must succeed before deploy (result=${RESULT_DEPLOY_STAGE})."
             exit 1
           fi
-          echo "Deploy gate passed."
+          echo "Deploy gate passed (no external deployment executed in Quality Gates workflow)."
 
   quality-summary:
     name: Quality Summary
