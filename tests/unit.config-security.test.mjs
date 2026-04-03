@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import { loadConfig, setConfigValue } from "../src/config/service.js";
+import { configSchema, getRuntimeSecretSchema } from "../src/config/schema.js";
 
 test("Unit config security: reject plaintext secrets in project config by default", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
@@ -77,4 +78,14 @@ test("Unit config security: allow config set for non-secret keys", async () => {
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("Unit config security: persisted config schema excludes secret keys while runtime secret schema validates env secrets", () => {
+  assert.throws(
+    () => configSchema.parse({ openaiApiKey: "sk-test" }),
+    /unrecognized key/i
+  );
+
+  const parsed = getRuntimeSecretSchema().partial().parse({ openaiApiKey: "sk-test" });
+  assert.equal(parsed.openaiApiKey, "sk-test");
 });

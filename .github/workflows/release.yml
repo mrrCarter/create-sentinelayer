@@ -50,6 +50,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
           ACTOR: ${{ github.actor }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
         run: |
           set -euo pipefail
           if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
@@ -58,6 +59,10 @@ jobs:
           fi
           if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
             echo "::error::Release workflow_dispatch must originate from the canonical repository."
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_VALUE}" != "refs/heads/main" ]] && [[ "${GITHUB_REF_VALUE}" != refs/tags/v* ]]; then
+            echo "::error::Release workflow_dispatch is restricted to refs/heads/main or refs/tags/v* (received '${GITHUB_REF_VALUE}')."
             exit 1
           fi
           permission="$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
@@ -135,6 +140,7 @@ jobs:
     name: Verify Required Checks
     runs-on: ubuntu-22.04
     needs: [resolve-release-flags]
+    environment: release-management
     timeout-minutes: 12
     outputs:
       target_sha: ${{ steps.verify.outputs.target_sha }}
@@ -145,6 +151,20 @@ jobs:
       checks: read
       actions: read
     steps:
+      - name: Verify release-management environment protections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          env_json="$(gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+
       - name: Verify release commit checks
         id: verify
         shell: bash
@@ -262,6 +282,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [resolve-release-flags, verify-required-checks]
     if: ${{ needs.resolve-release-flags.outputs.release_path_execution == 'true' }}
+    environment: release-management
     timeout-minutes: 30
     permissions:
       contents: read

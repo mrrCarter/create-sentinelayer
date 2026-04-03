@@ -30,9 +30,13 @@ const secretConfigShape = {
 export const SECRET_CONFIG_KEYS = Object.freeze(Object.keys(secretConfigShape));
 
 export const persistedConfigSchema = z.object(persistedConfigShape).strict();
-export const configSchema = persistedConfigSchema.extend(secretConfigShape).strict();
+export const runtimeSecretSchema = z.object(secretConfigShape).strict();
+export const configSchema = persistedConfigSchema;
 
-export const CONFIG_KEYS = Object.freeze(Object.keys(configSchema.shape));
+export const CONFIG_KEYS = Object.freeze([
+  ...Object.keys(persistedConfigShape),
+  ...SECRET_CONFIG_KEYS,
+]);
 
 export function isSecretConfigKey(key) {
   return SECRET_CONFIG_KEYS.includes(String(key || "").trim());
@@ -47,4 +51,8 @@ export function findPersistedSecretKeys(value) {
 
 export function getPersistedConfigSchema() {
   return persistedConfigSchema;
+}
+
+export function getRuntimeSecretSchema() {
+  return runtimeSecretSchema;
 }

@@ -6,7 +6,9 @@ import { ensureConfigFile, readConfigFile, writeConfigFile } from "./io.js";
 import {
   CONFIG_KEYS,
   configSchema,
+  getRuntimeSecretSchema,
   isSecretConfigKey,
+  SECRET_CONFIG_KEYS,
 } from "./schema.js";
 
 const ENV_MAPPING = Object.freeze({
@@ -32,7 +34,8 @@ function normalizeKey(key) {
 
 function normalizeValueForKey(key, value) {
   const payload = { [key]: value };
-  const parsed = configSchema.partial().parse(payload);
+  const schema = isSecretConfigKey(key) ? getRuntimeSecretSchema() : configSchema;
+  const parsed = schema.partial().parse(payload);
   return parsed[key];
 }
 
@@ -60,6 +63,22 @@ function mergeLayers(...layers) {
   }, {});
 }
 
+function splitPersistedAndSecretLayers(layer) {
+  const persistedLayer = {};
+  const secretLayer = {};
+  for (const [key, value] of Object.entries(layer || {})) {
+    if (value === undefined) {
+      continue;
+    }
+    if (SECRET_CONFIG_KEYS.includes(key)) {
+      secretLayer[key] = value;
+    } else {
+      persistedLayer[key] = value;
+    }
+  }
+  return { persistedLayer, secretLayer };
+}
+
 function normalizeLayerScope(scope, { allowResolved = true } = {}) {
   const normalized = String(scope || "resolved").trim();
   if (!allowResolved && normalized === "resolved") {
@@ -79,7 +98,12 @@ export async function loadConfig({ cwd = process.cwd(), env = process.env, homeD
   ]);
 
   const envConfig = buildEnvLayer(env);
-  const resolved = configSchema.parse(mergeLayers(globalConfig, projectConfig, envConfig));
+  const merged = mergeLayers(globalConfig, projectConfig, envConfig);
+  const { persistedLayer, secretLayer } = splitPersistedAndSecretLayers(merged);
+  const resolved = {
+    ...configSchema.parse(persistedLayer),
+    ...getRuntimeSecretSchema().partial().parse(secretLayer),
+  };
 
   return {
     paths,
