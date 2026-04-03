@@ -85,6 +85,51 @@ jobs:
           echo "::error::Timed out waiting for Quality Summary on ${TARGET_SHA}."
           exit 1
 
+      - name: Verify Omar Gate for target SHA
+        id: omar_gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            runs_json="$(gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=50" -H "Accept: application/vnd.github+json")"
+            latest_omar_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/omar-gate.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "pull_request" or (.event // "") == "workflow_dispatch")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+            ')"
+            if [[ -z "${latest_omar_run}" ]]; then
+              echo "Waiting for Omar Gate workflow run on ${TARGET_SHA}."
+              sleep 10
+              continue
+            fi
+            omar_run_id="$(echo "${latest_omar_run}" | jq -r '.id // ""')"
+            omar_run_url="$(echo "${latest_omar_run}" | jq -r '.html_url // ""')"
+            status="$(echo "${latest_omar_run}" | jq -r '.status // ""')"
+            conclusion="$(echo "${latest_omar_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              echo "omar-gate run ${omar_run_id} status=${status}; waiting."
+              sleep 10
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::Omar Gate concluded with '${conclusion}' for ${TARGET_SHA} (run=${omar_run_id})."
+              exit 1
+            fi
+            echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
+            echo "Omar Gate passed for ${TARGET_SHA} via run ${omar_run_id} (${omar_run_url})."
+            exit 0
+          done
+          echo "::error::Timed out waiting for Omar Gate on ${TARGET_SHA}."
+          exit 1
+
       - name: Validate quality build artifact lineage
         shell: bash
         env:

@@ -56,12 +56,43 @@ function renderUserSummary(user = {}) {
   return `${identity}${normalized.isAdmin ? " (admin)" : ""}`;
 }
 
-function formatApiError(error) {
+const API_ERROR_MESSAGE_BY_CODE = Object.freeze({
+  AUTH_REQUIRED: "Authentication is required. Run `sl auth login` and retry.",
+  ACCESS_DENIED: "Access denied for this operation.",
+  FORBIDDEN: "Access denied for this operation.",
+  TIMEOUT: "Request timed out while contacting the Sentinelayer API.",
+  NETWORK_ERROR: "Unable to reach the Sentinelayer API. Check network connectivity and retry.",
+  INVALID_JSON: "Received an invalid response from the Sentinelayer API.",
+  CIRCUIT_OPEN: "The Sentinelayer API circuit breaker is open. Retry after cooldown.",
+  MAX_RETRIES_EXHAUSTED: "Request failed after retry attempts.",
+  CLIENT_ABORTED: "Request was canceled before completion.",
+  TOKEN_SCOPE_REQUIRES_CONSENT:
+    "Privileged token scope requires explicit consent. Re-run with --allow-privileged-scope.",
+  TOKEN_SCOPE_INVALID: "Token scope override is invalid for this command.",
+});
+
+function isDebugErrorDetailEnabled() {
+  const normalized = String(process.env.SL_DEBUG_ERRORS || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function resolveSafeApiErrorMessage(error) {
+  const code = String(error?.code || "UNKNOWN")
+    .trim()
+    .toUpperCase();
+  return API_ERROR_MESSAGE_BY_CODE[code] || "Sentinelayer API request failed.";
+}
+
+export function formatApiError(error) {
   if (!(error instanceof SentinelayerApiError)) {
     return error instanceof Error ? error.message : String(error || "Unknown error");
   }
+  const safeMessage = resolveSafeApiErrorMessage(error);
   const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
-  return `${error.message} [${error.code}] status=${error.status}${requestId}`;
+  const debugDetail = isDebugErrorDetailEnabled() ? ` detail=${error.message}` : "";
+  return `${safeMessage} [${error.code}] status=${error.status}${requestId}${debugDetail}`;
 }
 
 function printAuthHint() {

@@ -27,6 +27,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NPM_VERSION_PIN: "10.8.2"
+  ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
 
 concurrency:
   group: release-control-create-sentinelayer
@@ -174,7 +175,7 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
-          REQUIRED_CHECKS: Omar Gate,Quality Summary,Release Readiness
+          BASE_REQUIRED_CHECKS: Omar Gate,Quality Summary,Release Readiness
         run: |
           set -euo pipefail
           resolved_sha="${TARGET_SHA}"
@@ -193,8 +194,13 @@ jobs:
             fi
           fi
           TARGET_SHA="${resolved_sha}"
+          required_checks_csv="${BASE_REQUIRED_CHECKS}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            required_checks_csv="Quality Summary,Release Readiness"
+            echo "Tag release detected; Omar Gate is validated at merge time and omitted from tag replay checks."
+          fi
           echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
-          IFS=',' read -r -a required_checks <<< "${REQUIRED_CHECKS}"
+          IFS=',' read -r -a required_checks <<< "${required_checks_csv}"
           if [[ "${#required_checks[@]}" -eq 0 ]]; then
             echo "::error::No required checks configured."
             exit 1
@@ -322,6 +328,53 @@ jobs:
           set -euo pipefail
           test -f docs/RELEASE_ROLLBACK.md || (echo "::error::Missing rollback runbook docs/RELEASE_ROLLBACK.md." && exit 1)
           test -f .github/workflows/rollback.yml || (echo "::error::Missing rollback workflow .github/workflows/rollback.yml." && exit 1)
+
+      - name: Validate recent rollback proof run
+        shell: bash
+        env:
+          MAX_AGE_DAYS: ${{ env.ROLLBACK_PROOF_MAX_AGE_DAYS }}
+        run: |
+          set -euo pipefail
+          max_age_days="$(echo "${MAX_AGE_DAYS:-14}" | tr -d '\r' | xargs || true)"
+          case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid ROLLBACK_PROOF_MAX_AGE_DAYS value '${max_age_days}'." ; exit 1 ;; esac
+          if [[ "${max_age_days}" -le 0 ]]; then
+            echo "::error::ROLLBACK_PROOF_MAX_AGE_DAYS must be > 0."
+            exit 1
+          fi
+          runs_json="$(gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?per_page=50" -H "Accept: application/vnd.github+json")"
+          latest_success_run="$(echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${latest_success_run}" ]]; then
+            echo "::error::No successful rollback workflow run found for .github/workflows/rollback.yml."
+            exit 1
+          fi
+          rollback_run_id="$(echo "${latest_success_run}" | jq -r '.id // ""')"
+          rollback_run_url="$(echo "${latest_success_run}" | jq -r '.html_url // ""')"
+          rollback_created_at="$(echo "${latest_success_run}" | jq -r '.created_at // ""')"
+          test -n "${rollback_run_id}" || (echo "::error::Unable to resolve rollback run id." && exit 1)
+          test -n "${rollback_created_at}" || (echo "::error::Unable to resolve rollback run created_at timestamp." && exit 1)
+          rollback_epoch="$(date -u -d "${rollback_created_at}" +%s 2>/dev/null || true)"
+          if [[ -z "${rollback_epoch}" ]]; then
+            echo "::error::Unable to parse rollback run timestamp '${rollback_created_at}'."
+            exit 1
+          fi
+          now_epoch="$(date -u +%s)"
+          age_seconds=$((now_epoch - rollback_epoch))
+          if [[ "${age_seconds}" -lt 0 ]]; then
+            age_seconds=0
+          fi
+          max_age_seconds=$((max_age_days * 86400))
+          if [[ "${age_seconds}" -gt "${max_age_seconds}" ]]; then
+            echo "::error::Latest successful rollback proof is stale (${age_seconds}s old, max ${max_age_seconds}s). Run ${rollback_run_url}"
+            exit 1
+          fi
+          echo "Rollback proof run ${rollback_run_id} is within recency window (${max_age_days} days)."
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

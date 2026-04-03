@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createHash, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 export const DEFAULT_REQUEST_MAX_ATTEMPTS = 3;
@@ -18,6 +18,7 @@ const MIN_RANDOM_JITTER_RATIO = 0.25;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 
 const circuitBreakerStates = new Map();
+let requestJitterFallbackCounter = 0;
 
 function normalizeApiError(errorPayload = {}) {
   if (!errorPayload || typeof errorPayload !== "object" || Array.isArray(errorPayload)) {
@@ -218,7 +219,19 @@ function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
   return Math.min(delayMs, MAX_RETRY_AFTER_DELAY_MS);
 }
 
-function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
+function createRequestJitterSeed(url, method = "GET") {
+  const normalizedMethod = String(method || "GET").trim().toUpperCase();
+  const normalizedUrl = String(url || "").trim();
+  try {
+    const entropy = randomBytes(16).toString("hex");
+    return `${normalizedMethod}:${normalizedUrl}:${process.pid}:${resolveMonotonicEpochMs()}:${entropy}`;
+  } catch {
+    requestJitterFallbackCounter += 1;
+    return `${normalizedMethod}:${normalizedUrl}:${process.pid}:${resolveMonotonicEpochMs()}:${requestJitterFallbackCounter}`;
+  }
+}
+
+function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null, requestJitterSeed = "") {
   if (Number.isFinite(Number(retryAfterMs)) && Number(retryAfterMs) > 0) {
     return Math.min(Math.round(Number(retryAfterMs)), MAX_RETRY_AFTER_DELAY_MS);
   }
@@ -231,8 +244,9 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null) {
   try {
     jitterBucket = randomInt(0, RANDOM_JITTER_BUCKETS + 1);
   } catch {
+    const normalizedSeed = String(requestJitterSeed || "global");
     const fallbackDigest = createHash("sha256")
-      .update(`${Math.max(0, attemptIndex)}:${base}:${process.pid}`)
+      .update(`${Math.max(0, attemptIndex)}:${base}:${process.pid}:${normalizedSeed}`)
       .digest();
     jitterBucket = fallbackDigest.readUInt16BE(0) % (RANDOM_JITTER_BUCKETS + 1);
   }
@@ -381,6 +395,7 @@ export async function requestJson(
   } = {}
 ) {
   const circuitScope = resolveCircuitBreakerScope(url);
+  const requestJitterSeed = createRequestJitterSeed(url, method);
   if (isCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Upstream circuit breaker is open. Retry after cooldown.", {
       status: 503,
@@ -464,7 +479,9 @@ export async function requestJson(
         registerCircuitFailure(circuitScope);
       }
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
-        await sleep(getRetryDelayMs(attemptIndex, retryBackoffMs, normalizedError.retryAfterMs));
+        await sleep(
+          getRetryDelayMs(attemptIndex, retryBackoffMs, normalizedError.retryAfterMs, requestJitterSeed)
+        );
         continue;
       }
 

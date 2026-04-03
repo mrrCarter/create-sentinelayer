@@ -124,3 +124,8 @@
 - Release provenance checks should validate workflow-run source event constraints and cryptographic attestation verification, not just digest lineage and workflow path matching.
 - In GitHub Actions, `actions/setup-node` with `cache: npm` requires a checked-out workspace with `package-lock.json`; new jobs should checkout before setup-node to avoid immediate gate failure.
 - In CI smoke installs, local tarball paths passed to `npm install` must be prefixed with `./` (or absolute path); otherwise npm can reinterpret `path/file.tgz` as a GitHub shorthand and fail with git SSH errors.
+- Release automation that mutates repo state (`release-please`) should verify both `Quality Summary` and `Omar Gate` on the exact target SHA before creating/updating release PRs.
+- Required-check policies in release workflows must be event-aware: tag-triggered release runs cannot block on checks that never run for tags (for example Omar Gate pull-request checks).
+- Rollback preflight checks need fresh proof of rollback exercisability (recent successful rollback workflow run), not just existence of rollback docs/workflow files.
+- CLI auth error surfaces should default to curated, code-based safe messages and only include raw backend error detail behind an explicit debug flag.
+- Retry jitter fallback paths must incorporate per-request entropy/seed, otherwise crypto-failure fallback can synchronize backoff timing across in-process requests.

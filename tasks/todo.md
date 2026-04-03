@@ -521,4 +521,16 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Apply quality-gates hotfix: add explicit checkout step before `setup-node` in `Release Readiness` job.
 - [x] Push quality-gates hotfix (`cfe4a62`) and rerun Omar (`run_id=23937429580`): Omar blocked again because `npm install` treated `quality-readiness/<tarball>` as a GitHub shorthand (missing local `./` prefix).
 - [x] Apply second quality-gates hotfix: force local tarball install path to `./quality-readiness/<tarball>` in `Release Readiness` smoke stage.
-- [ ] Push second quality-gates hotfix and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push second quality-gates hotfix (`4d1496f`) and rerun Omar (`run_id=23938362934`): Omar unblocked and reported active residual set `P2=5` (release-please Omar dependency, release tag gate deadlock, rollback proof recency, auth error-message exposure, auth jitter fallback correlation).
+- [x] Tenth-cycle hardening applied for active residual findings:
+  - `release-please.yml`: explicit Omar Gate verification on target SHA before release mutation.
+  - `release.yml`: event-aware required-check policy for tags (omit Omar Gate), plus rollback-proof recency validation (`ROLLBACK_PROOF_MAX_AGE_DAYS`).
+  - `auth/http.js`: per-request jitter seed threaded into deterministic fallback backoff hash path.
+  - `commands/auth.js`: sanitized API error rendering by code with optional raw-detail opt-in via `SL_DEBUG_ERRORS`.
+  - Added deterministic unit coverage for auth command error formatting (`tests/unit.auth-command-errors.test.mjs`).
+- [x] Tenth-cycle local evidence:
+  - `node --test tests/unit.auth-command-errors.test.mjs tests/unit.auth-http.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `155/155`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push tenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
