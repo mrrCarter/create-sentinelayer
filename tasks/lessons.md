@@ -160,3 +160,4 @@
 - Required PR quality workflows should avoid `cancel-in-progress` to prevent transient missing/queued required checks and merge-gate race windows.
 - Deterministic build-proof lanes are stronger when both packs are produced from isolated clean git clones and validated by both digest parity and packed-file-list parity.
 - Release tag trust gates should verify both annotated tag object signatures (when present) and target commit verification before allowing publish-path execution.
+- Time-sensitive polling tests should assert deterministic ceilings/invariants (`<= max attempts`, unique idempotency keys), not exact poll-call counts that can vary by scheduler timing.

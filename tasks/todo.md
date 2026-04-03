@@ -213,8 +213,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-106-split-oversized-command-files` (current)
-2. `roadmap/pr-107-command-lazy-loading`
+1. `roadmap/pr-114-p2-burn-down-clean` (current: active Omar loop to reduce P2 findings to <=2)
+2. `roadmap/pr-115-command-lazy-loading` (next after PR 114 merge)
+
+### Active Omar Loop Status (PR 114)
+- [x] Validate audit findings against active branch state and latest Omar comment thread.
+- [x] Reproduce and root-cause CI blocker from latest failed run (`Quality Gates` run `23946241522`).
+- [x] Fix flaky unit coverage test assertion (`tests/unit.auth-service.test.mjs`) to enforce deterministic ceiling instead of timing-sensitive exact poll count.
+- [x] Run local verification (`npm run test:coverage`, `npm run verify`).
+- [x] Run local Omar/Audit JSON gates and capture artifacts.
+- [ ] Push fix commit and watch Omar Gate run to completion via `gh run watch --exit-status`.
+- [ ] If Omar findings remain above target, iterate P2 fixes and rerun loop until `P2 <= 2`.
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
