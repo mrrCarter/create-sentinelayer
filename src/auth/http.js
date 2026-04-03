@@ -15,6 +15,7 @@ const MAX_EXPONENTIAL_RETRY_DELAY_MS = 15_000;
 const MIN_JITTER_RETRY_DELAY_MS = 100;
 const RANDOM_JITTER_BUCKETS = 1000;
 const MIN_RANDOM_JITTER_RATIO = 0.25;
+const MAX_REQUEST_BODY_BYTES = 256_000;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 
@@ -327,11 +328,46 @@ function isPassThroughBody(body) {
   return false;
 }
 
+function assertRequestBodyWithinLimit(byteLength) {
+  const normalizedBytes = Number(byteLength || 0);
+  if (normalizedBytes <= MAX_REQUEST_BODY_BYTES) {
+    return;
+  }
+  throw new SentinelayerApiError("Request body exceeded maximum allowed size.", {
+    status: 413,
+    code: "REQUEST_TOO_LARGE",
+  });
+}
+
 function serializeRequestBody(body, requestHeaders = {}) {
   if (body === undefined) {
     return undefined;
   }
   if (isPassThroughBody(body)) {
+    if (typeof body === "string") {
+      assertRequestBodyWithinLimit(Buffer.byteLength(body, "utf8"));
+      return body;
+    }
+    if (body instanceof Uint8Array) {
+      assertRequestBodyWithinLimit(body.byteLength);
+      return body;
+    }
+    if (body instanceof ArrayBuffer) {
+      assertRequestBodyWithinLimit(body.byteLength);
+      return body;
+    }
+    if (ArrayBuffer.isView(body)) {
+      assertRequestBodyWithinLimit(body.byteLength);
+      return body;
+    }
+    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+      assertRequestBodyWithinLimit(Buffer.byteLength(body.toString(), "utf8"));
+      return body;
+    }
+    if (typeof Blob !== "undefined" && body instanceof Blob) {
+      assertRequestBodyWithinLimit(body.size);
+      return body;
+    }
     return body;
   }
   const contentType = String(
@@ -341,9 +377,21 @@ function serializeRequestBody(body, requestHeaders = {}) {
     .toLowerCase();
   const expectsJson = !contentType || contentType.includes("application/json") || contentType.includes("+json");
   if (expectsJson) {
-    return JSON.stringify(body);
+    let serializedJson = "";
+    try {
+      serializedJson = JSON.stringify(body);
+    } catch {
+      throw new SentinelayerApiError("Request body could not be JSON serialized.", {
+        status: 400,
+        code: "INVALID_REQUEST_BODY",
+      });
+    }
+    assertRequestBodyWithinLimit(Buffer.byteLength(serializedJson, "utf8"));
+    return serializedJson;
   }
-  return String(body);
+  const serialized = String(body);
+  assertRequestBodyWithinLimit(Buffer.byteLength(serialized, "utf8"));
+  return serialized;
 }
 
 function composeRequestAbortSignal(controller, signal) {

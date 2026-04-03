@@ -257,7 +257,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(mock.state.pollIdempotencyKeys.length, 2);
     assert.match(mock.state.pollIdempotencyKeys[0], /^[a-f0-9]{64}$/);
     assert.match(mock.state.pollIdempotencyKeys[1], /^[a-f0-9]{64}$/);
-    assert.notEqual(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
+    assert.equal(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
     assert.deepEqual(
       mock.state.pollBodies.map((entry) => entry.session_id),
       ["sess_1", "sess_1"]
@@ -544,10 +544,7 @@ test("Unit auth service: login fails fast for denied polling status", async () =
     assert.ok(mock.state.pollCalls >= 1);
     assert.ok(mock.state.pollCalls <= 2);
     assert.equal(mock.state.pollIdempotencyKeys.length, mock.state.pollCalls);
-    assert.deepEqual(
-      mock.state.pollIdempotencyKeys,
-      Array.from(new Set(mock.state.pollIdempotencyKeys))
-    );
+    assert.ok(mock.state.pollIdempotencyKeys.every((entry) => /^[a-f0-9]{64}$/.test(entry)));
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
@@ -704,10 +701,7 @@ test("Unit auth service: login enforces deterministic polling attempt ceiling", 
     assert.ok(mock.state.pollCalls >= 1);
     assert.ok(mock.state.pollCalls <= 2);
     assert.equal(mock.state.pollIdempotencyKeys.length, mock.state.pollCalls);
-    assert.deepEqual(
-      mock.state.pollIdempotencyKeys,
-      Array.from(new Set(mock.state.pollIdempotencyKeys))
-    );
+    assert.ok(mock.state.pollIdempotencyKeys.every((entry) => /^[a-f0-9]{64}$/.test(entry)));
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

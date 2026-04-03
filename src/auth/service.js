@@ -28,6 +28,7 @@ const MIN_AUTH_POLL_INTERVAL_MS = 250;
 const MAX_AUTH_POLL_ATTEMPTS = 1200;
 const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
 const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
+const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 2;
 const RETRYABLE_AUTH_POLL_CODES = new Set([
   "TIMEOUT",
   "NETWORK_ERROR",
@@ -145,15 +146,16 @@ function resolveAuthPollIntervalMs(rawPollIntervalSeconds, fallbackSeconds = 2) 
   return Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.round(candidateSeconds * 1000));
 }
 
-function buildPollIdempotencyKey({ sessionId, pollClientId, attempt, nonce }) {
+function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  const pollWindowBucket = Math.floor(normalizedAttempt / AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE);
   return crypto
     .createHash("sha256")
     .update(
       [
         String(sessionId || "").trim(),
         String(pollClientId || "").trim(),
-        String(attempt || 0),
-        String(nonce || "").trim(),
+        String(pollWindowBucket),
       ].join(":")
     )
     .digest("hex");
@@ -329,7 +331,6 @@ async function pollCliAuthSession({
     1,
     Math.min(MAX_AUTH_POLL_ATTEMPTS, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS))
   );
-  const pollIdempotencyNonce = crypto.randomBytes(16).toString("hex");
   let lastKnownPollIntervalMs = resolveAuthPollIntervalMs(pollIntervalSeconds, 2);
   let consecutiveBackendFailures = 0;
   let attempt = 0;
@@ -340,7 +341,6 @@ async function pollCliAuthSession({
       sessionId: normalizedSessionId,
       pollClientId: normalizedPollClientId,
       attempt,
-      nonce: pollIdempotencyNonce,
     });
     let payload = null;
     try {
