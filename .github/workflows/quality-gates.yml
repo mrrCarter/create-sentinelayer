@@ -197,24 +197,11 @@ jobs:
       - name: Run npm audit (full dependency graph)
         run: timeout --preserve-status 5m npm audit --audit-level=high
 
-      - name: Enforce pinned gitleaks action policy
+      - name: Enforce workflow action SHA allowlist policy
         shell: bash
         run: |
           set -euo pipefail
-          allowlist_file=".github/security/action-sha-allowlist.txt"
-          test -f "${allowlist_file}" || (echo "::error::Missing ${allowlist_file}." && exit 1)
-          expected_sha="$(awk -F'=' '$1=="gitleaks/gitleaks-action" {print $2}' "${allowlist_file}" | tr -d '[:space:]')"
-          test -n "${expected_sha}" || (echo "::error::Missing gitleaks/gitleaks-action allowlist entry in ${allowlist_file}." && exit 1)
-          if [[ ! "${expected_sha}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Invalid gitleaks allowlist SHA '${expected_sha}'."
-            exit 1
-          fi
-          configured_sha="$(grep -E "gitleaks/gitleaks-action@[0-9a-f]{40}" .github/workflows/quality-gates.yml | head -n 1 | sed -E 's/.*@([0-9a-f]{40}).*/\1/')"
-          test -n "${configured_sha}" || (echo "::error::Unable to resolve gitleaks action SHA from quality-gates workflow." && exit 1)
-          if [[ "${configured_sha}" != "${expected_sha}" ]]; then
-            echo "::error::Gitleaks action SHA drift detected (configured=${configured_sha}, allowlist=${expected_sha})."
-            exit 1
-          fi
+          bash scripts/ci/verify-action-shas.sh .github/workflows/quality-gates.yml
 
       - name: Run gitleaks secret scan gate
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.6 (sha pinned)
@@ -526,8 +513,8 @@ jobs:
             quality-deploy/deploy-readiness.attestation.json
           if-no-files-found: error
 
-  deploy:
-    name: Deploy
+  deploy-stage:
+    name: Deploy Stage
     runs-on: ubuntu-22.04
     timeout-minutes: 8
     needs: [build-artifact, release-readiness, deploy-readiness]
@@ -574,7 +561,7 @@ jobs:
             "workflow": "quality-gates",
             "runId": "${GITHUB_RUN_ID}",
             "commitSha": "${GITHUB_SHA}",
-            "stage": "deploy",
+            "stage": "deploy-stage",
             "inputs": [
               "release-readiness.summary.json",
               "deploy-readiness.summary.json"
@@ -592,7 +579,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy]
+    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy-stage]
     if: ${{ always() }}
     steps:
       - name: Evaluate gate outcomes
@@ -607,11 +594,11 @@ jobs:
           RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
           RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
           RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
-          RESULT_DEPLOY: ${{ needs.deploy.result }}
+          RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
         run: |
           set -euo pipefail
           failures=0
-          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY; do
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE; do
             result="${!gate}"
             name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
             echo "${name}: ${result}"

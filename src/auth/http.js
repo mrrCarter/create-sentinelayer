@@ -263,7 +263,80 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null, requ
   return Math.max(MIN_JITTER_RETRY_DELAY_MS, jitteredDelay);
 }
 
-async function readResponseBodyWithLimit(response, maxBytes = MAX_RESPONSE_BODY_BYTES) {
+function createAbortError() {
+  const error = new Error("Request aborted while reading response body.");
+  error.name = "AbortError";
+  return error;
+}
+
+async function readResponseBodyWithLimit(
+  response,
+  maxBytes = MAX_RESPONSE_BODY_BYTES,
+  { timeoutAtEpochMs = null, signal = null } = {}
+) {
+  const createBodyReadTimeoutError = () =>
+    new SentinelayerApiError("Request timed out while reading response body.", {
+      status: 408,
+      code: "TIMEOUT",
+    });
+
+  const resolveRemainingTimeoutMs = () => {
+    if (!Number.isFinite(Number(timeoutAtEpochMs))) {
+      return null;
+    }
+    return Math.max(0, Math.floor(Number(timeoutAtEpochMs) - Date.now()));
+  };
+
+  const runWithTimeoutBudget = async (operation) => {
+    const remainingMs = resolveRemainingTimeoutMs();
+    if (remainingMs !== null && remainingMs <= 0) {
+      throw createBodyReadTimeoutError();
+    }
+    const hasAbortSignal =
+      signal &&
+      typeof signal === "object" &&
+      typeof signal.addEventListener === "function" &&
+      typeof signal.removeEventListener === "function";
+    if (remainingMs === null && !hasAbortSignal) {
+      return operation();
+    }
+
+    let timerHandle = null;
+    let onAbort = null;
+    const racers = [operation()];
+    if (remainingMs !== null) {
+      racers.push(
+        new Promise((_, reject) => {
+          timerHandle = setTimeout(() => {
+            reject(createBodyReadTimeoutError());
+          }, remainingMs);
+        })
+      );
+    }
+    if (hasAbortSignal) {
+      racers.push(
+        new Promise((_, reject) => {
+          onAbort = () => reject(createAbortError());
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) {
+            onAbort();
+          }
+        })
+      );
+    }
+
+    try {
+      return await Promise.race(racers);
+    } finally {
+      if (timerHandle) {
+        clearTimeout(timerHandle);
+      }
+      if (hasAbortSignal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    }
+  };
+
   const declaredLength = Number(response?.headers?.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
@@ -272,7 +345,7 @@ async function readResponseBodyWithLimit(response, maxBytes = MAX_RESPONSE_BODY_
     });
   }
   if (!response?.body || typeof response.body.getReader !== "function") {
-    const rawBody = await response.text();
+    const rawBody = await runWithTimeoutBudget(() => response.text());
     if (Buffer.byteLength(rawBody, "utf8") > maxBytes) {
       throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
         status: 502,
@@ -286,21 +359,26 @@ async function readResponseBodyWithLimit(response, maxBytes = MAX_RESPONSE_BODY_
   const decoder = new TextDecoder();
   let totalBytes = 0;
   let rawBody = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      const { done, value } = await runWithTimeoutBudget(() => reader.read());
+      if (done) {
+        break;
+      }
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+      totalBytes += chunk.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
+          status: 502,
+          code: "RESPONSE_TOO_LARGE",
+        });
+      }
+      rawBody += decoder.decode(chunk, { stream: true });
     }
-    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
-    totalBytes += chunk.byteLength;
-    if (totalBytes > maxBytes) {
-      await reader.cancel();
-      throw new SentinelayerApiError("API response exceeded maximum allowed size.", {
-        status: 502,
-        code: "RESPONSE_TOO_LARGE",
-      });
-    }
-    rawBody += decoder.decode(chunk, { stream: true });
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
   }
   rawBody += decoder.decode();
   return rawBody;
@@ -462,6 +540,7 @@ export async function requestJson(
   for (let attemptIndex = 0; attemptIndex < attempts; attemptIndex += 1) {
     const controller = new AbortController();
     let timedOut = false;
+    const timeoutAtEpochMs = Date.now() + normalizedTimeoutMs;
     const timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();
@@ -491,7 +570,10 @@ export async function requestJson(
       });
 
       const responseBodyLimit = response.ok ? MAX_RESPONSE_BODY_BYTES : MAX_ERROR_RESPONSE_BODY_BYTES;
-      const rawBody = await readResponseBodyWithLimit(response, responseBodyLimit);
+      const rawBody = await readResponseBodyWithLimit(response, responseBodyLimit, {
+        timeoutAtEpochMs,
+        signal: activeSignal,
+      });
       let json = {};
       if (rawBody.trim()) {
         try {

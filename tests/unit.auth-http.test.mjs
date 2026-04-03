@@ -165,3 +165,38 @@ test("Unit auth http: requestJson preserves camelCase requestId on API errors", 
     await mock.close();
   }
 });
+
+test("Unit auth http: requestJson times out when response body stream stalls", async () => {
+  let pullCount = 0;
+  const stalledStream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"ok":'));
+    },
+    pull() {
+      pullCount += 1;
+      return new Promise(() => {});
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      requestJson("https://sentinelayer.example/stalled-stream", {
+        method: "GET",
+        timeoutMs: 150,
+        maxAttempts: 1,
+        fetchImpl: async () =>
+          new Response(stalledStream, {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          }),
+      }),
+    (error) => {
+      assert.equal(error?.code, "TIMEOUT");
+      assert.equal(error?.status, 408);
+      return true;
+    }
+  );
+  assert.ok(pullCount >= 1);
+});
