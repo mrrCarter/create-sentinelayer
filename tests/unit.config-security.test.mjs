@@ -135,7 +135,11 @@ test("Unit config security: runtime secret schema rejects unknown token shapes b
 
 test("Unit config security: runtime secret schema allows unknown token shapes only with explicit override flag", () => {
   const previousOverride = process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousCi = process.env.CI;
   process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE = "1";
+  process.env.NODE_ENV = "development";
+  delete process.env.CI;
   try {
     const parsed = getRuntimeSecretSchema().partial().parse({
       sentinelayerToken: "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n",
@@ -146,6 +150,50 @@ test("Unit config security: runtime secret schema allows unknown token shapes on
       delete process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE;
     } else {
       process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE = previousOverride;
+    }
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
+    }
+  }
+});
+
+test("Unit config security: runtime secret schema rejects unknown token shapes in CI even with override flag", () => {
+  const previousOverride = process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousCi = process.env.CI;
+  process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE = "1";
+  process.env.NODE_ENV = "development";
+  process.env.CI = "true";
+  try {
+    assert.throws(
+      () =>
+        getRuntimeSecretSchema().partial().parse({
+          sentinelayerToken: "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n",
+        }),
+      /SL-CONFIG-SECRET-SHAPE/i
+    );
+  } finally {
+    if (previousOverride === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE = previousOverride;
+    }
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
     }
   }
 });

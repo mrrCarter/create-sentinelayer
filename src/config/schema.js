@@ -15,11 +15,23 @@ const optionalUrl = z.preprocess(emptyToUndefined, z.string().url()).optional();
 const FALLBACK_SECRET_PATTERN = /^\S+$/u;
 const ALLOW_UNKNOWN_SECRET_SHAPE_ENV = "SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE";
 
-function shouldAllowUnknownSecretShapes() {
-  const rawValue = String(process.env[ALLOW_UNKNOWN_SECRET_SHAPE_ENV] || "")
+function isTruthy(value) {
+  const normalized = String(value || "")
     .trim()
     .toLowerCase();
-  return rawValue === "1" || rawValue === "true" || rawValue === "yes" || rawValue === "on";
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function shouldAllowUnknownSecretShapes() {
+  if (!isTruthy(process.env[ALLOW_UNKNOWN_SECRET_SHAPE_ENV])) {
+    return false;
+  }
+  const nodeEnv = String(process.env.NODE_ENV || "")
+    .trim()
+    .toLowerCase();
+  const isLocalDevelopment = nodeEnv === "development" || nodeEnv === "dev";
+  const runningInCi = isTruthy(process.env.CI);
+  return isLocalDevelopment && !runningInCi;
 }
 
 function createOptionalSecretSchema({

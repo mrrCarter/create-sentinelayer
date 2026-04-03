@@ -138,6 +138,37 @@ jobs:
               echo "::error::Quality Summary gate must pass before Omar Gate (run=${run_id}, conclusion=${conclusion}, url=${run_url})."
               exit 1
             fi
+            check_runs_status=0
+            check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || check_runs_status=$?
+            if [[ "${check_runs_status}" -ne 0 ]]; then
+              echo "Quality Summary check-run lookup timed out or failed (status=${check_runs_status}); retrying."
+              sleep 10
+              continue
+            fi
+            quality_details_url="$(echo "${check_runs_json}" | jq -r '
+              [
+                .check_runs[]
+                | select((.name // "") == "Quality Summary")
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select((.app.slug // "") == "github-actions")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.completed_at // ""), (.id // 0)) | last | .details_url // ""
+            ')"
+            if [[ -z "${quality_details_url}" ]]; then
+              echo "Quality Summary check-run anchor is not available yet on ${TARGET_SHA}; waiting."
+              sleep 10
+              continue
+            fi
+            anchor_run_id="$(echo "${quality_details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+).*$#\1#p')"
+            if [[ -z "${anchor_run_id}" ]]; then
+              echo "::error::Unable to parse workflow run id from Quality Summary details URL (${quality_details_url})."
+              exit 1
+            fi
+            if [[ "${anchor_run_id}" != "${run_id}" ]]; then
+              echo "::error::Quality Summary anchor mismatch (selected_run=${run_id}, check_run_anchor=${anchor_run_id}, details_url=${quality_details_url})."
+              exit 1
+            fi
             echo "Quality Summary gate passed via workflow run ${run_id} (${run_url})."
             exit 0
           done

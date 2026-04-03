@@ -227,11 +227,13 @@ jobs:
               fi
               release_path_execution="true"
               requested_manual_publish="$(normalize_bool "${INPUT_EXECUTE_PUBLISH:-false}")"
-              if [[ "${requested_manual_publish}" == "true" ]]; then
-                echo "::warning::workflow_dispatch publish is disabled in this workflow; forcing verification-only mode."
+              requested_dry_run="$(normalize_bool "${INPUT_DRY_RUN:-false}")"
+              publish_requested="${requested_manual_publish}"
+              if [[ "${publish_requested}" == "true" ]]; then
+                dry_run="${requested_dry_run}"
+              else
+                dry_run="true"
               fi
-              publish_requested="false"
-              dry_run="$(normalize_bool "${INPUT_DRY_RUN:-false}")"
               ;;
             *)
               release_path_execution="false"

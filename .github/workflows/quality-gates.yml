@@ -15,6 +15,8 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NPM_VERSION_PIN: "10.8.2"
+  NODE_VERSION_PIN: "20.11.1"
+  NODE_VERSION_LEGACY_PIN: "18.20.4"
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -32,7 +34,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Install dependencies (lockfile immutable)
@@ -104,7 +106,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["18", "20"]
+        node: ["18.20.4", "20.11.1"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -136,7 +138,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Install dependencies
@@ -164,7 +166,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Install dependencies
@@ -187,7 +189,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Install dependencies
@@ -233,7 +235,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Pin npm CLI version
@@ -387,14 +389,26 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [build-artifact]
+    if: ${{ always() }}
     steps:
+      - name: Enforce build-artifact success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
+            echo "::error::build-artifact must succeed before release-readiness (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Download quality build package
@@ -442,6 +456,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [build-artifact]
+    if: ${{ always() }}
     permissions:
       contents: read
       id-token: write
@@ -450,13 +465,24 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
+      - name: Enforce build-artifact success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
+            echo "::error::build-artifact must succeed before deploy-readiness (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
       - name: Download quality build package
@@ -520,8 +546,25 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 8
     needs: [build-artifact, release-readiness, deploy-readiness]
+    if: ${{ always() }}
     environment: quality-deploy
     steps:
+      - name: Enforce readiness-gate success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
+          RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
+        run: |
+          set -euo pipefail
+          for gate in RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS; do
+            result="${!gate}"
+            if [[ "${result}" != "success" ]]; then
+              echo "::error::Deploy stage prerequisite ${gate} did not succeed (result=${result})."
+              exit 1
+            fi
+          done
+
       - name: Download quality build package
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
@@ -622,3 +665,4 @@ jobs:
           fi
 
           echo "All quality checks passed."
+
