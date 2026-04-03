@@ -115,7 +115,17 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
         state.pollBodies.push(body);
         state.pollIdempotencyKeys.push(String(req.headers["idempotency-key"] || "").trim());
         const pollIndex = Math.min(state.pollCalls - 1, resolvedPollResponses.length - 1);
-        return jsonResponse(res, 200, resolvedPollResponses[pollIndex]);
+        const pollPayload = resolvedPollResponses[pollIndex] || {};
+        const pollHttpStatus = Number(pollPayload.__httpStatus || 200);
+        if (pollHttpStatus >= 400) {
+          const errorBody = pollPayload.error || {
+            code: String(pollPayload.code || "UPSTREAM_UNAVAILABLE"),
+            message: String(pollPayload.message || "Authentication polling backend unavailable."),
+            request_id: String(pollPayload.request_id || "").trim() || null,
+          };
+          return jsonResponse(res, pollHttpStatus, { error: errorBody });
+        }
+        return jsonResponse(res, 200, pollPayload);
       }
 
       if (req.method === "GET" && pathname === "/api/v1/auth/me") {
@@ -591,6 +601,63 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
     assert.equal(mock.state.pollCalls, 1);
     assert.equal(mock.state.pollIdempotencyKeys.length, 1);
     assert.match(mock.state.pollIdempotencyKeys[0], /^[a-f0-9]{64}$/);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login fails closed after repeated polling backend outages", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        __httpStatus: 503,
+        error: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "Service unavailable during poll.",
+          request_id: "req-backend-down-123",
+        },
+      },
+    ],
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 10_000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          allowFileStorageFallback: true,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.ok(["CLI_AUTH_BACKEND_UNAVAILABLE", "CLI_AUTH_TIMEOUT"].includes(error.code));
+        assert.ok([503, 408].includes(Number(error.status || 0)));
+        if (error.code === "CLI_AUTH_BACKEND_UNAVAILABLE") {
+          assert.equal(error.requestId, "req-backend-down-123");
+        }
+        return true;
+      }
+    );
+    assert.ok(mock.state.pollCalls >= 3);
+    assert.ok(mock.state.pollCalls <= 20);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

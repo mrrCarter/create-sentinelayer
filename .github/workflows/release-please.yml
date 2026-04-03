@@ -122,13 +122,25 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          source scripts/release/backoff.sh
+          retry_attempt=0
+          max_backoff_retries=24
+          retry_with_backoff() {
+            local context="${1:-quality-summary}"
+            retry_attempt=$((retry_attempt + 1))
+            if (( retry_attempt > max_backoff_retries )); then
+              echo "::error::Exceeded bounded retry budget while waiting for ${context}."
+              exit 1
+            fi
+            sl_backoff_sleep "${context}" "${retry_attempt}"
+          }
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             api_status=0
             runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
               echo "quality-gates lookup timed out or failed (status=${api_status}); retrying."
-              sleep 10
+              retry_with_backoff "quality-gates lookup"
               continue
             fi
             latest_quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
@@ -140,7 +152,7 @@ jobs:
             ')"
             if [[ -z "${latest_quality_run}" ]]; then
               echo "Waiting for quality-gates workflow run on ${TARGET_SHA}."
-              sleep 10
+              retry_with_backoff "quality-gates missing run"
               continue
             fi
             quality_run_id="$(echo "${latest_quality_run}" | jq -r '.id // ""')"
@@ -149,7 +161,7 @@ jobs:
             conclusion="$(echo "${latest_quality_run}" | jq -r '.conclusion // ""')"
             if [[ "${status}" != "completed" ]]; then
               echo "quality-gates run ${quality_run_id} status=${status}; waiting."
-              sleep 10
+              retry_with_backoff "quality-gates incomplete run"
               continue
             fi
             if [[ "${conclusion}" != "success" ]]; then
@@ -172,13 +184,25 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          source scripts/release/backoff.sh
+          retry_attempt=0
+          max_backoff_retries=24
+          retry_with_backoff() {
+            local context="${1:-omar-gate}"
+            retry_attempt=$((retry_attempt + 1))
+            if (( retry_attempt > max_backoff_retries )); then
+              echo "::error::Exceeded bounded retry budget while waiting for ${context}."
+              exit 1
+            fi
+            sl_backoff_sleep "${context}" "${retry_attempt}"
+          }
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             api_status=0
             check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
               echo "omar-gate check-run lookup timed out or failed (status=${api_status}); retrying."
-              sleep 10
+              retry_with_backoff "omar check-run lookup"
               continue
             fi
             anchored_check_run="$(echo "${check_runs_json}" | jq -c '
@@ -193,7 +217,7 @@ jobs:
               conclusion="$(echo "${anchored_check_run}" | jq -r '.conclusion // ""')"
               if [[ "${status}" != "completed" ]]; then
                 echo "Omar Gate check-run on ${TARGET_SHA} status=${status}; waiting."
-                sleep 10
+                retry_with_backoff "omar check-run pending"
                 continue
               fi
               if [[ "${conclusion}" != "success" ]]; then
@@ -204,7 +228,7 @@ jobs:
               omar_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${omar_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
               if [[ "${run_lookup_status}" -ne 0 ]]; then
                 echo "Unable to resolve Omar workflow run metadata for run_id=${omar_run_id}; retrying."
-                sleep 10
+                retry_with_backoff "omar run metadata lookup"
                 continue
               fi
               run_head_sha="$(echo "${omar_run}" | jq -r '.head_sha // ""')"
@@ -222,7 +246,7 @@ jobs:
             commit_prs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/pulls" -H "Accept: application/vnd.github+json")" || pr_lookup_status=$?
             if [[ "${pr_lookup_status}" -ne 0 ]]; then
               echo "Unable to resolve associated pull requests for ${TARGET_SHA}; retrying."
-              sleep 10
+              retry_with_backoff "canonical PR lookup"
               continue
             fi
             canonical_pr_count="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
@@ -235,7 +259,7 @@ jobs:
             ')"
             if [[ "${canonical_pr_count}" -eq 0 ]]; then
               echo "Waiting for canonical merged PR provenance for ${TARGET_SHA}."
-              sleep 10
+              retry_with_backoff "canonical PR provenance"
               continue
             fi
             if [[ "${canonical_pr_count}" -ne 1 ]]; then
@@ -266,7 +290,7 @@ jobs:
             pr_check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${source_pr_head_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || pr_check_status=$?
             if [[ "${pr_check_status}" -ne 0 ]]; then
               echo "Unable to resolve Omar check-runs for source PR head ${source_pr_head_sha}; retrying."
-              sleep 10
+              retry_with_backoff "source PR omar check-run lookup"
               continue
             fi
             pr_omar_check_run="$(echo "${pr_check_runs_json}" | jq -c '
@@ -277,14 +301,14 @@ jobs:
             ')"
             if [[ -z "${pr_omar_check_run}" ]]; then
               echo "Waiting for Omar Gate check-run on associated PR head ${source_pr_head_sha}."
-              sleep 10
+              retry_with_backoff "source PR omar check-run missing"
               continue
             fi
             pr_status="$(echo "${pr_omar_check_run}" | jq -r '.status // ""')"
             pr_conclusion="$(echo "${pr_omar_check_run}" | jq -r '.conclusion // ""')"
             if [[ "${pr_status}" != "completed" ]]; then
               echo "Omar Gate check-run on PR head ${source_pr_head_sha} status=${pr_status}; waiting."
-              sleep 10
+              retry_with_backoff "source PR omar check-run pending"
               continue
             fi
             if [[ "${pr_conclusion}" != "success" ]]; then
@@ -296,7 +320,7 @@ jobs:
             omar_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${omar_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
             if [[ "${run_lookup_status}" -ne 0 ]]; then
               echo "Unable to resolve Omar workflow run metadata for fallback run_id=${omar_run_id}; retrying."
-              sleep 10
+              retry_with_backoff "fallback omar run metadata lookup"
               continue
             fi
             run_head_sha="$(echo "${omar_run}" | jq -r '.head_sha // ""')"

@@ -66,18 +66,32 @@ const API_ERROR_MESSAGE_BY_CODE = Object.freeze({
   CIRCUIT_OPEN: "The Sentinelayer API circuit breaker is open. Retry after cooldown.",
   MAX_RETRIES_EXHAUSTED: "Request failed after retry attempts.",
   CLIENT_ABORTED: "Request was canceled before completion.",
+  CLI_AUTH_BACKEND_UNAVAILABLE:
+    "Authentication polling could not reach the Sentinelayer API reliably. Retry once service health recovers.",
   TOKEN_SCOPE_REQUIRES_CONSENT:
     "Privileged token scope requires explicit consent. Re-run with --allow-privileged-scope.",
   TOKEN_SCOPE_INVALID: "Token scope override is invalid for this command.",
 });
 
 const DEBUG_ERROR_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
+const CI_TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
 
-function shouldExposeDebugRequestId() {
+function shouldEmitDebugErrorDetails() {
   const raw = String(process.env.SL_DEBUG_ERRORS || "")
     .trim()
     .toLowerCase();
   return DEBUG_ERROR_FLAG_VALUES.has(raw);
+}
+
+function isCiEnvironment() {
+  const raw = String(process.env.CI || "")
+    .trim()
+    .toLowerCase();
+  return CI_TRUE_VALUES.has(raw);
+}
+
+function shouldExposeDebugRequestId() {
+  return shouldEmitDebugErrorDetails() && process.stdout.isTTY === true && !isCiEnvironment();
 }
 
 function formatDebugRequestId(rawRequestId) {
@@ -102,7 +116,7 @@ export function formatApiError(error) {
   }
   const safeMessage = resolveSafeApiErrorMessage(error);
   const requestId = formatDebugRequestId(error.requestId);
-  if (shouldExposeDebugRequestId()) {
+  if (shouldEmitDebugErrorDetails()) {
     return `${safeMessage} [${error.code}] status=${error.status}${requestId}`;
   }
   return safeMessage;

@@ -21,7 +21,11 @@ test("Unit auth command: API errors are sanitized by default", () => {
 
 test("Unit auth command: debug env emits only request-id tail", () => {
   const previousDebug = process.env.SL_DEBUG_ERRORS;
+  const previousCi = process.env.CI;
+  const previousIsTty = process.stdout.isTTY;
   process.env.SL_DEBUG_ERRORS = "true";
+  delete process.env.CI;
+  process.stdout.isTTY = true;
   try {
     const error = new SentinelayerApiError("internal stack trace: token=secret", {
       status: 429,
@@ -36,6 +40,12 @@ test("Unit auth command: debug env emits only request-id tail", () => {
     assert.doesNotMatch(formatted, /req_debug_trace_abcdef12/);
     assert.doesNotMatch(formatted, /internal stack trace/i);
   } finally {
+    process.stdout.isTTY = previousIsTty;
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
+    }
     if (previousDebug === undefined) {
       delete process.env.SL_DEBUG_ERRORS;
     } else {

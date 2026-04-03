@@ -1,18 +1,6 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish to npm (requires NPM_TOKEN)"
-        required: false
-        default: false
-        type: boolean
-      dry_run:
-        description: "Run release validation without attempting npm publish"
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "v*"
@@ -60,13 +48,6 @@ jobs:
           fi
           requires_invoker_validation="false"
           case "${EVENT_NAME}" in
-            workflow_dispatch)
-              if [[ "${GITHUB_REF_VALUE}" != refs/tags/v* ]]; then
-                echo "::error::Release workflow_dispatch is restricted to refs/tags/v* (received '${GITHUB_REF_VALUE}')."
-                exit 1
-              fi
-              requires_invoker_validation="true"
-              ;;
             push)
               if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
                 requires_invoker_validation="true"
@@ -156,25 +137,17 @@ jobs:
             echo "Verified signed release provenance for tag '${tag_name}' (commit=${target_sha})."
           fi
 
-      - name: Normalize dispatch and tag inputs
+      - name: Normalize release tag inputs
         id: flags
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF_VALUE: ${{ github.ref }}
-          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
-          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
           set -euo pipefail
-          normalize_bool() {
-            case "$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)" in
-              true|1|yes|on) echo "true" ;;
-              *) echo "false" ;;
-            esac
-          }
           publish_requested="false"
           release_path_execution="false"
-          dry_run="$(normalize_bool "${INPUT_DRY_RUN}")"
+          dry_run="false"
           is_tag_ref="false"
           if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
             is_tag_ref="true"
@@ -184,24 +157,6 @@ jobs:
               if [[ "${is_tag_ref}" == "true" ]]; then
                 publish_requested="true"
                 release_path_execution="true"
-              fi
-              ;;
-            workflow_dispatch)
-              dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
-              publish_requested="false"
-              dry_run="true"
-              if [[ "${is_tag_ref}" == "true" ]]; then
-                release_path_execution="true"
-                if [[ "${dispatch_publish}" == "true" ]]; then
-                  echo "::notice::workflow_dispatch publish request ignored; manual release runs are validation-only."
-                fi
-                echo "::notice::workflow_dispatch on tag ref is validation-only (publish disabled, dry-run forced)."
-              else
-                release_path_execution="false"
-                if [[ "${dispatch_publish}" == "true" ]]; then
-                  echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
-                fi
-                echo "::notice::workflow_dispatch on non-tag ref skips release path jobs (publish disabled, dry-run forced)."
               fi
               ;;
             *)

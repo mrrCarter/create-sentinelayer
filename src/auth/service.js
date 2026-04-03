@@ -26,6 +26,14 @@ const DEFAULT_API_TOKEN_SCOPE = "cli_session";
 const PRIVILEGED_API_TOKEN_SCOPE = "github_app_bridge";
 const MIN_AUTH_POLL_INTERVAL_MS = 250;
 const MAX_AUTH_POLL_ATTEMPTS = 1200;
+const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
+const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
+const RETRYABLE_AUTH_POLL_CODES = new Set([
+  "TIMEOUT",
+  "NETWORK_ERROR",
+  "MAX_RETRIES_EXHAUSTED",
+  "CIRCUIT_OPEN",
+]);
 const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
@@ -98,6 +106,43 @@ function deterministicJitterFactor(sessionId, attempt) {
   const digest = crypto.createHash("sha256").update(seed).digest();
   const bucket = digest[0] / 255;
   return 0.8 + bucket * 0.4;
+}
+
+function isRetryableAuthPollError(error) {
+  if (!(error instanceof SentinelayerApiError)) {
+    return false;
+  }
+  const status = Number(error.status || 0);
+  if (status >= 500 && status <= 599) {
+    return true;
+  }
+  const code = String(error.code || "")
+    .trim()
+    .toUpperCase();
+  return RETRYABLE_AUTH_POLL_CODES.has(code);
+}
+
+function resolveAuthPollBackendCooldownMs({
+  sessionId,
+  attempt,
+  consecutiveFailures,
+  pollIntervalMs,
+}) {
+  const normalizedBase = Math.max(MIN_AUTH_POLL_INTERVAL_MS, Number(pollIntervalMs) || MIN_AUTH_POLL_INTERVAL_MS);
+  const failureMultiplier = 2 ** Math.min(Math.max(0, Number(consecutiveFailures) - 1), 5);
+  const jitterFactor = deterministicJitterFactor(sessionId, Number(attempt || 0) + Number(consecutiveFailures || 0));
+  const cooldownMs = Math.round(normalizedBase * failureMultiplier * jitterFactor);
+  return Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.min(MAX_AUTH_POLL_BACKEND_BACKOFF_MS, cooldownMs));
+}
+
+function resolveAuthPollIntervalMs(rawPollIntervalSeconds, fallbackSeconds = 2) {
+  const fallback = Number(fallbackSeconds);
+  const normalizedFallback = Number.isFinite(fallback) ? fallback : 2;
+  const candidateSeconds = Number(rawPollIntervalSeconds ?? normalizedFallback);
+  if (!Number.isFinite(candidateSeconds) || candidateSeconds <= 0) {
+    return MIN_AUTH_POLL_INTERVAL_MS;
+  }
+  return Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.round(candidateSeconds * 1000));
 }
 
 function buildPollIdempotencyKey({ sessionId, pollClientId, attempt, nonce }) {
@@ -285,6 +330,8 @@ async function pollCliAuthSession({
     Math.min(MAX_AUTH_POLL_ATTEMPTS, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS))
   );
   const pollIdempotencyNonce = crypto.randomBytes(16).toString("hex");
+  let lastKnownPollIntervalMs = resolveAuthPollIntervalMs(pollIntervalSeconds, 2);
+  let consecutiveBackendFailures = 0;
   let attempt = 0;
 
   while (Date.now() < deadline && attempt < maxAttempts) {
@@ -295,18 +342,50 @@ async function pollCliAuthSession({
       attempt,
       nonce: pollIdempotencyNonce,
     });
-    const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
-      method: "POST",
-      headers: {
-        "Idempotency-Key": pollIdempotencyKey,
-        "X-Poll-Attempt": String(attempt),
-      },
-      body: {
-        session_id: normalizedSessionId,
-        challenge,
-      },
-      signal,
-    });
+    let payload = null;
+    try {
+      payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": pollIdempotencyKey,
+          "X-Poll-Attempt": String(attempt),
+        },
+        body: {
+          session_id: normalizedSessionId,
+          challenge,
+        },
+        signal,
+      });
+      consecutiveBackendFailures = 0;
+    } catch (error) {
+      if (!isRetryableAuthPollError(error)) {
+        throw error;
+      }
+      consecutiveBackendFailures += 1;
+      if (consecutiveBackendFailures >= MAX_AUTH_POLL_BACKEND_FAILURES) {
+        throw new SentinelayerApiError(
+          "Authentication polling backend is temporarily unavailable. Retry once service health recovers.",
+          {
+            status: 503,
+            code: "CLI_AUTH_BACKEND_UNAVAILABLE",
+            requestId: error instanceof SentinelayerApiError ? error.requestId : null,
+          }
+        );
+      }
+      const remainingMs = Math.max(0, deadline - Date.now());
+      const cooldownMs = Math.min(
+        remainingMs,
+        resolveAuthPollBackendCooldownMs({
+          sessionId: normalizedSessionId,
+          attempt,
+          consecutiveFailures: consecutiveBackendFailures,
+          pollIntervalMs: lastKnownPollIntervalMs,
+        })
+      );
+      await sleepWithAbortSignal(cooldownMs, signal);
+      attempt += 1;
+      continue;
+    }
 
     const responseSessionId = getAuthPollSessionId(payload);
     const requestId = getAuthPollRequestId(payload);
@@ -343,10 +422,11 @@ async function pollCliAuthSession({
       );
     }
 
-    const serverPollIntervalMs = Math.max(
-      MIN_AUTH_POLL_INTERVAL_MS,
-      Math.round(Number(payload.poll_interval_seconds || pollIntervalSeconds || 2) * 1000)
+    const serverPollIntervalMs = resolveAuthPollIntervalMs(
+      payload.poll_interval_seconds ?? payload.pollIntervalSeconds ?? pollIntervalSeconds,
+      2
     );
+    lastKnownPollIntervalMs = serverPollIntervalMs;
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
     const jitterFactor = deterministicJitterFactor(normalizedSessionId, attempt);
