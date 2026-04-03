@@ -81,7 +81,7 @@ jobs:
             echo "Trusted invoker validation skipped for ref '${GITHUB_REF_VALUE}'."
             exit 0
           fi
-          permission="$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
+          permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
           trusted_actor="false"
           case "${permission}" in
             admin|maintain|write)
@@ -96,7 +96,7 @@ jobs:
           annotated_tag_json=""
           if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
             tag_name="${GITHUB_REF_VALUE#refs/tags/}"
-            tag_ref_json="$(gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
+            tag_ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
             ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
             ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
             if [[ -z "${ref_sha}" ]]; then
@@ -105,7 +105,7 @@ jobs:
             fi
             target_sha="${ref_sha}"
             if [[ "${ref_type}" == "tag" ]]; then
-              annotated_tag_json="$(gh api "repos/${REPO}/git/tags/${ref_sha}")"
+              annotated_tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}")"
               target_sha="$(echo "${annotated_tag_json}" | jq -r '.object.sha // ""')"
             elif [[ "${ref_type}" != "commit" ]]; then
               echo "::error::Tag '${tag_name}' points to unsupported object type '${ref_type}'."
@@ -117,7 +117,7 @@ jobs:
             fi
           fi
           if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${ACTOR}" == "github-actions[bot]" ]]; then
-            release_runs_json="$(gh api "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+            release_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
             release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release-please.yml" --arg repo "${REPO}" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
@@ -147,7 +147,7 @@ jobs:
                 exit 1
               fi
             fi
-            commit_json="$(gh api "repos/${REPO}/commits/${target_sha}" -H "Accept: application/vnd.github+json")"
+            commit_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${target_sha}" -H "Accept: application/vnd.github+json")"
             commit_verified="$(echo "${commit_json}" | jq -r '.commit.verification.verified // false')"
             if [[ "${commit_verified}" != "true" ]]; then
               echo "::error::Tag target commit '${target_sha}' is not cryptographically verified."
@@ -188,18 +188,16 @@ jobs:
               ;;
             workflow_dispatch)
               dispatch_publish="$(normalize_bool "${INPUT_PUBLISH}")"
-              release_path_execution="true"
+              publish_requested="false"
+              dry_run="true"
               if [[ "${is_tag_ref}" == "true" ]]; then
+                release_path_execution="true"
                 if [[ "${dispatch_publish}" == "true" ]]; then
-                  publish_requested="true"
-                  if [[ "${dry_run}" == "true" ]]; then
-                    echo "::notice::workflow_dispatch publish requested with dry-run=true; publish step will be skipped."
-                  fi
+                  echo "::notice::workflow_dispatch publish request ignored; manual release runs are validation-only."
                 fi
+                echo "::notice::workflow_dispatch on tag ref is validation-only (publish disabled, dry-run forced)."
               else
-                publish_requested="false"
                 release_path_execution="false"
-                dry_run="true"
                 if [[ "${dispatch_publish}" == "true" ]]; then
                   echo "::notice::Manual publish requested on non-tag ref; request ignored because release path requires semver tags."
                 fi
@@ -238,7 +236,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          env_json="$(gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
           reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           if [[ "${reviewer_count}" -lt 1 ]]; then
             echo "::error::release-management environment must require at least one reviewer."
@@ -255,7 +253,7 @@ jobs:
           set -euo pipefail
           branch_name="${DEFAULT_BRANCH:-main}"
           protection_status=0
-          protection_json="$(gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")" || protection_status=$?
+          protection_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")" || protection_status=$?
           if [[ "${protection_status}" -ne 0 ]]; then
             echo "::error::Branch '${branch_name}' must have protection enabled with strict required checks."
             exit 1
@@ -283,7 +281,7 @@ jobs:
               exit 1
             fi
           done
-          env_json="$(gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
           env_reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           env_branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
           if [[ "${env_reviewer_count}" -lt 1 ]]; then
@@ -311,11 +309,11 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             tag_name="${GITHUB_REF_VALUE#refs/tags/}"
             if [[ -n "${tag_name}" ]]; then
-              ref_json="$(gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
+              ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
               ref_type="$(echo "${ref_json}" | jq -r '.object.type')"
               ref_sha="$(echo "${ref_json}" | jq -r '.object.sha')"
               if [[ "${ref_type}" == "tag" ]]; then
-                tag_json="$(gh api "repos/${REPO}/git/tags/${ref_sha}")"
+                tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}")"
                 resolved_sha="$(echo "${tag_json}" | jq -r '.object.sha')"
               elif [[ "${ref_type}" == "commit" ]]; then
                 resolved_sha="${ref_sha}"
@@ -364,7 +362,7 @@ jobs:
                 continue
               fi
               if [[ "${check_name}" == "Omar Gate" ]] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-                runs_json="$(gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+                runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
                 latest_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/omar-gate.yml" --arg repo "${REPO}" '
                   [.workflow_runs[]
                     | select((.head_sha // "") == $sha)
@@ -407,7 +405,7 @@ jobs:
                 echo "::error::Missing allowed event mapping for required check '${check_name}'."
                 exit 1
               fi
-              runs_json="$(gh api "repos/${REPO}/actions/workflows/${workflow_file}/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+              runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/${workflow_file}/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
               candidate_runs="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path "${workflow_path}" --arg repo "${REPO}" --argjson allowedEvents "${allowed_events_json}" '
                 [.workflow_runs[]
                   | select((.head_sha // "") == $sha)
@@ -435,7 +433,7 @@ jobs:
               status="$(echo "${latest_run}" | jq -r '.status')"
               conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"
               event_name="$(echo "${latest_run}" | jq -r '.event // ""')"
-              check_runs_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+              check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
               anchored_check_run="$(echo "${check_runs_json}" | jq -c --arg name "${check_name}" '
                 [.check_runs[]
                   | select((.name // "") == $name)
@@ -517,7 +515,7 @@ jobs:
             echo "::error::ROLLBACK_PROOF_MAX_AGE_DAYS must be > 0."
             exit 1
           fi
-          runs_json="$(gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?per_page=50" -H "Accept: application/vnd.github+json")"
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?per_page=50" -H "Accept: application/vnd.github+json")"
           latest_success_run="$(echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
             [.workflow_runs[]
               | select((.status // "") == "completed")
@@ -885,7 +883,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          env_json="$(gh api "repos/${REPO}/environments/production" -H "Accept: application/vnd.github+json")"
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/production" -H "Accept: application/vnd.github+json")"
           reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
           if [[ "${reviewer_count}" -lt 1 ]]; then
@@ -924,3 +922,4 @@ jobs:
           echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
           echo "- Trigger rollback workflow: \`gh workflow run rollback.yml -f version=<previous-version> -f execute=true\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Runbook: \`docs/RELEASE_ROLLBACK.md\`" >> "$GITHUB_STEP_SUMMARY"
+

@@ -9,6 +9,7 @@ const KEYRING_SERVICE = "sentinelayer-cli";
 const FILE_TOKEN_KEY_BYTES = 32;
 const FILE_TOKEN_IV_BYTES = 12;
 const FILE_TOKEN_KEY_VERSION = 1;
+const LEGACY_FILE_TOKEN_KEY_NAME = "credentials.key";
 
 export class StoredSessionError extends Error {
   constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
@@ -27,6 +28,14 @@ function resolveHomeDir(homeDir) {
   return path.resolve(String(homeDir || os.homedir()));
 }
 
+function buildApiScopeDigest(apiUrl) {
+  const normalized = String(apiUrl || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+}
+
 /**
  * Resolve the deterministic credentials metadata file path for the current user/home override.
  *
@@ -39,16 +48,25 @@ export function resolveCredentialsFilePath({ homeDir } = {}) {
 }
 
 function resolveCredentialsKeyPath({ homeDir } = {}) {
+  return resolveLegacyCredentialsKeyPath({ homeDir });
+}
+
+function resolveLegacyCredentialsKeyPath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
-  return path.join(resolvedHome, ".sentinelayer-secrets", "credentials.key");
+  return path.join(resolvedHome, ".sentinelayer-secrets", LEGACY_FILE_TOKEN_KEY_NAME);
+}
+
+function resolveScopedCredentialsKeyPath({ homeDir, apiUrl } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  const digest = buildApiScopeDigest(apiUrl);
+  if (!digest) {
+    return resolveLegacyCredentialsKeyPath({ homeDir: resolvedHome });
+  }
+  return path.join(resolvedHome, ".sentinelayer-secrets", `credentials-${digest}.key`);
 }
 
 function buildKeyringAccountName(apiUrl) {
-  const digest = crypto
-    .createHash("sha256")
-    .update(String(apiUrl || "").trim().toLowerCase())
-    .digest("hex")
-    .slice(0, 16);
+  const digest = buildApiScopeDigest(apiUrl);
   return `default-${digest}`;
 }
 
@@ -190,10 +208,15 @@ async function persistEncryptedFileTokenMetadata({
   homeDir,
   rotateKey = false,
 } = {}) {
-  const keyMaterial = rotateKey
-    ? await rotateFileTokenKey({ homeDir })
-    : await loadFileTokenKey({ homeDir, createIfMissing: true });
-  const encrypted = encryptFileToken(token, keyMaterial);
+  const keyState = rotateKey
+    ? await rotateFileTokenKey({ homeDir, apiUrl: metadata?.apiUrl })
+    : await loadFileTokenKey({
+        homeDir,
+        apiUrl: metadata?.apiUrl,
+        createIfMissing: true,
+        allowLegacyFallback: false,
+      });
+  const encrypted = encryptFileToken(token, keyState.keyMaterial);
   const rotatedAt = nowIso();
   const updatedMetadata = normalizeMetadata({
     ...metadata,
@@ -245,43 +268,87 @@ async function writeSecretFile(filePath, contents) {
   }
 }
 
-async function loadFileTokenKey({ homeDir, createIfMissing = false } = {}) {
-  const keyPath = resolveCredentialsKeyPath({ homeDir });
-  try {
-    const raw = await fsp.readFile(keyPath, "utf-8");
-    const material = Buffer.from(String(raw || "").trim(), "base64");
-    if (material.length !== FILE_TOKEN_KEY_BYTES) {
-      throw new StoredSessionError(
-        "Stored file-token encryption key is invalid. Re-authenticate with `sl auth login`.",
-        { code: "FILE_TOKEN_KEY_INVALID", filePath: keyPath }
-      );
+function decodeKeyMaterial(raw, keyPath) {
+  const material = Buffer.from(String(raw || "").trim(), "base64");
+  if (material.length !== FILE_TOKEN_KEY_BYTES) {
+    throw new StoredSessionError(
+      "Stored file-token encryption key is invalid. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_KEY_INVALID", filePath: keyPath }
+    );
+  }
+  return material;
+}
+
+async function loadFileTokenKey({
+  homeDir,
+  apiUrl,
+  createIfMissing = false,
+  allowLegacyFallback = false,
+} = {}) {
+  const scopedKeyPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl });
+  const legacyKeyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  const candidatePaths = [scopedKeyPath];
+  if (allowLegacyFallback && legacyKeyPath !== scopedKeyPath) {
+    candidatePaths.push(legacyKeyPath);
+  }
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      const raw = await fsp.readFile(candidatePath, "utf-8");
+      return {
+        keyMaterial: decodeKeyMaterial(raw, candidatePath),
+        keyPath: candidatePath,
+        usedLegacyKeyPath: candidatePath === legacyKeyPath && candidatePath !== scopedKeyPath,
+      };
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+        throw error;
+      }
     }
-    return material;
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT" && createIfMissing) {
-      return rotateFileTokenKey({ homeDir });
+  }
+
+  if (createIfMissing) {
+    return rotateFileTokenKey({ homeDir, apiUrl });
+  }
+
+  throw new StoredSessionError(
+    "Stored file-token encryption key is missing. Re-authenticate with `sl auth login`.",
+    { code: "FILE_TOKEN_KEY_MISSING", filePath: scopedKeyPath }
+  );
+}
+
+async function rotateFileTokenKey({ homeDir, apiUrl } = {}) {
+  const keyPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl });
+  const generated = crypto.randomBytes(FILE_TOKEN_KEY_BYTES);
+  await writeSecretFile(keyPath, `${generated.toString("base64")}\n`);
+  return {
+    keyMaterial: generated,
+    keyPath,
+    usedLegacyKeyPath: false,
+  };
+}
+
+async function deleteFileTokenKey({ homeDir, apiUrl, includeLegacy = false } = {}) {
+  const keyPaths = [resolveScopedCredentialsKeyPath({ homeDir, apiUrl })];
+  const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  if (includeLegacy && legacyPath !== keyPaths[0]) {
+    keyPaths.push(legacyPath);
+  }
+  for (const keyPath of keyPaths) {
+    try {
+      await fsp.rm(keyPath);
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+        throw error;
+      }
     }
-    if (error && typeof error === "object" && error.code === "ENOENT") {
-      throw new StoredSessionError(
-        "Stored file-token encryption key is missing. Re-authenticate with `sl auth login`.",
-        { code: "FILE_TOKEN_KEY_MISSING", filePath: keyPath }
-      );
-    }
-    throw error;
   }
 }
 
-async function rotateFileTokenKey({ homeDir } = {}) {
-  const keyPath = resolveCredentialsKeyPath({ homeDir });
-  const generated = crypto.randomBytes(FILE_TOKEN_KEY_BYTES);
-  await writeSecretFile(keyPath, `${generated.toString("base64")}\n`);
-  return generated;
-}
-
-async function deleteFileTokenKey({ homeDir } = {}) {
-  const keyPath = resolveCredentialsKeyPath({ homeDir });
+async function deleteLegacyFileTokenKey({ homeDir } = {}) {
+  const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
   try {
-    await fsp.rm(keyPath);
+    await fsp.rm(legacyPath);
   } catch (error) {
     if (!error || typeof error !== "object" || error.code !== "ENOENT") {
       throw error;
@@ -397,16 +464,21 @@ export async function readStoredSession({ homeDir } = {}) {
   let token = null;
   let resolvedMetadata = metadata;
   if (metadata.tokenCiphertext && metadata.tokenIv && metadata.tokenTag) {
-    const keyMaterial = await loadFileTokenKey({ homeDir, createIfMissing: false });
+    const keyState = await loadFileTokenKey({
+      homeDir,
+      apiUrl: metadata.apiUrl,
+      createIfMissing: false,
+      allowLegacyFallback: true,
+    });
     token = decryptFileToken(
       {
         tokenCiphertext: metadata.tokenCiphertext,
         tokenIv: metadata.tokenIv,
         tokenTag: metadata.tokenTag,
       },
-      keyMaterial
+      keyState.keyMaterial
     );
-    if (requiresFileTokenRekey(metadata)) {
+    if (requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath) {
       resolvedMetadata = await persistEncryptedFileTokenMetadata({
         filePath,
         metadata,
@@ -414,6 +486,9 @@ export async function readStoredSession({ homeDir } = {}) {
         homeDir,
         rotateKey: true,
       });
+      if (keyState.usedLegacyKeyPath) {
+        await deleteLegacyFileTokenKey({ homeDir });
+      }
     }
   } else if (metadata.token) {
     token = metadata.token;
@@ -573,7 +648,7 @@ export async function writeStoredSession(
     nextMetadata.fileTokenKeyRotatedAt = null;
     nextMetadata.storageDowngraded = false;
     if (String(existingMetadata?.storage || "").trim() === "file") {
-      await deleteFileTokenKey({ homeDir });
+      await deleteFileTokenKey({ homeDir, apiUrl: normalizedApiUrl, includeLegacy: true });
     }
     await writeMetadata(filePath, nextMetadata);
   } else {
@@ -614,7 +689,7 @@ export async function clearStoredSession({ homeDir } = {}) {
       await keytar.deletePassword(metadata.keyringService || KEYRING_SERVICE, metadata.keyringAccount);
     }
   } else if (metadata && metadata.storage === "file") {
-    await deleteFileTokenKey({ homeDir });
+    await deleteFileTokenKey({ homeDir, apiUrl: metadata.apiUrl, includeLegacy: true });
   }
 
   try {

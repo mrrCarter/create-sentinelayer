@@ -258,6 +258,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           QUALITY_RUN_ID: ${{ steps.quality_gate.outputs.quality_run_id }}
           TARGET_SHA: ${{ github.sha }}
         run: |
@@ -265,6 +266,9 @@ jobs:
           test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality_run_id from Quality Summary gate step." && exit 1)
           timeout --preserve-status 120s gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
           test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json artifact from quality run ${QUALITY_RUN_ID}." && exit 1)
+          quality_tarball="$(tr -d '\r\n' < quality-proof/quality-build.tarball)"
+          test -n "${quality_tarball}" || (echo "::error::Missing tarball identity in quality-build.tarball for quality run ${QUALITY_RUN_ID}." && exit 1)
+          test -f "quality-proof/${quality_tarball}" || (echo "::error::Missing quality tarball quality-proof/${quality_tarball}." && exit 1)
           quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
           quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
           quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
@@ -274,6 +278,14 @@ jobs:
           fi
           if [[ -z "${quality_sha}" ]] || [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
             echo "::error::Quality artifact reproducibility proof mismatch (sha256=${quality_sha}, rebuild=${quality_rebuild_sha})."
+            exit 1
+          fi
+          timeout --preserve-status 90s gh attestation verify "quality-proof/${quality_tarball}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-proof/quality-build.attestation.verify.json
+          if ! jq -e --arg sha "${quality_sha}" '.. | select(type == "string") | select(. == $sha)' quality-proof/quality-build.attestation.verify.json >/dev/null; then
+            echo "::error::Attestation verification output did not include expected quality digest ${quality_sha}."
             exit 1
           fi
 
