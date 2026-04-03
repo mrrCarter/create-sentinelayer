@@ -348,6 +348,11 @@ async function pollCliAuthSession({
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
+    const remainingBudgetMs = Math.max(0, deadlineMs - resolveMonotonicNowMs());
+    if (remainingBudgetMs <= 0) {
+      break;
+    }
+    const pollRequestTimeoutMs = Math.max(250, Math.min(5_000, remainingBudgetMs));
     const pollIdempotencyKey = buildPollIdempotencyKey({
       sessionId: normalizedSessionId,
       pollClientId: normalizedPollClientId,
@@ -365,6 +370,7 @@ async function pollCliAuthSession({
           session_id: normalizedSessionId,
           challenge,
         },
+        timeoutMs: pollRequestTimeoutMs,
         signal,
       });
       consecutiveBackendFailures = 0;
@@ -410,7 +416,12 @@ async function pollCliAuthSession({
 
     const status = String(payload.status || "pending").trim().toLowerCase();
     if (status === "approved" && payload.auth_token) {
-      return payload;
+      const normalizedRequestId = requestId || null;
+      return {
+        ...payload,
+        request_id: normalizedRequestId,
+        requestId: normalizedRequestId,
+      };
     }
     if (TERMINAL_CLI_AUTH_POLL_STATUSES.has(status)) {
       const terminalConfig = TERMINAL_CLI_AUTH_POLL_STATUSES.get(status);

@@ -79,7 +79,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          env_json="$(gh api "repos/${REPO}/environments/security-review" -H "Accept: application/vnd.github+json")"
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/security-review" -H "Accept: application/vnd.github+json")"
           reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           if [[ "${reviewer_count}" -lt 1 ]]; then
             echo "::error::security-review environment must require at least one reviewer."
@@ -100,7 +100,7 @@ jobs:
           deadline=$((SECONDS + 900))
           while (( SECONDS < deadline )); do
             api_status=0
-            check_runs_json="$(gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || api_status=$?
+            check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
               echo "quality-summary check-run lookup timed out or failed (status=${api_status}); retrying."
               sleep 10
@@ -119,7 +119,7 @@ jobs:
               continue
             fi
             run_lookup_status=0
-            quality_run="$(gh api "repos/${REPO}/actions/runs/${anchored_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
+            quality_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${anchored_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
             if [[ "${run_lookup_status}" -ne 0 ]]; then
               echo "quality-gates run lookup failed for run_id=${anchored_run_id}; retrying."
               sleep 10

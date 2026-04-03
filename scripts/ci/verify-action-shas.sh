@@ -55,7 +55,7 @@ for workflow_file in "${workflow_files[@]}"; do
     if [[ "${uses_value}" == ./* ]] || [[ "${uses_value}" == docker://* ]]; then
       continue
     fi
-    if [[ ! "${uses_value}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$ ]]; then
+    if [[ ! "${uses_value}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$ ]]; then
       echo "::error file=${workflow_file}::Action reference '${uses_value}' must pin a full 40-character SHA."
       failures=$((failures + 1))
       continue
