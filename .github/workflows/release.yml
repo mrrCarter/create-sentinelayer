@@ -944,6 +944,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
+      QUALITY_RUN_ID: ${{ needs.verify-required-checks.outputs.quality_run_id || '' }}
       RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
       EVENT_NAME: ${{ github.event_name }}
     steps:
@@ -965,6 +966,44 @@ jobs:
         with:
           name: create-sentinelayer-release-bundle
           path: release-bundle
+
+      - name: Verify immutable artifact promotion lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_path="release-bundle/quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
+          tarball_name="$(tr -d '\r\n' < release-bundle/create-sentinelayer.tarball)"
+          expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Missing promoted release tarball digest." && exit 1)
+          manifest_artifact="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_commit="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_run_id="$(jq -r '.runId // ""' "${manifest_path}")"
+          test -n "${manifest_artifact}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
+          test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          if [[ "${manifest_artifact}" != "${tarball_name}" ]]; then
+            echo "::error::Release artifact identity mismatch (manifest=${manifest_artifact}, promoted=${tarball_name})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release artifact digest mismatch (manifest=${manifest_sha}, promoted=${expected_sha})."
+            exit 1
+          fi
+          if [[ -n "${TARGET_SHA}" ]] && [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Release artifact commit mismatch (manifest=${manifest_commit}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ -n "${QUALITY_RUN_ID}" ]] && [[ "${manifest_run_id}" != "${QUALITY_RUN_ID}" ]]; then
+            echo "::error::Release artifact run mismatch (manifest=${manifest_run_id}, quality=${QUALITY_RUN_ID})."
+            exit 1
+          fi
+          if [[ ! -f "release-bundle/${tarball_name}" ]]; then
+            echo "::error::Promoted tarball release-bundle/${tarball_name} is missing."
+            exit 1
+          fi
+          echo "Verified immutable artifact promotion lineage (run=${manifest_run_id}, sha=${manifest_sha})."
 
       - name: Verify promoted quality artifact attestation provenance
         shell: bash

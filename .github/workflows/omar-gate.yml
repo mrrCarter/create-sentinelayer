@@ -174,6 +174,15 @@ jobs:
           done
           echo "::error::Timed out waiting for Quality Summary check on ${TARGET_SHA}."
           exit 1
+      - name: Mask scan secrets in logs
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${SENTINELAYER_TOKEN}"
+          echo "::add-mask::${OPENAI_API_KEY}"
       - name: Validate Sentinelayer token secret
         shell: bash
         env:
@@ -188,15 +197,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
-      - name: Mask scan secrets in logs
-        shell: bash
-        env:
-          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          echo "::add-mask::${SENTINELAYER_TOKEN}"
-          echo "::add-mask::${OPENAI_API_KEY}"
       - name: Enforce pinned Omar action SHA policy
         shell: bash
         run: |

@@ -1,6 +1,6 @@
 name: Quality Gates
 # Deployment gate chain is enforced in this workflow:
-# lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> quality-summary
+# lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> deploy -> quality-summary
 
 on:
   pull_request:
@@ -341,6 +341,10 @@ jobs:
             echo "::error::Tarball identity mismatch across clean trees (baseline=${baseline_tarball}, rebuild=${rebuild_tarball})."
             exit 1
           fi
+          if ! cmp -s "${baseline_dir}/${baseline_tarball}" "${rebuild_dir}/${rebuild_tarball}"; then
+            echo "::error::Tarball byte mismatch across clean-tree builds."
+            exit 1
+          fi
           if ! cmp -s quality-build.files.baseline.txt quality-build.files.rebuild.txt; then
             echo "::error::Packed file list drift detected across clean-tree builds."
             exit 1
@@ -627,10 +631,28 @@ jobs:
           path: quality-deploy-stage/deploy.summary.json
           if-no-files-found: error
 
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-22.04
+    needs: [deploy-stage]
+    if: ${{ always() }}
+    steps:
+      - name: Enforce deploy-stage success
+        shell: bash
+        env:
+          RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_DEPLOY_STAGE}" != "success" ]]; then
+            echo "::error::deploy-stage must succeed before deploy (result=${RESULT_DEPLOY_STAGE})."
+            exit 1
+          fi
+          echo "Deploy gate passed."
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy-stage]
+    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy-stage, deploy]
     if: ${{ always() }}
     steps:
       - name: Evaluate gate outcomes
@@ -646,10 +668,11 @@ jobs:
           RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
           RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
           RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
+          RESULT_DEPLOY: ${{ needs.deploy.result }}
         run: |
           set -euo pipefail
           failures=0
-          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE; do
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_DEPLOY; do
             result="${!gate}"
             name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
             echo "${name}: ${result}"

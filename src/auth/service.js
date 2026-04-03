@@ -232,8 +232,9 @@ function throwIfAbortRequested(signal) {
 
 async function sleepWithAbortSignal(delayMs, signal) {
   throwIfAbortRequested(signal);
+  const normalizedDelayMs = Math.max(0, Number(delayMs) || 0);
   if (!signal || typeof signal !== "object") {
-    await sleep(delayMs);
+    await sleep(normalizedDelayMs, undefined, { ref: false });
     return;
   }
   await new Promise((resolve, reject) => {
@@ -254,7 +255,8 @@ async function sleepWithAbortSignal(delayMs, signal) {
     timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
       resolve();
-    }, Math.max(0, Number(delayMs) || 0));
+    }, normalizedDelayMs);
+    timer.unref?.();
   });
 }
 
