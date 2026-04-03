@@ -1,4 +1,6 @@
 name: Quality Gates
+# Deployment gate chain is enforced in this workflow:
+# lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> quality-summary
 
 on:
   pull_request:

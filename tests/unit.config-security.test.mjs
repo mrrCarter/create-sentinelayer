@@ -123,18 +123,31 @@ test("Unit config security: persisted config schema excludes secret keys while r
   assert.equal(parsed.openaiApiKey, VALID_OPENAI_KEY);
 });
 
-test("Unit config security: runtime secret schema accepts forward-compatible key formats", () => {
-  const parsed = getRuntimeSecretSchema().partial().parse({
-    sentinelayerToken: "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n",
-    openaiApiKey: "sk-proj-2a3b4c5d6e7f8g9h0i1j2k3l4m",
-    anthropicApiKey: "sk-v2-ant-3a4b5c6d7e8f9g0h1i2j3k4l5m",
-    googleApiKey: "AIzaSyA2b3C4d5E6f7G8h9I0j1K2l3M4",
-  });
+test("Unit config security: runtime secret schema rejects unknown token shapes by default", () => {
+  assert.throws(
+    () =>
+      getRuntimeSecretSchema().partial().parse({
+        sentinelayerToken: "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n",
+      }),
+    /SL-CONFIG-SECRET-SHAPE/i
+  );
+});
 
-  assert.equal(parsed.sentinelayerToken, "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n");
-  assert.equal(parsed.openaiApiKey, "sk-proj-2a3b4c5d6e7f8g9h0i1j2k3l4m");
-  assert.equal(parsed.anthropicApiKey, "sk-v2-ant-3a4b5c6d7e8f9g0h1i2j3k4l5m");
-  assert.equal(parsed.googleApiKey, "AIzaSyA2b3C4d5E6f7G8h9I0j1K2l3M4");
+test("Unit config security: runtime secret schema allows unknown token shapes only with explicit override flag", () => {
+  const previousOverride = process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE;
+  process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE = "1";
+  try {
+    const parsed = getRuntimeSecretSchema().partial().parse({
+      sentinelayerToken: "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n",
+    });
+    assert.equal(parsed.sentinelayerToken, "tokv2_1a2b3c4d5e6f7g8h9i0j1k2l3m4n");
+  } finally {
+    if (previousOverride === undefined) {
+      delete process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE;
+    } else {
+      process.env.SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE = previousOverride;
+    }
+  }
 });
 
 test("Unit config security: runtime secret schema rejects whitespace token values", () => {

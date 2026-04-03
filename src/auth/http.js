@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt } from "node:crypto";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 export const DEFAULT_REQUEST_MAX_ATTEMPTS = 3;
@@ -21,6 +21,15 @@ const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 
 const circuitBreakerStates = new Map();
 let requestJitterFallbackCounter = 0;
+const REQUEST_JITTER_STARTUP_SECRET = initializeRequestJitterStartupSecret();
+
+function initializeRequestJitterStartupSecret() {
+  try {
+    return randomBytes(32);
+  } catch {
+    return null;
+  }
+}
 
 function normalizeApiError(errorPayload = {}) {
   if (!errorPayload || typeof errorPayload !== "object" || Array.isArray(errorPayload)) {
@@ -226,14 +235,40 @@ function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
 }
 
 function createRequestJitterSeed(url, method = "GET") {
+  if (!REQUEST_JITTER_STARTUP_SECRET) {
+    throw new SentinelayerApiError("Unable to initialize retry jitter entropy.", {
+      status: 500,
+      code: "JITTER_ENTROPY_UNAVAILABLE",
+    });
+  }
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
   const normalizedUrl = String(url || "").trim();
   try {
     const entropy = randomBytes(16).toString("hex");
-    return `${normalizedMethod}:${normalizedUrl}:${process.pid}:${resolveMonotonicEpochMs()}:${entropy}`;
+    return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
+      .update(
+        [
+          "primary",
+          normalizedMethod,
+          normalizedUrl,
+          String(process.pid),
+          String(resolveMonotonicEpochMs()),
+          entropy,
+        ].join(":")
+      )
+      .digest("hex");
   } catch {
     requestJitterFallbackCounter += 1;
-    return `${normalizedMethod}:${normalizedUrl}:${process.pid}:${resolveMonotonicEpochMs()}:${requestJitterFallbackCounter}`;
+    return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
+      .update(
+        [
+          "fallback",
+          normalizedMethod,
+          normalizedUrl,
+          String(Math.max(0, requestJitterFallbackCounter)),
+        ].join(":")
+      )
+      .digest("hex");
   }
 }
 

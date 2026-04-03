@@ -226,7 +226,11 @@ jobs:
                 exit 1
               fi
               release_path_execution="true"
-              publish_requested="$(normalize_bool "${INPUT_EXECUTE_PUBLISH:-false}")"
+              requested_manual_publish="$(normalize_bool "${INPUT_EXECUTE_PUBLISH:-false}")"
+              if [[ "${requested_manual_publish}" == "true" ]]; then
+                echo "::warning::workflow_dispatch publish is disabled in this workflow; forcing verification-only mode."
+              fi
+              publish_requested="false"
               dry_run="$(normalize_bool "${INPUT_DRY_RUN:-false}")"
               ;;
             *)
@@ -446,7 +450,7 @@ jobs:
                   [.workflow_runs[]
                     | select((.head_sha // "") == $sha)
                     | select(((.path // "") | split("@")[0]) == $path)
-                    | select((["pull_request", "push"] | index(.event // "")) != null)
+                    | select((.event // "") == "pull_request" or (.event // "") == "push")
                     | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
                   ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
                 ')"
@@ -508,7 +512,8 @@ jobs:
                 [.workflow_runs[]
                   | select((.head_sha // "") == $sha)
                   | select(((.path // "") | split("@")[0]) == $path)
-                  | select((($allowedEvents | index(.event // "")) != null))
+                  | (.event // "") as $event
+                  | select((($allowedEvents | index($event)) != null))
                   | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
                 ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | reverse
               ')"

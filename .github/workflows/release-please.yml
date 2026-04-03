@@ -176,7 +176,7 @@ jobs:
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
                 | select(((.path // "") | split("@")[0]) == $path)
-                | select((["push", "pull_request"] | index(.event // "")) != null)
+                | select((.event // "") == "push" or (.event // "") == "pull_request")
               ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
             ')"
             if [[ -z "${latest_quality_run}" ]]; then
@@ -396,7 +396,7 @@ jobs:
             --repo "${REPO}" \
             --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
             --format json > quality-proof/quality-build.attestation.verify.json
-          if ! jq -e --arg sha "${quality_sha}" '.. | select(type == "string") | select(. == $sha)' quality-proof/quality-build.attestation.verify.json >/dev/null; then
+          if ! jq -e --arg sha "${quality_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($sha) != null' quality-proof/quality-build.attestation.verify.json >/dev/null; then
             echo "::error::Attestation verification output did not include expected quality digest ${quality_sha}."
             exit 1
           fi

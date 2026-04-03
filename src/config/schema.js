@@ -1,3 +1,5 @@
+import process from "node:process";
+
 import { z } from "zod";
 
 function emptyToUndefined(value) {
@@ -11,12 +13,21 @@ function emptyToUndefined(value) {
 const optionalTrimmedString = z.preprocess(emptyToUndefined, z.string().min(1)).optional();
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url()).optional();
 const FALLBACK_SECRET_PATTERN = /^\S+$/u;
+const ALLOW_UNKNOWN_SECRET_SHAPE_ENV = "SENTINELAYER_ALLOW_UNKNOWN_TOKEN_SHAPE";
+
+function shouldAllowUnknownSecretShapes() {
+  const rawValue = String(process.env[ALLOW_UNKNOWN_SECRET_SHAPE_ENV] || "")
+    .trim()
+    .toLowerCase();
+  return rawValue === "1" || rawValue === "true" || rawValue === "yes" || rawValue === "on";
+}
 
 function createOptionalSecretSchema({
   field,
   minLength = 20,
   maxLength = 512,
   providerPatterns = [],
+  allowUnknownTokenShape = false,
 }) {
   return z
     .preprocess(
@@ -32,9 +43,11 @@ function createOptionalSecretSchema({
               return true;
             }
           }
-          // Forward-compatible fallback: allow any non-whitespace token shape.
-          return FALLBACK_SECRET_PATTERN.test(value);
-        }, `${field} must match a documented provider token shape or a non-whitespace fallback token format.`)
+          if (allowUnknownTokenShape && shouldAllowUnknownSecretShapes()) {
+            return FALLBACK_SECRET_PATTERN.test(value);
+          }
+          return false;
+        }, `${field} must match a supported provider token shape [SL-CONFIG-SECRET-SHAPE].`)
     )
     .optional();
 }
@@ -53,21 +66,25 @@ const secretConfigShape = {
     field: "sentinelayerToken",
     minLength: 24,
     providerPatterns: [/^(?:sl_[A-Za-z0-9._~:/+=-]{20,}|[A-Fa-f0-9]{32,})$/],
+    allowUnknownTokenShape: true,
   }),
   openaiApiKey: createOptionalSecretSchema({
     field: "openaiApiKey",
     minLength: 20,
     providerPatterns: [/^sk-(?:proj-)?[A-Za-z0-9._-]{16,}$/],
+    allowUnknownTokenShape: true,
   }),
   anthropicApiKey: createOptionalSecretSchema({
     field: "anthropicApiKey",
     minLength: 20,
     providerPatterns: [/^sk-ant-[A-Za-z0-9._-]{12,}$/],
+    allowUnknownTokenShape: true,
   }),
   googleApiKey: createOptionalSecretSchema({
     field: "googleApiKey",
     minLength: 20,
     providerPatterns: [/^AIza[A-Za-z0-9_-]{20,}$/],
+    allowUnknownTokenShape: true,
   }),
 };
 
