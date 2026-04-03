@@ -293,6 +293,7 @@ async function promoteCandidateToCanonical(candidatePath, canonicalPath) {
   }
   await removeWithRetry(canonicalPath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
   await renameWithRetry(candidatePath, canonicalPath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+  await syncDirectoryBestEffort(path.dirname(canonicalPath));
 }
 
 async function reconcileAtomicArtifacts(filePath) {
@@ -330,6 +331,7 @@ async function tryLoadAtomicFallbackFile(filePath, fallbackPath) {
     const payload = await readJsonFile(fallbackPath);
     try {
       await renameWithRetry(fallbackPath, filePath, { maxAttempts: 3 });
+      await syncDirectoryBestEffort(path.dirname(filePath));
     } catch (promoteError) {
       if (!isAtomicRenameRetryable(promoteError)) {
         throw promoteError;

@@ -3,7 +3,11 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { getSharedRequestJitterSalt, requestJson } from "../src/auth/http.js";
+import {
+  __resetAuthHttpCircuitBreakerForTests,
+  getSharedRequestJitterSalt,
+  requestJson,
+} from "../src/auth/http.js";
 
 async function startMockServer(handler) {
   const server = createServer(handler);
@@ -97,6 +101,46 @@ test("Unit auth http: requestJson serializes object payloads as JSON by default"
     assert.equal(response.body, JSON.stringify({ value: 42 }));
   } finally {
     await mock.close();
+  }
+});
+
+test("Unit auth http: sustained 429 responses open rate-limit circuit and stop retries", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+  let calls = 0;
+  const rateLimitBody = JSON.stringify({
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requests",
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/rate-limit", {
+          method: "GET",
+          maxAttempts: 5,
+          retryBackoffMs: 1,
+          fetchImpl: async () => {
+            calls += 1;
+            return new Response(rateLimitBody, {
+              status: 429,
+              headers: {
+                "Content-Type": "application/json",
+                "Retry-After": "1",
+              },
+            });
+          },
+        }),
+      (error) => {
+        assert.equal(error?.status, 429);
+        assert.equal(error?.code, "RATE_LIMITED");
+        assert.ok(Number(error?.retryAfterMs || 0) > 0);
+        return true;
+      }
+    );
+    assert.ok(calls <= 2, `Expected retry loop to stop after rate-limit circuit opens, got ${calls} calls.`);
+  } finally {
+    __resetAuthHttpCircuitBreakerForTests();
   }
 });
 

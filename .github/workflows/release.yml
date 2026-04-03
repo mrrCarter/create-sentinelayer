@@ -186,6 +186,45 @@ jobs:
             echo "Verified signed release provenance for tag '${tag_name}' (commit=${target_sha})."
           fi
 
+      - name: Assert rollback-readiness gate contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          if (!/\n  rollback-readiness:\s*\n/m.test(content)) {
+            console.error("::error::Missing rollback-readiness job in release workflow.");
+            process.exit(1);
+          }
+          const publishNeedsMatch = content.match(/publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!publishNeedsMatch) {
+            console.error("::error::Unable to resolve publish.needs in release workflow.");
+            process.exit(1);
+          }
+          const publishNeeds = publishNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!publishNeeds.includes("rollback-readiness")) {
+            console.error("::error::release publish path must depend on rollback-readiness.");
+            process.exit(1);
+          }
+          const authorizeNeedsMatch = content.match(/authorize-production-publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!authorizeNeedsMatch) {
+            console.error("::error::Unable to resolve authorize-production-publish.needs in release workflow.");
+            process.exit(1);
+          }
+          const authorizeNeeds = authorizeNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!authorizeNeeds.includes("rollback-readiness")) {
+            console.error("::error::authorize-production-publish must depend on rollback-readiness.");
+            process.exit(1);
+          }
+          NODE
+
       - name: Normalize release tag inputs
         id: flags
         shell: bash

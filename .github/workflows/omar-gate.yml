@@ -41,6 +41,9 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OMAR_MODEL_ID: "gpt-5.3-codex"
+  OMAR_FALLBACK_MODEL_ID: "gpt-4.1-mini"
+  OMAR_MODEL_POLICY_SHA256: "a213b6bacc3fd8929301235755e860c0a6040081c479f5dc42bbc8a8d96ee1a0"
 
 concurrency:
   group: omar-gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -207,6 +210,23 @@ jobs:
             echo "::error::Omar action SHA drift detected (configured=${configured_sha}, allowlist=${expected_sha})."
             exit 1
           fi
+      - name: Validate pinned Omar model policy
+        shell: bash
+        env:
+          OMAR_MODEL_ID: ${{ env.OMAR_MODEL_ID }}
+          OMAR_FALLBACK_MODEL_ID: ${{ env.OMAR_FALLBACK_MODEL_ID }}
+          OMAR_MODEL_POLICY_SHA256: ${{ env.OMAR_MODEL_POLICY_SHA256 }}
+        run: |
+          set -euo pipefail
+          test -n "${OMAR_MODEL_ID}" || (echo "::error::Missing OMAR_MODEL_ID." && exit 1)
+          test -n "${OMAR_FALLBACK_MODEL_ID}" || (echo "::error::Missing OMAR_FALLBACK_MODEL_ID." && exit 1)
+          test -n "${OMAR_MODEL_POLICY_SHA256}" || (echo "::error::Missing OMAR_MODEL_POLICY_SHA256." && exit 1)
+          descriptor="${OMAR_MODEL_ID}|${OMAR_FALLBACK_MODEL_ID}"
+          resolved_sha="$(printf '%s' "${descriptor}" | sha256sum | awk '{print $1}')"
+          if [[ "${resolved_sha}" != "${OMAR_MODEL_POLICY_SHA256}" ]]; then
+            echo "::error::Omar model policy digest mismatch (expected=${OMAR_MODEL_POLICY_SHA256}, actual=${resolved_sha})."
+            exit 1
+          fi
       - name: Run Omar Gate
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
@@ -218,9 +238,9 @@ jobs:
           sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
+          model: ${{ env.OMAR_MODEL_ID }}
+          codex_model: ${{ env.OMAR_MODEL_ID }}
+          model_fallback: ${{ env.OMAR_FALLBACK_MODEL_ID }}
           use_codex: "true"
           codex_only: "false"
           llm_failure_policy: block
@@ -278,6 +298,8 @@ jobs:
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
           echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- model_policy: \`${{ env.OMAR_MODEL_ID }} | fallback=${{ env.OMAR_FALLBACK_MODEL_ID }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- model_policy_sha256: \`${{ env.OMAR_MODEL_POLICY_SHA256 }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"

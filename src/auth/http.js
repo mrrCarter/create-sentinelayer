@@ -15,6 +15,8 @@ const MAX_EXPONENTIAL_RETRY_DELAY_MS = 15_000;
 const MIN_JITTER_RETRY_DELAY_MS = 100;
 const RANDOM_JITTER_BUCKETS = 1000;
 const MIN_RANDOM_JITTER_RATIO = 0.25;
+const RATE_LIMIT_CIRCUIT_THRESHOLD = 2;
+const RATE_LIMIT_CIRCUIT_COOLDOWN_MS = 60_000;
 const MAX_REQUEST_BODY_BYTES = 256_000;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
@@ -124,7 +126,10 @@ function resolveCircuitBreakerScope(url) {
 function createCircuitBreakerState(nowEpochMs = Date.now()) {
   return {
     consecutiveFailures: 0,
+    consecutiveRateLimits: 0,
     openedAtEpochMs: 0,
+    rateLimitOpenedAtEpochMs: 0,
+    rateLimitCooldownMs: RATE_LIMIT_CIRCUIT_COOLDOWN_MS,
     touchedAtEpochMs: nowEpochMs,
   };
 }
@@ -168,7 +173,10 @@ function resetCircuitBreaker(scope = null, nowEpochMs = Date.now()) {
   }
   const state = getCircuitBreakerState(scope, nowEpochMs);
   state.consecutiveFailures = 0;
+  state.consecutiveRateLimits = 0;
   state.openedAtEpochMs = 0;
+  state.rateLimitOpenedAtEpochMs = 0;
+  state.rateLimitCooldownMs = RATE_LIMIT_CIRCUIT_COOLDOWN_MS;
   state.touchedAtEpochMs = nowEpochMs;
   pruneCircuitBreakerStates(nowEpochMs);
 }
@@ -188,6 +196,56 @@ function registerCircuitFailure(scope, nowEpochMs = Date.now()) {
     state.openedAtEpochMs = nowEpochMs;
   }
   pruneCircuitBreakerStates(nowEpochMs);
+}
+
+function registerRateLimitFailure(scope, retryAfterMs = null, nowEpochMs = Date.now()) {
+  const state = getCircuitBreakerState(scope, nowEpochMs);
+  state.consecutiveRateLimits = Math.max(0, Number(state.consecutiveRateLimits || 0)) + 1;
+  state.touchedAtEpochMs = nowEpochMs;
+  const retryAfterCooldownMs =
+    Number.isFinite(Number(retryAfterMs)) && Number(retryAfterMs) > 0
+      ? Math.min(Number(retryAfterMs), MAX_RETRY_AFTER_DELAY_MS)
+      : 0;
+  const cooldownMs = Math.max(RATE_LIMIT_CIRCUIT_COOLDOWN_MS, retryAfterCooldownMs);
+  state.rateLimitCooldownMs = cooldownMs;
+  if (state.consecutiveRateLimits >= RATE_LIMIT_CIRCUIT_THRESHOLD) {
+    state.rateLimitOpenedAtEpochMs = nowEpochMs;
+  }
+  pruneCircuitBreakerStates(nowEpochMs);
+}
+
+function getRateLimitRetryAfterMs(scope, nowEpochMs = Date.now()) {
+  const state = getCircuitBreakerState(scope, nowEpochMs);
+  const openedAtEpochMs = Number(state.rateLimitOpenedAtEpochMs || 0);
+  if (!openedAtEpochMs) {
+    return 0;
+  }
+  const cooldownMs = Math.max(
+    RATE_LIMIT_CIRCUIT_COOLDOWN_MS,
+    Number(state.rateLimitCooldownMs || RATE_LIMIT_CIRCUIT_COOLDOWN_MS)
+  );
+  const elapsedMs = Math.max(0, nowEpochMs - openedAtEpochMs);
+  return Math.max(0, cooldownMs - elapsedMs);
+}
+
+function isRateLimitCircuitOpen(scope, nowEpochMs = Date.now()) {
+  const state = getCircuitBreakerState(scope, nowEpochMs);
+  const openedAtEpochMs = Number(state.rateLimitOpenedAtEpochMs || 0);
+  if (!openedAtEpochMs) {
+    return false;
+  }
+  const cooldownMs = Math.max(
+    RATE_LIMIT_CIRCUIT_COOLDOWN_MS,
+    Number(state.rateLimitCooldownMs || RATE_LIMIT_CIRCUIT_COOLDOWN_MS)
+  );
+  if (nowEpochMs - openedAtEpochMs >= cooldownMs) {
+    state.consecutiveRateLimits = 0;
+    state.rateLimitOpenedAtEpochMs = 0;
+    state.rateLimitCooldownMs = RATE_LIMIT_CIRCUIT_COOLDOWN_MS;
+    state.touchedAtEpochMs = nowEpochMs;
+    return false;
+  }
+  return true;
 }
 
 function isCircuitOpen(scope, nowEpochMs = Date.now()) {
@@ -581,6 +639,13 @@ export async function requestJson(
 ) {
   const circuitScope = resolveCircuitBreakerScope(url);
   const requestJitterSeed = createRequestJitterSeed(url, method);
+  if (isRateLimitCircuitOpen(circuitScope)) {
+    throw new SentinelayerApiError("Upstream rate limit circuit is open. Retry after cooldown.", {
+      status: 429,
+      code: "RATE_LIMITED",
+      retryAfterMs: getRateLimitRetryAfterMs(circuitScope),
+    });
+  }
   if (isCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Upstream circuit breaker is open. Retry after cooldown.", {
       status: 503,
@@ -667,6 +732,19 @@ export async function requestJson(
       const shouldRecordCircuitFailure = shouldRetry(normalizedError);
       if (shouldRecordCircuitFailure) {
         registerCircuitFailure(circuitScope);
+      }
+      if (Number(normalizedError.status || 0) === 429) {
+        registerRateLimitFailure(circuitScope, normalizedError.retryAfterMs);
+        if (isRateLimitCircuitOpen(circuitScope)) {
+          throw new SentinelayerApiError(
+            "Upstream rate limit circuit is open. Retry after cooldown.",
+            {
+              status: 429,
+              code: "RATE_LIMITED",
+              retryAfterMs: getRateLimitRetryAfterMs(circuitScope),
+            }
+          );
+        }
       }
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
         await sleep(
