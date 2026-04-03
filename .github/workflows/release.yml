@@ -82,13 +82,19 @@ jobs:
             exit 0
           fi
           permission="$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
+          trusted_actor="false"
           case "${permission}" in
             admin|maintain|write)
+              trusted_actor="true"
               echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
-              exit 0
               ;;
           esac
-          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${ACTOR}" == "github-actions[bot]" ]]; then
+          tag_name=""
+          ref_type=""
+          ref_sha=""
+          target_sha=""
+          annotated_tag_json=""
+          if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
             tag_name="${GITHUB_REF_VALUE#refs/tags/}"
             tag_ref_json="$(gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
             ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
@@ -109,6 +115,8 @@ jobs:
               echo "::error::Unable to resolve commit SHA for tag '${tag_name}'."
               exit 1
             fi
+          fi
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${ACTOR}" == "github-actions[bot]" ]]; then
             release_runs_json="$(gh api "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
             release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release-please.yml" --arg repo "${REPO}" '
               [.workflow_runs[]
@@ -125,10 +133,28 @@ jobs:
               exit 1
             fi
             echo "Trusted bot invoker '${ACTOR}' validated via release-please run ${release_run_id} on commit ${target_sha}."
-            exit 0
+            trusted_actor="true"
           fi
-          echo "::error::Actor '${ACTOR}' is not authorized for release event '${EVENT_NAME}' on '${GITHUB_REF_VALUE}' (permission='${permission}')."
-          exit 1
+          if [[ "${trusted_actor}" != "true" ]]; then
+            echo "::error::Actor '${ACTOR}' is not authorized for release event '${EVENT_NAME}' on '${GITHUB_REF_VALUE}' (permission='${permission}')."
+            exit 1
+          fi
+          if [[ -n "${tag_name}" ]]; then
+            if [[ "${ref_type}" == "tag" ]]; then
+              tag_verified="$(echo "${annotated_tag_json}" | jq -r '.verification.verified // false')"
+              if [[ "${tag_verified}" != "true" ]]; then
+                echo "::error::Annotated tag '${tag_name}' is not cryptographically verified."
+                exit 1
+              fi
+            fi
+            commit_json="$(gh api "repos/${REPO}/commits/${target_sha}" -H "Accept: application/vnd.github+json")"
+            commit_verified="$(echo "${commit_json}" | jq -r '.commit.verification.verified // false')"
+            if [[ "${commit_verified}" != "true" ]]; then
+              echo "::error::Tag target commit '${target_sha}' is not cryptographically verified."
+              exit 1
+            fi
+            echo "Verified signed release provenance for tag '${tag_name}' (commit=${target_sha})."
+          fi
 
       - name: Normalize dispatch and tag inputs
         id: flags

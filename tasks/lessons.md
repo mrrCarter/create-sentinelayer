@@ -156,3 +156,7 @@
 - Release provenance gates need a squash-merge fallback path (`target commit -> merged PR head -> Omar check-run`) so release automation does not deadlock on commits without direct same-SHA PR runs.
 - Config key enumeration should default to persisted non-secret keys and require explicit opt-in for secret-bearing key namespaces to prevent accidental generic key disclosure.
 - File-lock reliability for daemon ledgers should include owner-token metadata, lock-file fsync, ownership-aware release, and stale-lock reclaim with metadata compare-before-remove semantics.
+- CLI auth error rendering should default to safe high-level messages only; internal status/code context should stay behind explicit debug gating.
+- Required PR quality workflows should avoid `cancel-in-progress` to prevent transient missing/queued required checks and merge-gate race windows.
+- Deterministic build-proof lanes are stronger when both packs are produced from isolated clean git clones and validated by both digest parity and packed-file-list parity.
+- Release tag trust gates should verify both annotated tag object signatures (when present) and target commit verification before allowing publish-path execution.

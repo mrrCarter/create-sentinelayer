@@ -102,7 +102,10 @@ export function formatApiError(error) {
   }
   const safeMessage = resolveSafeApiErrorMessage(error);
   const requestId = formatDebugRequestId(error.requestId);
-  return `${safeMessage} [${error.code}] status=${error.status}${requestId}`;
+  if (shouldExposeDebugRequestId()) {
+    return `${safeMessage} [${error.code}] status=${error.status}${requestId}`;
+  }
+  return safeMessage;
 }
 
 function printAuthHint() {

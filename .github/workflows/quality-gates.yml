@@ -16,7 +16,7 @@ env:
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   lint:
@@ -257,26 +257,38 @@ jobs:
           npm config set cache "${cache_dir}"
           npm --version
 
-      - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts
-
       - name: Build package tarball and digest
         shell: bash
         run: |
           set -euo pipefail
-          npm config set cache "${NPM_CACHE_DIR}"
           lock_hash_expected="$(sha256sum package-lock.json | awk '{print $1}')"
-          pack_json="$(npm pack --json)"
-          tarball="$(echo "${pack_json}" | jq -r '.[0].filename')"
-          test -n "${tarball}" || (echo "::error::Unable to resolve packed tarball filename." && exit 1)
-          baseline_hash="$(sha256sum "${tarball}" | awk '{print $1}')"
-          printf "%s\n" "${baseline_hash}" > quality-build.sha256
-          printf "%s\n" "${tarball}" > quality-build.tarball
+          baseline_dir="$(mktemp -d)"
           rebuild_dir="$(mktemp -d)"
-          git archive --format=tar HEAD | tar -xf - -C "${rebuild_dir}"
+          baseline_cache_dir="$(mktemp -d)"
+          rebuild_cache_dir="$(mktemp -d)"
+          git clone --local --quiet "." "${baseline_dir}"
+          git -C "${baseline_dir}" checkout --detach "${GITHUB_SHA}" >/dev/null
+          git -C "${baseline_dir}" clean -ffdqx
+          git clone --local --quiet "." "${rebuild_dir}"
+          git -C "${rebuild_dir}" checkout --detach "${GITHUB_SHA}" >/dev/null
+          git -C "${rebuild_dir}" clean -ffdqx
+          pushd "${baseline_dir}" >/dev/null
+          npm config set registry "https://registry.npmjs.org/"
+          npm config set cache "${baseline_cache_dir}"
+          timeout --preserve-status 8m npm ci --ignore-scripts
+          baseline_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
+          if [[ "${baseline_lock_hash}" != "${lock_hash_expected}" ]]; then
+            echo "::error::Lockfile drift detected during baseline clean-tree build (expected=${lock_hash_expected}, actual=${baseline_lock_hash})."
+            exit 1
+          fi
+          baseline_pack_json="$(npm pack --json)"
+          baseline_tarball="$(echo "${baseline_pack_json}" | jq -r '.[0].filename')"
+          test -n "${baseline_tarball}" || (echo "::error::Unable to resolve baseline packed tarball filename." && exit 1)
+          baseline_hash="$(sha256sum "${baseline_tarball}" | awk '{print $1}')"
+          tar -tf "${baseline_tarball}" | LC_ALL=C sort > "${GITHUB_WORKSPACE}/quality-build.files.baseline.txt"
+          popd >/dev/null
           pushd "${rebuild_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
-          rebuild_cache_dir="$(mktemp -d)"
           npm config set cache "${rebuild_cache_dir}"
           timeout --preserve-status 8m npm ci --ignore-scripts
           rebuild_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
@@ -288,7 +300,19 @@ jobs:
           rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
           test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)
           rebuild_hash="$(sha256sum "${rebuild_tarball}" | awk '{print $1}')"
+          tar -tf "${rebuild_tarball}" | LC_ALL=C sort > "${GITHUB_WORKSPACE}/quality-build.files.rebuild.txt"
           popd >/dev/null
+          if [[ "${baseline_tarball}" != "${rebuild_tarball}" ]]; then
+            echo "::error::Tarball identity mismatch across clean trees (baseline=${baseline_tarball}, rebuild=${rebuild_tarball})."
+            exit 1
+          fi
+          if ! cmp -s quality-build.files.baseline.txt quality-build.files.rebuild.txt; then
+            echo "::error::Packed file list drift detected across clean-tree builds."
+            exit 1
+          fi
+          cp "${baseline_dir}/${baseline_tarball}" "./${baseline_tarball}"
+          printf "%s\n" "${baseline_hash}" > quality-build.sha256
+          printf "%s\n" "${baseline_tarball}" > quality-build.tarball
           printf "%s\n" "${rebuild_hash}" > quality-build.rebuild.sha256
           if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
             echo "::error::Non-deterministic quality build hash detected (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
@@ -300,7 +324,7 @@ jobs:
             "workflow": "quality-gates",
             "runId": "${GITHUB_RUN_ID}",
             "commitSha": "${GITHUB_SHA}",
-            "artifactName": "${tarball}",
+            "artifactName": "${baseline_tarball}",
             "sha256": "${baseline_hash}",
             "rebuildSha256": "${rebuild_hash}"
           }
@@ -316,6 +340,8 @@ jobs:
             quality-build.rebuild.sha256
             quality-build.tarball
             quality-build.manifest.json
+            quality-build.files.baseline.txt
+            quality-build.files.rebuild.txt
           if-no-files-found: error
 
       - name: Attest quality build provenance

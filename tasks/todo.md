@@ -628,4 +628,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `157/157`; coverage statements `90.19%`, branches `70.45%`, functions `91.51%`, lines `90.19%`).
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
-- [ ] Push seventeenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push seventeenth-cycle fixes (`0e3d0aa`) and rerun Omar (`run_id=23943129963`): Omar remains `P2=6` with new focus on auth CLI error surface verbosity, quality-gates PR concurrency policy, deterministic clean-tree build proof rigor, release tag-signature provenance checks, and long-lived secret exposure in third-party Omar action inputs.
+- [x] Eighteenth-cycle hardening applied for active residual findings:
+  - `src/commands/auth.js`: `formatApiError` now emits only safe user message by default; `[code] status` remains debug-only behind `SL_DEBUG_ERRORS`.
+  - `tests/unit.auth-command-errors.test.mjs`: updated assertions for default redaction and debug-only code/status exposure.
+  - `.github/workflows/quality-gates.yml`: required quality workflow concurrency is now non-canceling (`cancel-in-progress: false`) to avoid PR check race instability.
+  - `.github/workflows/quality-gates.yml`: build reproducibility now runs from two independent clean git clones (`checkout --detach` + `git clean -ffdqx`), compares sha256 and sorted packed file list parity, and uploads file-list proofs.
+  - `.github/workflows/release.yml`: trusted-invoker gate now enforces cryptographic verification for annotated tags and tag target commits before release path execution.
+- [x] Eighteenth-cycle local evidence:
+  - `npm run verify` (pass, e2e `84/84`; unit `157/157`; coverage statements `90.19%`, branches `70.45%`, functions `91.51%`, lines `90.19%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [ ] Push eighteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
