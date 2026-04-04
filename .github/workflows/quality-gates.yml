@@ -16,6 +16,7 @@ permissions: {}
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NPM_VERSION_PIN: "10.2.4"
+  NPM_VERSION_LEGACY_PIN: "10.7.0"
   NODE_VERSION_PIN: "20.11.1"
   NODE_VERSION_LEGACY_PIN: "18.20.4"
 
@@ -44,9 +45,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          expected_npm_version="${NPM_VERSION_PIN}"
+          if [[ "${{ matrix.node }}" == "${NODE_VERSION_LEGACY_PIN}" ]]; then
+            expected_npm_version="${NPM_VERSION_LEGACY_PIN}"
+          fi
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
-          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
-            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+          if [[ "${resolved_npm_version}" != "${expected_npm_version}" ]]; then
+            echo "::error::npm pin mismatch (expected='${expected_npm_version}', actual='${resolved_npm_version}')."
             exit 1
           fi
 
