@@ -34,8 +34,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  omar_gate_untrusted:
+    name: Omar Gate (Untrusted PR)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    if: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.repo.fork == true) }}
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Validate untrusted pull_request profile
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          if [[ "${HEAD_REPOSITORY}" == "${REPOSITORY}" ]] && [[ "${HEAD_IS_FORK}" != "true" ]]; then
+            echo "::error::Untrusted Omar profile must run only for fork-origin pull requests."
+            exit 1
+          fi
+      - name: Run deterministic untrusted Omar baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/verify-action-shas.sh \
+            .github/workflows/quality-gates.yml \
+            .github/workflows/release.yml \
+            .github/workflows/release-publish.yml \
+            .github/workflows/rollback.yml \
+            .github/workflows/omar-gate.yml
+          node scripts/ci/verify-workflow-permissions.js \
+            .github/workflows/quality-gates.yml \
+            .github/workflows/omar-gate.yml \
+            .github/workflows/release.yml \
+            .github/workflows/release-publish.yml \
+            .github/workflows/release-please.yml \
+            .github/workflows/rollback.yml
+          node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml
+      - name: Emit untrusted Omar summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- profile: \`untrusted-pr\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- findings: \`deterministic-policy-checks-only\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- note: \`Fork-origin pull requests run without secrets and execute deterministic CI policy checks.\`" >> "$GITHUB_STEP_SUMMARY"
+
   omar_gate:
-    name: Omar Gate
+    name: Omar Gate (Trusted)
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false) }}
@@ -410,3 +460,44 @@ jobs:
               fi
             done
           done
+
+  omar_gate_result:
+    name: Omar Gate
+    runs-on: ubuntu-22.04
+    if: ${{ always() }}
+    needs: [omar_gate_untrusted, omar_gate]
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve Omar profile outcome
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          TRUSTED_RESULT: ${{ needs.omar_gate.result }}
+          UNTRUSTED_RESULT: ${{ needs.omar_gate_untrusted.result }}
+        run: |
+          set -euo pipefail
+          trusted_result="$(echo "${TRUSTED_RESULT}" | tr -d '\r' | xargs || true)"
+          untrusted_result="$(echo "${UNTRUSTED_RESULT}" | tr -d '\r' | xargs || true)"
+          is_untrusted_pr="false"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]] || [[ "${HEAD_IS_FORK}" == "true" ]]; then
+              is_untrusted_pr="true"
+            fi
+          fi
+          if [[ "${is_untrusted_pr}" == "true" ]]; then
+            if [[ "${untrusted_result}" != "success" ]]; then
+              echo "::error::Untrusted Omar profile did not succeed (result='${untrusted_result}')."
+              exit 1
+            fi
+            echo "Omar Gate passed via untrusted deterministic profile."
+            exit 0
+          fi
+          if [[ "${trusted_result}" != "success" ]]; then
+            echo "::error::Trusted Omar profile did not succeed (result='${trusted_result}')."
+            exit 1
+          fi
+          echo "Omar Gate passed via trusted secrets-backed profile."

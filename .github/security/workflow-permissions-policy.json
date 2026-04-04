@@ -66,6 +66,18 @@
     },
     ".github/workflows/omar-gate.yml": {
       "jobs": {
+        "omar_gate_untrusted": {
+          "required": {
+            "contents": "read",
+            "checks": "read",
+            "pull-requests": "write"
+          },
+          "max": {
+            "contents": "read",
+            "checks": "read",
+            "pull-requests": "write"
+          }
+        },
         "omar_gate": {
           "required": {
             "contents": "read",
@@ -76,6 +88,14 @@
             "contents": "read",
             "checks": "write",
             "pull-requests": "write"
+          }
+        },
+        "omar_gate_result": {
+          "required": {
+            "contents": "read"
+          },
+          "max": {
+            "contents": "read"
           }
         }
       }

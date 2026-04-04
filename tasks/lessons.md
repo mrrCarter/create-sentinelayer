@@ -277,6 +277,11 @@
 - "Rollback readiness" findings are reduced when release workflows run rollback validation as a first-class transaction gate (`uses: rollback.yml`) and then verify rollback-lineage artifacts against preflight commit/digest contracts before publish authorization.
 - CI immutability findings are easier to suppress when lint includes explicit structural checks that deploy-path jobs only consume immutable build artifacts and forbid rebuild commands (`npm pack`, `npm publish`, `npm run build`) in promotion stages.
 - For automated release publishing, add a second human gate with explicit distinctness checks (`initiator != primary approver != second approver`) and persist both approval identities in publish evidence artifacts.
+- Fork-origin PRs still need a deterministic Omar check result; use split trusted/untrusted jobs plus a single final `Omar Gate` aggregator check so branch protection always has coverage.
+- Break-glass `workflow_dispatch` publish paths should be policy-file driven (allowlisted actors + incident id contract) rather than globally forced to validation-only mode.
+- Rollback workflows should enforce npm pin equality (`resolved == NPM_VERSION_PIN`) instead of merely printing `npm --version`, or deterministic toolchain guarantees are illusory.
+- Structured CLI JSON errors should expose only safe message + optional redacted request-id tail; do not leak raw backend `code/status` taxonomy, especially in CI output.
+- If local Windows lacks WSL/bash, treat bash-based CI policy scripts as locally skipped and rely on ubuntu CI jobs for authoritative execution evidence.
 
 ## 2026-04-04
 

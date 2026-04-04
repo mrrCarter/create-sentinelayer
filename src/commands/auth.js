@@ -98,16 +98,26 @@ function shouldExposeVerboseErrorDetails(options = {}, { jsonOutput = false } = 
   if (!jsonOutput) {
     return false;
   }
+  if (isCiEnvironment()) {
+    return false;
+  }
   return Boolean(options.verboseErrors) || shouldEmitDebugErrorDetails();
 }
 
-function formatDebugRequestId(rawRequestId) {
+function toRedactedRequestId(rawRequestId) {
   const requestId = String(rawRequestId || "").trim();
   if (!requestId || !shouldExposeDebugRequestId()) {
+    return null;
+  }
+  return requestId.length > 8 ? `...${requestId.slice(-8)}` : requestId;
+}
+
+function formatDebugRequestId(rawRequestId) {
+  const redacted = toRedactedRequestId(rawRequestId);
+  if (!redacted) {
     return "";
   }
-  const tail = requestId.length > 8 ? requestId.slice(-8) : requestId;
-  return ` request_id=...${tail}`;
+  return ` request_id=${redacted}`;
 }
 
 function resolveSafeApiErrorMessage(error) {
@@ -127,9 +137,7 @@ function sanitizeRemoteError(remoteError, { includeDetails = false } = {}) {
   }
   return {
     message: safeMessage,
-    code: String(remoteError.code || "UNKNOWN").trim().toUpperCase(),
-    status: Number.isFinite(remoteError.status) ? Number(remoteError.status) : null,
-    requestId: shouldExposeDebugRequestId() ? String(remoteError.requestId || "").trim() || null : null,
+    requestId: toRedactedRequestId(remoteError.requestId),
   };
 }
 
@@ -146,23 +154,25 @@ export function formatApiError(error) {
 }
 
 function toStructuredApiError(error, { includeDebugRequestId = false } = {}) {
+  const requestId = includeDebugRequestId ? toRedactedRequestId(error?.requestId) : null;
   if (error instanceof SentinelayerApiError) {
     return {
       message: resolveSafeApiErrorMessage(error),
-      code: String(error.code || "UNKNOWN").trim().toUpperCase(),
-      status: Number.isFinite(Number(error.status)) ? Number(error.status) : null,
-      requestId:
-        includeDebugRequestId && String(error.requestId || "").trim()
-          ? String(error.requestId || "").trim()
-          : null,
+      requestId,
     };
   }
   return {
     message: error instanceof Error ? error.message : String(error || "Unknown error"),
-    code: null,
-    status: null,
-    requestId: null,
+    requestId,
   };
+}
+
+export function __serializeAuthCommandErrorForTests(error, options = {}) {
+  return toStructuredApiError(error, options);
+}
+
+export function __sanitizeRemoteAuthErrorForTests(remoteError, options = {}) {
+  return sanitizeRemoteError(remoteError, options);
 }
 
 function emitAuthCommandError(error, { options, command, commandName }) {
@@ -383,13 +393,8 @@ export function registerAuthCommand(program) {
       if (status.remoteError) {
         const safeMessage = resolveSafeApiErrorMessage(status.remoteError);
         console.log(pc.red(`Remote validation failed: ${safeMessage}`));
-        if (includeErrorDetails) {
-          const requestId = formatDebugRequestId(status.remoteError.requestId);
-          console.log(
-            pc.gray(
-              `Error code: ${status.remoteError.code} status=${status.remoteError.status}${requestId}`
-            )
-          );
+        if (includeErrorDetails && status.remoteError.requestId) {
+          console.log(pc.gray(`Request id: ${status.remoteError.requestId}`));
         }
       } else {
         console.log(pc.yellow("Remote validation was skipped (`--offline`)."));

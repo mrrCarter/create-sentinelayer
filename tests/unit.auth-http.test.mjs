@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   __resetAuthHttpCircuitBreakerForTests,
@@ -77,6 +78,12 @@ test("Unit auth http: shared jitter salt is deterministic per scope and distinct
   assert.match(saltA, /^[a-f0-9]{64}$/);
   assert.equal(saltA, saltB);
   assert.notEqual(saltA, otherSalt);
+});
+
+test("Unit auth http: retry jitter implementation does not use Math.random fallback", async () => {
+  const sourcePath = fileURLToPath(new URL("../src/auth/http.js", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+  assert.doesNotMatch(source, /Math\.random\s*\(/);
 });
 
 test("Unit auth http: requestJson serializes object payloads as JSON by default", async () => {

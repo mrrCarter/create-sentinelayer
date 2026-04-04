@@ -117,12 +117,7 @@ function bestEffortJitterIntInclusive(minInclusive, maxInclusive) {
   if (max <= min) {
     return min;
   }
-  try {
-    return secureRandomIntInclusive(min, max);
-  } catch {
-    const span = max - min + 1;
-    return min + Math.floor(Math.random() * span);
-  }
+  return secureRandomIntInclusive(min, max);
 }
 
 function initializeRequestJitterStartupSecret() {

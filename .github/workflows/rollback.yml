@@ -101,7 +101,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm --version
+          resolved_npm_version="$(npm --version)"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm version pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
 
       - name: Resolve rollback intent
         shell: bash
@@ -524,7 +528,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm --version
+          resolved_npm_version="$(npm --version)"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm version pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
 
       - name: Validate rollback drill install path
         shell: bash

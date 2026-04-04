@@ -1146,3 +1146,24 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push fortieth-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`) and re-anchor findings until `P2<=2`.
 - [ ] Begin feedback-fixes Batch U execution (`PR 137 -> 140`) once PR #114 target is achieved.
+
+### PR #114 Forty-First Cycle (2026-04-04, run_id=a088243d-6b33-4a40-a517-a6abff4b6306)
+- [x] Re-anchor to active Omar findings (`P2=5`) and map deterministic remediation scope:
+  - `.github/workflows/omar-gate.yml`: add explicit untrusted fork-PR Omar profile with deterministic baseline checks; preserve trusted secrets-backed profile.
+  - `.github/workflows/release-publish.yml`: allow guarded `workflow_dispatch` execute path (`execute_mode=true`) with actor allowlist + `incident_id` requirement and existing dual-human approvals.
+  - `.github/workflows/rollback.yml`: enforce `NPM_VERSION_PIN` equality in rollback and drill jobs.
+  - `src/auth/http.js`: remove `Math.random` jitter fallback; require secure CSPRNG path.
+  - `src/commands/auth.js`: sanitize structured JSON auth errors to avoid backend `code/status` leakage and suppress verbose internals in CI.
+- [x] Add/refresh deterministic tests for new hardening behavior:
+  - `tests/unit.auth-command-errors.test.mjs`: structured error redaction + CI verbose suppression.
+  - `tests/unit.auth-http.test.mjs`: regression asserting no `Math.random` jitter fallback.
+- [x] Run forty-first-cycle local evidence:
+  - `node --test tests/unit.auth-command-errors.test.mjs` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/omar-gate.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/release-please.yml .github/workflows/rollback.yml` (pass)
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+  - `bash scripts/ci/verify-action-shas.sh ...` (local Windows skip: no WSL/bash distribution installed; CI on ubuntu remains authoritative)
+- [ ] Commit + push forty-first-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start feedback-fixes Batch U execution (`PR 137 -> 140`) immediately after PR #114 burn-down target is met.
