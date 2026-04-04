@@ -248,7 +248,8 @@ jobs:
           proof_workflow="$(jq -r '.workflow // ""' "${proof_file}")"
           proof_gate="$(jq -r '.gate // ""' "${proof_file}")"
           proof_run_id="$(jq -r '.runId // ""' "${proof_file}")"
-          proof_commit_sha="$(jq -r '.commitSha // ""' "${proof_file}")"
+          proof_head_sha="$(jq -r '.headSha // .commitSha // ""' "${proof_file}")"
+          proof_workflow_sha="$(jq -r '.workflowSha // ""' "${proof_file}")"
           proof_artifact_sha="$(jq -r '.artifactSha256 // ""' "${proof_file}")"
           if [[ "${proof_workflow}" != "quality-gates" ]] || [[ "${proof_gate}" != "Quality Summary" ]]; then
             echo "::error::Invalid quality summary proof identity (workflow='${proof_workflow}', gate='${proof_gate}')."
@@ -258,8 +259,8 @@ jobs:
             echo "::error::Quality summary proof runId mismatch (proof='${proof_run_id}', expected='${quality_run_id}')."
             exit 1
           fi
-          if [[ "${proof_commit_sha}" != "${target_sha}" ]]; then
-            echo "::error::Quality summary proof commit mismatch (proof='${proof_commit_sha}', expected='${target_sha}')."
+          if [[ "${proof_head_sha}" != "${target_sha}" ]]; then
+            echo "::error::Quality summary proof head SHA mismatch (proof='${proof_head_sha}', expected='${target_sha}', workflow_sha='${proof_workflow_sha}')."
             exit 1
           fi
           if [[ ! "${proof_artifact_sha}" =~ ^[0-9a-f]{64}$ ]]; then

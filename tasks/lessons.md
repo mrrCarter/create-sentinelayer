@@ -314,3 +314,4 @@
 - Shell remote-exec analyzers need both token-aware command matching and fail-closed high-risk indirection detection (`eval`, command substitution, backticks) when network fetch signals are present.
 - Auth backend outage handling should fail faster with tighter circuit thresholds and surface explicit cooldown/failure-count context in user-visible error messages for clearer operator recovery signals.
 - Remote-exec correlation must be command-local, not whole-step-global; mixing network signals from one command with benign `$()`/template constructs in other commands causes high-noise false positives that break CI gates.
+- PR workflow provenance artifacts should record both PR head SHA and workflow execution SHA; using merge SHA alone breaks downstream gates that intentionally validate source-head commit lineage.

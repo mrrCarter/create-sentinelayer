@@ -1271,3 +1271,16 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-seventh-cycle fix batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Eighth Cycle (2026-04-04, omar proof-sha alignment)
+- [x] Capture Omar failure root cause from run `23980668606`:
+  - `Bind Quality Summary promotion proof to target SHA` failed because quality proof used PR merge SHA (`github.sha`) while Omar validated PR head SHA (`pull_request.head.sha`).
+- [x] Apply deterministic provenance alignment:
+  - `.github/workflows/quality-gates.yml`: quality summary promotion proof now emits `commitSha` as PR head SHA and `workflowSha` as runner SHA.
+  - `.github/workflows/omar-gate.yml`: proof binder validates `headSha` (fallback `commitSha`) against Omar target SHA and includes workflow SHA in mismatch diagnostics.
+- [x] Run forty-eighth-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `204/210` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-eighth-cycle fix batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.

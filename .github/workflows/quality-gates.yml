@@ -1777,8 +1777,12 @@ jobs:
       - name: Assert immutable promotion invariant
         if: env.EXECUTE_FULL == 'true'
         shell: bash
+        env:
+          TARGET_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          target_head_sha="$(echo "${TARGET_HEAD_SHA}" | tr -d '\r' | xargs || true)"
+          test -n "${target_head_sha}" || target_head_sha="${GITHUB_SHA}"
           manifest_path="quality-summary-proof/quality-build.manifest.json"
           lock_path="quality-summary-proof/quality-release-input.lock.json"
           invariant_path="quality-summary-proof/quality-promotion-invariant.json"
@@ -1810,7 +1814,8 @@ jobs:
             "workflow": "quality-gates",
             "gate": "Quality Summary",
             "runId": "${GITHUB_RUN_ID}",
-            "commitSha": "${GITHUB_SHA}",
+            "commitSha": "${target_head_sha}",
+            "workflowSha": "${GITHUB_SHA}",
             "artifactName": "${tarball_name}",
             "artifactSha256": "${actual_sha}",
             "artifactManifest": "quality-build.manifest.json",
