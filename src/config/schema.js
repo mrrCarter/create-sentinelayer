@@ -10,6 +10,27 @@ function emptyToUndefined(value) {
 
 const optionalTrimmedString = z.preprocess(emptyToUndefined, z.string().min(1)).optional();
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url()).optional();
+const PLACEHOLDER_TOKEN_PATTERNS = [
+  /(?:^|[_\-])(?:example|sample|placeholder|changeme|replace(?:[_\-]?me)?|test(?:[_\-]?key|[_\-]?token)?)(?:$|[_\-])/i,
+  /(?:your[_\-]?(?:api[_\-]?key|token|secret))/i,
+];
+
+function hasSufficientTokenDiversity(value) {
+  const normalized = String(value || "");
+  const uniqueChars = new Set(normalized).size;
+  const classes = [
+    /[a-z]/.test(normalized),
+    /[A-Z]/.test(normalized),
+    /[0-9]/.test(normalized),
+    /[^A-Za-z0-9]/.test(normalized),
+  ].filter(Boolean).length;
+  return uniqueChars >= 8 && classes >= 2;
+}
+
+function hasPlaceholderTokenPattern(value) {
+  const normalized = String(value || "");
+  return PLACEHOLDER_TOKEN_PATTERNS.some((pattern) => pattern.test(normalized));
+}
 
 function createOptionalSecretSchema({
   field,
@@ -28,6 +49,14 @@ function createOptionalSecretSchema({
         .refine(
           (value) => /^[\x21-\x7E]+$/.test(value),
           `${field} must use printable ASCII token characters only [SL-CONFIG-SECRET-CHARSET].`
+        )
+        .refine(
+          (value) => !hasPlaceholderTokenPattern(value),
+          `${field} must not contain placeholder/test credential text [SL-CONFIG-SECRET-PLACEHOLDER].`
+        )
+        .refine(
+          (value) => hasSufficientTokenDiversity(value),
+          `${field} must include sufficient character diversity [SL-CONFIG-SECRET-STRENGTH].`
         )
         .refine((value) => {
           for (const providerPattern of providerPatterns) {

@@ -36,7 +36,6 @@ const RETRYABLE_AUTH_POLL_CODES = new Set([
   "MAX_RETRIES_EXHAUSTED",
   "CIRCUIT_OPEN",
 ]);
-const AUTH_POLL_JITTER_TIME_BUCKET_MS = 30_000;
 const AUTH_POLL_JITTER_SALT = getSharedRequestJitterSalt("auth-poll-backoff");
 const ALLOW_INSECURE_LOCAL_HTTP_ENV = "SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP";
 const ALLOWED_API_TOKEN_SCOPES = new Set([
@@ -125,32 +124,34 @@ function generatePollClientId() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-function resolveMonotonicJitterBucket(attempt, consecutiveFailures) {
-  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
-  const normalizedFailures = Math.max(0, Math.floor(Number(consecutiveFailures) || 0));
-  let monotonicEpochMs = Date.now();
-  if (
-    typeof globalThis.performance === "object" &&
-    Number.isFinite(Number(globalThis.performance.timeOrigin)) &&
-    typeof globalThis.performance.now === "function"
-  ) {
-    monotonicEpochMs = Number(globalThis.performance.timeOrigin) + Number(globalThis.performance.now());
+function generatePollJitterSeed(sessionId, pollClientId) {
+  try {
+    return crypto.randomBytes(16).toString("hex");
+  } catch {
+    return crypto
+      .createHash("sha256")
+      .update(
+        [
+          String(sessionId || "").trim(),
+          String(pollClientId || "").trim(),
+          AUTH_POLL_JITTER_SALT,
+          String(Date.now()),
+        ].join(":")
+      )
+      .digest("hex")
+      .slice(0, 32);
   }
-  const shiftedEpochMs =
-    monotonicEpochMs + normalizedAttempt * 100 + normalizedFailures * 25;
-  return Math.floor(shiftedEpochMs / AUTH_POLL_JITTER_TIME_BUCKET_MS);
 }
 
-function deterministicJitterFactor(sessionId, attempt, consecutiveFailures = 0) {
+function deterministicJitterFactor(sessionId, pollJitterSeed, attempt, consecutiveFailures = 0) {
   const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
   const normalizedFailures = Math.max(0, Math.floor(Number(consecutiveFailures) || 0));
-  const monotonicBucket = resolveMonotonicJitterBucket(normalizedAttempt, normalizedFailures);
   const seed = [
     String(sessionId || "").trim(),
+    String(pollJitterSeed || "").trim(),
     String(normalizedAttempt),
     String(normalizedFailures),
     AUTH_POLL_JITTER_SALT,
-    String(monotonicBucket),
   ].join(":");
   const digest = crypto.createHash("sha256").update(seed).digest();
   const bucket = digest[0] / 255;
@@ -173,6 +174,7 @@ function isRetryableAuthPollError(error) {
 
 function resolveAuthPollBackendCooldownMs({
   sessionId,
+  pollJitterSeed,
   attempt,
   consecutiveFailures,
   pollIntervalMs,
@@ -181,11 +183,16 @@ function resolveAuthPollBackendCooldownMs({
   const failureMultiplier = 2 ** Math.min(Math.max(0, Number(consecutiveFailures) - 1), 5);
   const jitterFactor = deterministicJitterFactor(
     sessionId,
+    pollJitterSeed,
     Number(attempt || 0),
     Number(consecutiveFailures || 0)
   );
   const cooldownMs = Math.round(normalizedBase * failureMultiplier * jitterFactor);
   return Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.min(MAX_AUTH_POLL_BACKEND_BACKOFF_MS, cooldownMs));
+}
+
+export function __resolveAuthPollBackendCooldownForTests(options = {}) {
+  return resolveAuthPollBackendCooldownMs(options);
 }
 
 function resolveAuthPollIntervalMs(rawPollIntervalSeconds, fallbackSeconds = 2) {
@@ -458,6 +465,7 @@ async function pollCliAuthSession({
   let consecutiveBackendFailures = 0;
   let attempt = 0;
   const seenRequestIds = new Set();
+  const pollJitterSeed = generatePollJitterSeed(normalizedSessionId, normalizedPollClientId);
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
@@ -520,6 +528,7 @@ async function pollCliAuthSession({
         remainingMs,
         resolveAuthPollBackendCooldownMs({
           sessionId: normalizedSessionId,
+          pollJitterSeed,
           attempt,
           consecutiveFailures: consecutiveBackendFailures,
           pollIntervalMs: lastKnownPollIntervalMs,
@@ -607,7 +616,7 @@ async function pollCliAuthSession({
     lastKnownPollIntervalMs = serverPollIntervalMs;
     const backoffMultiplier = 2 ** Math.min(attempt, 5);
     const baseDelayMs = Math.min(serverPollIntervalMs * backoffMultiplier, 8_000);
-    const jitterFactor = deterministicJitterFactor(normalizedSessionId, attempt);
+    const jitterFactor = deterministicJitterFactor(normalizedSessionId, pollJitterSeed, attempt);
     const remainingMs = Math.max(0, deadlineMs - resolveMonotonicNowMs());
     const nextDelayMs = Math.max(
       MIN_AUTH_POLL_INTERVAL_MS,

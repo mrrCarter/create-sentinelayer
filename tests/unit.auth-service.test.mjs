@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
+  __resolveAuthPollBackendCooldownForTests,
   getAuthStatus,
   getRuntimeRunStatus,
   listStoredAuthSessions,
@@ -508,6 +509,26 @@ test("Unit auth service: localhost HTTP API URL is allowed only outside CI", asy
       }),
     /blocked when CI=true/i
   );
+});
+
+test("Unit auth service: poll jitter seed differentiates cooldowns for identical attempts", () => {
+  const baseline = __resolveAuthPollBackendCooldownForTests({
+    sessionId: "sess_1",
+    pollJitterSeed: "seed_alpha",
+    attempt: 3,
+    consecutiveFailures: 2,
+    pollIntervalMs: 800,
+  });
+  const comparison = __resolveAuthPollBackendCooldownForTests({
+    sessionId: "sess_1",
+    pollJitterSeed: "seed_bravo",
+    attempt: 3,
+    consecutiveFailures: 2,
+    pollIntervalMs: 800,
+  });
+  assert.ok(Number.isFinite(baseline));
+  assert.ok(Number.isFinite(comparison));
+  assert.notEqual(baseline, comparison);
 });
 
 test("Unit auth service: keyring-backed metadata without keyring fails closed and logout clears local state", async () => {

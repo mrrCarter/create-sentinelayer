@@ -195,3 +195,7 @@
 - `Retry-After` absolute-date handling must use wall-clock deltas (`retry_epoch - Date.now()`), while monotonic clocks should stay scoped to elapsed-time budgets only.
 - Localhost plaintext API allowances should require explicit opt-in (`SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true`) and be rejected under `CI=true` to prevent silent insecure transport in automation environments.
 - Release-control trigger surfaces should prefer explicit `workflow_dispatch` and `workflow_call`; avoid `repository_dispatch` for high-risk rollback/publish paths unless there is a strict provenance need that cannot be satisfied otherwise.
+- Placeholder-secret denylist controls can over-block legitimate fixtures if test tokens include terms like `test`; keep fixtures provider-shaped and non-placeholder while retaining strict runtime placeholder rejection.
+- Security evidence used across workflows should be promoted as immutable artifacts plus checksum validation (`sha256sum -c`) before downstream jobs consume it.
+- Jitter fallback hardening should use per-login random seeds rather than time-bucket coupling, so concurrent pollers do not share correlated backoff behavior when entropy paths degrade.
+- Release workflows need an explicit guarded `publish` dispatch input; forcing manual dispatches into validation-only mode introduces governance drift findings and operator confusion.

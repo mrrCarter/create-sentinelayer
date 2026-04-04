@@ -8,7 +8,7 @@ import { loadConfig, setConfigValue } from "../src/config/service.js";
 import { configSchema, getRuntimeSecretSchema, SECRET_CONFIG_KEYS } from "../src/config/schema.js";
 
 const VALID_SENTINELAYER_TOKEN = "sl_env_0123456789abcdef0123456789";
-const VALID_OPENAI_KEY = "sk-test-123456789012345678901234567890";
+const VALID_OPENAI_KEY = "sk-proj-A1b2C3d4E5f6G7h8J9k0LmNoPqRsTuVw";
 
 test("Unit config security: reject plaintext secrets in project config by default", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-config-unit-"));
@@ -187,5 +187,22 @@ test("Unit config security: runtime secret schema rejects control and zero-width
   assert.throws(
     () => getRuntimeSecretSchema().partial().parse({ sentinelayerToken: controlSentinel }),
     /SL-CONFIG-SECRET-CHARSET/i
+  );
+});
+
+test("Unit config security: runtime secret schema rejects placeholder and low-diversity secrets", () => {
+  assert.throws(
+    () =>
+      getRuntimeSecretSchema()
+        .partial()
+        .parse({ openaiApiKey: "sk-proj-your_api_key_placeholder_1234567890" }),
+    /SL-CONFIG-SECRET-PLACEHOLDER/i
+  );
+  assert.throws(
+    () =>
+      getRuntimeSecretSchema()
+        .partial()
+        .parse({ sentinelayerToken: "sl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
+    /SL-CONFIG-SECRET-STRENGTH/i
   );
 });

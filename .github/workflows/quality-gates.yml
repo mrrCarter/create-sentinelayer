@@ -243,6 +243,30 @@ jobs:
       - name: Run npm audit (full dependency graph)
         run: timeout --preserve-status 5m npm audit --audit-level=high
 
+      - name: Capture npm audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 5m npm audit --omit=dev --json > security-audit.prod.json || true
+          timeout --preserve-status 5m npm audit --json > security-audit.full.json || true
+          node <<'NODE'
+          const fs = require("node:fs");
+          const files = ["security-audit.prod.json", "security-audit.full.json"];
+          for (const file of files) {
+            const raw = fs.readFileSync(file, "utf8");
+            const parsed = JSON.parse(raw);
+            const metadata = parsed && typeof parsed === "object" ? parsed.metadata || {} : {};
+            const vulnerabilities = metadata && typeof metadata === "object" ? metadata.vulnerabilities || {} : {};
+            const high = Number(vulnerabilities.high || 0);
+            const critical = Number(vulnerabilities.critical || 0);
+            if (!Number.isFinite(high) || !Number.isFinite(critical)) {
+              console.error(`::error::Invalid vulnerability metadata in ${file}.`);
+              process.exit(1);
+            }
+          }
+          NODE
+          sha256sum security-audit.prod.json security-audit.full.json > security-audit.sha256
+
       - name: Enforce workflow action SHA allowlist policy
         shell: bash
         run: |
@@ -256,6 +280,16 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: "false"
           GITLEAKS_ENABLE_SUMMARY: "false"
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Upload security audit evidence
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: security-audit-evidence
+          path: |
+            security-audit.prod.json
+            security-audit.full.json
+            security-audit.sha256
+          if-no-files-found: error
 
   build-artifact:
     name: Build Artifact
@@ -289,6 +323,21 @@ jobs:
           npm install --global "npm@${NPM_VERSION_PIN}"
           npm config set cache "${cache_dir}"
           npm --version
+
+      - name: Download security audit evidence
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: security-audit-evidence
+          path: security-audit
+
+      - name: Verify security audit evidence integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f security-audit/security-audit.prod.json || (echo "::error::Missing security-audit.prod.json artifact." && exit 1)
+          test -f security-audit/security-audit.full.json || (echo "::error::Missing security-audit.full.json artifact." && exit 1)
+          test -f security-audit/security-audit.sha256 || (echo "::error::Missing security-audit.sha256 artifact." && exit 1)
+          (cd security-audit && sha256sum -c security-audit.sha256)
 
       - name: Validate lockfile dependency provenance metadata
         shell: bash

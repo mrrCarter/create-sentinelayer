@@ -749,4 +749,16 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Twentieth-cycle local evidence:
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass).
   - `npm run verify` (pass, e2e `84/84`; unit `173/173`; coverage statements `90.21%`, branches `70.57%`, functions `91.54%`, lines `90.21%`).
-- [ ] Commit/push twentieth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twentieth-cycle fixes (`8959d18`) and rerun Omar (`run_id=23966639262`): Omar reduced active findings to `P2=5` (`P0=0`, `P1=0`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=3127a13a-ff18-4eab-9e46-dc9c0494b5fd`) and apply twenty-first-cycle hardening:
+  - `.github/workflows/quality-gates.yml`: capture immutable `npm audit` evidence artifacts and enforce artifact integrity in downstream `build-artifact`.
+  - `.github/workflows/release-publish.yml`: add explicit least-privilege job permissions to `publish-dry-run`, `authorize-production-publish`, and `publish`.
+  - `.github/workflows/release.yml`: restore guarded `workflow_dispatch` `publish` input so manual production publishes remain deterministic and auditable.
+  - `src/auth/service.js`: replace monotonic-time jitter coupling with per-login `pollJitterSeed` to avoid cross-process fallback correlation.
+  - `tests/unit.auth-service.test.mjs`: add deterministic coverage proving distinct jitter seeds produce distinct cooldowns.
+  - `src/config/schema.js`: add placeholder credential and token-diversity validation gates (`SL-CONFIG-SECRET-PLACEHOLDER`, `SL-CONFIG-SECRET-STRENGTH`).
+  - `tests/unit.config-security.test.mjs`: add regression tests for placeholder/low-diversity rejection and update valid fixture to provider-shaped non-placeholder key.
+- [x] Twenty-first-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass, `175/175`).
+  - `npm run verify` (pass, e2e `84/84`; unit `175/175`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
+- [ ] Commit/push twenty-first-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.

@@ -10,6 +10,11 @@ on:
         description: "Semver tag to release (vX.Y.Z)"
         required: true
         type: string
+      publish:
+        description: "Execute production publish after validation gates"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -253,6 +258,7 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE_VALUE: ${{ github.ref_type }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          INPUT_PUBLISH: ${{ inputs.publish || 'false' }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           FALLBACK_SHA: ${{ github.sha }}
@@ -294,8 +300,12 @@ jobs:
                 exit 1
               fi
               release_path_execution="true"
-              publish_requested="false"
-              dry_run="true"
+              publish_requested="$(normalize_bool "${INPUT_PUBLISH:-false}")"
+              if [[ "${publish_requested}" == "true" ]]; then
+                dry_run="false"
+              else
+                dry_run="true"
+              fi
               ;;
             *)
               release_path_execution="false"
