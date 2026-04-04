@@ -24,6 +24,10 @@ on:
         required: false
         default: false
         type: boolean
+      incident_id:
+        description: "Required incident id for manual execute mode (format INC-XXXX...)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -55,6 +59,8 @@ jobs:
       target_sha: ${{ steps.resolve.outputs.target_sha }}
       release_run_id: ${{ steps.resolve.outputs.release_run_id }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
+      incident_id: ${{ steps.resolve.outputs.incident_id }}
+      execute_mode: ${{ steps.resolve.outputs.execute_mode }}
     steps:
       - name: Verify release-management environment protections
         shell: bash
@@ -86,6 +92,7 @@ jobs:
           RAW_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           RAW_BREAK_GLASS: ${{ inputs.break_glass || 'false' }}
+          RAW_INCIDENT_ID: ${{ inputs.incident_id || '' }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event || '' }}
@@ -115,6 +122,8 @@ jobs:
           target_sha=""
           release_run_id=""
           dry_run="false"
+          incident_id=""
+          execute_mode="false"
 
           case "${EVENT_NAME}" in
             workflow_dispatch)
@@ -133,10 +142,22 @@ jobs:
                 exit 1
               fi
               input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
-              if [[ "${input_dry_run}" != "true" ]]; then
-                echo "workflow_dispatch publish is forced to dry-run mode; ignoring dry_run=${input_dry_run}."
+              incident_id="$(echo "${RAW_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
+              if [[ "${input_dry_run}" == "true" ]]; then
+                dry_run="true"
+                execute_mode="false"
+              else
+                if [[ -z "${incident_id}" ]]; then
+                  echo "::error::Manual execute mode requires incident_id (for example INC-12345)."
+                  exit 1
+                fi
+                if [[ ! "${incident_id}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
+                  echo "::error::incident_id '${incident_id}' is invalid (expected ^INC-[A-Za-z0-9._-]{4,64}$)."
+                  exit 1
+                fi
+                dry_run="false"
+                execute_mode="true"
               fi
-              dry_run="true"
               permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // ""' 2>/dev/null || true)"
               case "${permission}" in
                 admin|maintain) ;;
@@ -198,6 +219,7 @@ jobs:
               fi
               dry_run="false"
               release_run_id="$(echo "${WORKFLOW_RUN_ID}" | tr -d '\r' | xargs || true)"
+              execute_mode="true"
               ;;
             *)
               echo "::error::Unsupported trigger '${EVENT_NAME}' for release-publish workflow."
@@ -225,7 +247,9 @@ jobs:
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
           echo "release_run_id=${release_run_id}" >> "$GITHUB_OUTPUT"
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
-          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}, trigger=${EVENT_NAME}."
+          echo "incident_id=${incident_id}" >> "$GITHUB_OUTPUT"
+          echo "execute_mode=${execute_mode}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}, execute_mode=${execute_mode}, trigger=${EVENT_NAME}."
 
       - name: Verify branch protection and required contexts for publish target
         shell: bash
@@ -397,6 +421,32 @@ jobs:
             exit 1
           fi
 
+      - name: Emit break-glass incident evidence
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          INCIDENT_ID: ${{ needs.resolve-release-bundle.outputs.incident_id }}
+          RELEASE_TAG: ${{ needs.resolve-release-bundle.outputs.release_tag }}
+          TARGET_SHA: ${{ needs.resolve-release-bundle.outputs.target_sha }}
+          EXECUTE_MODE: ${{ needs.resolve-release-bundle.outputs.execute_mode }}
+          DRY_RUN: ${{ needs.resolve-release-bundle.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          cat > release-bundle/breakglass-dispatch-evidence.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release-publish",
+            "runId": "${GITHUB_RUN_ID}",
+            "actor": "${GITHUB_ACTOR}",
+            "releaseTag": "${RELEASE_TAG}",
+            "targetSha": "${TARGET_SHA}",
+            "executeMode": "${EXECUTE_MODE}",
+            "dryRun": "${DRY_RUN}",
+            "incidentId": "${INCIDENT_ID}",
+            "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
       - name: Validate packaged CLI install
         shell: bash
         run: |
@@ -456,7 +506,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     needs: [resolve-release-bundle, prepare-release-bundle]
-    if: ${{ github.event_name == 'workflow_run' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
     environment: production
     permissions:
       contents: read
@@ -472,7 +522,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish]
-    if: ${{ github.event_name == 'workflow_run' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
     environment: production
     permissions:
       contents: read

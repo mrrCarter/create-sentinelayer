@@ -315,31 +315,24 @@ function throwIfAbortRequested(signal) {
 async function sleepWithAbortSignal(delayMs, signal) {
   throwIfAbortRequested(signal);
   const normalizedDelayMs = Math.max(0, Number(delayMs) || 0);
-  if (!signal || typeof signal !== "object") {
-    await sleep(normalizedDelayMs, undefined, { ref: false });
-    return;
+  const abortSignal =
+    signal &&
+    typeof signal === "object" &&
+    typeof signal.addEventListener === "function" &&
+    typeof signal.removeEventListener === "function"
+      ? signal
+      : undefined;
+  try {
+    await sleep(normalizedDelayMs, undefined, { signal: abortSignal, ref: false });
+  } catch (error) {
+    if (error && typeof error === "object" && error.name === "AbortError") {
+      throw new SentinelayerApiError("CLI authentication polling canceled by caller.", {
+        status: 499,
+        code: "CLI_AUTH_ABORTED",
+      });
+    }
+    throw error;
   }
-  await new Promise((resolve, reject) => {
-    let timer = null;
-    const onAbort = () => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      signal.removeEventListener("abort", onAbort);
-      reject(
-        new SentinelayerApiError("CLI authentication polling canceled by caller.", {
-          status: 499,
-          code: "CLI_AUTH_ABORTED",
-        })
-      );
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, normalizedDelayMs);
-    timer.unref?.();
-  });
 }
 
 const TERMINAL_CLI_AUTH_POLL_STATUSES = new Map([

@@ -873,6 +873,56 @@ test("Unit auth service: login ignores non-increasing poll sequence values", asy
   }
 });
 
+test("Unit auth service: login maps aborted polling waits to CLI_AUTH_ABORTED", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      { status: "pending" },
+      { status: "pending" },
+      { status: "pending" },
+    ],
+  });
+
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 10_000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          allowFileStorageFallback: true,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+          signal: controller.signal,
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.equal(error.code, "CLI_AUTH_ABORTED");
+        assert.equal(error.status, 499);
+        return true;
+      }
+    );
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth service: login fails closed after repeated polling backend outages", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";

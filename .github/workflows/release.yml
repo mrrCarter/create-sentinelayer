@@ -649,6 +649,12 @@ jobs:
     if: ${{ needs.resolve-release-flags.outputs.release_path_execution == 'true' }}
     environment: release-management
     timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_sha256: ${{ steps.contract.outputs.artifact_sha256 }}
+      artifact_rebuild_sha256: ${{ steps.contract.outputs.artifact_rebuild_sha256 }}
+      artifact_commit_sha: ${{ steps.contract.outputs.artifact_commit_sha }}
+      artifact_run_id: ${{ steps.contract.outputs.artifact_run_id }}
     permissions:
       contents: read
       checks: read
@@ -944,6 +950,31 @@ jobs:
           fi
           echo "Verified release artifact lineage for ${package_name}@${package_version}."
 
+      - name: Emit immutable release artifact contract
+        id: contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_name="$(tr -d '\r\n' < create-sentinelayer.tarball)"
+          artifact_sha="$(awk 'NF {print $1; exit}' create-sentinelayer.sha256)"
+          artifact_rebuild_sha="$(awk 'NF {print $1; exit}' create-sentinelayer.rebuild.sha256)"
+          artifact_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
+          artifact_run_id="$(jq -r '.runId // ""' quality-proof/quality-build.manifest.json)"
+          test -n "${artifact_name}" || (echo "::error::Release artifact contract missing artifact name." && exit 1)
+          test -n "${artifact_sha}" || (echo "::error::Release artifact contract missing artifact sha256." && exit 1)
+          test -n "${artifact_rebuild_sha}" || (echo "::error::Release artifact contract missing rebuild sha256." && exit 1)
+          test -n "${artifact_commit_sha}" || (echo "::error::Release artifact contract missing commit sha." && exit 1)
+          test -n "${artifact_run_id}" || (echo "::error::Release artifact contract missing source run id." && exit 1)
+          if [[ "${artifact_sha}" != "${artifact_rebuild_sha}" ]]; then
+            echo "::error::Release artifact contract requires matching baseline and rebuild digests."
+            exit 1
+          fi
+          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
+          echo "artifact_sha256=${artifact_sha}" >> "$GITHUB_OUTPUT"
+          echo "artifact_rebuild_sha256=${artifact_rebuild_sha}" >> "$GITHUB_OUTPUT"
+          echo "artifact_commit_sha=${artifact_commit_sha}" >> "$GITHUB_OUTPUT"
+          echo "artifact_run_id=${artifact_run_id}" >> "$GITHUB_OUTPUT"
+
       - name: Upload immutable release artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
@@ -1036,6 +1067,11 @@ jobs:
       REPO: ${{ github.repository }}
       TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
       QUALITY_RUN_ID: ${{ needs.verify-required-checks.outputs.quality_run_id || '' }}
+      PREFLIGHT_ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name || '' }}
+      PREFLIGHT_ARTIFACT_SHA256: ${{ needs.preflight.outputs.artifact_sha256 || '' }}
+      PREFLIGHT_ARTIFACT_REBUILD_SHA256: ${{ needs.preflight.outputs.artifact_rebuild_sha256 || '' }}
+      PREFLIGHT_ARTIFACT_COMMIT_SHA: ${{ needs.preflight.outputs.artifact_commit_sha || '' }}
+      PREFLIGHT_ARTIFACT_RUN_ID: ${{ needs.preflight.outputs.artifact_run_id || '' }}
       RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
       RELEASE_INITIATOR: ${{ needs.resolve-release-flags.outputs.release_initiator || '' }}
       EVENT_NAME: ${{ github.event_name }}
@@ -1063,6 +1099,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -n "${PREFLIGHT_ARTIFACT_NAME}" || (echo "::error::Missing preflight artifact contract name output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_SHA256}" || (echo "::error::Missing preflight artifact contract sha output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_REBUILD_SHA256}" || (echo "::error::Missing preflight artifact contract rebuild sha output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" || (echo "::error::Missing preflight artifact contract commit output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_RUN_ID}" || (echo "::error::Missing preflight artifact contract run output." && exit 1)
+          if [[ "${PREFLIGHT_ARTIFACT_SHA256}" != "${PREFLIGHT_ARTIFACT_REBUILD_SHA256}" ]]; then
+            echo "::error::Preflight artifact contract digest mismatch (${PREFLIGHT_ARTIFACT_SHA256} vs ${PREFLIGHT_ARTIFACT_REBUILD_SHA256})."
+            exit 1
+          fi
           manifest_path="release-bundle/quality-proof/quality-build.manifest.json"
           lock_path="release-bundle/quality-proof/quality-release-input.lock.json"
           test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
@@ -1091,8 +1136,16 @@ jobs:
             echo "::error::Release artifact identity mismatch (manifest=${manifest_artifact}, promoted=${tarball_name})."
             exit 1
           fi
+          if [[ "${manifest_artifact}" != "${PREFLIGHT_ARTIFACT_NAME}" ]] || [[ "${tarball_name}" != "${PREFLIGHT_ARTIFACT_NAME}" ]]; then
+            echo "::error::Release artifact identity mismatch with preflight contract (${PREFLIGHT_ARTIFACT_NAME})."
+            exit 1
+          fi
           if [[ "${manifest_sha}" != "${expected_sha}" ]]; then
             echo "::error::Release artifact digest mismatch (manifest=${manifest_sha}, promoted=${expected_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${PREFLIGHT_ARTIFACT_SHA256}" ]] || [[ "${expected_sha}" != "${PREFLIGHT_ARTIFACT_SHA256}" ]]; then
+            echo "::error::Release artifact digest mismatch with preflight contract (${PREFLIGHT_ARTIFACT_SHA256})."
             exit 1
           fi
           if [[ "${lock_artifact}" != "${manifest_artifact}" ]] || [[ "${lock_sha}" != "${manifest_sha}" ]] || [[ "${lock_rebuild_sha}" != "${manifest_sha}" ]]; then
@@ -1103,8 +1156,16 @@ jobs:
             echo "::error::Release-input lock commit mismatch (lock=${lock_commit}, manifest=${manifest_commit})."
             exit 1
           fi
+          if [[ "${manifest_commit}" != "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" ]]; then
+            echo "::error::Release artifact commit mismatch with preflight contract (manifest=${manifest_commit}, contract=${PREFLIGHT_ARTIFACT_COMMIT_SHA})."
+            exit 1
+          fi
           if [[ "${lock_run_id}" != "${manifest_run_id}" ]]; then
             echo "::error::Release-input lock run mismatch (lock=${lock_run_id}, manifest=${manifest_run_id})."
+            exit 1
+          fi
+          if [[ "${manifest_run_id}" != "${PREFLIGHT_ARTIFACT_RUN_ID}" ]]; then
+            echo "::error::Release artifact run mismatch with preflight contract (manifest=${manifest_run_id}, contract=${PREFLIGHT_ARTIFACT_RUN_ID})."
             exit 1
           fi
           if [[ -n "${TARGET_SHA}" ]] && [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then

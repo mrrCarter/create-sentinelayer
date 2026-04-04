@@ -805,4 +805,19 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Twenty-fourth-cycle local evidence:
   - `npm run test:unit -- tests/unit.auth-service.test.mjs` (pass, `182/182`).
   - `npm run verify` (pass, e2e `84/84`; unit `182/182`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
-- [ ] Commit/push twenty-fourth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twenty-fourth-cycle fixes (`589d3dc`, `275e272`, `7dae800`) and rerun Omar (`run_id=1194e434-7ed7-49ce-b8e6-873b588c62d7`): Omar remained non-blocking at `P2=6` (`P0=0`, `P1=0`) with residual findings in gate threshold overrides, request-id sanitization, break-glass execute path, sleep abort cleanup, workflow permissions policy assertions, and release artifact handoff contract outputs.
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=1194e434-7ed7-49ce-b8e6-873b588c62d7`) and apply twenty-fifth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: add protected-branch gate-policy resolver forcing `severity_gate=P1` on default-branch protected refs and route all threshold enforcement through resolved policy outputs.
+  - `src/auth/http.js`: sanitize backend `request_id` / `requestId` values with strict charset + length policy and apply identical sanitization in `SentinelayerApiError` for defense in depth.
+  - `tests/unit.auth-http.test.mjs`: add tainted-request-id regression coverage asserting invalid identifiers are rejected (`requestId=null`).
+  - `src/auth/service.js`: replace custom abort/timer Promise in `sleepWithAbortSignal` with `timers/promises` signal-aware sleep and canonical `AbortError -> CLI_AUTH_ABORTED` mapping.
+  - `tests/unit.auth-service.test.mjs`: add cancellation regression coverage proving aborted poll wait resolves to `CLI_AUTH_ABORTED` (`499`).
+  - `.github/workflows/quality-gates.yml`: add explicit workflow permissions policy enforcement step in `lint`, declare `quality-summary` least-privilege permissions, and wire shared policy checker into local `npm run check` contract.
+  - `scripts/ci/verify-workflow-permissions.js` + `package.json`: new YAML-structural policy checker ensuring explicit top-level + per-job permissions with allowlisted scopes/values.
+  - `.github/workflows/release-publish.yml`: restore guarded break-glass execute path for `workflow_dispatch` (`break_glass=true`, admin/maintain actor, validated `incident_id`), emit immutable dispatch evidence artifact, and allow production publish only for execute-mode dispatches or provenance-anchored `workflow_run` triggers.
+  - `.github/workflows/release.yml`: add explicit preflight immutable artifact contract outputs (`artifact_name`, digests, commit/run provenance) and require publish-path lineage checks to match those outputs before any npm mutation.
+- [x] Twenty-fifth-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass, `184/184`).
+  - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-fifth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.

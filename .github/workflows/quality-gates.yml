@@ -81,6 +81,12 @@ jobs:
             exit 1
           fi
 
+      - name: Enforce explicit workflow permissions policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml
+
       - name: Run lint/syntax gate
         run: npm run check
 
@@ -1128,6 +1134,8 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy-stage, deploy]
     if: ${{ always() }}
+    permissions:
+      contents: read
     steps:
       - name: Evaluate gate outcomes
         shell: bash

@@ -261,6 +261,37 @@ test("Unit auth http: requestJson preserves camelCase requestId on API errors", 
   }
 });
 
+test("Unit auth http: requestJson rejects tainted requestId values from API errors", async () => {
+  const mock = await startMockServer(async (_req, res) => {
+    const payload = JSON.stringify({
+      error: {
+        code: "AUTH_REQUIRED",
+        message: "login required",
+        requestId: "req\nspoofed:trace",
+      },
+    });
+    res.writeHead(401, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  });
+
+  try {
+    await assert.rejects(
+      () => requestJson(`${mock.baseUrl}/tainted-request-id`, { method: "GET", maxAttempts: 1 }),
+      (error) => {
+        assert.equal(error?.code, "AUTH_REQUIRED");
+        assert.equal(error?.status, 401);
+        assert.equal(error?.requestId, null);
+        return true;
+      }
+    );
+  } finally {
+    await mock.close();
+  }
+});
+
 test("Unit auth http: requestJson times out when response body stream stalls", async () => {
   let pullCount = 0;
   const stalledStream = new ReadableStream({

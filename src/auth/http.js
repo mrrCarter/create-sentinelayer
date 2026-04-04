@@ -20,6 +20,8 @@ const RATE_LIMIT_CIRCUIT_COOLDOWN_MS = 60_000;
 const MAX_REQUEST_BODY_BYTES = 256_000;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
+const MAX_REQUEST_ID_LENGTH = 128;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 const circuitBreakerStates = new Map();
 const REQUEST_JITTER_STARTUP_SECRET = initializeRequestJitterStartupSecret();
@@ -90,12 +92,22 @@ function normalizeApiError(errorPayload = {}) {
   return {
     code: String(errorPayload.code || "UNKNOWN"),
     message: String(errorPayload.message || "Unknown API error"),
-    requestId: errorPayload.request_id
-      ? String(errorPayload.request_id)
-      : errorPayload.requestId
-        ? String(errorPayload.requestId)
-        : null,
+    requestId: sanitizeRequestId(errorPayload.request_id ?? errorPayload.requestId ?? null),
   };
+}
+
+function sanitizeRequestId(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length > MAX_REQUEST_ID_LENGTH) {
+    return null;
+  }
+  if (!REQUEST_ID_PATTERN.test(normalized)) {
+    return null;
+  }
+  return normalized;
 }
 
 export class SentinelayerApiError extends Error {
@@ -104,7 +116,7 @@ export class SentinelayerApiError extends Error {
     this.name = "SentinelayerApiError";
     this.status = Number(status || 500);
     this.code = String(code || "UNKNOWN");
-    this.requestId = requestId ? String(requestId) : null;
+    this.requestId = sanitizeRequestId(requestId);
     this.retryAfterMs = Number.isFinite(Number(retryAfterMs)) ? Number(retryAfterMs) : null;
   }
 }

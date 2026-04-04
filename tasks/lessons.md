@@ -222,3 +222,9 @@
 - High-risk publish workflows should treat `workflow_dispatch` as dry-run validation only and reserve mutation paths for chained, provenance-anchored `workflow_run` executions.
 - Rollback freshness proofs must verify execute-path contract booleans (`executeMode`, `productionGateVerified`, `npmMutationPathVerified`), not timestamp recency alone.
 - Deploy-proof lanes are more defensible when they bind immutable promotion artifacts to both rollback-drill freshness and explicit canary health checks, then emit a dedicated proof artifact.
+- Security-gate workflow inputs should be policy-resolved before scan invocation; protected/default-branch refs must ignore operator-provided weakening knobs and enforce pinned merge thresholds.
+- Request correlation identifiers from backend payloads should be sanitized as untrusted input (charset + length) before surfacing in any error path to prevent trace/log spoofing.
+- For abort-aware polling delays, prefer native `timers/promises` signal support over custom timer/listener promises to avoid cleanup edge-case leaks and inconsistent cancellation semantics.
+- Workflow least-privilege drift is easier to prevent with a structural YAML policy checker (top-level + per-job explicit permissions) wired into both local `npm run check` and CI lint gates.
+- Break-glass release paths should remain executable but heavily governed (dual control, validated incident id, immutable incident evidence artifact) rather than fully disabled into dry-run-only behavior.
+- Immutable artifact lineage controls are stronger when preflight emits a contract output set (artifact name, digests, commit/run provenance) that publish jobs must match exactly before mutation steps.

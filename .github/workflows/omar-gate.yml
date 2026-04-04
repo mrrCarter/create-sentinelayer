@@ -228,6 +228,61 @@ jobs:
             echo "::error::Omar model policy digest mismatch (expected=${OMAR_MODEL_POLICY_SHA256}, actual=${resolved_sha})."
             exit 1
           fi
+      - name: Resolve protected-branch gate policy
+        id: gate_policy
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          REF_NAME: ${{ github.ref_name || '' }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          INPUT_SEVERITY_GATE: ${{ inputs.severity_gate || 'P1' }}
+          INPUT_P2_MAX_ALLOWED: ${{ inputs.p2_max_allowed || '5' }}
+        run: |
+          set -euo pipefail
+          default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${default_branch}" ]]; then
+            default_branch="main"
+          fi
+          severity_input="$(echo "${INPUT_SEVERITY_GATE:-P1}" | tr -d '\r' | xargs || true)"
+          p2_input="$(echo "${INPUT_P2_MAX_ALLOWED:-5}" | tr -d '\r' | xargs || true)"
+          case "${severity_input}" in
+            P1|P2) ;;
+            *)
+              echo "::error::Invalid severity_gate value '${severity_input}'."
+              exit 1
+              ;;
+          esac
+          case "${p2_input}" in ''|*[!0-9]*)
+            echo "::error::Invalid p2_max_allowed value '${p2_input}'."
+            exit 1
+            ;;
+          esac
+
+          protected_ref="false"
+          case "${EVENT_NAME}" in
+            pull_request)
+              if [[ "${PR_BASE_REF}" == "${default_branch}" ]]; then
+                protected_ref="true"
+              fi
+              ;;
+            push|workflow_dispatch)
+              if [[ "${REF_NAME}" == "${default_branch}" ]]; then
+                protected_ref="true"
+              fi
+              ;;
+          esac
+
+          severity_gate="${severity_input}"
+          p2_max_allowed="${p2_input}"
+          if [[ "${protected_ref}" == "true" ]]; then
+            severity_gate="P1"
+            p2_max_allowed="0"
+          fi
+
+          echo "protected_ref=${protected_ref}" >> "$GITHUB_OUTPUT"
+          echo "severity_gate=${severity_gate}" >> "$GITHUB_OUTPUT"
+          echo "p2_max_allowed=${p2_max_allowed}" >> "$GITHUB_OUTPUT"
       - name: Run Omar Gate
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
@@ -238,7 +293,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          severity_gate: ${{ steps.gate_policy.outputs.severity_gate }}
           model: ${{ env.OMAR_MODEL_ID }}
           codex_model: ${{ env.OMAR_MODEL_ID }}
           model_fallback: ${{ env.OMAR_FALLBACK_MODEL_ID }}
@@ -251,8 +306,8 @@ jobs:
           P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
           P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
           P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
-          P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          P2_MAX_ALLOWED: ${{ steps.gate_policy.outputs.p2_max_allowed }}
+          SEVERITY_GATE_SELECTED: ${{ steps.gate_policy.outputs.severity_gate }}
         run: |
           set -euo pipefail
           p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
@@ -290,8 +345,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
-          p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
+          severity_gate="${{ steps.gate_policy.outputs.severity_gate }}"
+          p2_max="${{ steps.gate_policy.outputs.p2_max_allowed }}"
+          protected_ref="${{ steps.gate_policy.outputs.protected_ref }}"
           threshold_line="P0=0, P1=0"
           if [ "${severity_gate}" = "P2" ]; then
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
@@ -303,6 +359,7 @@ jobs:
           echo "- model_policy_sha256: \`${{ env.OMAR_MODEL_POLICY_SHA256 }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- protected_ref_policy: \`${protected_ref}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"
       - name: Assert workflow outputs and artifacts exclude raw secrets
         shell: bash
