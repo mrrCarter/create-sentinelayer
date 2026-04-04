@@ -266,32 +266,16 @@ jobs:
                   ;;
               esac
               if [[ "${input_execute_mode}" == "true" ]]; then
-                if [[ "${input_dry_run}" == "true" ]]; then
-                  echo "::error::workflow_dispatch execute_mode=true requires dry_run=false."
-                  exit 1
-                fi
-                if [[ -z "${incident_id}" ]] || [[ ! "${incident_id}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
-                  echo "::error::workflow_dispatch execute_mode=true requires incident_id (format: INC-<id>)."
-                  exit 1
-                fi
-                allowlist_file=".github/security/release-execute-allowlist.json"
-                test -f "${allowlist_file}" || (echo "::error::Missing ${allowlist_file}." && exit 1)
-                allowlisted_actor="$(jq -r --arg actor "${ACTOR}" '[.allowed_actors[]? | tostring | ascii_downcase] | map(select(. == ($actor | ascii_downcase))) | first // empty' "${allowlist_file}")"
-                if [[ -z "${allowlisted_actor}" ]]; then
-                  echo "::error::Actor '${ACTOR}' is not in ${allowlist_file} and cannot use execute_mode=true."
-                  exit 1
-                fi
-                dry_run="false"
-                execute_mode="true"
-              else
-                if [[ "${input_dry_run}" != "true" ]]; then
-                  echo "::error::workflow_dispatch validation path requires dry_run=true when execute_mode=false."
-                  exit 1
-                fi
-                dry_run="true"
-                execute_mode="false"
-                incident_id=""
+                echo "::error::workflow_dispatch execute_mode=true is disabled by default. Use provenance-anchored workflow_run release path for publish mutation."
+                exit 1
               fi
+              if [[ "${input_dry_run}" != "true" ]]; then
+                echo "::error::workflow_dispatch validation path requires dry_run=true; manual dispatch cannot mutate npm."
+                exit 1
+              fi
+              dry_run="true"
+              execute_mode="false"
+              incident_id=""
               tag_ref_json="$(gh_api_json "repos/${REPO}/git/ref/tags/${release_tag}")"
               ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
               ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"

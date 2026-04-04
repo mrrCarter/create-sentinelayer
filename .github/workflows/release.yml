@@ -154,13 +154,17 @@ jobs:
           permission_json="$(gh_api_json "repos/${REPO}/collaborators/${ACTOR}/permission")"
           permission="$(echo "${permission_json}" | jq -r '.permission // ""')"
           trusted_actor="false"
-          case "${permission}" in
-            admin|maintain)
-              trusted_actor="true"
-              echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
-              ;;
-          esac
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            case "${permission}" in
+              admin|maintain)
+                trusted_actor="true"
+                echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
+                ;;
+              *)
+                echo "::error::workflow_dispatch release requires admin/maintain permission (actor='${ACTOR}', permission='${permission}')."
+                exit 1
+                ;;
+            esac
             test -f "${invoker_policy_path}" || (echo "::error::Missing trusted invoker policy file ${invoker_policy_path}." && exit 1)
             allowlist_count="$(jq -r '.workflowDispatch.allowlist | length // 0' "${invoker_policy_path}")"
             if [[ "${allowlist_count}" -lt 1 ]]; then
@@ -245,7 +249,11 @@ jobs:
             echo "::error::workflow_dispatch release requires release_tag input."
             exit 1
           fi
-          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${ACTOR}" == "github-actions[bot]" ]]; then
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+            if [[ "${ACTOR}" != "github-actions[bot]" ]]; then
+              echo "::error::Tag-push release requires canonical bot actor 'github-actions[bot]' with release-please provenance; manual tag pushes are not allowed."
+              exit 1
+            fi
             release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20")"
             release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release-please.yml" --arg repo "${REPO}" '
               [.workflow_runs[]

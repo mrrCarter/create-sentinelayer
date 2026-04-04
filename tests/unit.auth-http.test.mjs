@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,10 @@ import {
   getSharedRequestJitterSalt,
   requestJson,
 } from "../src/auth/http.js";
+
+const authHttpSharedStatePolicyPath = fileURLToPath(
+  new URL("../.github/security/auth-http-shared-state-policy.json", import.meta.url)
+);
 
 async function startMockServer(handler) {
   const server = createServer(handler);
@@ -324,6 +328,144 @@ test("Unit auth http: CI mode ignores shared-state override outside allowed root
   }
 });
 
+test("Unit auth http: CI shared-state override requires NODE_ENV=test", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+  const previousStateDir = process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+  const previousCi = process.env.CI;
+  const previousCiOverride = process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = path.join(os.tmpdir(), "sl-auth-http-outside-root");
+  process.env.CI = "true";
+  process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE = "true";
+  process.env.NODE_ENV = "production";
+  const rateLimitBody = JSON.stringify({
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requests",
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/ci-node-env-guard", {
+          method: "GET",
+          maxAttempts: 1,
+          fetchImpl: async () =>
+            new Response(rateLimitBody, {
+              status: 429,
+              headers: {
+                "Content-Type": "application/json",
+                "Retry-After": "1",
+              },
+            }),
+        }),
+      (error) => {
+        assert.equal(error?.status, 429);
+        assert.equal(error?.code, "RATE_LIMITED");
+        return true;
+      }
+    );
+  } finally {
+    if (previousStateDir === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = previousStateDir;
+    }
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
+    }
+    if (previousCiOverride === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE = previousCiOverride;
+    }
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    __resetAuthHttpCircuitBreakerForTests();
+  }
+});
+
+test("Unit auth http: GitHub Actions CI override remains denied without explicit policy opt-in", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+  const previousStateDir = process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+  const previousCi = process.env.CI;
+  const previousCiOverride = process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousGithubActions = process.env.GITHUB_ACTIONS;
+  const originalPolicyRaw = await readFile(authHttpSharedStatePolicyPath, "utf8");
+  process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = path.join(os.tmpdir(), "sl-auth-http-outside-root");
+  process.env.CI = "true";
+  process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE = "true";
+  process.env.NODE_ENV = "test";
+  process.env.GITHUB_ACTIONS = "true";
+  await writeFile(
+    authHttpSharedStatePolicyPath,
+    JSON.stringify({ allowCiStateDirOverrideInGithubActions: false }, null, 2),
+    "utf8"
+  );
+  const rateLimitBody = JSON.stringify({
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requests",
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/ci-github-actions-policy-guard", {
+          method: "GET",
+          maxAttempts: 1,
+          fetchImpl: async () =>
+            new Response(rateLimitBody, {
+              status: 429,
+              headers: {
+                "Content-Type": "application/json",
+                "Retry-After": "1",
+              },
+            }),
+        }),
+      (error) => {
+        assert.equal(error?.status, 429);
+        assert.equal(error?.code, "RATE_LIMITED");
+        return true;
+      }
+    );
+  } finally {
+    await writeFile(authHttpSharedStatePolicyPath, originalPolicyRaw, "utf8");
+    if (previousStateDir === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = previousStateDir;
+    }
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
+    }
+    if (previousCiOverride === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE = previousCiOverride;
+    }
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    if (previousGithubActions === undefined) {
+      delete process.env.GITHUB_ACTIONS;
+    } else {
+      process.env.GITHUB_ACTIONS = previousGithubActions;
+    }
+    __resetAuthHttpCircuitBreakerForTests();
+  }
+});
+
 test("Unit auth http: requestJson honors Retry-After http-date relative to server date", async () => {
   let attempts = 0;
   const serverDate = new Date();
@@ -491,6 +633,28 @@ test("Unit auth http: requestJson carries sanitized requestId from transport fai
       return true;
     }
   );
+});
+
+test("Unit auth http: requestJson classifies internal client failures and avoids retries", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    () =>
+      requestJson("https://sentinelayer.example/client-processing-failure", {
+        method: "GET",
+        maxAttempts: 3,
+        retryBackoffMs: 1,
+        fetchImpl: async () => {
+          attempts += 1;
+          throw new Error("serialization pipeline exploded");
+        },
+      }),
+    (error) => {
+      assert.equal(error?.code, "CLIENT_PROCESSING_ERROR");
+      assert.equal(error?.status, 500);
+      return true;
+    }
+  );
+  assert.equal(attempts, 1, "Client processing failures must fail fast without retries.");
 });
 
 test("Unit auth http: requestJson preserves response header request id on invalid json", async () => {

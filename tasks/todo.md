@@ -1284,3 +1284,24 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-eighth-cycle fix batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Ninth Cycle (2026-04-04, run_id=bcd73aae-6763-4077-af30-84f774e1e6ec)
+- [x] Re-anchor to active Omar findings (`P2=6`) and patch only active deterministic findings:
+  - `.github/workflows/quality-gates.yml`: remove push-event canonical skip heuristic and force full gate-chain execution on protected default-branch pushes.
+  - `.github/workflows/quality-gates.yml`: replace brittle npm patch-version hard-fail with deterministic npm pin bootstrap (`npm@${NPM_VERSION_PIN}`) plus post-bootstrap pin assertion.
+  - `.github/workflows/quality-gates.yml`: keep digest allowlist verification but remove brittle npm hostedtoolcache path requirement in favor of executable + digest checks.
+  - `.github/workflows/release-publish.yml`: hard-disable `workflow_dispatch` mutation path (`execute_mode=true` rejected; manual dispatch requires `dry_run=true`).
+  - `.github/workflows/release.yml`: require canonical bot actor + release-please provenance for push-tag release path; block manual push-tag initiators.
+  - `src/auth/http.js`: classify unknown non-network failures as `CLIENT_PROCESSING_ERROR` (500), preserve `NETWORK_ERROR` for transport failures only, and mark processing errors non-retryable.
+  - `src/auth/http.js`: harden CI shared-state override policy with `NODE_ENV=test` prerequisite plus GitHub Actions explicit policy opt-in requirement.
+  - `.github/security/auth-http-shared-state-policy.json`: add repository policy contract for GitHub Actions CI override opt-in (default deny).
+  - `tests/unit.auth-http.test.mjs`: add regression coverage for non-retryable `CLIENT_PROCESSING_ERROR` and CI/GitHub Actions shared-state override guardrails.
+- [x] Run forty-ninth-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/omar-gate.yml .github/workflows/release-please.yml .github/workflows/rollback.yml` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-ninth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after re-anchored Omar findings are captured.

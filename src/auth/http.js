@@ -14,6 +14,27 @@ const CIRCUIT_BREAKER_STALE_WINDOW_MS = CIRCUIT_BREAKER_COOLDOWN_MS * 4;
 const MAX_CIRCUIT_BREAKER_BUCKETS = 64;
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  "CLIENT_ABORTED",
+  "CLIENT_PROCESSING_ERROR",
+  "INVALID_JSON",
+]);
+const NETWORK_FAILURE_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETRESET",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPROTO",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 const MAX_RETRY_AFTER_DELAY_MS = 15_000;
 const MAX_EXPONENTIAL_RETRY_DELAY_MS = 15_000;
 const MIN_JITTER_RETRY_DELAY_MS = 100;
@@ -30,6 +51,9 @@ const AUTH_HTTP_SHARED_STATE_DIR_ENV = "SENTINELAYER_AUTH_HTTP_STATE_DIR";
 const AUTH_HTTP_SHARED_STATE_CI_OVERRIDE_ENV = "SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE";
 const AUTH_HTTP_SHARED_STATE_ROOT_DIRNAME = ".sentinelayer";
 const AUTH_HTTP_SHARED_STATE_FILENAME = "circuit-breaker-state.v1.json";
+const AUTH_HTTP_SHARED_STATE_POLICY_FILE = path.resolve(
+  ".github/security/auth-http-shared-state-policy.json"
+);
 const AUTH_HTTP_SHARED_STATE_RELOAD_INTERVAL_MS = 750;
 const AUTH_HTTP_SHARED_STATE_LOCK_WAIT_MS = 1_500;
 const AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MIN_MS = 15;
@@ -174,6 +198,71 @@ function sanitizeRequestId(value) {
   return normalized;
 }
 
+function extractErrorCodeFromUnknownError(error, depth = 0) {
+  if (!error || typeof error !== "object" || depth > 2) {
+    return "";
+  }
+  const normalizedCode = String(error.code || "")
+    .trim()
+    .toUpperCase();
+  if (normalizedCode) {
+    return normalizedCode;
+  }
+  return extractErrorCodeFromUnknownError(error.cause, depth + 1);
+}
+
+function isLikelyNetworkErrorMessage(message) {
+  const normalizedMessage = String(message || "")
+    .trim()
+    .toLowerCase();
+  if (!normalizedMessage) {
+    return false;
+  }
+  return (
+    normalizedMessage.includes("fetch failed") ||
+    normalizedMessage.includes("network") ||
+    normalizedMessage.includes("socket") ||
+    normalizedMessage.includes("econn") ||
+    normalizedMessage.includes("enotfound") ||
+    normalizedMessage.includes("timeout") ||
+    normalizedMessage.includes("timed out")
+  );
+}
+
+function isLikelyNetworkFailure(error) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const normalizedName = String(error.name || "")
+    .trim()
+    .toLowerCase();
+  if (normalizedName === "fetcherror") {
+    return true;
+  }
+  const normalizedCode = extractErrorCodeFromUnknownError(error);
+  if (NETWORK_FAILURE_ERROR_CODES.has(normalizedCode)) {
+    return true;
+  }
+  return isLikelyNetworkErrorMessage(error.message);
+}
+
+function isGitHubActionsEnvironment() {
+  return isEnabledFlag(process.env.GITHUB_ACTIONS);
+}
+
+function isGithubActionsCiOverridePolicyEnabled() {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(AUTH_HTTP_SHARED_STATE_POLICY_FILE, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  return isEnabledFlag(parsed.allowCiStateDirOverrideInGithubActions);
+}
+
 export class SentinelayerApiError extends Error {
   constructor(message, { status = 500, code = "UNKNOWN", requestId = null, retryAfterMs = null } = {}) {
     super(String(message || "Sentinelayer API error"));
@@ -234,11 +323,21 @@ function normalizeUnknownError(error, { timedOut = false, externalAbort = false 
       requestId,
     });
   }
+  if (isLikelyNetworkFailure(error)) {
+    return new SentinelayerApiError(
+      error instanceof Error ? error.message : String(error || "Network request failed"),
+      {
+        status: 503,
+        code: "NETWORK_ERROR",
+        requestId,
+      }
+    );
+  }
   return new SentinelayerApiError(
-    error instanceof Error ? error.message : String(error || "Request failed"),
+    error instanceof Error ? error.message : String(error || "Client request processing failed"),
     {
-      status: 503,
-      code: "NETWORK_ERROR",
+      status: 500,
+      code: "CLIENT_PROCESSING_ERROR",
       requestId,
     }
   );
@@ -289,8 +388,25 @@ function resolveAuthHttpSharedStateDirectory() {
   if (explicitDirectory) {
     const runningInCi = isEnabledFlag(process.env.CI);
     const allowCiOverride = isEnabledFlag(process.env[AUTH_HTTP_SHARED_STATE_CI_OVERRIDE_ENV]);
-    if (runningInCi && !allowCiOverride) {
-      return defaultDirectory;
+    if (runningInCi) {
+      if (!allowCiOverride) {
+        return defaultDirectory;
+      }
+      const normalizedNodeEnv = String(process.env.NODE_ENV || "")
+        .trim()
+        .toLowerCase();
+      if (normalizedNodeEnv !== "test") {
+        console.warn(
+          `${AUTH_HTTP_SHARED_STATE_CI_OVERRIDE_ENV} ignored in CI without NODE_ENV=test.`
+        );
+        return defaultDirectory;
+      }
+      if (isGitHubActionsEnvironment() && !isGithubActionsCiOverridePolicyEnabled()) {
+        console.warn(
+          `${AUTH_HTTP_SHARED_STATE_CI_OVERRIDE_ENV} ignored in GitHub Actions without explicit policy opt-in.`
+        );
+        return defaultDirectory;
+      }
     }
     const resolvedExplicitDirectory = path.resolve(explicitDirectory);
     const allowedRoot = resolveAuthHttpSharedStateAllowedRoot();
@@ -768,7 +884,7 @@ function shouldRetry(error) {
   if (!(error instanceof SentinelayerApiError)) {
     return false;
   }
-  if (String(error.code || "") === "CLIENT_ABORTED") {
+  if (NON_RETRYABLE_ERROR_CODES.has(String(error.code || "").trim().toUpperCase())) {
     return false;
   }
   return RETRYABLE_STATUS_CODES.has(Number(error.status || 0));

@@ -315,3 +315,9 @@
 - Auth backend outage handling should fail faster with tighter circuit thresholds and surface explicit cooldown/failure-count context in user-visible error messages for clearer operator recovery signals.
 - Remote-exec correlation must be command-local, not whole-step-global; mixing network signals from one command with benign `$()`/template constructs in other commands causes high-noise false positives that break CI gates.
 - PR workflow provenance artifacts should record both PR head SHA and workflow execution SHA; using merge SHA alone breaks downstream gates that intentionally validate source-head commit lineage.
+- Push-vs-PR canonical-run dedupe heuristics can undercut required-check determinism; for protected default-branch pushes, execute the full quality chain and treat duplicate-cost optimization as secondary.
+- npm patch-version pin checks on hosted runners should use deterministic bootstrap-to-pin plus digest allowlist validation, not raw runner-image version equality assumptions.
+- Unknown client-side auth HTTP exceptions must not be bucketed into `NETWORK_ERROR`; classify non-transport failures as non-retryable processing errors so retry/backoff logic remains actionable.
+- CI state-directory override flags need layered controls (`CI override flag` + `NODE_ENV=test` + `GitHub Actions policy opt-in`) to prevent accidental path-control drift in automation.
+- Manual `workflow_dispatch` release-publish paths should default to validation-only mode; keep publish mutation on provenance-anchored `workflow_run` path unless an explicitly gated break-glass lane is implemented.
+- Push-tag release triggers should enforce canonical bot provenance (`release-please` lineage) and block manual human tag pushes from entering release mutation workflows.

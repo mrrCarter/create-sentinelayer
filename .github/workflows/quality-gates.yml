@@ -50,28 +50,10 @@ jobs:
         run: |
           set -euo pipefail
           execute_full="true"
-          skip_reason="canonical_event"
+          skip_reason="canonical_full_execution"
           if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
-            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${HEAD_SHA}&per_page=30" -H "Accept: application/vnd.github+json")"
-            canonical_pr_run_id="$(echo "${runs_json}" | jq -r --arg current "${RUN_ID}" --arg repo "${REPO}" --arg sha "${HEAD_SHA}" '
-              [.workflow_runs[]
-                | select(((.id | tostring) != $current))
-                | select((.event // "") == "pull_request")
-                | select((.head_sha // "") == $sha)
-                | select(((.path // "") | split("@")[0]) == ".github/workflows/quality-gates.yml")
-                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
-                | select(
-                    ((.status // "") == "in_progress") or
-                    ((.status // "") == "queued") or
-                    (((.status // "") == "completed") and ((.conclusion // "") == "success"))
-                  )
-              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | (.id | tostring) // ""
-            ')"
-            if [[ -n "${canonical_pr_run_id}" ]]; then
-              execute_full="false"
-              skip_reason="duplicate_sha_already_validated_by_pull_request_run_${canonical_pr_run_id}"
-              echo "::notice::Skipping duplicate push quality execution for SHA ${HEAD_SHA}; canonical pull_request run ${canonical_pr_run_id} already exists."
-            fi
+            skip_reason="protected_branch_push_forced_full_execution"
+            echo "::notice::Protected default-branch push detected for SHA ${HEAD_SHA}; executing full quality gate chain."
           fi
           echo "execute_full=${execute_full}" >> "$GITHUB_OUTPUT"
           echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"
@@ -100,7 +82,12 @@ jobs:
           set -euo pipefail
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
           if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
-            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            echo "::notice::Bootstrapping npm to pinned version '${NPM_VERSION_PIN}' from '${resolved_npm_version}'."
+            timeout --preserve-status 120s npm install --global --no-audit --no-fund "npm@${NPM_VERSION_PIN}"
+            resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          fi
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin bootstrap failed (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
             exit 1
           fi
 
@@ -120,8 +107,8 @@ jobs:
             echo "::error::Node binary is not sourced from hosted toolcache (${node_path})."
             exit 1
           fi
-          if [[ "${npm_path}" != *"/hostedtoolcache/"* ]]; then
-            echo "::error::npm binary is not sourced from hosted toolcache (${npm_path})."
+          if [[ ! -x "${npm_path}" ]]; then
+            echo "::error::Resolved npm binary is not executable (${npm_path})."
             exit 1
           fi
           node_sha="$(sha256sum "${node_path}" | awk '{print $1}')"
