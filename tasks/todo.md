@@ -1097,5 +1097,14 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-session-store.test.mjs` (pass; `193/197` with 4 env-skipped bash tests)
   - `npm run verify` (pass; e2e `84/84`; unit `193/197` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-seventh-cycle hardening batch.
+- [x] Commit + push thirty-seventh-cycle hardening batch (`2589f4a`).
+- [x] Execute full Omar loop and capture failure root cause:
+  - `gh run watch 23975391161 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23975391147`.
+  - `gh run watch 23975391147 --exit-status` failed at `Run Omar Gate` with high-entropy lockfile findings (`package-lock.json`) after managed-LLM mode switch.
+- [x] Apply thirty-eighth-cycle Omar scan-path hotfix:
+  - `.github/workflows/omar-gate.yml`: restore OpenAI-keyed Omar invocation (`openai_api_key`, `sentinelayer_managed_llm: "false"`), restore strict OpenAI secret presence/masking checks, and include `OPENAI_API_KEY` in output leak assertions.
+- [x] Run thirty-eighth-cycle local evidence:
+  - `npm run check` (pass)
+- [ ] Commit + push thirty-eighth-cycle hotfix batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

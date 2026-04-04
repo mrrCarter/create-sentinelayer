@@ -272,3 +272,4 @@
 - Required-check workflows should use SHA-scoped concurrency keys (`pull_request.head.sha`/`github.sha`) instead of PR-number/ref keys to prevent stale-run collisions across synchronize pushes.
 - Request correlation fidelity needs dual-source capture in HTTP clients: sanitize and propagate IDs from both backend payload fields and response headers (`x-request-id`) for invalid JSON and transport failures.
 - Publish paths need a final just-before-mutation attestation/digest verification step even when upstream quality gates already validated provenance; downstream job context is a distinct trust boundary.
+- For this repository's Omar workflow, switching to `sentinelayer_managed_llm: "true"` changed scanner behavior and triggered lockfile entropy failures in `Run Omar Gate`; keep the OpenAI-keyed scan path (`openai_api_key` + `sentinelayer_managed_llm: "false"`) unless policy is explicitly updated.
