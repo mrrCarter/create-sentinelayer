@@ -153,14 +153,14 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - PR 12.7 swarm identity hardening. (merged as #86)
 
 ## Requested Phase Expansion Plan (2026-04-01 update)
-- [ ] Phase 2: add low-latency interactive chat mode with streaming progress UX (AWS/GH CLI style) while preserving deterministic command mode.
-- [ ] Phase 4: complete persistent session lifecycle (auto-rotate, session listing/resume metadata, revocation controls).
-- [ ] Phase 5: define plugin/template/policy extension API boundaries and load-order governance.
-- [ ] Phase 6: implement MCP tool registry schema + adapter contracts (including AIdenID provisioning adapter).
-- [ ] Phase 9: expand watch + review into full OMAR local reviewer pipeline with deterministic diff/full scan modes.
-- [ ] Phase 10: add multi-agent audit swarm orchestration and reconciliation report packaging.
-- [ ] Phase 11: expose AIdenID operations through CLI command surface (including `sl ai ...` alias plan and policy gating).
-- [ ] Phase 12: implement governed QA swarm runtime/dashboard with explicit token/time/tool/path/network budgets and kill/quarantine controls.
+- [x] Phase 2: add low-latency interactive chat mode with streaming progress UX (AWS/GH CLI style) while preserving deterministic command mode.
+- [x] Phase 4: complete persistent session lifecycle (auto-rotate, session listing/resume metadata, revocation controls).
+- [x] Phase 5: define plugin/template/policy extension API boundaries and load-order governance.
+- [x] Phase 6: implement MCP tool registry schema + adapter contracts (including AIdenID provisioning adapter).
+- [x] Phase 9: expand watch + review into full OMAR local reviewer pipeline with deterministic diff/full scan modes.
+- [x] Phase 10: add multi-agent audit swarm orchestration and reconciliation report packaging.
+- [x] Phase 11: expose AIdenID operations through CLI command surface (including `sl ai ...` alias plan and policy gating).
+- [x] Phase 12: implement governed QA swarm runtime/dashboard with explicit token/time/tool/path/network budgets and kill/quarantine controls.
 
 ### Batch I - Stretch / Deferred (P3)
 - PR 7.1 interactive AI refinement.
@@ -196,7 +196,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch N - Structural Follow-Through (2026-04-02 audit)
 - [x] PR 106 split oversized command files (`src/commands/ai.js`, `src/commands/daemon.js`) into modular slices.
-- [ ] PR 107 command lazy-loading.
+- [x] PR 107 command lazy-loading.
 
 ### Batch U - Scaffold and Spec Feedback Fixes (2026-04-03)
 - [x] PR 137 frictionless secret setup + workflow unification (`.env` gitignore guard, repo-aware `scan init` instructions, `gh secret` verify).
@@ -208,7 +208,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 141 shared local blackboard memory with retrieval quality gate.
 - [x] PR 142 local hybrid retrieval index (deterministic + TF-IDF) with optional API delegation hook.
 - [x] PR 143 daemon watchdog stuck-agent detection + Slack/Telegram alerts.
-- [ ] PR 144 ingest staleness refresh and hash-aware cache controls.
+- [x] PR 144 ingest staleness refresh and hash-aware cache controls.
 
 ## Execution Board (2026-04-04)
 
@@ -225,8 +225,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-144-ingest-refresh-staleness` (in progress)
-2. `roadmap/pr-107-command-lazy-loading`
+1. Queue cleared for current roadmap sequence (`PR 107` merged as #113).
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -534,3 +533,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - Added `src/daemon/watchdog.js` plus `daemon watchdog`, `daemon watchdog run`, and `daemon watchdog status` command surfaces with deterministic artifact storage and smart state-change alerting.
     - Added Slack/Telegram channel normalization with env-template support, dry-run dispatch records, and state-transition recovery signaling.
     - Fixed Omar P1 finding by replacing nested await dispatch loops with batched `Promise.all` alert fan-out.
+
+  - PR 144 (ingest staleness refresh + hash-aware cache controls) merged evidence (branch `roadmap/pr-144-ingest-refresh-staleness`):
+    - `npm run verify` (pass)
+    - `gh pr checks 123` (all required checks passed, including `Omar Gate`, `Quality Gates`, and `Eval Impact Gate`)
+    - `gh pr view 123 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `f9273af2fca97d612a7ea1019d4e60ba950689a5`)
+    - Added staleness-aware ingest resolver/hash metadata and `--refresh` flow across `review`, `audit`, `spec`, and `prompt` commands with refresh metadata persisted in artifacts/reports.
+
+  - PR 107 (command lazy-loading) merged evidence (branch `roadmap/pr-107-command-lazy-loading`):
+    - `npm run verify` (pass, e2e `86/86`; unit tests `182/182`; coverage statements `90.22%`, branches `70.98%`, functions `92.03%`, lines `90.22%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - `gh run watch 23988615495 --exit-status` (Omar Gate pass; no P0/P1, reported `P2=8` and `P3=1134`)
+    - `gh pr view 113 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `642ce48517cdfc4c6068a27ff8929bc0d3bd5c48`)
+    - Replaced eager command imports in `src/cli.js` with dynamic registrar loaders and command-scoped registration to reduce startup load while preserving command contracts.
