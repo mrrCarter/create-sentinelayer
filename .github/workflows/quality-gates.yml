@@ -43,6 +43,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           RUN_ID: ${{ github.run_id }}
           REF_NAME: ${{ github.ref_name }}
@@ -78,8 +80,18 @@ jobs:
               echo "::notice::Run ${RUN_ID} is canonical for event '${EVENT_NAME}' and SHA ${HEAD_SHA}."
             fi
           else
-            echo "::warning::Unable to resolve canonical-run metadata (status=${runs_status}); executing full gate chain."
-            if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+            if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
+              execute_full="false"
+              skip_reason="non_canonical_event_repository_fallback"
+              echo "::warning::Canonical-run lookup failed (status=${runs_status}) and event repository '${EVENT_REPOSITORY}' does not match '${REPO}'; skipping full chain."
+            elif [[ "${EVENT_NAME}" == "pull_request" ]] && [[ "${PR_HEAD_REPOSITORY}" != "${REPO}" ]]; then
+              execute_full="false"
+              skip_reason="non_canonical_head_repository_fallback"
+              echo "::warning::Canonical-run lookup failed (status=${runs_status}) and PR head repository '${PR_HEAD_REPOSITORY}' does not match '${REPO}'; skipping full chain."
+            else
+              echo "::warning::Unable to resolve canonical-run metadata (status=${runs_status}); executing full gate chain."
+            fi
+            if [[ "${execute_full}" == "true" ]] && [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
               skip_reason="protected_branch_push_forced_full_execution"
             fi
           fi

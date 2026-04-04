@@ -27,10 +27,6 @@ if [[ "${#trusted_action_owners[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-mapfile -t tarball_fallback_owners < <(
-  jq -r '.tarballFallbackOwners[]? // empty' "${provenance_policy_file}" | awk 'NF {print tolower($0)}'
-)
-
 require_verified_commit_signatures_raw="$(
   jq -r '.requireVerifiedCommitSignatures // true' "${provenance_policy_file}"
 )"
@@ -283,18 +279,9 @@ for workflow_file in "${workflow_files[@]}"; do
           fi
         fi
       else
-        if owner_in_list "${action_owner}" "${tarball_fallback_owners[@]}"; then
-          if ! timeout --preserve-status 30s gh api -X HEAD -i "repos/${action_owner}/${action_repo}/tarball/${workflow_sha}" >/dev/null; then
-            echo "::error file=${workflow_file}::Unable to resolve tarball fallback provenance for '${action_key}@${workflow_sha}'."
-            failures=$((failures + 1))
-            continue
-          fi
-          echo "::warning file=${workflow_file}::Commit provenance API fallback used for '${action_key}@${workflow_sha}' via tarball ref resolution."
-        else
-          echo "::error file=${workflow_file}::Unable to resolve action provenance for '${action_key}@${workflow_sha}' via commits API."
-          failures=$((failures + 1))
-          continue
-        fi
+        echo "::error file=${workflow_file}::Unable to resolve action provenance for '${action_key}@${workflow_sha}' via commits API."
+        failures=$((failures + 1))
+        continue
       fi
     fi
   done

@@ -1350,3 +1350,18 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
 - [ ] Commit + push fifty-second-cycle fix batch.
 - [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Third Cycle (2026-04-04, run_id=cee5b639-9a28-447d-970e-c7e3429cd41d)
+- [x] Re-anchor to active Omar findings (`P2=5`) and apply deterministic hardening:
+  - `.github/workflows/quality-gates.yml`: add fallback repository-identity guards for canonical-run resolution failure paths (`event.repository` and `pull_request.head.repo` match enforcement).
+  - `.github/workflows/omar-gate.yml`: bind secret validation step to explicit `security-review` verification output and trusted job identity (`github.job == omar_gate`), and always assert environment protection contract before secret handling.
+  - `.github/workflows/release.yml`: remove collaborator-permission API dependency from tag-push paths by scoping that check to `workflow_dispatch` only (prevents bot-tag deadlock on missing collaborator endpoint access).
+  - `scripts/ci/verify-action-shas.sh`: remove HEAD-only tarball fallback; fail closed when commit-provenance API is unavailable.
+  - `.github/security/action-provenance-policy.json`: align policy with fail-closed commit-provenance behavior.
+  - `.github/workflows/release-publish.yml`: add `enforce-oidc-contract` preflight job that validates `jobs.publish.permissions.id-token == write`, and gate runtime guard on this contract.
+  - `.github/security/workflow-permissions-policy.json`: add explicit permission policy entry for `enforce-oidc-contract`.
+- [x] Run fifty-third-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push fifty-third-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

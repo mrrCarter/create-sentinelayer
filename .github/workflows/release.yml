@@ -151,10 +151,10 @@ jobs:
             echo "Trusted invoker validation skipped for ref '${GITHUB_REF_VALUE}'."
             exit 0
           fi
-          permission_json="$(gh_api_json "repos/${REPO}/collaborators/${ACTOR}/permission")"
-          permission="$(echo "${permission_json}" | jq -r '.permission // ""')"
           trusted_actor="false"
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            permission_json="$(gh_api_json "repos/${REPO}/collaborators/${ACTOR}/permission")"
+            permission="$(echo "${permission_json}" | jq -r '.permission // ""')"
             case "${permission}" in
               admin|maintain)
                 trusted_actor="true"

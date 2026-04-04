@@ -327,3 +327,7 @@
 - Auth poll replay protection should persist issued idempotency-key history across restarts and reject reused keys in resumed loops; in-memory-only tracking is insufficient under process restarts.
 - If CI policy scripts require GitHub API auth (`gh api`), propagate `GH_TOKEN: ${{ github.token }}` explicitly into every test/coverage step that can execute those scripts; the token is not auto-exported into shell environments.
 - Apply the same `GH_TOKEN` propagation rule to dedicated security jobs (not only test lanes); allowlist/provenance checks in security stages hit the same auth requirement.
+- For canonical-run dedupe safety, API-failure fallback paths must still enforce repository identity (`event.repository` and PR head repository) before allowing full execution.
+- Secret-presence checks are not sufficient for trusted scans; tie secret-consuming steps to explicit environment-protection verification outputs and trusted job identity.
+- Tag-push release trust paths should avoid collaborator-permission API coupling for bot actors; keep collaborator checks scoped to manual-dispatch governance paths.
+- Action provenance fallback-by-availability weakens guarantees; prefer fail-closed commit-provenance checks over tarball HEAD existence probes unless immutable digest verification is implemented.

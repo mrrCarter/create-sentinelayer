@@ -5,8 +5,5 @@
     "gitleaks",
     "mrrCarter"
   ],
-  "requireVerifiedCommitSignatures": true,
-  "tarballFallbackOwners": [
-    "actions"
-  ]
+  "requireVerifiedCommitSignatures": true
 }

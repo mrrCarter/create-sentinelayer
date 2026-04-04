@@ -111,7 +111,7 @@ jobs:
             exit 1
           fi
       - name: Verify security-review environment protections
-        if: ${{ github.event_name == 'pull_request' }}
+        id: verify_security_review
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -128,6 +128,7 @@ jobs:
           if [[ "${wait_timer_seconds}" =~ ^[0-9]+$ ]] && [[ "${wait_timer_seconds}" -lt 1 ]]; then
             echo "::warning::security-review environment has no wait timer configured; consider enabling a non-zero timer for additional review control."
           fi
+          echo "security_review_verified=true" >> "$GITHUB_OUTPUT"
       - name: Wait for Quality Summary gate
         id: wait_quality
         shell: bash
@@ -268,6 +269,7 @@ jobs:
             exit 1
           fi
       - name: Validate and mask scan secrets
+        if: ${{ steps.verify_security_review.outputs.security_review_verified == 'true' && github.job == 'omar_gate' }}
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}

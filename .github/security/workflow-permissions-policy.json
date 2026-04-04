@@ -176,6 +176,10 @@
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }
         },
+        "enforce-oidc-contract": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
         "runtime-budget-guard": {
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }
