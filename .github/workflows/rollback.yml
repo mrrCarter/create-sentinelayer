@@ -26,6 +26,10 @@ on:
         required: false
         default: false
         type: boolean
+      lineage_exception_id:
+        description: "Required when allow_local_validation_only=true (format: LV-<context>)"
+        required: false
+        type: string
   workflow_call:
     inputs:
       target_version:
@@ -50,6 +54,10 @@ on:
         required: false
         type: boolean
         default: false
+      lineage_exception_id:
+        description: "Required when allow_local_validation_only=true (format: LV-<context>)"
+        required: false
+        type: string
   schedule:
     - cron: "23 6 * * *"
 
@@ -84,6 +92,7 @@ jobs:
       RAW_REASON: ${{ inputs.reason || github.event.inputs.reason || '' }}
       RAW_EXECUTE: ${{ inputs.execute || github.event.inputs.execute || 'false' }}
       RAW_ALLOW_LOCAL_VALIDATION_ONLY: ${{ inputs.allow_local_validation_only || github.event.inputs.allow_local_validation_only || 'false' }}
+      RAW_LINEAGE_EXCEPTION_ID: ${{ inputs.lineage_exception_id || github.event.inputs.lineage_exception_id || '' }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -116,6 +125,7 @@ jobs:
           reason="$(echo "${RAW_REASON:-}" | tr -d '\r' | xargs || true)"
           execute_raw="$(echo "${RAW_EXECUTE:-false}" | tr -d '\r' | xargs || true)"
           allow_local_validation_raw="$(echo "${RAW_ALLOW_LOCAL_VALIDATION_ONLY:-false}" | tr -d '\r' | xargs || true)"
+          lineage_exception_id="$(echo "${RAW_LINEAGE_EXCEPTION_ID:-}" | tr -d '\r' | xargs || true)"
           parse_bool_input() {
             local raw_value="${1:-false}"
             local key_name="${2:-value}"
@@ -140,6 +150,7 @@ jobs:
           echo "REASON=${reason}" >> "$GITHUB_ENV"
           echo "EXECUTE=${execute}" >> "$GITHUB_ENV"
           echo "ALLOW_LOCAL_VALIDATION_ONLY=${allow_local_validation_only}" >> "$GITHUB_ENV"
+          echo "LINEAGE_EXCEPTION_ID=${lineage_exception_id}" >> "$GITHUB_ENV"
 
       - name: Verify production environment protections
         if: env.EXECUTE == 'true'
@@ -168,6 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           target_version="$(echo "${TARGET_VERSION:-}" | tr -d '\r' | xargs || true)"
+          lineage_exception_id="$(echo "${LINEAGE_EXCEPTION_ID:-}" | tr -d '\r' | xargs || true)"
           target_version_local_only="false"
           if [[ -z "${target_version}" ]]; then
             if [[ "${EXECUTE}" == "true" ]]; then
@@ -198,11 +210,22 @@ jobs:
                 echo "::error::Local rollback validation fallback is disabled. Set allow_local_validation_only=true only for explicitly approved validation-only workflows."
                 exit 1
               fi
+              if [[ -z "${lineage_exception_id}" ]]; then
+                echo "::error::lineage_exception_id is required when local rollback validation fallback is used."
+                exit 1
+              fi
+              if [[ ! "${lineage_exception_id}" =~ ^LV-[A-Za-z0-9._-]{6,80}$ ]]; then
+                echo "::error::lineage_exception_id must match ^LV-[A-Za-z0-9._-]{6,80}$ when local rollback validation fallback is used."
+                exit 1
+              fi
               target_version_local_only="true"
-              echo "::warning::Unable to resolve published dist-tag for ${PACKAGE_NAME}; using local package.json version ${target_version} for validation-only rollback readiness."
+              echo "::warning::Unable to resolve published dist-tag for ${PACKAGE_NAME}; using local package.json version ${target_version} for validation-only rollback readiness (lineage_exception_id=${lineage_exception_id})."
             else
               echo "No target_version supplied; inferred latest published version ${target_version} for validation mode."
             fi
+          fi
+          if [[ "${target_version_local_only}" != "true" ]] && [[ -n "${lineage_exception_id}" ]]; then
+            echo "::warning::lineage_exception_id was provided but local rollback validation fallback is not active; ignoring value."
           fi
           if [[ "${target_version}" == v* ]]; then
             target_version="${target_version#v}"
@@ -231,6 +254,7 @@ jobs:
             exit 1
           fi
           echo "TARGET_VERSION_LOCAL_ONLY=${target_version_local_only}" >> "$GITHUB_ENV"
+          echo "LINEAGE_EXCEPTION_ID=${lineage_exception_id}" >> "$GITHUB_ENV"
 
       - name: Smoke-check target version install
         shell: bash
@@ -378,6 +402,7 @@ jobs:
             "qualityArtifactRebuildSha256": "",
             "attestationVerified": false,
             "lineageMode": "local_validation",
+            "lineageExceptionId": "${LINEAGE_EXCEPTION_ID}",
             "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
@@ -451,6 +476,11 @@ jobs:
           echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
           echo "- execute: \`${EXECUTE}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- allow_local_validation_only: \`${ALLOW_LOCAL_VALIDATION_ONLY:-false}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${LINEAGE_EXCEPTION_ID:-}" ]]; then
+            echo "- lineage_exception_id: \`${LINEAGE_EXCEPTION_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- lineage_exception_id: \`(none)\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "- target_version: \`${TARGET_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           if [[ -n "${BAD_VERSION}" ]]; then
             echo "- bad_version: \`${BAD_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"

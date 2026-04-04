@@ -20,6 +20,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION_PIN: "20.11.1"
+  NPM_VERSION_PIN: "10.2.4"
   ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
 
 concurrency:
@@ -41,6 +43,28 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
+      - name: Install dependencies (lockfile immutable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install-immutable.sh .
 
       - name: Determine release-intent delta
         id: release_scope

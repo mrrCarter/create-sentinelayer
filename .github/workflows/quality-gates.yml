@@ -22,7 +22,7 @@ env:
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -1440,6 +1440,7 @@ jobs:
     with:
       execute: false
       allow_local_validation_only: true
+      lineage_exception_id: LV-QUALITY-${{ github.run_id }}
 
   deploy:
     name: Deploy

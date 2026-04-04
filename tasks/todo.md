@@ -1167,3 +1167,22 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-first-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start feedback-fixes Batch U execution (`PR 137 -> 140`) immediately after PR #114 burn-down target is met.
+
+### PR #114 Forty-Second Cycle (2026-04-04, pending Omar re-run)
+- [x] Re-anchor to active Omar findings (`P2=5`) and apply deterministic remediations only on active paths:
+  - `.github/workflows/quality-gates.yml`: enforce SHA-scoped concurrency with `cancel-in-progress: true` to prevent stale required-check overlap.
+  - `.github/workflows/quality-gates.yml` -> rollback reusable call: pass explicit `lineage_exception_id` contract for local fallback validation mode.
+  - `.github/workflows/release-please.yml`: install dependencies immutably (`install-immutable.sh`) after pinned Node/npm verification before release-intent mutation checks.
+  - `.github/workflows/release-publish.yml`: align concurrency key across `workflow_run` and `workflow_dispatch` paths on release-run identifiers.
+  - `.github/workflows/rollback.yml`: add typed `lineage_exception_id` input, require validated exception id when local fallback is used, and emit lineage exception evidence in rollback summary artifacts.
+  - `src/auth/service.js`: add service-layer persisted backend outage circuit fields (`backendCircuitOpenedAtEpochMs`, `backendCircuitCooldownMs`) in resume state and enforce pre-loop fail-closed `CLI_AUTH_BACKEND_UNAVAILABLE` handling until cooldown expires.
+  - `src/auth/service.js`: replace lock retry jitter fallback with CSPRNG-backed `crypto.randomInt` path.
+- [x] Run forty-second-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-http.test.mjs` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release-please.yml .github/workflows/release-publish.yml .github/workflows/rollback.yml .github/workflows/omar-gate.yml` (pass)
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `201/207` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-second-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Begin `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after PR #114 target is reached.

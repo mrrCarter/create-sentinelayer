@@ -294,3 +294,7 @@
 - Release governance workflows should use the shared `gh_api_json` retry/timeout helper for control-plane API lookups to avoid bespoke timeout logic drift.
 - Omar least-privilege findings can be reduced by keeping workflow-level permissions read-only and moving write scopes strictly to the scanning job.
 - Provenance findings are easier to close when release-publish has a dedicated workflow-boundary provenance gate job that all publish-capable paths depend on.
+- Required-check reliability improves when quality-gate concurrency cancels superseded runs for the same SHA; leaving stale runs active can surface duplicate or drifting required-check states.
+- Release-intent and release-publish workflows should enforce immutable dependency install (`npm ci`/lockfile gate) before governance or mutation logic to prevent toolchain drift.
+- Local rollback lineage fallback must require an explicit, structured exception identifier and persist that exception into lineage artifacts; otherwise validation-only fallback weakens auditability.
+- Auth poll backend outage handling should persist circuit-open state across process restarts so retry storms do not resume immediately after CLI restart.

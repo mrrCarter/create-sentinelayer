@@ -31,6 +31,7 @@ const MIN_AUTH_POLL_INTERVAL_MS = 250;
 const MAX_AUTH_POLL_ATTEMPTS = 300;
 const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
 const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
+const AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS = 60_000;
 const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 8;
 const MAX_TRACKED_POLL_REQUEST_IDS = 256;
 const AUTH_POLL_RESUME_STATE_VERSION = 1;
@@ -512,6 +513,22 @@ function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
   const nextAttemptRaw = Number(raw.nextAttempt);
   const nextAttempt = Number.isFinite(nextAttemptRaw) ? Math.max(0, Math.floor(nextAttemptRaw)) : 0;
   const seenRequestIds = normalizeTrackedPollRequestIds(raw.seenRequestIds);
+  const backendCircuitOpenedAtEpochMsRaw = Number(raw.backendCircuitOpenedAtEpochMs || 0);
+  let backendCircuitOpenedAtEpochMs = Number.isFinite(backendCircuitOpenedAtEpochMsRaw)
+    ? Math.max(0, Math.floor(backendCircuitOpenedAtEpochMsRaw))
+    : 0;
+  const backendCircuitCooldownMsRaw = Number(raw.backendCircuitCooldownMs || 0);
+  let backendCircuitCooldownMs = Number.isFinite(backendCircuitCooldownMsRaw)
+    ? Math.max(0, Math.min(AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS, Math.floor(backendCircuitCooldownMsRaw)))
+    : 0;
+  if (
+    !backendCircuitOpenedAtEpochMs ||
+    !backendCircuitCooldownMs ||
+    Date.now() - backendCircuitOpenedAtEpochMs >= backendCircuitCooldownMs
+  ) {
+    backendCircuitOpenedAtEpochMs = 0;
+    backendCircuitCooldownMs = 0;
+  }
   const versionRaw = Number(raw.version);
   const version = Number.isFinite(versionRaw) ? Math.max(1, Math.floor(versionRaw)) : AUTH_POLL_RESUME_STATE_VERSION;
   return {
@@ -522,6 +539,8 @@ function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
     highestSeenPollSequence,
     nextAttempt,
     seenRequestIds,
+    backendCircuitOpenedAtEpochMs,
+    backendCircuitCooldownMs,
   };
 }
 
@@ -582,7 +601,13 @@ async function withAuthPollResumeStateLock({ sessionId, homeDir } = {}, operatio
       }
       const retryDelayMs =
         AUTH_POLL_RESUME_LOCK_RETRY_BASE_MS +
-        Math.floor(Math.random() * (AUTH_POLL_RESUME_LOCK_RETRY_JITTER_MS + 1));
+        (() => {
+          try {
+            return crypto.randomInt(0, AUTH_POLL_RESUME_LOCK_RETRY_JITTER_MS + 1);
+          } catch {
+            return AUTH_POLL_RESUME_LOCK_RETRY_JITTER_MS;
+          }
+        })();
       await sleep(retryDelayMs);
     }
   }
@@ -617,6 +642,8 @@ async function writeAuthPollResumeState({
   highestSeenPollSequence,
   nextAttempt,
   seenRequestIds,
+  backendCircuitOpenedAtEpochMs,
+  backendCircuitCooldownMs,
   homeDir,
 } = {}) {
   const normalizedSessionId = String(sessionId || "").trim();
@@ -630,6 +657,25 @@ async function writeAuthPollResumeState({
   const requestedHighestSequence = Math.max(-1, Math.floor(Number(highestSeenPollSequence) || -1));
   const requestedNextAttempt = Math.max(0, Math.floor(Number(nextAttempt) || 0));
   const requestedSeenRequestIds = normalizeTrackedPollRequestIds(seenRequestIds);
+  const requestedBackendCircuitOpenedAtEpochMsRaw = Number(backendCircuitOpenedAtEpochMs || 0);
+  let requestedBackendCircuitOpenedAtEpochMs = Number.isFinite(requestedBackendCircuitOpenedAtEpochMsRaw)
+    ? Math.max(0, Math.floor(requestedBackendCircuitOpenedAtEpochMsRaw))
+    : 0;
+  const requestedBackendCircuitCooldownMsRaw = Number(backendCircuitCooldownMs || 0);
+  let requestedBackendCircuitCooldownMs = Number.isFinite(requestedBackendCircuitCooldownMsRaw)
+    ? Math.max(
+        0,
+        Math.min(AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS, Math.floor(requestedBackendCircuitCooldownMsRaw))
+      )
+    : 0;
+  if (
+    !requestedBackendCircuitOpenedAtEpochMs ||
+    !requestedBackendCircuitCooldownMs ||
+    Date.now() - requestedBackendCircuitOpenedAtEpochMs >= requestedBackendCircuitCooldownMs
+  ) {
+    requestedBackendCircuitOpenedAtEpochMs = 0;
+    requestedBackendCircuitCooldownMs = 0;
+  }
   await withAuthPollResumeStateLock(
     { sessionId: normalizedSessionId, homeDir },
     async ({ stateFilePath }) => {
@@ -652,6 +698,8 @@ async function writeAuthPollResumeState({
         highestSeenPollSequence: mergedHighestSequence,
         nextAttempt: mergedNextAttempt,
         seenRequestIds: mergedSeenRequestIds,
+        backendCircuitOpenedAtEpochMs: requestedBackendCircuitOpenedAtEpochMs,
+        backendCircuitCooldownMs: requestedBackendCircuitCooldownMs,
         updatedAt: new Date().toISOString(),
       };
       const tempPath = `${stateFilePath}.${process.pid}.${Date.now()}.tmp`;
@@ -946,6 +994,18 @@ async function pollCliAuthSession({
     ? Math.max(-1, Number(persistedPollState.highestSeenPollSequence || -1))
     : -1;
   const pollJitterSeed = generatePollJitterSeed();
+  let backendCircuitOpenedAtEpochMs = resumeStateMatchesClientId
+    ? Math.max(0, Number(persistedPollState.backendCircuitOpenedAtEpochMs || 0))
+    : 0;
+  let backendCircuitCooldownMs = resumeStateMatchesClientId
+    ? Math.max(
+        0,
+        Math.min(
+          AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS,
+          Number(persistedPollState.backendCircuitCooldownMs || 0)
+        )
+      )
+    : 0;
 
   async function persistResumeState() {
     try {
@@ -955,6 +1015,8 @@ async function pollCliAuthSession({
         highestSeenPollSequence,
         nextAttempt: attempt,
         seenRequestIds: Array.from(seenRequestIds),
+        backendCircuitOpenedAtEpochMs,
+        backendCircuitCooldownMs,
         homeDir,
       });
     } catch {
@@ -968,6 +1030,26 @@ async function pollCliAuthSession({
     } catch {
       // Resume-state cleanup is best-effort and must not block auth.
     }
+  }
+
+  if (backendCircuitOpenedAtEpochMs > 0 && backendCircuitCooldownMs > 0) {
+    const elapsedSinceCircuitOpenMs = Date.now() - backendCircuitOpenedAtEpochMs;
+    if (elapsedSinceCircuitOpenMs < backendCircuitCooldownMs) {
+      const retryAfterMs = Math.max(
+        MIN_AUTH_POLL_INTERVAL_MS,
+        Math.min(MAX_AUTH_POLL_BACKEND_BACKOFF_MS, backendCircuitCooldownMs - elapsedSinceCircuitOpenMs)
+      );
+      throw new SentinelayerApiError(
+        "Authentication polling backend is temporarily unavailable. Retry once service health recovers.",
+        {
+          status: 503,
+          code: "CLI_AUTH_BACKEND_UNAVAILABLE",
+          retryAfterMs,
+        }
+      );
+    }
+    backendCircuitOpenedAtEpochMs = 0;
+    backendCircuitCooldownMs = 0;
   }
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
@@ -1011,6 +1093,8 @@ async function pollCliAuthSession({
         signal,
       });
       consecutiveBackendFailures = 0;
+      backendCircuitOpenedAtEpochMs = 0;
+      backendCircuitCooldownMs = 0;
     } catch (error) {
       if (!isRetryableAuthPollError(error)) {
         await persistResumeState();
@@ -1035,6 +1119,9 @@ async function pollCliAuthSession({
             )
           )
         );
+        backendCircuitOpenedAtEpochMs = Date.now();
+        backendCircuitCooldownMs = retryAfterMs;
+        await persistResumeState();
         throw new SentinelayerApiError(
           "Authentication polling backend is temporarily unavailable. Retry once service health recovers.",
           {
