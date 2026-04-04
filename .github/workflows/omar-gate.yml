@@ -68,7 +68,7 @@ jobs:
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+        uses: mrrCarter/sentinelayer-v1-action@cea2e860681d6fc3663e0c5880edf4f04e29fac3
         with:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
