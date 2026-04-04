@@ -212,6 +212,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch W - Omar Workflow Security Burn-Down (2026-04-04)
 - [x] PR 145 release/release-please/omar workflow hardening (pinned actions, concurrency guards, fail-closed publish path, stricter Omar dispatch thresholds).
+- [ ] PR 146 immutable release artifact promotion + gate-proof checks + exact dependency pinning.
 
 ## Execution Board (2026-04-04)
 
