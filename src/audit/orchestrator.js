@@ -30,6 +30,13 @@ import {
   runTestingSpecialist,
 } from "./agents/testing.js";
 import { writeDdPackage } from "./package.js";
+import {
+  appendBlackboardFindings,
+  createBlackboard,
+  queryBlackboard,
+  summarizeBlackboard,
+  writeBlackboardArtifact,
+} from "../memory/blackboard.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -168,6 +175,12 @@ Summary:
 - Blocking: ${report.summary.blocking ? "yes" : "no"}
 - Agents: ${report.agentResults.length}
 
+Shared memory:
+- Enabled: ${report.sharedMemory?.enabled ? "yes" : "no"}
+- Entries: ${report.sharedMemory?.entryCount || 0}
+- Queries: ${report.sharedMemory?.queryCount || 0}
+- Artifact: ${report.sharedMemory?.artifactPath || "n/a"}
+
 Ingest:
 - Files scanned: ${report.ingest.summary.filesScanned}
 - LOC: ${report.ingest.summary.totalLoc}
@@ -201,6 +214,10 @@ export async function runAuditOrchestrator({
   const runDirectory = path.join(outputRoot, "audits", runId);
   const agentsDirectory = path.join(runDirectory, "agents");
   await fsp.mkdir(agentsDirectory, { recursive: true });
+  const blackboard = createBlackboard({
+    runId,
+    scope: "audit-orchestrator",
+  });
 
   const ingest = await collectCodebaseIngest({ rootPath: normalizedTargetPath });
 
@@ -225,6 +242,11 @@ export async function runAuditOrchestrator({
       findings: deterministic.findings,
     };
   }
+  appendBlackboardFindings(blackboard, {
+    agentId: "omar",
+    findings: deterministicBaseline.findings,
+    source: "deterministic-baseline",
+  });
 
   const routeBuckets = new Map();
   for (const finding of deterministicBaseline.findings) {
@@ -237,6 +259,11 @@ export async function runAuditOrchestrator({
   const startedAt = Date.now();
   const agentResults = await runWithConcurrency(agents, maxParallel, async (agent) => {
     const agentStart = Date.now();
+    const sharedContext = queryBlackboard(blackboard, {
+      query: `${agent.id} ${agent.domain} ${agent.persona}`,
+      agentId: agent.id,
+      limit: 24,
+    });
     let findings = routeBuckets.get(agent.id) || [];
     let summary = severitySummary(findings);
     let confidence = computeConfidenceFloor(agent.confidenceFloor, findings.length);
@@ -345,7 +372,22 @@ export async function runAuditOrchestrator({
       escalationTargets: agent.escalationTargets || [],
       evidenceRequirements: agent.evidenceRequirements || [],
       specialistReportPath,
+      sharedContextEntryCount: sharedContext.entries.length,
+      sharedContextPreview: sharedContext.entries.slice(0, 5).map((entry) => ({
+        entryId: entry.entryId,
+        severity: entry.severity,
+        file: entry.file,
+        line: entry.line,
+        message: entry.message,
+      })),
     };
+    appendBlackboardFindings(blackboard, {
+      agentId: agent.id,
+      findings,
+      source: "specialist-agent",
+      note: `${agent.id} specialist finding`,
+      confidence,
+    });
     const agentPath = path.join(agentsDirectory, `${agent.id}.json`);
     await fsp.writeFile(agentPath, `${JSON.stringify(result, null, 2)}\n`, "utf-8");
     return {
@@ -370,6 +412,10 @@ export async function runAuditOrchestrator({
     }
   }
   const summary = severitySummary(uniqueFindings);
+  const sharedMemoryArtifact = await writeBlackboardArtifact(blackboard, {
+    outputRoot,
+  });
+  const sharedMemorySummary = summarizeBlackboard(blackboard);
 
   const report = {
     schemaVersion: "1.0.0",
@@ -389,6 +435,15 @@ export async function runAuditOrchestrator({
         : [],
     },
     deterministicBaseline,
+    sharedMemory: {
+      enabled: true,
+      artifactPath: sharedMemoryArtifact.artifactPath,
+      entryCount: sharedMemorySummary.entryCount,
+      queryCount: sharedMemorySummary.queryCount,
+      severity: sharedMemorySummary.severity,
+      createdAt: sharedMemorySummary.createdAt,
+      updatedAt: sharedMemorySummary.updatedAt,
+    },
     selectedAgents: agents.map((agent) => agent.id),
     agentResults,
     summary,

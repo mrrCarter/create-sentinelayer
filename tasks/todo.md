@@ -202,7 +202,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 137 frictionless secret setup + workflow unification (`.env` gitignore guard, repo-aware `scan init` instructions, `gh secret` verify).
 - [x] PR 138 deterministic IDE/agent dictionary + per-agent scaffold config.
 - [x] PR 139 project-type-aware spec generation + dynamic phase planning.
-- [ ] PR 140 spec-bound pre-commit review drift checks.
+- [x] PR 140 spec-bound pre-commit review drift checks.
 
 ### Batch V - Memory and Watchdog Feedback Fixes (2026-04-03)
 - [ ] PR 141 shared local blackboard memory with retrieval quality gate.
@@ -225,11 +225,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-140-spec-bound-review` (next)
-2. `roadmap/pr-141-shared-memory-blackboard`
-3. `roadmap/pr-142-hybrid-retrieval-index`
-4. `roadmap/pr-143-daemon-watchdog-alerts`
-5. `roadmap/pr-144-ingest-refresh-staleness`
+1. `roadmap/pr-141-shared-memory-blackboard` (in progress)
+2. `roadmap/pr-142-hybrid-retrieval-index`
+3. `roadmap/pr-143-daemon-watchdog-alerts`
+4. `roadmap/pr-144-ingest-refresh-staleness`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -513,3 +512,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - Added a deterministic spec-binding review layer (`src/review/spec-binding.js`) that enforces `SL-SPEC-001` (scope drift) and `SL-SPEC-002` (spec coverage gaps) for diff/staged pre-commit paths.
     - Wired `--spec <path>` through `review`, `review scan`, and `review replay`, and persisted spec-path/hash context into deterministic output payloads and run-context artifacts.
     - Extended AI review prompts with spec context (path/hash/endpoints/acceptance counts), and aligned unified report spec hashing with explicit `--spec` overrides for reproducible reconciliation.
+
+  - PR 141 (shared local blackboard memory with retrieval quality gate) local evidence (branch `roadmap/pr-141-shared-memory-blackboard`):
+    - `npm run verify` (pass, e2e `85/85`; unit tests `174/174`; coverage statements `90.18%`, branches `70.50%`, functions `91.37%`, lines `90.18%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added `src/memory/blackboard.js` for deterministic append/query/persist flows and 8-needle recall benchmarking (`>=95%` gate in unit tests).
+    - Wired audit orchestration to seed baseline findings into blackboard, read scoped shared context per agent, append specialist findings, and persist `.sentinelayer/memory/blackboard-<runId>.json`.
+    - Extended `audit` command outputs and report artifacts with shared-memory metadata (`sharedMemoryPath`, entry/query counts) for reproducible cross-agent context lineage.

@@ -4275,6 +4275,9 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     assert.deepEqual(payload.selectedAgents.sort(), ["architecture", "security", "testing"]);
     assert.match(String(payload.reportPath || ""), /[\\/]AUDIT_REPORT\.md$/);
     assert.match(String(payload.reportJsonPath || ""), /[\\/]AUDIT_REPORT\.json$/);
+    assert.match(String(payload.sharedMemoryPath || ""), /[\\/]memory[\\/]blackboard-audit-/);
+    assert.equal(typeof payload.sharedMemoryEntryCount, "number");
+    assert.equal(typeof payload.sharedMemoryQueryCount, "number");
     assert.match(String(payload.ddPackageManifestPath || ""), /[\\/]DD_PACKAGE_MANIFEST\.json$/);
     assert.match(String(payload.ddPackageFindingsPath || ""), /[\\/]DD_FINDINGS_INDEX\.json$/);
     assert.match(String(payload.ddPackageSummaryPath || ""), /[\\/]DD_EXEC_SUMMARY\.md$/);
@@ -4285,6 +4288,13 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     assert.equal(Array.isArray(report.agentResults), true);
     assert.equal(report.agentResults.length, 3);
     assert.equal(report.selectedAgents.includes("security"), true);
+    assert.equal(report.sharedMemory.enabled, true);
+    assert.equal(report.sharedMemory.artifactPath, payload.sharedMemoryPath);
+    assert.equal(report.sharedMemory.entryCount, payload.sharedMemoryEntryCount);
+    assert.equal(report.sharedMemory.queryCount, payload.sharedMemoryQueryCount);
+    const sharedMemoryPayload = JSON.parse(await readFile(payload.sharedMemoryPath, "utf-8"));
+    assert.equal(sharedMemoryPayload.runId, payload.runId);
+    assert.equal(sharedMemoryPayload.summary.entryCount, payload.sharedMemoryEntryCount);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

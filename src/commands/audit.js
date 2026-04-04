@@ -30,6 +30,9 @@ function printAuditSummary(result) {
   console.log(pc.gray(`Run: ${result.runId}`));
   console.log(pc.gray(`Report: ${result.reportMarkdownPath}`));
   console.log(pc.gray(`JSON: ${result.reportJsonPath}`));
+  if (result.sharedMemory?.artifactPath) {
+    console.log(pc.gray(`Shared memory: ${result.sharedMemory.artifactPath}`));
+  }
   if (result.ddPackage?.executiveSummaryPath) {
     console.log(pc.gray(`DD package: ${result.ddPackage.executiveSummaryPath}`));
   }
@@ -87,6 +90,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: result.maxParallel,
         summary: result.summary,
         agentCount: result.agentResults.length,
+        sharedMemoryPath: result.sharedMemory?.artifactPath || "",
+        sharedMemoryEntryCount: Number(result.sharedMemory?.entryCount || 0),
+        sharedMemoryQueryCount: Number(result.sharedMemory?.queryCount || 0),
         ddPackageManifestPath: result.ddPackage?.manifestPath || "",
         ddPackageFindingsPath: result.ddPackage?.findingsIndexPath || "",
         ddPackageSummaryPath: result.ddPackage?.executiveSummaryPath || "",
