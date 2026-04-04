@@ -1,0 +1,171 @@
+import { execSync } from "node:child_process";
+import path from "node:path";
+
+const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_OUTPUT_CHARS = 30_000;
+
+/**
+ * Patterns that are BLOCKED unconditionally.
+ * Sourced from review/local-review.js security rules + src bash security patterns.
+ */
+const BLOCKED_PATTERNS = [
+  { pattern: /rm\s+(-[rR]f?|--recursive)\s+\/($|\s)/, desc: "rm -rf /" },
+  { pattern: /:\(\)\s*\{[^}]*\}\s*;?\s*:/, desc: "fork bomb" },
+  { pattern: /\beval\s*\(/, desc: "eval injection" },
+  { pattern: /curl[^|]*\|\s*(ba)?sh/, desc: "pipe to shell" },
+  { pattern: /wget[^|]*\|\s*(ba)?sh/, desc: "wget pipe to shell" },
+  { pattern: />\s*\/dev\/sd[a-z]/, desc: "write to raw device" },
+  { pattern: /mkfs\./, desc: "filesystem format" },
+  { pattern: /dd\s+.*of=\/dev\//, desc: "dd to device" },
+  { pattern: /chmod\s+777\s+\//, desc: "chmod 777 root" },
+  { pattern: />\s*\/etc\//, desc: "write to /etc" },
+  { pattern: /rm\s+-rf?\s+~/, desc: "rm home directory" },
+  { pattern: /git\s+push\s+.*--force\s+.*main/, desc: "force push to main" },
+  { pattern: /git\s+reset\s+--hard/, desc: "git reset hard" },
+  { pattern: /DROP\s+TABLE|DROP\s+DATABASE/i, desc: "SQL drop" },
+  { pattern: /TRUNCATE\s+TABLE/i, desc: "SQL truncate" },
+];
+
+/**
+ * Patterns that trigger a WARNING but are allowed.
+ */
+const WARN_PATTERNS = [
+  { pattern: /npm\s+install|yarn\s+add|pnpm\s+add/, desc: "package install" },
+  { pattern: /git\s+push/, desc: "git push" },
+  { pattern: /curl\s|wget\s|fetch\(/, desc: "network request" },
+  { pattern: /rm\s+-/, desc: "file deletion" },
+  { pattern: /sudo\s/, desc: "elevated privileges" },
+];
+
+/**
+ * Environment variables to strip from child process env.
+ * Prevents credential leakage to spawned commands.
+ */
+const ENV_VARS_TO_STRIP = [
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+  "SENTINELAYER_TOKEN",
+  "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  "AZURE_CLIENT_SECRET", "GOOGLE_APPLICATION_CREDENTIALS",
+  "GITHUB_TOKEN", "GH_TOKEN",
+  "NPM_TOKEN", "NODE_AUTH_TOKEN",
+  "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+  "STRIPE_SECRET_KEY", "SLACK_BOT_TOKEN",
+  "DATABASE_URL", "REDIS_URL",
+  "SSH_SIGNING_KEY",
+];
+
+/**
+ * Execute a shell command with security analysis, timeout, and env scrubbing.
+ *
+ * @param {object} input
+ * @param {string} input.command - The shell command to execute.
+ * @param {string} [input.cwd] - Working directory (default: process.cwd()).
+ * @param {number} [input.timeout] - Timeout in ms (default: 120000).
+ * @returns {{ stdout, stderr, exitCode, durationMs, command, security }}
+ */
+export function shell(input) {
+  if (!input.command || typeof input.command !== "string") {
+    throw new ShellError("command is required and must be a non-empty string.");
+  }
+
+  const command = input.command.trim();
+  const cwd = input.cwd ? path.resolve(input.cwd) : process.cwd();
+  const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS;
+
+  // Security analysis
+  const security = analyzeCommand(command);
+  if (security.risk === "blocked") {
+    throw new ShellBlockedError(
+      `Command blocked: ${security.patterns[0].desc}`,
+      security,
+    );
+  }
+
+  // Build scrubbed environment
+  const env = buildScrubbedEnv();
+
+  const startMs = Date.now();
+  let stdout = "";
+  let stderr = "";
+  let exitCode = 0;
+
+  try {
+    stdout = execSync(command, {
+      cwd,
+      encoding: "utf-8",
+      timeout,
+      env,
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    exitCode = err.status ?? 1;
+    stdout = err.stdout ?? "";
+    stderr = err.stderr ?? "";
+    if (err.killed) {
+      stderr += `\n[Process killed: timeout after ${timeout}ms]`;
+    }
+  }
+
+  const durationMs = Date.now() - startMs;
+
+  // Truncate large outputs
+  if (stdout.length > MAX_OUTPUT_CHARS) {
+    stdout = stdout.slice(0, MAX_OUTPUT_CHARS) + "\n[... truncated]";
+  }
+  if (stderr.length > MAX_OUTPUT_CHARS) {
+    stderr = stderr.slice(0, MAX_OUTPUT_CHARS) + "\n[... truncated]";
+  }
+
+  return { stdout, stderr, exitCode, durationMs, command, security };
+}
+
+/**
+ * Analyze a command for security risks.
+ * @returns {{ risk: "safe"|"warn"|"blocked", patterns: Array<{desc}> }}
+ */
+export function analyzeCommand(command) {
+  for (const rule of BLOCKED_PATTERNS) {
+    if (rule.pattern.test(command)) {
+      return { risk: "blocked", patterns: [rule] };
+    }
+  }
+
+  const warnings = [];
+  for (const rule of WARN_PATTERNS) {
+    if (rule.pattern.test(command)) {
+      warnings.push(rule);
+    }
+  }
+
+  if (warnings.length > 0) {
+    return { risk: "warn", patterns: warnings };
+  }
+
+  return { risk: "safe", patterns: [] };
+}
+
+function buildScrubbedEnv() {
+  const env = { ...process.env };
+  for (const key of ENV_VARS_TO_STRIP) {
+    delete env[key];
+    // GitHub Actions INPUT_ prefix convention
+    delete env[`INPUT_${key}`];
+  }
+  return env;
+}
+
+export class ShellError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ShellError";
+  }
+}
+
+export class ShellBlockedError extends ShellError {
+  constructor(message, security) {
+    super(message);
+    this.name = "ShellBlockedError";
+    this.security = security;
+  }
+}
