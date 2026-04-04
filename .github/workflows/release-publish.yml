@@ -470,6 +470,26 @@ jobs:
             echo "::error::release_run_id '${release_run_id}' event '${release_run_event}' is not allowlisted."
             exit 1
           fi
+          release_run_jobs_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}/jobs?per_page=100")"
+          required_release_jobs=(
+            "Verify Required Checks"
+            "Release Preflight (Verify + Security)"
+            "Rollback Readiness"
+          )
+          for required_release_job in "${required_release_jobs[@]}"; do
+            required_release_job_count="$(echo "${release_run_jobs_json}" | jq -r --arg name "${required_release_job}" '
+              [
+                .jobs[]
+                | select((.name // "") == $name)
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+              ] | length
+            ')"
+            if [[ "${required_release_job_count}" -lt 1 ]]; then
+              echo "::error::release_run_id '${release_run_id}' is missing successful upstream gate-chain job '${required_release_job}'."
+              exit 1
+            fi
+          done
           branch_name="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
           if [[ -z "${branch_name}" ]]; then
             branch_name="main"

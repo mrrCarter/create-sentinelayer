@@ -43,6 +43,13 @@ function verifyQualityGateGraph(workflowPath) {
   }
 
   const requiredJobs = [
+    "lint",
+    "eval-impact",
+    "syntax-matrix",
+    "unit-coverage",
+    "e2e-packaging",
+    "security-scan",
+    "build-artifact",
     "artifact-attestation-gate",
     "release-readiness",
     "deploy-readiness",
@@ -55,6 +62,38 @@ function verifyQualityGateGraph(workflowPath) {
     if (!Object.prototype.hasOwnProperty.call(jobs, jobId)) {
       fail(`Workflow '${workflowPath}' is missing required job '${jobId}'.`);
     }
+  }
+
+  const evalImpactNeeds = new Set(normalizeNeeds(jobs["eval-impact"]?.needs));
+  if (!evalImpactNeeds.has("lint")) {
+    fail(`Workflow '${workflowPath}' job 'eval-impact' must depend on 'lint'.`);
+  }
+
+  const syntaxMatrixNeeds = new Set(normalizeNeeds(jobs["syntax-matrix"]?.needs));
+  if (!syntaxMatrixNeeds.has("lint")) {
+    fail(`Workflow '${workflowPath}' job 'syntax-matrix' must depend on 'lint'.`);
+  }
+
+  const unitCoverageNeeds = new Set(normalizeNeeds(jobs["unit-coverage"]?.needs));
+  if (!unitCoverageNeeds.has("lint")) {
+    fail(`Workflow '${workflowPath}' job 'unit-coverage' must depend on 'lint'.`);
+  }
+
+  const e2ePackagingNeeds = new Set(normalizeNeeds(jobs["e2e-packaging"]?.needs));
+  if (!e2ePackagingNeeds.has("lint")) {
+    fail(`Workflow '${workflowPath}' job 'e2e-packaging' must depend on 'lint'.`);
+  }
+
+  const securityScanNeeds = new Set(normalizeNeeds(jobs["security-scan"]?.needs));
+  for (const requiredNeed of ["eval-impact", "syntax-matrix", "unit-coverage", "e2e-packaging"]) {
+    if (!securityScanNeeds.has(requiredNeed)) {
+      fail(`Workflow '${workflowPath}' job 'security-scan' must depend on '${requiredNeed}'.`);
+    }
+  }
+
+  const buildArtifactNeeds = new Set(normalizeNeeds(jobs["build-artifact"]?.needs));
+  if (!buildArtifactNeeds.has("security-scan")) {
+    fail(`Workflow '${workflowPath}' job 'build-artifact' must depend on 'security-scan'.`);
   }
 
   const releaseReadinessNeeds = new Set(normalizeNeeds(jobs["release-readiness"]?.needs));
@@ -90,6 +129,13 @@ function verifyQualityGateGraph(workflowPath) {
 
   const qualitySummaryNeeds = new Set(normalizeNeeds(jobs["quality-summary"]?.needs));
   for (const requiredNeed of [
+    "lint",
+    "eval-impact",
+    "syntax-matrix",
+    "unit-coverage",
+    "e2e-packaging",
+    "security-scan",
+    "build-artifact",
     "artifact-attestation-gate",
     "deploy-readiness",
     "deploy-stage",

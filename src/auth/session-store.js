@@ -10,6 +10,8 @@ const FILE_TOKEN_KEY_BYTES = 32;
 const FILE_TOKEN_IV_BYTES = 12;
 const FILE_TOKEN_KEY_VERSION = 1;
 const LEGACY_FILE_TOKEN_KEY_NAME = "credentials.key";
+const FILE_STORAGE_CONSENT_ENV = "SENTINELAYER_FILE_STORAGE_CONFIRM";
+const FILE_STORAGE_CONSENT_TOKEN = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
 
 export class StoredSessionError extends Error {
   constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
@@ -111,9 +113,6 @@ function isKeyringDisabledByEnv() {
 }
 
 async function loadKeytarClient() {
-  if (isKeyringDisabledByEnv()) {
-    return null;
-  }
   try {
     const mod = await import("keytar");
     const client = mod && typeof mod === "object" ? mod.default || mod : null;
@@ -148,6 +147,11 @@ async function readMetadata({ homeDir } = {}) {
     }
     throw error;
   }
+}
+
+function hasFileStorageConsent() {
+  const token = String(process.env[FILE_STORAGE_CONSENT_ENV] || "").trim();
+  return token === FILE_STORAGE_CONSENT_TOKEN;
 }
 
 async function syncDirectoryBestEffort(dirPath) {
@@ -436,6 +440,12 @@ export async function readStoredSession({ homeDir } = {}) {
         { code: "KEYRING_ACCOUNT_MISSING", filePath }
       );
     }
+    if (isKeyringDisabledByEnv()) {
+      throw new StoredSessionError(
+        "Stored session requires keyring access, but keyring is disabled by SENTINELAYER_DISABLE_KEYRING.",
+        { code: "KEYRING_UNAVAILABLE", filePath }
+      );
+    }
     const keytar = await loadKeytarClient();
     if (!keytar) {
       throw new StoredSessionError(
@@ -614,14 +624,29 @@ export async function writeStoredSession(
 
   const { filePath, metadata: existingMetadata } = await readMetadata({ homeDir });
   const keyringDisabledByEnv = isKeyringDisabledByEnv();
+  const explicitFileStorageFallback = Boolean(allowFileStorageFallback);
+  const disableKeyringRequested = keyringDisabledByEnv || explicitFileStorageFallback;
   const keytar = await loadKeytarClient();
   const keyringAccount = buildKeyringAccountName(normalizedApiUrl);
   const updatedAt = nowIso();
+  const fileStorageConsentGranted = hasFileStorageConsent();
 
-  if (!keytar && keyringDisabledByEnv && !allowFileStorageFallback) {
+  if (keyringDisabledByEnv && !explicitFileStorageFallback) {
     throw new StoredSessionError(
       "Keyring is disabled by SENTINELAYER_DISABLE_KEYRING. Re-run `sl auth login --no-keyring` to explicitly allow file-backed credential storage.",
       { code: "KEYRING_FALLBACK_REQUIRES_CONSENT", filePath }
+    );
+  }
+  if (!keytar && !explicitFileStorageFallback) {
+    throw new StoredSessionError(
+      "System keyring is unavailable. Re-run `sl auth login --no-keyring` to explicitly allow file-backed credential storage.",
+      { code: "KEYRING_FALLBACK_REQUIRES_CONSENT", filePath }
+    );
+  }
+  if (disableKeyringRequested && !fileStorageConsentGranted) {
+    throw new StoredSessionError(
+      `File-backed credential storage requires explicit consent. Set ${FILE_STORAGE_CONSENT_ENV}=${FILE_STORAGE_CONSENT_TOKEN} and re-run the command.`,
+      { code: "FILE_STORAGE_CONSENT_REQUIRED", filePath }
     );
   }
 
@@ -636,7 +661,7 @@ export async function writeStoredSession(
     updatedAt,
   });
 
-  if (keytar) {
+  if (keytar && !disableKeyringRequested) {
     const previousKeyringAccount = String(existingMetadata?.keyringAccount || "").trim();
     const previousStorage = String(existingMetadata?.storage || "").trim();
     if (previousStorage === "keyring" && previousKeyringAccount && previousKeyringAccount !== keyringAccount) {
@@ -667,7 +692,7 @@ export async function writeStoredSession(
         keyringService: KEYRING_SERVICE,
         keyringAccount: "",
         token: null,
-        storageDowngraded: Boolean(keyringDisabledByEnv),
+        storageDowngraded: Boolean(disableKeyringRequested || !keytar),
       },
       token: normalizedToken,
       homeDir,

@@ -205,11 +205,76 @@ function resolveAuthHttpSharedStateDirectory() {
 }
 
 function resolveAuthHttpSharedStateFilePath() {
-  return path.join(resolveAuthHttpSharedStateDirectory(), AUTH_HTTP_SHARED_STATE_FILENAME);
+  const stateDirectory = path.resolve(resolveAuthHttpSharedStateDirectory());
+  return path.join(stateDirectory, AUTH_HTTP_SHARED_STATE_FILENAME);
 }
 
 function resolveAuthHttpSharedStateLockPath() {
   return `${resolveAuthHttpSharedStateFilePath()}.lock`;
+}
+
+function isUncPath(candidatePath) {
+  return process.platform === "win32" && String(candidatePath || "").startsWith("\\\\");
+}
+
+function assertPrivatePathPermissions(stats, label) {
+  if (process.platform === "win32") {
+    return;
+  }
+  const mode = Number(stats?.mode || 0);
+  if (Number.isFinite(mode) && (mode & 0o022) !== 0) {
+    throw new Error(`${label} must not be group/world writable.`);
+  }
+}
+
+async function assertSecureSharedStateDirectory({ create = false } = {}) {
+  const stateDirectory = path.resolve(resolveAuthHttpSharedStateDirectory());
+  if (isUncPath(stateDirectory)) {
+    throw new Error(
+      `${AUTH_HTTP_SHARED_STATE_DIR_ENV} must not point to a UNC/network path.`
+    );
+  }
+  if (create) {
+    await fsp.mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+  }
+  try {
+    const stateDirectoryStats = await fsp.lstat(stateDirectory);
+    if (stateDirectoryStats.isSymbolicLink()) {
+      throw new Error("Auth HTTP shared-state directory must not be a symbolic link.");
+    }
+    if (!stateDirectoryStats.isDirectory()) {
+      throw new Error("Auth HTTP shared-state path must resolve to a directory.");
+    }
+    assertPrivatePathPermissions(stateDirectoryStats, "Auth HTTP shared-state directory");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return stateDirectory;
+    }
+    throw error;
+  }
+  return stateDirectory;
+}
+
+async function assertSecureSharedStateFile(filePath, { allowMissing = true } = {}) {
+  const resolvedFilePath = path.resolve(String(filePath || ""));
+  if (isUncPath(resolvedFilePath)) {
+    throw new Error("Auth HTTP shared-state files must not use UNC/network paths.");
+  }
+  try {
+    const stateFileStats = await fsp.lstat(resolvedFilePath);
+    if (stateFileStats.isSymbolicLink()) {
+      throw new Error(`Auth HTTP shared-state file '${resolvedFilePath}' must not be a symbolic link.`);
+    }
+    if (!stateFileStats.isFile()) {
+      throw new Error(`Auth HTTP shared-state file '${resolvedFilePath}' must be a regular file.`);
+    }
+    assertPrivatePathPermissions(stateFileStats, `Auth HTTP shared-state file '${resolvedFilePath}'`);
+  } catch (error) {
+    if (allowMissing && error && typeof error === "object" && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
 }
 
 function normalizeCircuitBreakerSnapshotState(rawState = {}, nowEpochMs = Date.now()) {
@@ -314,7 +379,9 @@ function serializeCircuitBreakerSnapshot(nowEpochMs = Date.now()) {
 }
 
 async function readSharedCircuitBreakerSnapshot() {
+  await assertSecureSharedStateDirectory({ create: false });
   const stateFilePath = resolveAuthHttpSharedStateFilePath();
+  await assertSecureSharedStateFile(stateFilePath, { allowMissing: true });
   let rawSnapshot = "";
   try {
     rawSnapshot = await fsp.readFile(stateFilePath, "utf8");
@@ -332,13 +399,15 @@ async function readSharedCircuitBreakerSnapshot() {
 }
 
 async function withSharedCircuitBreakerStateLock(operation) {
-  const lockPath = resolveAuthHttpSharedStateLockPath();
-  await fsp.mkdir(path.dirname(lockPath), { recursive: true });
+  const stateDirectory = await assertSecureSharedStateDirectory({ create: true });
+  const lockPath = path.join(stateDirectory, `${AUTH_HTTP_SHARED_STATE_FILENAME}.lock`);
+  await assertSecureSharedStateFile(lockPath, { allowMissing: true });
+  await fsp.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const start = Date.now();
   let lockHandle = null;
   while (!lockHandle) {
     try {
-      lockHandle = await fsp.open(lockPath, "wx");
+      lockHandle = await fsp.open(lockPath, "wx", 0o600);
       await lockHandle.writeFile(
         JSON.stringify({ pid: process.pid, acquiredAtEpochMs: Date.now() }, null, 2),
         "utf8"
@@ -389,18 +458,20 @@ async function persistSharedCircuitBreakerSnapshot() {
   sharedCircuitBreakerPersistPromise = (async () => {
     const nowEpochMs = Date.now();
     pruneCircuitBreakerStates(nowEpochMs);
-    const stateDirectory = resolveAuthHttpSharedStateDirectory();
-    const stateFilePath = resolveAuthHttpSharedStateFilePath();
-    await fsp.mkdir(stateDirectory, { recursive: true });
+    const stateDirectory = await assertSecureSharedStateDirectory({ create: true });
+    const stateFilePath = path.join(stateDirectory, AUTH_HTTP_SHARED_STATE_FILENAME);
     await withSharedCircuitBreakerStateLock(async () => {
       const diskSnapshot = await readSharedCircuitBreakerSnapshot().catch(() => null);
       if (diskSnapshot) {
         mergeSharedCircuitBreakerSnapshot(diskSnapshot, nowEpochMs);
       }
+      await assertSecureSharedStateFile(stateFilePath, { allowMissing: true });
       const serializedSnapshot = serializeCircuitBreakerSnapshot(nowEpochMs);
       const tempPath = `${stateFilePath}.${process.pid}.${Date.now()}.tmp`;
       await fsp.writeFile(tempPath, JSON.stringify(serializedSnapshot, null, 2), "utf8");
+      await fsp.chmod(tempPath, 0o600).catch(() => {});
       await fsp.rename(tempPath, stateFilePath);
+      await fsp.chmod(stateFilePath, 0o600).catch(() => {});
     });
   })();
   try {

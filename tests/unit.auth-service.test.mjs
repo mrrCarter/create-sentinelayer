@@ -29,6 +29,16 @@ import {
   writeStoredSession,
 } from "../src/auth/session-store.js";
 
+const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+test.after(() => {
+  if (previousFileStorageConsent === undefined) {
+    delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+  } else {
+    process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = previousFileStorageConsent;
+  }
+});
+
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -325,7 +335,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(mock.state.pollIdempotencyKeys.length, 2);
     assert.match(mock.state.pollIdempotencyKeys[0], /^[a-f0-9]{64}$/);
     assert.match(mock.state.pollIdempotencyKeys[1], /^[a-f0-9]{64}$/);
-    assert.equal(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
+    assert.notEqual(mock.state.pollIdempotencyKeys[0], mock.state.pollIdempotencyKeys[1]);
     assert.equal(mock.state.pollBodies[0].poll_attempt, 0);
     assert.equal(mock.state.pollBodies[1].poll_attempt, 1);
     assert.match(String(mock.state.pollBodies[0].poll_client_id || ""), /^[0-9a-f-]{16,}$/i);

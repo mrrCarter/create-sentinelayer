@@ -254,3 +254,8 @@
 - Validation-only unpublished-package fallback in rollback workflows should be behind an explicit boolean policy input (`allow_local_validation_only`) and fail closed when not authorized.
 - Release-governance coupling checks should validate workflow DAG edges structurally (`jobs` + `needs` via YAML parse) rather than relying on text/regex assertions.
 - Shared-lock retry jitter in auth paths should be CSPRNG-backed; avoid `Math.random` for contention-sensitive reliability/security behavior.
+- Manual Omar dispatch inputs that weaken merge thresholds (`severity_gate`, `p2_max_allowed`) should be removed or policy-clamped; runtime knobs on high-risk gates create governance bypass surfaces.
+- Release-publish promotion must revalidate upstream release gate-chain job outcomes on the selected `release_run_id`, not just tag/run identity and branch-protection context checks.
+- Env-overridable local state directories need explicit hardening (no UNC paths, no symlinks, private permissions) before read/write/lock operations to prevent path hijack/tamper channels.
+- Poll idempotency keys should be per-attempt and resume-state aware; bucketed/windowed reuse can allow duplicate mutation windows under retries and restarts.
+- File-backed credential fallback should require explicit policy-confirmation tokens in addition to `--no-keyring`; fallback without deterministic operator acknowledgment is an avoidable secret-handling risk.

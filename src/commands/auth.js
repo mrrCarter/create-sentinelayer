@@ -184,7 +184,7 @@ export function registerAuthCommand(program) {
     )
     .option(
       "--no-keyring",
-      "Explicitly allow file-backed session storage when keyring is unavailable or disabled"
+      "Explicitly allow file-backed session storage (requires SENTINELAYER_FILE_STORAGE_CONFIRM=I_ACKNOWLEDGE_FILE_STORAGE_RISK)"
     )
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")

@@ -997,5 +997,24 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run test:unit -- tests/unit.auth-http.test.mjs` (pass)
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-third-cycle hardening batch.
+- [x] Commit + push thirty-third-cycle hardening batch (`1aa17b7`).
+- [x] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings:
+  - `gh run watch 23973791741 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23973791729`.
+  - `gh run watch 23973791729 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=6`, `run_id=2daecea6-7833-45dc-8f6c-c0a4f3fd3ace`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=2daecea6-7833-45dc-8f6c-c0a4f3fd3ace`) and apply thirty-fourth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: remove `workflow_dispatch` threshold knobs (`severity_gate`, `p2_max_allowed`) so manual runs cannot weaken Omar threshold policy via runtime inputs.
+  - `scripts/ci/verify-quality-gate-graph.js`: enforce canonical quality stage DAG (`lint -> {eval-impact, syntax-matrix, unit-coverage, e2e-packaging} -> security-scan -> build-artifact`) in addition to deploy/readiness chain.
+  - `.github/workflows/release-publish.yml`: add mandatory upstream release gate-chain revalidation by requiring successful `Verify Required Checks`, `Release Preflight (Verify + Security)`, and `Rollback Readiness` jobs on the selected `release_run_id`.
+  - `src/auth/http.js`: add secure shared-state path validation (no UNC/network paths, no symlink state files/dirs, private-permission checks on POSIX) and lockfile creation hardening (`0o600`).
+  - `src/auth/service.js`: shift poll idempotency to per-attempt keys (no shared two-attempt window reuse) and increase replay request-id tracking horizon (`256`).
+  - `src/auth/session-store.js`: enforce explicit file-storage policy confirmation token (`SENTINELAYER_FILE_STORAGE_CONFIRM=I_ACKNOWLEDGE_FILE_STORAGE_RISK`) whenever keyring is intentionally bypassed; require explicit `--no-keyring` fallback when keyring is unavailable.
+  - `src/commands/auth.js`: update `--no-keyring` help text with required policy-confirmation token.
+  - `tests/unit.auth-service.test.mjs`: update idempotency expectations and set deterministic file-storage policy-consent env for auth service unit flows.
+  - `tests/unit.auth-session-store.test.mjs`: set deterministic file-storage policy-consent env and add regression coverage for missing policy-consent token (`FILE_STORAGE_CONSENT_REQUIRED`).
+- [x] Run thirty-fourth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.auth-session-store.test.mjs` (pass; `190/194` with 4 env-skipped bash tests)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `190/194` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-fourth-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

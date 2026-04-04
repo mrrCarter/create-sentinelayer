@@ -13,6 +13,16 @@ import {
   writeStoredSession,
 } from "../src/auth/session-store.js";
 
+const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+test.after(() => {
+  if (previousFileStorageConsent === undefined) {
+    delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+  } else {
+    process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = previousFileStorageConsent;
+  }
+});
+
 async function listKeyFiles(homeDir) {
   const keyDir = path.join(homeDir, ".sentinelayer-secrets");
   try {
@@ -268,6 +278,45 @@ test("Unit auth session store: keyring disablement requires explicit file fallba
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
     } else {
       process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: file fallback requires policy confirmation token", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+  delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await assert.rejects(
+      () =>
+        writeStoredSession(
+          {
+            apiUrl: "https://api.sentinelayer.dev",
+            token: "api_token_example_3",
+            tokenId: "token_3",
+          },
+          { homeDir: tempRoot, allowFileStorageFallback: true }
+        ),
+      (error) => {
+        assert.ok(error instanceof StoredSessionError);
+        assert.equal(error.code, "FILE_STORAGE_CONSENT_REQUIRED");
+        return true;
+      }
+    );
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    if (previousFileStorageConsent === undefined) {
+      delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+    } else {
+      process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = previousFileStorageConsent;
     }
     await rm(tempRoot, { recursive: true, force: true });
   }
