@@ -32,7 +32,7 @@ CLI binaries:
 npx create-sentinelayer@latest my-agent-app
 ```
 
-2. Interview prompts (project goal, provider, auth mode, depth, audience, project type, optional repo connect).
+2. Interview prompts (project goal, provider, coding agent, auth mode, depth, audience, project type, optional repo connect).
 3. If repo connect is enabled:
    - choose repo source: current repo, GitHub picker, or manual `owner/repo`
    - optional browser GitHub authorization
@@ -50,7 +50,7 @@ npm run sentinel:start
 Use non-interactive mode to run full scaffolding in automation:
 
 ```bash
-SENTINELAYER_CLI_INTERVIEW_JSON='{"projectName":"demo-app","projectDescription":"Build an autonomous secure code review orchestrator.","aiProvider":"openai","authMode":"sentinelayer","generationMode":"detailed","audienceLevel":"developer","projectType":"greenfield","techStack":["TypeScript","Node.js"],"features":["auth","scan"],"connectRepo":false,"injectSecret":false}' \
+SENTINELAYER_CLI_INTERVIEW_JSON='{"projectName":"demo-app","projectDescription":"Build an autonomous secure code review orchestrator.","aiProvider":"openai","codingAgent":"codex","authMode":"sentinelayer","generationMode":"detailed","audienceLevel":"developer","projectType":"greenfield","techStack":["TypeScript","Node.js"],"features":["auth","scan"],"connectRepo":false,"injectSecret":false}' \
 npx create-sentinelayer@latest demo-app --non-interactive --skip-browser-open
 ```
 
@@ -73,6 +73,7 @@ Inputs for non-interactive mode:
 - `.github/workflows/omar-gate.yml`
 - `tasks/todo.md`
 - `AGENT_HANDOFF_PROMPT.md` (read order + Omar loop + local command matrix + workflow tuning options)
+- coding-agent config file for selected agent when supported (examples: `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`)
 - `package.json` (adds `sentinel:start`, `sentinel:omargate`, `sentinel:omargate:json`, `sentinel:audit`, `sentinel:audit:json`, `sentinel:persona:*`, `sentinel:apply` when missing)
 - `.env` with `SENTINELAYER_TOKEN` (or API-provided secret name) in managed auth mode
 
@@ -106,6 +107,7 @@ When `Clone this repo locally and build directly into it now?` is enabled:
 - browser auth JWT is used in-memory only
 - in managed auth mode, CLI stores only bootstrap token in `.env`
 - in managed auth mode, GitHub secret injection uses stdin (`gh secret set ...`) and never writes token to command history
+- in managed auth mode, secret injection is verified with `gh secret list --repo <owner/repo>`
 - API fallback secret name is pinned to `SENTINELAYER_TOKEN` if server response is invalid
 - in BYOK mode, no Sentinelayer token is created or injected
 

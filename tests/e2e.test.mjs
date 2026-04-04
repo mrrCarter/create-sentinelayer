@@ -42,12 +42,13 @@ async function startMockApi({
     bootstrapCalls: 0,
     generatePayload: null,
     generateAuthHeader: "",
+    sessionStartPayload: null,
   };
 
   const server = createServer(async (req, res) => {
     try {
       if (req.method === "POST" && req.url === "/api/v1/auth/cli/sessions/start") {
-        await readJsonBody(req);
+        state.sessionStartPayload = await readJsonBody(req);
         return jsonResponse(res, 200, {
           session_id: "sess_123",
           authorize_url: "http://127.0.0.1/cli-auth?session_id=sess_123",
@@ -660,6 +661,7 @@ function baseInterview(overrides = {}) {
     generationMode: "detailed",
     audienceLevel: "developer",
     projectType: "greenfield",
+    codingAgent: "generic",
     techStack: ["TypeScript", "Node.js", "PostgreSQL"],
     features: ["auth", "scanning", "reporting"],
     connectRepo: false,
@@ -683,8 +685,10 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
       SENTINELAYER_CLI_NON_INTERACTIVE: "1",
       SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
       SENTINELAYER_SECRET_SINK_FILE: secretSinkPath,
+      CURSOR_TRACE_ID: "cursor-trace-test",
       SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
         baseInterview({
+          codingAgent: "cursor",
           connectRepo: true,
           repoSlug: "acme/demo-repo",
           injectSecret: true,
@@ -698,6 +702,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     const projectDir = path.join(tempRoot, "demo-app");
     const envText = await readFile(path.join(projectDir, ".env"), "utf-8");
     const gitignoreText = await readFile(path.join(projectDir, ".gitignore"), "utf-8");
+    const cursorRulesText = await readFile(path.join(projectDir, ".cursorrules"), "utf-8");
     const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
     const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
@@ -705,9 +710,14 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
 
     assert.match(envText, new RegExp(`SENTINELAYER_TOKEN=${BOOTSTRAP_VALUE_FROM_GENERATE}`));
     assert.match(gitignoreText, /(^|\r?\n)\.env(\r?\n|$)/);
+    assert.match(cursorRulesText, /Sentinelayer Cursor Profile/);
     assert.match(result.stdout, /Falling back to SENTINELAYER_TOKEN/);
+    assert.match(result.stdout, /Cursor config scaffolded at/);
     assert.match(todoText, /Repo: `acme\/demo-repo`/);
+    assert.match(todoText, /Coding agent: `Cursor \(cursor\)`/);
     assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
+    assert.match(handoffText, /Selected agent: Cursor \(cursor\)/);
+    assert.match(handoffText, /Prompt target: cursor/);
     assert.match(handoffText, /Terminal command options:/);
     assert.match(handoffText, /sentinel \/omargate deep --path \./);
     assert.match(handoffText, /Workflow tuning options:/);
@@ -724,6 +734,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
       new RegExp(`acme\\/demo-repo\\|SENTINELAYER_TOKEN\\|${BOOTSTRAP_VALUE_FROM_GENERATE}`)
     );
 
+    assert.equal(mock.state.sessionStartPayload.ide, "cursor");
     assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
     assert.equal(mock.state.generatePayload.model_provider, "openai");
     assert.equal(mock.state.generatePayload.model_id, "gpt-5.3-codex");
