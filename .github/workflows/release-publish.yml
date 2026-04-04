@@ -43,15 +43,68 @@ env:
   NPM_VERSION_PIN: "10.2.4"
   RELEASE_RUN_MAX_AGE_HOURS: "72"
   REQUIRED_CONTEXT_MAX_AGE_HOURS: "168"
+  WORKFLOW_MAX_AGE_MINUTES: "120"
 
 concurrency:
   group: release-publish-${{ github.repository }}-release-run-${{ github.event_name == 'workflow_dispatch' && inputs.release_run_id || github.event_name == 'workflow_run' && github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
+  runtime-budget-guard:
+    name: Workflow Runtime Guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run_age_minutes: ${{ steps.guard.outputs.run_age_minutes }}
+    steps:
+      - name: Enforce workflow runtime budget
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_MAX_AGE_MINUTES: ${{ env.WORKFLOW_MAX_AGE_MINUTES }}
+        run: |
+          set -euo pipefail
+          max_age_minutes="$(echo "${WORKFLOW_MAX_AGE_MINUTES:-120}" | tr -d '\r' | xargs || true)"
+          case "${max_age_minutes}" in ''|*[!0-9]*)
+            echo "::error::Invalid WORKFLOW_MAX_AGE_MINUTES value '${max_age_minutes}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${max_age_minutes}" -lt 5 ]]; then
+            echo "::error::WORKFLOW_MAX_AGE_MINUTES must be >= 5."
+            exit 1
+          fi
+          run_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${RUN_ID}" -H "Accept: application/vnd.github+json")"
+          run_created_at="$(echo "${run_json}" | jq -r '.created_at // ""')"
+          test -n "${run_created_at}" || (echo "::error::Unable to resolve run created_at for runtime guard." && exit 1)
+          run_created_epoch="$(date -u -d "${run_created_at}" +%s 2>/dev/null || true)"
+          now_epoch="$(date -u +%s)"
+          if [[ -z "${run_created_epoch}" ]] || ! [[ "${run_created_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to parse workflow run created_at '${run_created_at}'."
+            exit 1
+          fi
+          if [[ "${run_created_epoch}" -gt "${now_epoch}" ]]; then
+            echo "::error::Workflow run created_at '${run_created_at}' is in the future."
+            exit 1
+          fi
+          run_age_minutes="$(( (now_epoch - run_created_epoch) / 60 ))"
+          if [[ "${run_age_minutes}" -gt "${max_age_minutes}" ]]; then
+            echo "::error::Workflow runtime guard exceeded (${run_age_minutes}m > ${max_age_minutes}m). Cancel and rerun with a fresh release lock."
+            exit 1
+          fi
+          echo "run_age_minutes=${run_age_minutes}" >> "$GITHUB_OUTPUT"
+          echo "Workflow runtime guard passed (age=${run_age_minutes}m, max=${max_age_minutes}m)."
+
   resolve-release-bundle:
     name: Resolve Release Bundle
     runs-on: ubuntu-22.04
+    needs: [runtime-budget-guard]
     timeout-minutes: 10
     environment: release-management
     permissions:

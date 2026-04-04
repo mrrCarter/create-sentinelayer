@@ -302,3 +302,8 @@
 - Upstream workflow provenance pinning is stronger when release workflows validate both immutable workflow identity (`workflow_id`) and approved workflow-file digest at target commit against a policy file.
 - Remote-exec detection in workflow `run` blocks should be parser/dataflow driven (tainted-variable tracking + execution sink detection), with regex checks treated as secondary defense only.
 - Reusable rollback validation callers should not request `id-token: write` unless the called path actually performs OIDC trust exchange.
+- Production-deploy assurance in quality workflows should be represented as a first-class protected-environment proof job that emits immutable evidence artifacts, not inferred indirectly from prior checks.
+- Release-publish orchestration should enforce deterministic run-age budgets before selecting upstream artifacts; stale-run guards belong in workflow logic, not operator convention.
+- Rollback execute paths need strict provenance contract validation (`attestationVerified`, lineage mode, quality artifact digest parity) immediately before npm mutation commands.
+- Policy-map coverage must evolve with workflow DAG changes; every new governance job requires explicit `required`+`max` permission policy entries to keep local/CI drift checks authoritative.
+- Poll attempt ceilings should be derived from timeout-window math (deadline, interval, backoff cap) rather than static constants so auth loops cannot silently exceed configured duration budgets.

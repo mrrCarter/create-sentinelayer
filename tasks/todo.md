@@ -1207,3 +1207,21 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-third-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Begin `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) once PR #114 target is achieved.
+
+### PR #114 Forty-Fourth Cycle (2026-04-04, pending Omar re-run)
+- [x] Re-anchor to active Omar findings (`P2=5`) and patch deterministic controls on active paths:
+  - `.github/workflows/quality-gates.yml`: add protected-environment `deploy-production-proof` gate on semver tag pushes and propagate immutable deploy proof artifact lineage.
+  - `.github/workflows/release-publish.yml`: add `runtime-budget-guard` age-window enforcement before any release bundle selection.
+  - `.github/workflows/rollback.yml`: enforce execute-mode attestation + quality digest provenance contract and tarball digest parity before npm mutation commands.
+  - `.github/security/workflow-permissions-policy.json`: align policy map with `deploy-production-proof` and `runtime-budget-guard` jobs.
+  - `src/auth/service.js`: derive poll-attempt budget from timeout window + backoff cap to prevent poll overrun beyond configured deadline.
+  - `scripts/ci/verify-workflow-remote-exec.js`: replace brittle line-regex scan with parser/dataflow model (segments, pipelines, taint propagation, sink checks) and fail closed on parse anomalies.
+- [x] Run forty-fourth-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release-publish.yml .github/workflows/rollback.yml .github/workflows/omar-gate.yml .github/workflows/release.yml` (pass)
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `201/207` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-fourth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.

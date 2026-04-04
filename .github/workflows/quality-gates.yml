@@ -1639,6 +1639,59 @@ jobs:
           path: quality-deploy-proof/deploy.summary.json
           if-no-files-found: error
 
+  deploy-production-proof:
+    name: Deploy Production Proof
+    runs-on: ubuntu-22.04
+    needs: [deploy]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.deploy.result == 'success' }}
+    timeout-minutes: 6
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Download deploy promotion proof
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: deploy-proof
+          path: quality-production-proof/deploy
+
+      - name: Emit production deployment proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_summary_path="quality-production-proof/deploy/deploy.summary.json"
+          test -f "${deploy_summary_path}" || (echo "::error::Missing deploy promotion summary ${deploy_summary_path}." && exit 1)
+          deploy_stage="$(jq -r '.stage // ""' "${deploy_summary_path}")"
+          deploy_commit="$(jq -r '.commitSha // ""' "${deploy_summary_path}")"
+          if [[ "${deploy_stage}" != "deploy-promotion-proof" ]]; then
+            echo "::error::Deploy promotion summary stage mismatch (expected='deploy-promotion-proof', actual='${deploy_stage}')."
+            exit 1
+          fi
+          if [[ "${deploy_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy promotion summary commit mismatch (expected='${GITHUB_SHA}', actual='${deploy_commit}')."
+            exit 1
+          fi
+          cat > quality-production-proof/deploy-production.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "releaseTag": "${GITHUB_REF_NAME}",
+            "proofType": "deploy-production-proof",
+            "sourceProof": "deploy-proof/deploy.summary.json",
+            "productionGateApproved": true,
+            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload production deployment proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: deploy-production-proof
+          path: quality-production-proof/deploy-production.summary.json
+          if-no-files-found: error
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04

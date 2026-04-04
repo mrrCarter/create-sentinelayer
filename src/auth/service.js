@@ -980,11 +980,17 @@ async function pollCliAuthSession({
   );
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadlineMs = resolveMonotonicNowMs() + timeout;
+  let lastKnownPollIntervalMs = resolveAuthPollIntervalMs(pollIntervalSeconds, 2);
+  const maxAttemptsByDeadline = Math.max(1, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS));
+  const maxAttemptsByPollInterval = Math.max(
+    1,
+    Math.ceil(timeout / Math.max(MIN_AUTH_POLL_INTERVAL_MS, lastKnownPollIntervalMs))
+  );
+  const maxAttemptsByBackoff = Math.max(1, Math.ceil(timeout / MAX_AUTH_POLL_BACKEND_BACKOFF_MS) + 4);
   const maxAttempts = Math.max(
     1,
-    Math.min(MAX_AUTH_POLL_ATTEMPTS, Math.ceil(timeout / MIN_AUTH_POLL_INTERVAL_MS))
+    Math.min(MAX_AUTH_POLL_ATTEMPTS, maxAttemptsByDeadline, maxAttemptsByPollInterval, maxAttemptsByBackoff)
   );
-  let lastKnownPollIntervalMs = resolveAuthPollIntervalMs(pollIntervalSeconds, 2);
   let consecutiveBackendFailures = 0;
   let attempt = resumeStateMatchesClientId ? Math.max(0, Number(persistedPollState.nextAttempt || 0)) : 0;
   const seenRequestIds = new Set(

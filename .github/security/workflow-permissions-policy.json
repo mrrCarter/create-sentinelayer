@@ -58,6 +58,10 @@
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }
         },
+        "deploy-production-proof": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
         "quality-summary": {
           "required": { "contents": "read" },
           "max": { "contents": "read" }
@@ -166,6 +170,10 @@
     },
     ".github/workflows/release-publish.yml": {
       "jobs": {
+        "runtime-budget-guard": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
         "resolve-release-bundle": {
           "required": { "contents": "read", "actions": "read", "checks": "read" },
           "max": { "contents": "read", "actions": "read", "checks": "read" }
