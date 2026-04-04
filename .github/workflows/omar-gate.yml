@@ -24,7 +24,6 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -46,7 +45,6 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
-      id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - name: Enforce trusted PR source for secret-backed scan
@@ -235,14 +233,32 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           REF_NAME: ${{ github.ref_name || '' }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          THRESHOLDS_FILE: .github/security/omar-thresholds.json
         run: |
           set -euo pipefail
           default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
           if [[ -z "${default_branch}" ]]; then
             default_branch="main"
           fi
-          severity_input="P1"
-          p2_input="5"
+          thresholds_file="$(echo "${THRESHOLDS_FILE}" | tr -d '\r' | xargs || true)"
+          test -n "${thresholds_file}" || (echo "::error::Missing threshold policy path." && exit 1)
+          test -f "${thresholds_file}" || (echo "::error::Missing threshold policy file '${thresholds_file}'." && exit 1)
+
+          severity_input="$(jq -r '.defaults.severity_gate // empty' "${thresholds_file}")"
+          p2_input="$(jq -r '.defaults.p2_max_allowed // empty' "${thresholds_file}")"
+          protected_severity_input="$(jq -r '.protected_branch_overrides.severity_gate // empty' "${thresholds_file}")"
+          protected_p2_input="$(jq -r '.protected_branch_overrides.p2_max_allowed // empty' "${thresholds_file}")"
+
+          case "${severity_input}" in
+            P0|P1|P2|none) ;;
+            *) echo "::error::Invalid defaults.severity_gate '${severity_input}' in ${thresholds_file}." ; exit 1 ;;
+          esac
+          case "${protected_severity_input}" in
+            P0|P1|P2|none) ;;
+            *) echo "::error::Invalid protected_branch_overrides.severity_gate '${protected_severity_input}' in ${thresholds_file}." ; exit 1 ;;
+          esac
+          case "${p2_input}" in ''|*[!0-9]*) echo "::error::Invalid defaults.p2_max_allowed '${p2_input}' in ${thresholds_file}." ; exit 1 ;; esac
+          case "${protected_p2_input}" in ''|*[!0-9]*) echo "::error::Invalid protected_branch_overrides.p2_max_allowed '${protected_p2_input}' in ${thresholds_file}." ; exit 1 ;; esac
 
           protected_ref="false"
           case "${EVENT_NAME}" in
@@ -261,8 +277,8 @@ jobs:
           severity_gate="${severity_input}"
           p2_max_allowed="${p2_input}"
           if [[ "${protected_ref}" == "true" ]]; then
-            severity_gate="P1"
-            p2_max_allowed="0"
+            severity_gate="${protected_severity_input}"
+            p2_max_allowed="${protected_p2_input}"
           fi
 
           echo "protected_ref=${protected_ref}" >> "$GITHUB_OUTPUT"

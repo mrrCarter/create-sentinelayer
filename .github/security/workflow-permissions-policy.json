@@ -70,14 +70,12 @@
           "required": {
             "contents": "read",
             "checks": "write",
-            "pull-requests": "write",
-            "id-token": "write"
+            "pull-requests": "write"
           },
           "max": {
             "contents": "read",
             "checks": "write",
-            "pull-requests": "write",
-            "id-token": "write"
+            "pull-requests": "write"
           }
         }
       }

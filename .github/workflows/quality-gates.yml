@@ -175,6 +175,60 @@ jobs:
           }
           NODE
 
+      - name: Assert Omar threshold policy is file-backed
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const workflowPath = ".github/workflows/omar-gate.yml";
+          const thresholdsPath = ".github/security/omar-thresholds.json";
+          const workflowRaw = fs.readFileSync(workflowPath, "utf8");
+          if (/severity_input\s*=\s*"P1"/.test(workflowRaw) || /p2_input\s*=\s*"5"/.test(workflowRaw)) {
+            throw new Error("Omar gate policy drift: hardcoded severity/p2 defaults are forbidden; use .github/security/omar-thresholds.json.");
+          }
+          if (!/THRESHOLDS_FILE:\s*\.github\/security\/omar-thresholds\.json/.test(workflowRaw)) {
+            throw new Error("Omar gate policy must source THRESHOLDS_FILE from .github/security/omar-thresholds.json.");
+          }
+          let parsed;
+          try {
+            parsed = JSON.parse(fs.readFileSync(thresholdsPath, "utf8"));
+          } catch (error) {
+            throw new Error(`Failed to parse ${thresholdsPath}: ${error.message || String(error)}`);
+          }
+          const defaults = parsed && typeof parsed === "object" ? parsed.defaults : null;
+          const protectedOverrides =
+            parsed && typeof parsed === "object" ? parsed.protected_branch_overrides : null;
+          if (!defaults || typeof defaults !== "object") {
+            throw new Error(`${thresholdsPath} must include object field defaults.`);
+          }
+          if (!protectedOverrides || typeof protectedOverrides !== "object") {
+            throw new Error(`${thresholdsPath} must include object field protected_branch_overrides.`);
+          }
+          const allowedSeverity = new Set(["P0", "P1", "P2", "none"]);
+          const validateSeverity = (label, value) => {
+            if (!allowedSeverity.has(String(value || ""))) {
+              throw new Error(`${thresholdsPath} ${label} must be one of ${Array.from(allowedSeverity).join(", ")}.`);
+            }
+          };
+          const validateP2 = (label, value) => {
+            if (!Number.isInteger(value) || value < 0) {
+              throw new Error(`${thresholdsPath} ${label} must be a non-negative integer.`);
+            }
+          };
+          validateSeverity("defaults.severity_gate", defaults.severity_gate);
+          validateSeverity(
+            "protected_branch_overrides.severity_gate",
+            protectedOverrides.severity_gate
+          );
+          validateP2("defaults.p2_max_allowed", defaults.p2_max_allowed);
+          validateP2(
+            "protected_branch_overrides.p2_max_allowed",
+            protectedOverrides.p2_max_allowed
+          );
+          NODE
+
       - name: Assert deploy promotion jobs are immutable-artifact only
         shell: bash
         run: |
