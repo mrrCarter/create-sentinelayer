@@ -240,6 +240,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - Confirm non-sensitive keys remain available to subprocess execution.
 - [x] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
 
+### PR 149 Working Plan (roadmap/pr-149-shell-network-domain-allowlist)
+- [x] Add deterministic host extraction for shell network commands (`curl`/`wget`) and evaluate hostnames against an allowlist.
+- [x] Add config/env-driven allowlist sources with secure defaults:
+  - `SENTINELAYER_ALLOWED_FETCH_HOSTS` comma-separated override.
+  - Built-in safe domains for core package tooling and GitHub workflows.
+- [x] Enforce domain allowlist at shell execution time:
+  - Block network commands targeting non-allowlisted hosts.
+  - Keep non-network shell commands unaffected.
+- [x] Add unit tests for allowed and blocked domains, plus wildcard/suffix matching boundaries.
+- [ ] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
+
 ## Execution Board (2026-04-04)
 
 ### Omar Gate Loop (required on every PR)

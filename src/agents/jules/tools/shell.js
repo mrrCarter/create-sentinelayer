@@ -3,6 +3,19 @@ import path from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 30_000;
+const DEFAULT_ALLOWED_FETCH_HOSTS = [
+  "github.com",
+  "api.github.com",
+  "raw.githubusercontent.com",
+  "*.githubusercontent.com",
+  "registry.npmjs.org",
+  "registry.yarnpkg.com",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "rubygems.org",
+  "crates.io",
+  "static.crates.io",
+];
 
 /**
  * Patterns that are BLOCKED unconditionally.
@@ -183,12 +196,23 @@ export function shell(input) {
 
 /**
  * Analyze a command for security risks.
- * @returns {{ risk: "safe"|"warn"|"blocked", patterns: Array<{desc}> }}
+ * @param {object} [options]
+ * @param {Record<string, string|undefined>} [options.env]
+ * @returns {{ risk: "safe"|"warn"|"blocked", patterns: Array<{desc}>, networkPolicy?: object }}
  */
-export function analyzeCommand(command) {
+export function analyzeCommand(command, options = {}) {
+  const networkPolicy = evaluateNetworkPolicy(command, options.env);
+  if (networkPolicy.blocking) {
+    return {
+      risk: "blocked",
+      patterns: [{ desc: networkPolicy.reason }],
+      networkPolicy,
+    };
+  }
+
   for (const rule of BLOCKED_PATTERNS) {
     if (rule.pattern.test(command)) {
-      return { risk: "blocked", patterns: [rule] };
+      return { risk: "blocked", patterns: [rule], networkPolicy };
     }
   }
 
@@ -200,10 +224,10 @@ export function analyzeCommand(command) {
   }
 
   if (warnings.length > 0) {
-    return { risk: "warn", patterns: warnings };
+    return { risk: "warn", patterns: warnings, networkPolicy };
   }
 
-  return { risk: "safe", patterns: [] };
+  return { risk: "safe", patterns: [], networkPolicy };
 }
 
 export function buildScrubbedEnv(sourceEnv = process.env) {
@@ -244,6 +268,103 @@ function shouldStripEnvKey(key) {
   }
 
   return ENV_KEY_SUFFIX_PATTERNS.some((pattern) => pattern.test(upperKey));
+}
+
+function evaluateNetworkPolicy(command, sourceEnv = process.env) {
+  if (!/\b(curl|wget)\b/i.test(command)) {
+    return {
+      blocking: false,
+      hosts: [],
+      deniedHosts: [],
+    };
+  }
+
+  const hosts = extractNetworkHosts(command);
+  if (hosts.length === 0) {
+    return {
+      blocking: true,
+      hosts: [],
+      deniedHosts: [],
+      reason: "network command requires explicit URL host",
+    };
+  }
+
+  const allowlist = resolveAllowedFetchHosts(sourceEnv);
+  const deniedHosts = hosts.filter((host) => !isAllowedHost(host, allowlist));
+  if (deniedHosts.length > 0) {
+    return {
+      blocking: true,
+      hosts,
+      deniedHosts,
+      reason: `network host not allowlisted: ${deniedHosts.join(", ")}`,
+    };
+  }
+
+  return {
+    blocking: false,
+    hosts,
+    deniedHosts: [],
+  };
+}
+
+function resolveAllowedFetchHosts(sourceEnv = process.env) {
+  const configured = String(sourceEnv.SENTINELAYER_ALLOWED_FETCH_HOSTS || "")
+    .split(",")
+    .map((item) => normalizeHostPattern(item))
+    .filter(Boolean);
+
+  const allPatterns = [...DEFAULT_ALLOWED_FETCH_HOSTS, ...configured]
+    .map((item) => normalizeHostPattern(item))
+    .filter(Boolean);
+  return Array.from(new Set(allPatterns));
+}
+
+function extractNetworkHosts(command) {
+  const matches = command.matchAll(/\bhttps?:\/\/([^\s"'`]+)/gi);
+  const hosts = new Set();
+  for (const match of matches) {
+    const candidate = match?.[0];
+    if (!candidate) {
+      continue;
+    }
+    try {
+      const parsed = new URL(candidate);
+      const host = normalizeHostPattern(parsed.hostname);
+      if (host) {
+        hosts.add(host);
+      }
+    } catch {
+      // Skip malformed URL segments.
+    }
+  }
+  return Array.from(hosts);
+}
+
+function isAllowedHost(host, allowlist) {
+  const normalizedHost = normalizeHostPattern(host);
+  if (!normalizedHost) {
+    return false;
+  }
+
+  return allowlist.some((pattern) => {
+    if (!pattern) {
+      return false;
+    }
+
+    if (pattern.startsWith("*.")) {
+      const suffix = pattern.slice(2);
+      return normalizedHost === suffix || normalizedHost.endsWith(`.${suffix}`);
+    }
+
+    return normalizedHost === pattern;
+  });
+}
+
+function normalizeHostPattern(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "");
 }
 
 export class ShellError extends Error {
