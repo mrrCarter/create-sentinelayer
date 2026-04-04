@@ -14,6 +14,30 @@ if [[ ! -f "${remote_exec_allowlist_file}" ]]; then
 fi
 mapfile -t remote_exec_allowlist_patterns < <(grep -vE '^\s*($|#)' "${remote_exec_allowlist_file}" || true)
 
+duplicate_allowlist_entries="$(
+  awk -F'=' '
+    /^[[:space:]]*($|#)/ { next }
+    {
+      key=$1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key == "") { next }
+      if (!(key in first_line)) {
+        first_line[key]=NR
+        next
+      }
+      if (!(key in emitted)) {
+        printf "%s (lines %d and %d)\n", key, first_line[key], NR
+        emitted[key]=1
+      }
+    }
+  ' "${allowlist_file}"
+)"
+if [[ -n "${duplicate_allowlist_entries}" ]]; then
+  duplicate_preview="$(echo "${duplicate_allowlist_entries}" | tr '\n' '; ' | sed -E 's/[;[:space:]]+$//')"
+  echo "::error::Duplicate action allowlist entries detected in ${allowlist_file}: ${duplicate_preview}"
+  exit 1
+fi
+
 declare -A allowlisted_shas=()
 declare -A allowlisted_line_numbers=()
 allowlist_line_number=0

@@ -150,7 +150,7 @@ test(
       const result = runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath });
       assert.notEqual(result.status, 0);
       const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
-      assert.match(combinedOutput, /Duplicate action allowlist entry/i);
+      assert.match(combinedOutput, /Duplicate action allowlist entr/i);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
