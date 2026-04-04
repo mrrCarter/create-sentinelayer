@@ -1,5 +1,5 @@
 import fsp from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
@@ -188,6 +188,39 @@ function resolveAtomicBackupPath(filePath) {
   return `${filePath}.${process.pid}.${Date.now()}.bak`;
 }
 
+function resolveRetryJitterOffset(maxJitterMs) {
+  const normalizedJitter = Math.max(0, Math.floor(Number(maxJitterMs) || 0));
+  if (normalizedJitter <= 0) {
+    return 0;
+  }
+  try {
+    return crypto.randomInt(-normalizedJitter, normalizedJitter + 1);
+  } catch {
+    const webCryptoSource =
+      (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function"
+        ? globalThis.crypto
+        : crypto.webcrypto && typeof crypto.webcrypto.getRandomValues === "function"
+          ? crypto.webcrypto
+          : null);
+    if (!webCryptoSource) {
+      return 0;
+    }
+    const randomWord = new Uint32Array(1);
+    webCryptoSource.getRandomValues(randomWord);
+    const range = normalizedJitter * 2 + 1;
+    return Number(randomWord[0] % range) - normalizedJitter;
+  }
+}
+
+function resolveAtomicRetryDelayMs(attempt, baseDelayMs, { maxDelayMs = 1000 } = {}) {
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  const normalizedBaseDelay = Math.max(1, Math.floor(Number(baseDelayMs) || ATOMIC_RENAME_RETRY_BASE_MS));
+  const cappedBaseDelay = Math.min(normalizedBaseDelay * 2 ** normalizedAttempt, maxDelayMs);
+  const jitterWindowMs = Math.max(1, Math.floor(cappedBaseDelay * 0.2));
+  const jitterOffsetMs = resolveRetryJitterOffset(jitterWindowMs);
+  return Math.max(1, Math.min(maxDelayMs, cappedBaseDelay + jitterOffsetMs));
+}
+
 async function renameWithRetry(fromPath, toPath, {
   maxAttempts = ATOMIC_RENAME_RETRY_LIMIT,
   baseDelayMs = ATOMIC_RENAME_RETRY_BASE_MS,
@@ -202,7 +235,7 @@ async function renameWithRetry(fromPath, toPath, {
       if (!isAtomicRenameRetryable(error) || isLastAttempt) {
         throw error;
       }
-      const waitMs = Math.min(baseDelayMs * 2 ** attempt, 1000);
+      const waitMs = resolveAtomicRetryDelayMs(attempt, baseDelayMs);
       await delay(waitMs);
     }
   }
@@ -226,7 +259,7 @@ async function removeWithRetry(targetPath, {
       if (!isAtomicRenameRetryable(error) || isLastAttempt) {
         throw error;
       }
-      const waitMs = Math.min(baseDelayMs * 2 ** attempt, 1000);
+      const waitMs = resolveAtomicRetryDelayMs(attempt, baseDelayMs);
       await delay(waitMs);
     }
   }

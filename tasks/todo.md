@@ -309,6 +309,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `src/config/schema.js` + `src/auth/service.js`: reject leading/trailing whitespace in secret tokens and parse env token via runtime schema before auth session resolution.
   - Added regression tests in `tests/unit.config-security.test.mjs` and `tests/unit.auth-service.test.mjs`.
 - [x] Re-run post-fix verification (`npm run test:unit -- tests/unit.config-security.test.mjs tests/unit.auth-service.test.mjs`, `npm run verify`).
+- [x] Apply second-cycle P2 remediation from run `83c47717-51ac-4df0-b992-a74ba8c33c43`:
+  - `src/auth/service.js`: remove time-derived jitter seed fallback and require cryptographic randomness (`randomBytes` -> `webcrypto` -> fail closed).
+  - `src/daemon/assignment-ledger.js`: add bounded randomized jitter to atomic rename/remove retry backoff loops.
+  - `.github/workflows/release-publish.yml`: narrow `workflow_run` trigger to `main` and reject non-default upstream head branches during resolve.
+- [x] Re-run post-remediation verification (`npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.daemon-assignment-ledger.test.mjs`, `npm run verify`).
 - [ ] Push fix commit and watch Omar Gate run to completion via `gh run watch --exit-status`.
 - [ ] If Omar findings remain above target, iterate P2 fixes and rerun loop until `P2 <= 2`.
 

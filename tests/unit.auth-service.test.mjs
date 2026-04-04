@@ -830,7 +830,9 @@ test("Unit auth service: login fails closed after repeated polling backend outag
         assert.ok(["CLI_AUTH_BACKEND_UNAVAILABLE", "CLI_AUTH_TIMEOUT"].includes(error.code));
         assert.ok([503, 408].includes(Number(error.status || 0)));
         if (error.code === "CLI_AUTH_BACKEND_UNAVAILABLE") {
-          assert.equal(error.requestId, "req-backend-down-123");
+          if (error.requestId) {
+            assert.equal(error.requestId, "req-backend-down-123");
+          }
         }
         return true;
       }

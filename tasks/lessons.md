@@ -213,3 +213,7 @@
 - Secret leakage checks in CI should scan explicit output/artifact paths only; repository-wide recursive grep against runtime secret values creates avoidable false positives and noisy gate churn.
 - Runtime secret schemas should reject leading/trailing whitespace explicitly (`SL-CONFIG-SECRET-WHITESPACE`) rather than silently trimming; auth/session entrypoints must parse env secrets through schema helpers before use.
 - Manual publish workflows need in-workflow branch-protection + required-context verification on the resolved target commit, even when actor permissions and break-glass controls already pass.
+- Poll jitter seed generation should never derive entropy from wall-clock/time-based fallbacks; use cryptographic RNG (`randomBytes` then `webcrypto`) and fail closed when no CSPRNG is available.
+- Atomic filesystem retry loops should include bounded jitter in exponential backoff; deterministic waits can synchronize concurrent workers and increase contention amplification.
+- `workflow_run` release-publish triggers should be narrowed at both trigger and runtime guard layers (protected branch filter + upstream head-branch check) to reduce accidental publish-surface activation.
+- In backend-outage auth tests, request-id propagation can legitimately vary with timeout/backoff path; assert deterministic error class/status first, then conditionally assert request-id when present.

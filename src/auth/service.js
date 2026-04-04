@@ -124,23 +124,36 @@ function generatePollClientId() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-function generatePollJitterSeed(sessionId, pollClientId) {
+function generateSecureRandomHex(length, { context = "secure-random" } = {}) {
+  const normalizedLength = Math.max(1, Math.floor(Number(length) || 0));
   try {
-    return crypto.randomBytes(16).toString("hex");
+    return crypto.randomBytes(normalizedLength).toString("hex");
   } catch {
-    return crypto
-      .createHash("sha256")
-      .update(
-        [
-          String(sessionId || "").trim(),
-          String(pollClientId || "").trim(),
-          AUTH_POLL_JITTER_SALT,
-          String(Date.now()),
-        ].join(":")
-      )
-      .digest("hex")
-      .slice(0, 32);
+    const webCryptoSource =
+      (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function"
+        ? globalThis.crypto
+        : crypto.webcrypto && typeof crypto.webcrypto.getRandomValues === "function"
+          ? crypto.webcrypto
+          : null);
+    if (!webCryptoSource) {
+      throw new SentinelayerApiError(
+        `Unable to initialize ${context}: cryptographic RNG is unavailable.`,
+        {
+          status: 500,
+          code: "AUTH_CRYPTO_UNAVAILABLE",
+        }
+      );
+    }
+    const bytes = new Uint8Array(normalizedLength);
+    webCryptoSource.getRandomValues(bytes);
+    return Buffer.from(bytes).toString("hex");
   }
+}
+
+function generatePollJitterSeed() {
+  return generateSecureRandomHex(16, {
+    context: "auth-poll-jitter-seed",
+  });
 }
 
 function deterministicJitterFactor(sessionId, pollJitterSeed, attempt, consecutiveFailures = 0) {
@@ -465,7 +478,7 @@ async function pollCliAuthSession({
   let consecutiveBackendFailures = 0;
   let attempt = 0;
   const seenRequestIds = new Set();
-  const pollJitterSeed = generatePollJitterSeed(normalizedSessionId, normalizedPollClientId);
+  const pollJitterSeed = generatePollJitterSeed();
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
     throwIfAbortRequested(signal);

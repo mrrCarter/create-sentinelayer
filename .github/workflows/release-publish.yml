@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows:
       - Release
+    branches:
+      - main
     types:
       - completed
   workflow_dispatch:
@@ -88,8 +90,10 @@ jobs:
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event || '' }}
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
           WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || '' }}
           WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
           git fetch --force --tags origin >/dev/null 2>&1 || true
@@ -153,6 +157,19 @@ jobs:
             workflow_run)
               if [[ "${WORKFLOW_RUN_CONCLUSION}" != "success" ]]; then
                 echo "::error::workflow_run trigger requires successful upstream Release conclusion."
+                exit 1
+              fi
+              default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${default_branch}" ]]; then
+                default_branch="main"
+              fi
+              workflow_run_head_branch="$(echo "${WORKFLOW_RUN_HEAD_BRANCH:-}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${workflow_run_head_branch}" ]]; then
+                echo "::error::workflow_run source must include a resolved head branch."
+                exit 1
+              fi
+              if [[ "${workflow_run_head_branch}" != "${default_branch}" ]]; then
+                echo "::error::workflow_run source branch '${workflow_run_head_branch}' is not the protected default branch '${default_branch}'."
                 exit 1
               fi
               normalized_run_path="$(echo "${WORKFLOW_RUN_PATH}" | sed -E 's/@.*$//')"
