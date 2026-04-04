@@ -627,6 +627,31 @@ test("Unit auth service: localhost HTTP API URL requires allowlisted high/random
       }),
     /port 1023 is not allowlisted/i
   );
+
+  await assert.rejects(
+    () =>
+      resolveApiUrl({
+        explicitApiUrl: "http://127.0.0.1:40000",
+        env: {
+          SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true",
+          SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT:
+            __buildInsecureLocalHttpConsentTokenForTests("127.0.0.1"),
+        },
+        allowInsecureLocalHttp: true,
+      }),
+    /port 40000 is not allowlisted/i
+  );
+
+  const resolvedHighPort = await resolveApiUrl({
+    explicitApiUrl: "http://127.0.0.1:55000",
+    env: {
+      SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true",
+      SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT:
+        __buildInsecureLocalHttpConsentTokenForTests("127.0.0.1"),
+    },
+    allowInsecureLocalHttp: true,
+  });
+  assert.equal(resolvedHighPort, "http://127.0.0.1:55000");
 });
 
 test("Unit auth service: localhost HTTP API URL is allowed only outside CI", async () => {

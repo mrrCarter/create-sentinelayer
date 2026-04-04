@@ -1284,6 +1284,40 @@ jobs:
             exit 1
           fi
 
+      - name: Verify OIDC token exchange before publish
+        shell: bash
+        env:
+          OIDC_AUDIENCE: sentinelayer-release-publish
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || (echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_URL for OIDC exchange." && exit 1)
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" || (echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_TOKEN for OIDC exchange." && exit 1)
+          oidc_response="$(timeout --preserve-status 30s curl -fsSL -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}")"
+          oidc_token="$(echo "${oidc_response}" | jq -r '.value // ""')"
+          if [[ -z "${oidc_token}" ]]; then
+            echo "::error::OIDC provider response did not include a token value."
+            exit 1
+          fi
+          node - "${oidc_token}" "${OIDC_AUDIENCE}" <<'NODE'
+          const token = String(process.argv[2] || "");
+          const expectedAudience = String(process.argv[3] || "");
+          const segments = token.split(".");
+          if (segments.length !== 3) {
+            throw new Error("OIDC token format is invalid.");
+          }
+          const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
+          const audience = payload && payload.aud;
+          const audienceMatches = Array.isArray(audience)
+            ? audience.includes(expectedAudience)
+            : audience === expectedAudience;
+          if (!audienceMatches) {
+            throw new Error(`OIDC token audience mismatch (expected='${expectedAudience}').`);
+          }
+          if (!payload || !payload.sub) {
+            throw new Error("OIDC token missing required subject claim.");
+          }
+          NODE
+
       - name: Publish to npm
         shell: bash
         run: |

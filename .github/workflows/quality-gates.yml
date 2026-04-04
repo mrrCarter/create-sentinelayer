@@ -81,13 +81,11 @@ jobs:
             fi
           else
             if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
-              execute_full="false"
-              skip_reason="non_canonical_event_repository_fallback"
-              echo "::warning::Canonical-run lookup failed (status=${runs_status}) and event repository '${EVENT_REPOSITORY}' does not match '${REPO}'; skipping full chain."
+              echo "::error::Canonical-run lookup failed (status=${runs_status}) and event repository '${EVENT_REPOSITORY}' does not match canonical repository '${REPO}'."
+              exit 1
             elif [[ "${EVENT_NAME}" == "pull_request" ]] && [[ "${PR_HEAD_REPOSITORY}" != "${REPO}" ]]; then
-              execute_full="false"
-              skip_reason="non_canonical_head_repository_fallback"
-              echo "::warning::Canonical-run lookup failed (status=${runs_status}) and PR head repository '${PR_HEAD_REPOSITORY}' does not match '${REPO}'; skipping full chain."
+              echo "::error::Canonical-run lookup failed (status=${runs_status}) and PR head repository '${PR_HEAD_REPOSITORY}' does not match canonical repository '${REPO}'."
+              exit 1
             else
               echo "::warning::Unable to resolve canonical-run metadata (status=${runs_status}); executing full gate chain."
             fi

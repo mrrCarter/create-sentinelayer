@@ -332,3 +332,7 @@
 - Tag-push release trust paths should avoid collaborator-permission API coupling for bot actors; keep collaborator checks scoped to manual-dispatch governance paths.
 - Action provenance fallback-by-availability weakens guarantees; prefer fail-closed commit-provenance checks over tarball HEAD existence probes unless immutable digest verification is implemented.
 - Some pinned GitHub Actions SHAs (for example `actions/attest-build-provenance`) can intermittently fail commits-API resolution; robust provenance gates should allow fallback only with explicit tarball SHA-256 allowlist verification.
+- Canonical-run fallback logic for required CI gates should fail closed (error) for non-canonical repository contexts when run-selection API lookups fail; skipping full gates creates merge-policy blind spots.
+- Quality-check anchoring in cross-workflow gates should bind both commit SHA and expected branch/ref context to avoid selecting unrelated successful runs for the same commit.
+- Insecure localhost HTTP dev allowances should treat `49152+` as the random-port boundary; lower ephemeral ranges are too broad for auth-sensitive workflows.
+- OIDC governance is stronger when publish lanes verify actual token exchange/claims before mutation, not just static `id-token: write` permission presence.

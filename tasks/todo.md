@@ -1376,3 +1376,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
 - [ ] Commit + push fifty-fourth-cycle fix batch.
 - [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Fifth Cycle (2026-04-04, run_id=8d2b33f0-ongoing)
+- [x] Re-anchor to active Omar findings (`P2=5`) and apply deterministic remediations:
+  - `.github/workflows/quality-gates.yml`: convert non-canonical repository fallback path from skip behavior to fail-closed error when canonical-run API lookup fails under non-canonical repository contexts.
+  - `.github/workflows/omar-gate.yml`: bind Quality Summary anchor selection to expected PR head branch in addition to SHA/path/event checks.
+  - `src/auth/service.js`: tighten insecure localhost HTTP random-port threshold from `>=32768` to `>=49152`.
+  - `tests/unit.auth-service.test.mjs`: add regression for rejecting mid-range port `40000` and allowing high ephemeral port `55000`.
+  - `.github/workflows/release-publish.yml`: add explicit OIDC token exchange verification step (audience + subject claim validation) before publish mutation.
+  - `scripts/ci/verify-action-shas.sh`: downgrade digest-verified tarball fallback message from warning to notice to reflect non-degraded, allowlist-backed provenance proof.
+- [x] Run fifty-fifth-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-fifth-cycle hardening batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

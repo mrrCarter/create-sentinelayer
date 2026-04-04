@@ -306,7 +306,7 @@ for workflow_file in "${workflow_files[@]}"; do
           failures=$((failures + 1))
           continue
         fi
-        echo "::warning file=${workflow_file}::Commit provenance API unavailable for '${fallback_key}'; tarball digest allowlist verification succeeded."
+        echo "::notice file=${workflow_file}::Commit provenance API unavailable for '${fallback_key}'; tarball digest allowlist verification succeeded."
       fi
     fi
   done
