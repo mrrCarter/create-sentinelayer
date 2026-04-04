@@ -200,6 +200,7 @@ variable_pipe_shell_pattern='\$[a-z_][a-z0-9_]*[[:space:]]*\|[[:space:]]*(bash|s
 tokenized_network_pattern='(^| )(curl|wget|invoke-webrequest|iwr|irm)( |$)'
 tokenized_shell_pattern='(^| )(bash|sh|zsh|ksh|pwsh|powershell|iex)( |$)'
 tokenized_obfuscation_pattern='(^| )(eval|base64|openssl|bash -c|sh -c|pwsh -c|powershell -c)( |$)'
+execution_primitive_pattern='(\||;|&&|\$\(|`|<\()'
 
 failures=0
 for workflow_file in "${workflow_files[@]}"; do
@@ -362,6 +363,9 @@ for workflow_file in "${workflow_files[@]}"; do
       remote_exec_detected="true"
     fi
     if [[ "${tokenized_contains_network}" == "true" && "${tokenized_contains_shell}" == "true" && "${normalized_tokenized_run}" =~ ${tokenized_obfuscation_pattern} ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${tokenized_contains_network}" == "true" && "${tokenized_contains_shell}" == "true" && "${normalized_run}" =~ ${execution_primitive_pattern} ]]; then
       remote_exec_detected="true"
     fi
     if [[ "${contains_network_fetch}" == "true" && "${contains_shell_sink}" == "true" ]]; then

@@ -36,7 +36,7 @@ env:
   REQUIRED_CONTEXT_MAX_AGE_HOURS: "168"
 
 concurrency:
-  group: release-publish-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && format('release-run-{0}', inputs.release_run_id) || github.event_name == 'workflow_run' && format('release-run-{0}', github.event.workflow_run.id) || github.ref }}
+  group: release-publish-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && format('release-tag-{0}', inputs.release_tag) || github.event_name == 'workflow_run' && format('release-sha-{0}', github.event.workflow_run.head_sha) || github.ref }}
   cancel-in-progress: false
 
 jobs:

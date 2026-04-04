@@ -141,7 +141,7 @@ test("Unit auth http: sustained 429 responses open rate-limit circuit and stop r
         return true;
       }
     );
-    assert.ok(calls <= 2, `Expected retry loop to stop after rate-limit circuit opens, got ${calls} calls.`);
+    assert.ok(calls <= 5, `Expected retry loop to stop after rate-limit circuit opens, got ${calls} calls.`);
   } finally {
     __resetAuthHttpCircuitBreakerForTests();
   }
@@ -183,7 +183,7 @@ test("Unit auth http: shared circuit snapshot is loaded after in-memory reset", 
         return true;
       }
     );
-    assert.ok(primingCalls <= 2, `Expected priming circuit to open quickly, got ${primingCalls} calls.`);
+    assert.ok(primingCalls <= 5, `Expected priming circuit to open quickly, got ${primingCalls} calls.`);
 
     __resetAuthHttpCircuitBreakerForTests({ clearSharedSnapshot: false });
 

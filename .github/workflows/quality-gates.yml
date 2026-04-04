@@ -81,26 +81,68 @@ jobs:
             echo "::error::Unable to compute valid npm SHA-256 digest."
             exit 1
           fi
-          expected_node_sha="$(jq -r --arg key "${digest_manifest_key}" '.[$key].node_sha256 // ""' "${digest_manifest_path}")"
-          expected_npm_sha="$(jq -r --arg key "${digest_manifest_key}" '.[$key].npm_sha256 // ""' "${digest_manifest_path}")"
-          if [[ -z "${expected_node_sha}" ]] || [[ -z "${expected_npm_sha}" ]]; then
+          mapfile -t expected_node_shas < <(
+            jq -r --arg key "${digest_manifest_key}" '
+              .[$key].node_sha256 as $value
+              | if ($value | type) == "array" then
+                  $value[]
+                elif ($value | type) == "string" then
+                  $value
+                else
+                  empty
+                end
+            ' "${digest_manifest_path}" \
+              | awk 'NF {print tolower($0)}'
+          )
+          mapfile -t expected_npm_shas < <(
+            jq -r --arg key "${digest_manifest_key}" '
+              .[$key].npm_sha256 as $value
+              | if ($value | type) == "array" then
+                  $value[]
+                elif ($value | type) == "string" then
+                  $value
+                else
+                  empty
+                end
+            ' "${digest_manifest_path}" \
+              | awk 'NF {print tolower($0)}'
+          )
+          if [[ "${#expected_node_shas[@]}" -eq 0 ]] || [[ "${#expected_npm_shas[@]}" -eq 0 ]]; then
             echo "::error::Missing expected digests for key '${digest_manifest_key}' in '${digest_manifest_path}'."
             exit 1
           fi
-          if [[ ! "${expected_node_sha}" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Invalid expected node_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+          for expected_node_sha in "${expected_node_shas[@]}"; do
+            if [[ ! "${expected_node_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid expected node_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+              exit 1
+            fi
+          done
+          for expected_npm_sha in "${expected_npm_shas[@]}"; do
+            if [[ ! "${expected_npm_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid expected npm_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+              exit 1
+            fi
+          done
+          node_digest_match="false"
+          for expected_node_sha in "${expected_node_shas[@]}"; do
+            if [[ "${node_sha}" == "${expected_node_sha}" ]]; then
+              node_digest_match="true"
+              break
+            fi
+          done
+          if [[ "${node_digest_match}" != "true" ]]; then
+            echo "::error::Node digest mismatch for '${digest_manifest_key}' (actual='${node_sha}', allowed='${expected_node_shas[*]}')."
             exit 1
           fi
-          if [[ ! "${expected_npm_sha}" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Invalid expected npm_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
-            exit 1
-          fi
-          if [[ "${node_sha}" != "${expected_node_sha}" ]]; then
-            echo "::error::Node digest mismatch for '${digest_manifest_key}' (expected='${expected_node_sha}', actual='${node_sha}')."
-            exit 1
-          fi
-          if [[ "${npm_sha}" != "${expected_npm_sha}" ]]; then
-            echo "::error::npm digest mismatch for '${digest_manifest_key}' (expected='${expected_npm_sha}', actual='${npm_sha}')."
+          npm_digest_match="false"
+          for expected_npm_sha in "${expected_npm_shas[@]}"; do
+            if [[ "${npm_sha}" == "${expected_npm_sha}" ]]; then
+              npm_digest_match="true"
+              break
+            fi
+          done
+          if [[ "${npm_digest_match}" != "true" ]]; then
+            echo "::error::npm digest mismatch for '${digest_manifest_key}' (actual='${npm_sha}', allowed='${expected_npm_shas[*]}')."
             exit 1
           fi
           echo "Pinned toolchain digests verified for ${digest_manifest_key}: node=${node_sha} npm=${npm_sha}"
