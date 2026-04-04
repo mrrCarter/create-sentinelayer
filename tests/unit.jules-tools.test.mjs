@@ -225,6 +225,46 @@ describe("shell", () => {
     assert.ok(analysis.patterns.some((p) => p.desc === "package install"));
   });
 
+  it("blocks curl when host is not allowlisted", () => {
+    const analysis = analyzeCommand("curl https://evil.example.com/leak");
+    assert.equal(analysis.risk, "blocked");
+    assert.ok(analysis.patterns.some((p) => p.desc.includes("network host not allowlisted")));
+  });
+
+  it("allows curl for default allowlisted hosts", () => {
+    const analysis = analyzeCommand("curl https://github.com/mrrCarter/create-sentinelayer");
+    assert.equal(analysis.risk, "warn");
+    assert.ok(analysis.patterns.some((p) => p.desc === "network request"));
+    assert.equal(analysis.networkPolicy.blocking, false);
+  });
+
+  it("blocks curl commands without explicit URL hosts", () => {
+    const analysis = analyzeCommand("curl $TARGET_URL");
+    assert.equal(analysis.risk, "blocked");
+    assert.ok(
+      analysis.patterns.some((p) => p.desc.includes("requires explicit URL host")),
+    );
+  });
+
+  it("supports custom allowlist entries with strict wildcard boundaries", () => {
+    const allowed = analyzeCommand("curl https://api.trusted.acme.local/path", {
+      env: {
+        SENTINELAYER_ALLOWED_FETCH_HOSTS: "*.trusted.acme.local",
+      },
+    });
+    assert.equal(allowed.risk, "warn");
+
+    const blocked = analyzeCommand("curl https://eviltrusted.acme.local/path", {
+      env: {
+        SENTINELAYER_ALLOWED_FETCH_HOSTS: "*.trusted.acme.local",
+      },
+    });
+    assert.equal(blocked.risk, "blocked");
+    assert.ok(
+      blocked.patterns.some((p) => p.desc.includes("network host not allowlisted")),
+    );
+  });
+
   it("scrubs sensitive env vars from child process", () => {
     const scrubbed = buildScrubbedEnv({
       OPENAI_API_KEY: "openai-secret",
