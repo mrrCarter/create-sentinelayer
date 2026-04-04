@@ -308,3 +308,8 @@
 - Policy-map coverage must evolve with workflow DAG changes; every new governance job requires explicit `required`+`max` permission policy entries to keep local/CI drift checks authoritative.
 - Poll attempt ceilings should be derived from timeout-window math (deadline, interval, backoff cap) rather than static constants so auth loops cannot silently exceed configured duration budgets.
 - Parser/dataflow security-detector rewrites must ship with dedicated cross-platform unit tests that exercise the exact vulnerable pattern (for example variable-assignment -> `eval` sink), because bash-gated fixtures can be skipped on Windows and hide regressions until CI.
+- Security gates that depend on upstream required checks should bind to immutable proof artifacts from the anchored workflow run (not status checks alone) to close run-selection integrity gaps.
+- Workflow-wide SHA concurrency can still leave external-resource race windows; high-risk deploy-simulation stages should have a separate non-canceling global concurrency lock.
+- Shared GitHub API retry helpers must enforce hard upper bounds (`max attempts`, `max backoff`, `max total wait`) so callers cannot accidentally create effectively unbounded retry envelopes via env overrides.
+- Shell remote-exec analyzers need both token-aware command matching and fail-closed high-risk indirection detection (`eval`, command substitution, backticks) when network fetch signals are present.
+- Auth backend outage handling should fail faster with tighter circuit thresholds and surface explicit cooldown/failure-count context in user-visible error messages for clearer operator recovery signals.

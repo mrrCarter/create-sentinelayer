@@ -94,6 +94,7 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
+      actions: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - name: Enforce trusted PR source for secret-backed scan
@@ -128,6 +129,7 @@ jobs:
             echo "::warning::security-review environment has no wait timer configured; consider enabling a non-zero timer for additional review control."
           fi
       - name: Wait for Quality Summary gate
+        id: wait_quality
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -219,11 +221,51 @@ jobs:
               echo "::error::Quality Summary anchor mismatch (selected_run=${run_id}, check_run_anchor=${anchor_run_id}, details_url=${quality_details_url})."
               exit 1
             fi
+            echo "quality_run_id=${run_id}" >> "$GITHUB_OUTPUT"
             echo "Quality Summary gate passed via workflow run ${run_id} (${run_url})."
             exit 0
           done
           echo "::error::Timed out waiting for Quality Summary check on ${TARGET_SHA}."
           exit 1
+      - name: Bind Quality Summary promotion proof to target SHA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_RUN_ID: ${{ steps.wait_quality.outputs.quality_run_id }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          quality_run_id="$(echo "${QUALITY_RUN_ID}" | tr -d '\r' | xargs || true)"
+          target_sha="$(echo "${TARGET_SHA}" | tr -d '\r' | xargs || true)"
+          test -n "${quality_run_id}" || (echo "::error::Missing anchored quality_run_id output from Wait for Quality Summary gate." && exit 1)
+          test -n "${target_sha}" || (echo "::error::Missing TARGET_SHA for quality artifact binding." && exit 1)
+          rm -rf omar-quality-proof
+          mkdir -p omar-quality-proof
+          timeout --preserve-status 120s gh run download "${quality_run_id}" --name quality-summary-promotion-proof --dir omar-quality-proof
+          proof_file="omar-quality-proof/quality-summary.promotion-proof.json"
+          test -f "${proof_file}" || (echo "::error::Missing quality summary promotion proof artifact for quality run ${quality_run_id}." && exit 1)
+          proof_workflow="$(jq -r '.workflow // ""' "${proof_file}")"
+          proof_gate="$(jq -r '.gate // ""' "${proof_file}")"
+          proof_run_id="$(jq -r '.runId // ""' "${proof_file}")"
+          proof_commit_sha="$(jq -r '.commitSha // ""' "${proof_file}")"
+          proof_artifact_sha="$(jq -r '.artifactSha256 // ""' "${proof_file}")"
+          if [[ "${proof_workflow}" != "quality-gates" ]] || [[ "${proof_gate}" != "Quality Summary" ]]; then
+            echo "::error::Invalid quality summary proof identity (workflow='${proof_workflow}', gate='${proof_gate}')."
+            exit 1
+          fi
+          if [[ "${proof_run_id}" != "${quality_run_id}" ]]; then
+            echo "::error::Quality summary proof runId mismatch (proof='${proof_run_id}', expected='${quality_run_id}')."
+            exit 1
+          fi
+          if [[ "${proof_commit_sha}" != "${target_sha}" ]]; then
+            echo "::error::Quality summary proof commit mismatch (proof='${proof_commit_sha}', expected='${target_sha}')."
+            exit 1
+          fi
+          if [[ ! "${proof_artifact_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Quality summary proof artifact digest is missing or invalid."
+            exit 1
+          fi
       - name: Validate and mask scan secrets
         shell: bash
         env:

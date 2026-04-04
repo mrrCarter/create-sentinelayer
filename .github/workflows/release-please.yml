@@ -23,6 +23,10 @@ env:
   NODE_VERSION_PIN: "20.11.1"
   NPM_VERSION_PIN: "10.2.4"
   ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
+  GH_API_TIMEOUT_SECONDS: "20"
+  GH_API_MAX_ATTEMPTS: "3"
+  GH_API_BACKOFF_SECONDS: "2"
+  GH_API_MAX_TOTAL_WAIT_SECONDS: "60"
 
 concurrency:
   group: release-control-create-sentinelayer

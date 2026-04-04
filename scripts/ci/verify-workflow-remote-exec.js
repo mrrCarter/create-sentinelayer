@@ -313,9 +313,29 @@ function parseAssignments(words) {
 }
 
 function containsNetworkFetchFragment(fragment) {
-  const lower = String(fragment || "").toLowerCase();
+  const normalized = normalizeWhitespace(fragment);
+  if (!normalized) {
+    return false;
+  }
+  const words = splitWords(normalized);
+  for (const word of words) {
+    const token = String(word || "")
+      .replace(/^["'`({[]+|[)"'`}\],;]+$/g, "")
+      .toLowerCase();
+    if (!token) {
+      continue;
+    }
+    if (NETWORK_COMMANDS.has(token)) {
+      return true;
+    }
+    if (containsRemoteUrl(token)) {
+      return true;
+    }
+  }
+  const lower = normalized.toLowerCase();
   for (const command of NETWORK_COMMANDS) {
-    if (lower.includes(command)) {
+    const boundaryPattern = new RegExp(`(^|[^a-z0-9_])${command}([^a-z0-9_]|$)`, "i");
+    if (boundaryPattern.test(lower)) {
       return true;
     }
   }
@@ -324,6 +344,20 @@ function containsNetworkFetchFragment(fragment) {
 
 function containsRemoteUrl(fragment) {
   return /https?:\/\/|ftp:\/\//i.test(String(fragment || ""));
+}
+
+function hasHighRiskShellIndirection(fragment) {
+  const text = String(fragment || "");
+  if (!text) {
+    return false;
+  }
+  return (
+    /\beval\b/i.test(text) ||
+    /\$\(/.test(text) ||
+    /`/.test(text) ||
+    /\$\{![^}]+\}/.test(text) ||
+    /\b(source|\.)\s+\$[{(]?[A-Za-z_][A-Za-z0-9_]*[})]?/i.test(text)
+  );
 }
 
 function extractReferencedVariables(fragment) {
@@ -370,6 +404,13 @@ function analyzeRunStep(step) {
   const findings = [];
   const taintedVariables = new Set();
   const commands = splitCommands(step.run).map((commandText) => buildCommandModel(commandText));
+  const runHasNetworkSignal = commands.some((command) =>
+    command.segments.some(
+      (segment) =>
+        containsNetworkFetchFragment(segment.raw) ||
+        containsRemoteUrl(segment.raw)
+    )
+  );
 
   const addFinding = (reason, commandRaw) => {
     const preview = normalizeWhitespace(commandRaw).slice(0, 220);
@@ -386,7 +427,12 @@ function analyzeRunStep(step) {
         }
         const referencedVariables = extractReferencedVariables(value);
         const referencesTaintedValue = Array.from(referencedVariables).some((entry) => taintedVariables.has(entry));
-        if (containsNetworkFetchFragment(value) || containsRemoteUrl(value) || referencesTaintedValue) {
+        if (
+          containsNetworkFetchFragment(value) ||
+          containsRemoteUrl(value) ||
+          referencesTaintedValue ||
+          (runHasNetworkSignal && hasHighRiskShellIndirection(value))
+        ) {
           taintedVariables.add(varName);
         }
       }
@@ -408,6 +454,9 @@ function analyzeRunStep(step) {
       }
       if (joinedArgs.includes("base64") && command.segments.some((entry) => isExecutionSink(entry.commandName))) {
         addFinding("encoded payload routed into execution sink", command.raw);
+      }
+      if (runHasNetworkSignal && hasHighRiskShellIndirection(segment.raw)) {
+        addFinding("high-risk shell indirection combined with network fetch signal", command.raw);
       }
     }
 

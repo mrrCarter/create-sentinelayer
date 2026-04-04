@@ -29,9 +29,9 @@ const DEFAULT_API_TOKEN_SCOPE = "cli_session";
 const PRIVILEGED_API_TOKEN_SCOPE = "github_app_bridge";
 const MIN_AUTH_POLL_INTERVAL_MS = 250;
 const MAX_AUTH_POLL_ATTEMPTS = 300;
-const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
-const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
-const AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS = 60_000;
+const MAX_AUTH_POLL_BACKEND_FAILURES = 3;
+const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 10_000;
+const AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS = 30_000;
 const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 8;
 const MAX_TRACKED_POLL_REQUEST_IDS = 256;
 const AUTH_POLL_RESUME_STATE_VERSION = 1;
@@ -1046,7 +1046,9 @@ async function pollCliAuthSession({
         Math.min(MAX_AUTH_POLL_BACKEND_BACKOFF_MS, backendCircuitCooldownMs - elapsedSinceCircuitOpenMs)
       );
       throw new SentinelayerApiError(
-        "Authentication polling backend is temporarily unavailable. Retry once service health recovers.",
+        `Authentication polling backend is temporarily unavailable (circuit open; retry after ${Math.ceil(
+          retryAfterMs / 1000
+        )}s).`,
         {
           status: 503,
           code: "CLI_AUTH_BACKEND_UNAVAILABLE",
@@ -1129,7 +1131,9 @@ async function pollCliAuthSession({
         backendCircuitCooldownMs = retryAfterMs;
         await persistResumeState();
         throw new SentinelayerApiError(
-          "Authentication polling backend is temporarily unavailable. Retry once service health recovers.",
+          `Authentication polling backend is temporarily unavailable after ${consecutiveBackendFailures} consecutive failures (retry after ${Math.ceil(
+            retryAfterMs / 1000
+          )}s).`,
           {
             status: 503,
             code: "CLI_AUTH_BACKEND_UNAVAILABLE",

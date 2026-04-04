@@ -90,12 +90,14 @@
           "required": {
             "contents": "read",
             "checks": "write",
-            "pull-requests": "write"
+            "pull-requests": "write",
+            "actions": "read"
           },
           "max": {
             "contents": "read",
             "checks": "write",
-            "pull-requests": "write"
+            "pull-requests": "write",
+            "actions": "read"
           }
         },
         "omar_gate_result": {

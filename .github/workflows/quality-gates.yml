@@ -1218,6 +1218,9 @@ jobs:
     if: ${{ always() }}
     permissions:
       contents: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
     steps:
       - name: Enforce build-artifact success
         shell: bash
@@ -1294,6 +1297,9 @@ jobs:
       contents: read
       id-token: write
       attestations: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1389,6 +1395,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
     steps:
       - name: Enforce readiness-gate success
         shell: bash
@@ -1488,6 +1497,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
     uses: ./.github/workflows/rollback.yml
     with:
       execute: false
@@ -1503,6 +1515,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}

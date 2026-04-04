@@ -1240,3 +1240,20 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-fifth-cycle fix batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Sixth Cycle (2026-04-04, run_id=da0b4801-03aa-4e52-a22d-7fb2d38a3fc4)
+- [x] Re-anchor to active Omar findings (`P2=5`) and patch deterministic controls:
+  - `.github/workflows/omar-gate.yml`: add quality-run output capture + artifact-bound proof validation (`quality-summary-promotion-proof`) before secret-backed Omar execution; require `actions: read` permission for trusted job.
+  - `.github/workflows/quality-gates.yml`: serialize deploy simulation chain (`release-readiness`, `deploy-readiness`, `deploy-stage`, `rollback-readiness`, `deploy`) under non-canceling global deploy-sim concurrency group.
+  - `.github/workflows/release-please.yml` + `scripts/ci/gh-api-retry.sh`: enforce bounded GitHub API retry budgets with hard ceilings (`max attempts`, `backoff`, `max total wait`) and explicit workflow-level retry env pins.
+  - `scripts/ci/verify-workflow-remote-exec.js`: strengthen parser detection with token-bound network command recognition and high-risk shell-indirection + network-signal detection.
+  - `tests/unit.verify-workflow-remote-exec.test.mjs`: add regression for obfuscated indirection pattern (`PAYLOAD="$(curl ...)"` + `eval`).
+  - `src/auth/service.js`: tighten backend outage budget constants and surface explicit circuit-open/failure-count cooldown details in `CLI_AUTH_BACKEND_UNAVAILABLE` messages.
+  - `.github/security/workflow-permissions-policy.json`: align Omar trusted job policy to include read-only actions scope.
+- [x] Run forty-sixth-cycle local evidence:
+  - `node --test tests/unit.verify-workflow-remote-exec.test.mjs tests/unit.auth-service.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `204/210` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-sixth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
