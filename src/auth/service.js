@@ -64,8 +64,11 @@ const ALLOWED_API_PATH_PATTERNS = Object.freeze([
   /^\/api\/v1\/auth\/api-tokens$/,
   /^\/api\/v1\/auth\/api-tokens\/[A-Za-z0-9._~%-]+$/,
   /^\/api\/v1\/runtime\/runs\/[A-Za-z0-9._~%-]+\/status$/,
-  /^\/api\/v1\/runtime\/runs\/[A-Za-z0-9._~%-]+\/events\/list(?:\?after_event_id=[A-Za-z0-9._~%-]+)?$/,
+  /^\/api\/v1\/runtime\/runs\/[A-Za-z0-9._~%-]+\/events\/list$/,
 ]);
+const RUNTIME_EVENTS_PATH_PATTERN = /^\/api\/v1\/runtime\/runs\/[A-Za-z0-9._~%-]+\/events\/list$/;
+const RUNTIME_EVENTS_QUERY_KEY = "after_event_id";
+const RUNTIME_EVENTS_QUERY_VALUE_PATTERN = /^[A-Za-z0-9._~%/-]+$/;
 
 function isEnabledFlag(rawValue) {
   const normalized = String(rawValue || "")
@@ -248,10 +251,31 @@ function normalizeAndValidateApiPathSuffix(pathSuffix) {
   } catch {
     throw new Error(`Invalid API path suffix '${normalizedSuffix}'.`);
   }
-  const normalizedPathAndQuery = `${parsedSuffix.pathname}${parsedSuffix.search}`;
-  const matchesAllowlist = ALLOWED_API_PATH_PATTERNS.some((pattern) =>
-    pattern.test(normalizedPathAndQuery)
-  );
+  const normalizedPath = parsedSuffix.pathname;
+  const queryEntries = Array.from(parsedSuffix.searchParams.entries());
+  const allowsRuntimeEventsQuery = RUNTIME_EVENTS_PATH_PATTERN.test(normalizedPath);
+  if (!allowsRuntimeEventsQuery && queryEntries.length > 0) {
+    throw new Error(`Unsupported API path query for '${normalizedSuffix}'.`);
+  }
+  if (allowsRuntimeEventsQuery) {
+    if (queryEntries.length > 1) {
+      throw new Error(`Unsupported API path query for '${normalizedSuffix}'.`);
+    }
+    if (queryEntries.length === 1) {
+      const [queryKey, queryValue] = queryEntries[0];
+      if (queryKey !== RUNTIME_EVENTS_QUERY_KEY) {
+        throw new Error(`Unsupported API path query for '${normalizedSuffix}'.`);
+      }
+      if (!RUNTIME_EVENTS_QUERY_VALUE_PATTERN.test(queryValue)) {
+        throw new Error(`Invalid API path query value for '${normalizedSuffix}'.`);
+      }
+    }
+  }
+  const normalizedQuery = parsedSuffix.searchParams.toString();
+  const normalizedPathAndQuery = normalizedQuery
+    ? `${normalizedPath}?${normalizedQuery}`
+    : normalizedPath;
+  const matchesAllowlist = ALLOWED_API_PATH_PATTERNS.some((pattern) => pattern.test(normalizedPath));
   if (!matchesAllowlist) {
     throw new Error(`Unsupported API path suffix '${normalizedSuffix}'.`);
   }

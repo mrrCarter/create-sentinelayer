@@ -112,6 +112,14 @@ test("Unit auth service: API paths are URL-joined safely", () => {
     "https://api.sentinelayer.com/api/v1/runtime/runs/run-1/events/list?after_event_id=evt%2F1"
   );
   assert.throws(
+    () =>
+      __buildApiPathForTests(
+        "https://api.sentinelayer.com/",
+        "/api/v1/runtime/runs/run-1/events/list?cursor=evt_1"
+      ),
+    /Unsupported API path query/
+  );
+  assert.throws(
     () => __buildApiPathForTests("https://api.sentinelayer.com", "/api/v1/admin/users"),
     /Unsupported API path suffix/
   );

@@ -124,6 +124,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
             echo "::error::Release workflow must originate from canonical repository '${REPO}' (received '${EVENT_REPOSITORY}')."
             exit 1
@@ -150,7 +151,8 @@ jobs:
             echo "Trusted invoker validation skipped for ref '${GITHUB_REF_VALUE}'."
             exit 0
           fi
-          permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // \"\"' 2>/dev/null || true)"
+          permission_json="$(gh_api_json "repos/${REPO}/collaborators/${ACTOR}/permission")"
+          permission="$(echo "${permission_json}" | jq -r '.permission // ""')"
           trusted_actor="false"
           case "${permission}" in
             admin|maintain)
@@ -182,7 +184,7 @@ jobs:
                 exit 1
               fi
             fi
-            release_env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+            release_env_json="$(gh_api_json "repos/${REPO}/environments/release-management")"
             release_reviewer_count="$(echo "${release_env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]? | ((.reviewer.login // .reviewer.slug // .login // .slug // "") | select(length > 0))] | unique | length')"
             case "${release_reviewer_count}" in ''|*[!0-9]*)
               echo "::error::Unable to resolve release-management required reviewer count."
@@ -219,7 +221,7 @@ jobs:
               echo "::error::release_tag '${tag_name}' must match vX.Y.Z semantic version format."
               exit 1
             fi
-            tag_ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
+            tag_ref_json="$(gh_api_json "repos/${REPO}/git/ref/tags/${tag_name}")"
             ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
             ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
             if [[ -z "${ref_sha}" ]]; then
@@ -228,7 +230,7 @@ jobs:
             fi
             target_sha="${ref_sha}"
             if [[ "${ref_type}" == "tag" ]]; then
-              annotated_tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}")"
+              annotated_tag_json="$(gh_api_json "repos/${REPO}/git/tags/${ref_sha}")"
               target_sha="$(echo "${annotated_tag_json}" | jq -r '.object.sha // ""')"
             elif [[ "${ref_type}" != "commit" ]]; then
               echo "::error::Tag '${tag_name}' points to unsupported object type '${ref_type}'."
@@ -244,7 +246,7 @@ jobs:
             exit 1
           fi
           if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]] && [[ "${ACTOR}" == "github-actions[bot]" ]]; then
-            release_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+            release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20")"
             release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release-please.yml" --arg repo "${REPO}" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
@@ -274,17 +276,17 @@ jobs:
                 exit 1
               fi
             fi
-            commit_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${target_sha}" -H "Accept: application/vnd.github+json")"
+            commit_json="$(gh_api_json "repos/${REPO}/commits/${target_sha}")"
             commit_verified="$(echo "${commit_json}" | jq -r '.commit.verification.verified // false')"
             if [[ "${commit_verified}" != "true" ]]; then
               echo "::error::Tag target commit '${target_sha}' is not cryptographically verified."
               exit 1
             fi
             default_branch="${DEFAULT_BRANCH:-main}"
-            default_branch_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${default_branch}" -H "Accept: application/vnd.github+json")"
+            default_branch_json="$(gh_api_json "repos/${REPO}/branches/${default_branch}")"
             default_branch_sha="$(echo "${default_branch_json}" | jq -r '.commit.sha // ""')"
             test -n "${default_branch_sha}" || (echo "::error::Unable to resolve default branch head SHA for '${default_branch}'." && exit 1)
-            compare_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/compare/${target_sha}...${default_branch_sha}" -H "Accept: application/vnd.github+json")"
+            compare_json="$(gh_api_json "repos/${REPO}/compare/${target_sha}...${default_branch_sha}")"
             compare_status="$(echo "${compare_json}" | jq -r '.status // ""')"
             if [[ "${compare_status}" != "ahead" ]] && [[ "${compare_status}" != "identical" ]]; then
               echo "::error::Release tag commit ${target_sha} is not on protected default branch '${default_branch}' lineage (compare_status=${compare_status})."

@@ -105,7 +105,24 @@ function secureRandomIntInclusive(minInclusive, maxInclusive) {
       }
     }
   }
-  return min;
+  throw new Error("Unable to generate secure random integer.");
+}
+
+function bestEffortJitterIntInclusive(minInclusive, maxInclusive) {
+  const min = Math.floor(Number(minInclusive));
+  const max = Math.floor(Number(maxInclusive));
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    throw new Error("Invalid jitter integer bounds.");
+  }
+  if (max <= min) {
+    return min;
+  }
+  try {
+    return secureRandomIntInclusive(min, max);
+  } catch {
+    const span = max - min + 1;
+    return min + Math.floor(Math.random() * span);
+  }
 }
 
 function initializeRequestJitterStartupSecret() {
@@ -527,7 +544,7 @@ async function withSharedCircuitBreakerStateLock(operation) {
       }
       const delayMs =
         AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MIN_MS +
-        secureRandomIntInclusive(0, AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS);
+        bestEffortJitterIntInclusive(0, AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS);
       await sleep(delayMs);
     }
   }
