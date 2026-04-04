@@ -1,4 +1,6 @@
 name: Release Publish
+# GitHub Actions does not support workflow-level timeout-minutes.
+# This workflow enforces bounded runtime via per-job timeout-minutes and a timeout-contract gate.
 
 on:
   workflow_run:
@@ -50,9 +52,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  enforce-timeout-contract:
+    name: Enforce Timeout Contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify all release-publish jobs define timeout-minutes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/release-publish.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const parsed = YAML.parse(raw);
+          const jobs = parsed && typeof parsed === "object" ? parsed.jobs || {} : {};
+          const offenders = [];
+          for (const [jobId, job] of Object.entries(jobs)) {
+            if (!job || typeof job !== "object") {
+              continue;
+            }
+            const timeout = Number(job["timeout-minutes"]);
+            if (!Number.isFinite(timeout) || timeout <= 0) {
+              offenders.push(jobId);
+              continue;
+            }
+            if (timeout > 120) {
+              offenders.push(`${jobId} (timeout=${timeout})`);
+            }
+          }
+          if (offenders.length > 0) {
+            console.error(
+              `::error::release-publish timeout contract violation: ${offenders.join(", ")}.`
+            );
+            process.exit(1);
+          }
+          NODE
+
   runtime-budget-guard:
     name: Workflow Runtime Guard
     runs-on: ubuntu-22.04
+    needs: [enforce-timeout-contract]
     timeout-minutes: 3
     permissions:
       contents: read

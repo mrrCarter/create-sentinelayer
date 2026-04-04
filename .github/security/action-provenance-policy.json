@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "trustedOwners": [
+    "actions",
+    "gitleaks",
+    "mrrCarter"
+  ],
+  "requireVerifiedCommitSignatures": true,
+  "tarballFallbackOwners": [
+    "actions"
+  ]
+}

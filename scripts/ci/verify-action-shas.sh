@@ -13,6 +13,67 @@ if [[ ! -f "${remote_exec_allowlist_file}" ]]; then
   exit 1
 fi
 
+provenance_policy_file="${ACTION_SHA_PROVENANCE_POLICY_FILE:-.github/security/action-provenance-policy.json}"
+if [[ ! -f "${provenance_policy_file}" ]]; then
+  echo "::error::Missing action provenance policy file '${provenance_policy_file}'."
+  exit 1
+fi
+
+mapfile -t trusted_action_owners < <(
+  jq -r '.trustedOwners[]? // empty' "${provenance_policy_file}" | awk 'NF {print tolower($0)}'
+)
+if [[ "${#trusted_action_owners[@]}" -eq 0 ]]; then
+  echo "::error::No trustedOwners configured in ${provenance_policy_file}."
+  exit 1
+fi
+
+mapfile -t tarball_fallback_owners < <(
+  jq -r '.tarballFallbackOwners[]? // empty' "${provenance_policy_file}" | awk 'NF {print tolower($0)}'
+)
+
+require_verified_commit_signatures_raw="$(
+  jq -r '.requireVerifiedCommitSignatures // true' "${provenance_policy_file}"
+)"
+case "$(echo "${require_verified_commit_signatures_raw}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)
+    require_verified_commit_signatures="true"
+    ;;
+  0|false|no|off)
+    require_verified_commit_signatures="false"
+    ;;
+  *)
+    echo "::error::Invalid requireVerifiedCommitSignatures value '${require_verified_commit_signatures_raw}' in ${provenance_policy_file}."
+    exit 1
+    ;;
+esac
+
+has_gh_api_auth="false"
+if [[ -n "${GH_TOKEN:-}" ]] || [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  has_gh_api_auth="true"
+fi
+if [[ "${has_gh_api_auth}" != "true" ]]; then
+  if [[ "$(echo "${CI:-false}" | tr '[:upper:]' '[:lower:]')" == "true" ]]; then
+    echo "::error::GitHub API auth token is required in CI for action provenance validation."
+    exit 1
+  fi
+  echo "::notice::Skipping action provenance API checks (no GH_TOKEN/GITHUB_TOKEN configured)."
+fi
+
+owner_in_list() {
+  local candidate_owner
+  candidate_owner="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+  shift || true
+  if [[ -z "${candidate_owner}" ]]; then
+    return 1
+  fi
+  for listed_owner in "$@"; do
+    if [[ "${candidate_owner}" == "${listed_owner}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 duplicate_allowlist_entries="$(
   awk -F'=' '
     /^[[:space:]]*($|#)/ { next }
@@ -189,6 +250,52 @@ for workflow_file in "${workflow_files[@]}"; do
     if [[ "${workflow_sha}" != "${allowlisted_sha}" ]]; then
       echo "::error file=${workflow_file}::SHA mismatch for '${action_key}' (workflow=${workflow_sha}, allowlist=${allowlisted_sha})."
       failures=$((failures + 1))
+      continue
+    fi
+    action_owner="$(echo "${action_key}" | cut -d'/' -f1 | tr '[:upper:]' '[:lower:]' | xargs || true)"
+    action_repo="$(echo "${action_key}" | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]' | xargs || true)"
+    if [[ -z "${action_owner}" ]] || [[ -z "${action_repo}" ]]; then
+      echo "::error file=${workflow_file}::Unable to resolve action owner/repo from '${action_key}'."
+      failures=$((failures + 1))
+      continue
+    fi
+    if ! owner_in_list "${action_owner}" "${trusted_action_owners[@]}"; then
+      echo "::error file=${workflow_file}::Action owner '${action_owner}' for '${action_key}' is not trusted by ${provenance_policy_file}."
+      failures=$((failures + 1))
+      continue
+    fi
+    if [[ "${has_gh_api_auth}" == "true" ]]; then
+      commit_status=0
+      commit_json="$(timeout --preserve-status 30s gh api "repos/${action_owner}/${action_repo}/commits/${workflow_sha}" -H "Accept: application/vnd.github+json")" || commit_status=$?
+      if [[ "${commit_status}" -eq 0 ]]; then
+        resolved_commit_sha="$(echo "${commit_json}" | jq -r '.sha // ""' | tr '[:upper:]' '[:lower:]' | xargs || true)"
+        if [[ "${resolved_commit_sha}" != "${workflow_sha}" ]]; then
+          echo "::error file=${workflow_file}::Action provenance mismatch for '${action_key}' (expected='${workflow_sha}', resolved='${resolved_commit_sha}')."
+          failures=$((failures + 1))
+          continue
+        fi
+        if [[ "${require_verified_commit_signatures}" == "true" ]]; then
+          commit_verified="$(echo "${commit_json}" | jq -r '.commit.verification.verified // false')"
+          if [[ "${commit_verified}" != "true" ]]; then
+            echo "::error file=${workflow_file}::Action commit '${action_key}@${workflow_sha}' is not signature-verified."
+            failures=$((failures + 1))
+            continue
+          fi
+        fi
+      else
+        if owner_in_list "${action_owner}" "${tarball_fallback_owners[@]}"; then
+          if ! timeout --preserve-status 30s gh api -X HEAD -i "repos/${action_owner}/${action_repo}/tarball/${workflow_sha}" >/dev/null; then
+            echo "::error file=${workflow_file}::Unable to resolve tarball fallback provenance for '${action_key}@${workflow_sha}'."
+            failures=$((failures + 1))
+            continue
+          fi
+          echo "::warning file=${workflow_file}::Commit provenance API fallback used for '${action_key}@${workflow_sha}' via tarball ref resolution."
+        else
+          echo "::error file=${workflow_file}::Unable to resolve action provenance for '${action_key}@${workflow_sha}' via commits API."
+          failures=$((failures + 1))
+          continue
+        fi
+      fi
     fi
   done
 done

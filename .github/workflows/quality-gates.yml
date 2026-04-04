@@ -51,9 +51,37 @@ jobs:
           set -euo pipefail
           execute_full="true"
           skip_reason="canonical_full_execution"
-          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
-            skip_reason="protected_branch_push_forced_full_execution"
-            echo "::notice::Protected default-branch push detected for SHA ${HEAD_SHA}; executing full quality gate chain."
+          runs_status=0
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${HEAD_SHA}&event=${EVENT_NAME}&per_page=30" -H "Accept: application/vnd.github+json")" || runs_status=$?
+          if [[ "${runs_status}" -eq 0 ]]; then
+            canonical_run_id="$(echo "${runs_json}" | jq -r --arg repo "${REPO}" --arg sha "${HEAD_SHA}" --arg event "${EVENT_NAME}" '
+              [.workflow_runs[]
+                | select((.event // "") == $event)
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == ".github/workflows/quality-gates.yml")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | select(
+                    ((.status // "") == "in_progress") or
+                    ((.status // "") == "queued") or
+                    (((.status // "") == "completed") and ((.conclusion // "") == "success"))
+                  )
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | (.id | tostring) // ""
+            ')"
+            if [[ -n "${canonical_run_id}" ]] && [[ "${canonical_run_id}" != "${RUN_ID}" ]]; then
+              execute_full="false"
+              skip_reason="non_canonical_run_for_sha_${canonical_run_id}"
+              echo "::notice::Skipping non-canonical quality run ${RUN_ID} for SHA ${HEAD_SHA}; canonical run is ${canonical_run_id}."
+            elif [[ -n "${canonical_run_id}" ]]; then
+              if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+                skip_reason="protected_branch_push_canonical_execution"
+              fi
+              echo "::notice::Run ${RUN_ID} is canonical for event '${EVENT_NAME}' and SHA ${HEAD_SHA}."
+            fi
+          else
+            echo "::warning::Unable to resolve canonical-run metadata (status=${runs_status}); executing full gate chain."
+            if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+              skip_reason="protected_branch_push_forced_full_execution"
+            fi
           fi
           echo "execute_full=${execute_full}" >> "$GITHUB_OUTPUT"
           echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"

@@ -321,3 +321,7 @@
 - CI state-directory override flags need layered controls (`CI override flag` + `NODE_ENV=test` + `GitHub Actions policy opt-in`) to prevent accidental path-control drift in automation.
 - Manual `workflow_dispatch` release-publish paths should default to validation-only mode; keep publish mutation on provenance-anchored `workflow_run` path unless an explicitly gated break-glass lane is implemented.
 - Push-tag release triggers should enforce canonical bot provenance (`release-please` lineage) and block manual human tag pushes from entering release mutation workflows.
+- Canonical required-check dedupe should be anchored to explicit GitHub run metadata (`event + head_sha + workflow path`) and fail open to full execution when API lookup fails; silent skip heuristics on protected pushes produce governance drift.
+- Workflow permission-policy updates must ship in lockstep with new workflow jobs; adding a governance job without policy entry causes immediate deterministic gate failure.
+- Action SHA pinning alone is not enough for supply-chain governance; enforce owner allowlists and commit provenance/signature checks via GitHub API with bounded local fallback semantics.
+- Auth poll replay protection should persist issued idempotency-key history across restarts and reject reused keys in resumed loops; in-memory-only tracking is insufficient under process restarts.

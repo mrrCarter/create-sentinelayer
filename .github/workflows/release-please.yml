@@ -7,6 +7,8 @@ on:
       - "src/**"
       - "bin/**"
       - "scripts/**"
+      - ".github/workflows/**"
+      - ".github/security/**"
       - "package.json"
       - "package-lock.json"
       - ".release-please-config.json"
@@ -116,7 +118,7 @@ jobs:
           changed_files="$(timeout --preserve-status 20s git diff --name-only "${base_sha}" "${target_sha}")"
           changed_file_count="$(printf "%s\n" "${changed_files}" | sed '/^$/d' | wc -l | xargs)"
           echo "changed_file_count=${changed_file_count}" >> "$GITHUB_OUTPUT"
-          if grep -Eq '^(src/|bin/|scripts/|package\.json$|package-lock\.json$|\.release-please-config\.json$|\.release-please-manifest\.json$)' <<< "${changed_files}"; then
+          if grep -Eq '^(\.github/workflows/|\.github/security/|src/|bin/|scripts/|package\.json$|package-lock\.json$|\.release-please-config\.json$|\.release-please-manifest\.json$)' <<< "${changed_files}"; then
             echo "release_relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "release_relevant=false" >> "$GITHUB_OUTPUT"

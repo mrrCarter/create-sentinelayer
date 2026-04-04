@@ -172,6 +172,10 @@
     },
     ".github/workflows/release-publish.yml": {
       "jobs": {
+        "enforce-timeout-contract": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
         "runtime-budget-guard": {
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }

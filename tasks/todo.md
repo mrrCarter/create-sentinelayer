@@ -1305,3 +1305,24 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-ninth-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after re-anchored Omar findings are captured.
+
+### PR #114 Fiftieth Cycle (2026-04-04, run_id=f97b65ed-2544-4290-83da-6473f8e21a9c)
+- [x] Re-anchor to active Omar findings (`P2=5`) and patch deterministic governance + auth replay controls:
+  - `.github/workflows/quality-gates.yml`: replace prior canonical heuristic with deterministic canonical-run resolution for identical `event + sha` and skip non-canonical duplicates.
+  - `.github/workflows/release-please.yml`: include control-plane changes (`.github/workflows/**`, `.github/security/**`) in trigger paths and in release-intent changed-file relevance checks.
+  - `.github/workflows/release-publish.yml`: add `enforce-timeout-contract` preflight job and require bounded `timeout-minutes` on all release-publish jobs.
+  - `.github/security/workflow-permissions-policy.json`: add explicit contract entry for `enforce-timeout-contract`.
+  - `scripts/ci/verify-action-shas.sh`: enforce policy-driven trusted action owners and GitHub API commit provenance/signature checks (with bounded fallback behavior).
+  - `.github/security/action-provenance-policy.json`: introduce trusted-owner and signature-verification policy contract for action provenance checks.
+  - `src/auth/service.js`: persist and enforce issued poll idempotency-key history in resume state so restarted poll loops avoid key reuse; include per-attempt key derivation input.
+  - `tests/unit.auth-service.test.mjs`: align deterministic expectations to per-attempt unique poll idempotency keys.
+- [x] Run fiftieth-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js` (pass)
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push fiftieth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after Omar target is met.

@@ -34,6 +34,7 @@ const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 10_000;
 const AUTH_POLL_BACKEND_CIRCUIT_MAX_COOLDOWN_MS = 30_000;
 const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 8;
 const MAX_TRACKED_POLL_REQUEST_IDS = 256;
+const MAX_TRACKED_POLL_IDEMPOTENCY_KEYS = 256;
 const AUTH_POLL_RESUME_STATE_VERSION = 1;
 const AUTH_POLL_RESUME_STATE_TTL_MS = 2 * 60 * 60 * 1000;
 const AUTH_POLL_RESUME_LOCK_TIMEOUT_MS = 5_000;
@@ -414,7 +415,8 @@ function resolvePollWindowBucket(attempt) {
 }
 
 function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
-  const pollWindowBucket = resolvePollWindowBucket(attempt);
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  const pollWindowBucket = resolvePollWindowBucket(normalizedAttempt);
   return crypto
     .createHash("sha256")
     .update(
@@ -422,6 +424,7 @@ function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
         String(sessionId || "").trim(),
         String(pollClientId || "").trim(),
         String(pollWindowBucket),
+        String(normalizedAttempt),
       ].join(":")
     )
     .digest("hex");
@@ -480,6 +483,23 @@ function normalizeTrackedPollRequestIds(entries = []) {
   return normalized;
 }
 
+function normalizeTrackedPollIdempotencyKeys(entries = []) {
+  const normalized = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const idempotencyKey = String(entry || "")
+      .trim()
+      .toLowerCase();
+    if (!idempotencyKey || normalized.includes(idempotencyKey)) {
+      continue;
+    }
+    normalized.push(idempotencyKey);
+    if (normalized.length >= MAX_TRACKED_POLL_IDEMPOTENCY_KEYS) {
+      break;
+    }
+  }
+  return normalized;
+}
+
 function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return null;
@@ -513,6 +533,7 @@ function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
   const nextAttemptRaw = Number(raw.nextAttempt);
   const nextAttempt = Number.isFinite(nextAttemptRaw) ? Math.max(0, Math.floor(nextAttemptRaw)) : 0;
   const seenRequestIds = normalizeTrackedPollRequestIds(raw.seenRequestIds);
+  const issuedIdempotencyKeys = normalizeTrackedPollIdempotencyKeys(raw.issuedIdempotencyKeys);
   const backendCircuitOpenedAtEpochMsRaw = Number(raw.backendCircuitOpenedAtEpochMs || 0);
   let backendCircuitOpenedAtEpochMs = Number.isFinite(backendCircuitOpenedAtEpochMsRaw)
     ? Math.max(0, Math.floor(backendCircuitOpenedAtEpochMsRaw))
@@ -539,6 +560,7 @@ function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
     highestSeenPollSequence,
     nextAttempt,
     seenRequestIds,
+    issuedIdempotencyKeys,
     backendCircuitOpenedAtEpochMs,
     backendCircuitCooldownMs,
   };
@@ -642,6 +664,7 @@ async function writeAuthPollResumeState({
   highestSeenPollSequence,
   nextAttempt,
   seenRequestIds,
+  issuedIdempotencyKeys,
   backendCircuitOpenedAtEpochMs,
   backendCircuitCooldownMs,
   homeDir,
@@ -657,6 +680,7 @@ async function writeAuthPollResumeState({
   const requestedHighestSequence = Math.max(-1, Math.floor(Number(highestSeenPollSequence) || -1));
   const requestedNextAttempt = Math.max(0, Math.floor(Number(nextAttempt) || 0));
   const requestedSeenRequestIds = normalizeTrackedPollRequestIds(seenRequestIds);
+  const requestedIdempotencyKeys = normalizeTrackedPollIdempotencyKeys(issuedIdempotencyKeys);
   const requestedBackendCircuitOpenedAtEpochMsRaw = Number(backendCircuitOpenedAtEpochMs || 0);
   let requestedBackendCircuitOpenedAtEpochMs = Number.isFinite(requestedBackendCircuitOpenedAtEpochMsRaw)
     ? Math.max(0, Math.floor(requestedBackendCircuitOpenedAtEpochMsRaw))
@@ -691,6 +715,10 @@ async function writeAuthPollResumeState({
         ...(existingState?.seenRequestIds || []),
         ...requestedSeenRequestIds,
       ]);
+      const mergedIdempotencyKeys = normalizeTrackedPollIdempotencyKeys([
+        ...(existingState?.issuedIdempotencyKeys || []),
+        ...requestedIdempotencyKeys,
+      ]);
       const payload = {
         version: AUTH_POLL_RESUME_STATE_VERSION,
         sessionId: normalizedSessionId,
@@ -698,6 +726,7 @@ async function writeAuthPollResumeState({
         highestSeenPollSequence: mergedHighestSequence,
         nextAttempt: mergedNextAttempt,
         seenRequestIds: mergedSeenRequestIds,
+        issuedIdempotencyKeys: mergedIdempotencyKeys,
         backendCircuitOpenedAtEpochMs: requestedBackendCircuitOpenedAtEpochMs,
         backendCircuitCooldownMs: requestedBackendCircuitCooldownMs,
         updatedAt: new Date().toISOString(),
@@ -767,6 +796,26 @@ function trackSeenPollRequestId(seenRequestIds, requestId) {
       break;
     }
     seenRequestIds.delete(oldestRequestId);
+  }
+}
+
+function trackIssuedPollIdempotencyKey(issuedIdempotencyKeys, idempotencyKey) {
+  const normalizedIdempotencyKey = String(idempotencyKey || "")
+    .trim()
+    .toLowerCase();
+  if (!normalizedIdempotencyKey) {
+    return;
+  }
+  if (issuedIdempotencyKeys.has(normalizedIdempotencyKey)) {
+    return;
+  }
+  issuedIdempotencyKeys.add(normalizedIdempotencyKey);
+  while (issuedIdempotencyKeys.size > MAX_TRACKED_POLL_IDEMPOTENCY_KEYS) {
+    const oldestKey = issuedIdempotencyKeys.values().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    issuedIdempotencyKeys.delete(oldestKey);
   }
 }
 
@@ -996,6 +1045,11 @@ async function pollCliAuthSession({
   const seenRequestIds = new Set(
     resumeStateMatchesClientId ? normalizeTrackedPollRequestIds(persistedPollState.seenRequestIds) : []
   );
+  const issuedIdempotencyKeys = new Set(
+    resumeStateMatchesClientId
+      ? normalizeTrackedPollIdempotencyKeys(persistedPollState.issuedIdempotencyKeys)
+      : []
+  );
   let highestSeenPollSequence = resumeStateMatchesClientId
     ? Math.max(-1, Number(persistedPollState.highestSeenPollSequence || -1))
     : -1;
@@ -1021,6 +1075,7 @@ async function pollCliAuthSession({
         highestSeenPollSequence,
         nextAttempt: attempt,
         seenRequestIds: Array.from(seenRequestIds),
+        issuedIdempotencyKeys: Array.from(issuedIdempotencyKeys),
         backendCircuitOpenedAtEpochMs,
         backendCircuitCooldownMs,
         homeDir,
@@ -1067,17 +1122,33 @@ async function pollCliAuthSession({
       break;
     }
     const pollRequestTimeoutMs = Math.max(250, Math.min(5_000, remainingBudgetMs));
-    const pollIdempotencyKey = buildPollIdempotencyKey({
+    let pollWindow = resolvePollWindowBucket(attempt);
+    let pollIdempotencyKey = buildPollIdempotencyKey({
       sessionId: normalizedSessionId,
       pollClientId: normalizedPollClientId,
       attempt,
     });
-    const pollWindow = resolvePollWindowBucket(attempt);
+    while (issuedIdempotencyKeys.has(pollIdempotencyKey)) {
+      attempt += 1;
+      if (resolveMonotonicNowMs() >= deadlineMs || attempt >= maxAttempts) {
+        break;
+      }
+      pollWindow = resolvePollWindowBucket(attempt);
+      pollIdempotencyKey = buildPollIdempotencyKey({
+        sessionId: normalizedSessionId,
+        pollClientId: normalizedPollClientId,
+        attempt,
+      });
+    }
+    if (resolveMonotonicNowMs() >= deadlineMs || attempt >= maxAttempts) {
+      break;
+    }
     const pollCorrelationId = buildPollCorrelationId({
       sessionId: normalizedSessionId,
       pollClientId: normalizedPollClientId,
       attempt,
     });
+    trackIssuedPollIdempotencyKey(issuedIdempotencyKeys, pollIdempotencyKey);
     let payload = null;
     try {
       payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
