@@ -836,4 +836,6 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Twenty-sixth-cycle local evidence:
   - `npm run check` (pass).
   - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
-- [ ] Commit/push twenty-sixth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twenty-sixth-cycle fixes (`9d805d4`) and rerun Omar loop on PR #114 (`gh run watch 23969662889 --exit-status`): failed early in `Lint` because `verify-quality-gate-graph` depended on `yaml` before `npm ci`.
+- [x] Apply corrective gate-order hotfix: in `.github/workflows/quality-gates.yml` run `Assert deploy gate-chain contract is present` after `Setup Node` + `Install dependencies (lockfile immutable)`; local `npm run check` passes.
+- [ ] Commit/push corrective hotfix and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.

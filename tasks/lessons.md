@@ -232,3 +232,4 @@
 - For critical workflow contract assertions, parse YAML structurally and inspect `jobs`/`needs` DAG edges; regex/string matching of workflow text is too brittle for governance guarantees.
 - Manual release publish dispatches should be anchored to a specific successful release run id and validated against tag commit SHA, not reconstructed heuristically from "latest successful run for SHA".
 - When migrating direct publish controls out of release validation workflows, remove user-facing publish toggles from dispatch inputs first to eliminate accidental production path confusion.
+- CI steps that execute Node scripts with third-party imports must run only after dependency installation; pre-install contract checks must use shell/native tooling or explicitly bootstrap deps first.
