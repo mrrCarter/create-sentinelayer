@@ -351,6 +351,11 @@ for workflow_file in "${workflow_files[@]}"; do
     if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${variable_pipe_shell_pattern} ]]; then
       remote_exec_detected="true"
     fi
+    if [[ "${contains_network_fetch}" == "true" ]] \
+      && printf '%s\n' "${normalized_run}" \
+        | grep -Eq 'eval[[:space:]]+["'"'"']?\$[a-z_][a-z0-9_]*[[:space:]]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)(["'"'"']|[[:space:]]|$)'; then
+      remote_exec_detected="true"
+    fi
     if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${obfuscation_indirection_pattern} ]]; then
       remote_exec_detected="true"
     fi
