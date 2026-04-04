@@ -17,10 +17,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write
   checks: read
   actions: read
-  attestations: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -1026,7 +1024,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Pin npm registry and snapshot lock hash
@@ -1507,7 +1504,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Download immutable release artifact

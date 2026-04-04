@@ -101,7 +101,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Resolve rollback intent
@@ -525,7 +524,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Validate rollback drill install path

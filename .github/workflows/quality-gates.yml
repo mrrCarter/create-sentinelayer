@@ -44,7 +44,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
           if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
             echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
@@ -411,7 +410,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
           if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
             echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
@@ -449,7 +447,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
           if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
             echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
@@ -491,7 +488,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
           if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
             echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
@@ -529,7 +525,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           resolved_npm_version="$(npm --version | tr -d '\r\n')"
           if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
             echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
@@ -822,7 +817,6 @@ jobs:
           set -euo pipefail
           cache_dir="${RUNNER_TEMP}/npm-cache-quality"
           echo "NPM_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm config set cache "${cache_dir}"
           npm --version
 

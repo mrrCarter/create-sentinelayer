@@ -184,9 +184,21 @@ jobs:
               target_sha="${ref_sha}"
               if [[ "${ref_type}" == "tag" ]]; then
                 tag_json="$(gh_api_json "repos/${REPO}/git/tags/${ref_sha}")"
+                tag_target_type="$(echo "${tag_json}" | jq -r '.object.type // ""')"
+                if [[ "${tag_target_type}" != "commit" ]]; then
+                  echo "::error::Annotated tag '${release_tag}' must reference a commit object (received '${tag_target_type}')."
+                  exit 1
+                fi
                 target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
               elif [[ "${ref_type}" != "commit" ]]; then
                 echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
+                exit 1
+              fi
+              test -n "${target_sha}" || (echo "::error::Unable to resolve commit SHA for tag '${release_tag}'." && exit 1)
+              target_commit_json="$(gh_api_json "repos/${REPO}/git/commits/${target_sha}")"
+              resolved_target_sha="$(echo "${target_commit_json}" | jq -r '.sha // ""')"
+              if [[ -z "${resolved_target_sha}" ]] || [[ "${resolved_target_sha}" != "${target_sha}" ]]; then
+                echo "::error::Tag '${release_tag}' must resolve to a concrete commit object (expected='${target_sha}', resolved='${resolved_target_sha}')."
                 exit 1
               fi
               dispatch_release_run_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}")"
@@ -583,7 +595,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Download immutable release artifact bundle
@@ -743,7 +754,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Download validated release bundle
@@ -891,7 +901,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
       - name: Download validated release bundle

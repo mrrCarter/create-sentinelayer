@@ -5,6 +5,7 @@ import path from "node:path";
 import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 
 import {
+  __buildFileStorageConsentTokenForTests,
   clearStoredSession,
   readStoredSession,
   readStoredSessionMetadata,
@@ -14,7 +15,11 @@ import {
 } from "../src/auth/session-store.js";
 
 const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
-process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = __buildFileStorageConsentTokenForTests([
+  "https://api.sentinelayer.dev",
+  "https://api.sentinelayer.com",
+  "http://127.0.0.1",
+]);
 test.after(() => {
   if (previousFileStorageConsent === undefined) {
     delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;

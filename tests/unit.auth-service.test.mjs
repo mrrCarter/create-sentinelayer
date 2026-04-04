@@ -24,13 +24,18 @@ import {
 } from "../src/auth/service.js";
 import { SentinelayerApiError } from "../src/auth/http.js";
 import {
+  __buildFileStorageConsentTokenForTests,
   readStoredSession,
   resolveCredentialsFilePath,
   writeStoredSession,
 } from "../src/auth/session-store.js";
 
 const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
-process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = __buildFileStorageConsentTokenForTests([
+  "https://api.sentinelayer.com",
+  "https://api.sentinelayer.dev",
+  "http://127.0.0.1",
+]);
 test.after(() => {
   if (previousFileStorageConsent === undefined) {
     delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
@@ -96,6 +101,10 @@ test("Unit auth service: API paths are URL-joined safely", () => {
       "/api/v1/runtime/runs/run-1/events/list?after_event_id=evt%2F1"
     ),
     "https://api.sentinelayer.com/api/v1/runtime/runs/run-1/events/list?after_event_id=evt%2F1"
+  );
+  assert.throws(
+    () => __buildApiPathForTests("https://api.sentinelayer.com", "/api/v1/admin/users"),
+    /Unsupported API path suffix/
   );
 });
 

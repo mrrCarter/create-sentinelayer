@@ -12,6 +12,7 @@ const FILE_TOKEN_KEY_VERSION = 1;
 const LEGACY_FILE_TOKEN_KEY_NAME = "credentials.key";
 const FILE_STORAGE_CONSENT_ENV = "SENTINELAYER_FILE_STORAGE_CONFIRM";
 const FILE_STORAGE_CONSENT_TOKEN = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+const FILE_STORAGE_CONSENT_DIGEST_HEX_LENGTH = 12;
 const API_SCOPE_DIGEST_HEX_LENGTH = 32;
 const LEGACY_API_SCOPE_DIGEST_HEX_LENGTH = 16;
 
@@ -167,9 +168,81 @@ async function readMetadata({ homeDir } = {}) {
   }
 }
 
-function hasFileStorageConsent() {
+function resolveFileStorageConsentScope(apiUrl) {
+  const normalizedApiUrl = String(apiUrl || "").trim();
+  if (!normalizedApiUrl) {
+    return "";
+  }
+  try {
+    const parsed = new URL(normalizedApiUrl);
+    const protocol = String(parsed.protocol || "").trim().toLowerCase();
+    const hostname = String(parsed.hostname || "").trim().toLowerCase();
+    if (!protocol || !hostname) {
+      return normalizedApiUrl.toLowerCase();
+    }
+    return `${protocol}//${hostname}`;
+  } catch {
+    return normalizedApiUrl.toLowerCase();
+  }
+}
+
+function buildFileStorageConsentDigest(apiUrl) {
+  const scope = resolveFileStorageConsentScope(apiUrl);
+  return buildApiScopeDigest(scope, {
+    hexLength: FILE_STORAGE_CONSENT_DIGEST_HEX_LENGTH,
+  });
+}
+
+function parseFileStorageConsentDigests(rawToken) {
+  const token = String(rawToken || "").trim();
+  if (!token.startsWith(`${FILE_STORAGE_CONSENT_TOKEN}:`)) {
+    return [];
+  }
+  const digestSegment = token.slice(`${FILE_STORAGE_CONSENT_TOKEN}:`.length);
+  if (!digestSegment) {
+    return [];
+  }
+  const parsedDigests = digestSegment
+    .split(",")
+    .map((entry) => String(entry || "").trim().toLowerCase())
+    .filter(Boolean);
+  const uniqueDigests = Array.from(new Set(parsedDigests));
+  const validDigestPattern = new RegExp(`^[0-9a-f]{${FILE_STORAGE_CONSENT_DIGEST_HEX_LENGTH}}$`);
+  return uniqueDigests.filter((digest) => validDigestPattern.test(digest));
+}
+
+function buildFileStorageConsentToken(apiUrl, { additionalApiUrls = [] } = {}) {
+  const digestInputs = [apiUrl, ...(Array.isArray(additionalApiUrls) ? additionalApiUrls : [])];
+  const digests = Array.from(
+    new Set(
+      digestInputs
+        .map((entry) => buildFileStorageConsentDigest(entry))
+        .filter(Boolean)
+    )
+  );
+  if (digests.length === 0) {
+    return `${FILE_STORAGE_CONSENT_TOKEN}:`;
+  }
+  return `${FILE_STORAGE_CONSENT_TOKEN}:${digests.join(",")}`;
+}
+
+function hasFileStorageConsent(apiUrl) {
+  const requiredDigest = buildFileStorageConsentDigest(apiUrl);
+  if (!requiredDigest) {
+    return false;
+  }
   const token = String(process.env[FILE_STORAGE_CONSENT_ENV] || "").trim();
-  return token === FILE_STORAGE_CONSENT_TOKEN;
+  const grantedDigests = parseFileStorageConsentDigests(token);
+  return grantedDigests.includes(requiredDigest);
+}
+
+export function __buildFileStorageConsentTokenForTests(apiUrls = []) {
+  const entries = Array.isArray(apiUrls) ? apiUrls : [apiUrls];
+  if (entries.length === 0) {
+    throw new Error("At least one apiUrl is required to build a file storage consent token.");
+  }
+  const [firstApiUrl, ...restApiUrls] = entries;
+  return buildFileStorageConsentToken(firstApiUrl, { additionalApiUrls: restApiUrls });
 }
 
 async function syncDirectoryBestEffort(dirPath) {
@@ -659,7 +732,8 @@ export async function writeStoredSession(
   const keytar = await loadKeytarClient();
   const keyringAccount = buildKeyringAccountName(normalizedApiUrl);
   const updatedAt = nowIso();
-  const fileStorageConsentGranted = hasFileStorageConsent();
+  const fileStorageConsentGranted = hasFileStorageConsent(normalizedApiUrl);
+  const requiredFileStorageConsentToken = buildFileStorageConsentToken(normalizedApiUrl);
 
   if (keyringDisabledByEnv && !explicitFileStorageFallback) {
     throw new StoredSessionError(
@@ -675,7 +749,7 @@ export async function writeStoredSession(
   }
   if (disableKeyringRequested && !fileStorageConsentGranted) {
     throw new StoredSessionError(
-      `File-backed credential storage requires explicit consent. Set ${FILE_STORAGE_CONSENT_ENV}=${FILE_STORAGE_CONSENT_TOKEN} and re-run the command.`,
+      `File-backed credential storage requires explicit consent. Set ${FILE_STORAGE_CONSENT_ENV}=${requiredFileStorageConsentToken} and re-run the command. Additional endpoint scopes can be appended as comma-separated digests using the same prefix token.`,
       { code: "FILE_STORAGE_CONSENT_REQUIRED", filePath }
     );
   }

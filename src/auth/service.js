@@ -53,6 +53,15 @@ const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
 ]);
+const ALLOWED_API_PATH_PATTERNS = Object.freeze([
+  /^\/api\/v1\/auth\/cli\/sessions\/start$/,
+  /^\/api\/v1\/auth\/cli\/sessions\/poll$/,
+  /^\/api\/v1\/auth\/me$/,
+  /^\/api\/v1\/auth\/api-tokens$/,
+  /^\/api\/v1\/auth\/api-tokens\/[A-Za-z0-9._~%-]+$/,
+  /^\/api\/v1\/runtime\/runs\/[A-Za-z0-9._~%-]+\/status$/,
+  /^\/api\/v1\/runtime\/runs\/[A-Za-z0-9._~%-]+\/events\/list(?:\?after_event_id=[A-Za-z0-9._~%-]+)?$/,
+]);
 
 function isEnabledFlag(rawValue) {
   const normalized = String(rawValue || "")
@@ -129,6 +138,30 @@ function normalizeUser(user = {}) {
   };
 }
 
+function normalizeAndValidateApiPathSuffix(pathSuffix) {
+  const normalizedSuffix = String(pathSuffix || "").trim();
+  if (!normalizedSuffix) {
+    return "";
+  }
+  const normalizedPathSuffix = normalizedSuffix.startsWith("/")
+    ? normalizedSuffix
+    : `/${normalizedSuffix}`;
+  let parsedSuffix;
+  try {
+    parsedSuffix = new URL(normalizedPathSuffix, "https://sentinelayer.invalid");
+  } catch {
+    throw new Error(`Invalid API path suffix '${normalizedSuffix}'.`);
+  }
+  const normalizedPathAndQuery = `${parsedSuffix.pathname}${parsedSuffix.search}`;
+  const matchesAllowlist = ALLOWED_API_PATH_PATTERNS.some((pattern) =>
+    pattern.test(normalizedPathAndQuery)
+  );
+  if (!matchesAllowlist) {
+    throw new Error(`Unsupported API path suffix '${normalizedSuffix}'.`);
+  }
+  return normalizedPathAndQuery;
+}
+
 function buildApiPath(apiUrl, pathSuffix) {
   const normalizedBase = String(apiUrl || "").trim();
   if (!normalizedBase) {
@@ -145,8 +178,8 @@ function buildApiPath(apiUrl, pathSuffix) {
   if (!normalizedSuffix) {
     return baseHref;
   }
-  const normalizedPathSuffix = normalizedSuffix.startsWith("/") ? normalizedSuffix : `/${normalizedSuffix}`;
-  return new URL(normalizedPathSuffix, `${baseHref}/`).toString();
+  const safePathSuffix = normalizeAndValidateApiPathSuffix(normalizedSuffix);
+  return new URL(safePathSuffix, `${baseHref}/`).toString();
 }
 
 function generateChallenge() {
