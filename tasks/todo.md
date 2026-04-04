@@ -212,7 +212,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch W - Omar Workflow Security Burn-Down (2026-04-04)
 - [x] PR 145 release/release-please/omar workflow hardening (pinned actions, concurrency guards, fail-closed publish path, stricter Omar dispatch thresholds).
-- [ ] PR 146 immutable release artifact promotion + gate-proof checks + exact dependency pinning.
+- [x] PR 146 immutable release artifact promotion + gate-proof checks + exact dependency pinning.
 
 ## Execution Board (2026-04-04)
 
@@ -229,7 +229,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-146-release-artifact-promotion-hardening`
+1. `roadmap/pr-147-auth-runtime-governance-hardening`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -560,3 +560,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `gh pr view 125 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `cfd1fa24d1ee0cb4fd571b347a74ff21efabed34`)
     - Hardened release workflows with pinned action SHAs, concurrency/timeout controls, fail-closed publish credentials check, OIDC provenance publish flag, and `--ignore-scripts` install paths.
     - Hardened auth login polling to tolerate transient transport/server faults and fail fast on terminal rejection/expiry states with deterministic error codes.
+
+  - PR 146 (immutable release artifact promotion + dependency pinning) merged evidence (branch `roadmap/pr-146-release-artifact-promotion-hardening`):
+    - `npm run verify` (pass, e2e `86/86`; unit tests `184/184`; coverage statements `90.22%`, branches `70.98%`, functions `92.03%`, lines `90.22%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - `gh run watch 23989413005 --exit-status` (Omar Gate pass after `security-review` deployment approval)
+    - `gh pr view 127 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `f7643749382d90fb137d6fb397657555d9b13895`)
+    - Refactored release workflow to promote a single immutable tarball artifact from a dedicated build job into publish job (no rebuild during publish).
+    - Added commit-level gate proof checks (`Quality Summary` + `Omar Gate`) before release publish, and pinned dependency specs in `package.json` with lockfile alignment.
