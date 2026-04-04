@@ -199,7 +199,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] PR 107 command lazy-loading.
 
 ### Batch U - Scaffold and Spec Feedback Fixes (2026-04-03)
-- [ ] PR 137 frictionless secret setup + workflow unification (`.env` gitignore guard, repo-aware `scan init` instructions, `gh secret` verify).
+- [x] PR 137 frictionless secret setup + workflow unification (`.env` gitignore guard, repo-aware `scan init` instructions, `gh secret` verify).
 - [ ] PR 138 deterministic IDE/agent dictionary + per-agent scaffold config.
 - [ ] PR 139 project-type-aware spec generation + dynamic phase planning.
 - [ ] PR 140 spec-bound pre-commit review drift checks.
@@ -225,14 +225,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-137-frictionless-secret-setup` (current)
-2. `roadmap/pr-138-agent-dictionary-deterministic`
-3. `roadmap/pr-139-spec-dynamic-phases`
-4. `roadmap/pr-140-spec-bound-review`
-5. `roadmap/pr-141-shared-memory-blackboard`
-6. `roadmap/pr-142-hybrid-retrieval-index`
-7. `roadmap/pr-143-daemon-watchdog-alerts`
-8. `roadmap/pr-144-ingest-refresh-staleness`
+1. `roadmap/pr-138-agent-dictionary-deterministic` (next)
+2. `roadmap/pr-139-spec-dynamic-phases`
+3. `roadmap/pr-140-spec-bound-review`
+4. `roadmap/pr-141-shared-memory-blackboard`
+5. `roadmap/pr-142-hybrid-retrieval-index`
+6. `roadmap/pr-143-daemon-watchdog-alerts`
+7. `roadmap/pr-144-ingest-refresh-staleness`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
