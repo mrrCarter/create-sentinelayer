@@ -14,30 +14,34 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
+    environment: package-release
+    concurrency:
+      group: release-publish-${{ github.ref }}
+      cancel-in-progress: false
     env:
       NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
-      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Validate package
         run: npm run verify
@@ -49,24 +53,27 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
-          npm install --global "${TARBALL}"
+          npm install --global --ignore-scripts "${TARBALL}"
           create-sentinelayer --version
           sentinel --version
 
       - name: Upload release tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: create-sentinelayer-tarball
           path: create-sentinelayer-*.tgz
 
-      - name: Publish skipped (missing NPM_TOKEN)
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT != 'true'
+      - name: Validate publish credentials
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
         run: |
-          echo "NPM_TOKEN is not configured. Skipping npm publish."
-          echo "Set repository/org secret NPM_TOKEN and rerun with publish=true."
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN_VALUE:-}" ]; then
+            echo "::error::NPM_TOKEN is required when publish is requested."
+            exit 1
+          fi
 
       - name: Publish to npm
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT == 'true'
-        run: npm publish --access public
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
