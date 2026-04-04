@@ -154,6 +154,7 @@ test("Unit command contracts: review command tree keeps deterministic + HITL flo
     "--staged",
     "--ai",
     "--ai-dry-run",
+    "--spec <path>",
     "--max-cost <usd>",
     "--max-tokens <n>",
     "--max-runtime-ms <n>",
@@ -178,6 +179,7 @@ test("Unit command contracts: review command tree keeps deterministic + HITL flo
   assertCommandHasOption(reviewScan, "--mode <mode>");
   assertCommandHasOption(reviewScan, "--diff");
   assertCommandHasOption(reviewScan, "--staged");
+  assertCommandHasOption(reviewScan, "--spec <path>");
 });
 
 test("Unit command contracts: swarm command tree keeps planning/runtime/report controls", () => {

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { resolveOutputRoot } from "../config/service.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
+import { runSpecBindingChecks } from "./spec-binding.js";
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -1027,7 +1028,15 @@ Layer 2 - Structural analysis:
 Layer 3 - Static analysis orchestration:
 ${formatStaticCheckMarkdown(result.layers.staticAnalysis.checks)}
 
-Layer 4 - Pattern checks:
+Layer 4 - Spec binding checks:
+- Enabled: ${result.layers.specBinding.enabled ? "yes" : "no"}
+- Spec path: ${result.layers.specBinding.specPath || "none"}
+- Spec hash: ${result.layers.specBinding.specHashSha256 || "none"}
+- Spec endpoints: ${result.layers.specBinding.endpointCount}
+- Acceptance criteria: ${result.layers.specBinding.acceptanceCriteriaCount}
+- Findings: ${result.layers.specBinding.findingCount}
+
+Layer 5 - Pattern checks:
 - Findings: ${result.layers.pattern.findingCount}
 
 Readiness checks:
@@ -1059,6 +1068,7 @@ export async function runDeterministicReviewPipeline({
   targetPath,
   mode = "full",
   outputDir = "",
+  specFile = "",
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedMode = normalizeMode(mode, {
@@ -1098,6 +1108,15 @@ export async function runDeterministicReviewPipeline({
   });
 
   remainingBudget = Math.max(0, remainingBudget - readinessFindings.length);
+  const specBinding = await runSpecBindingChecks({
+    targetPath: normalizedTargetPath,
+    mode: normalizedMode,
+    scopedFilePaths: scopedFiles,
+    maxFindings: remainingBudget,
+    specFile,
+  });
+
+  remainingBudget = Math.max(0, remainingBudget - specBinding.findings.length);
   const staticAnalysis = await runStaticAnalysisLayer({
     targetPath: normalizedTargetPath,
     ingest,
@@ -1109,6 +1128,7 @@ export async function runDeterministicReviewPipeline({
     ...structuralFindings,
     ...patternFindings,
     ...readinessFindings,
+    ...specBinding.findings,
     ...staticAnalysis.findings,
   ]);
   const severity = summarizeSeverity(findings);
@@ -1139,6 +1159,19 @@ export async function runDeterministicReviewPipeline({
         checkCount: staticAnalysis.checks.length,
         checks: staticAnalysis.checks,
         findingCount: staticAnalysis.findings.length,
+      },
+      specBinding: {
+        enabled: Boolean(specBinding.metadata.enabled),
+        specPath: specBinding.metadata.specPath
+          ? toPosixPath(path.relative(normalizedTargetPath, specBinding.metadata.specPath))
+          : "",
+        specHashSha256: specBinding.metadata.specHashSha256 || "",
+        endpointCount: specBinding.metadata.endpointCount || 0,
+        acceptanceCriteriaCount: specBinding.metadata.acceptanceCriteriaCount || 0,
+        endpointsPreview: Array.isArray(specBinding.metadata.endpointsPreview)
+          ? specBinding.metadata.endpointsPreview
+          : [],
+        findingCount: specBinding.findings.length,
       },
       pattern: {
         findingCount: patternFindings.length,
@@ -1171,7 +1204,7 @@ export async function runDeterministicReviewPipeline({
   };
 }
 
-export async function runLocalReviewScan({ targetPath, mode = "full" } = {}) {
+export async function runLocalReviewScan({ targetPath, mode = "full", specFile = "" } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedMode = normalizeMode(mode, {
     allowedModes: ["full", "diff", "staged"],
@@ -1180,13 +1213,29 @@ export async function runLocalReviewScan({ targetPath, mode = "full" } = {}) {
   const filePaths = await collectModeFilePaths(normalizedTargetPath, normalizedMode);
 
   const scan = await scanFileSet(normalizedTargetPath, filePaths);
+  const remainingBudget = Math.max(0, MAX_FINDINGS - scan.findings.length);
+  const specBinding = await runSpecBindingChecks({
+    targetPath: normalizedTargetPath,
+    mode: normalizedMode,
+    scopedFilePaths: filePaths,
+    maxFindings: remainingBudget,
+    specFile,
+  });
+  const findings = sortFindings([...scan.findings, ...specBinding.findings]);
+  const p1 = findings.filter((item) => item.severity === "P1").length;
+  const p2 = findings.filter((item) => item.severity === "P2").length;
+
   return {
     targetPath: normalizedTargetPath,
     mode: normalizedMode,
     scannedRelativeFiles: filePaths.map((filePath) =>
       toPosixPath(path.relative(normalizedTargetPath, filePath))
     ),
-    ...scan,
+    scannedFiles: filePaths.length,
+    findings,
+    p1,
+    p2,
+    specBinding: specBinding.metadata,
   };
 }
 
