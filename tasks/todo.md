@@ -214,6 +214,21 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 145 release/release-please/omar workflow hardening (pinned actions, concurrency guards, fail-closed publish path, stricter Omar dispatch thresholds).
 - [x] PR 146 immutable release artifact promotion + gate-proof checks + exact dependency pinning.
 
+### Batch X - Agent Tool Security Hardening (2026-04-04)
+- [ ] PR 147 symlink + UNC + device-path guardrails for Jules `FileRead`/`FileEdit` tools (realpath-aware root validation, Windows-safe path-prefix checks, deterministic failure codes).
+
+### PR 147 Working Plan (roadmap/pr-147-auth-runtime-governance-hardening)
+- [x] Add shared path-guard utility for Jules file tools:
+  - Canonicalize original path + resolved realpath.
+  - Reject UNC/network paths and OS device paths.
+  - Enforce allowed-root containment using boundary-safe path checks.
+- [x] Wire guard utility into `file-read` and `file-edit` so both read/write operations use identical enforcement rules.
+- [x] Expand `tests/unit.jules-tools.test.mjs` with security regressions:
+  - UNC path rejection coverage for `fileRead` and `fileEdit`.
+  - Symlink escape rejection when resolved target leaves allowed root.
+  - Prefix-collision defense (`<root>` vs `<root>-evil`) for allowed-root checks.
+- [ ] Run Omar Gate PR loop (`gh run watch`) and merge only after `Omar Gate` + required checks pass.
+
 ## Execution Board (2026-04-04)
 
 ### Omar Gate Loop (required on every PR)

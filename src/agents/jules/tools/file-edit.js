@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { PathGuardError, resolveGuardedPath } from "./path-guards.js";
 
 /**
  * String replacement in files with uniqueness enforcement and diff generation.
@@ -15,8 +16,6 @@ import { createHash } from "node:crypto";
  * @returns {{ filePath, diff, occurrencesFound, occurrencesReplaced, linesChanged }}
  */
 export function fileEdit(input) {
-  const filePath = path.resolve(input.file_path);
-
   if (!input.old_string && input.old_string !== "") {
     throw new FileEditError("old_string is required.");
   }
@@ -27,14 +26,21 @@ export function fileEdit(input) {
     throw new FileEditError("old_string and new_string must be different.");
   }
 
-  // Worktree guard: only allow edits within explicit root
-  if (input.allowed_root) {
-    const allowedRoot = path.resolve(input.allowed_root);
-    if (!filePath.startsWith(allowedRoot + path.sep) && filePath !== allowedRoot) {
-      throw new FileEditError(
-        `Edit blocked: ${filePath} is outside allowed root ${allowedRoot}`,
-      );
+  let filePath;
+  try {
+    const guarded = resolveGuardedPath({
+      filePath: input.file_path,
+      allowedRoot: input.allowed_root || undefined,
+    });
+    filePath = guarded.resolvedPath;
+  } catch (error) {
+    if (error instanceof PathGuardError) {
+      throw new FileEditError(error.message);
     }
+    if (error instanceof FileEditError) {
+      throw error;
+    }
+    throw new FileEditError(`Cannot access path: ${error.message}`);
   }
 
   // Read current content

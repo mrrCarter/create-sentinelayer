@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { PathGuardError, resolveGuardedPath } from "./path-guards.js";
 
 const MAX_RESULT_CHARS = 5000;
 const BINARY_EXTENSIONS = new Set([
@@ -15,7 +16,7 @@ const BINARY_EXTENSIONS = new Set([
  * Returns { filePath, content, numLines, startLine, totalLines, truncated }.
  */
 export function fileRead(input) {
-  const filePath = resolveAndValidatePath(input.file_path);
+  const filePath = resolveAndValidatePath(input.file_path, input.allowed_root);
   const ext = path.extname(filePath).toLowerCase();
 
   if (BINARY_EXTENSIONS.has(ext)) {
@@ -80,33 +81,20 @@ export class FileReadError extends Error {
   }
 }
 
-function resolveAndValidatePath(filePath) {
-  if (!filePath || typeof filePath !== "string") {
-    throw new FileReadError("file_path is required and must be a non-empty string.");
-  }
-  const resolved = path.resolve(filePath);
-
-  // Symlink defense: resolve real path and validate both
-  let realPath;
+function resolveAndValidatePath(filePath, allowedRoot) {
   try {
-    realPath = fs.realpathSync(resolved);
-  } catch {
-    // If realpath fails the file may not exist yet, resolved is sufficient
-    realPath = resolved;
-  }
-
-  // Block /dev/, /proc/, /sys/ (Linux), NUL/CON/AUX (Windows)
-  const blocked = ["/dev/", "/proc/", "/sys/"];
-  for (const prefix of blocked) {
-    if (realPath.startsWith(prefix) || resolved.startsWith(prefix)) {
-      throw new FileReadError(`Blocked path: ${filePath}`);
+    const guarded = resolveGuardedPath({
+      filePath,
+      allowedRoot: allowedRoot || undefined,
+    });
+    return guarded.resolvedPath;
+  } catch (error) {
+    if (error instanceof PathGuardError) {
+      throw new FileReadError(error.message);
     }
+    if (error instanceof FileReadError) {
+      throw error;
+    }
+    throw new FileReadError(`Cannot access path: ${error.message}`);
   }
-
-  // Block UNC paths (network share access)
-  if (resolved.startsWith("\\\\") || resolved.startsWith("//")) {
-    throw new FileReadError(`Network paths are not allowed: ${filePath}`);
-  }
-
-  return resolved;
 }

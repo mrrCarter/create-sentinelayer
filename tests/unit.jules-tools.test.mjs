@@ -89,6 +89,38 @@ describe("fileRead", () => {
       FileReadError,
     );
   });
+
+  it("blocks symlink escapes outside allowed root", (t) => {
+    const allowedRoot = path.join(tmpDir, "workspace");
+    const outsideRoot = path.join(tmpDir, "outside");
+    fs.mkdirSync(allowedRoot, { recursive: true });
+    fs.mkdirSync(outsideRoot, { recursive: true });
+
+    const outsideFile = path.join(outsideRoot, "secret.txt");
+    fs.writeFileSync(outsideFile, "secret=1\n", "utf-8");
+    const symlinkPath = path.join(allowedRoot, "linked-secret.txt");
+
+    try {
+      fs.symlinkSync(
+        outsideFile,
+        symlinkPath,
+        process.platform === "win32" ? "file" : undefined,
+      );
+    } catch (error) {
+      if (["EPERM", "EACCES", "EINVAL", "UNKNOWN"].includes(error.code)) {
+        t.skip(`Symlink creation not permitted in this environment (${error.code}).`);
+        return;
+      }
+      throw error;
+    }
+
+    assert.throws(
+      () => fileRead({ file_path: symlinkPath, allowed_root: allowedRoot }),
+      (error) =>
+        error instanceof FileReadError &&
+        error.message.includes("PATH_OUTSIDE_ALLOWED_ROOT"),
+    );
+  });
 });
 
 // ── Grep ─────────────────────────────────────────────────────────────
@@ -269,6 +301,75 @@ describe("fileEdit", () => {
         allowed_root: tmpDir,
       }),
       FileEditError,
+    );
+  });
+
+  it("blocks UNC paths", () => {
+    assert.throws(
+      () => fileEdit({
+        file_path: "\\\\evil-server\\share\\edit.js",
+        old_string: "a",
+        new_string: "b",
+        allowed_root: tmpDir,
+      }),
+      (error) =>
+        error instanceof FileEditError &&
+        error.message.includes("PATH_UNC_BLOCKED"),
+    );
+  });
+
+  it("blocks symlink escapes outside allowed root", (t) => {
+    const allowedRoot = path.join(tmpDir, "workspace");
+    const outsideRoot = path.join(tmpDir, "outside");
+    fs.mkdirSync(allowedRoot, { recursive: true });
+    fs.mkdirSync(outsideRoot, { recursive: true });
+
+    const outsideFile = path.join(outsideRoot, "target.js");
+    fs.writeFileSync(outsideFile, "const token = 'outside';\n", "utf-8");
+    const symlinkPath = path.join(allowedRoot, "target.js");
+
+    try {
+      fs.symlinkSync(
+        outsideFile,
+        symlinkPath,
+        process.platform === "win32" ? "file" : undefined,
+      );
+    } catch (error) {
+      if (["EPERM", "EACCES", "EINVAL", "UNKNOWN"].includes(error.code)) {
+        t.skip(`Symlink creation not permitted in this environment (${error.code}).`);
+        return;
+      }
+      throw error;
+    }
+
+    assert.throws(
+      () => fileEdit({
+        file_path: symlinkPath,
+        old_string: "outside",
+        new_string: "inside",
+        allowed_root: allowedRoot,
+      }),
+      (error) =>
+        error instanceof FileEditError &&
+        error.message.includes("PATH_OUTSIDE_ALLOWED_ROOT"),
+    );
+  });
+
+  it("blocks sibling prefix collision paths outside allowed root", () => {
+    const allowedRoot = path.join(tmpDir, "workspace");
+    fs.mkdirSync(allowedRoot, { recursive: true });
+    const siblingPath = writeFile("workspace-evil/sneaky.js", "const sneaky = true;\n");
+
+    assert.throws(
+      () => fileEdit({
+        file_path: siblingPath,
+        old_string: "true",
+        new_string: "false",
+        allowed_root: allowedRoot,
+      }),
+      (error) =>
+        error instanceof FileEditError &&
+        error.message.includes("PATH_OUTSIDE_ALLOWED_ROOT"),
     );
   });
 });
