@@ -242,3 +242,5 @@
 - YAML governance scanners should parse with strict duplicate-key rejection and fail on parser warnings/errors; best-effort parse modes leave policy-bypass ambiguity.
 - File-backed auth poll resume state needs explicit per-session lock files and stale-lock reclaim to preserve monotonic replay windows under concurrent processes.
 - Probabilistic jitter regression tests should assert diversity across a seed set rather than strict inequality for a single pair, which can collide under bounded jitter windows.
+- Localhost HTTP auth endpoints should require dual consent (`SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true` plus explicit runtime opt-in flag) and remain blocked in CI.
+- For large Windows test files, prefer structured/scripted AST-safe edits over brittle regex replacements that can inject literal escape sequences into source.

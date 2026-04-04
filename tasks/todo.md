@@ -877,3 +877,22 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   6. `roadmap/pr-142-hybrid-retrieval-index`
   7. `roadmap/pr-143-stuck-agent-alert-channels`
   8. `roadmap/pr-144-stale-ingest-auto-refresh`
+
+### PR #114 Current Cycle (2026-04-03/04)
+- [x] Apply active Omar P2 fixes from latest check-run annotations:
+  - Explicit pre-deploy attestation verification gate in `.github/workflows/quality-gates.yml`.
+  - Least-privilege refactor in `.github/workflows/release-publish.yml` (remove early privileged scopes).
+  - Non-forward release-tag guard in `.github/workflows/release.yml`.
+  - `src/auth/service.js` localhost HTTP hardening (env + explicit runtime flag).
+  - `src/auth/service.js` polling-pressure reduction and structured backend-unavailable `retryAfterMs`.
+- [x] Update policy/tests/docs affected by the above changes:
+  - `.github/security/workflow-permissions-policy.json`
+  - `tests/unit.auth-service.test.mjs`
+  - `src/commands/auth.js`
+- [x] Run deterministic local evidence (`npm run check`, targeted auth tests, `npm run verify`).
+- [ ] Commit + push PR #114 remediation batch.
+- [ ] Execute full Omar loop:
+  1. `gh run watch <quality-run-id> --exit-status`
+  2. Approve pending deployment for Omar Gate (`security-review`) if waiting
+  3. `gh run watch <omar-run-id> --exit-status`
+  4. Re-anchor to latest Omar findings and continue until `P2<=2`.

@@ -306,6 +306,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       skipBrowserOpen: true,
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
@@ -361,6 +362,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       autoRotate: false,
     });
     assert.equal(activeSession?.source, "session");
@@ -371,6 +373,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       checkRemote: true,
       autoRotate: false,
     });
@@ -397,6 +400,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       revokeRemote: true,
     });
     assert.equal(logoutResult.hadStoredSession, true);
@@ -430,6 +434,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       skipBrowserOpen: true,
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
@@ -444,6 +449,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
     });
     assert.equal(listed.apiUrl, mock.apiUrl);
     assert.equal(listed.sessions.length, 1);
@@ -455,6 +461,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
     });
     assert.equal(revoked.revokedRemote, true);
     assert.equal(revoked.tokenId, "token_1");
@@ -549,9 +556,9 @@ test("Unit auth service: localhost HTTP API URL requires explicit opt-in flag", 
     () =>
       resolveApiUrl({
         explicitApiUrl: "http://127.0.0.1:9443",
-        env: {},
+        env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true" },
       }),
-    /SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP/i
+    /explicit runtime opt-in/i
   );
 });
 
@@ -559,6 +566,7 @@ test("Unit auth service: localhost HTTP API URL is allowed only outside CI", asy
   const resolved = await resolveApiUrl({
     explicitApiUrl: "http://127.0.0.1:9443",
     env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true" },
+    allowInsecureLocalHttp: true,
   });
   assert.equal(resolved, "http://127.0.0.1:9443");
 
@@ -570,6 +578,7 @@ test("Unit auth service: localhost HTTP API URL is allowed only outside CI", asy
           SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true",
           CI: "true",
         },
+        allowInsecureLocalHttp: true,
       }),
     /blocked when CI=true/i
   );
@@ -694,6 +703,7 @@ test("Unit auth service: login fails fast for denied polling status", async () =
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 5000,
           tokenLabel: "unit-test-token",
@@ -748,6 +758,7 @@ test("Unit auth service: login rejects mismatched poll session id", async () => 
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 5000,
           tokenLabel: "unit-test-token",
@@ -815,6 +826,7 @@ test("Unit auth service: login ignores stale poll correlation mismatches before 
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       skipBrowserOpen: true,
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
@@ -879,6 +891,7 @@ test("Unit auth service: login ignores non-increasing poll sequence values", asy
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       skipBrowserOpen: true,
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
@@ -925,6 +938,7 @@ test("Unit auth service: login maps aborted polling waits to CLI_AUTH_ABORTED", 
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 10_000,
           tokenLabel: "unit-test-token",
@@ -978,6 +992,7 @@ test("Unit auth service: login fails closed after repeated polling backend outag
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 10_000,
           tokenLabel: "unit-test-token",
@@ -991,6 +1006,8 @@ test("Unit auth service: login fails closed after repeated polling backend outag
         assert.ok(["CLI_AUTH_BACKEND_UNAVAILABLE", "CLI_AUTH_TIMEOUT"].includes(error.code));
         assert.ok([503, 408].includes(Number(error.status || 0)));
         if (error.code === "CLI_AUTH_BACKEND_UNAVAILABLE") {
+          assert.ok(Number.isFinite(Number(error.retryAfterMs)));
+          assert.ok(Number(error.retryAfterMs) >= 250);
           if (error.requestId) {
             assert.equal(error.requestId, "req-backend-down-123");
           }
@@ -1028,6 +1045,7 @@ test("Unit auth service: login enforces deterministic polling attempt ceiling", 
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 300,
           tokenLabel: "unit-test-token",
@@ -1195,6 +1213,7 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       skipBrowserOpen: true,
       timeoutMs: 5000,
       tokenLabel: "unit-test-token",
@@ -1223,6 +1242,7 @@ test("Unit auth service: token rotation revoke falls back when new token cannot 
       env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
+      allowInsecureLocalHttp: true,
       autoRotate: true,
       rotateThresholdDays: 30,
       tokenLabel: "unit-test-rotated",
@@ -1262,6 +1282,7 @@ test("Unit auth service: privileged token scope requires explicit opt-in flag", 
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 5000,
           tokenLabel: "unit-test-token",
@@ -1302,6 +1323,7 @@ test("Unit auth service: login supports explicit privileged token scope override
         },
         homeDir: tempRoot,
         explicitApiUrl: mock.apiUrl,
+        allowInsecureLocalHttp: true,
         skipBrowserOpen: true,
         timeoutMs: 5000,
         tokenLabel: "unit-test-token",
@@ -1345,6 +1367,7 @@ test("Unit auth service: privileged token scope rejects non-interactive sessions
             },
             homeDir: tempRoot,
             explicitApiUrl: mock.apiUrl,
+            allowInsecureLocalHttp: true,
             skipBrowserOpen: true,
             timeoutMs: 5000,
             tokenLabel: "unit-test-token",
@@ -1386,6 +1409,7 @@ test("Unit auth service: privileged token scope requires policy confirmation tok
             env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
             homeDir: tempRoot,
             explicitApiUrl: mock.apiUrl,
+            allowInsecureLocalHttp: true,
             skipBrowserOpen: true,
             timeoutMs: 5000,
             tokenLabel: "unit-test-token",
@@ -1426,6 +1450,7 @@ test("Unit auth service: login rejects unknown token scope overrides", async () 
           env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
+          allowInsecureLocalHttp: true,
           skipBrowserOpen: true,
           timeoutMs: 5000,
           tokenLabel: "unit-test-token",

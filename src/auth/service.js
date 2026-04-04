@@ -28,7 +28,7 @@ const DEFAULT_IDE_NAME = "sl-cli";
 const DEFAULT_API_TOKEN_SCOPE = "cli_session";
 const PRIVILEGED_API_TOKEN_SCOPE = "github_app_bridge";
 const MIN_AUTH_POLL_INTERVAL_MS = 250;
-const MAX_AUTH_POLL_ATTEMPTS = 1200;
+const MAX_AUTH_POLL_ATTEMPTS = 300;
 const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
 const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
 const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 2;
@@ -70,7 +70,10 @@ function hasPrivilegedScopePolicyConsent(env = process.env) {
   return rawConsentToken === PRIVILEGED_SCOPE_CONFIRM_TOKEN;
 }
 
-function normalizeApiUrl(rawValue, env = process.env) {
+function normalizeApiUrl(
+  rawValue,
+  { env = process.env, allowInsecureLocalHttp = false } = {}
+) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
   let parsed;
   try {
@@ -82,11 +85,12 @@ function normalizeApiUrl(rawValue, env = process.env) {
   const isLocalDevEndpoint =
     hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
   if (parsed.protocol === "http:" && isLocalDevEndpoint) {
-    const allowInsecureLocalHttp = isEnabledFlag(env?.[ALLOW_INSECURE_LOCAL_HTTP_ENV]);
+    const allowInsecureLocalHttpEnv = isEnabledFlag(env?.[ALLOW_INSECURE_LOCAL_HTTP_ENV]);
+    const allowInsecureLocalHttpRuntime = Boolean(allowInsecureLocalHttp);
     const runningInCi = isEnabledFlag(env?.CI);
-    if (!allowInsecureLocalHttp || runningInCi) {
+    if (!allowInsecureLocalHttpEnv || !allowInsecureLocalHttpRuntime || runningInCi) {
       throw new Error(
-        `Invalid API URL '${candidate}': localhost HTTP requires ${ALLOW_INSECURE_LOCAL_HTTP_ENV}=true and is blocked when CI=true.`
+        `Invalid API URL '${candidate}': localhost HTTP requires ${ALLOW_INSECURE_LOCAL_HTTP_ENV}=true plus explicit runtime opt-in and is blocked when CI=true.`
       );
     }
   } else if (parsed.protocol !== "https:") {
@@ -695,6 +699,7 @@ function isNearExpiry(tokenExpiresAt, thresholdDays) {
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
  *   explicitApiUrl?: string,
+ *   allowInsecureLocalHttp?: boolean,
  *   homeDir?: string
  * }} [options]
  * @returns {Promise<string>}
@@ -703,25 +708,26 @@ export async function resolveApiUrl({
   cwd = process.cwd(),
   env = process.env,
   explicitApiUrl = "",
+  allowInsecureLocalHttp = false,
   homeDir,
 } = {}) {
   const overrideUrl = String(explicitApiUrl || "").trim();
   if (overrideUrl) {
-    return normalizeApiUrl(overrideUrl, env);
+    return normalizeApiUrl(overrideUrl, { env, allowInsecureLocalHttp });
   }
 
   const envUrl = String(env.SENTINELAYER_API_URL || "").trim();
   if (envUrl) {
-    return normalizeApiUrl(envUrl, env);
+    return normalizeApiUrl(envUrl, { env, allowInsecureLocalHttp });
   }
 
   const config = await loadConfig({ cwd, env, homeDir });
   const configuredApiUrl = String(config.resolved.apiUrl || "").trim();
   if (configuredApiUrl) {
-    return normalizeApiUrl(configuredApiUrl, env);
+    return normalizeApiUrl(configuredApiUrl, { env, allowInsecureLocalHttp });
   }
 
-  return normalizeApiUrl(DEFAULT_API_URL, env);
+  return normalizeApiUrl(DEFAULT_API_URL, { env, allowInsecureLocalHttp });
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {
@@ -851,12 +857,30 @@ async function pollCliAuthSession({
       }
       consecutiveBackendFailures += 1;
       if (consecutiveBackendFailures >= MAX_AUTH_POLL_BACKEND_FAILURES) {
+        const remainingMs = Math.max(0, deadlineMs - resolveMonotonicNowMs());
+        const retryAfterMs = Math.max(
+          MIN_AUTH_POLL_INTERVAL_MS,
+          Math.min(
+            MAX_AUTH_POLL_BACKEND_BACKOFF_MS,
+            Math.min(
+              remainingMs,
+              resolveAuthPollBackendCooldownMs({
+                sessionId: normalizedSessionId,
+                pollJitterSeed,
+                attempt,
+                consecutiveFailures: consecutiveBackendFailures,
+                pollIntervalMs: lastKnownPollIntervalMs,
+              })
+            )
+          )
+        );
         throw new SentinelayerApiError(
           "Authentication polling backend is temporarily unavailable. Retry once service health recovers.",
           {
             status: 503,
             code: "CLI_AUTH_BACKEND_UNAVAILABLE",
             requestId: error instanceof SentinelayerApiError ? error.requestId : null,
+            retryAfterMs,
           }
         );
       }
@@ -1246,6 +1270,7 @@ async function rotateStoredApiTokenIfNeeded({
  *   tokenTtlDays?: number,
  *   tokenScope?: string,
  *   allowPrivilegedScope?: boolean,
+ *   allowInsecureLocalHttp?: boolean,
  *   allowFileStorageFallback?: boolean,
  *   ide?: string,
  *   cliVersion?: string,
@@ -1280,13 +1305,20 @@ export async function loginAndPersistSession({
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   tokenScope = "",
   allowPrivilegedScope = false,
+  allowInsecureLocalHttp = false,
   allowFileStorageFallback = false,
   ide = DEFAULT_IDE_NAME,
   cliVersion = "",
   signal = null,
   homeDir,
 } = {}) {
-  const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  const apiUrl = await resolveApiUrl({
+    cwd,
+    env,
+    explicitApiUrl,
+    allowInsecureLocalHttp,
+    homeDir,
+  });
   const challenge = generateChallenge();
   const pollClientId = generatePollClientId();
   const session = await startCliAuthSession({
@@ -1376,6 +1408,7 @@ export async function loginAndPersistSession({
  *   tokenTtlDays?: number,
  *   tokenScope?: string,
  *   allowPrivilegedScope?: boolean,
+ *   allowInsecureLocalHttp?: boolean,
  *   homeDir?: string
  * }} [options]
  * @returns {Promise<null | {
@@ -1408,9 +1441,16 @@ export async function resolveActiveAuthSession({
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   tokenScope = "",
   allowPrivilegedScope = false,
+  allowInsecureLocalHttp = false,
   homeDir,
 } = {}) {
-  const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  const apiUrl = await resolveApiUrl({
+    cwd,
+    env,
+    explicitApiUrl,
+    allowInsecureLocalHttp,
+    homeDir,
+  });
 
   const envToken = normalizeValueForKey("sentinelayerToken", env?.SENTINELAYER_TOKEN) || "";
   if (envToken) {
@@ -1513,6 +1553,7 @@ export async function resolveActiveAuthSession({
  *   rotateThresholdDays?: number,
  *   tokenLabel?: string,
  *   tokenTtlDays?: number,
+ *   allowInsecureLocalHttp?: boolean,
  *   homeDir?: string
  * }} [options]
  * @returns {Promise<{
@@ -1540,6 +1581,7 @@ export async function getAuthStatus({
   rotateThresholdDays = DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS,
   tokenLabel = "",
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
+  allowInsecureLocalHttp = false,
   homeDir,
 } = {}) {
   const session = await resolveActiveAuthSession({
@@ -1550,13 +1592,20 @@ export async function getAuthStatus({
     rotateThresholdDays,
     tokenLabel,
     tokenTtlDays,
+    allowInsecureLocalHttp,
     homeDir,
   });
 
   if (!session) {
     return {
       authenticated: false,
-      apiUrl: await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir }),
+      apiUrl: await resolveApiUrl({
+        cwd,
+        env,
+        explicitApiUrl,
+        allowInsecureLocalHttp,
+        homeDir,
+      }),
       source: null,
       storage: null,
       user: null,
@@ -1614,16 +1663,29 @@ export async function getAuthStatus({
 /**
  * List persisted local session metadata for CLI operators/HITL dashboards.
  *
- * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, explicitApiUrl?: string, homeDir?: string }} [options]
+ * @param {{
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   explicitApiUrl?: string,
+ *   allowInsecureLocalHttp?: boolean,
+ *   homeDir?: string
+ * }} [options]
  * @returns {Promise<{ apiUrl: string, sessions: Array<any> }>}
  */
 export async function listStoredAuthSessions({
   cwd = process.cwd(),
   env = process.env,
   explicitApiUrl = "",
+  allowInsecureLocalHttp = false,
   homeDir,
 } = {}) {
-  const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  const apiUrl = await resolveApiUrl({
+    cwd,
+    env,
+    explicitApiUrl,
+    allowInsecureLocalHttp,
+    homeDir,
+  });
   const stored = await readStoredSessionMetadata({ homeDir });
   if (!stored) {
     return {
@@ -1657,6 +1719,7 @@ export async function listStoredAuthSessions({
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
  *   explicitApiUrl?: string,
+ *   allowInsecureLocalHttp?: boolean,
  *   tokenId?: string,
  *   homeDir?: string
  * }} [options]
@@ -1674,6 +1737,7 @@ export async function revokeAuthToken({
   cwd = process.cwd(),
   env = process.env,
   explicitApiUrl = "",
+  allowInsecureLocalHttp = false,
   tokenId = "",
   homeDir,
 } = {}) {
@@ -1682,6 +1746,7 @@ export async function revokeAuthToken({
     env,
     explicitApiUrl,
     autoRotate: false,
+    allowInsecureLocalHttp,
     homeDir,
   });
   if (!active || !active.token) {
@@ -1739,6 +1804,7 @@ export async function revokeAuthToken({
  *   cwd?: string,
  *   env?: NodeJS.ProcessEnv,
  *   explicitApiUrl?: string,
+ *   allowInsecureLocalHttp?: boolean,
  *   revokeRemote?: boolean
  * }} [options]
  * @returns {Promise<{
@@ -1754,6 +1820,7 @@ export async function logoutSession({
   cwd = process.cwd(),
   env = process.env,
   explicitApiUrl = "",
+  allowInsecureLocalHttp = false,
   revokeRemote = true,
 } = {}) {
   let stored = null;
@@ -1776,7 +1843,13 @@ export async function logoutSession({
       hadStoredSession: false,
       revokedRemote: false,
       clearedLocal: false,
-      apiUrl: await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir }),
+      apiUrl: await resolveApiUrl({
+        cwd,
+        env,
+        explicitApiUrl,
+        allowInsecureLocalHttp,
+        homeDir,
+      }),
     };
   }
 
@@ -1784,7 +1857,13 @@ export async function logoutSession({
   if (revokeRemote && stored.tokenId && stored.token) {
     try {
       await revokeApiToken({
-        apiUrl: await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir }),
+        apiUrl: await resolveApiUrl({
+          cwd,
+          env,
+          explicitApiUrl,
+          allowInsecureLocalHttp,
+          homeDir,
+        }),
         authToken: stored.token,
         tokenId: stored.tokenId,
       });

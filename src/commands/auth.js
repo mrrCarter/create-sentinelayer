@@ -158,6 +158,10 @@ export function registerAuthCommand(program) {
     .command("login")
     .description("Authenticate in browser and persist a long-lived API token")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--skip-browser-open", "Do not auto-open browser; print authorize URL instead")
     .option(
       "--timeout-ms <ms>",
@@ -198,6 +202,7 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           skipBrowserOpen: Boolean(options.skipBrowserOpen),
           timeoutMs,
           tokenLabel: options.tokenLabel,
@@ -252,6 +257,10 @@ export function registerAuthCommand(program) {
     .command("status")
     .description("Show current authentication/session status")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--offline", "Skip remote token validation (`/auth/me`)")
     .option("--no-auto-rotate", "Disable near-expiry auto-rotation for this command")
     .option("--verbose-errors", "Include backend error metadata in JSON output (use only for local debugging)")
@@ -264,6 +273,7 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           checkRemote: !options.offline,
           autoRotate: Boolean(options.autoRotate),
         });
@@ -347,6 +357,10 @@ export function registerAuthCommand(program) {
     .alias("list")
     .description("List persisted local session metadata for resume and auditability")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -356,6 +370,7 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
         });
       } catch (error) {
         throw new Error(formatApiError(error));
@@ -410,6 +425,10 @@ export function registerAuthCommand(program) {
     .command("revoke")
     .description("Revoke a remote API token and clear matching local session metadata")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--token-id <id>", "API token id to revoke (defaults to active session token id)")
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
@@ -420,6 +439,7 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           tokenId: options.tokenId,
         });
       } catch (error) {
@@ -461,6 +481,10 @@ export function registerAuthCommand(program) {
     .command("logout")
     .description("Clear local session and optionally revoke remote API token")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--local-only", "Clear local session only (skip remote revoke)")
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
@@ -471,6 +495,7 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           revokeRemote: !options.localOnly,
         });
       } catch (error) {

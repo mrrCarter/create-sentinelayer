@@ -42,14 +42,34 @@ function verifyQualityGateGraph(workflowPath) {
     fail(`Workflow '${workflowPath}' must define a jobs object.`);
   }
 
-  const requiredJobs = ["deploy-readiness", "deploy-stage", "deploy", "quality-summary"];
+  const requiredJobs = [
+    "artifact-attestation-gate",
+    "release-readiness",
+    "deploy-readiness",
+    "deploy-stage",
+    "deploy",
+    "quality-summary",
+  ];
   for (const jobId of requiredJobs) {
     if (!Object.prototype.hasOwnProperty.call(jobs, jobId)) {
       fail(`Workflow '${workflowPath}' is missing required job '${jobId}'.`);
     }
   }
 
+  const releaseReadinessNeeds = new Set(normalizeNeeds(jobs["release-readiness"]?.needs));
+  if (!releaseReadinessNeeds.has("artifact-attestation-gate")) {
+    fail(`Workflow '${workflowPath}' job 'release-readiness' must depend on 'artifact-attestation-gate'.`);
+  }
+
+  const deployReadinessNeeds = new Set(normalizeNeeds(jobs["deploy-readiness"]?.needs));
+  if (!deployReadinessNeeds.has("artifact-attestation-gate")) {
+    fail(`Workflow '${workflowPath}' job 'deploy-readiness' must depend on 'artifact-attestation-gate'.`);
+  }
+
   const deployStageNeeds = new Set(normalizeNeeds(jobs["deploy-stage"]?.needs));
+  if (!deployStageNeeds.has("artifact-attestation-gate")) {
+    fail(`Workflow '${workflowPath}' job 'deploy-stage' must depend on 'artifact-attestation-gate'.`);
+  }
   if (!deployStageNeeds.has("deploy-readiness")) {
     fail(`Workflow '${workflowPath}' job 'deploy-stage' must depend on 'deploy-readiness'.`);
   }
@@ -60,7 +80,7 @@ function verifyQualityGateGraph(workflowPath) {
   }
 
   const qualitySummaryNeeds = new Set(normalizeNeeds(jobs["quality-summary"]?.needs));
-  for (const requiredNeed of ["deploy-readiness", "deploy-stage", "deploy"]) {
+  for (const requiredNeed of ["artifact-attestation-gate", "deploy-readiness", "deploy-stage", "deploy"]) {
     if (!qualitySummaryNeeds.has(requiredNeed)) {
       fail(
         `Workflow '${workflowPath}' job 'quality-summary' must depend on '${requiredNeed}' for deploy gate-chain enforcement.`

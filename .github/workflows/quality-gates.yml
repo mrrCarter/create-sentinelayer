@@ -777,14 +777,19 @@ jobs:
         with:
           subject-path: create-sentinelayer-*.tgz
 
-  release-readiness:
-    name: Release Readiness
+  artifact-attestation-gate:
+    name: Artifact Attestation Gate
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 8
     needs: [build-artifact]
     if: ${{ always() }}
     permissions:
       contents: read
+      id-token: write
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Enforce build-artifact success
         shell: bash
@@ -793,7 +798,83 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
+            echo "::error::build-artifact must succeed before artifact-attestation-gate (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-attestation
+
+      - name: Verify immutable artifact digest + attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(tr -d '\r\n' < quality-attestation/quality-build.tarball)"
+          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball identity for artifact-attestation-gate." && exit 1)
+          artifact_path="quality-attestation/${tarball}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality tarball ${artifact_path}." && exit 1)
+          expected_sha="$(awk 'NF {print $1; exit}' quality-attestation/quality-build.sha256)"
+          test -n "${expected_sha}" || (echo "::error::Missing quality-build.sha256 digest for artifact-attestation-gate." && exit 1)
+          actual_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${expected_sha}" != "${actual_sha}" ]]; then
+            echo "::error::Artifact-attestation gate digest mismatch (expected=${expected_sha}, actual=${actual_sha})."
+            exit 1
+          fi
+          gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-attestation/artifact-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' quality-attestation/artifact-attestation.verify.json >/dev/null; then
+            echo "::error::Artifact-attestation gate verification is missing expected digest ${expected_sha}."
+            exit 1
+          fi
+          cat > quality-attestation/artifact-attestation.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "stage": "artifact-attestation-gate",
+            "artifactName": "${tarball}",
+            "artifactSha256": "${actual_sha}",
+            "checks": ["sha256 parity", "gh attestation verify"]
+          }
+          EOF
+
+      - name: Upload artifact-attestation proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: artifact-attestation-proof
+          path: |
+            quality-attestation/artifact-attestation.summary.json
+            quality-attestation/artifact-attestation.verify.json
+          if-no-files-found: error
+
+  release-readiness:
+    name: Release Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [build-artifact, artifact-attestation-gate]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce build-artifact success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
             echo "::error::build-artifact must succeed before release-readiness (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+          if [[ "${RESULT_ARTIFACT_ATTESTATION_GATE}" != "success" ]]; then
+            echo "::error::artifact-attestation-gate must succeed before release-readiness (result=${RESULT_ARTIFACT_ATTESTATION_GATE})."
             exit 1
           fi
 
@@ -850,7 +931,7 @@ jobs:
     name: Deploy Readiness
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [build-artifact]
+    needs: [build-artifact, artifact-attestation-gate]
     if: ${{ always() }}
     permissions:
       contents: read
@@ -864,10 +945,15 @@ jobs:
         shell: bash
         env:
           RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
         run: |
           set -euo pipefail
           if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
             echo "::error::build-artifact must succeed before deploy-readiness (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+          if [[ "${RESULT_ARTIFACT_ATTESTATION_GATE}" != "success" ]]; then
+            echo "::error::artifact-attestation-gate must succeed before deploy-readiness (result=${RESULT_ARTIFACT_ATTESTATION_GATE})."
             exit 1
           fi
 
@@ -940,7 +1026,7 @@ jobs:
     name: Deploy Stage
     runs-on: ubuntu-22.04
     timeout-minutes: 8
-    needs: [build-artifact, release-readiness, deploy-readiness]
+    needs: [build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness]
     if: ${{ always() }}
     environment: quality-deploy
     permissions:
@@ -951,11 +1037,12 @@ jobs:
         shell: bash
         env:
           RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
           RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
           RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
         run: |
           set -euo pipefail
-          for gate in RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS; do
+          for gate in RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS; do
             result="${!gate}"
             if [[ "${result}" != "success" ]]; then
               echo "::error::Deploy stage prerequisite ${gate} did not succeed (result=${result})."
@@ -1180,7 +1267,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, release-readiness, deploy-readiness, deploy-stage, deploy]
+    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness, deploy-stage, deploy]
     if: ${{ always() }}
     permissions:
       contents: read
@@ -1195,6 +1282,7 @@ jobs:
           RESULT_E2E_PACKAGING: ${{ needs.e2e-packaging.result }}
           RESULT_SECURITY_SCAN: ${{ needs.security-scan.result }}
           RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
           RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
           RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
           RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
@@ -1202,7 +1290,7 @@ jobs:
         run: |
           set -euo pipefail
           failures=0
-          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_DEPLOY; do
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_DEPLOY; do
             result="${!gate}"
             name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
             echo "${name}: ${result}"
@@ -1331,6 +1419,7 @@ jobs:
           assert_exact_success "E2E Tests"
           assert_exact_success "Security Scan"
           assert_exact_success "Build Artifact"
+          assert_exact_success "Artifact Attestation Gate"
           assert_exact_success "Release Readiness"
           assert_exact_success "Deploy Readiness"
           assert_exact_success "Deploy Stage"

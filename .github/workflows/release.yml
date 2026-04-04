@@ -358,6 +358,126 @@ jobs:
           fi
           input_release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
           input_incident_id="$(echo "${INPUT_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
+          compare_semver_tags() {
+            local requested_tag="$1"
+            local latest_tag="$2"
+            node - "${requested_tag}" "${latest_tag}" <<'NODE'
+          const requestedRaw = String(process.argv[2] || "").trim();
+          const latestRaw = String(process.argv[3] || "").trim();
+          const semverRegex = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+          const parseTag = (value) => {
+            const match = semverRegex.exec(String(value || "").trim());
+            if (!match) {
+              return null;
+            }
+            return {
+              major: Number(match[1]),
+              minor: Number(match[2]),
+              patch: Number(match[3]),
+              prerelease: match[4] ? match[4].split(".") : [],
+            };
+          };
+          const compareIdentifiers = (left, right) => {
+            const leftNumeric = /^\d+$/.test(left);
+            const rightNumeric = /^\d+$/.test(right);
+            if (leftNumeric && rightNumeric) {
+              return Number(left) - Number(right);
+            }
+            if (leftNumeric && !rightNumeric) {
+              return -1;
+            }
+            if (!leftNumeric && rightNumeric) {
+              return 1;
+            }
+            if (left < right) {
+              return -1;
+            }
+            if (left > right) {
+              return 1;
+            }
+            return 0;
+          };
+          const comparePrerelease = (left = [], right = []) => {
+            const leftHas = left.length > 0;
+            const rightHas = right.length > 0;
+            if (!leftHas && !rightHas) {
+              return 0;
+            }
+            if (!leftHas && rightHas) {
+              return 1;
+            }
+            if (leftHas && !rightHas) {
+              return -1;
+            }
+            const maxLength = Math.max(left.length, right.length);
+            for (let index = 0; index < maxLength; index += 1) {
+              const leftPart = left[index];
+              const rightPart = right[index];
+              if (leftPart === undefined && rightPart !== undefined) {
+                return -1;
+              }
+              if (leftPart !== undefined && rightPart === undefined) {
+                return 1;
+              }
+              const delta = compareIdentifiers(String(leftPart), String(rightPart));
+              if (delta !== 0) {
+                return delta;
+              }
+            }
+            return 0;
+          };
+          const compareTags = (left, right) => {
+            for (const field of ["major", "minor", "patch"]) {
+              if (left[field] !== right[field]) {
+                return left[field] - right[field];
+              }
+            }
+            return comparePrerelease(left.prerelease, right.prerelease);
+          };
+          const requested = parseTag(requestedRaw);
+          const latest = parseTag(latestRaw);
+          if (!requested || !latest) {
+            console.log("invalid");
+            process.exit(0);
+          }
+          const comparison = compareTags(requested, latest);
+          if (comparison > 0) {
+            console.log("greater");
+          } else if (comparison < 0) {
+            console.log("lower");
+          } else {
+            console.log("equal");
+          }
+          NODE
+          }
+          resolve_npm_latest_tag_json() {
+            local latest_json=""
+            local status=0
+            local error_file
+            error_file="$(mktemp)"
+            for attempt in 1 2 3; do
+              set +e
+              latest_json="$(timeout --preserve-status 30s npm view create-sentinelayer dist-tags.latest --json 2>"${error_file}")"
+              status=$?
+              set -e
+              if [[ "${status}" -eq 0 ]]; then
+                rm -f "${error_file}"
+                printf '%s\n' "${latest_json}"
+                return 0
+              fi
+              if grep -qiE "E404|404 Not Found" "${error_file}"; then
+                rm -f "${error_file}"
+                printf '""\n'
+                return 0
+              fi
+              if [[ "${attempt}" -lt 3 ]]; then
+                sleep $((attempt * 2))
+              fi
+            done
+            cat "${error_file}" >&2 || true
+            rm -f "${error_file}"
+            return 1
+          }
           case "${EVENT_NAME}" in
             push)
               if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
@@ -417,6 +537,30 @@ jobs:
             release_ref_value="refs/tags/${release_tag}"
             release_ref_type="tag"
             dry_run="true"
+            latest_tag_json="$(resolve_npm_latest_tag_json)" || (echo "::error::Unable to resolve npm dist-tags.latest for non-forward release guard." && exit 1)
+            latest_tag="$(echo "${latest_tag_json}" | jq -r 'if type == "string" then . elif type == "object" then .latest // "" else "" end' | tr -d '\r' | xargs || true)"
+            if [[ -n "${latest_tag}" ]]; then
+              semver_relation="$(compare_semver_tags "${release_tag}" "${latest_tag}")"
+              case "${semver_relation}" in
+                greater)
+                  echo "Release tag '${release_tag}' is forward relative to npm latest '${latest_tag}'."
+                  ;;
+                equal|lower)
+                  if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ -n "${incident_id}" ]]; then
+                    echo "::warning::Non-forward release tag '${release_tag}' vs npm latest '${latest_tag}' allowed due to workflow_dispatch incident '${incident_id}'."
+                  else
+                    echo "::error::release_tag '${release_tag}' is not forward relative to npm latest '${latest_tag}'."
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "::error::Unable to compare release_tag '${release_tag}' against npm latest '${latest_tag}' for ordering guard."
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "No published npm latest dist-tag found; allowing initial release tag '${release_tag}'."
+            fi
           fi
           if [[ "${publish_requested}" == "true" ]] && [[ "${release_ref_type}" != "tag" ]]; then
             echo "::error::Publish can only execute for tag-scoped releases."

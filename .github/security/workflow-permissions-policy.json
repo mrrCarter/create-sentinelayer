@@ -30,6 +30,10 @@
           "required": { "contents": "read", "id-token": "write", "attestations": "write" },
           "max": { "contents": "read", "id-token": "write", "attestations": "write" }
         },
+        "artifact-attestation-gate": {
+          "required": { "contents": "read", "id-token": "write", "attestations": "read" },
+          "max": { "contents": "read", "id-token": "write", "attestations": "read" }
+        },
         "release-readiness": {
           "required": { "contents": "read" },
           "max": { "contents": "read" }
@@ -129,18 +133,8 @@
           "max": { "contents": "read", "actions": "read", "checks": "read" }
         },
         "prepare-release-bundle": {
-          "required": {
-            "contents": "read",
-            "actions": "read",
-            "id-token": "write",
-            "attestations": "write"
-          },
-          "max": {
-            "contents": "read",
-            "actions": "read",
-            "id-token": "write",
-            "attestations": "write"
-          }
+          "required": { "contents": "read", "actions": "read", "attestations": "read" },
+          "max": { "contents": "read", "actions": "read", "attestations": "read" }
         },
         "publish-dry-run": {
           "required": { "contents": "read" },
