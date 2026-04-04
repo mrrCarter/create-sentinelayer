@@ -1257,3 +1257,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-sixth-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Seventh Cycle (2026-04-04, quality false-positive fix)
+- [x] Capture quality failure root cause from run `23980500183`:
+  - `Security Scan` failed at `verify-action-shas.sh` because remote-exec parser started correlating step-wide network signals with unrelated command substitutions (`mktemp`, template strings), causing false positives in `quality-gates.yml`.
+- [x] Apply deterministic false-positive correction:
+  - `scripts/ci/verify-workflow-remote-exec.js`: scope high-risk indirection correlation to command-local network signals (`commandHasNetworkSignal`) instead of whole-step network presence.
+- [x] Run forty-seventh-cycle local evidence:
+  - `node scripts/ci/verify-workflow-remote-exec.js .github/workflows/quality-gates.yml` (pass)
+  - `node --test tests/unit.verify-workflow-remote-exec.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `204/210` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-seventh-cycle fix batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.

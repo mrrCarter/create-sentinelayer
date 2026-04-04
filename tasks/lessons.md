@@ -313,3 +313,4 @@
 - Shared GitHub API retry helpers must enforce hard upper bounds (`max attempts`, `max backoff`, `max total wait`) so callers cannot accidentally create effectively unbounded retry envelopes via env overrides.
 - Shell remote-exec analyzers need both token-aware command matching and fail-closed high-risk indirection detection (`eval`, command substitution, backticks) when network fetch signals are present.
 - Auth backend outage handling should fail faster with tighter circuit thresholds and surface explicit cooldown/failure-count context in user-visible error messages for clearer operator recovery signals.
+- Remote-exec correlation must be command-local, not whole-step-global; mixing network signals from one command with benign `$()`/template constructs in other commands causes high-noise false positives that break CI gates.

@@ -404,13 +404,6 @@ function analyzeRunStep(step) {
   const findings = [];
   const taintedVariables = new Set();
   const commands = splitCommands(step.run).map((commandText) => buildCommandModel(commandText));
-  const runHasNetworkSignal = commands.some((command) =>
-    command.segments.some(
-      (segment) =>
-        containsNetworkFetchFragment(segment.raw) ||
-        containsRemoteUrl(segment.raw)
-    )
-  );
 
   const addFinding = (reason, commandRaw) => {
     const preview = normalizeWhitespace(commandRaw).slice(0, 220);
@@ -418,6 +411,9 @@ function analyzeRunStep(step) {
   };
 
   for (const command of commands) {
+    const commandHasNetworkSignal = command.segments.some(
+      (segment) => containsNetworkFetchFragment(segment.raw) || containsRemoteUrl(segment.raw)
+    );
     for (const segment of command.segments) {
       for (const assignment of segment.assignments) {
         const varName = toLowerToken(assignment.name);
@@ -431,7 +427,7 @@ function analyzeRunStep(step) {
           containsNetworkFetchFragment(value) ||
           containsRemoteUrl(value) ||
           referencesTaintedValue ||
-          (runHasNetworkSignal && hasHighRiskShellIndirection(value))
+          (commandHasNetworkSignal && hasHighRiskShellIndirection(value))
         ) {
           taintedVariables.add(varName);
         }
@@ -455,7 +451,7 @@ function analyzeRunStep(step) {
       if (joinedArgs.includes("base64") && command.segments.some((entry) => isExecutionSink(entry.commandName))) {
         addFinding("encoded payload routed into execution sink", command.raw);
       }
-      if (runHasNetworkSignal && hasHighRiskShellIndirection(segment.raw)) {
+      if (commandHasNetworkSignal && hasHighRiskShellIndirection(segment.raw)) {
         addFinding("high-risk shell indirection combined with network fetch signal", command.raw);
       }
     }
