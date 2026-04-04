@@ -146,6 +146,10 @@
           "required": { "contents": "read", "actions": "read", "checks": "read" },
           "max": { "contents": "read", "actions": "read", "checks": "read" }
         },
+        "verify-provenance": {
+          "required": { "contents": "read", "actions": "read", "attestations": "read" },
+          "max": { "contents": "read", "actions": "read", "attestations": "read" }
+        },
         "prepare-release-bundle": {
           "required": { "contents": "read", "actions": "read", "attestations": "read" },
           "max": { "contents": "read", "actions": "read", "attestations": "read" }
@@ -165,6 +169,24 @@
         "publish": {
           "required": { "contents": "read", "id-token": "write", "attestations": "read" },
           "max": { "contents": "read", "id-token": "write", "attestations": "read" }
+        }
+      }
+    },
+    ".github/workflows/release-please.yml": {
+      "jobs": {
+        "release-please": {
+          "required": {
+            "contents": "write",
+            "pull-requests": "write",
+            "checks": "read",
+            "actions": "read"
+          },
+          "max": {
+            "contents": "write",
+            "pull-requests": "write",
+            "checks": "read",
+            "actions": "read"
+          }
         }
       }
     },

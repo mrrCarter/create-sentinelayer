@@ -277,3 +277,15 @@
 - "Rollback readiness" findings are reduced when release workflows run rollback validation as a first-class transaction gate (`uses: rollback.yml`) and then verify rollback-lineage artifacts against preflight commit/digest contracts before publish authorization.
 - CI immutability findings are easier to suppress when lint includes explicit structural checks that deploy-path jobs only consume immutable build artifacts and forbid rebuild commands (`npm pack`, `npm publish`, `npm run build`) in promotion stages.
 - For automated release publishing, add a second human gate with explicit distinctness checks (`initiator != primary approver != second approver`) and persist both approval identities in publish evidence artifacts.
+
+## 2026-04-04
+
+- Localhost HTTP dev escape hatches should require three simultaneous controls: env flag, runtime flag, and deterministic cryptographic consent token scoped to loopback host; this prevents accidental plaintext auth transport activation.
+- Insecure localhost HTTP should enforce explicit high/random-port policy with a small curated dev allowlist, rather than accepting arbitrary loopback ports.
+- Privileged token scopes (`github_app_bridge`) must be hard-disabled on insecure HTTP transport even when operator consent flags are present.
+- Shared-state security controls must fail closed: do not swallow policy/path-validation errors in snapshot load/persist helpers, or guardrails become no-ops.
+- Env-overridable shared-state paths should be root-contained under `${HOME}/.sentinelayer`; in CI, unsafe overrides should be ignored unless an explicit secure test override is set.
+- Command handlers that rethrow sanitized strings as `Error` lose machine-triage metadata; prefer structured error payload emission + `process.exitCode=1` for deterministic automation.
+- Release governance workflows should use the shared `gh_api_json` retry/timeout helper for control-plane API lookups to avoid bespoke timeout logic drift.
+- Omar least-privilege findings can be reduced by keeping workflow-level permissions read-only and moving write scopes strictly to the scanning job.
+- Provenance findings are easier to close when release-publish has a dedicated workflow-boundary provenance gate job that all publish-capable paths depend on.

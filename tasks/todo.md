@@ -1122,3 +1122,27 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass; e2e `84/84`; unit `193/197` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
 - [ ] Commit + push thirty-ninth-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.
+
+### PR #114 Fortieth Cycle (2026-04-04, run_id=0e18e9dc-425a-4e10-8087-84e7076e7ac9)
+- [x] Re-anchor to active Omar finding set (`P2=6`) from latest PR comment and patch only active paths:
+  - `.github/workflows/omar-gate.yml`: keep workflow-level permissions at `contents: read`; retain mutable scopes job-local only.
+  - `.github/workflows/release-please.yml`: migrate governance `gh api` calls to `scripts/ci/gh-api-retry.sh` helper (`gh_api_json`) for bounded retry/timeout behavior.
+  - `.github/workflows/release-publish.yml`: add explicit `verify-provenance` workflow-boundary job; gate bundle preparation on provenance pass.
+  - `.github/security/workflow-permissions-policy.json`: add release-publish `verify-provenance` contract and explicit release-please workflow policy entry.
+  - `src/auth/http.js`: enforce shared-state root containment under `${HOME}/.sentinelayer`, ignore unsafe override in `CI=true` unless explicit override flag, and fail closed for policy violations.
+  - `src/auth/service.js`: add cryptographic localhost-HTTP consent token requirement (`SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT`), loopback port allowlist/high-port gate, and privileged-scope hard-disable on insecure localhost HTTP.
+  - `src/commands/auth.js`: replace generic `Error` wrapping with structured command error emission (`code/status/requestId`) and deterministic non-zero exit handling.
+- [x] Update deterministic unit coverage for the hardening:
+  - `tests/unit.auth-service.test.mjs`: localhost consent + port allowlist coverage and privileged-scope denial on insecure transport.
+  - `tests/unit.auth-http.test.mjs`: shared-state root policy + CI override behavior coverage.
+- [x] Run fortieth-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `node --test tests/unit.auth-command-errors.test.mjs` (pass)
+  - `npm run test:unit -- tests/unit.auth-command-errors.test.mjs` (pass; full unit suite pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/omar-gate.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/release-please.yml .github/workflows/rollback.yml` (pass)
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fortieth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`) and re-anchor findings until `P2<=2`.
+- [ ] Begin feedback-fixes Batch U execution (`PR 137 -> 140`) once PR #114 target is achieved.

@@ -27,12 +27,22 @@ const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 const MAX_REQUEST_ID_LENGTH = 128;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const AUTH_HTTP_SHARED_STATE_DIR_ENV = "SENTINELAYER_AUTH_HTTP_STATE_DIR";
+const AUTH_HTTP_SHARED_STATE_CI_OVERRIDE_ENV = "SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE";
+const AUTH_HTTP_SHARED_STATE_ROOT_DIRNAME = ".sentinelayer";
 const AUTH_HTTP_SHARED_STATE_FILENAME = "circuit-breaker-state.v1.json";
 const AUTH_HTTP_SHARED_STATE_RELOAD_INTERVAL_MS = 750;
 const AUTH_HTTP_SHARED_STATE_LOCK_WAIT_MS = 1_500;
 const AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MIN_MS = 15;
 const AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS = 75;
 const AUTH_HTTP_SHARED_STATE_LOCK_STALE_MS = 10_000;
+const RECOVERABLE_SHARED_STATE_ERROR_CODES = new Set([
+  "EACCES",
+  "EBUSY",
+  "EISDIR",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+]);
 
 const circuitBreakerStates = new Map();
 const REQUEST_JITTER_STARTUP_SECRET = initializeRequestJitterStartupSecret();
@@ -230,12 +240,56 @@ function resolveCircuitBreakerScope(url) {
   }
 }
 
+function isEnabledFlag(rawValue) {
+  const normalized = String(rawValue || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function resolveAuthHttpSharedStateAllowedRoot() {
+  return path.resolve(path.join(os.homedir(), AUTH_HTTP_SHARED_STATE_ROOT_DIRNAME));
+}
+
+function isPathWithinRoot(candidatePath, rootPath) {
+  const resolvedCandidate = path.resolve(String(candidatePath || ""));
+  const resolvedRoot = path.resolve(String(rootPath || ""));
+  const relative = path.relative(resolvedRoot, resolvedCandidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isRecoverableSharedStateError(error) {
+  if (error instanceof SyntaxError) {
+    return true;
+  }
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = String(error.code || "")
+    .trim()
+    .toUpperCase();
+  return RECOVERABLE_SHARED_STATE_ERROR_CODES.has(code);
+}
+
 function resolveAuthHttpSharedStateDirectory() {
+  const defaultDirectory = path.join(os.homedir(), AUTH_HTTP_SHARED_STATE_ROOT_DIRNAME, "auth");
   const explicitDirectory = String(process.env[AUTH_HTTP_SHARED_STATE_DIR_ENV] || "").trim();
   if (explicitDirectory) {
-    return explicitDirectory;
+    const runningInCi = isEnabledFlag(process.env.CI);
+    const allowCiOverride = isEnabledFlag(process.env[AUTH_HTTP_SHARED_STATE_CI_OVERRIDE_ENV]);
+    if (runningInCi && !allowCiOverride) {
+      return defaultDirectory;
+    }
+    const resolvedExplicitDirectory = path.resolve(explicitDirectory);
+    const allowedRoot = resolveAuthHttpSharedStateAllowedRoot();
+    if (!isPathWithinRoot(resolvedExplicitDirectory, allowedRoot)) {
+      throw new Error(
+        `${AUTH_HTTP_SHARED_STATE_DIR_ENV} must resolve within '${allowedRoot}' (received '${resolvedExplicitDirectory}').`
+      );
+    }
+    return resolvedExplicitDirectory;
   }
-  return path.join(os.homedir(), ".sentinelayer", "auth");
+  return defaultDirectory;
 }
 
 function resolveAuthHttpSharedStateFilePath() {
@@ -263,6 +317,10 @@ function assertPrivatePathPermissions(stats, label) {
 
 async function assertSecureSharedStateDirectory({ create = false } = {}) {
   const stateDirectory = path.resolve(resolveAuthHttpSharedStateDirectory());
+  const allowedRoot = resolveAuthHttpSharedStateAllowedRoot();
+  if (!isPathWithinRoot(stateDirectory, allowedRoot)) {
+    throw new Error(`Auth HTTP shared-state directory must remain within '${allowedRoot}'.`);
+  }
   if (isUncPath(stateDirectory)) {
     throw new Error(
       `${AUTH_HTTP_SHARED_STATE_DIR_ENV} must not point to a UNC/network path.`
@@ -495,7 +553,12 @@ async function persistSharedCircuitBreakerSnapshot() {
     const stateDirectory = await assertSecureSharedStateDirectory({ create: true });
     const stateFilePath = path.join(stateDirectory, AUTH_HTTP_SHARED_STATE_FILENAME);
     await withSharedCircuitBreakerStateLock(async () => {
-      const diskSnapshot = await readSharedCircuitBreakerSnapshot().catch(() => null);
+      const diskSnapshot = await readSharedCircuitBreakerSnapshot().catch((error) => {
+        if (isRecoverableSharedStateError(error)) {
+          return null;
+        }
+        throw error;
+      });
       if (diskSnapshot) {
         mergeSharedCircuitBreakerSnapshot(diskSnapshot, nowEpochMs);
       }
@@ -524,7 +587,12 @@ async function ensureSharedCircuitBreakerSnapshotLoaded({ force = false } = {}) 
   ) {
     return;
   }
-  const snapshot = await readSharedCircuitBreakerSnapshot().catch(() => null);
+  const snapshot = await readSharedCircuitBreakerSnapshot().catch((error) => {
+    if (isRecoverableSharedStateError(error)) {
+      return null;
+    }
+    throw error;
+  });
   if (snapshot) {
     mergeSharedCircuitBreakerSnapshot(snapshot, nowEpochMs);
   }
@@ -1126,7 +1194,11 @@ export async function requestJson(
       }
 
       resetCircuitBreaker(circuitScope);
-      await persistSharedCircuitBreakerSnapshot().catch(() => {});
+      await persistSharedCircuitBreakerSnapshot().catch((error) => {
+        if (!isRecoverableSharedStateError(error)) {
+          throw error;
+        }
+      });
       return json;
     } catch (error) {
       const normalizedError = normalizeUnknownError(error, {
@@ -1146,7 +1218,11 @@ export async function requestJson(
         registerRateLimitFailure(circuitScope, normalizedError.retryAfterMs);
         stateMutated = true;
         if (isRateLimitCircuitOpen(circuitScope)) {
-          await persistSharedCircuitBreakerSnapshot().catch(() => {});
+          await persistSharedCircuitBreakerSnapshot().catch((error) => {
+            if (!isRecoverableSharedStateError(error)) {
+              throw error;
+            }
+          });
           throw new SentinelayerApiError(
             "Upstream rate limit circuit is open. Retry after cooldown.",
             {
@@ -1158,7 +1234,11 @@ export async function requestJson(
         }
       }
       if (stateMutated) {
-        await persistSharedCircuitBreakerSnapshot().catch(() => {});
+        await persistSharedCircuitBreakerSnapshot().catch((error) => {
+          if (!isRecoverableSharedStateError(error)) {
+            throw error;
+          }
+        });
       }
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
         await sleep(

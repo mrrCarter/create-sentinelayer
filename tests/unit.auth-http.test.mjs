@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -149,7 +149,9 @@ test("Unit auth http: sustained 429 responses open rate-limit circuit and stop r
 
 test("Unit auth http: shared circuit snapshot is loaded after in-memory reset", async () => {
   __resetAuthHttpCircuitBreakerForTests();
-  const tempStateDir = await mkdtemp(path.join(os.tmpdir(), "sl-auth-http-state-"));
+  const stateRoot = path.join(os.homedir(), ".sentinelayer");
+  await mkdir(stateRoot, { recursive: true });
+  const tempStateDir = await mkdtemp(path.join(stateRoot, "sl-auth-http-state-"));
   process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = tempStateDir;
   let primingCalls = 0;
   let resumedCalls = 0;
@@ -215,6 +217,103 @@ test("Unit auth http: shared circuit snapshot is loaded after in-memory reset", 
     delete process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
     __resetAuthHttpCircuitBreakerForTests();
     await rm(tempStateDir, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth http: shared-state directory override must remain under ~/.sentinelayer", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+  const previousStateDir = process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+  const previousCi = process.env.CI;
+  const previousCiOverride = process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+  process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = path.join(os.tmpdir(), "sl-auth-http-outside-root");
+  delete process.env.CI;
+  delete process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/outside-root", {
+          method: "GET",
+          maxAttempts: 1,
+          fetchImpl: async () =>
+            new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+        }),
+      /must resolve within/i
+    );
+  } finally {
+    if (previousStateDir === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = previousStateDir;
+    }
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
+    }
+    if (previousCiOverride === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE = previousCiOverride;
+    }
+    __resetAuthHttpCircuitBreakerForTests();
+  }
+});
+
+test("Unit auth http: CI mode ignores shared-state override outside allowed root", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+  const previousStateDir = process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+  const previousCi = process.env.CI;
+  const previousCiOverride = process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+  process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = path.join(os.tmpdir(), "sl-auth-http-outside-root");
+  process.env.CI = "true";
+  delete process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+  const rateLimitBody = JSON.stringify({
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requests",
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/ci-ignore-override", {
+          method: "GET",
+          maxAttempts: 1,
+          fetchImpl: async () =>
+            new Response(rateLimitBody, {
+              status: 429,
+              headers: {
+                "Content-Type": "application/json",
+                "Retry-After": "1",
+              },
+            }),
+        }),
+      (error) => {
+        assert.equal(error?.status, 429);
+        assert.equal(error?.code, "RATE_LIMITED");
+        return true;
+      }
+    );
+  } finally {
+    if (previousStateDir === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = previousStateDir;
+    }
+    if (previousCi === undefined) {
+      delete process.env.CI;
+    } else {
+      process.env.CI = previousCi;
+    }
+    if (previousCiOverride === undefined) {
+      delete process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE;
+    } else {
+      process.env.SENTINELAYER_AUTH_HTTP_ALLOW_CI_STATE_DIR_OVERRIDE = previousCiOverride;
+    }
+    __resetAuthHttpCircuitBreakerForTests();
   }
 });
 

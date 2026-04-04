@@ -145,6 +145,49 @@ export function formatApiError(error) {
   return safeMessage;
 }
 
+function toStructuredApiError(error, { includeDebugRequestId = false } = {}) {
+  if (error instanceof SentinelayerApiError) {
+    return {
+      message: resolveSafeApiErrorMessage(error),
+      code: String(error.code || "UNKNOWN").trim().toUpperCase(),
+      status: Number.isFinite(Number(error.status)) ? Number(error.status) : null,
+      requestId:
+        includeDebugRequestId && String(error.requestId || "").trim()
+          ? String(error.requestId || "").trim()
+          : null,
+    };
+  }
+  return {
+    message: error instanceof Error ? error.message : String(error || "Unknown error"),
+    code: null,
+    status: null,
+    requestId: null,
+  };
+}
+
+function emitAuthCommandError(error, { options, command, commandName }) {
+  const emitJson = shouldEmitJson(options, command);
+  const structuredError = toStructuredApiError(error, {
+    includeDebugRequestId: shouldExposeDebugRequestId(),
+  });
+  if (emitJson) {
+    console.error(
+      JSON.stringify(
+        {
+          command: commandName,
+          ok: false,
+          error: structuredError,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.error(pc.red(formatApiError(error)));
+  }
+  process.exitCode = 1;
+}
+
 function printAuthHint() {
   console.log(pc.gray("Run `sl auth login` to create a persistent CLI session."));
 }
@@ -213,7 +256,8 @@ export function registerAuthCommand(program) {
           cliVersion: CLI_VERSION,
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth login" });
+        return;
       }
 
       const payload = {
@@ -278,7 +322,8 @@ export function registerAuthCommand(program) {
           autoRotate: Boolean(options.autoRotate),
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth status" });
+        return;
       }
       const emitJson = shouldEmitJson(options, command);
       const includeErrorDetails = shouldExposeVerboseErrorDetails(options, {
@@ -373,7 +418,8 @@ export function registerAuthCommand(program) {
           allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth sessions" });
+        return;
       }
 
       const payload = {
@@ -443,7 +489,8 @@ export function registerAuthCommand(program) {
           tokenId: options.tokenId,
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth revoke" });
+        return;
       }
 
       const payload = {
@@ -499,7 +546,8 @@ export function registerAuthCommand(program) {
           revokeRemote: !options.localOnly,
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth logout" });
+        return;
       }
 
       const payload = {

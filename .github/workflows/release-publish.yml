@@ -562,11 +562,70 @@ jobs:
           done
           echo "Publish target ${target_sha} satisfies branch-protection required context checks."
 
+  verify-provenance:
+    name: Verify Release Provenance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [resolve-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    environment: release-management
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RELEASE_RUN_ID: ${{ needs.resolve-release-bundle.outputs.release_run_id }}
+      TARGET_SHA: ${{ needs.resolve-release-bundle.outputs.target_sha }}
+      RELEASE_TAG: ${{ needs.resolve-release-bundle.outputs.release_tag }}
+    steps:
+      - name: Download immutable release artifact bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${RELEASE_RUN_ID}" || (echo "::error::Missing release workflow run id." && exit 1)
+          timeout --preserve-status 120s gh run download "${RELEASE_RUN_ID}" --name create-sentinelayer-release-bundle --dir provenance-proof
+
+      - name: Verify promoted quality artifact attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < provenance-proof/create-sentinelayer.tarball)"
+          tarball_path="provenance-proof/${tarball_name}"
+          expected_sha="$(awk 'NF {print $1; exit}' provenance-proof/create-sentinelayer.sha256)"
+          manifest_path="provenance-proof/quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
+          test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
+          test -f "${tarball_path}" || (echo "::error::Tarball '${tarball_name}' missing from release artifact bundle." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_commit="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          if [[ "${manifest_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release artifact digest mismatch between manifest (${manifest_sha}) and promoted tarball digest (${expected_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Release artifact manifest commit mismatch (manifest=${manifest_commit}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          timeout --preserve-status 90s gh attestation verify "${tarball_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > provenance-proof/release-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' provenance-proof/release-attestation.verify.json >/dev/null; then
+            echo "::error::Release artifact attestation does not include expected digest ${expected_sha}."
+            exit 1
+          fi
+          echo "Release provenance verified for ${RELEASE_TAG} (${TARGET_SHA})."
+
   prepare-release-bundle:
     name: Prepare Release Bundle
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [resolve-release-bundle]
+    needs: [resolve-release-bundle, verify-provenance]
     concurrency:
       group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
       cancel-in-progress: false

@@ -132,7 +132,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          source scripts/ci/gh-api-retry.sh
+          env_json="$(gh_api_json "repos/${REPO}/environments/release-management")"
           reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           if [[ "${reviewer_count}" -lt 1 ]]; then
             echo "::error::release-management environment must require at least one reviewer."
@@ -147,8 +148,9 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           branch_name="${DEFAULT_BRANCH:-main}"
-          protection_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")"
+          protection_json="$(gh_api_json "repos/${REPO}/branches/${branch_name}/protection")"
           strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
           if [[ "${strict_checks}" != "true" ]]; then
             echo "::error::Branch protection for '${branch_name}' must enforce strict required checks."
@@ -182,6 +184,7 @@ jobs:
           ROLLBACK_PROOF_MAX_AGE_DAYS: ${{ env.ROLLBACK_PROOF_MAX_AGE_DAYS }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           normalize_bool() {
             local raw
             raw="$(echo "${1:-false}" | tr -d '\r' | xargs || true)"
@@ -195,7 +198,7 @@ jobs:
           case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid rollback freshness window '${max_age_days}'." ; exit 1 ;; esac
           now_epoch="$(date -u +%s)"
           max_age_seconds=$((max_age_days * 86400))
-          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=50" -H "Accept: application/vnd.github+json")"
+          runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=50")"
           selected_run_id=""
           selected_run_created_at=""
           selected_proof_file=""
@@ -259,6 +262,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/release/backoff.sh
+          source scripts/ci/gh-api-retry.sh
           retry_attempt=0
           max_backoff_retries=24
           retry_with_backoff() {
@@ -273,7 +277,7 @@ jobs:
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             api_status=0
-            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
+            runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
               echo "quality-gates lookup timed out or failed (status=${api_status}); retrying."
               retry_with_backoff "quality-gates lookup"
@@ -321,6 +325,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/release/backoff.sh
+          source scripts/ci/gh-api-retry.sh
           retry_attempt=0
           max_backoff_retries=24
           retry_with_backoff() {
@@ -335,7 +340,7 @@ jobs:
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             api_status=0
-            check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || api_status=$?
+            check_runs_json="$(gh_api_json "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
               echo "omar-gate check-run lookup timed out or failed (status=${api_status}); retrying."
               retry_with_backoff "omar check-run lookup"
@@ -361,7 +366,7 @@ jobs:
                 exit 1
               fi
               run_lookup_status=0
-              omar_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${omar_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
+              omar_run="$(gh_api_json "repos/${REPO}/actions/runs/${omar_run_id}")" || run_lookup_status=$?
               if [[ "${run_lookup_status}" -ne 0 ]]; then
                 echo "Unable to resolve Omar workflow run metadata for run_id=${omar_run_id}; retrying."
                 retry_with_backoff "omar run metadata lookup"
@@ -379,7 +384,7 @@ jobs:
               exit 0
             fi
             pr_lookup_status=0
-            commit_prs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/pulls" -H "Accept: application/vnd.github+json")" || pr_lookup_status=$?
+            commit_prs_json="$(gh_api_json "repos/${REPO}/commits/${TARGET_SHA}/pulls")" || pr_lookup_status=$?
             if [[ "${pr_lookup_status}" -ne 0 ]]; then
               echo "Unable to resolve associated pull requests for ${TARGET_SHA}; retrying."
               retry_with_backoff "canonical PR lookup"
@@ -423,7 +428,7 @@ jobs:
               exit 1
             fi
             pr_check_status=0
-            pr_check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${source_pr_head_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || pr_check_status=$?
+            pr_check_runs_json="$(gh_api_json "repos/${REPO}/commits/${source_pr_head_sha}/check-runs?per_page=100")" || pr_check_status=$?
             if [[ "${pr_check_status}" -ne 0 ]]; then
               echo "Unable to resolve Omar check-runs for source PR head ${source_pr_head_sha}; retrying."
               retry_with_backoff "source PR omar check-run lookup"
@@ -453,7 +458,7 @@ jobs:
             fi
             omar_run_id="$(echo "${pr_omar_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
             run_lookup_status=0
-            omar_run="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${omar_run_id}" -H "Accept: application/vnd.github+json")" || run_lookup_status=$?
+            omar_run="$(gh_api_json "repos/${REPO}/actions/runs/${omar_run_id}")" || run_lookup_status=$?
             if [[ "${run_lookup_status}" -ne 0 ]]; then
               echo "Unable to resolve Omar workflow run metadata for fallback run_id=${omar_run_id}; retrying."
               retry_with_backoff "fallback omar run metadata lookup"
@@ -482,6 +487,7 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           if ! grep -Eq '^[[:space:]]+branches:' .github/workflows/release.yml; then
             echo "Release workflow push trigger is tag-only; skipping same-SHA baseline run assertion for ${TARGET_SHA}."
             echo "release_run_id=" >> "$GITHUB_OUTPUT"
@@ -502,7 +508,7 @@ jobs:
           deadline=$((SECONDS + 600))
           while (( SECONDS < deadline )); do
             api_status=0
-            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
+            runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${TARGET_SHA}&per_page=20")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
               echo "release workflow lookup timed out or failed (status=${api_status}); retrying."
               retry_with_backoff "release workflow lookup"

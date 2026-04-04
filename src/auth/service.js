@@ -47,8 +47,12 @@ const RETRYABLE_AUTH_POLL_CODES = new Set([
 ]);
 const AUTH_POLL_JITTER_SALT = getSharedRequestJitterSalt("auth-poll-backoff");
 const ALLOW_INSECURE_LOCAL_HTTP_ENV = "SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP";
+const INSECURE_LOCAL_HTTP_CONSENT_ENV = "SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT";
+const INSECURE_LOCAL_HTTP_CONSENT_NAMESPACE = "sentinelayer-cli-insecure-local-http-v1";
 const PRIVILEGED_SCOPE_CONFIRM_ENV = "SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM";
 const PRIVILEGED_SCOPE_CONFIRM_TOKEN = "I_ACKNOWLEDGE_GITHUB_APP_BRIDGE_SCOPE";
+const LOCAL_HTTP_EPHEMERAL_PORT_MIN = 49_152;
+const LOCAL_HTTP_PORT_ALLOWLIST = new Set([3000, 4173, 5173, 8000, 8080, 8787, 9000, 9443]);
 const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
@@ -79,6 +83,77 @@ function hasPrivilegedScopePolicyConsent(env = process.env) {
   return rawConsentToken === PRIVILEGED_SCOPE_CONFIRM_TOKEN;
 }
 
+function normalizeLoopbackHostname(rawHostname = "") {
+  const normalized = String(rawHostname || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "[::1]") {
+    return "::1";
+  }
+  return normalized;
+}
+
+function isLoopbackHostname(rawHostname = "") {
+  const hostname = normalizeLoopbackHostname(rawHostname);
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function parseExplicitPort(urlValue) {
+  const rawPort = String(urlValue?.port || "").trim();
+  if (!rawPort) {
+    return null;
+  }
+  const parsedPort = Number(rawPort);
+  if (!Number.isInteger(parsedPort)) {
+    return null;
+  }
+  return parsedPort;
+}
+
+function isAllowedInsecureLocalHttpPort(port) {
+  const normalizedPort = Math.floor(Number(port));
+  if (!Number.isInteger(normalizedPort) || normalizedPort < 1 || normalizedPort > 65_535) {
+    return false;
+  }
+  if (normalizedPort >= LOCAL_HTTP_EPHEMERAL_PORT_MIN) {
+    return true;
+  }
+  return LOCAL_HTTP_PORT_ALLOWLIST.has(normalizedPort);
+}
+
+function buildInsecureLocalHttpConsentToken(hostname) {
+  const normalizedHostname = normalizeLoopbackHostname(hostname);
+  return crypto
+    .createHash("sha256")
+    .update(`${INSECURE_LOCAL_HTTP_CONSENT_NAMESPACE}:${normalizedHostname}`)
+    .digest("hex");
+}
+
+function hasInsecureLocalHttpConsent(hostname, env = process.env) {
+  const expected = buildInsecureLocalHttpConsentToken(hostname);
+  const providedToken = env?.[INSECURE_LOCAL_HTTP_CONSENT_ENV] ?? process.env[INSECURE_LOCAL_HTTP_CONSENT_ENV];
+  const provided = String(providedToken || "")
+    .trim()
+    .toLowerCase();
+  if (!provided || provided.length !== expected.length) {
+    return false;
+  }
+  try {
+    return crypto.timingSafeEqual(Buffer.from(provided, "utf8"), Buffer.from(expected, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+function isInsecureLoopbackHttpApiUrl(rawApiUrl) {
+  try {
+    const parsed = new URL(String(rawApiUrl || ""));
+    return parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function normalizeApiUrl(
   rawValue,
   { env = process.env, allowInsecureLocalHttp = false } = {}
@@ -90,16 +165,37 @@ function normalizeApiUrl(
   } catch {
     throw new Error(`Invalid API URL '${candidate}'.`);
   }
-  const hostname = String(parsed.hostname || "").trim().toLowerCase();
-  const isLocalDevEndpoint =
-    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  const hostname = normalizeLoopbackHostname(parsed.hostname);
+  const isLocalDevEndpoint = isLoopbackHostname(hostname);
+  if (parsed.username || parsed.password) {
+    throw new Error(`Invalid API URL '${candidate}': URL credentials are not allowed.`);
+  }
   if (parsed.protocol === "http:" && isLocalDevEndpoint) {
     const allowInsecureLocalHttpEnv = isEnabledFlag(env?.[ALLOW_INSECURE_LOCAL_HTTP_ENV]);
     const allowInsecureLocalHttpRuntime = Boolean(allowInsecureLocalHttp);
     const runningInCi = isEnabledFlag(env?.CI);
+    const localPort = parseExplicitPort(parsed);
     if (!allowInsecureLocalHttpEnv || !allowInsecureLocalHttpRuntime || runningInCi) {
       throw new Error(
         `Invalid API URL '${candidate}': localhost HTTP requires ${ALLOW_INSECURE_LOCAL_HTTP_ENV}=true plus explicit runtime opt-in and is blocked when CI=true.`
+      );
+    }
+    if (!Number.isInteger(localPort)) {
+      throw new Error(
+        `Invalid API URL '${candidate}': localhost HTTP requires an explicit loopback port.`
+      );
+    }
+    if (!isAllowedInsecureLocalHttpPort(localPort)) {
+      throw new Error(
+        `Invalid API URL '${candidate}': localhost HTTP port ${localPort} is not allowlisted (use >=${LOCAL_HTTP_EPHEMERAL_PORT_MIN} or one of ${[
+          ...LOCAL_HTTP_PORT_ALLOWLIST,
+        ].join(", ")}).`
+      );
+    }
+    if (!hasInsecureLocalHttpConsent(hostname, env)) {
+      const expectedConsent = buildInsecureLocalHttpConsentToken(hostname);
+      throw new Error(
+        `Invalid API URL '${candidate}': localhost HTTP requires ${INSECURE_LOCAL_HTTP_CONSENT_ENV}=${expectedConsent}.`
       );
     }
   } else if (parsed.protocol !== "https:") {
@@ -686,7 +782,10 @@ function defaultTokenLabel() {
   return `sl-cli-session-${stamp}`;
 }
 
-function resolveApiTokenScope(rawScope = "", { allowPrivilegedScope = false, env = process.env } = {}) {
+function resolveApiTokenScope(
+  rawScope = "",
+  { allowPrivilegedScope = false, env = process.env, apiUrl = "" } = {}
+) {
   const normalized = String(rawScope || "").trim().toLowerCase();
   if (!normalized) {
     return DEFAULT_API_TOKEN_SCOPE;
@@ -707,6 +806,11 @@ function resolveApiTokenScope(rawScope = "", { allowPrivilegedScope = false, env
   if (normalized === PRIVILEGED_API_TOKEN_SCOPE && !hasPrivilegedScopePolicyConsent(env)) {
     throw new Error(
       `tokenScope github_app_bridge requires policy confirmation. Export ${PRIVILEGED_SCOPE_CONFIRM_ENV}=${PRIVILEGED_SCOPE_CONFIRM_TOKEN}.`
+    );
+  }
+  if (normalized === PRIVILEGED_API_TOKEN_SCOPE && isInsecureLoopbackHttpApiUrl(apiUrl)) {
+    throw new Error(
+      "tokenScope github_app_bridge is disabled when API URL uses insecure localhost HTTP transport."
     );
   }
   return normalized;
@@ -1066,6 +1170,10 @@ export function __buildApiPathForTests(apiUrl, pathSuffix) {
   return buildApiPath(apiUrl, pathSuffix);
 }
 
+export function __buildInsecureLocalHttpConsentTokenForTests(hostname = "127.0.0.1") {
+  return buildInsecureLocalHttpConsentToken(hostname);
+}
+
 async function fetchCurrentUser({ apiUrl, token }) {
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/me"), {
     method: "GET",
@@ -1090,7 +1198,7 @@ async function issueApiToken({
     headers: toAuthHeader(authToken),
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: resolveApiTokenScope(tokenScope, { allowPrivilegedScope, env }),
+      scope: resolveApiTokenScope(tokenScope, { allowPrivilegedScope, env, apiUrl }),
       llm_credential_mode: "managed",
       expires_in_days: expiresInDays,
     },

@@ -8,6 +8,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
   __buildApiPathForTests,
+  __buildInsecureLocalHttpConsentTokenForTests,
   __pollCliAuthSessionForTests,
   __readAuthPollResumeStateForTests,
   __resolveAuthPollBackendCooldownForTests,
@@ -31,16 +32,24 @@ import {
 } from "../src/auth/session-store.js";
 
 const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+const previousInsecureLocalHttpConsent = process.env.SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT;
 process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = __buildFileStorageConsentTokenForTests([
   "https://api.sentinelayer.com",
   "https://api.sentinelayer.dev",
   "http://127.0.0.1",
 ]);
+process.env.SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT =
+  __buildInsecureLocalHttpConsentTokenForTests("127.0.0.1");
 test.after(() => {
   if (previousFileStorageConsent === undefined) {
     delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
   } else {
     process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = previousFileStorageConsent;
+  }
+  if (previousInsecureLocalHttpConsent === undefined) {
+    delete process.env.SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT;
+  } else {
+    process.env.SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT = previousInsecureLocalHttpConsent;
   }
 });
 
@@ -578,6 +587,37 @@ test("Unit auth service: localhost HTTP API URL requires explicit opt-in flag", 
         env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true" },
       }),
     /explicit runtime opt-in/i
+  );
+});
+
+test("Unit auth service: localhost HTTP API URL requires cryptographic consent token", async () => {
+  await assert.rejects(
+    () =>
+      resolveApiUrl({
+        explicitApiUrl: "http://127.0.0.1:9443",
+        env: {
+          SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true",
+          SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT: "",
+        },
+        allowInsecureLocalHttp: true,
+      }),
+    /requires SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT/i
+  );
+});
+
+test("Unit auth service: localhost HTTP API URL requires allowlisted high/random port", async () => {
+  await assert.rejects(
+    () =>
+      resolveApiUrl({
+        explicitApiUrl: "http://127.0.0.1:1023",
+        env: {
+          SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "true",
+          SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT:
+            __buildInsecureLocalHttpConsentTokenForTests("127.0.0.1"),
+        },
+        allowInsecureLocalHttp: true,
+      }),
+    /port 1023 is not allowlisted/i
   );
 });
 
@@ -1325,7 +1365,7 @@ test("Unit auth service: privileged token scope requires explicit opt-in flag", 
   }
 });
 
-test("Unit auth service: login supports explicit privileged token scope override", async () => {
+test("Unit auth service: privileged token scope is disabled on insecure localhost HTTP transport", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
 
@@ -1334,28 +1374,31 @@ test("Unit auth service: login supports explicit privileged token scope override
 
   try {
     await withMockTty(true, async () => {
-      await loginAndPersistSession({
-        cwd: tempRoot,
-        env: {
-          SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1",
-          SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM: "I_ACKNOWLEDGE_GITHUB_APP_BRIDGE_SCOPE",
-        },
-        homeDir: tempRoot,
-        explicitApiUrl: mock.apiUrl,
-        allowInsecureLocalHttp: true,
-        skipBrowserOpen: true,
-        timeoutMs: 5000,
-        tokenLabel: "unit-test-token",
-        tokenTtlDays: 30,
-        tokenScope: "github_app_bridge",
-        allowPrivilegedScope: true,
-        allowFileStorageFallback: true,
-        ide: "unit-test",
-        cliVersion: "0.0.0-test",
-      });
+      await assert.rejects(
+        () =>
+          loginAndPersistSession({
+            cwd: tempRoot,
+            env: {
+              SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1",
+              SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM: "I_ACKNOWLEDGE_GITHUB_APP_BRIDGE_SCOPE",
+            },
+            homeDir: tempRoot,
+            explicitApiUrl: mock.apiUrl,
+            allowInsecureLocalHttp: true,
+            skipBrowserOpen: true,
+            timeoutMs: 5000,
+            tokenLabel: "unit-test-token",
+            tokenTtlDays: 30,
+            tokenScope: "github_app_bridge",
+            allowPrivilegedScope: true,
+            allowFileStorageFallback: true,
+            ide: "unit-test",
+            cliVersion: "0.0.0-test",
+          }),
+        /disabled when API URL uses insecure localhost HTTP transport/i
+      );
     });
-    assert.equal(mock.state.tokenIssueBodies.length, 1);
-    assert.equal(mock.state.tokenIssueBodies[0].scope, "github_app_bridge");
+    assert.equal(mock.state.tokenIssueCalls, 0);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
