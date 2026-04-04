@@ -1263,6 +1263,34 @@ async function upsertEnvVariable(filePath, key, value) {
   await writeTextFile(filePath, next);
 }
 
+async function ensureEnvFileIgnored(projectDir) {
+  const gitignorePath = path.join(projectDir, ".gitignore");
+  let existing = "";
+  if (fs.existsSync(gitignorePath)) {
+    existing = await fsp.readFile(gitignorePath, "utf-8");
+  }
+
+  const lines = existing.split(/\r?\n/);
+  const hasEntry = lines.some((line) => {
+    const normalized = String(line || "").trim();
+    return normalized === ".env" || normalized === "/.env";
+  });
+  if (hasEntry) {
+    return;
+  }
+
+  const envEntry = ".env";
+  let next = "";
+  if (existing.trim().length === 0) {
+    next = `${envEntry}\n`;
+  } else if (existing.endsWith("\n")) {
+    next = `${existing}${envEntry}\n`;
+  } else {
+    next = `${existing}\n${envEntry}\n`;
+  }
+  await writeTextFile(gitignorePath, next);
+}
+
 async function ensureSentinelStartScript(projectDir, projectName) {
   const packagePath = path.join(projectDir, "package.json");
   const fallback = {
@@ -1587,6 +1615,27 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
       reason: String(result.stderr || result.stdout || "gh secret set failed").trim(),
     };
   }
+
+  const verifyResult = spawnSync(ghCommand, ["secret", "list", "--repo", normalizedRepo], {
+    encoding: "utf-8",
+  });
+  if (verifyResult.status !== 0) {
+    return {
+      ok: false,
+      reason: String(verifyResult.stderr || verifyResult.stdout || "gh secret list failed").trim(),
+    };
+  }
+
+  const listedSecrets = String(verifyResult.stdout || "");
+  const escapedSecretName = String(secretName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const secretRegex = new RegExp(`(^|\\r?\\n)\\s*${escapedSecretName}(\\s|$)`, "m");
+  if (!secretRegex.test(listedSecrets)) {
+    return {
+      ok: false,
+      reason: `Secret '${secretName}' was not visible in gh secret list output after injection.`,
+    };
+  }
+
   return { ok: true };
 }
 
@@ -2103,6 +2152,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
 
   await ensureSentinelStartScript(projectDir, effectiveProjectName);
   if (sentinelayerToken) {
+    await ensureEnvFileIgnored(projectDir);
     await upsertEnvVariable(path.join(projectDir, ".env"), secretName, sentinelayerToken);
   }
   await ensureGitRepositorySetup({

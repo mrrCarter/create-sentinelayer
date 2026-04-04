@@ -661,9 +661,12 @@ echo "SENTINELAYER_TOKEN=<your-token>" >> .env
 
 ```bash
 gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
+gh secret list --repo <owner/repo>
 ```
 
-3. BYOK mode (no Sentinelayer token):
+3. For manual setup details: `https://docs.sentinelayer.com/cli/secret-setup`
+
+4. BYOK mode (no Sentinelayer token):
    - keep generated `docs/spec.md`, `docs/build-guide.md`, `prompts/execution-prompt.md`, and `tasks/todo.md`
    - run your coding agent directly with your provider key (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`)
    - generated workflow is a BYOK reminder workflow; wire `SENTINELAYER_TOKEN` later to enable Omar Gate action
@@ -749,7 +752,7 @@ Generate and validate a spec-aligned security workflow:
 - `create-sentinelayer scan init --path . --has-e2e-tests yes --playwright-mode auto`
 - `create-sentinelayer scan validate --path . --json`
 
-`scan init` writes `.github/workflows/security-review.yml` and derives:
+`scan init` writes `.github/workflows/omar-gate.yml` and derives:
 
 - `scan_mode` + `severity_gate` from spec risk profile
 - `playwright_mode` from spec signals + optional E2E wizard/flags

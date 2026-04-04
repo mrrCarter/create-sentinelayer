@@ -1,6 +1,6 @@
 import YAML from "yaml";
 
-export const DEFAULT_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
+export const DEFAULT_SCAN_WORKFLOW_PATH = ".github/workflows/omar-gate.yml";
 export const DEFAULT_SCAN_SECRET_NAME = "SENTINELAYER_TOKEN";
 export const SENTINELAYER_ACTION_REF = "mrrCarter/sentinelayer-v1-action@55a2c158f637d7d92e26ab0ef3ba81db791da4be";
 export const SUPPORTED_E2E_HINTS = Object.freeze(["auto", "yes", "no"]);
@@ -9,6 +9,7 @@ export const SUPPORTED_PLAYWRIGHT_MODES = Object.freeze(["auto", "off", "baselin
 const CHECKOUT_ACTION_REF = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683";
 const SETUP_NODE_ACTION_REF = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020";
 const SECRET_NAME_REGEX = /^[A-Z][A-Z0-9_]*$/;
+const REPO_SLUG_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 function normalizeChoice(rawValue, allowed, label) {
   const normalized = String(rawValue || "").trim().toLowerCase();
@@ -148,7 +149,7 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
   const normalizedSecret = sanitizeSecretName(secretName);
 
   const document = {
-    name: "Security Review",
+    name: "Omar Gate",
     on: {
       pull_request: {
         types: ["opened", "synchronize", "reopened"],
@@ -161,8 +162,8 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
       checks: "write",
     },
     jobs: {
-      security_review: {
-        name: "Omar Security Review",
+      omar_gate: {
+        name: "Omar Gate",
         "runs-on": "ubuntu-22.04",
         "timeout-minutes": 20,
         steps: [
@@ -187,7 +188,7 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
             run: "npm run verify",
           },
           {
-            name: "Omar Gate",
+            name: "Run Omar Gate",
             uses: SENTINELAYER_ACTION_REF,
             with: {
               sentinelayer_token: `\${{ secrets.${normalizedSecret} }}`,
@@ -329,12 +330,21 @@ export function validateSecurityReviewWorkflow({
   };
 }
 
-export function buildSecretSetupInstructions(secretName = DEFAULT_SCAN_SECRET_NAME) {
+export function buildSecretSetupInstructions(
+  secretName = DEFAULT_SCAN_SECRET_NAME,
+  { repoSlug = "" } = {}
+) {
   const normalizedSecret = sanitizeSecretName(secretName);
+  const normalizedRepoSlug = String(repoSlug || "").trim();
+  const resolvedRepoSlug = REPO_SLUG_REGEX.test(normalizedRepoSlug)
+    ? normalizedRepoSlug
+    : "<owner/repo>";
   return [
     "Set the Sentinelayer token secret before relying on this workflow in PR checks:",
-    `- gh secret set ${normalizedSecret} --repo <owner/repo>`,
-    "- Commit and push .github/workflows/security-review.yml",
+    `- gh secret set ${normalizedSecret} --repo ${resolvedRepoSlug}`,
+    `- Verify secret visibility: gh secret list --repo ${resolvedRepoSlug}`,
+    "- Commit and push .github/workflows/omar-gate.yml",
+    "- For manual setup: https://docs.sentinelayer.com/cli/secret-setup",
   ];
 }
 

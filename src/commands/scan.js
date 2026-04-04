@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -29,6 +30,8 @@ import {
 } from "../scan/generator.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 
+const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
+
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
   const globalFromCommand =
@@ -48,6 +51,82 @@ function resolveSpecPath(targetPath, explicitSpecFile) {
     throw new Error("No spec file found. Provide --spec-file or generate SPEC.md first.");
   }
   return found;
+}
+
+function normalizeRepoSlug(value) {
+  return String(value || "").trim().replace(/\.git$/i, "");
+}
+
+function parseRepoSlugFromRemote(remoteUrl) {
+  const remote = String(remoteUrl || "").trim();
+  if (!remote) {
+    return "";
+  }
+
+  const sshMatch = remote.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return normalizeRepoSlug(`${sshMatch[1]}/${sshMatch[2]}`);
+  }
+
+  const httpsMatch = remote.match(/^https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/i);
+  if (httpsMatch) {
+    return normalizeRepoSlug(`${httpsMatch[1]}/${httpsMatch[2]}`);
+  }
+
+  const sshUrlMatch = remote.match(/^ssh:\/\/git@github\.com\/([^/]+)\/(.+?)(?:\.git)?$/i);
+  if (sshUrlMatch) {
+    return normalizeRepoSlug(`${sshUrlMatch[1]}/${sshUrlMatch[2]}`);
+  }
+
+  return "";
+}
+
+function detectRepoSlugFromGit(targetPath) {
+  const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
+    cwd: targetPath,
+    encoding: "utf-8",
+  });
+  if (result.status !== 0) {
+    return "";
+  }
+  return parseRepoSlugFromRemote(result.stdout);
+}
+
+function resolveWorkflowPathForCommand({
+  targetPath,
+  explicitWorkflowFile = "",
+  preferExistingLegacy = true,
+} = {}) {
+  const explicit = String(explicitWorkflowFile || "").trim();
+  if (explicit) {
+    return {
+      workflowFile: explicit,
+      workflowPath: path.resolve(targetPath, explicit),
+    };
+  }
+
+  const preferredWorkflowPath = path.resolve(targetPath, DEFAULT_SCAN_WORKFLOW_PATH);
+  if (fs.existsSync(preferredWorkflowPath)) {
+    return {
+      workflowFile: DEFAULT_SCAN_WORKFLOW_PATH,
+      workflowPath: preferredWorkflowPath,
+    };
+  }
+
+  if (preferExistingLegacy) {
+    const legacyWorkflowPath = path.resolve(targetPath, LEGACY_SCAN_WORKFLOW_PATH);
+    if (fs.existsSync(legacyWorkflowPath)) {
+      return {
+        workflowFile: LEGACY_SCAN_WORKFLOW_PATH,
+        workflowPath: legacyWorkflowPath,
+      };
+    }
+  }
+
+  return {
+    workflowFile: DEFAULT_SCAN_WORKFLOW_PATH,
+    workflowPath: preferredWorkflowPath,
+  };
 }
 
 function normalizeE2EHint(rawValue) {
@@ -256,14 +335,10 @@ export function registerScanCommand(program) {
 
   scan
     .command("init")
-    .description("Generate .github/workflows/security-review.yml from spec context")
+    .description("Generate .github/workflows/omar-gate.yml from spec context")
     .option("--path <path>", "Target workspace path", ".")
     .option("--spec-file <path>", "Spec file path relative to --path")
-    .option(
-      "--workflow-file <path>",
-      "Workflow output path relative to --path",
-      DEFAULT_SCAN_WORKFLOW_PATH
-    )
+    .option("--workflow-file <path>", "Workflow output path relative to --path")
     .option(
       "--secret-name <name>",
       "GitHub Actions secret name for sentinelayer_token",
@@ -283,8 +358,13 @@ export function registerScanCommand(program) {
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const workflowFile = String(options.workflowFile || DEFAULT_SCAN_WORKFLOW_PATH).trim();
-      const workflowPath = path.resolve(targetPath, workflowFile);
+      const workflowTarget = resolveWorkflowPathForCommand({
+        targetPath,
+        explicitWorkflowFile: options.workflowFile,
+        preferExistingLegacy: true,
+      });
+      const workflowFile = workflowTarget.workflowFile;
+      const workflowPath = workflowTarget.workflowPath;
       const specPath = resolveSpecPath(targetPath, options.specFile);
       const specMarkdown = await fsp.readFile(specPath, "utf-8");
 
@@ -321,7 +401,9 @@ export function registerScanCommand(program) {
       await fsp.mkdir(path.dirname(workflowPath), { recursive: true });
       await fsp.writeFile(workflowPath, workflowMarkdown, "utf-8");
 
-      const instructions = buildSecretSetupInstructions(options.secretName);
+      const instructions = buildSecretSetupInstructions(options.secretName, {
+        repoSlug: detectRepoSlugFromGit(targetPath),
+      });
       const payload = {
         command: "scan init",
         targetPath,
@@ -361,14 +443,10 @@ export function registerScanCommand(program) {
 
   scan
     .command("validate")
-    .description("Validate existing security-review workflow against current spec profile")
+    .description("Validate existing Omar Gate workflow against current spec profile")
     .option("--path <path>", "Target workspace path", ".")
     .option("--spec-file <path>", "Spec file path relative to --path")
-    .option(
-      "--workflow-file <path>",
-      "Workflow file path relative to --path",
-      DEFAULT_SCAN_WORKFLOW_PATH
-    )
+    .option("--workflow-file <path>", "Workflow file path relative to --path")
     .option("--secret-name <name>", "Expected GitHub Actions secret name", "SENTINELAYER_TOKEN")
     .option(
       "--has-e2e-tests <mode>",
@@ -384,10 +462,11 @@ export function registerScanCommand(program) {
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const specPath = resolveSpecPath(targetPath, options.specFile);
-      const workflowPath = path.resolve(
+      const workflowPath = resolveWorkflowPathForCommand({
         targetPath,
-        String(options.workflowFile || DEFAULT_SCAN_WORKFLOW_PATH).trim()
-      );
+        explicitWorkflowFile: options.workflowFile,
+        preferExistingLegacy: true,
+      }).workflowPath;
 
       const specMarkdown = await fsp.readFile(specPath, "utf-8");
       const workflowMarkdown = await fsp.readFile(workflowPath, "utf-8");
