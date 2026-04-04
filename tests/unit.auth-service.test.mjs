@@ -39,7 +39,7 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
-async function startAuthRuntimeMockApi() {
+async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
   const state = {
     pollCalls: 0,
     tokenIssueCalls: 0,
@@ -88,6 +88,10 @@ async function startAuthRuntimeMockApi() {
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/poll") {
         await readJsonBody(req);
         state.pollCalls += 1;
+        if (Array.isArray(pollResponses) && pollResponses.length > 0) {
+          const pollResponse = pollResponses[Math.min(state.pollCalls - 1, pollResponses.length - 1)];
+          return jsonResponse(res, Number(pollResponse.httpStatus || 200), pollResponse.payload || {});
+        }
         if (state.pollCalls === 1) {
           return jsonResponse(res, 200, { status: "pending" });
         }
@@ -274,6 +278,105 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const clearedSession = await readStoredSession({ homeDir: tempRoot });
     assert.equal(clearedSession, null);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login poll tolerates transient transport failures", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        httpStatus: 503,
+        payload: {
+          error: {
+            code: "TEMPORARY_UNAVAILABLE",
+            message: "Retry shortly",
+          },
+        },
+      },
+      {
+        httpStatus: 200,
+        payload: { status: "pending" },
+      },
+      {
+        httpStatus: 200,
+        payload: {
+          status: "approved",
+          auth_token: "auth_token_web_1",
+          user: {
+            id: "user_1",
+            github_username: "demo-user",
+            email: "demo@example.com",
+          },
+        },
+      },
+    ],
+  });
+
+  try {
+    const loginResult = await loginAndPersistSession({
+      cwd: tempRoot,
+      env: {},
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+    assert.equal(loginResult.user.githubUsername, "demo-user");
+    assert.equal(mock.state.pollCalls, 3);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: login fails fast when poll status is rejected", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [{ httpStatus: 200, payload: { status: "rejected" } }],
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        loginAndPersistSession({
+          cwd: tempRoot,
+          env: {},
+          homeDir: tempRoot,
+          explicitApiUrl: mock.apiUrl,
+          skipBrowserOpen: true,
+          timeoutMs: 5000,
+          tokenLabel: "unit-test-token",
+          tokenTtlDays: 30,
+          ide: "unit-test",
+          cliVersion: "0.0.0-test",
+        }),
+      /CLI authentication was not approved/
+    );
+    assert.equal(mock.state.pollCalls, 1);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

@@ -210,6 +210,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 143 daemon watchdog stuck-agent detection + Slack/Telegram alerts.
 - [x] PR 144 ingest staleness refresh and hash-aware cache controls.
 
+### Batch W - Omar Workflow Security Burn-Down (2026-04-04)
+- [ ] PR 145 release/release-please/omar workflow hardening (pinned actions, concurrency guards, fail-closed publish path, stricter Omar dispatch thresholds).
+
 ## Execution Board (2026-04-04)
 
 ### Omar Gate Loop (required on every PR)
@@ -225,7 +228,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. Queue cleared for current roadmap sequence (`PR 107` merged as #113).
+1. `roadmap/pr-145-release-pipeline-hardening`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.

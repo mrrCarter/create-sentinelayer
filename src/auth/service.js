@@ -146,19 +146,46 @@ async function pollCliAuthSession({
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
   const deadline = Date.now() + timeout;
+  const isTransientPollError = (error) =>
+    error instanceof SentinelayerApiError &&
+    (error.code === "NETWORK_ERROR" ||
+      error.code === "TIMEOUT" ||
+      error.status === 429 ||
+      error.status >= 500);
 
   while (Date.now() < deadline) {
-    const payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
-      method: "POST",
-      body: {
-        session_id: sessionId,
-        challenge,
-      },
-    });
+    let payload;
+    try {
+      payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
+        method: "POST",
+        body: {
+          session_id: sessionId,
+          challenge,
+        },
+      });
+    } catch (error) {
+      if (isTransientPollError(error)) {
+        await sleep(pollIntervalMs);
+        continue;
+      }
+      throw error;
+    }
 
     const status = String(payload.status || "pending").trim().toLowerCase();
     if (status === "approved" && payload.auth_token) {
       return payload;
+    }
+    if (status === "rejected" || status === "denied" || status === "cancelled") {
+      throw new SentinelayerApiError("CLI authentication was not approved.", {
+        status: 401,
+        code: "CLI_AUTH_REJECTED",
+      });
+    }
+    if (status === "expired") {
+      throw new SentinelayerApiError("CLI authentication session expired.", {
+        status: 401,
+        code: "CLI_AUTH_EXPIRED",
+      });
     }
 
     await sleep(pollIntervalMs);
