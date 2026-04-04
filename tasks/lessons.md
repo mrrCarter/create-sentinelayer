@@ -106,3 +106,6 @@
 - `node --test --test-name-pattern` is not a reliable shortcut for this suite in current tooling; assume full-file execution and budget validation time accordingly.
 - Ingest content-hash caches must exclude generated artifact roots (for example `.sentinelayer/`) or the ingest file invalidates its own fingerprint and appears perpetually stale.
 - Keep staleness semantics explicit during refresh flows: preserve stale-before-refresh reasoning for traceability, but report post-refresh state as non-stale to avoid misleading operator dashboards.
+- When a feature branch is attached to another git worktree, local branch checkout/deletion operations in the primary worktree will fail; either execute directly in the attached worktree or detach/remove it first.
+- Omar Gate runs on protected environments can remain in `waiting` until deployment approval; use `gh api repos/<org>/<repo>/actions/runs/<runId>/pending_deployments` to approve and unblock `gh run watch`.
+- `gh pr merge --delete-branch` can partially succeed (PR merged, local branch delete fails) when the branch is checked out in a different worktree; always verify merge state with `gh pr view --json state,mergedAt,mergeCommit`.
