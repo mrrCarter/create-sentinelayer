@@ -82,9 +82,17 @@ function secureRandomIntInclusive(minInclusive, maxInclusive) {
   try {
     return randomInt(min, max + 1);
   } catch {
-    const randomChunk = secureRandomBuffer(4);
-    if (randomChunk && randomChunk.length >= 4) {
-      return min + (randomChunk.readUInt32BE(0) % span);
+    const maxUint32PlusOne = 0x1_0000_0000;
+    const rejectionLimit = maxUint32PlusOne - (maxUint32PlusOne % span);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const randomChunk = secureRandomBuffer(4);
+      if (!randomChunk || randomChunk.length < 4) {
+        break;
+      }
+      const candidate = randomChunk.readUInt32BE(0);
+      if (candidate < rejectionLimit) {
+        return min + (candidate % span);
+      }
     }
   }
   return min;

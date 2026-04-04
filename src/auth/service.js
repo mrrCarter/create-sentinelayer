@@ -31,6 +31,7 @@ const MIN_AUTH_POLL_INTERVAL_MS = 250;
 const MAX_AUTH_POLL_ATTEMPTS = 300;
 const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
 const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
+const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 8;
 const MAX_TRACKED_POLL_REQUEST_IDS = 256;
 const AUTH_POLL_RESUME_STATE_VERSION = 1;
 const AUTH_POLL_RESUME_STATE_TTL_MS = 2 * 60 * 60 * 1000;
@@ -254,11 +255,11 @@ function resolveAuthPollIntervalMs(rawPollIntervalSeconds, fallbackSeconds = 2) 
 }
 
 function resolvePollWindowBucket(attempt) {
-  return Math.max(0, Math.floor(Number(attempt) || 0));
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  return Math.floor(normalizedAttempt / AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE);
 }
 
 function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
-  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
   const pollWindowBucket = resolvePollWindowBucket(attempt);
   return crypto
     .createHash("sha256")
@@ -267,7 +268,6 @@ function buildPollIdempotencyKey({ sessionId, pollClientId, attempt }) {
         String(sessionId || "").trim(),
         String(pollClientId || "").trim(),
         String(pollWindowBucket),
-        String(normalizedAttempt),
       ].join(":")
     )
     .digest("hex");

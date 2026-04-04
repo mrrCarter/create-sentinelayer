@@ -176,6 +176,7 @@ source_substitution_pattern='(source|\.)[[:space:]]*<\([[:space:]]*(curl|wget)[[
 shell_c_fetch_pattern='(bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]*[^[:space:]]*(curl|wget)'
 pwsh_pipe_iex_pattern='(powershell|pwsh)[^|;]*(iwr|invoke-webrequest|irm)[^|;]*\|[[:space:]]*iex'
 iex_iwr_pattern='iex[[:space:]]*\([[:space:]]*(iwr|invoke-webrequest|irm)'
+obfuscation_indirection_pattern='(\$\(|`|eval[[:space:]]|bash[[:space:]]+-c[[:space:]]*\$|sh[[:space:]]+-c[[:space:]]*\$|pwsh[[:space:]]+-c[[:space:]]*\$|powershell[[:space:]]+-c[[:space:]]*\$)'
 
 failures=0
 for workflow_file in "${workflow_files[@]}"; do
@@ -273,6 +274,9 @@ for workflow_file in "${workflow_files[@]}"; do
       remote_exec_detected="true"
     fi
     if [[ "${normalized_run}" =~ ${iex_iwr_pattern} ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${obfuscation_indirection_pattern} ]]; then
       remote_exec_detected="true"
     fi
     if [[ "${contains_network_fetch}" == "true" && "${contains_shell_sink}" == "true" ]]; then

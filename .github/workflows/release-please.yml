@@ -622,7 +622,7 @@ jobs:
           NODE
 
       - name: Run release-please
-        if: steps.release_scope.outputs.release_relevant == 'true'
+        if: steps.release_scope.outputs.release_relevant == 'true' && steps.quality_gate.outputs.quality_run_id != '' && steps.omar_gate.outputs.omar_run_id != ''
         timeout-minutes: 5
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:

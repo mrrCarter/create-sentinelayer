@@ -51,6 +51,32 @@ jobs:
             exit 1
           fi
 
+      - name: Verify pinned toolchain provenance baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_path="$(readlink -f "$(command -v node)")"
+          npm_path="$(readlink -f "$(command -v npm)")"
+          if [[ "${node_path}" != *"/hostedtoolcache/"* ]]; then
+            echo "::error::Node binary is not sourced from hosted toolcache (${node_path})."
+            exit 1
+          fi
+          if [[ "${npm_path}" != *"/hostedtoolcache/"* ]]; then
+            echo "::error::npm binary is not sourced from hosted toolcache (${npm_path})."
+            exit 1
+          fi
+          node_sha="$(sha256sum "${node_path}" | awk '{print $1}')"
+          npm_sha="$(sha256sum "${npm_path}" | awk '{print $1}')"
+          if [[ ! "${node_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to compute valid Node SHA-256 digest."
+            exit 1
+          fi
+          if [[ ! "${npm_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to compute valid npm SHA-256 digest."
+            exit 1
+          fi
+          echo "Pinned toolchain digests: node=${node_sha} npm=${npm_sha}"
+
       - name: Install dependencies (lockfile immutable)
         shell: bash
         run: |

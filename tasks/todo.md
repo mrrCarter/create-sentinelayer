@@ -1016,5 +1016,20 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.auth-session-store.test.mjs` (pass; `190/194` with 4 env-skipped bash tests)
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `190/194` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-fourth-cycle hardening batch.
+- [x] Commit + push thirty-fourth-cycle hardening batch (`e07a78f`) and execute full Omar loop:
+  - `gh run watch 23974224971 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23974224957`.
+  - `gh run watch 23974224957 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=6`, `run_id=7b3fbb75-4dcf-46d8-be36-f5ee7b17c682`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=7b3fbb75-4dcf-46d8-be36-f5ee7b17c682`) and apply thirty-fifth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: migrate trigger to `pull_request_target` with explicit same-repo/fork guard conditions and protected-ref policy mapping to target event semantics.
+  - `.github/workflows/quality-gates.yml`: add deterministic pinned toolchain provenance baseline step (hosted toolcache path assertion + SHA-256 digest validation).
+  - `.github/workflows/release-please.yml`: require both upstream quality and Omar gate resolution outputs before mutation step (`Run release-please`) can execute.
+  - `scripts/ci/verify-action-shas.sh`: extend remote-exec detector to flag network-fetch commands paired with obfuscation/indirection execution shells.
+  - `src/auth/http.js`: replace modulo fallback in secure jitter helper with rejection-sampling CSPRNG logic to avoid distribution bias.
+  - `src/auth/service.js`: restore bounded poll idempotency window bucketing (`AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE=8`) and update unit assertions for logical-window key reuse.
+- [x] Run thirty-fifth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.auth-session-store.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; `190/194` with 4 env-skipped bash tests)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `190/194` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-fifth-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

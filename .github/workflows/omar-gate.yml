@@ -1,7 +1,7 @@
 name: Omar Gate
 
 on:
-  pull_request:
+  pull_request_target:
     types:
       - opened
       - synchronize
@@ -40,7 +40,7 @@ jobs:
   omar_gate:
     name: Omar Gate
     runs-on: ubuntu-22.04
-    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false) }}
+    if: ${{ github.event_name != 'pull_request_target' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false) }}
     environment: security-review
     permissions:
       contents: read
@@ -50,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - name: Enforce trusted PR source for secret-backed scan
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request_target' }}
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
@@ -63,7 +63,7 @@ jobs:
             exit 1
           fi
       - name: Verify security-review environment protections
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request_target' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -246,7 +246,7 @@ jobs:
 
           protected_ref="false"
           case "${EVENT_NAME}" in
-            pull_request)
+            pull_request_target)
               if [[ "${PR_BASE_REF}" == "${default_branch}" ]]; then
                 protected_ref="true"
               fi

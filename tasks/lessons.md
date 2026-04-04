@@ -259,3 +259,8 @@
 - Env-overridable local state directories need explicit hardening (no UNC paths, no symlinks, private permissions) before read/write/lock operations to prevent path hijack/tamper channels.
 - Poll idempotency keys should be per-attempt and resume-state aware; bucketed/windowed reuse can allow duplicate mutation windows under retries and restarts.
 - File-backed credential fallback should require explicit policy-confirmation tokens in addition to `--no-keyring`; fallback without deterministic operator acknowledgment is an avoidable secret-handling risk.
+- When using `pull_request_target` for secret-backed workflows, pair it with strict same-repo/non-fork guards and event-aware policy logic so privileged scans cannot execute against untrusted fork context.
+- Release mutation jobs should require explicit successful upstream gate-run IDs (`quality` and `Omar`) before execution; checking only release-scope booleans is not sufficient provenance.
+- Jitter/random helper fallbacks must avoid modulo reduction on bounded integer ranges; use rejection sampling to prevent bias in retry timing distributions.
+- Remote-exec detection for workflow shell commands should treat network-fetch + obfuscated shell indirection (`$()`, backticks, `eval`, `*-c $...`) as high-risk even when direct pipe patterns are absent.
+- Toolchain provenance checks are stronger when CI asserts both expected toolcache source paths and cryptographic digests for active `node`/`npm` binaries.
