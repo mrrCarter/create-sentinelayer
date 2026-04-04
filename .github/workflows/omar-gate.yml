@@ -181,16 +181,11 @@ jobs:
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "::error::Missing SENTINELAYER_TOKEN" && exit 1)
-          test -n "${OPENAI_API_KEY}" || (echo "::error::Missing OPENAI_API_KEY" && exit 1)
           if [[ -n "${SENTINELAYER_TOKEN}" ]]; then
             echo "::add-mask::${SENTINELAYER_TOKEN}"
-          fi
-          if [[ -n "${OPENAI_API_KEY}" ]]; then
-            echo "::add-mask::${OPENAI_API_KEY}"
           fi
       - name: Enforce pinned Omar action SHA policy
         shell: bash
@@ -275,8 +270,7 @@ jobs:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: "false"
+          sentinelayer_managed_llm: "true"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ steps.gate_policy.outputs.severity_gate }}
           model: ${{ env.OMAR_MODEL_ID }}
@@ -350,10 +344,9 @@ jobs:
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          for secret_name in SENTINELAYER_TOKEN OPENAI_API_KEY; do
+          for secret_name in SENTINELAYER_TOKEN; do
             secret_value="$(printenv "${secret_name}" || true)"
             if [[ -z "${secret_value}" ]]; then
               continue

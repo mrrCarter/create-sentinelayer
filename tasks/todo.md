@@ -268,35 +268,38 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] PR 159 Compliance report generator (SOC 2 / EU AI Act / ISO 27001 templates from tamper-evident artifact chain).
 - [ ] PR 160 Tech debt scoring engine (continuous quality metrics per AI tool per project, threshold-based generation throttle).
 
-### Phase J — Jules Tanaka Persona System (14 PRs, 2026-04-04)
+### Phase J — Jules Tanaka Persona System (17 PRs, self-contained, NO O-Q dependency)
 
-#### Batch J-Alpha: Foundation Tools
-- [ ] PR J-1 FrontendAnalyze helper tool (16 deterministic operations: detect_framework, find_security_sinks, count_state_hooks, check_accessibility, etc.).
-- [ ] PR J-2 Jules agent definition YAML + full updated system prompt (budget awareness, framework detection, SWE framework, enhanced a11y WCAG AA, governance integration, language-agnostic fallback).
-- [ ] PR J-3 Standalone invocation flow (`sl audit frontend|jules`, auto-prerequisites, Omar baseline-on-demand, autocomplete for all 13 personas).
+#### Batch J-Alpha: Tool Execution (builds its own lightweight runtime)
+- [ ] PR J-1 Jules tool wrappers: file-read, grep, glob, shell, file-edit (budget gate, telemetry emission, env scrubbing, result persistence).
+- [ ] PR J-2 FrontendAnalyze helper (24 deterministic ops: detect_framework, find_security_sinks, count_state_hooks, check_accessibility, check_css_health, check_i18n, check_seo, check_error_boundaries, check_image_optimization, check_font_loading, find_third_party_scripts, check_service_workers, check_realtime_connections, audit_npm_deps, and more).
+- [ ] PR J-3 Jules tool dispatch + budget enforcement (pre-flight check BEFORE every tool call, telemetry event, large-result persistence).
 
-#### Batch J-Beta: Execution Layer
-- [ ] PR J-4 Sub-agent spawning for large frontends (route group partitioning, shared infra partition, proportional budget, sub-agent reconciliation).
-- [ ] PR J-5 Jules streaming events + visual identity (persona color/avatar registry, NDJSON per-agent attribution, terminal display, reasoning events, heartbeat).
-- [ ] PR J-6 Jules memory integration (blackboard read/write, FAISS cross-run recall, finding indexing, compaction with finding preservation).
+#### Batch J-Beta: Sub-Agent Swarm
+- [ ] PR J-4 Sub-agent core: JulesSubAgent class (isolated conversation, tool access, budget slice, blackboard write, AbortController linked to parent).
+- [ ] PR J-5 FileScanner sub-agent type (reads file batches, extracts structured summaries, reports discovered deps for scope expansion).
+- [ ] PR J-6 PatternHunter sub-agent type (6 hunter specializations: XSS, state, hydration, a11y, perf, security).
+- [ ] PR J-7 Swarm orchestrator (parallel dispatch up to 4 concurrent, multi-pass convergence loop, coverage verification, budget accounting across sub-agents).
 
-#### Batch J-Gamma: Autonomous Fix Cycle
-- [ ] PR J-7 Jules worktree isolation for fix mode (git worktree create, FileEdit in worktree, test execution in worktree, cleanup on completion/failure).
-- [ ] PR J-8 Jules → Jira lifecycle integration (claim work item, open ticket, comment plan/finding/fix, transition statuses, sign "— Jules Tanaka").
-- [ ] PR J-9 Jules → PR creation + Omar Gate watch loop (push branch, gh pr create, gh run watch, fix P0-P2 from comments, merge when green).
-- [ ] PR J-10 Jules → S3 artifact upload (audit report, fix diff, Omar log, Jira lifecycle, telemetry — compliance-grade with object lock).
+#### Batch J-Gamma: Persona + Invocation
+- [ ] PR J-8 Jules agent definition YAML + full updated system prompt (SWE framework, WCAG AA a11y, budget awareness, framework detection, governance, language-agnostic).
+- [ ] PR J-9 Jules agentic loop (LLM→tool_use→execute→result→LLM with sub-agent swarm integration for large codebases).
+- [ ] PR J-10 Standalone invocation (`sl audit frontend|jules`, auto-prerequisites, Omar baseline-on-demand, autocomplete for all 13 personas).
+- [ ] PR J-11 Streaming events + visual identity (persona color/avatar registry, NDJSON per-agent attribution, terminal display, reasoning chain streaming).
 
-#### Batch J-Delta: Daemon Integration
-- [ ] PR J-11 Pulse daemon monitor (stuck detection heuristics, health checks, recovery actions, error-to-persona routing by domain).
-- [ ] PR J-12 Pulse → Slack/Telegram alert channels (smart frequency on state changes, health summaries, low-token payloads).
-- [ ] PR J-13 Jules error intake flow (receive frontend errors from queue, scope from stack trace, trigger autonomous fix cycle).
+#### Batch J-Delta: Autonomous Operations
+- [ ] PR J-12 Jules worktree fix mode + Jira lifecycle (claim → open → plan → investigate → fix → comment → transition, signed "— Jules Tanaka").
+- [ ] PR J-13 Jules PR + Omar Gate watch loop (push → create → watch → fix P0-P2 → merge) + S3 artifact upload (compliance-grade object lock).
+- [ ] PR J-14 Pulse daemon (stuck detection, error-to-persona routing, Slack/Telegram alerts, health summaries, recovery actions).
+- [ ] PR J-15 Jules error intake (receive frontend errors from queue, scope from stack trace, trigger full autonomous fix cycle).
 
-#### Batch J-Epsilon: Polish + Tests
-- [ ] PR J-14 Jules integration tests + benchmark (React/Vue/Next.js audit, fix cycle e2e, sub-agent test, 8-needle recall, budget enforcement, stuck detection).
+#### Batch J-Epsilon: Memory + Tests
+- [ ] PR J-16 Jules memory integration (sub-agent blackboard, FAISS cross-run recall, finding indexing, auto-compaction with finding preservation).
+- [ ] PR J-17 Jules integration tests + benchmark (React/Vue/Next.js audit, sub-agent swarm, fix cycle e2e, 8-needle recall, stuck detection).
 
 ## Execution Board (2026-04-04)
 
-### Full Batch Roadmap (174 PRs total)
+### Full Batch Roadmap (177 PRs total)
 - Batches A-J (#1-#95): Original roadmap -- DONE
 - Batch K (#97-#100): Governance hardening -- DONE
 - Batch L (#101-#102): Coverage expansion -- DONE
@@ -305,7 +308,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - Batch O (#115-#120): Streaming protocol + internal tools -- QUEUED
 - Batch P (#121-#123): Agentic loop + permissions -- QUEUED
 - Batch Q (#124-#126): Agent spawning + /audit deep -- QUEUED
-- Phase J (J-1 to J-14): Jules Tanaka persona system -- QUEUED (after Q)
+- Phase J (J-1 to J-17): Jules Tanaka persona system -- QUEUED (self-contained, starts after #114 merges)
 - Batch R (#127-#129): Import graph + scope mapping -- QUEUED
 - Batch S (#130-#132): Entitlement + interactive -- QUEUED
 - Batch T (#133-#136): sl run/fix + daemon upgrade -- QUEUED
@@ -1077,5 +1080,22 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
   - `npm run test:unit -- tests/unit.auth-session-store.test.mjs` (pass; `191/195` with 4 env-skipped bash tests)
   - `npm run verify` (pass; e2e `84/84`; unit `191/195` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-sixth-cycle hardening batch.
+- [x] Commit + push thirty-sixth-cycle hardening batch (`5ffbdf2`).
+- [x] Execute full Omar loop and re-anchor findings:
+  - `gh run watch 23975020543 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23975020547`.
+  - `gh run watch 23975020547 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=5`, `run_id=3d457a49-6a7e-48d8-9ead-83c3302a0653`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=3d457a49-6a7e-48d8-9ead-83c3302a0653`) and apply thirty-seventh-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: remove third-party action dependency on `OPENAI_API_KEY` by switching to managed LLM mode and narrowing secret-leak assertions to `SENTINELAYER_TOKEN`.
+  - `.github/workflows/quality-gates.yml`: scope concurrency groups to commit SHA (`pull_request.head.sha || github.sha`) to avoid cross-revision gate collisions.
+  - `.github/workflows/release-publish.yml`: add publish-stage attestation + digest re-verification immediately before `npm publish` and declare `attestations: read` least-privilege scope.
+  - `.github/workflows/release.yml`: add explicit `release-management-gate` environment approval job and enforce it as a dependency of release-trigger validation.
+  - `.github/security/workflow-permissions-policy.json`: update release/release-publish policy contracts for new gate job and publish attestation permission.
+  - `src/auth/http.js`: preserve sanitized request correlation IDs from unknown transport errors (including nested `cause`) and response headers (`x-request-id`) across invalid-json and non-OK failure paths.
+  - `tests/unit.auth-http.test.mjs`: add regressions for transport-error request-id propagation and response-header request-id retention on invalid JSON payloads.
+- [x] Run thirty-seventh-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-session-store.test.mjs` (pass; `193/197` with 4 env-skipped bash tests)
+  - `npm run verify` (pass; e2e `84/84`; unit `193/197` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-seventh-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

@@ -366,6 +366,51 @@ test("Unit auth http: requestJson rejects tainted requestId values from API erro
   }
 });
 
+test("Unit auth http: requestJson carries sanitized requestId from transport failures", async () => {
+  await assert.rejects(
+    () =>
+      requestJson("https://sentinelayer.example/network-failure", {
+        method: "GET",
+        maxAttempts: 1,
+        fetchImpl: async () => {
+          const transportError = new Error("socket hangup");
+          transportError.requestId = "req_transport_123";
+          throw transportError;
+        },
+      }),
+    (error) => {
+      assert.equal(error?.code, "NETWORK_ERROR");
+      assert.equal(error?.status, 503);
+      assert.equal(error?.requestId, "req_transport_123");
+      return true;
+    }
+  );
+});
+
+test("Unit auth http: requestJson preserves response header request id on invalid json", async () => {
+  await assert.rejects(
+    () =>
+      requestJson("https://sentinelayer.example/invalid-json", {
+        method: "GET",
+        maxAttempts: 1,
+        fetchImpl: async () =>
+          new Response("not-json", {
+            status: 500,
+            headers: {
+              "Content-Type": "application/json",
+              "x-request-id": "req_hdr_456",
+            },
+          }),
+      }),
+    (error) => {
+      assert.equal(error?.code, "INVALID_JSON");
+      assert.equal(error?.status, 500);
+      assert.equal(error?.requestId, "req_hdr_456");
+      return true;
+    }
+  );
+});
+
 test("Unit auth http: requestJson times out when response body stream stalls", async () => {
   let pullCount = 0;
   const stalledStream = new ReadableStream({

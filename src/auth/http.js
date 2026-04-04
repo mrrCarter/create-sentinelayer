@@ -171,20 +171,45 @@ function normalizePositiveInteger(rawValue, fallbackValue) {
   return Math.floor(normalized);
 }
 
+function extractRequestIdFromUnknownError(error, depth = 0) {
+  if (!error || typeof error !== "object" || depth > 2) {
+    return null;
+  }
+  const candidate = sanitizeRequestId(error.requestId ?? error.request_id ?? null);
+  if (candidate) {
+    return candidate;
+  }
+  return extractRequestIdFromUnknownError(error.cause, depth + 1);
+}
+
+function extractResponseRequestId(headers) {
+  if (!headers || typeof headers.get !== "function") {
+    return null;
+  }
+  return (
+    sanitizeRequestId(headers.get("x-request-id")) ||
+    sanitizeRequestId(headers.get("x-requestid")) ||
+    sanitizeRequestId(headers.get("request-id"))
+  );
+}
+
 function normalizeUnknownError(error, { timedOut = false, externalAbort = false } = {}) {
   if (error instanceof SentinelayerApiError) {
     return error;
   }
+  const requestId = extractRequestIdFromUnknownError(error);
   if (error && typeof error === "object" && error.name === "AbortError") {
     if (externalAbort && !timedOut) {
       return new SentinelayerApiError("Request canceled by caller.", {
         status: 499,
         code: "CLIENT_ABORTED",
+        requestId,
       });
     }
     return new SentinelayerApiError("Request timed out.", {
       status: 408,
       code: "TIMEOUT",
+      requestId,
     });
   }
   return new SentinelayerApiError(
@@ -192,6 +217,7 @@ function normalizeUnknownError(error, { timedOut = false, externalAbort = false 
     {
       status: 503,
       code: "NETWORK_ERROR",
+      requestId,
     }
   );
 }
@@ -1064,6 +1090,7 @@ export async function requestJson(
         signal: activeSignal,
       });
       const responseReceivedAtEpochMs = resolveMonotonicEpochMs();
+      const responseRequestId = extractResponseRequestId(response.headers);
 
       const responseBodyLimit = response.ok ? MAX_RESPONSE_BODY_BYTES : MAX_ERROR_RESPONSE_BODY_BYTES;
       const rawBody = await readResponseBodyWithLimit(response, responseBodyLimit, {
@@ -1078,6 +1105,7 @@ export async function requestJson(
           throw new SentinelayerApiError("Invalid JSON returned by API.", {
             status: response.status,
             code: "INVALID_JSON",
+            requestId: responseRequestId,
           });
         }
       }
@@ -1092,7 +1120,7 @@ export async function requestJson(
         throw new SentinelayerApiError(apiError.message, {
           status: response.status,
           code: apiError.code,
-          requestId: apiError.requestId,
+          requestId: apiError.requestId || responseRequestId,
           retryAfterMs,
         });
       }

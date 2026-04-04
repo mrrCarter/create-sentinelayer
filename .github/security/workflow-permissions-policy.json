@@ -84,6 +84,10 @@
     },
     ".github/workflows/release.yml": {
       "jobs": {
+        "release-management-gate": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
         "validate-release-trigger": {
           "required": { "contents": "read" },
           "max": { "contents": "read" }
@@ -149,8 +153,8 @@
           "max": { "contents": "read", "actions": "read" }
         },
         "publish": {
-          "required": { "contents": "read", "id-token": "write" },
-          "max": { "contents": "read", "id-token": "write" }
+          "required": { "contents": "read", "id-token": "write", "attestations": "read" },
+          "max": { "contents": "read", "id-token": "write", "attestations": "read" }
         }
       }
     },

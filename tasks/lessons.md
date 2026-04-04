@@ -268,3 +268,7 @@
 - When widening deterministic key namespace digests (for example 16 -> 32 hex), include backward-compatible lookup candidates and post-read migration cleanup so existing encrypted material remains decryptable and converges to the new path.
 - If emergency/manual release routes are retained, force `workflow_dispatch` into validation-only mode unless explicitly required; keep production mutation jobs gated to provenance-anchored `workflow_run` paths.
 - Toolchain digest allowlists should be keyed by runner image + pinned version tuple, and CI should fail closed when the tuple is missing from the checked-in manifest.
+- Third-party action jobs should minimize high-value secret exposure: if managed LLM mode is available, avoid passing `OPENAI_API_KEY` and assert only secrets that are strictly required for the step.
+- Required-check workflows should use SHA-scoped concurrency keys (`pull_request.head.sha`/`github.sha`) instead of PR-number/ref keys to prevent stale-run collisions across synchronize pushes.
+- Request correlation fidelity needs dual-source capture in HTTP clients: sanitize and propagate IDs from both backend payload fields and response headers (`x-request-id`) for invalid JSON and transport failures.
+- Publish paths need a final just-before-mutation attestation/digest verification step even when upstream quality gates already validated provenance; downstream job context is a distinct trust boundary.

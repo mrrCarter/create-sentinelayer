@@ -33,9 +33,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-management-gate:
+    name: Release Management Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    environment: release-management
+    permissions:
+      contents: read
+    steps:
+      - name: Require release-management approval context
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Release management approval captured for ${GITHUB_WORKFLOW} run ${GITHUB_RUN_ID}."
+
   validate-release-trigger:
     name: Validate Release Trigger
     runs-on: ubuntu-22.04
+    needs: [release-management-gate]
     timeout-minutes: 2
     permissions:
       contents: read

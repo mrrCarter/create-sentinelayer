@@ -819,6 +819,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: read
     env:
       RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
       APPROVER_LOGIN: ${{ needs.authorize-production-publish.outputs.approver_login || '' }}
@@ -874,6 +875,31 @@ jobs:
           fi
           if [[ -n "${INCIDENT_ID}" ]] && [[ ! "${INCIDENT_ID}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
             echo "::error::Invalid incident_id '${INCIDENT_ID}' in publish authorization metadata."
+            exit 1
+          fi
+
+      - name: Re-verify publish artifact attestation and digest
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
+          tarball_path="validated-release-bundle/release-bundle/${tarball_name}"
+          expected_sha="$(awk 'NF {print $1; exit}' validated-release-bundle/release-bundle/create-sentinelayer.sha256)"
+          test -f "${tarball_path}" || (echo "::error::Release tarball '${tarball_name}' missing from validated bundle." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          actual_sha="$(sha256sum "${tarball_path}" | awk '{print $1}')"
+          if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release tarball digest mismatch before publish (expected='${expected_sha}', actual='${actual_sha}')."
+            exit 1
+          fi
+          timeout --preserve-status 90s gh attestation verify "${tarball_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > validated-release-bundle/release-bundle/publish-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' validated-release-bundle/release-bundle/publish-attestation.verify.json >/dev/null; then
+            echo "::error::Publish attestation verification did not include expected digest ${expected_sha}."
             exit 1
           fi
 
