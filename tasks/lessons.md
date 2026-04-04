@@ -100,3 +100,5 @@
 - Keep `SPEC.md` phase plans parseable for downstream tooling: add phase metadata as non-numbered lines, but preserve numbered implementation tasks under each `### Phase` heading for guide parser compatibility.
 - Spec drift checks should be mode-aware: enforce scope-bound findings (`SL-SPEC-001`) in `diff|staged` paths to prevent pre-commit noise on full-repo sweeps.
 - When adding explicit `--spec` overrides, thread the same spec path through deterministic review, AI prompt context, replay context, and unified report hashing to avoid hash/source mismatches across layers.
+- Eval-impact gating treats `src/commands/audit.js` as AI-impacting scope; include a `tasks/evals/*.md` artifact in the same PR whenever that command surface changes.
+- In this Windows environment, avoid invoking bash-only helper scripts directly (`bash ...`) because WSL may be unavailable; run equivalent checks via PowerShell/Node or rely on CI execution.
