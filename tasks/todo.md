@@ -244,7 +244,50 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] PR 143 Stuck-agent detection + alert channels (Slack/Telegram webhooks, smart frequency on state changes, low-token payloads).
 - [ ] PR 144 Stale ingest auto-refresh (git timestamp comparison, --refresh flag, content-hash caching).
 
-## Execution Board (2026-04-03)
+### Batch W - Security Hardening (from src patterns, 2026-04-04 market analysis)
+- [ ] PR 145 Expand secret scanner to 30+ credential types (AWS, GCP, Azure, Stripe, Slack, npm, PyPI, GitHub PAT variants, PEM keys).
+- [ ] PR 146 Subprocess env scrubbing for internal agent child processes (strip 27+ sensitive vars: cloud creds, OIDC, API keys).
+- [ ] PR 147 Symlink + UNC path defense for FileRead/FileEdit tools (resolve both paths, block network paths).
+- [ ] PR 148 Domain allowlist for WebFetch tool (130+ preapproved doc/framework hosts with path-segment boundary enforcement).
+
+### Batch X - Developer Experience (from src patterns, 2026-04-04 market analysis)
+- [ ] PR 149 Hooks system (pre/post tool lifecycle events, user-customizable in .sentinelayer.yml, exit-code behavior).
+- [ ] PR 150 File history/undo (auto-checkpoint per agent session, 100-snapshot cap, content-hash dedup, rollback command).
+- [ ] PR 151 Plan mode for agent execution (preview strategy before running, approval gate, plan editing).
+- [ ] PR 152 Image/screenshot support in FileRead (base64 encode, format detection, size metadata for frontend review agents).
+
+### Batch Y - Enterprise Features (2026-04-04 market analysis)
+- [ ] PR 153 Feature flags with subscription-tier gating (per-user feature values, graceful degradation when API unavailable).
+- [ ] PR 154 Privacy-first analytics (type-level PII prevention, sampled events, opt-in, no code/filepath logging).
+- [ ] PR 155 Remote-managed enterprise settings (server-side policy push, hourly polling, checksum-based sync, fail-open).
+- [ ] PR 156 Team memory sync (repo-scoped shared context, delta upload with secret scanning, pull=server-wins).
+- [ ] PR 157 OAuth with subscription metadata (token carries tier + rate limit + org UUID for entitlement gating).
+
+### Batch Z - Blue Ocean (no competitor has these, 2026-04-04 market analysis)
+- [ ] PR 158 Cross-tool governance proxy (middleware wrapping any AI tool's git output through SL review pipeline).
+- [ ] PR 159 Compliance report generator (SOC 2 / EU AI Act / ISO 27001 templates from tamper-evident artifact chain).
+- [ ] PR 160 Tech debt scoring engine (continuous quality metrics per AI tool per project, threshold-based generation throttle).
+
+## Execution Board (2026-04-04)
+
+### Full Batch Roadmap (160 PRs total)
+- Batches A-J (#1-#95): Original roadmap -- DONE
+- Batch K (#97-#100): Governance hardening -- DONE
+- Batch L (#101-#102): Coverage expansion -- DONE
+- Batch M (#103-#105): Docs/housekeeping -- DONE
+- Batch N (#106-#107): Structural -- IN PROGRESS
+- Batch O (#115-#120): Streaming protocol + internal tools -- QUEUED
+- Batch P (#121-#123): Agentic loop + permissions -- QUEUED
+- Batch Q (#124-#126): Agent spawning + /audit deep -- QUEUED
+- Batch R (#127-#129): Import graph + scope mapping -- QUEUED
+- Batch S (#130-#132): Entitlement + interactive -- QUEUED
+- Batch T (#133-#136): sl run/fix + daemon upgrade -- QUEUED
+- Batch U (#137-#140): Scaffold quality + spec fixes -- QUEUED
+- Batch V (#141-#144): Shared memory + alerts -- QUEUED
+- Batch W (#145-#148): Security hardening (src patterns) -- QUEUED
+- Batch X (#149-#152): Developer experience (src patterns) -- QUEUED
+- Batch Y (#153-#157): Enterprise features -- QUEUED
+- Batch Z (#158-#160): Blue ocean (no competitor has these) -- QUEUED
 
 ### Omar Gate Loop (required on every PR)
 1. `git checkout main && git pull --ff-only`
@@ -938,5 +981,21 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Run thirty-second-cycle local evidence:
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-second-cycle gate-verification batch.
+- [x] Commit + push thirty-second-cycle gate-verification batch (`36cc067`).
+- [x] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings:
+  - `gh run watch 23972873637 --exit-status` (Quality Gates: pass).
+  - Cleared stale Omar concurrency blocker by canceling run `23972231917`.
+  - Approved `security-review` pending deployment for Omar run `23972873619`.
+  - `gh run watch 23972873619 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=4`, `run_id=e304c6bd-7c29-4a33-8c8a-4eef92bfe353`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=e304c6bd-7c29-4a33-8c8a-4eef92bfe353`) and apply thirty-third-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: replace fixed 10s polling with bounded exponential backoff + jitter via `scripts/release/backoff.sh` for quality-run lookup/status and check-run anchor waits.
+  - `.github/workflows/rollback.yml`: add explicit `allow_local_validation_only` workflow input (dispatch + reusable call), parse as strict boolean, and fail closed when local unpublished-package fallback is requested without policy opt-in.
+  - `.github/workflows/quality-gates.yml`: explicitly opt into rollback local-validation fallback (`allow_local_validation_only: true`) for validation-only quality readiness runs.
+  - `.github/workflows/quality-gates.yml`: add structural release-contract assertion verifying `release.yml` contains `verify-required-checks` and required `needs` edges (`preflight`, `rollback-readiness`, `authorize-production-publish`, `publish`) plus semver tag trigger (`v*.*.*`).
+  - `src/auth/http.js`: replace lock-loop `Math.random` jitter with CSPRNG-backed `secureRandomIntInclusive`.
+- [x] Run thirty-third-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-third-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

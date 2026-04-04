@@ -101,13 +101,18 @@ jobs:
           TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          source scripts/release/backoff.sh
           deadline=$((SECONDS + 900))
+          quality_lookup_attempt=0
+          quality_status_attempt=0
+          check_run_attempt=0
           while (( SECONDS < deadline )); do
             api_status=0
             runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
             if [[ "${api_status}" -ne 0 ]]; then
+              quality_lookup_attempt=$((quality_lookup_attempt + 1))
               echo "quality-gates run lookup timed out or failed (status=${api_status}); retrying."
-              sleep 10
+              sl_backoff_sleep "omar-quality-run-lookup" "${quality_lookup_attempt}"
               continue
             fi
             quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
@@ -119,8 +124,9 @@ jobs:
               ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
             ')"
             if [[ -z "${quality_run}" ]]; then
+              quality_status_attempt=$((quality_status_attempt + 1))
               echo "Waiting for canonical quality-gates run on ${TARGET_SHA}."
-              sleep 10
+              sl_backoff_sleep "omar-quality-run-await" "${quality_status_attempt}"
               continue
             fi
             run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
@@ -134,19 +140,23 @@ jobs:
             status="$(echo "${quality_run}" | jq -r '.status')"
             conclusion="$(echo "${quality_run}" | jq -r '.conclusion // ""')"
             if [[ "${status}" != "completed" ]]; then
+              quality_status_attempt=$((quality_status_attempt + 1))
               echo "quality-gates run ${run_id} status=${status}; waiting."
-              sleep 10
+              sl_backoff_sleep "omar-quality-run-status" "${quality_status_attempt}"
               continue
             fi
             if [[ "${conclusion}" != "success" ]]; then
               echo "::error::Quality Summary gate must pass before Omar Gate (run=${run_id}, conclusion=${conclusion}, url=${run_url})."
               exit 1
             fi
+            quality_lookup_attempt=0
+            quality_status_attempt=0
             check_runs_status=0
             check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || check_runs_status=$?
             if [[ "${check_runs_status}" -ne 0 ]]; then
+              check_run_attempt=$((check_run_attempt + 1))
               echo "Quality Summary check-run lookup timed out or failed (status=${check_runs_status}); retrying."
-              sleep 10
+              sl_backoff_sleep "omar-quality-checkrun-lookup" "${check_run_attempt}"
               continue
             fi
             quality_details_url="$(echo "${check_runs_json}" | jq -r '
@@ -160,10 +170,12 @@ jobs:
               ] | sort_by((.completed_at // ""), (.id // 0)) | last | .details_url // ""
             ')"
             if [[ -z "${quality_details_url}" ]]; then
+              check_run_attempt=$((check_run_attempt + 1))
               echo "Quality Summary check-run anchor is not available yet on ${TARGET_SHA}; waiting."
-              sleep 10
+              sl_backoff_sleep "omar-quality-checkrun-await" "${check_run_attempt}"
               continue
             fi
+            check_run_attempt=0
             anchor_run_id="$(echo "${quality_details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+).*$#\1#p')"
             if [[ -z "${anchor_run_id}" ]]; then
               echo "::error::Unable to parse workflow run id from Quality Summary details URL (${quality_details_url})."

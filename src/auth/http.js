@@ -69,6 +69,27 @@ function secureRandomBuffer(length) {
   }
 }
 
+function secureRandomIntInclusive(minInclusive, maxInclusive) {
+  const min = Math.floor(Number(minInclusive));
+  const max = Math.floor(Number(maxInclusive));
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    throw new Error("Invalid secure random integer bounds.");
+  }
+  if (max <= min) {
+    return min;
+  }
+  const span = max - min + 1;
+  try {
+    return randomInt(min, max + 1);
+  } catch {
+    const randomChunk = secureRandomBuffer(4);
+    if (randomChunk && randomChunk.length >= 4) {
+      return min + (randomChunk.readUInt32BE(0) % span);
+    }
+  }
+  return min;
+}
+
 function initializeRequestJitterStartupSecret() {
   return secureRandomBuffer(32);
 }
@@ -345,7 +366,7 @@ async function withSharedCircuitBreakerStateLock(operation) {
       }
       const delayMs =
         AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MIN_MS +
-        Math.floor(Math.random() * (AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS + 1));
+        secureRandomIntInclusive(0, AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS);
       await sleep(delayMs);
     }
   }

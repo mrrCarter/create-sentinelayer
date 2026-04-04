@@ -250,3 +250,7 @@
 - In bash `[[ ... =~ ... ]]` checks, complex regex with `;`/`|` should be assigned to variables first; inline patterns can trigger parser tokenization errors in CI even when logically valid as regex.
 - Reusable rollback/readiness workflows must support unpublished-package repos in validation-only mode (`execute=false`): fall back to local package version/tarball checks and still emit required summary artifacts, while keeping execute-mode npm lineage checks strict.
 - Runtime gate-verification scripts that query run jobs must target the exact required job identity (or explicitly ignore skipped schedule-only siblings); broad regex matching across reusable workflow children can falsely fail successful runs.
+- Omar-gate dependency polling must use bounded exponential backoff with jitter and per-phase attempt counters; fixed-interval polling creates predictable load spikes and avoidable transient gate noise.
+- Validation-only unpublished-package fallback in rollback workflows should be behind an explicit boolean policy input (`allow_local_validation_only`) and fail closed when not authorized.
+- Release-governance coupling checks should validate workflow DAG edges structurally (`jobs` + `needs` via YAML parse) rather than relying on text/regex assertions.
+- Shared-lock retry jitter in auth paths should be CSPRNG-backed; avoid `Math.random` for contention-sensitive reliability/security behavior.

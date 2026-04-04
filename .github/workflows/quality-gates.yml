@@ -7,6 +7,8 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
 permissions: {}
@@ -60,6 +62,64 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml
+
+      - name: Assert release path consumes quality required checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/release.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const doc = YAML.parseDocument(raw, {
+            uniqueKeys: true,
+            strict: true,
+            merge: false,
+            prettyErrors: true,
+          });
+          if (Array.isArray(doc.errors) && doc.errors.length > 0) {
+            throw new Error(
+              `Unable to parse ${workflowPath}: ${doc.errors.map((entry) => entry.message || String(entry)).join("; ")}`
+            );
+          }
+          const parsed = doc.toJS();
+          const jobs = parsed && typeof parsed === "object" ? parsed.jobs || {} : {};
+          const requiredJobs = [
+            "verify-required-checks",
+            "preflight",
+            "rollback-readiness",
+            "authorize-production-publish",
+            "publish",
+          ];
+          for (const jobId of requiredJobs) {
+            if (!Object.prototype.hasOwnProperty.call(jobs, jobId)) {
+              throw new Error(`Missing required release workflow job '${jobId}'.`);
+            }
+          }
+          const normalizeNeeds = (value) => {
+            if (!value) {
+              return [];
+            }
+            if (Array.isArray(value)) {
+              return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+            }
+            return [String(value || "").trim()].filter(Boolean);
+          };
+          for (const jobId of ["preflight", "rollback-readiness", "authorize-production-publish", "publish"]) {
+            const needs = normalizeNeeds(jobs[jobId] && jobs[jobId].needs);
+            if (!needs.includes("verify-required-checks")) {
+              throw new Error(`Release job '${jobId}' must depend on 'verify-required-checks'.`);
+            }
+          }
+          const triggers =
+            (parsed && typeof parsed === "object" ? parsed.on || parsed["on"] : null) || {};
+          const pushTrigger = triggers.push || {};
+          const tagFilters = Array.isArray(pushTrigger.tags) ? pushTrigger.tags : [];
+          if (!tagFilters.includes("v*.*.*")) {
+            throw new Error("Release workflow push trigger must include semver tag filter 'v*.*.*'.");
+          }
+          NODE
 
       - name: Enforce explicit workflow permissions policy
         shell: bash
@@ -1135,6 +1195,7 @@ jobs:
     uses: ./.github/workflows/rollback.yml
     with:
       execute: false
+      allow_local_validation_only: true
 
   deploy:
     name: Deploy

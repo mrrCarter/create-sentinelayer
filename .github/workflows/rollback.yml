@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow_local_validation_only:
+        description: "Allow validation-only fallback to local package version when npm registry metadata is unavailable"
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       target_version:
@@ -37,6 +42,11 @@ on:
         type: string
       execute:
         description: "Execute rollback mutations (false = validation only)"
+        required: false
+        type: boolean
+        default: false
+      allow_local_validation_only:
+        description: "Allow validation-only fallback to local package version when npm registry metadata is unavailable"
         required: false
         type: boolean
         default: false
@@ -73,6 +83,7 @@ jobs:
       RAW_BAD_VERSION: ${{ inputs.bad_version || github.event.inputs.bad_version || '' }}
       RAW_REASON: ${{ inputs.reason || github.event.inputs.reason || '' }}
       RAW_EXECUTE: ${{ inputs.execute || github.event.inputs.execute || 'false' }}
+      RAW_ALLOW_LOCAL_VALIDATION_ONLY: ${{ inputs.allow_local_validation_only || github.event.inputs.allow_local_validation_only || 'false' }}
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -101,15 +112,23 @@ jobs:
           bad_version="$(echo "${RAW_BAD_VERSION:-}" | tr -d '\r' | xargs || true)"
           reason="$(echo "${RAW_REASON:-}" | tr -d '\r' | xargs || true)"
           execute_raw="$(echo "${RAW_EXECUTE:-false}" | tr -d '\r' | xargs || true)"
-          execute_normalized="$(echo "${execute_raw}" | tr '[:upper:]' '[:lower:]')"
-          case "${execute_normalized}" in
-            1|true|yes|on) execute="true" ;;
-            0|false|no|off|'') execute="false" ;;
-            *)
-              echo "::error::Invalid execute value '${execute_raw}'. Expected true/false."
-              exit 1
-              ;;
-          esac
+          allow_local_validation_raw="$(echo "${RAW_ALLOW_LOCAL_VALIDATION_ONLY:-false}" | tr -d '\r' | xargs || true)"
+          parse_bool_input() {
+            local raw_value="${1:-false}"
+            local key_name="${2:-value}"
+            local normalized
+            normalized="$(echo "${raw_value}" | tr '[:upper:]' '[:lower:]')"
+            case "${normalized}" in
+              1|true|yes|on) echo "true" ;;
+              0|false|no|off|'') echo "false" ;;
+              *)
+                echo "::error::Invalid ${key_name} value '${raw_value}'. Expected true/false."
+                exit 1
+                ;;
+            esac
+          }
+          execute="$(parse_bool_input "${execute_raw}" "execute")"
+          allow_local_validation_only="$(parse_bool_input "${allow_local_validation_raw}" "allow_local_validation_only")"
           if [[ -z "${reason}" ]]; then
             reason="Rollback in progress due to regression"
           fi
@@ -117,6 +136,7 @@ jobs:
           echo "BAD_VERSION=${bad_version}" >> "$GITHUB_ENV"
           echo "REASON=${reason}" >> "$GITHUB_ENV"
           echo "EXECUTE=${execute}" >> "$GITHUB_ENV"
+          echo "ALLOW_LOCAL_VALIDATION_ONLY=${allow_local_validation_only}" >> "$GITHUB_ENV"
 
       - name: Verify production environment protections
         if: env.EXECUTE == 'true'
@@ -169,6 +189,10 @@ jobs:
               target_version="$(jq -r '.version // ""' package.json)"
               if [[ -z "${target_version}" ]]; then
                 echo "::error::Unable to infer rollback target version from npm dist-tag or local package.json."
+                exit 1
+              fi
+              if [[ "${ALLOW_LOCAL_VALIDATION_ONLY:-false}" != "true" ]]; then
+                echo "::error::Local rollback validation fallback is disabled. Set allow_local_validation_only=true only for explicitly approved validation-only workflows."
                 exit 1
               fi
               target_version_local_only="true"
@@ -423,6 +447,7 @@ jobs:
           fi
           echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
           echo "- execute: \`${EXECUTE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- allow_local_validation_only: \`${ALLOW_LOCAL_VALIDATION_ONLY:-false}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- target_version: \`${TARGET_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           if [[ -n "${BAD_VERSION}" ]]; then
             echo "- bad_version: \`${BAD_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
