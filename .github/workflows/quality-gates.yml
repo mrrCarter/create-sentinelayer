@@ -1051,7 +1051,14 @@ jobs:
               | select((.event // "") == "schedule")
             ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
           ')"
-          test -n "${rollback_run}" || (echo "::error::No successful scheduled rollback drill run was found." && exit 1)
+          if [[ -z "${rollback_run}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+              echo "::notice::No successful scheduled rollback drill run found in pull_request context; deferring strict rollback freshness enforcement to release controls."
+              exit 0
+            fi
+            echo "::error::No successful scheduled rollback drill run was found."
+            exit 1
+          fi
           rollback_run_id="$(echo "${rollback_run}" | jq -r '.id // ""')"
           rollback_created_at="$(echo "${rollback_run}" | jq -r '.created_at // ""')"
           test -n "${rollback_run_id}" || (echo "::error::Unable to resolve rollback run id for drill linkage." && exit 1)
