@@ -1326,3 +1326,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push fiftieth-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after Omar target is met.
+
+### PR #114 Fifty-First Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23981661872`:
+  - `Syntax & Sanity` and `Unit Coverage` failed because `verify-action-shas.sh` now requires GitHub API auth in CI, but the unit-test steps did not provide `GH_TOKEN`.
+- [x] Apply deterministic fix:
+  - `.github/workflows/quality-gates.yml`: inject `GH_TOKEN: ${{ github.token }}` only into `Run unit tests` and `Enforce unit coverage thresholds` steps.
+- [x] Run fifty-first-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-first-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

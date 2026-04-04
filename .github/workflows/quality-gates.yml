@@ -539,6 +539,8 @@ jobs:
         run: npm run check
 
       - name: Run unit tests
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: npm run test:unit
 
   unit-coverage:
@@ -573,6 +575,8 @@ jobs:
         run: bash scripts/ci/install-immutable.sh .
 
       - name: Enforce unit coverage thresholds
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: npm run test:coverage
 
       - name: Upload coverage report
