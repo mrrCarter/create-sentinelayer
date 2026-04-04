@@ -1338,3 +1338,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
 - [ ] Commit + push fifty-first-cycle fix batch.
 - [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Second Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23981756246`:
+  - `Security Scan` failed because `Enforce workflow action SHA allowlist policy` called `verify-action-shas.sh` without `GH_TOKEN`, while CI policy now requires API auth for provenance validation.
+- [x] Apply deterministic fix:
+  - `.github/workflows/quality-gates.yml`: inject `GH_TOKEN: ${{ github.token }}` into the security-scan allowlist/provenance enforcement step.
+- [x] Run fifty-second-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-second-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

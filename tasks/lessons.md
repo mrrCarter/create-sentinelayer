@@ -326,3 +326,4 @@
 - Action SHA pinning alone is not enough for supply-chain governance; enforce owner allowlists and commit provenance/signature checks via GitHub API with bounded local fallback semantics.
 - Auth poll replay protection should persist issued idempotency-key history across restarts and reject reused keys in resumed loops; in-memory-only tracking is insufficient under process restarts.
 - If CI policy scripts require GitHub API auth (`gh api`), propagate `GH_TOKEN: ${{ github.token }}` explicitly into every test/coverage step that can execute those scripts; the token is not auto-exported into shell environments.
+- Apply the same `GH_TOKEN` propagation rule to dedicated security jobs (not only test lanes); allowlist/provenance checks in security stages hit the same auth requirement.
