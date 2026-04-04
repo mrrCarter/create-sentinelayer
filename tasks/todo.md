@@ -211,7 +211,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 144 ingest staleness refresh and hash-aware cache controls.
 
 ### Batch W - Omar Workflow Security Burn-Down (2026-04-04)
-- [ ] PR 145 release/release-please/omar workflow hardening (pinned actions, concurrency guards, fail-closed publish path, stricter Omar dispatch thresholds).
+- [x] PR 145 release/release-please/omar workflow hardening (pinned actions, concurrency guards, fail-closed publish path, stricter Omar dispatch thresholds).
 
 ## Execution Board (2026-04-04)
 
@@ -228,7 +228,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-145-release-pipeline-hardening`
+1. `roadmap/pr-146-release-artifact-promotion-hardening`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -550,3 +550,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `gh run watch 23988615495 --exit-status` (Omar Gate pass; no P0/P1, reported `P2=8` and `P3=1134`)
     - `gh pr view 113 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `642ce48517cdfc4c6068a27ff8929bc0d3bd5c48`)
     - Replaced eager command imports in `src/cli.js` with dynamic registrar loaders and command-scoped registration to reduce startup load while preserving command contracts.
+
+  - PR 145 (workflow + auth poll hardening) merged evidence (branch `roadmap/pr-145-release-pipeline-hardening`):
+    - `npm run verify` (pass, e2e `86/86`; unit tests `184/184`; coverage statements `90.22%`, branches `70.98%`, functions `92.03%`, lines `90.22%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - `gh run watch 23989238721 --exit-status` (Omar Gate pass after `security-review` deployment approval)
+    - `gh pr view 125 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `cfd1fa24d1ee0cb4fd571b347a74ff21efabed34`)
+    - Hardened release workflows with pinned action SHAs, concurrency/timeout controls, fail-closed publish credentials check, OIDC provenance publish flag, and `--ignore-scripts` install paths.
+    - Hardened auth login polling to tolerate transient transport/server faults and fail fast on terminal rejection/expiry states with deterministic error codes.

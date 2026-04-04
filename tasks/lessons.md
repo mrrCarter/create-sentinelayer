@@ -109,3 +109,6 @@
 - When a feature branch is attached to another git worktree, local branch checkout/deletion operations in the primary worktree will fail; either execute directly in the attached worktree or detach/remove it first.
 - Omar Gate runs on protected environments can remain in `waiting` until deployment approval; use `gh api repos/<org>/<repo>/actions/runs/<runId>/pending_deployments` to approve and unblock `gh run watch`.
 - `gh pr merge --delete-branch` can partially succeed (PR merged, local branch delete fails) when the branch is checked out in a different worktree; always verify merge state with `gh pr view --json state,mergedAt,mergeCommit`.
+- Avoid exposing a `severity_gate=none` option in Omar workflow dispatch for production repos; keep threshold choices bounded to enforce review policy by default.
+- Polling-based auth flows should treat transient network/5xx/429 errors as retryable and handle terminal states (`rejected`, `expired`) explicitly so login sessions fail deterministically and quickly.
+- Release workflows should fail closed when publish is requested without credentials, and use pinned action SHAs plus concurrency controls to prevent overlapping mutable release runs.
