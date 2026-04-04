@@ -94,3 +94,5 @@
 - Keep scaffold token safety deterministic: whenever `.env` is written automatically, ensure `.gitignore` contains `.env` in the same execution path.
 - Workflow generator commands must converge on a single canonical path (`.github/workflows/omar-gate.yml`) and carry legacy-path compatibility (`security-review.yml`) only as an update/read fallback to avoid duplicate PR workflows.
 - Secret injection success should be validated, not assumed: after `gh secret set`, confirm visibility with `gh secret list --repo <slug>` and fail closed when the secret is not listed.
+- Deterministic agent identity needs an explicit dictionary module: map coding-agent id -> prompt target -> config file so scaffold, prompting, and handoff all use one source of truth.
+- IDE detection order must be explicit and precedence-safe (`CURSOR_TRACE_ID` before `TERM_PROGRAM=vscode`) so telemetry does not misclassify Cursor sessions as VS Code.

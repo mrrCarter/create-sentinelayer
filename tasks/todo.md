@@ -492,3 +492,10 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - `scan init` now defaults to `.github/workflows/omar-gate.yml`, updates existing legacy `security-review.yml` when present, and emits repo-aware `gh secret set/list` instructions with the docs fallback URL.
     - Managed scaffold mode now ensures `.env` is ignored in `.gitignore` before writing tokens and verifies `gh secret set` by checking `gh secret list` output.
+
+  - PR 138 (deterministic coding-agent/IDE dictionary and scaffold wiring) local evidence (branch `roadmap/pr-138-agent-dictionary-deterministic`):
+    - `npm run verify` (pass, e2e `84/84`; unit tests `166/166`; coverage statements `90.12%`, branches `70.26%`, functions `91.30%`, lines `90.12%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added `src/config/agent-dictionary.js` with deterministic top-10 coding-agent mapping (`promptTarget`, config path) and IDE detection (`cursor` vs `vscode` via `CURSOR_TRACE_ID` precedence).
+    - Scaffold interview now captures `codingAgent`, generates agent-specific handoff tuning, writes supported agent config files when absent (for example `.cursorrules`), and reports detected IDE in auth session startup payload.

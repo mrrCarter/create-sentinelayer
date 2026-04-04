@@ -13,6 +13,13 @@ import { pathToFileURL } from "node:url";
 import open from "open";
 import pc from "picocolors";
 import prompts from "prompts";
+import {
+  DEFAULT_CODING_AGENT_ID,
+  detectCodingAgentFromEnv,
+  detectIdeFromEnv,
+  listSupportedCodingAgents,
+  resolveCodingAgent,
+} from "./config/agent-dictionary.js";
 import { resolveOutputRoot } from "./config/service.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
 
@@ -210,18 +217,30 @@ function printUsage() {
   console.log("  SENTINELAYER_GITHUB_CLONE_BASE_URL=https://github.com");
 }
 
-function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" } = {}) {
+function normalizeInterviewInput(
+  raw,
+  { argProjectName = "", detectedRepo = "", detectedCodingAgent = DEFAULT_CODING_AGENT_ID } = {}
+) {
   const obj = raw && typeof raw === "object" ? raw : {};
   const aiProvider = String(obj.aiProvider || "openai").trim().toLowerCase();
   const generationMode = String(obj.generationMode || "detailed").trim().toLowerCase();
   const audienceLevel = String(obj.audienceLevel || "developer").trim().toLowerCase();
   const projectType = String(obj.projectType || "greenfield").trim().toLowerCase();
+  const codingAgentCandidate = String(obj.codingAgent || detectedCodingAgent || DEFAULT_CODING_AGENT_ID)
+    .trim()
+    .toLowerCase();
   const authMode = String(obj.authMode || "sentinelayer").trim().toLowerCase();
   const connectRepo = Boolean(obj.connectRepo);
   const repoSlug = normalizeRepoSlug(obj.repoSlug || detectedRepo || "");
   const buildFromExistingRepo = connectRepo ? Boolean(obj.buildFromExistingRepo) : false;
   const normalizedAuthMode = VALID_AUTH_MODES.has(authMode) ? authMode : "sentinelayer";
   const derivedProjectName = sanitizeProjectName(obj.projectName || argProjectName) || getRepoNameFromSlug(repoSlug);
+  let resolvedCodingAgent = DEFAULT_CODING_AGENT_ID;
+  try {
+    resolvedCodingAgent = resolveCodingAgent(codingAgentCandidate).id;
+  } catch {
+    resolvedCodingAgent = DEFAULT_CODING_AGENT_ID;
+  }
 
   const normalized = {
     projectName: derivedProjectName,
@@ -230,6 +249,7 @@ function normalizeInterviewInput(raw, { argProjectName = "", detectedRepo = "" }
     generationMode: VALID_GENERATION_MODES.has(generationMode) ? generationMode : "detailed",
     audienceLevel: VALID_AUDIENCE_LEVELS.has(audienceLevel) ? audienceLevel : "developer",
     projectType: VALID_PROJECT_TYPES.has(projectType) ? projectType : "greenfield",
+    codingAgent: resolvedCodingAgent,
     techStack: normalizeListInput(obj.techStack),
     features: normalizeListInput(obj.features),
     authMode: normalizedAuthMode,
@@ -261,6 +281,15 @@ function validateInterviewInput(interview) {
   if (!VALID_PROJECT_TYPES.has(interview.projectType)) {
     throw new Error("Invalid projectType. Use greenfield, add_feature, or bugfix.");
   }
+  try {
+    resolveCodingAgent(interview.codingAgent || DEFAULT_CODING_AGENT_ID);
+  } catch {
+    throw new Error(
+      `Invalid codingAgent. Use one of: ${listSupportedCodingAgents()
+        .map((agent) => agent.id)
+        .join(", ")}.`
+    );
+  }
   if (!VALID_AUTH_MODES.has(interview.authMode)) {
     throw new Error("Invalid authMode. Use sentinelayer or byok.");
   }
@@ -275,7 +304,12 @@ function validateInterviewInput(interview) {
   }
 }
 
-async function loadAutomatedInterview({ argProjectName, detectedRepo, interviewFile }) {
+async function loadAutomatedInterview({
+  argProjectName,
+  detectedRepo,
+  detectedCodingAgent,
+  interviewFile,
+}) {
   const envPayload = String(process.env.SENTINELAYER_CLI_INTERVIEW_JSON || "").trim();
   let payload = null;
   let source = "";
@@ -294,7 +328,11 @@ async function loadAutomatedInterview({ argProjectName, detectedRepo, interviewF
     return null;
   }
 
-  const normalized = normalizeInterviewInput(payload, { argProjectName, detectedRepo });
+  const normalized = normalizeInterviewInput(payload, {
+    argProjectName,
+    detectedRepo,
+    detectedCodingAgent,
+  });
   try {
     validateInterviewInput(normalized);
   } catch (error) {
@@ -377,9 +415,7 @@ async function requestJson(url, { method = "GET", headers = {}, body, timeoutMs 
 }
 
 function detectIde() {
-  if (process.env.TERM_PROGRAM?.toLowerCase().includes("vscode")) return "vscode";
-  if (process.env.JETBRAINS_IDE) return "jetbrains";
-  return "terminal";
+  return detectIdeFromEnv(process.env).id;
 }
 
 async function startCliSession({ apiUrl, challenge, cliVersion }) {
@@ -1335,9 +1371,88 @@ async function ensureSentinelStartScript(projectDir, projectName) {
   await writeTextFile(packagePath, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
+function buildCodingAgentConfigTemplate({ agentProfile, projectName }) {
+  const projectLabel = String(projectName || "sentinelayer-project").trim() || "sentinelayer-project";
+  const commonChecklist = [
+    "Read docs/spec.md, docs/build-guide.md, tasks/todo.md, and AGENT_HANDOFF_PROMPT.md in order.",
+    "Work one PR scope at a time and keep changes deterministic.",
+    "Run local checks before push: /omargate deep and /audit.",
+  ];
+
+  if (agentProfile.id === "aider") {
+    return `model: gpt-5.3-codex
+read:
+  - docs/spec.md
+  - docs/build-guide.md
+  - tasks/todo.md
+  - AGENT_HANDOFF_PROMPT.md
+notes:
+  - ${commonChecklist.join("\n  - ")}
+`;
+  }
+
+  if (agentProfile.id === "continue" || agentProfile.id === "cody") {
+    return `${JSON.stringify(
+      {
+        profile: "sentinelayer",
+        project: projectLabel,
+        promptTarget: agentProfile.promptTarget,
+        instructions: commonChecklist,
+      },
+      null,
+      2
+    )}\n`;
+  }
+
+  const markdownBody = [
+    `# Sentinelayer ${agentProfile.name} Profile`,
+    "",
+    `Project: ${projectLabel}`,
+    `Prompt target: ${agentProfile.promptTarget}`,
+    "",
+    "Rules:",
+    ...commonChecklist.map((item) => `- ${item}`),
+    "",
+  ].join("\n");
+
+  return `${markdownBody}\n`;
+}
+
+async function ensureCodingAgentConfigFile({ projectDir, projectName, codingAgent }) {
+  const agentProfile = resolveCodingAgent(codingAgent || DEFAULT_CODING_AGENT_ID);
+  if (!agentProfile.configFile) {
+    return {
+      created: false,
+      path: "",
+      agent: agentProfile,
+    };
+  }
+
+  const configPath = path.join(projectDir, agentProfile.configFile);
+  if (fs.existsSync(configPath)) {
+    return {
+      created: false,
+      path: configPath,
+      agent: agentProfile,
+    };
+  }
+
+  const configContent = buildCodingAgentConfigTemplate({
+    agentProfile,
+    projectName,
+  });
+  await writeTextFile(configPath, configContent);
+  return {
+    created: true,
+    path: configPath,
+    agent: agentProfile,
+  };
+}
+
 function buildTodoContent({
   projectName,
   aiProvider,
+  codingAgent,
   authMode,
   repoSlug,
   buildFromExistingRepo,
@@ -1345,6 +1460,7 @@ function buildTodoContent({
   audienceLevel,
   projectType,
 }) {
+  const codingAgentProfile = resolveCodingAgent(codingAgent || DEFAULT_CODING_AGENT_ID);
   return `# Sentinelayer Autonomous Build Plan
 
 Generated: ${nowIso()}
@@ -1352,6 +1468,7 @@ Project: ${projectName}
 
 ## Inputs
 - AI provider: \`${aiProvider}\`
+- Coding agent: \`${codingAgentProfile.name} (${codingAgentProfile.id})\`
 - Auth mode: \`${authMode}\`
 - Generation mode: \`${generationMode}\`
 - Audience level: \`${audienceLevel}\`
@@ -1395,7 +1512,44 @@ Project: ${projectName}
 `;
 }
 
-function buildHandoffPrompt({ projectName, repoSlug, secretName, buildFromExistingRepo, authMode }) {
+function buildAgentPromptGuidance(promptTarget) {
+  const normalized = String(promptTarget || "generic").trim().toLowerCase();
+  if (normalized === "claude") {
+    return `- Use explicit plan -> implement -> verify loops.
+- Keep deterministic checks first, then optional AI steps.
+- Capture concrete evidence per PR before handoff.`;
+  }
+  if (normalized === "cursor") {
+    return `- Keep edits small and keep scope to one PR id.
+- Run local verification before each push.
+- Keep repository conventions and test style unchanged.`;
+  }
+  if (normalized === "copilot") {
+    return `- Keep error handling explicit on all new paths.
+- Avoid implicit behavior changes in existing modules.
+- Add targeted tests for each new branch introduced.`;
+  }
+  if (normalized === "codex") {
+    return `- Execute autonomously, one bounded PR at a time.
+- Use deterministic ingest/spec context as primary source.
+- Fail closed when scope or safety requirements are ambiguous.`;
+  }
+  return `- Follow the provided spec and todo list exactly.
+- Implement incrementally with deterministic checkpoints.
+- Document assumptions and unresolved risks clearly.`;
+}
+
+function buildHandoffPrompt({
+  projectName,
+  repoSlug,
+  secretName,
+  buildFromExistingRepo,
+  authMode,
+  codingAgent,
+}) {
+  const codingAgentProfile = resolveCodingAgent(codingAgent || DEFAULT_CODING_AGENT_ID);
+  const codingAgentConfigPath = codingAgentProfile.configFile || "none";
+  const codingAgentGuidance = buildAgentPromptGuidance(codingAgentProfile.promptTarget);
   const tokenContract =
     authMode === "sentinelayer"
       ? `- Required secret name: ${secretName}
@@ -1427,6 +1581,14 @@ Execution mode:
 - For each PR run Omar loop until P0/P1 are zero and quality checks pass.
 - Keep commits scoped and deterministic.
 - Stop only for blocking secrets/permission gaps.
+
+Coding agent profile:
+- Selected agent: ${codingAgentProfile.name} (${codingAgentProfile.id})
+- Prompt target: ${codingAgentProfile.promptTarget}
+- Suggested config path: ${codingAgentConfigPath}
+
+Agent-specific guidance:
+${codingAgentGuidance}
 
 GitHub Action contract:
 ${tokenContract}
@@ -1639,10 +1801,22 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
   return { ok: true };
 }
 
-async function collectInterview({ initialProjectName, detectedRepo }) {
+async function collectInterview({ initialProjectName, detectedRepo, detectedCodingAgent }) {
   const onCancel = () => {
     throw new Error("Prompt flow cancelled by user.");
   };
+  const detectedAgentRecord = resolveCodingAgent(detectedCodingAgent || DEFAULT_CODING_AGENT_ID);
+  const codingAgentChoices = listSupportedCodingAgents().map((agent) => ({
+    title:
+      agent.id === detectedAgentRecord.id
+        ? `${agent.name} (${agent.id}, detected)`
+        : `${agent.name} (${agent.id})`,
+    value: agent.id,
+  }));
+  const defaultCodingAgentIndex = Math.max(
+    0,
+    codingAgentChoices.findIndex((choice) => choice.value === detectedAgentRecord.id)
+  );
 
   const base = await prompts(
     [
@@ -1673,6 +1847,13 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
           { title: "Google (Gemini)", value: "google" },
         ],
         initial: 0,
+      },
+      {
+        type: "select",
+        name: "codingAgent",
+        message: "Which coding agent will you use?",
+        choices: codingAgentChoices,
+        initial: defaultCodingAgentIndex,
       },
       {
         type: "select",
@@ -1851,6 +2032,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
     generationMode: base.generationMode,
     audienceLevel: base.audienceLevel,
     projectType: base.projectType,
+    codingAgent: resolveCodingAgent(base.codingAgent || detectedAgentRecord.id).id,
     techStack: parseCommaList(base.techStack),
     features: parseCommaList(base.features),
     authMode: base.authMode,
@@ -1864,6 +2046,7 @@ async function collectInterview({ initialProjectName, detectedRepo }) {
   printInfo(`Project: ${interviewResult.projectName}`);
   printInfo(`Type: ${interviewResult.projectType}`);
   printInfo(`Provider: ${interviewResult.aiProvider}`);
+  printInfo(`Coding agent: ${interviewResult.codingAgent}`);
   printInfo(`Auth mode: ${interviewResult.authMode}`);
   printInfo(`Repo: ${interviewResult.repoSlug || "not connected"}`);
   printInfo(
@@ -1938,6 +2121,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   }
   const argProjectName = args.projectName;
   const detectedRepo = detectRepoSlug(process.cwd());
+  const detectedCodingAgent = detectCodingAgentFromEnv(process.env).id;
 
   printSection("Sentinelayer Scaffold");
   printInfo(`API: ${DEFAULT_API_URL}`);
@@ -1949,6 +2133,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   const automatedInterview = await loadAutomatedInterview({
     argProjectName,
     detectedRepo,
+    detectedCodingAgent,
     interviewFile: args.interviewFile,
   });
 
@@ -1959,6 +2144,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       : await collectInterview({
           initialProjectName: argProjectName,
           detectedRepo,
+          detectedCodingAgent,
         }));
 
   if (!interview) {
@@ -2131,6 +2317,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     buildTodoContent({
       projectName: effectiveProjectName,
       aiProvider: interview.aiProvider,
+      codingAgent: interview.codingAgent,
       authMode: effectiveAuthMode,
       repoSlug: interview.repoSlug,
       buildFromExistingRepo: interview.buildFromExistingRepo,
@@ -2147,8 +2334,14 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       secretName,
       buildFromExistingRepo: interview.buildFromExistingRepo,
       authMode: effectiveAuthMode,
+      codingAgent: interview.codingAgent,
     })
   );
+  const codingAgentConfig = await ensureCodingAgentConfigFile({
+    projectDir,
+    projectName: effectiveProjectName,
+    codingAgent: interview.codingAgent,
+  });
 
   await ensureSentinelStartScript(projectDir, effectiveProjectName);
   if (sentinelayerToken) {
@@ -2175,6 +2368,11 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     console.log(pc.green(`✔ ${secretName} injected into ${path.join(projectDir, ".env")}`));
   } else {
     console.log(pc.yellow("! BYOK mode active: Sentinelayer token was not injected."));
+  }
+  if (codingAgentConfig.created) {
+    console.log(
+      pc.green(`✔ ${codingAgentConfig.agent.name} config scaffolded at ${codingAgentConfig.path}`)
+    );
   }
   if (interview.connectRepo && interview.injectSecret && sentinelayerToken) {
     if (secretInjection.ok) {
