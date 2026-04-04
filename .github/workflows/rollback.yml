@@ -430,7 +430,7 @@ jobs:
       actions: read
       id-token: write
     env:
-      PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
+      PACKAGE_NAME: create-sentinelayer
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
