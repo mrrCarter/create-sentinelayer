@@ -43,6 +43,7 @@ function verifyQualityGateGraph(workflowPath) {
   }
 
   const requiredJobs = [
+    "canonical-run",
     "lint",
     "eval-impact",
     "syntax-matrix",
@@ -62,6 +63,11 @@ function verifyQualityGateGraph(workflowPath) {
     if (!Object.prototype.hasOwnProperty.call(jobs, jobId)) {
       fail(`Workflow '${workflowPath}' is missing required job '${jobId}'.`);
     }
+  }
+
+  const lintNeeds = new Set(normalizeNeeds(jobs.lint?.needs));
+  if (!lintNeeds.has("canonical-run")) {
+    fail(`Workflow '${workflowPath}' job 'lint' must depend on 'canonical-run'.`);
   }
 
   const evalImpactNeeds = new Set(normalizeNeeds(jobs["eval-impact"]?.needs));
@@ -115,6 +121,9 @@ function verifyQualityGateGraph(workflowPath) {
   }
 
   const deployNeeds = new Set(normalizeNeeds(jobs.deploy?.needs));
+  if (!deployNeeds.has("canonical-run")) {
+    fail(`Workflow '${workflowPath}' job 'deploy' must depend on 'canonical-run'.`);
+  }
   if (!deployNeeds.has("deploy-stage")) {
     fail(`Workflow '${workflowPath}' job 'deploy' must depend on 'deploy-stage'.`);
   }
@@ -128,6 +137,9 @@ function verifyQualityGateGraph(workflowPath) {
   }
 
   const qualitySummaryNeeds = new Set(normalizeNeeds(jobs["quality-summary"]?.needs));
+  if (!qualitySummaryNeeds.has("canonical-run")) {
+    fail(`Workflow '${workflowPath}' job 'quality-summary' must depend on 'canonical-run'.`);
+  }
   for (const requiredNeed of [
     "lint",
     "eval-impact",

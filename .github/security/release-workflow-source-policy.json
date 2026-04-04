@@ -1,0 +1,9 @@
+{
+  "release_workflow": {
+    "path": ".github/workflows/release.yml",
+    "workflow_id": "253653250",
+    "approved_sha256": [
+      "202d425ea8ae871ad177d1a252afa7236c0bfcc3fc6061a887f5e26cf7a3c515"
+    ]
+  }
+}

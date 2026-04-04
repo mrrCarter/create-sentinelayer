@@ -64,7 +64,6 @@ on:
 permissions:
   contents: read
   actions: read
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -85,7 +84,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      id-token: write
     env:
       RAW_TARGET_VERSION: ${{ inputs.target_version || github.event.inputs.target_version || '' }}
       RAW_BAD_VERSION: ${{ inputs.bad_version || github.event.inputs.bad_version || '' }}
@@ -542,7 +540,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      id-token: write
     env:
       PACKAGE_NAME: create-sentinelayer
       GH_TOKEN: ${{ github.token }}

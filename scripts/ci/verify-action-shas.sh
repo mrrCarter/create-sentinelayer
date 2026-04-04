@@ -12,7 +12,6 @@ if [[ ! -f "${remote_exec_allowlist_file}" ]]; then
   echo "::error::Missing workflow remote-exec allowlist file '${remote_exec_allowlist_file}'."
   exit 1
 fi
-mapfile -t remote_exec_allowlist_patterns < <(grep -vE '^\s*($|#)' "${remote_exec_allowlist_file}" || true)
 
 duplicate_allowlist_entries="$(
   awk -F'=' '
@@ -79,7 +78,7 @@ if [[ "${#workflow_files[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-extract_workflow_entries() {
+extract_workflow_uses() {
   local workflow_file="${1:-}"
   if [[ -z "${workflow_file}" ]]; then
     return 1
@@ -124,83 +123,34 @@ try {
   process.exit(1);
 }
 
-const entries = [];
-const slugify = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-const encode = (value) => Buffer.from(String(value || ""), "utf8").toString("base64");
-const tokenizeRun = (script) =>
-  String(script || "")
-    .toLowerCase()
-    .replace(/#.*/g, " ")
-    .replace(/[()<>|;&]/g, " ")
-    .replace(/["'`]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const jobs = parsed && typeof parsed === "object" && parsed.jobs && typeof parsed.jobs === "object"
-  ? parsed.jobs
-  : {};
-for (const [jobIdRaw, jobValue] of Object.entries(jobs)) {
-  const jobId = slugify(jobIdRaw) || "job";
+const jobs =
+  parsed &&
+  typeof parsed === "object" &&
+  parsed.jobs &&
+  typeof parsed.jobs === "object"
+    ? parsed.jobs
+    : {};
+for (const jobValue of Object.values(jobs)) {
   if (!jobValue || typeof jobValue !== "object") {
     continue;
   }
   const jobUses = typeof jobValue.uses === "string" ? jobValue.uses.trim() : "";
   if (jobUses) {
-    entries.push(`USES\t${jobUses}\t${jobId}\tjob`);
+    process.stdout.write(`${jobUses}\n`);
   }
   const steps = Array.isArray(jobValue.steps) ? jobValue.steps : [];
-  for (let index = 0; index < steps.length; index += 1) {
-    const step = steps[index];
+  for (const step of steps) {
     if (!step || typeof step !== "object") {
       continue;
     }
-    const stepId =
-      slugify(step.id) ||
-      slugify(step.name) ||
-      `step-${index + 1}`;
     const stepUses = typeof step.uses === "string" ? step.uses.trim() : "";
     if (stepUses) {
-      entries.push(`USES\t${stepUses}\t${jobId}\t${stepId}`);
-    }
-    const stepRun = typeof step.run === "string" ? step.run.trim() : "";
-    if (stepRun) {
-      entries.push(
-        `RUN\t${encode(stepRun)}\t${encode(tokenizeRun(stepRun))}\t${jobId}\t${stepId}`
-      );
+      process.stdout.write(`${stepUses}\n`);
     }
   }
 }
-
-for (const entry of entries) {
-  process.stdout.write(`${entry}\n`);
-}
 NODE
 }
-
-network_fetch_pattern='(curl|wget|invoke-webrequest|iwr|irm)[[:space:]]'
-shell_sink_pattern='[|;][[:space:]]*(env[[:space:]]+)?(bash|sh|zsh|ksh|pwsh|powershell|iex)([[:space:]]|$)'
-process_substitution_pattern='(bash|sh|zsh|ksh)[[:space:]]*<\([[:space:]]*(curl|wget|invoke-webrequest|iwr|irm)[[:space:]]'
-source_substitution_pattern='(source|\.)[[:space:]]*<\([[:space:]]*(curl|wget|invoke-webrequest|iwr|irm)[[:space:]]'
-shell_c_fetch_pattern='(bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]*[^[:space:]]*(curl|wget|invoke-webrequest|iwr|irm)'
-pwsh_pipe_iex_pattern='(powershell|pwsh)[^|;]*(iwr|invoke-webrequest|irm)[^|;]*\|[[:space:]]*iex'
-iex_iwr_pattern='iex[[:space:]]*\([[:space:]]*(iwr|invoke-webrequest|irm)'
-obfuscation_indirection_pattern='(\$\(|`|eval[[:space:]]|bash[[:space:]]+-c[[:space:]]*\$|sh[[:space:]]+-c[[:space:]]*\$|pwsh[[:space:]]+-c[[:space:]]*\$|powershell[[:space:]]+-c[[:space:]]*\$)'
-base64_pipe_shell_pattern='(base64|openssl[[:space:]]+base64)[^|;]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)([[:space:]]|$)'
-network_variable_assignment_pattern='[a-z_][a-z0-9_]*[[:space:]]*=[[:space:]]*["'"'"'`]*(curl|wget|invoke-webrequest|iwr|irm)([[:space:]]|$)'
-variable_exec_pattern='(eval|bash[[:space:]]+-c|sh[[:space:]]+-c|pwsh[[:space:]]+-c|powershell[[:space:]]+-c)[^[:cntrl:]]*\$[a-z_][a-z0-9_]*'
-variable_eval_shell_pattern='eval[[:space:]]+["'"'"'`]*[^[:cntrl:]]*\$[a-z_][a-z0-9_]*[^[:cntrl:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)'
-variable_eval_pipe_shell_pattern='eval[[:space:]]+[^[:cntrl:]]*\$[a-z_][a-z0-9_]*[^[:cntrl:]]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)(["'"'"'`]|[[:space:]]|$)'
-eval_pipe_shell_pattern='eval[[:space:]]+[^[:cntrl:]]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)(["'"'"'`]|[[:space:]]|$)'
-variable_pipe_shell_pattern='\$[a-z_][a-z0-9_]*[[:space:]]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)(["'"'"'`]|[[:space:]]|$)'
-tokenized_network_pattern='(^| )(curl|wget|invoke-webrequest|iwr|irm)( |$)'
-tokenized_shell_pattern='(^| )(bash|sh|zsh|ksh|pwsh|powershell|iex)( |$)'
-tokenized_obfuscation_pattern='(^| )(eval|base64|openssl|bash -c|sh -c|pwsh -c|powershell -c)( |$)'
-execution_primitive_pattern='(\||;|&&|\$\(|`|<\()'
 
 failures=0
 for workflow_file in "${workflow_files[@]}"; do
@@ -209,33 +159,13 @@ for workflow_file in "${workflow_files[@]}"; do
     failures=$((failures + 1))
     continue
   fi
-
-  workflow_entries_output=""
-  if ! workflow_entries_output="$(extract_workflow_entries "${workflow_file}")"; then
+  uses_output=""
+  if ! uses_output="$(extract_workflow_uses "${workflow_file}")"; then
     echo "::error file=${workflow_file}::Unable to parse workflow for pinned action verification."
     failures=$((failures + 1))
     continue
   fi
-  mapfile -t workflow_entries <<< "${workflow_entries_output}"
-  uses_entries=()
-  run_entries=()
-  for workflow_entry in "${workflow_entries[@]}"; do
-    if [[ -z "${workflow_entry}" ]]; then
-      continue
-    fi
-    if [[ "${workflow_entry}" == USES$'\t'* ]]; then
-      IFS=$'\t' read -r _entry_type uses_value _job_id _step_id <<< "${workflow_entry}"
-      uses_entries+=("${uses_value}")
-      continue
-    fi
-    if [[ "${workflow_entry}" == RUN$'\t'* ]]; then
-      IFS=$'\t' read -r _entry_type encoded_run encoded_tokenized_run run_job_id run_step_id <<< "${workflow_entry}"
-      # Preserve base64 payloads in-memory so multiline run blocks are decoded
-      # only after entry splitting (avoids newline truncation on read).
-      run_entries+=("${encoded_run}"$'\x1f'"${encoded_tokenized_run}"$'\x1f'"${run_job_id}"$'\x1f'"${run_step_id}")
-    fi
-  done
-
+  mapfile -t uses_entries <<< "${uses_output}"
   for uses_value in "${uses_entries[@]}"; do
     if [[ -z "${uses_value}" ]]; then
       continue
@@ -261,133 +191,11 @@ for workflow_file in "${workflow_files[@]}"; do
       failures=$((failures + 1))
     fi
   done
-
-  for run_entry in "${run_entries[@]}"; do
-    if [[ -z "${run_entry}" ]]; then
-      continue
-    fi
-    IFS=$'\x1f' read -r encoded_run encoded_tokenized_run run_job_id run_step_id <<< "${run_entry}"
-    run_value="$(printf '%s' "${encoded_run}" | base64 --decode 2>/dev/null || true)"
-    tokenized_run="$(printf '%s' "${encoded_tokenized_run}" | base64 --decode 2>/dev/null || true)"
-    if [[ -z "${run_value}" ]] && [[ -n "${encoded_run}" ]]; then
-      echo "::error file=${workflow_file}::Unable to decode base64 run command payload."
-      failures=$((failures + 1))
-      continue
-    fi
-    if [[ -z "${tokenized_run}" ]] && [[ -n "${encoded_tokenized_run}" ]]; then
-      echo "::error file=${workflow_file}::Unable to decode tokenized run command payload."
-      failures=$((failures + 1))
-      continue
-    fi
-    if [[ -z "${run_value}" ]]; then
-      continue
-    fi
-    normalized_run="$(
-      printf '%s' "${run_value}" \
-        | tr '[:upper:]' '[:lower:]' \
-        | tr '\n' ' ' \
-        | sed -E 's/[[:space:]]+/ /g'
-    )"
-    normalized_tokenized_run="$(
-      printf '%s' "${tokenized_run:-}" \
-        | tr '[:upper:]' '[:lower:]' \
-        | tr '\n' ' ' \
-        | sed -E 's/[[:space:]]+/ /g'
-    )"
-    run_job_id="$(echo "${run_job_id:-job}" | tr -d '\r' | xargs || true)"
-    run_step_id="$(echo "${run_step_id:-step}" | tr -d '\r' | xargs || true)"
-    if [[ -z "${run_job_id}" ]]; then
-      run_job_id="job"
-    fi
-    if [[ -z "${run_step_id}" ]]; then
-      run_step_id="step"
-    fi
-    allowlist_context="${workflow_file}#${run_job_id}.${run_step_id}"
-    remote_exec_detected="false"
-    contains_network_fetch="false"
-    contains_shell_sink="false"
-    tokenized_contains_network="false"
-    tokenized_contains_shell="false"
-
-    if [[ "${normalized_run}" =~ ${network_fetch_pattern} ]]; then
-      contains_network_fetch="true"
-    fi
-    if [[ "${normalized_run}" =~ ${shell_sink_pattern} ]]; then
-      contains_shell_sink="true"
-    fi
-    if [[ "${normalized_tokenized_run}" =~ ${tokenized_network_pattern} ]]; then
-      tokenized_contains_network="true"
-    fi
-    if [[ "${normalized_tokenized_run}" =~ ${tokenized_shell_pattern} ]]; then
-      tokenized_contains_shell="true"
-    fi
-    if [[ "${normalized_run}" =~ ${process_substitution_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${source_substitution_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${shell_c_fetch_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${pwsh_pipe_iex_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${iex_iwr_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${base64_pipe_shell_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${network_variable_assignment_pattern} ]] && [[ "${normalized_run}" =~ ${variable_exec_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${normalized_run}" =~ ${network_variable_assignment_pattern} ]] && [[ "${normalized_run}" =~ ${variable_eval_shell_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${variable_eval_pipe_shell_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${eval_pipe_shell_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${variable_pipe_shell_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${contains_network_fetch}" == "true" ]] \
-      && printf '%s\n' "${normalized_run}" \
-        | grep -Eq 'eval[[:space:]]+["'"'"']?\$[a-z_][a-z0-9_]*[[:space:]]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)(["'"'"']|[[:space:]]|$)'; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${obfuscation_indirection_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${tokenized_contains_network}" == "true" && "${tokenized_contains_shell}" == "true" && "${normalized_tokenized_run}" =~ ${tokenized_obfuscation_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${tokenized_contains_network}" == "true" && "${tokenized_contains_shell}" == "true" && "${normalized_run}" =~ ${execution_primitive_pattern} ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${contains_network_fetch}" == "true" && "${contains_shell_sink}" == "true" ]]; then
-      remote_exec_detected="true"
-    fi
-    if [[ "${remote_exec_detected}" != "true" ]]; then
-      continue
-    fi
-    remote_exec_allowlisted="false"
-    for allow_pattern in "${remote_exec_allowlist_patterns[@]}"; do
-      if [[ -n "${allow_pattern}" ]] && ( [[ "${normalized_run}" =~ ${allow_pattern} ]] || [[ "${normalized_tokenized_run}" =~ ${allow_pattern} ]] || [[ "${allowlist_context}" =~ ${allow_pattern} ]] ); then
-        remote_exec_allowlisted="true"
-        break
-      fi
-    done
-    if [[ "${remote_exec_allowlisted}" != "true" ]]; then
-      command_preview="$(printf '%s' "${run_value}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-180)"
-      echo "::error file=${workflow_file}::Potential remote shell execution in run step is not allowlisted (${allowlist_context}): ${command_preview}"
-      failures=$((failures + 1))
-    fi
-  done
 done
+
+if ! node scripts/ci/verify-workflow-remote-exec.js --allowlist "${remote_exec_allowlist_file}" "${workflow_files[@]}"; then
+  failures=$((failures + 1))
+fi
 
 if [[ "${failures}" -gt 0 ]]; then
   echo "::error::Workflow action SHA validation failed with ${failures} issue(s)."

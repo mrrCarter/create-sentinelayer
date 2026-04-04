@@ -2,6 +2,10 @@
   "workflows": {
     ".github/workflows/quality-gates.yml": {
       "jobs": {
+        "canonical-run": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
         "lint": {
           "required": { "contents": "read" },
           "max": { "contents": "read" }
@@ -47,8 +51,8 @@
           "max": { "contents": "read", "actions": "read" }
         },
         "rollback-readiness": {
-          "required": { "contents": "read", "actions": "read", "id-token": "write" },
-          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         },
         "deploy": {
           "required": { "contents": "read", "actions": "read" },
@@ -139,8 +143,8 @@
           "max": { "contents": "read" }
         },
         "rollback-readiness": {
-          "required": { "contents": "read", "actions": "read", "id-token": "write" },
-          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         },
         "verify-rollback-transaction-lineage": {
           "required": { "contents": "read", "actions": "read" },
@@ -213,12 +217,12 @@
     ".github/workflows/rollback.yml": {
       "jobs": {
         "rollback": {
-          "required": { "contents": "read", "actions": "read", "id-token": "write" },
-          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         },
         "rollback-readiness-drill": {
-          "required": { "contents": "read", "actions": "read", "id-token": "write" },
-          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         }
       }
     }

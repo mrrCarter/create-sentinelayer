@@ -1186,3 +1186,24 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-second-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Begin `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after PR #114 target is reached.
+
+### PR #114 Forty-Third Cycle (2026-04-04, run_id=e38cb331-80af-421e-b09a-11a05c5a17d1)
+- [x] Re-anchor to active Omar findings (`P2=4`) and patch deterministic governance gaps:
+  - `.github/workflows/quality-gates.yml`: add canonical-run dedupe selector to prevent duplicate full gate execution for identical SHA across `pull_request` vs `push main`; gate downstream jobs on canonical selection.
+  - `.github/workflows/quality-gates.yml`: update `quality-summary` and `verify-gate-graph` flow to pass with explicit dedupe-mode summary when canonical PR run already exists.
+  - `scripts/ci/verify-quality-gate-graph.js`: enforce new `canonical-run` gate dependency edges.
+  - `.github/workflows/release-publish.yml`: add policy-pinned upstream release workflow identity enforcement (`workflow_id` + approved release workflow SHA-256 digest at target commit).
+  - `.github/security/release-workflow-source-policy.json`: add approved `release.yml` workflow identity baseline (`workflow_id` and digest allowlist).
+  - `.github/workflows/rollback.yml`: remove unused `id-token: write` permissions from rollback paths.
+  - `.github/workflows/release.yml` + `.github/workflows/quality-gates.yml`: remove unnecessary `id-token` on reusable rollback-readiness caller jobs.
+  - `scripts/ci/verify-action-shas.sh`: make Node structural remote-exec analyzer primary and keep deterministic action SHA allowlist checks.
+  - `scripts/ci/verify-workflow-remote-exec.js`: new parser-based workflow `run` analyzer with tainted-variable and network-to-exec dataflow checks.
+  - `.github/security/workflow-permissions-policy.json`: align policy contract with canonical-run job and reduced rollback permission surface.
+- [x] Run forty-third-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/rollback.yml .github/workflows/omar-gate.yml` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `201/207` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-third-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Begin `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) once PR #114 target is achieved.

@@ -110,6 +110,7 @@ jobs:
           WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || '' }}
           WORKFLOW_RUN_ACTOR: ${{ github.event.workflow_run.actor.login || '' }}
           WORKFLOW_RUN_CREATED_AT: ${{ github.event.workflow_run.created_at || '' }}
+          WORKFLOW_RUN_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id || '' }}
           WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           RELEASE_RUN_MAX_AGE_HOURS: ${{ env.RELEASE_RUN_MAX_AGE_HOURS }}
@@ -150,6 +151,33 @@ jobs:
             echo "::error::RELEASE_RUN_MAX_AGE_HOURS must be >= 1."
             exit 1
           fi
+          release_workflow_policy_file=".github/security/release-workflow-source-policy.json"
+          test -f "${release_workflow_policy_file}" || (echo "::error::Missing ${release_workflow_policy_file}." && exit 1)
+          release_workflow_path="$(jq -r '.release_workflow.path // ""' "${release_workflow_policy_file}")"
+          expected_release_workflow_id="$(jq -r '.release_workflow.workflow_id // ""' "${release_workflow_policy_file}")"
+          if [[ -z "${release_workflow_path}" ]]; then
+            echo "::error::release_workflow.path is required in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          case "${expected_release_workflow_id}" in ''|*[!0-9]*)
+            echo "::error::release_workflow.workflow_id must be a numeric value in ${release_workflow_policy_file}."
+            exit 1
+            ;;
+          esac
+          mapfile -t approved_release_workflow_shas < <(
+            jq -r '.release_workflow.approved_sha256[]? // empty' "${release_workflow_policy_file}" \
+              | awk 'NF {print tolower($0)}'
+          )
+          if [[ "${#approved_release_workflow_shas[@]}" -lt 1 ]]; then
+            echo "::error::release_workflow.approved_sha256 must include at least one digest in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          for approved_release_workflow_sha in "${approved_release_workflow_shas[@]}"; do
+            if [[ ! "${approved_release_workflow_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid release_workflow.approved_sha256 digest '${approved_release_workflow_sha}' in ${release_workflow_policy_file}."
+              exit 1
+            fi
+          done
 
           case "${EVENT_NAME}" in
             workflow_dispatch)
@@ -242,9 +270,14 @@ jobs:
               dispatch_release_run_head_sha="$(echo "${dispatch_release_run_json}" | jq -r '.head_sha // ""')"
               dispatch_release_run_event="$(echo "${dispatch_release_run_json}" | jq -r '.event // ""')"
               dispatch_release_run_head_repo="$(echo "${dispatch_release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+              dispatch_release_workflow_id="$(echo "${dispatch_release_run_json}" | jq -r '.workflow_id // ""')"
               release_run_created_at="$(echo "${dispatch_release_run_json}" | jq -r '.created_at // ""')"
-              if [[ "${dispatch_release_run_path}" != ".github/workflows/release.yml" ]]; then
-                echo "::error::release_run_id '${release_run_id}' must reference .github/workflows/release.yml (received '${dispatch_release_run_path}')."
+              if [[ "${dispatch_release_run_path}" != "${release_workflow_path}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' must reference ${release_workflow_path} (received '${dispatch_release_run_path}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_workflow_id}" != "${expected_release_workflow_id}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' workflow_id mismatch (expected='${expected_release_workflow_id}', actual='${dispatch_release_workflow_id}')."
                 exit 1
               fi
               if [[ "${dispatch_release_run_status}" != "completed" ]] || [[ "${dispatch_release_run_conclusion}" != "success" ]]; then
@@ -283,8 +316,13 @@ jobs:
                 exit 1
               fi
               normalized_run_path="$(echo "${WORKFLOW_RUN_PATH}" | sed -E 's/@.*$//')"
-              if [[ "${normalized_run_path}" != ".github/workflows/release.yml" ]]; then
-                echo "::error::workflow_run source path must be .github/workflows/release.yml (received '${WORKFLOW_RUN_PATH}')."
+              workflow_run_workflow_id="$(echo "${WORKFLOW_RUN_WORKFLOW_ID:-}" | tr -d '\r' | xargs || true)"
+              if [[ "${normalized_run_path}" != "${release_workflow_path}" ]]; then
+                echo "::error::workflow_run source path must be ${release_workflow_path} (received '${WORKFLOW_RUN_PATH}')."
+                exit 1
+              fi
+              if [[ "${workflow_run_workflow_id}" != "${expected_release_workflow_id}" ]]; then
+                echo "::error::workflow_run source workflow_id mismatch (expected='${expected_release_workflow_id}', actual='${workflow_run_workflow_id}')."
                 exit 1
               fi
               if [[ "${WORKFLOW_RUN_HEAD_REPO}" != "${REPO}" ]]; then
@@ -318,23 +356,46 @@ jobs:
           esac
 
           test -n "${target_sha}" || (echo "::error::Unable to resolve target release commit SHA." && exit 1)
-          release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${target_sha}&per_page=30")"
-          resolved_release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release.yml" --arg repo "${REPO}" '
+          release_workflow_blob=""
+          if ! release_workflow_blob="$(git show "${target_sha}:${release_workflow_path}" 2>/dev/null)"; then
+            echo "::error::Unable to read ${release_workflow_path} at target commit ${target_sha}."
+            exit 1
+          fi
+          release_workflow_sha="$(printf '%s' "${release_workflow_blob}" | sha256sum | awk '{print $1}')"
+          if [[ ! "${release_workflow_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to compute ${release_workflow_path} digest at target commit ${target_sha}."
+            exit 1
+          fi
+          release_workflow_sha_approved="false"
+          for approved_release_workflow_sha in "${approved_release_workflow_shas[@]}"; do
+            if [[ "${release_workflow_sha}" == "${approved_release_workflow_sha}" ]]; then
+              release_workflow_sha_approved="true"
+              break
+            fi
+          done
+          if [[ "${release_workflow_sha_approved}" != "true" ]]; then
+            echo "::error::${release_workflow_path} digest ${release_workflow_sha} for target ${target_sha} is not approved in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/${expected_release_workflow_id}/runs?head_sha=${target_sha}&per_page=30")"
+          resolved_release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path "${release_workflow_path}" --arg repo "${REPO}" --arg workflowId "${expected_release_workflow_id}" '
             [.workflow_runs[]
               | select((.head_sha // "") == $sha)
               | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.workflow_id // 0) | tostring) == $workflowId)
               | select((.status // "") == "completed")
               | select((.conclusion // "") == "success")
               | select((.event // "") == "push" or (.event // "") == "workflow_dispatch")
               | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
             ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .id // empty
           ')"
-          test -n "${resolved_release_run_id}" || (echo "::error::No successful release.yml run found for tag '${release_tag}' (${target_sha})." && exit 1)
+          test -n "${resolved_release_run_id}" || (echo "::error::No successful ${release_workflow_path} run found for tag '${release_tag}' (${target_sha})." && exit 1)
           if [[ -n "${release_run_id}" ]]; then
-            release_run_candidates="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release.yml" --arg repo "${REPO}" '
+            release_run_candidates="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path "${release_workflow_path}" --arg repo "${REPO}" --arg workflowId "${expected_release_workflow_id}" '
               [.workflow_runs[]
                 | select((.head_sha // "") == $sha)
                 | select(((.path // "") | split("@")[0]) == $path)
+                | select(((.workflow_id // 0) | tostring) == $workflowId)
                 | select((.status // "") == "completed")
                 | select((.conclusion // "") == "success")
                 | select((.event // "") == "push" or (.event // "") == "workflow_dispatch")
@@ -438,10 +499,24 @@ jobs:
             exit 1
           fi
           now_epoch="$(date -u +%s)"
+          release_workflow_policy_file=".github/security/release-workflow-source-policy.json"
+          test -f "${release_workflow_policy_file}" || (echo "::error::Missing ${release_workflow_policy_file}." && exit 1)
+          release_workflow_path="$(jq -r '.release_workflow.path // ""' "${release_workflow_policy_file}")"
+          expected_release_workflow_id="$(jq -r '.release_workflow.workflow_id // ""' "${release_workflow_policy_file}")"
+          if [[ -z "${release_workflow_path}" ]]; then
+            echo "::error::release_workflow.path is required in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          case "${expected_release_workflow_id}" in ''|*[!0-9]*)
+            echo "::error::release_workflow.workflow_id must be numeric in ${release_workflow_policy_file}."
+            exit 1
+            ;;
+          esac
           release_run_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}")"
           release_run_status="$(echo "${release_run_json}" | jq -r '.status // ""')"
           release_run_conclusion="$(echo "${release_run_json}" | jq -r '.conclusion // ""')"
           release_run_path="$(echo "${release_run_json}" | jq -r '((.path // "") | split("@")[0])')"
+          release_run_workflow_id="$(echo "${release_run_json}" | jq -r '.workflow_id // ""')"
           release_run_head_sha="$(echo "${release_run_json}" | jq -r '.head_sha // ""')"
           release_run_event="$(echo "${release_run_json}" | jq -r '.event // ""')"
           release_run_head_repo="$(echo "${release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
@@ -449,8 +524,12 @@ jobs:
             echo "::error::release_run_id '${release_run_id}' is not a successful completed release run (status='${release_run_status}', conclusion='${release_run_conclusion}')."
             exit 1
           fi
-          if [[ "${release_run_path}" != ".github/workflows/release.yml" ]]; then
-            echo "::error::release_run_id '${release_run_id}' must reference .github/workflows/release.yml (received '${release_run_path}')."
+          if [[ "${release_run_path}" != "${release_workflow_path}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' must reference ${release_workflow_path} (received '${release_run_path}')."
+            exit 1
+          fi
+          if [[ "${release_run_workflow_id}" != "${expected_release_workflow_id}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' workflow_id mismatch (expected='${expected_release_workflow_id}', actual='${release_run_workflow_id}')."
             exit 1
           fi
           if [[ "${release_run_head_sha}" != "${target_sha}" ]]; then

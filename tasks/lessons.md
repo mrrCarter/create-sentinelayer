@@ -298,3 +298,7 @@
 - Release-intent and release-publish workflows should enforce immutable dependency install (`npm ci`/lockfile gate) before governance or mutation logic to prevent toolchain drift.
 - Local rollback lineage fallback must require an explicit, structured exception identifier and persist that exception into lineage artifacts; otherwise validation-only fallback weakens auditability.
 - Auth poll backend outage handling should persist circuit-open state across process restarts so retry storms do not resume immediately after CLI restart.
+- Duplicate quality-gate execution across `pull_request` and `push main` should be controlled by an explicit canonical-run selector job; concurrency keys alone do not suppress post-completion duplicates.
+- Upstream workflow provenance pinning is stronger when release workflows validate both immutable workflow identity (`workflow_id`) and approved workflow-file digest at target commit against a policy file.
+- Remote-exec detection in workflow `run` blocks should be parser/dataflow driven (tainted-variable tracking + execution sink detection), with regex checks treated as secondary defense only.
+- Reusable rollback validation callers should not request `id-token: write` unless the called path actually performs OIDC trust exchange.

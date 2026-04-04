@@ -25,9 +25,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  canonical-run:
+    name: Canonical Run Selection
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      execute_full: ${{ steps.select.outputs.execute_full }}
+      skip_reason: ${{ steps.select.outputs.skip_reason }}
+    steps:
+      - name: Resolve canonical quality execution
+        id: select
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          execute_full="true"
+          skip_reason="canonical_event"
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${HEAD_SHA}&per_page=30" -H "Accept: application/vnd.github+json")"
+            canonical_pr_run_id="$(echo "${runs_json}" | jq -r --arg current "${RUN_ID}" --arg repo "${REPO}" --arg sha "${HEAD_SHA}" '
+              [.workflow_runs[]
+                | select(((.id | tostring) != $current))
+                | select((.event // "") == "pull_request")
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == ".github/workflows/quality-gates.yml")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | select(
+                    ((.status // "") == "in_progress") or
+                    ((.status // "") == "queued") or
+                    (((.status // "") == "completed") and ((.conclusion // "") == "success"))
+                  )
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | (.id | tostring) // ""
+            ')"
+            if [[ -n "${canonical_pr_run_id}" ]]; then
+              execute_full="false"
+              skip_reason="duplicate_sha_already_validated_by_pull_request_run_${canonical_pr_run_id}"
+              echo "::notice::Skipping duplicate push quality execution for SHA ${HEAD_SHA}; canonical pull_request run ${canonical_pr_run_id} already exists."
+            fi
+          fi
+          echo "execute_full=${execute_full}" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
     runs-on: ubuntu-22.04
+    needs: [canonical-run]
+    if: ${{ needs.canonical-run.outputs.execute_full == 'true' }}
     timeout-minutes: 8
     permissions:
       contents: read
@@ -1435,7 +1488,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      id-token: write
     uses: ./.github/workflows/rollback.yml
     with:
       execute: false
@@ -1445,8 +1497,8 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-22.04
-    needs: [deploy-stage, rollback-readiness]
-    if: ${{ always() }}
+    needs: [canonical-run, deploy-stage, rollback-readiness]
+    if: ${{ always() && needs.canonical-run.outputs.execute_full == 'true' }}
     environment: quality-deploy
     permissions:
       contents: read
@@ -1590,14 +1642,19 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness, deploy-stage, rollback-readiness, deploy]
+    needs: [canonical-run, lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness, deploy-stage, rollback-readiness, deploy]
     if: ${{ always() }}
     permissions:
       contents: read
+    env:
+      EXECUTE_FULL: ${{ needs.canonical-run.outputs.execute_full }}
     steps:
       - name: Evaluate gate outcomes
         shell: bash
         env:
+          RESULT_CANONICAL_RUN: ${{ needs.canonical-run.result }}
+          EXECUTE_FULL: ${{ needs.canonical-run.outputs.execute_full }}
+          CANONICAL_SKIP_REASON: ${{ needs.canonical-run.outputs.skip_reason }}
           RESULT_EVAL_IMPACT: ${{ needs.eval-impact.result }}
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_SYNTAX_MATRIX: ${{ needs.syntax-matrix.result }}
@@ -1613,6 +1670,17 @@ jobs:
           RESULT_DEPLOY: ${{ needs.deploy.result }}
         run: |
           set -euo pipefail
+          if [[ "${RESULT_CANONICAL_RUN}" != "success" ]]; then
+            echo "::error::Canonical run selector failed (result=${RESULT_CANONICAL_RUN})."
+            exit 1
+          fi
+          if [[ "${EXECUTE_FULL}" != "true" ]]; then
+            echo "Quality Summary dedupe: canonical pull_request run already covers this SHA. skip_reason=${CANONICAL_SKIP_REASON}."
+            echo "## Quality Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: \`deduped\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- skip_reason: \`${CANONICAL_SKIP_REASON}\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           failures=0
           for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_ROLLBACK_READINESS RESULT_DEPLOY; do
             result="${!gate}"
@@ -1632,12 +1700,14 @@ jobs:
           echo "All quality checks passed."
 
       - name: Download quality build package
+        if: env.EXECUTE_FULL == 'true'
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: quality-build-package
           path: quality-summary-proof
 
       - name: Assert immutable promotion invariant
+        if: env.EXECUTE_FULL == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -1682,6 +1752,7 @@ jobs:
           EOF
 
       - name: Upload quality summary promotion proof
+        if: env.EXECUTE_FULL == 'true'
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: quality-summary-promotion-proof
@@ -1691,8 +1762,8 @@ jobs:
   verify-gate-graph:
     name: Verify Gate Graph
     runs-on: ubuntu-22.04
-    needs: [quality-summary]
-    if: ${{ always() }}
+    needs: [canonical-run, quality-summary]
+    if: ${{ always() && needs.canonical-run.outputs.execute_full == 'true' }}
     permissions:
       actions: read
     steps:
@@ -1737,6 +1808,7 @@ jobs:
             fi
           }
           assert_exact_success "Lint"
+          assert_exact_success "Canonical Run Selection"
           assert_exact_success "Eval Impact Gate"
           assert_regex_success "^Syntax & Sanity \\(Node .+\\)$" 2
           assert_exact_success "Unit Coverage (>=80%)"
