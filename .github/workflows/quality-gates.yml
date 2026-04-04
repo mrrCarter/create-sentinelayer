@@ -1441,7 +1441,7 @@ jobs:
           assert_exact_success "Release Readiness"
           assert_exact_success "Deploy Readiness"
           assert_exact_success "Deploy Stage"
-          assert_regex_success "^Rollback Readiness( / .+)?$" 1
+          assert_exact_success "Rollback Readiness / Rollback Validation and Promote"
           assert_exact_success "Deploy"
           assert_exact_success "Quality Summary"
           echo "Gate graph verification passed for run ${RUN_ID}."

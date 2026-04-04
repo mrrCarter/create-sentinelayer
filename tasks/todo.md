@@ -930,5 +930,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Run thirty-first-cycle local evidence:
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-first-cycle rollback fallback batch.
+- [x] Commit + push thirty-first-cycle rollback fallback batch (`42f5e37`).
+- [x] Run quality gate watch (`gh run watch 23972715082 --exit-status`) and capture failure root cause:
+  - `Verify Gate Graph` incorrectly matched both reusable rollback jobs (`Rollback Validation and Promote` + skipped `Rollback Readiness Drill`) and treated the skipped scheduled drill job as a failure.
+- [x] Apply thirty-second-cycle gate-verification hardening:
+  - `.github/workflows/quality-gates.yml`: tighten rollback verification check to the exact required job name `Rollback Readiness / Rollback Validation and Promote` instead of broad regex matching.
+- [x] Run thirty-second-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-second-cycle gate-verification batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.
