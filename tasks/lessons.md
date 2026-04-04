@@ -112,3 +112,6 @@
 - Avoid exposing a `severity_gate=none` option in Omar workflow dispatch for production repos; keep threshold choices bounded to enforce review policy by default.
 - Polling-based auth flows should treat transient network/5xx/429 errors as retryable and handle terminal states (`rejected`, `expired`) explicitly so login sessions fail deterministically and quickly.
 - Release workflows should fail closed when publish is requested without credentials, and use pinned action SHAs plus concurrency controls to prevent overlapping mutable release runs.
+- Promote one immutable tarball from build stage to publish stage in release workflows; avoid rebuilding artifacts in publish jobs to preserve provenance lineage.
+- When pinning dependency specs from ranges to exact versions, regenerate and commit `package-lock.json` in the same PR to keep `npm ci` deterministic.
+- Gate-proof API checks in workflows should use bounded network behavior (`curl` max-time/retry or equivalent); unbounded remote checks can reintroduce release nondeterminism.
