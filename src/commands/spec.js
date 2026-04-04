@@ -13,7 +13,7 @@ import { loadConfig } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
-import { collectCodebaseIngest } from "../ingest/engine.js";
+import { formatIngestResolutionNotice, resolveCodebaseIngest } from "../ingest/engine.js";
 import {
   buildLineDiff,
   inferTemplateFromSpec,
@@ -434,6 +434,7 @@ export function registerSpecCommand(program) {
     .option("--project-type <type>", "Project type override (greenfield|add_feature|bugfix)")
     .option("--output-file <path>", "Output file path relative to --path", "SPEC.md")
     .option("--output-dir <path>", "Optional output dir override for cost/telemetry artifacts")
+    .option("--refresh", "Refresh CODEBASE_INGEST before generating SPEC")
     .option("--ai", "Enable AI-enhanced markdown refinement after deterministic spec generation")
     .option("--provider <name>", "AI provider override (openai|anthropic|google)")
     .option("--model <id>", "AI model override")
@@ -459,7 +460,12 @@ export function registerSpecCommand(program) {
         const outputPath = path.resolve(targetPath, outputFile);
 
         const template = resolveSpecTemplate(options.template);
-        const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+        const ingestResolution = await resolveCodebaseIngest({
+          rootPath: targetPath,
+          outputDir: options.outputDir,
+          refresh: Boolean(options.refresh),
+        });
+        const ingest = ingestResolution.ingest;
         const explicitProjectType = parseProjectTypeOption(options.projectType);
         const resolvedProjectType = resolveProjectType({
           projectType: explicitProjectType,
@@ -499,6 +505,15 @@ export function registerSpecCommand(program) {
           frameworks: ingest.frameworks,
           riskSurfaces: ingest.riskSurfaces,
           projectType: resolvedProjectType,
+          ingestRefresh: {
+            outputPath: ingestResolution.outputPath,
+            refreshed: ingestResolution.refreshed,
+            stale: ingestResolution.stale,
+            reasons: ingestResolution.reasons,
+            refreshedBecause: ingestResolution.refreshedBecause,
+            lastCommitAt: ingestResolution.lastCommitAt,
+            contentHash: ingestResolution.fingerprint?.contentHash || "",
+          },
           ai: aiResult.ai,
         };
 
@@ -508,6 +523,10 @@ export function registerSpecCommand(program) {
           console.log(pc.bold("Spec generated"));
           console.log(pc.gray(`Template: ${template.id}`));
           console.log(pc.gray(`Output: ${outputPath}`));
+          if (ingestResolution.stale || ingestResolution.refreshed) {
+            const color = ingestResolution.stale && !ingestResolution.refreshed ? pc.yellow : pc.gray;
+            console.log(color(formatIngestResolutionNotice(ingestResolution)));
+          }
           if (aiResult.ai) {
             printAiSummary(aiResult.ai);
           }
@@ -531,6 +550,7 @@ export function registerSpecCommand(program) {
     .option("--template <templateId>", "Template id override (defaults to template inferred from SPEC.md)")
     .option("--description <text>", "Optional goal override for regenerated deterministic sections")
     .option("--project-type <type>", "Project type override (greenfield|add_feature|bugfix)")
+    .option("--refresh", "Refresh CODEBASE_INGEST before regenerating SPEC")
     .option("--dry-run", "Preview merged SPEC and diff without writing file")
     .option("--no-diff", "Disable terminal diff output")
     .option("--plain", "Disable colorized diff output")
@@ -554,7 +574,11 @@ export function registerSpecCommand(program) {
         const resolvedTemplateId =
           String(options.template || "").trim() || inferredTemplate || "api-service";
         const template = resolveSpecTemplate(resolvedTemplateId);
-        const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+        const ingestResolution = await resolveCodebaseIngest({
+          rootPath: targetPath,
+          refresh: Boolean(options.refresh),
+        });
+        const ingest = ingestResolution.ingest;
         const explicitProjectType = parseProjectTypeOption(options.projectType);
         const inferredProjectType = inferProjectTypeFromSpecMarkdown(existingMarkdown);
         const resolvedProjectType = resolveProjectType({
@@ -606,6 +630,15 @@ export function registerSpecCommand(program) {
             changed: diff.changed,
             preview: diffPreview,
           },
+          ingestRefresh: {
+            outputPath: ingestResolution.outputPath,
+            refreshed: ingestResolution.refreshed,
+            stale: ingestResolution.stale,
+            reasons: ingestResolution.reasons,
+            refreshedBecause: ingestResolution.refreshedBecause,
+            lastCommitAt: ingestResolution.lastCommitAt,
+            contentHash: ingestResolution.fingerprint?.contentHash || "",
+          },
         };
 
         if (emitJson) {
@@ -622,6 +655,10 @@ export function registerSpecCommand(program) {
             `Summary: changed=${diff.changed} added=${diff.added} removed=${diff.removed} preserved_manual_sections=${merged.summary.preservedManualSections.length}`
           )
         );
+        if (ingestResolution.stale || ingestResolution.refreshed) {
+          const color = ingestResolution.stale && !ingestResolution.refreshed ? pc.yellow : pc.gray;
+          console.log(color(formatIngestResolutionNotice(ingestResolution)));
+        }
         if (options.diff) {
           const rendered = renderLineDiff(diff, {
             plain: Boolean(options.plain),

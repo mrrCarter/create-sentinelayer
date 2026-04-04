@@ -206,8 +206,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch V - Memory and Watchdog Feedback Fixes (2026-04-03)
 - [x] PR 141 shared local blackboard memory with retrieval quality gate.
-- [ ] PR 142 local hybrid retrieval index (deterministic + TF-IDF) with optional API delegation hook.
-- [ ] PR 143 daemon watchdog stuck-agent detection + Slack/Telegram alerts.
+- [x] PR 142 local hybrid retrieval index (deterministic + TF-IDF) with optional API delegation hook.
+- [x] PR 143 daemon watchdog stuck-agent detection + Slack/Telegram alerts.
 - [ ] PR 144 ingest staleness refresh and hash-aware cache controls.
 
 ## Execution Board (2026-04-04)
@@ -225,9 +225,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-142-hybrid-retrieval-index` (in progress)
-2. `roadmap/pr-143-daemon-watchdog-alerts`
-3. `roadmap/pr-144-ingest-refresh-staleness`
+1. `roadmap/pr-144-ingest-refresh-staleness` (in progress)
+2. `roadmap/pr-107-command-lazy-loading`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -527,3 +526,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - Added `src/memory/retrieval.js` with local hybrid retrieval scoring (`exact + token overlap + TF-IDF cosine + recency + severity`) and optional API delegation that fails closed to local results.
     - Added corpus ingestion for shared memory (`ingest summary`, `risk surfaces`, historical audit reports/findings, and `SPEC.md/docs/spec.md` when present).
     - Wired audit orchestrator to query hybrid memory per agent and persist provider/query metadata in `report.sharedMemory.retrieval`.
+
+  - PR 143 (daemon watchdog stuck-agent detection + alert channels) local evidence (branch `roadmap/pr-143-daemon-watchdog-alerts`):
+    - `npm run verify` (pass, e2e `85/85`; unit tests `179/179`; coverage statements `90.22%`, branches `70.86%`, functions `91.37%`, lines `90.22%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added `src/daemon/watchdog.js` plus `daemon watchdog`, `daemon watchdog run`, and `daemon watchdog status` command surfaces with deterministic artifact storage and smart state-change alerting.
+    - Added Slack/Telegram channel normalization with env-template support, dry-run dispatch records, and state-transition recovery signaling.
+    - Fixed Omar P1 finding by replacing nested await dispatch loops with batched `Promise.all` alert fan-out.

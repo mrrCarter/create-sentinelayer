@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { resolveOutputRoot } from "../config/service.js";
-import { collectCodebaseIngest } from "../ingest/engine.js";
+import { resolveCodebaseIngest } from "../ingest/engine.js";
 import { runSpecBindingChecks } from "./spec-binding.js";
 
 const IGNORED_DIRS = new Set([
@@ -1020,6 +1020,9 @@ Layer 1 - Codebase ingest:
 - Total LOC: ${result.layers.ingest.summary.totalLoc}
 - Frameworks: ${frameworks}
 - Risk surfaces: ${riskSurfaces}
+- Refresh: ${result.layers.ingest.refresh?.refreshed ? "yes" : "no"}
+- Stale: ${result.layers.ingest.refresh?.stale ? "yes" : "no"}
+- Refresh reasons: ${(result.layers.ingest.refresh?.reasons || []).join(", ") || "none"}
 
 Layer 2 - Structural analysis:
 - Rules evaluated: ${result.layers.structural.ruleCount}
@@ -1069,6 +1072,7 @@ export async function runDeterministicReviewPipeline({
   mode = "full",
   outputDir = "",
   specFile = "",
+  refreshIngest = false,
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedMode = normalizeMode(mode, {
@@ -1083,7 +1087,12 @@ export async function runDeterministicReviewPipeline({
   const runDir = path.join(outputRoot, "reviews", runId);
   await fsp.mkdir(runDir, { recursive: true });
 
-  const ingest = await collectCodebaseIngest({ rootPath: normalizedTargetPath });
+  const ingestResolution = await resolveCodebaseIngest({
+    rootPath: normalizedTargetPath,
+    outputDir,
+    refresh: Boolean(refreshIngest),
+  });
+  const ingest = ingestResolution.ingest;
   const scopedFiles = await collectModeFilePaths(normalizedTargetPath, normalizedMode);
 
   const structuralFindings = await scanRulesForFiles({
@@ -1150,6 +1159,15 @@ export async function runDeterministicReviewPipeline({
         entryPoints: Array.isArray(ingest.entryPoints) ? ingest.entryPoints : [],
         manifests: Array.isArray(ingest.manifests?.detected) ? ingest.manifests.detected : [],
         riskSurfaces: Array.isArray(ingest.riskSurfaces) ? ingest.riskSurfaces : [],
+        refresh: {
+          outputPath: ingestResolution.outputPath,
+          refreshed: ingestResolution.refreshed,
+          stale: ingestResolution.stale,
+          reasons: ingestResolution.reasons,
+          refreshedBecause: ingestResolution.refreshedBecause,
+          lastCommitAt: ingestResolution.lastCommitAt,
+          contentHash: ingestResolution.fingerprint?.contentHash || "",
+        },
       },
       structural: {
         ruleCount: DETERMINISTIC_REVIEW_RULES.length,

@@ -36,6 +36,14 @@ function printAuditSummary(result) {
   if (result.ddPackage?.executiveSummaryPath) {
     console.log(pc.gray(`DD package: ${result.ddPackage.executiveSummaryPath}`));
   }
+  if (result.ingest?.refresh?.stale || result.ingest?.refresh?.refreshed) {
+    const reasons = (result.ingest?.refresh?.reasons || []).join(", ") || "none";
+    const line = `Ingest refresh: refreshed=${result.ingest?.refresh?.refreshed ? "yes" : "no"} stale=${
+      result.ingest?.refresh?.stale ? "yes" : "no"
+    } reasons=${reasons}`;
+    const color = result.ingest?.refresh?.stale && !result.ingest?.refresh?.refreshed ? pc.yellow : pc.gray;
+    console.log(color(line));
+  }
   console.log(
     `Summary: P0=${result.summary.P0} P1=${result.summary.P1} P2=${result.summary.P2} P3=${result.summary.P3}`
   );
@@ -52,6 +60,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--max-parallel <n>", "Maximum agents processed in parallel", "3")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before running audit")
     .option("--dry-run", "Skip deterministic baseline and run orchestration planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
@@ -74,6 +83,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: parseMaxParallel(options.maxParallel),
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
 
       const payload = {
@@ -96,6 +106,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         ddPackageManifestPath: result.ddPackage?.manifestPath || "",
         ddPackageFindingsPath: result.ddPackage?.findingsIndexPath || "",
         ddPackageSummaryPath: result.ddPackage?.executiveSummaryPath || "",
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -165,6 +176,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Workspace path override (defaults to original run target)")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before replay")
     .option("--json", "Emit machine-readable output")
     .action(async (runId, options, command) => {
       const emitJson = shouldEmitJson(options, command);
@@ -197,6 +209,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: Number(baseReport.maxParallel || 1),
         outputDir: options.outputDir,
         dryRun: Boolean(baseReport.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
 
       const comparison = await writeAuditComparisonArtifact({
@@ -217,6 +230,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         deterministicEquivalent: comparison.comparison.deterministicEquivalent,
         addedCount: comparison.comparison.addedCount,
         removedCount: comparison.comparison.removedCount,
+        ingestRefresh: replayResult.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -315,6 +329,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before security specialist run")
     .option("--dry-run", "Skip deterministic baseline and run security planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -334,6 +349,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: 1,
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
       const securityAgent = result.agentResults.find((agent) => agent.agentId === "security") || null;
 
@@ -349,6 +365,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: result.summary,
         specialistSummary: securityAgent?.summary || null,
         dryRun: result.dryRun,
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -376,6 +393,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before architecture specialist run")
     .option("--dry-run", "Skip deterministic baseline and run architecture planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -395,6 +413,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: 1,
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
       const architectureAgent =
         result.agentResults.find((agent) => agent.agentId === "architecture") || null;
@@ -411,6 +430,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: result.summary,
         specialistSummary: architectureAgent?.summary || null,
         dryRun: result.dryRun,
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -438,6 +458,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before testing specialist run")
     .option("--dry-run", "Skip deterministic baseline and run testing planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -457,6 +478,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: 1,
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
       const testingAgent = result.agentResults.find((agent) => agent.agentId === "testing") || null;
 
@@ -472,6 +494,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: result.summary,
         specialistSummary: testingAgent?.summary || null,
         dryRun: result.dryRun,
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -499,6 +522,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before performance specialist run")
     .option("--dry-run", "Skip deterministic baseline and run performance planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -518,6 +542,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: 1,
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
       const performanceAgent =
         result.agentResults.find((agent) => agent.agentId === "performance") || null;
@@ -534,6 +559,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: result.summary,
         specialistSummary: performanceAgent?.summary || null,
         dryRun: result.dryRun,
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -561,6 +587,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before compliance specialist run")
     .option("--dry-run", "Skip deterministic baseline and run compliance planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -580,6 +607,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: 1,
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
       const complianceAgent =
         result.agentResults.find((agent) => agent.agentId === "compliance") || null;
@@ -596,6 +624,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: result.summary,
         specialistSummary: complianceAgent?.summary || null,
         dryRun: result.dryRun,
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {
@@ -623,6 +652,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before documentation specialist run")
     .option("--dry-run", "Skip deterministic baseline and run documentation planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -642,6 +672,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: 1,
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
+        refreshIngest: Boolean(options.refresh),
       });
       const documentationAgent =
         result.agentResults.find((agent) => agent.agentId === "documentation") || null;
@@ -658,6 +689,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: result.summary,
         specialistSummary: documentationAgent?.summary || null,
         dryRun: result.dryRun,
+        ingestRefresh: result.ingest?.refresh || null,
       };
 
       if (emitJson) {

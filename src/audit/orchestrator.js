@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { resolveOutputRoot } from "../config/service.js";
-import { collectCodebaseIngest } from "../ingest/engine.js";
+import { resolveCodebaseIngest } from "../ingest/engine.js";
 import { runDeterministicReviewPipeline } from "../review/local-review.js";
 import {
   renderArchitectureSpecialistMarkdown,
@@ -202,6 +202,9 @@ Ingest:
 - LOC: ${report.ingest.summary.totalLoc}
 - Frameworks: ${report.ingest.frameworks.join(", ") || "none"}
 - Risk surfaces: ${report.ingest.riskSurfaces.join(", ") || "none"}
+- Refresh: ${report.ingest.refresh?.refreshed ? "yes" : "no"}
+- Stale: ${report.ingest.refresh?.stale ? "yes" : "no"}
+- Refresh reasons: ${(report.ingest.refresh?.reasons || []).join(", ") || "none"}
 
 Deterministic baseline:
 - Run ID: ${report.deterministicBaseline.runId || "n/a"}
@@ -219,6 +222,7 @@ export async function runAuditOrchestrator({
   maxParallel = 3,
   outputDir = "",
   dryRun = false,
+  refreshIngest = false,
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const outputRoot = await resolveOutputRoot({
@@ -235,7 +239,12 @@ export async function runAuditOrchestrator({
     scope: "audit-orchestrator",
   });
 
-  const ingest = await collectCodebaseIngest({ rootPath: normalizedTargetPath });
+  const ingestResolution = await resolveCodebaseIngest({
+    rootPath: normalizedTargetPath,
+    outputDir,
+    refresh: Boolean(refreshIngest),
+  });
+  const ingest = ingestResolution.ingest;
 
   let deterministicBaseline = {
     runId: "",
@@ -493,6 +502,15 @@ export async function runAuditOrchestrator({
       riskSurfaces: Array.isArray(ingest.riskSurfaces)
         ? ingest.riskSurfaces.map((item) => item.surface)
         : [],
+      refresh: {
+        outputPath: ingestResolution.outputPath,
+        refreshed: ingestResolution.refreshed,
+        stale: ingestResolution.stale,
+        reasons: ingestResolution.reasons,
+        refreshedBecause: ingestResolution.refreshedBecause,
+        lastCommitAt: ingestResolution.lastCommitAt,
+        contentHash: ingestResolution.fingerprint?.contentHash || "",
+      },
     },
     deterministicBaseline,
     sharedMemory: {
