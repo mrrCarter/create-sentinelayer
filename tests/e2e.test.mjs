@@ -4292,6 +4292,10 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     assert.equal(report.sharedMemory.artifactPath, payload.sharedMemoryPath);
     assert.equal(report.sharedMemory.entryCount, payload.sharedMemoryEntryCount);
     assert.equal(report.sharedMemory.queryCount, payload.sharedMemoryQueryCount);
+    assert.equal(report.sharedMemory.corpusDocumentCount > 0, true);
+    assert.equal(report.sharedMemory.retrieval.providerRequested, "local");
+    assert.equal(report.sharedMemory.retrieval.queryCount, 3);
+    assert.equal(report.sharedMemory.retrieval.providersUsed.includes("local"), true);
     const sharedMemoryPayload = JSON.parse(await readFile(payload.sharedMemoryPath, "utf-8"));
     assert.equal(sharedMemoryPayload.runId, payload.runId);
     assert.equal(sharedMemoryPayload.summary.entryCount, payload.sharedMemoryEntryCount);

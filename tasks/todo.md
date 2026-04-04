@@ -205,7 +205,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 140 spec-bound pre-commit review drift checks.
 
 ### Batch V - Memory and Watchdog Feedback Fixes (2026-04-03)
-- [ ] PR 141 shared local blackboard memory with retrieval quality gate.
+- [x] PR 141 shared local blackboard memory with retrieval quality gate.
 - [ ] PR 142 local hybrid retrieval index (deterministic + TF-IDF) with optional API delegation hook.
 - [ ] PR 143 daemon watchdog stuck-agent detection + Slack/Telegram alerts.
 - [ ] PR 144 ingest staleness refresh and hash-aware cache controls.
@@ -225,10 +225,9 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-141-shared-memory-blackboard` (in progress)
-2. `roadmap/pr-142-hybrid-retrieval-index`
-3. `roadmap/pr-143-daemon-watchdog-alerts`
-4. `roadmap/pr-144-ingest-refresh-staleness`
+1. `roadmap/pr-142-hybrid-retrieval-index` (in progress)
+2. `roadmap/pr-143-daemon-watchdog-alerts`
+3. `roadmap/pr-144-ingest-refresh-staleness`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -520,3 +519,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - Added `src/memory/blackboard.js` for deterministic append/query/persist flows and 8-needle recall benchmarking (`>=95%` gate in unit tests).
     - Wired audit orchestration to seed baseline findings into blackboard, read scoped shared context per agent, append specialist findings, and persist `.sentinelayer/memory/blackboard-<runId>.json`.
     - Extended `audit` command outputs and report artifacts with shared-memory metadata (`sharedMemoryPath`, entry/query counts) for reproducible cross-agent context lineage.
+
+  - PR 142 (local hybrid retrieval index with optional API delegation) local evidence (branch `roadmap/pr-142-hybrid-retrieval-index`):
+    - `npm run verify` (pass, e2e `85/85`; unit tests `177/177`; coverage statements `90.18%`, branches `70.50%`, functions `91.37%`, lines `90.18%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added `src/memory/retrieval.js` with local hybrid retrieval scoring (`exact + token overlap + TF-IDF cosine + recency + severity`) and optional API delegation that fails closed to local results.
+    - Added corpus ingestion for shared memory (`ingest summary`, `risk surfaces`, historical audit reports/findings, and `SPEC.md/docs/spec.md` when present).
+    - Wired audit orchestrator to query hybrid memory per agent and persist provider/query metadata in `report.sharedMemory.retrieval`.

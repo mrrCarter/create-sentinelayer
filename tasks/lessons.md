@@ -102,3 +102,5 @@
 - When adding explicit `--spec` overrides, thread the same spec path through deterministic review, AI prompt context, replay context, and unified report hashing to avoid hash/source mismatches across layers.
 - Eval-impact gating treats `src/commands/audit.js` as AI-impacting scope; include a `tasks/evals/*.md` artifact in the same PR whenever that command surface changes.
 - In this Windows environment, avoid invoking bash-only helper scripts directly (`bash ...`) because WSL may be unavailable; run equivalent checks via PowerShell/Node or rely on CI execution.
+- Hybrid memory retrieval should fail closed to local deterministic results when API delegation fails or returns malformed payloads; never block audit orchestration on remote retrieval availability.
+- `node --test --test-name-pattern` is not a reliable shortcut for this suite in current tooling; assume full-file execution and budget validation time accordingly.
