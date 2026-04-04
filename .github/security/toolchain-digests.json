@@ -1,5 +1,5 @@
 {
-  "ubuntu-22.04/node-20.11.1/npm-10.8.2": {
+  "ubuntu-22.04/node-20.11.1/npm-10.2.4": {
     "node_sha256": "9530ce4bf5a30117b09d190fcccf59b6e79345c70e6b6ab77dd8b52be631323d",
     "npm_sha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
     "source_run_id": "23974632363"
