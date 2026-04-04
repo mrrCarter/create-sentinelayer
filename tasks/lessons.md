@@ -118,3 +118,5 @@
 - File-tool sandboxing should use one shared path-guard implementation; duplicated read/write path checks drift quickly and reopen traversal holes.
 - Allowed-root enforcement must validate both the requested path and its `realpath`; checking only `path.resolve(...)` allows symlink escape into out-of-scope files.
 - Keep deterministic `PATH_*` error codes in guardrail failures so policy dashboards and tests can assert exact stop reasons instead of parsing free-form text.
+- Subprocess env scrubbing is safer when combining an explicit sensitive-key set with deterministic prefix/suffix rules and `INPUT_` aliases, rather than relying on a short static list.
+- Verify credential scrubbing at two layers: pure env-sanitizer unit checks and an end-to-end shell subprocess assertion that sensitive vars are actually absent at runtime.
