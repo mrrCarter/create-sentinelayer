@@ -169,6 +169,14 @@ for (const entry of entries) {
 NODE
 }
 
+network_fetch_pattern='(curl|wget|invoke-webrequest|iwr|irm)[[:space:]]'
+shell_sink_pattern='[|;][[:space:]]*(env[[:space:]]+)?(bash|sh|zsh|ksh|pwsh|powershell|iex)([[:space:]]|$)'
+process_substitution_pattern='(bash|sh|zsh|ksh)[[:space:]]*<\([[:space:]]*(curl|wget)[[:space:]]'
+source_substitution_pattern='(source|\.)[[:space:]]*<\([[:space:]]*(curl|wget)[[:space:]]'
+shell_c_fetch_pattern='(bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]*[^[:space:]]*(curl|wget)'
+pwsh_pipe_iex_pattern='(powershell|pwsh)[^|;]*(iwr|invoke-webrequest|irm)[^|;]*\|[[:space:]]*iex'
+iex_iwr_pattern='iex[[:space:]]*\([[:space:]]*(iwr|invoke-webrequest|irm)'
+
 failures=0
 for workflow_file in "${workflow_files[@]}"; do
   if [[ ! -f "${workflow_file}" ]]; then
@@ -246,25 +254,25 @@ for workflow_file in "${workflow_files[@]}"; do
     contains_network_fetch="false"
     contains_shell_sink="false"
 
-    if [[ "${normalized_run}" =~ (curl|wget|invoke-webrequest|iwr|irm)[[:space:]] ]]; then
+    if [[ "${normalized_run}" =~ ${network_fetch_pattern} ]]; then
       contains_network_fetch="true"
     fi
-    if [[ "${normalized_run}" =~ [\|;][[:space:]]*(env[[:space:]]+)?(bash|sh|zsh|ksh|pwsh|powershell|iex)([[:space:]]|$) ]]; then
+    if [[ "${normalized_run}" =~ ${shell_sink_pattern} ]]; then
       contains_shell_sink="true"
     fi
-    if [[ "${normalized_run}" =~ (bash|sh|zsh|ksh)[[:space:]]*<\([[:space:]]*(curl|wget)[[:space:]] ]]; then
+    if [[ "${normalized_run}" =~ ${process_substitution_pattern} ]]; then
       remote_exec_detected="true"
     fi
-    if [[ "${normalized_run}" =~ (source|\.)[[:space:]]*<\([[:space:]]*(curl|wget)[[:space:]] ]]; then
+    if [[ "${normalized_run}" =~ ${source_substitution_pattern} ]]; then
       remote_exec_detected="true"
     fi
-    if [[ "${normalized_run}" =~ (bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]*[^[:space:]]*(curl|wget) ]]; then
+    if [[ "${normalized_run}" =~ ${shell_c_fetch_pattern} ]]; then
       remote_exec_detected="true"
     fi
-    if [[ "${normalized_run}" =~ (powershell|pwsh)[^|;]*(iwr|invoke-webrequest|irm)[^|;]*\|[[:space:]]*iex ]]; then
+    if [[ "${normalized_run}" =~ ${pwsh_pipe_iex_pattern} ]]; then
       remote_exec_detected="true"
     fi
-    if [[ "${normalized_run}" =~ iex[[:space:]]*\([[:space:]]*(iwr|invoke-webrequest|irm) ]]; then
+    if [[ "${normalized_run}" =~ ${iex_iwr_pattern} ]]; then
       remote_exec_detected="true"
     fi
     if [[ "${contains_network_fetch}" == "true" && "${contains_shell_sink}" == "true" ]]; then

@@ -914,5 +914,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent SHA tests skipped on local Windows as expected)
   - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push twenty-ninth-cycle hardening batch.
+- [x] Apply thirtieth-cycle parser hotfix for CI bash compatibility:
+  - `scripts/ci/verify-action-shas.sh`: move remote-exec regex patterns into predeclared variables before `[[ ... =~ ... ]]` checks to prevent bash parser failures on semicolon tokens.
+- [x] Run thirtieth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent tests skipped on local Windows as expected)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirtieth-cycle hotfix batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

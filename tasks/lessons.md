@@ -247,3 +247,4 @@
 - Reusable workflow-call jobs surface as `Parent Job / Child Job` names in run metadata; gate-verification checks should use regex matching, not exact single-name assertions.
 - In `set -euo pipefail` shells, expected non-zero probes (for example `npm view` on unpublished versions) must be wrapped with temporary `set +e` capture to differentiate benign `E404` from real registry/network faults.
 - Cross-process reliability features in CLI modules should expose deterministic test overrides for state paths (env-scoped temp directories) so persisted-state behavior is verifiable without mutating the developer's real home cache.
+- In bash `[[ ... =~ ... ]]` checks, complex regex with `;`/`|` should be assigned to variables first; inline patterns can trigger parser tokenization errors in CI even when logically valid as regex.
