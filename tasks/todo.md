@@ -920,5 +920,5 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run test:unit -- tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent tests skipped on local Windows as expected)
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirtieth-cycle hotfix batch.
+- [x] Commit + push thirtieth-cycle hotfix batch (`8d3ab6f`).
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.
