@@ -20,6 +20,7 @@ import {
   runReliabilityLane,
   setMaintenanceBillboard,
 } from "../../daemon/reliability-lane.js";
+import { getWatchdogStatus, runWatchdogTick } from "../../daemon/watchdog.js";
 import {
   parseBoolean,
   parseCsv,
@@ -339,6 +340,179 @@ map
 const reliability = daemon
   .command("reliability")
   .description("Midnight reliability lane controls and maintenance-billboard automation");
+
+const watchdog = daemon
+  .command("watchdog")
+  .description("Stuck-agent watchdog heuristics with state-change alerts and channel dispatch");
+
+watchdog
+  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+  .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+  .option("--limit <n>", "Maximum recent runs to return", "10")
+  .option("--json", "Emit machine-readable output")
+  .action(async (options, command) => {
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const status = await getWatchdogStatus({
+      targetPath,
+      outputDir: options.outputDir,
+      limit: parsePositiveInteger(options.limit, "limit", 10),
+    });
+    const payload = {
+      command: "daemon watchdog",
+      targetPath,
+      configPath: status.configPath,
+      statePath: status.statePath,
+      eventsPath: status.eventsPath,
+      runCount: status.runCount,
+      activeAlertCount: status.activeAlertCount,
+      activeAlerts: status.activeAlerts,
+      recentRuns: status.recentRuns,
+      config: status.config,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(pc.bold("OMAR watchdog status"));
+    console.log(pc.gray(`Config: ${status.configPath}`));
+    console.log(pc.gray(`State: ${status.statePath}`));
+    console.log(pc.gray(`Events: ${status.eventsPath}`));
+    console.log(
+      pc.gray(
+        `active_alerts=${status.activeAlertCount} run_count=${status.runCount} channels=${status.config.channels.length}`
+      )
+    );
+    for (const alert of status.activeAlerts) {
+      console.log(
+        `- ${alert.alertId} | ${alert.eventType} | ${alert.agentIdentity || "unassigned"} | ${alert.message}`
+      );
+    }
+  });
+
+watchdog
+  .command("run")
+  .description("Run one watchdog evaluation tick and optionally dispatch channel alerts")
+  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+  .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+  .option("--no-tool-call-seconds <n>", "Idle threshold for no tool calls", "60")
+  .option(
+    "--repeated-file-reads-threshold <n>",
+    "Consecutive repeated file-read threshold",
+    "3"
+  )
+  .option(
+    "--budget-warning-threshold <ratio>",
+    "Budget warning ratio threshold (0-1)",
+    "0.9"
+  )
+  .option("--turn-stall-turns <n>", "Turn-stall threshold", "5")
+  .option("--limit <n>", "Maximum records to inspect", "200")
+  .option("--execute <bool>", "Dispatch alerts to channels (true/false)", "false")
+  .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+  .option("--json", "Emit machine-readable output")
+  .action(async (options, command) => {
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const budgetThreshold = Number(options.budgetWarningThreshold || 0.9);
+    if (!Number.isFinite(budgetThreshold) || budgetThreshold < 0 || budgetThreshold > 1) {
+      throw new Error("budget-warning-threshold must be a number between 0 and 1.");
+    }
+    const executed = await runWatchdogTick({
+      targetPath,
+      outputDir: options.outputDir,
+      noToolCallSeconds: parsePositiveInteger(
+        options.noToolCallSeconds,
+        "no-tool-call-seconds",
+        60
+      ),
+      repeatedFileReadsThreshold: parsePositiveInteger(
+        options.repeatedFileReadsThreshold,
+        "repeated-file-reads-threshold",
+        3
+      ),
+      budgetWarningThreshold: budgetThreshold,
+      turnStallTurns: parsePositiveInteger(options.turnStallTurns, "turn-stall-turns", 5),
+      limit: parsePositiveInteger(options.limit, "limit", 200),
+      execute: parseBoolean(options.execute, false),
+      nowIso: options.nowIso,
+    });
+    const payload = {
+      command: "daemon watchdog run",
+      targetPath,
+      runId: executed.runId,
+      runPath: executed.runPath,
+      configPath: executed.configPath,
+      statePath: executed.statePath,
+      eventsPath: executed.eventsPath,
+      configExists: executed.configExists,
+      summary: executed.summary,
+      detections: executed.detections,
+      activatedAlerts: executed.activatedAlerts,
+      recoveredAlerts: executed.recoveredAlerts,
+      notifications: executed.notifications,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(pc.bold("OMAR watchdog tick complete"));
+    console.log(pc.gray(`Run: ${executed.runId}`));
+    console.log(pc.gray(`Artifact: ${executed.runPath}`));
+    console.log(
+      `detections=${executed.summary.detectionCount} activated=${executed.summary.activatedCount} recovered=${executed.summary.recoveredCount} notifications=${executed.summary.notificationCount}`
+    );
+    for (const alert of executed.activatedAlerts) {
+      console.log(`- activated ${alert.alertId} | ${alert.eventType} | ${alert.message}`);
+    }
+    for (const alert of executed.recoveredAlerts) {
+      console.log(`- recovered ${alert.alertId} | ${alert.message}`);
+    }
+  });
+
+watchdog
+  .command("status")
+  .description("Show watchdog state and recent run summaries")
+  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+  .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+  .option("--limit <n>", "Maximum recent runs to return", "10")
+  .option("--json", "Emit machine-readable output")
+  .action(async (options, command) => {
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const status = await getWatchdogStatus({
+      targetPath,
+      outputDir: options.outputDir,
+      limit: parsePositiveInteger(options.limit, "limit", 10),
+    });
+    const payload = {
+      command: "daemon watchdog status",
+      targetPath,
+      configPath: status.configPath,
+      statePath: status.statePath,
+      eventsPath: status.eventsPath,
+      runCount: status.runCount,
+      activeAlertCount: status.activeAlertCount,
+      activeAlerts: status.activeAlerts,
+      recentRuns: status.recentRuns,
+      config: status.config,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(pc.bold("OMAR watchdog status"));
+    console.log(pc.gray(`Config: ${status.configPath}`));
+    console.log(pc.gray(`State: ${status.statePath}`));
+    console.log(pc.gray(`Events: ${status.eventsPath}`));
+    console.log(
+      pc.gray(
+        `active_alerts=${status.activeAlertCount} run_count=${status.runCount} recent_runs=${status.recentRuns.length}`
+      )
+    );
+    for (const run of status.recentRuns) {
+      console.log(
+        `- ${run.runId} | detections=${run.detectionCount} | activated=${run.activatedCount} | recovered=${run.recoveredCount}`
+      );
+    }
+  });
 
 reliability
   .option("--path <path>", "Workspace path for artifact/config resolution", ".")

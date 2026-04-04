@@ -99,6 +99,7 @@ test("Unit command contracts: daemon command tree exposes operator and routing c
     "control",
     "lineage",
     "map",
+    "watchdog",
     "reliability",
     "maintenance",
     "error",
@@ -117,6 +118,13 @@ test("Unit command contracts: daemon command tree exposes operator and routing c
 
   const errorWorker = getCommandByPath(program, "daemon error worker");
   assertCommandHasOption(errorWorker, "--max-events <n>");
+
+  const watchdogRun = getCommandByPath(program, "daemon watchdog run");
+  assertCommandHasOption(watchdogRun, "--no-tool-call-seconds <n>");
+  assertCommandHasOption(watchdogRun, "--repeated-file-reads-threshold <n>");
+  assertCommandHasOption(watchdogRun, "--budget-warning-threshold <ratio>");
+  assertCommandHasOption(watchdogRun, "--turn-stall-turns <n>");
+  assertCommandHasOption(watchdogRun, "--execute <bool>");
 });
 
 test("Unit command contracts: scan command tree preserves workflow and precheck controls", () => {
