@@ -29,7 +29,7 @@ env:
   OMAR_PR_RUN_MAX_AGE_HOURS: "24"
 
 concurrency:
-  group: release-control-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', inputs.release_tag) || github.ref }}
+  group: release-control-production-global
   cancel-in-progress: false
 
 jobs:

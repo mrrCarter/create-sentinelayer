@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
+  __buildApiPathForTests,
   __pollCliAuthSessionForTests,
   __readAuthPollResumeStateForTests,
   __resolveAuthPollBackendCooldownForTests,
@@ -69,6 +70,24 @@ async function withMockTty(isInteractive, callback) {
     }
   }
 }
+
+test("Unit auth service: API paths are URL-joined safely", () => {
+  assert.equal(
+    __buildApiPathForTests("https://api.sentinelayer.com/", "/api/v1/auth/me"),
+    "https://api.sentinelayer.com/api/v1/auth/me"
+  );
+  assert.equal(
+    __buildApiPathForTests("https://api.sentinelayer.com", "api/v1/runtime/runs/run-1/status"),
+    "https://api.sentinelayer.com/api/v1/runtime/runs/run-1/status"
+  );
+  assert.equal(
+    __buildApiPathForTests(
+      "https://api.sentinelayer.com/",
+      "/api/v1/runtime/runs/run-1/events/list?after_event_id=evt%2F1"
+    ),
+    "https://api.sentinelayer.com/api/v1/runtime/runs/run-1/events/list?after_event_id=evt%2F1"
+  );
+});
 
 async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthToken = "" } = {}) {
   const state = {

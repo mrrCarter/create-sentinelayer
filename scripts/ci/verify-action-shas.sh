@@ -15,7 +15,10 @@ fi
 mapfile -t remote_exec_allowlist_patterns < <(grep -vE '^\s*($|#)' "${remote_exec_allowlist_file}" || true)
 
 declare -A allowlisted_shas=()
+declare -A allowlisted_line_numbers=()
+allowlist_line_number=0
 while IFS='=' read -r action_name pinned_sha; do
+  allowlist_line_number=$((allowlist_line_number + 1))
   normalized_action="$(echo "${action_name}" | xargs || true)"
   normalized_sha="$(echo "${pinned_sha}" | tr -d '[:space:]' || true)"
   if [[ -z "${normalized_action}" ]]; then
@@ -28,7 +31,13 @@ while IFS='=' read -r action_name pinned_sha; do
     echo "::error::Invalid SHA '${normalized_sha}' for action '${normalized_action}' in ${allowlist_file}."
     exit 1
   fi
+  if [[ -n "${allowlisted_shas["${normalized_action}"]+set}" ]]; then
+    original_line="${allowlisted_line_numbers["${normalized_action}"]}"
+    echo "::error::Duplicate action allowlist entry '${normalized_action}' in ${allowlist_file} (lines ${original_line} and ${allowlist_line_number})."
+    exit 1
+  fi
   allowlisted_shas["${normalized_action}"]="${normalized_sha}"
+  allowlisted_line_numbers["${normalized_action}"]="${allowlist_line_number}"
 done < "${allowlist_file}"
 
 if [[ "${#allowlisted_shas[@]}" -eq 0 ]]; then

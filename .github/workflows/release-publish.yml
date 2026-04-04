@@ -49,6 +49,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NPM_VERSION_PIN: "10.8.2"
   RELEASE_RUN_MAX_AGE_HOURS: "72"
+  REQUIRED_CONTEXT_MAX_AGE_HOURS: "168"
 
 concurrency:
   group: release-publish-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event_name == 'workflow_run' && format('run-{0}', github.event.workflow_run.id) || github.ref }}
@@ -80,7 +81,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          source scripts/ci/gh-api-retry.sh
+          env_json="$(gh_api_json "repos/${REPO}/environments/release-management")"
           reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
           if [[ "${reviewer_count}" -lt 1 ]]; then
             echo "::error::release-management environment must require at least one reviewer."
@@ -119,6 +121,7 @@ jobs:
           RELEASE_RUN_MAX_AGE_HOURS: ${{ env.RELEASE_RUN_MAX_AGE_HOURS }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           git fetch --force --tags origin >/dev/null 2>&1 || true
           normalize_bool() {
             local raw
@@ -199,7 +202,8 @@ jobs:
                 dry_run="false"
                 execute_mode="true"
               fi
-              permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // ""' 2>/dev/null || true)"
+              permission_json="$(gh_api_json_soft "repos/${REPO}/collaborators/${ACTOR}/permission" || true)"
+              permission="$(echo "${permission_json:-}" | jq -r '.permission // ""' 2>/dev/null || true)"
               case "${permission}" in
                 admin|maintain) ;;
                 *)
@@ -207,19 +211,19 @@ jobs:
                   exit 1
                   ;;
               esac
-              tag_ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${release_tag}" -H "Accept: application/vnd.github+json")"
+              tag_ref_json="$(gh_api_json "repos/${REPO}/git/ref/tags/${release_tag}")"
               ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
               ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
               test -n "${ref_sha}" || (echo "::error::Unable to resolve tag object SHA for '${release_tag}'." && exit 1)
               target_sha="${ref_sha}"
               if [[ "${ref_type}" == "tag" ]]; then
-                tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}" -H "Accept: application/vnd.github+json")"
+                tag_json="$(gh_api_json "repos/${REPO}/git/tags/${ref_sha}")"
                 target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
               elif [[ "${ref_type}" != "commit" ]]; then
                 echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
                 exit 1
               fi
-              dispatch_release_run_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${release_run_id}" -H "Accept: application/vnd.github+json")"
+              dispatch_release_run_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}")"
               dispatch_release_run_path="$(echo "${dispatch_release_run_json}" | jq -r '((.path // "") | split("@")[0])')"
               dispatch_release_run_conclusion="$(echo "${dispatch_release_run_json}" | jq -r '.conclusion // ""')"
               dispatch_release_run_status="$(echo "${dispatch_release_run_json}" | jq -r '.status // ""')"
@@ -302,7 +306,7 @@ jobs:
           esac
 
           test -n "${target_sha}" || (echo "::error::Unable to resolve target release commit SHA." && exit 1)
-          release_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${target_sha}&per_page=30" -H "Accept: application/vnd.github+json")"
+          release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${target_sha}&per_page=30")"
           resolved_release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release.yml" --arg repo "${REPO}" '
             [.workflow_runs[]
               | select((.head_sha // "") == $sha)
@@ -377,16 +381,59 @@ jobs:
           REPO: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          RELEASE_RUN_ID: ${{ steps.resolve.outputs.release_run_id }}
+          REQUIRED_CONTEXT_MAX_AGE_HOURS: ${{ env.REQUIRED_CONTEXT_MAX_AGE_HOURS }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           target_sha="$(echo "${TARGET_SHA:-}" | tr -d '\r' | xargs || true)"
           test -n "${target_sha}" || (echo "::error::Missing target SHA for publish target governance checks." && exit 1)
+          release_run_id="$(echo "${RELEASE_RUN_ID:-}" | tr -d '\r' | xargs || true)"
+          test -n "${release_run_id}" || (echo "::error::Missing release run id for required-context verification." && exit 1)
+          required_context_max_age_hours="$(echo "${REQUIRED_CONTEXT_MAX_AGE_HOURS:-168}" | tr -d '\r' | xargs || true)"
+          case "${required_context_max_age_hours}" in ''|*[!0-9]*)
+            echo "::error::Invalid REQUIRED_CONTEXT_MAX_AGE_HOURS value '${required_context_max_age_hours}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${required_context_max_age_hours}" -lt 1 ]]; then
+            echo "::error::REQUIRED_CONTEXT_MAX_AGE_HOURS must be >= 1."
+            exit 1
+          fi
+          now_epoch="$(date -u +%s)"
+          release_run_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}")"
+          release_run_status="$(echo "${release_run_json}" | jq -r '.status // ""')"
+          release_run_conclusion="$(echo "${release_run_json}" | jq -r '.conclusion // ""')"
+          release_run_path="$(echo "${release_run_json}" | jq -r '((.path // "") | split("@")[0])')"
+          release_run_head_sha="$(echo "${release_run_json}" | jq -r '.head_sha // ""')"
+          release_run_event="$(echo "${release_run_json}" | jq -r '.event // ""')"
+          release_run_head_repo="$(echo "${release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+          if [[ "${release_run_status}" != "completed" ]] || [[ "${release_run_conclusion}" != "success" ]]; then
+            echo "::error::release_run_id '${release_run_id}' is not a successful completed release run (status='${release_run_status}', conclusion='${release_run_conclusion}')."
+            exit 1
+          fi
+          if [[ "${release_run_path}" != ".github/workflows/release.yml" ]]; then
+            echo "::error::release_run_id '${release_run_id}' must reference .github/workflows/release.yml (received '${release_run_path}')."
+            exit 1
+          fi
+          if [[ "${release_run_head_sha}" != "${target_sha}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' head sha mismatch (release='${release_run_head_sha}', target='${target_sha}')."
+            exit 1
+          fi
+          if [[ "${release_run_head_repo}" != "${REPO}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' repository mismatch (expected='${REPO}', actual='${release_run_head_repo}')."
+            exit 1
+          fi
+          if [[ "${release_run_event}" != "push" ]] && [[ "${release_run_event}" != "workflow_dispatch" ]]; then
+            echo "::error::release_run_id '${release_run_id}' event '${release_run_event}' is not allowlisted."
+            exit 1
+          fi
           branch_name="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
           if [[ -z "${branch_name}" ]]; then
             branch_name="main"
           fi
 
-          protection_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")"
+          protection_json="$(gh_api_json "repos/${REPO}/branches/${branch_name}/protection")"
           strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
           if [[ "${strict_checks}" != "true" ]]; then
             echo "::error::Branch protection for '${branch_name}' must enforce strict required checks."
@@ -405,9 +452,16 @@ jobs:
             echo "::error::No required contexts defined in ${required_context_manifest}."
             exit 1
           fi
+          for critical_context in "Quality Summary" "Omar Gate"; do
+            if ! jq -e --arg context "${critical_context}" '.requiredContexts[] | select((.name // "") == $context)' "${required_context_manifest}" >/dev/null; then
+              echo "::error::Required context manifest must include critical gate '${critical_context}'."
+              exit 1
+            fi
+          done
           configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
           mapfile -t required_contexts < <(jq -c '.requiredContexts[]' "${required_context_manifest}")
-          check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${target_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+          check_runs_json="$(gh_api_json "repos/${REPO}/commits/${target_sha}/check-runs?per_page=100")"
+          validated_context_names=()
           for required_context_json in "${required_contexts[@]}"; do
             required_context="$(echo "${required_context_json}" | jq -r '.name // ""')"
             workflow_path="$(echo "${required_context_json}" | jq -r '.workflowPath // ""')"
@@ -433,13 +487,28 @@ jobs:
               echo "::error::Required context '${required_context}' is missing a successful check run on commit ${target_sha}."
               exit 1
             fi
+            check_completed_at="$(echo "${matched_check}" | jq -r '.completed_at // ""')"
+            check_completed_epoch="$(date -u -d "${check_completed_at}" +%s 2>/dev/null || true)"
+            if [[ -z "${check_completed_epoch}" ]] || ! [[ "${check_completed_epoch}" =~ ^[0-9]+$ ]]; then
+              echo "::error::Required context '${required_context}' returned unparsable completed_at timestamp '${check_completed_at}'."
+              exit 1
+            fi
+            if [[ "${check_completed_epoch}" -gt "${now_epoch}" ]]; then
+              echo "::error::Required context '${required_context}' has future completed_at '${check_completed_at}'."
+              exit 1
+            fi
+            check_age_hours="$(( (now_epoch - check_completed_epoch) / 3600 ))"
+            if [[ "${check_age_hours}" -gt "${required_context_max_age_hours}" ]]; then
+              echo "::error::Required context '${required_context}' is stale (${check_age_hours}h > ${required_context_max_age_hours}h)."
+              exit 1
+            fi
             details_url="$(echo "${matched_check}" | jq -r '.details_url // ""')"
             run_id="$(echo "${details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+)/?.*$#\1#p')"
             if [[ -z "${run_id}" ]]; then
               echo "::error::Unable to resolve workflow run id from check details_url '${details_url}' for context '${required_context}'."
               exit 1
             fi
-            run_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${run_id}" -H "Accept: application/vnd.github+json")"
+            run_json="$(gh_api_json "repos/${REPO}/actions/runs/${run_id}")"
             run_path="$(echo "${run_json}" | jq -r '((.path // "") | split("@")[0])')"
             run_head_sha="$(echo "${run_json}" | jq -r '.head_sha // ""')"
             run_event="$(echo "${run_json}" | jq -r '.event // ""')"
@@ -458,6 +527,13 @@ jobs:
             fi
             if ! echo "${allowed_events_json}" | jq -e --arg event "${run_event}" 'index($event) != null' >/dev/null; then
               echo "::error::Required context '${required_context}' run ${run_id} event '${run_event}' is not allowlisted by policy."
+              exit 1
+            fi
+            validated_context_names+=("${required_context}")
+          done
+          for critical_context in "Quality Summary" "Omar Gate"; do
+            if ! printf '%s\n' "${validated_context_names[@]}" | grep -Fx -- "${critical_context}" >/dev/null; then
+              echo "::error::Critical gate '${critical_context}' did not validate for release run '${release_run_id}' and target '${target_sha}'."
               exit 1
             fi
           done
@@ -690,12 +766,13 @@ jobs:
           RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
         run: |
           set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
           initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
           if [[ -z "${initiator}" ]]; then
             echo "::error::Missing release initiator identity for dual-control authorization."
             exit 1
           fi
-          approvals_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals" -H "Accept: application/vnd.github+json")"
+          approvals_json="$(gh_api_json "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals")"
           approver_count="$(echo "${approvals_json}" | jq -r '[.[] | select((.state // "") == "approved") | (.user.login // empty)] | unique | length')"
           selected_approver="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator)] | unique | first // empty')"
           if [[ "${approver_count}" -lt 1 ]]; then

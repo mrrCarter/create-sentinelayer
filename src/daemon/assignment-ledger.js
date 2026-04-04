@@ -305,6 +305,7 @@ async function readJsonCandidate(candidatePath) {
       path: candidatePath,
       payload,
       mtimeMs: Number(stat?.mtimeMs || 0),
+      revision: resolveCandidateRevision(payload),
       valid: true,
     };
   } catch (error) {
@@ -313,11 +314,23 @@ async function readJsonCandidate(candidatePath) {
         path: candidatePath,
         payload: null,
         mtimeMs: Number(stat?.mtimeMs || 0),
+        revision: -1,
         valid: false,
       };
     }
     throw error;
   }
+}
+
+function resolveCandidateRevision(payload) {
+  if (!payload || typeof payload !== "object") {
+    return -1;
+  }
+  const revision = Number(payload.revision);
+  if (!Number.isFinite(revision) || revision < 0) {
+    return -1;
+  }
+  return Math.floor(revision);
 }
 
 async function promoteCandidateToCanonical(candidatePath, canonicalPath) {
@@ -343,10 +356,23 @@ async function reconcileAtomicArtifacts(filePath) {
   if (validCandidates.length === 0) {
     return;
   }
-  const canonicalCandidate = validCandidates.find((candidate) => candidate.path === filePath);
+  const highestRevision = [...validCandidates].reduce(
+    (maxRevision, candidate) => Math.max(maxRevision, Number(candidate.revision || -1)),
+    -1
+  );
+  const revisionCandidates = validCandidates.filter(
+    (candidate) => Number(candidate.revision || -1) === highestRevision
+  );
+  const canonicalCandidate = revisionCandidates.find((candidate) => candidate.path === filePath);
   const selectedCandidate =
     canonicalCandidate ||
-    [...validCandidates].sort((left, right) => Number(right.mtimeMs || 0) - Number(left.mtimeMs || 0))[0];
+    [...revisionCandidates].sort((left, right) => {
+      const mtimeDiff = Number(right.mtimeMs || 0) - Number(left.mtimeMs || 0);
+      if (mtimeDiff !== 0) {
+        return mtimeDiff;
+      }
+      return String(left.path || "").localeCompare(String(right.path || ""));
+    })[0];
   await promoteCandidateToCanonical(selectedCandidate.path, filePath);
   const stalePaths = [fallbackPath, ...backupPaths];
   for (const stalePath of stalePaths) {

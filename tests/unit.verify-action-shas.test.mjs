@@ -111,3 +111,48 @@ test(
     }
   }
 );
+
+test(
+  "Unit action SHA verifier: duplicate allowlist entries fail closed",
+  { skip: !hasBash },
+  async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-sha-test-"));
+    try {
+      const allowlistPath = path.join(tempRoot, "allowlist.txt");
+      const remoteExecAllowlistPath = path.join(tempRoot, "remote-allowlist.txt");
+      const workflowPath = path.join(tempRoot, "workflow.yml");
+      await writeFile(
+        allowlistPath,
+        [
+          "actions/checkout=11bd71901bbe5b1630ceea73d27597364c9af683",
+          "actions/checkout=49933ea5288caeca8642d1e84afbd3f7d6820020",
+        ].join("\n"),
+        "utf8"
+      );
+      await writeFile(
+        remoteExecAllowlistPath,
+        "# no remote run entries are allowlisted in this fixture\n",
+        "utf8"
+      );
+      await writeFile(
+        workflowPath,
+        [
+          "name: Duplicate Allowlist Entries",
+          "on: [push]",
+          "jobs:",
+          "  verify:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        ].join("\n"),
+        "utf8"
+      );
+      const result = runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath });
+      assert.notEqual(result.status, 0);
+      const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
+      assert.match(combinedOutput, /Duplicate action allowlist entry/i);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+);

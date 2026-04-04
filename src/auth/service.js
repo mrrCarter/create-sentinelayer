@@ -126,11 +126,23 @@ function normalizeUser(user = {}) {
 }
 
 function buildApiPath(apiUrl, pathSuffix) {
-  const normalizedBase = String(apiUrl || "").trim().replace(/\/$/, "");
+  const normalizedBase = String(apiUrl || "").trim();
   if (!normalizedBase) {
     throw new Error("apiUrl is required.");
   }
-  return `${normalizedBase}${String(pathSuffix || "")}`;
+  let parsedBase;
+  try {
+    parsedBase = new URL(normalizedBase);
+  } catch {
+    throw new Error(`Invalid apiUrl '${normalizedBase}'.`);
+  }
+  const normalizedSuffix = String(pathSuffix || "").trim();
+  const baseHref = parsedBase.toString().replace(/\/$/, "");
+  if (!normalizedSuffix) {
+    return baseHref;
+  }
+  const normalizedPathSuffix = normalizedSuffix.startsWith("/") ? normalizedSuffix : `/${normalizedSuffix}`;
+  return new URL(normalizedPathSuffix, `${baseHref}/`).toString();
 }
 
 function generateChallenge() {
@@ -991,6 +1003,10 @@ export async function __writeAuthPollResumeStateForTests(options = {}) {
 
 export async function __readAuthPollResumeStateForTests(options = {}) {
   return readAuthPollResumeState(options);
+}
+
+export function __buildApiPathForTests(apiUrl, pathSuffix) {
+  return buildApiPath(apiUrl, pathSuffix);
 }
 
 async function fetchCurrentUser({ apiUrl, token }) {
