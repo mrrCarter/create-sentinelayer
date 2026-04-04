@@ -697,12 +697,14 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
 
     const projectDir = path.join(tempRoot, "demo-app");
     const envText = await readFile(path.join(projectDir, ".env"), "utf-8");
+    const gitignoreText = await readFile(path.join(projectDir, ".gitignore"), "utf-8");
     const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
     const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
     const secretSink = await readFile(secretSinkPath, "utf-8");
 
     assert.match(envText, new RegExp(`SENTINELAYER_TOKEN=${BOOTSTRAP_VALUE_FROM_GENERATE}`));
+    assert.match(gitignoreText, /(^|\r?\n)\.env(\r?\n|$)/);
     assert.match(result.stdout, /Falling back to SENTINELAYER_TOKEN/);
     assert.match(todoText, /Repo: `acme\/demo-repo`/);
     assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
@@ -1620,7 +1622,7 @@ test("CLI markdown show commands load spec/prompt/guide artifacts deterministica
   }
 });
 
-test("CLI scan init generates security-review workflow from spec profile", async () => {
+test("CLI scan init targets omar-gate workflow and includes repo-aware secret instructions", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-"));
   try {
     await writeFile(
@@ -1641,6 +1643,14 @@ test("CLI scan init generates security-review workflow from spec profile", async
       ].join("\n"),
       "utf-8"
     );
+    await mkdir(path.join(tempRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(path.join(tempRoot, ".github", "workflows", "omar-gate.yml"), "name: stale\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["init"] });
+    runCommand({
+      cwd: tempRoot,
+      command: "git",
+      args: ["remote", "add", "origin", "https://github.com/acme/scan-demo.git"],
+    });
 
     const initResult = await runCli({
       cwd: tempRoot,
@@ -1664,15 +1674,36 @@ test("CLI scan init generates security-review workflow from spec profile", async
     assert.equal(initPayload.profile.severityGate, "P2");
     assert.equal(initPayload.profile.playwrightMode, "audit");
     assert.equal(initPayload.profile.sbomMode, "audit");
-    assert.match(String(initPayload.workflowPath || ""), /[\\/]security-review\.yml$/);
+    assert.match(String(initPayload.workflowPath || ""), /[\\/]omar-gate\.yml$/);
+    assert.equal(
+      initPayload.instructions.some((line) =>
+        /gh secret set SENTINELAYER_TOKEN --repo acme\/scan-demo/.test(String(line || ""))
+      ),
+      true
+    );
+    assert.equal(
+      initPayload.instructions.some((line) =>
+        /gh secret list --repo acme\/scan-demo/.test(String(line || ""))
+      ),
+      true
+    );
+    assert.equal(
+      initPayload.instructions.some((line) =>
+        /https:\/\/docs\.sentinelayer\.com\/cli\/secret-setup/.test(String(line || ""))
+      ),
+      true
+    );
 
     const workflowText = await readFile(initPayload.workflowPath, "utf-8");
-    assert.match(workflowText, /name: Security Review/);
+    assert.match(workflowText, /name: Omar Gate/);
     assert.match(workflowText, /scan_mode: deep/);
     assert.match(workflowText, /severity_gate: P2/);
     assert.match(workflowText, /playwright_mode: audit/);
     assert.match(workflowText, /sbom_mode: audit/);
     assert.match(workflowText, /sentinelayer_token:\s*\$\{\{\s*secrets\.SENTINELAYER_TOKEN\s*\}\}/);
+    await assert.rejects(
+      readFile(path.join(tempRoot, ".github", "workflows", "security-review.yml"), "utf-8")
+    );
 
     const validateResult = await runCli({
       cwd: tempRoot,

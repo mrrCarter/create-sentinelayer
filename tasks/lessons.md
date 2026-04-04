@@ -88,3 +88,9 @@
 - Treat release-tag findings as stateful: verify `release-please` manifest/version and open release PRs before cutting tags, so manual tags are never created against stale audit assumptions.
 - For mechanical file splits, extract contiguous command blocks and keep a thin orchestrator entrypoint; this minimizes behavior drift while reducing top-level file size.
 - When `npm run check` only validates entry files, run explicit `node --check` on newly added module files before full test runs to catch extraction syntax regressions early.
+
+## 2026-04-04
+
+- Keep scaffold token safety deterministic: whenever `.env` is written automatically, ensure `.gitignore` contains `.env` in the same execution path.
+- Workflow generator commands must converge on a single canonical path (`.github/workflows/omar-gate.yml`) and carry legacy-path compatibility (`security-review.yml`) only as an update/read fallback to avoid duplicate PR workflows.
+- Secret injection success should be validated, not assumed: after `gh secret set`, confirm visibility with `gh secret list --repo <slug>` and fail closed when the secret is not listed.
