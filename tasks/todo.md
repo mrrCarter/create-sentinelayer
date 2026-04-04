@@ -921,4 +921,14 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
 - [x] Commit + push thirtieth-cycle hotfix batch (`8d3ab6f`).
+- [x] Run quality gate watch (`gh run watch 23972480483 --exit-status`) and capture failure root cause:
+  - `Rollback Readiness / Rollback Validation and Promote` failed because validation mode attempted `npm view create-sentinelayer` and hard-failed on `E404` for unpublished package.
+- [x] Apply thirty-first-cycle rollback validation fallback hardening:
+  - `.github/workflows/rollback.yml`: in `execute=false` mode, gracefully fallback from npm dist-tag lookup to local `package.json` version when package is unpublished.
+  - `.github/workflows/rollback.yml`: skip registry-version membership and release-lineage attestation checks only for local fallback mode, while preserving strict execute-mode behavior.
+  - `.github/workflows/rollback.yml`: smoke-install local packed tarball (`npm pack`) in fallback mode and emit deterministic local lineage summary artifact so downstream upload/summary steps cannot fail.
+- [x] Run thirty-first-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-first-cycle rollback fallback batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

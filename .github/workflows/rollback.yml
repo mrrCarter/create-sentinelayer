@@ -145,22 +145,37 @@ jobs:
         run: |
           set -euo pipefail
           target_version="$(echo "${TARGET_VERSION:-}" | tr -d '\r' | xargs || true)"
+          target_version_local_only="false"
           if [[ -z "${target_version}" ]]; then
             if [[ "${EXECUTE}" == "true" ]]; then
               echo "::error::target_version is required when execute=true."
               exit 1
             fi
-            target_version="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json | jq -r '
-              if type == "string" then .
-              elif type == "object" then .latest // ""
-              else ""
-              end
-            ')"
-            if [[ -z "${target_version}" ]]; then
-              echo "::error::Unable to infer latest published version for ${PACKAGE_NAME}."
-              exit 1
+            latest_tag_json=""
+            latest_tag_status=0
+            set +e
+            latest_tag_json="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/dev/null)"
+            latest_tag_status=$?
+            set -e
+            if [[ "${latest_tag_status}" -eq 0 ]]; then
+              target_version="$(echo "${latest_tag_json}" | jq -r '
+                if type == "string" then .
+                elif type == "object" then .latest // ""
+                else ""
+                end
+              ')"
             fi
-            echo "No target_version supplied; inferred latest published version ${target_version} for validation mode."
+            if [[ -z "${target_version}" ]]; then
+              target_version="$(jq -r '.version // ""' package.json)"
+              if [[ -z "${target_version}" ]]; then
+                echo "::error::Unable to infer rollback target version from npm dist-tag or local package.json."
+                exit 1
+              fi
+              target_version_local_only="true"
+              echo "::warning::Unable to resolve published dist-tag for ${PACKAGE_NAME}; using local package.json version ${target_version} for validation-only rollback readiness."
+            else
+              echo "No target_version supplied; inferred latest published version ${target_version} for validation mode."
+            fi
           fi
           if [[ "${target_version}" == v* ]]; then
             target_version="${target_version#v}"
@@ -175,17 +190,20 @@ jobs:
             echo "::error::target_version must be semver without v-prefix."
             exit 1
           fi
-          versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
-          if ! echo "${versions_json}" | jq -e --arg target "${target_version}" '
-            if type == "array" then any(.[]; . == $target) else . == $target end
-          ' >/dev/null; then
-            echo "::error::Target version ${target_version} is not published for ${PACKAGE_NAME}."
-            exit 1
+          if [[ "${target_version_local_only}" != "true" ]]; then
+            versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
+            if ! echo "${versions_json}" | jq -e --arg target "${target_version}" '
+              if type == "array" then any(.[]; . == $target) else . == $target end
+            ' >/dev/null; then
+              echo "::error::Target version ${target_version} is not published for ${PACKAGE_NAME}."
+              exit 1
+            fi
           fi
           if [[ -n "${bad_version}" ]] && [[ ! "${bad_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::bad_version must be semver without v-prefix."
             exit 1
           fi
+          echo "TARGET_VERSION_LOCAL_ONLY=${target_version_local_only}" >> "$GITHUB_ENV"
 
       - name: Smoke-check target version install
         shell: bash
@@ -213,11 +231,25 @@ jobs:
             exit 1
           }
           prefix_dir="$(mktemp -d)"
-          install_with_retry "${PACKAGE_NAME}@${TARGET_VERSION}" "${prefix_dir}"
+          package_spec="${PACKAGE_NAME}@${TARGET_VERSION}"
+          if [[ "${TARGET_VERSION_LOCAL_ONLY:-false}" == "true" ]]; then
+            pack_json="$(npm pack --json)"
+            local_tarball="$(echo "${pack_json}" | jq -r '
+              if type == "array" then .[0].filename // ""
+              elif type == "object" then .filename // ""
+              else ""
+              end
+            ')"
+            test -n "${local_tarball}" || (echo "::error::Unable to resolve local package tarball for rollback validation mode." && exit 1)
+            test -f "${local_tarball}" || (echo "::error::Local package tarball '${local_tarball}' was not created." && exit 1)
+            package_spec="./${local_tarball}"
+          fi
+          install_with_retry "${package_spec}" "${prefix_dir}"
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
 
       - name: Validate target release lineage evidence
+        if: env.TARGET_VERSION_LOCAL_ONLY != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -298,6 +330,30 @@ jobs:
           }
           EOF
           echo "Rollback lineage proof validated for ${PACKAGE_NAME}@${TARGET_VERSION} (commit=${target_sha}, quality_run=${quality_run_id})."
+
+      - name: Emit local rollback lineage summary fallback
+        if: env.TARGET_VERSION_LOCAL_ONLY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > rollback-lineage.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "targetVersion": "${TARGET_VERSION}",
+            "targetSha": "${GITHUB_SHA}",
+            "executeMode": ${EXECUTE},
+            "productionGateVerified": false,
+            "npmMutationPathVerified": false,
+            "qualityRunId": "",
+            "qualityArtifactName": "",
+            "qualityArtifactSha256": "",
+            "qualityArtifactRebuildSha256": "",
+            "attestationVerified": false,
+            "lineageMode": "local_validation",
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
 
       - name: Require NPM token for execute mode
         if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT != 'true'
