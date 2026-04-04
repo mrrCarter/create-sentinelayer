@@ -38,6 +38,8 @@ const RETRYABLE_AUTH_POLL_CODES = new Set([
 ]);
 const AUTH_POLL_JITTER_SALT = getSharedRequestJitterSalt("auth-poll-backoff");
 const ALLOW_INSECURE_LOCAL_HTTP_ENV = "SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP";
+const PRIVILEGED_SCOPE_CONFIRM_ENV = "SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM";
+const PRIVILEGED_SCOPE_CONFIRM_TOKEN = "I_ACKNOWLEDGE_GITHUB_APP_BRIDGE_SCOPE";
 const ALLOWED_API_TOKEN_SCOPES = new Set([
   DEFAULT_API_TOKEN_SCOPE,
   PRIVILEGED_API_TOKEN_SCOPE,
@@ -48,6 +50,15 @@ function isEnabledFlag(rawValue) {
     .trim()
     .toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function isInteractiveTty() {
+  return Boolean(process.stdin?.isTTY) && Boolean(process.stdout?.isTTY);
+}
+
+function hasPrivilegedScopePolicyConsent(env = process.env) {
+  const rawConsentToken = String(env?.[PRIVILEGED_SCOPE_CONFIRM_ENV] || "").trim();
+  return rawConsentToken === PRIVILEGED_SCOPE_CONFIRM_TOKEN;
 }
 
 function normalizeApiUrl(rawValue, env = process.env) {
@@ -348,6 +359,10 @@ function getAuthPollRequestId(payload = {}) {
   return normalized || null;
 }
 
+function getAuthPollSequence(payload = {}) {
+  return normalizeOptionalInteger(payload.poll_sequence ?? payload.pollSequence);
+}
+
 function getAuthPollSessionId(payload = {}) {
   const candidate = payload.session_id ?? payload.sessionId;
   const normalized = String(candidate || "").trim();
@@ -378,7 +393,7 @@ function defaultTokenLabel() {
   return `sl-cli-session-${stamp}`;
 }
 
-function resolveApiTokenScope(rawScope = "", { allowPrivilegedScope = false } = {}) {
+function resolveApiTokenScope(rawScope = "", { allowPrivilegedScope = false, env = process.env } = {}) {
   const normalized = String(rawScope || "").trim().toLowerCase();
   if (!normalized) {
     return DEFAULT_API_TOKEN_SCOPE;
@@ -389,6 +404,16 @@ function resolveApiTokenScope(rawScope = "", { allowPrivilegedScope = false } = 
   if (normalized === PRIVILEGED_API_TOKEN_SCOPE && !allowPrivilegedScope) {
     throw new Error(
       "tokenScope github_app_bridge requires explicit privileged approval. Re-run with --allow-privileged-scope."
+    );
+  }
+  if (normalized === PRIVILEGED_API_TOKEN_SCOPE && !isInteractiveTty()) {
+    throw new Error(
+      `tokenScope github_app_bridge requires interactive TTY consent with ${PRIVILEGED_SCOPE_CONFIRM_ENV}=${PRIVILEGED_SCOPE_CONFIRM_TOKEN}.`
+    );
+  }
+  if (normalized === PRIVILEGED_API_TOKEN_SCOPE && !hasPrivilegedScopePolicyConsent(env)) {
+    throw new Error(
+      `tokenScope github_app_bridge requires policy confirmation. Export ${PRIVILEGED_SCOPE_CONFIRM_ENV}=${PRIVILEGED_SCOPE_CONFIRM_TOKEN}.`
     );
   }
   return normalized;
@@ -478,6 +503,7 @@ async function pollCliAuthSession({
   let consecutiveBackendFailures = 0;
   let attempt = 0;
   const seenRequestIds = new Set();
+  let highestSeenPollSequence = -1;
   const pollJitterSeed = generatePollJitterSeed();
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
@@ -554,6 +580,7 @@ async function pollCliAuthSession({
 
     const responseSessionId = getAuthPollSessionId(payload);
     const requestId = getAuthPollRequestId(payload);
+    const pollSequence = getAuthPollSequence(payload);
     const responseCorrelation = getAuthPollCorrelation(payload);
     if (requestId && seenRequestIds.has(requestId)) {
       const replayDelayMs = Math.min(
@@ -587,6 +614,20 @@ async function pollCliAuthSession({
         code: "CLI_AUTH_SESSION_MISMATCH",
         requestId,
       });
+    }
+    if (pollSequence !== null) {
+      if (pollSequence <= highestSeenPollSequence) {
+        const replayDelayMs = Math.min(
+          Math.max(MIN_AUTH_POLL_INTERVAL_MS, Math.floor(lastKnownPollIntervalMs / 2)),
+          Math.max(0, deadlineMs - resolveMonotonicNowMs())
+        );
+        if (replayDelayMs > 0) {
+          await sleepWithAbortSignal(replayDelayMs, signal);
+        }
+        attempt += 1;
+        continue;
+      }
+      highestSeenPollSequence = pollSequence;
     }
 
     const status = String(payload.status || "pending").trim().toLowerCase();
@@ -659,6 +700,7 @@ async function issueApiToken({
   tokenTtlDays,
   tokenScope = "",
   allowPrivilegedScope = false,
+  env = process.env,
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
@@ -668,7 +710,7 @@ async function issueApiToken({
     headers: toAuthHeader(authToken),
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: resolveApiTokenScope(tokenScope, { allowPrivilegedScope }),
+      scope: resolveApiTokenScope(tokenScope, { allowPrivilegedScope, env }),
       llm_credential_mode: "managed",
       expires_in_days: expiresInDays,
     },
@@ -793,6 +835,7 @@ async function rotateStoredApiTokenIfNeeded({
   tokenTtlDays,
   tokenScope,
   allowPrivilegedScope = false,
+  env = process.env,
   homeDir,
 }) {
   if (!session || !session.token || !session.tokenExpiresAt) {
@@ -809,6 +852,7 @@ async function rotateStoredApiTokenIfNeeded({
     tokenTtlDays,
     tokenScope,
     allowPrivilegedScope,
+    env,
   });
 
   const nextSession = await writeStoredSession(
@@ -966,6 +1010,7 @@ export async function loginAndPersistSession({
     tokenTtlDays,
     tokenScope,
     allowPrivilegedScope,
+    env,
   });
 
   const stored = await writeStoredSession(
@@ -1102,6 +1147,7 @@ export async function resolveActiveAuthSession({
         tokenTtlDays,
         tokenScope,
         allowPrivilegedScope,
+        env,
         homeDir,
       });
       active = rotateResult.session;

@@ -46,6 +46,27 @@ async function readJsonBody(req) {
   return JSON.parse(raw);
 }
 
+async function withMockTty(isInteractive, callback) {
+  const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+  const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  try {
+    Object.defineProperty(process.stdin, "isTTY", { value: Boolean(isInteractive), configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: Boolean(isInteractive), configurable: true });
+    return await callback();
+  } finally {
+    if (stdinDescriptor) {
+      Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+    } else {
+      Reflect.deleteProperty(process.stdin, "isTTY");
+    }
+    if (stdoutDescriptor) {
+      Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+    } else {
+      Reflect.deleteProperty(process.stdout, "isTTY");
+    }
+  }
+}
+
 async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthToken = "" } = {}) {
   const state = {
     pollCalls: 0,
@@ -791,6 +812,67 @@ test("Unit auth service: login ignores stale poll correlation mismatches before 
   }
 });
 
+test("Unit auth service: login ignores non-increasing poll sequence values", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        status: "pending",
+        poll_sequence: 4,
+        request_id: "req-seq-4",
+      },
+      {
+        status: "approved",
+        auth_token: "stale_token",
+        poll_sequence: 4,
+        request_id: "req-seq-4-duplicate",
+      },
+      {
+        status: "approved",
+        auth_token: "auth_token_web_1",
+        poll_sequence: 5,
+        request_id: "req-seq-5",
+        user: {
+          id: "user_1",
+          github_username: "demo-user",
+          email: "demo@example.com",
+        },
+      },
+    ],
+  });
+
+  try {
+    const loginResult = await loginAndPersistSession({
+      cwd: tempRoot,
+      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
+      homeDir: tempRoot,
+      explicitApiUrl: mock.apiUrl,
+      skipBrowserOpen: true,
+      timeoutMs: 5000,
+      tokenLabel: "unit-test-token",
+      tokenTtlDays: 30,
+      allowFileStorageFallback: true,
+      ide: "unit-test",
+      cliVersion: "0.0.0-test",
+    });
+    assert.equal(loginResult.user.githubUsername, "demo-user");
+    assert.equal(mock.state.pollCalls, 3);
+    assert.equal(mock.state.tokenIssueCalls, 1);
+    assert.equal(mock.state.tokenIssueAuthHeaders[0], "Bearer auth_token_web_1");
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth service: login fails closed after repeated polling backend outages", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
@@ -1008,23 +1090,113 @@ test("Unit auth service: login supports explicit privileged token scope override
   const mock = await startAuthRuntimeMockApi();
 
   try {
-    await loginAndPersistSession({
-      cwd: tempRoot,
-      env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
-      homeDir: tempRoot,
-      explicitApiUrl: mock.apiUrl,
-      skipBrowserOpen: true,
-      timeoutMs: 5000,
-      tokenLabel: "unit-test-token",
-      tokenTtlDays: 30,
-      tokenScope: "github_app_bridge",
-      allowPrivilegedScope: true,
-      allowFileStorageFallback: true,
-      ide: "unit-test",
-      cliVersion: "0.0.0-test",
+    await withMockTty(true, async () => {
+      await loginAndPersistSession({
+        cwd: tempRoot,
+        env: {
+          SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1",
+          SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM: "I_ACKNOWLEDGE_GITHUB_APP_BRIDGE_SCOPE",
+        },
+        homeDir: tempRoot,
+        explicitApiUrl: mock.apiUrl,
+        skipBrowserOpen: true,
+        timeoutMs: 5000,
+        tokenLabel: "unit-test-token",
+        tokenTtlDays: 30,
+        tokenScope: "github_app_bridge",
+        allowPrivilegedScope: true,
+        allowFileStorageFallback: true,
+        ide: "unit-test",
+        cliVersion: "0.0.0-test",
+      });
     });
     assert.equal(mock.state.tokenIssueBodies.length, 1);
     assert.equal(mock.state.tokenIssueBodies[0].scope, "github_app_bridge");
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: privileged token scope rejects non-interactive sessions", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi();
+
+  try {
+    await withMockTty(false, async () => {
+      await assert.rejects(
+        () =>
+          loginAndPersistSession({
+            cwd: tempRoot,
+            env: {
+              SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1",
+              SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM: "I_ACKNOWLEDGE_GITHUB_APP_BRIDGE_SCOPE",
+            },
+            homeDir: tempRoot,
+            explicitApiUrl: mock.apiUrl,
+            skipBrowserOpen: true,
+            timeoutMs: 5000,
+            tokenLabel: "unit-test-token",
+            tokenTtlDays: 30,
+            tokenScope: "github_app_bridge",
+            allowPrivilegedScope: true,
+            allowFileStorageFallback: true,
+            ide: "unit-test",
+            cliVersion: "0.0.0-test",
+          }),
+        /requires interactive tty consent/i
+      );
+    });
+    assert.equal(mock.state.tokenIssueCalls, 0);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: privileged token scope requires policy confirmation token", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const mock = await startAuthRuntimeMockApi();
+
+  try {
+    await withMockTty(true, async () => {
+      await assert.rejects(
+        () =>
+          loginAndPersistSession({
+            cwd: tempRoot,
+            env: { SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP: "1" },
+            homeDir: tempRoot,
+            explicitApiUrl: mock.apiUrl,
+            skipBrowserOpen: true,
+            timeoutMs: 5000,
+            tokenLabel: "unit-test-token",
+            tokenTtlDays: 30,
+            tokenScope: "github_app_bridge",
+            allowPrivilegedScope: true,
+            allowFileStorageFallback: true,
+            ide: "unit-test",
+            cliVersion: "0.0.0-test",
+          }),
+        /requires policy confirmation/i
+      );
+    });
+    assert.equal(mock.state.tokenIssueCalls, 0);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

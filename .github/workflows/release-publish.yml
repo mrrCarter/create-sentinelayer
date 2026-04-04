@@ -132,7 +132,11 @@ jobs:
                 echo "::error::Manual workflow_dispatch publish requires break_glass=true."
                 exit 1
               fi
-              dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
+              input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
+              if [[ "${input_dry_run}" != "true" ]]; then
+                echo "workflow_dispatch publish is forced to dry-run mode; ignoring dry_run=${input_dry_run}."
+              fi
+              dry_run="true"
               permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // ""' 2>/dev/null || true)"
               case "${permission}" in
                 admin|maintain) ;;
@@ -452,7 +456,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     needs: [resolve-release-bundle, prepare-release-bundle]
-    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    if: ${{ github.event_name == 'workflow_run' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
     environment: production
     permissions:
       contents: read
@@ -468,7 +472,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish]
-    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    if: ${{ github.event_name == 'workflow_run' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
     environment: production
     permissions:
       contents: read

@@ -282,11 +282,15 @@ jobs:
             "packageName": "${PACKAGE_NAME}",
             "targetVersion": "${TARGET_VERSION}",
             "targetSha": "${target_sha}",
+            "executeMode": ${EXECUTE},
+            "productionGateVerified": ${EXECUTE},
+            "npmMutationPathVerified": false,
             "qualityRunId": "${quality_run_id}",
             "qualityArtifactName": "${manifest_artifact_name}",
             "qualityArtifactSha256": "${manifest_sha}",
             "qualityArtifactRebuildSha256": "${manifest_rebuild_sha}",
-            "attestationVerified": true
+            "attestationVerified": true,
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
           echo "Rollback lineage proof validated for ${PACKAGE_NAME}@${TARGET_VERSION} (commit=${target_sha}, quality_run=${quality_run_id})."
@@ -347,6 +351,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -f rollback-lineage.summary.json ]]; then
+            now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            tmp_lineage="$(mktemp)"
+            if [[ "${EXECUTE}" == "true" ]] && [[ -f rollback-operation.summary.json ]]; then
+              jq --arg now "${now_utc}" '.npmMutationPathVerified = true | .checkedAt = $now' rollback-lineage.summary.json > "${tmp_lineage}"
+            else
+              jq --arg now "${now_utc}" '.checkedAt = $now' rollback-lineage.summary.json > "${tmp_lineage}"
+            fi
+            mv "${tmp_lineage}" rollback-lineage.summary.json
+          fi
           echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
           echo "- execute: \`${EXECUTE}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- target_version: \`${TARGET_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
@@ -359,10 +373,16 @@ jobs:
             lineage_quality_run_id="$(jq -r '.qualityRunId // ""' rollback-lineage.summary.json)"
             lineage_target_sha="$(jq -r '.targetSha // ""' rollback-lineage.summary.json)"
             lineage_attestation_verified="$(jq -r '.attestationVerified // false' rollback-lineage.summary.json)"
+            lineage_execute_mode="$(jq -r '.executeMode // false' rollback-lineage.summary.json)"
+            lineage_production_gate_verified="$(jq -r '.productionGateVerified // false' rollback-lineage.summary.json)"
+            lineage_npm_mutation_verified="$(jq -r '.npmMutationPathVerified // false' rollback-lineage.summary.json)"
             echo "- lineage_verified: \`true\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- lineage_quality_run_id: \`${lineage_quality_run_id}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- lineage_target_sha: \`${lineage_target_sha}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- lineage_attestation_verified: \`${lineage_attestation_verified}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_execute_mode: \`${lineage_execute_mode}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_production_gate_verified: \`${lineage_production_gate_verified}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_npm_mutation_verified: \`${lineage_npm_mutation_verified}\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::error::rollback-lineage.summary.json is missing."
             exit 1

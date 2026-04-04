@@ -794,4 +794,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Twenty-third-cycle local evidence:
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-session-store.test.mjs` (pass, `176/176`).
   - `npm run verify` (pass, e2e `84/84`; unit `176/176`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
-- [ ] Commit/push twenty-third-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twenty-third-cycle fixes and rerun Omar loop on PR #114 (`5be0118`, `5e83fec`; latest Omar run `db0b85ef-86b0-4b12-a9cc-02c4fb9d097a`, `P2=5`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=db0b85ef-86b0-4b12-a9cc-02c4fb9d097a`) and apply twenty-fourth-cycle hardening:
+  - `src/auth/service.js`: add local privileged-scope guardrails for `github_app_bridge` (explicit opt-in + interactive TTY + policy confirmation token `SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM`), propagate env-aware scope validation through issue/rotation flows, and add monotonic `poll_sequence` replay rejection path.
+  - `tests/unit.auth-service.test.mjs`: add coverage for non-increasing poll-sequence replay handling and privileged-scope runtime controls (interactive requirement + policy-confirmation requirement); keep privileged allow path validated with mocked TTY and consent token.
+  - `.github/workflows/release-publish.yml`: force `workflow_dispatch` into dry-run mode and block production publish jobs unless trigger is `workflow_run`.
+  - `.github/workflows/rollback.yml`: emit rollback lineage execute-path booleans (`executeMode`, `productionGateVerified`, `npmMutationPathVerified`) and maintain freshness timestamp updates in final summary stage.
+  - `.github/workflows/release-please.yml`: rollback freshness gate now requires fresh execute-mode rollback lineage artifacts with all execute/mutation proof booleans true.
+  - `.github/workflows/quality-gates.yml`: strengthen deploy lane with immutable deploy-stage proof validation, rollback-drill freshness linkage, npm canary health checks, and uploaded deploy proof artifact.
+- [x] Twenty-fourth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs` (pass, `182/182`).
+  - `npm run verify` (pass, e2e `84/84`; unit `182/182`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-fourth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.

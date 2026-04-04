@@ -217,3 +217,8 @@
 - Atomic filesystem retry loops should include bounded jitter in exponential backoff; deterministic waits can synchronize concurrent workers and increase contention amplification.
 - `workflow_run` release-publish triggers should be narrowed at both trigger and runtime guard layers (protected branch filter + upstream head-branch check) to reduce accidental publish-surface activation.
 - In backend-outage auth tests, request-id propagation can legitimately vary with timeout/backoff path; assert deterministic error class/status first, then conditionally assert request-id when present.
+- Privileged token scopes need three local controls together: explicit CLI opt-in flag, interactive TTY presence, and deterministic policy-confirmation token (`SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM`) before API token issuance.
+- Poll replay defenses should enforce monotonic `poll_sequence` progression when provided by backend responses; request-id windows alone are insufficient over long sessions.
+- High-risk publish workflows should treat `workflow_dispatch` as dry-run validation only and reserve mutation paths for chained, provenance-anchored `workflow_run` executions.
+- Rollback freshness proofs must verify execute-path contract booleans (`executeMode`, `productionGateVerified`, `npmMutationPathVerified`), not timestamp recency alone.
+- Deploy-proof lanes are more defensible when they bind immutable promotion artifacts to both rollback-drill freshness and explicit canary health checks, then emit a dedicated proof artifact.

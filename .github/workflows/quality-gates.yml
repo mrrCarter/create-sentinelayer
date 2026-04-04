@@ -988,6 +988,14 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [deploy-stage]
     if: ${{ always() }}
+    environment: quality-deploy
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
     steps:
       - name: Enforce deploy-stage success
         shell: bash
@@ -999,7 +1007,102 @@ jobs:
             echo "::error::deploy-stage must succeed before deploy (result=${RESULT_DEPLOY_STAGE})."
             exit 1
           fi
-          echo "Deploy gate passed (no external deployment executed in Quality Gates workflow)."
+      - name: Download deploy-stage proof
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: deploy-stage-proof
+          path: quality-deploy-proof/deploy-stage
+
+      - name: Verify immutable deployment promotion contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_stage_summary="quality-deploy-proof/deploy-stage/deploy.summary.json"
+          test -f "${deploy_stage_summary}" || (echo "::error::Missing deploy-stage summary ${deploy_stage_summary}." && exit 1)
+          stage_name="$(jq -r '.stage // ""' "${deploy_stage_summary}")"
+          stage_commit="$(jq -r '.commitSha // ""' "${deploy_stage_summary}")"
+          stage_artifact_name="$(jq -r '.artifactName // ""' "${deploy_stage_summary}")"
+          stage_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_stage_summary}")"
+          if [[ "${stage_name}" != "deploy-stage-promotion-gate" ]]; then
+            echo "::error::Deploy-stage proof must originate from deploy-stage-promotion-gate (received '${stage_name}')."
+            exit 1
+          fi
+          if [[ "${stage_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy-stage proof commit (${stage_commit}) does not match workflow SHA (${GITHUB_SHA})."
+            exit 1
+          fi
+          test -n "${stage_artifact_name}" || (echo "::error::Deploy-stage proof missing artifactName." && exit 1)
+          test -n "${stage_artifact_sha}" || (echo "::error::Deploy-stage proof missing artifactSha256." && exit 1)
+
+      - name: Verify rollback drill linkage freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          max_age_days="$(echo "${ROLLBACK_PROOF_MAX_AGE_DAYS}" | tr -d '\r' | xargs || true)"
+          case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid rollback proof max age '${max_age_days}'." ; exit 1 ;; esac
+          max_age_seconds=$((max_age_days * 86400))
+          now_epoch="$(date -u +%s)"
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=30" -H "Accept: application/vnd.github+json")"
+          rollback_run="$(echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select((.conclusion // "") == "success")
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              | select((.event // "") == "schedule")
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          test -n "${rollback_run}" || (echo "::error::No successful scheduled rollback drill run was found." && exit 1)
+          rollback_run_id="$(echo "${rollback_run}" | jq -r '.id // ""')"
+          rollback_created_at="$(echo "${rollback_run}" | jq -r '.created_at // ""')"
+          test -n "${rollback_run_id}" || (echo "::error::Unable to resolve rollback run id for drill linkage." && exit 1)
+          test -n "${rollback_created_at}" || (echo "::error::Unable to resolve rollback run timestamp for drill linkage." && exit 1)
+          rollback_created_epoch="$(date -u -d "${rollback_created_at}" +%s)"
+          rollback_age_seconds=$((now_epoch - rollback_created_epoch))
+          if (( rollback_age_seconds < 0 )) || (( rollback_age_seconds > max_age_seconds )); then
+            echo "::error::Rollback drill run ${rollback_run_id} is stale (${rollback_age_seconds}s old; max=${max_age_seconds}s)."
+            exit 1
+          fi
+          timeout --preserve-status 120s gh run download "${rollback_run_id}" --name rollback-drill-summary --dir quality-deploy-proof/rollback
+          rollback_summary_path="quality-deploy-proof/rollback/rollback-drill.summary.json"
+          test -f "${rollback_summary_path}" || (echo "::error::Missing rollback drill summary ${rollback_summary_path}." && exit 1)
+          rollback_checked_at="$(jq -r '.checkedAt // ""' "${rollback_summary_path}")"
+          test -n "${rollback_checked_at}" || (echo "::error::Rollback drill summary missing checkedAt timestamp." && exit 1)
+          rollback_checked_epoch="$(date -u -d "${rollback_checked_at}" +%s)"
+          rollback_summary_age_seconds=$((now_epoch - rollback_checked_epoch))
+          if (( rollback_summary_age_seconds < 0 )) || (( rollback_summary_age_seconds > max_age_seconds )); then
+            echo "::error::Rollback drill summary timestamp is stale (${rollback_summary_age_seconds}s old; max=${max_age_seconds}s)."
+            exit 1
+          fi
+
+      - name: Execute canary registry health checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 30s npm ping
+          canary_latest="$(timeout --preserve-status 30s npm view create-sentinelayer dist-tags.latest --json | jq -r 'if type == "string" then . elif type == "object" then .latest // "" else "" end')"
+          test -n "${canary_latest}" || (echo "::error::Canary health check failed: npm latest dist-tag is empty." && exit 1)
+          cat > quality-deploy-proof/deploy.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "stage": "deploy-promotion-proof",
+            "checks": [
+              "deploy-stage artifact promotion proof",
+              "scheduled rollback drill freshness",
+              "npm canary registry health"
+            ],
+            "npmLatestDistTag": "${canary_latest}"
+          }
+          EOF
+
+      - name: Upload deploy promotion proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: deploy-proof
+          path: quality-deploy-proof/deploy.summary.json
+          if-no-files-found: error
 
   quality-summary:
     name: Quality Summary

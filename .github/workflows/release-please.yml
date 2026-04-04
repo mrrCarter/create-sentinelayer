@@ -182,50 +182,72 @@ jobs:
           ROLLBACK_PROOF_MAX_AGE_DAYS: ${{ env.ROLLBACK_PROOF_MAX_AGE_DAYS }}
         run: |
           set -euo pipefail
+          normalize_bool() {
+            local raw
+            raw="$(echo "${1:-false}" | tr -d '\r' | xargs || true)"
+            case "$(echo "${raw}" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) echo "true" ;;
+              0|false|no|off|'') echo "false" ;;
+              *) echo "false" ;;
+            esac
+          }
           max_age_days="$(echo "${ROLLBACK_PROOF_MAX_AGE_DAYS}" | tr -d '\r' | xargs || true)"
           case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid rollback freshness window '${max_age_days}'." ; exit 1 ;; esac
-          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=30" -H "Accept: application/vnd.github+json")"
-          rollback_run="$(echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
-            [.workflow_runs[]
-              | select(((.path // "") | split("@")[0]) == $path)
-              | select((.conclusion // "") == "success")
-              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
-              | select((.event // "") == "schedule" or (.event // "") == "workflow_dispatch")
-            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
-          ')"
-          if [[ -z "${rollback_run}" ]]; then
-            echo "::error::No successful rollback workflow run found for freshness proof."
-            exit 1
-          fi
-          rollback_run_id="$(echo "${rollback_run}" | jq -r '.id // ""')"
-          rollback_run_created_at="$(echo "${rollback_run}" | jq -r '.created_at // ""')"
-          test -n "${rollback_run_id}" || (echo "::error::Unable to resolve rollback run id for freshness proof." && exit 1)
-          test -n "${rollback_run_created_at}" || (echo "::error::Unable to resolve rollback run timestamp for freshness proof." && exit 1)
-          created_epoch="$(date -u -d "${rollback_run_created_at}" +%s)"
           now_epoch="$(date -u +%s)"
-          age_seconds=$((now_epoch - created_epoch))
           max_age_seconds=$((max_age_days * 86400))
-          if (( age_seconds < 0 )) || (( age_seconds > max_age_seconds )); then
-            echo "::error::Rollback readiness proof run ${rollback_run_id} is stale (${age_seconds}s old; max=${max_age_seconds}s)."
-            exit 1
-          fi
-          artifact_status=0
-          timeout --preserve-status 120s gh run download "${rollback_run_id}" --name rollback-drill-summary --dir rollback-proof || artifact_status=$?
-          if [[ "${artifact_status}" -ne 0 ]]; then
-            timeout --preserve-status 120s gh run download "${rollback_run_id}" --name rollback-lineage-summary --dir rollback-proof
-          fi
-          proof_file="$(find rollback-proof -maxdepth 2 -type f -name '*.json' | head -n 1 || true)"
-          test -n "${proof_file}" || (echo "::error::Rollback freshness proof artifact is missing JSON summary." && exit 1)
-          proof_checked_at="$(jq -r '.checkedAt // empty' "${proof_file}")"
-          if [[ -n "${proof_checked_at}" ]]; then
-            proof_epoch="$(date -u -d "${proof_checked_at}" +%s)"
-            proof_age_seconds=$((now_epoch - proof_epoch))
-            if (( proof_age_seconds < 0 )) || (( proof_age_seconds > max_age_seconds )); then
-              echo "::error::Rollback proof timestamp in artifact is stale (${proof_age_seconds}s old; max=${max_age_seconds}s)."
-              exit 1
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=50" -H "Accept: application/vnd.github+json")"
+          selected_run_id=""
+          selected_run_created_at=""
+          selected_proof_file=""
+          while IFS= read -r candidate; do
+            run_id="$(echo "${candidate}" | jq -r '.id // ""')"
+            run_created_at="$(echo "${candidate}" | jq -r '.created_at // ""')"
+            test -n "${run_id}" || continue
+            test -n "${run_created_at}" || continue
+            created_epoch="$(date -u -d "${run_created_at}" +%s)"
+            run_age_seconds=$((now_epoch - created_epoch))
+            if (( run_age_seconds < 0 )) || (( run_age_seconds > max_age_seconds )); then
+              continue
             fi
-          fi
-          echo "Rollback readiness freshness validated via run ${rollback_run_id} (${rollback_run_created_at})."
+            rm -rf rollback-proof
+            mkdir -p rollback-proof
+            artifact_status=0
+            timeout --preserve-status 120s gh run download "${run_id}" --name rollback-lineage-summary --dir rollback-proof || artifact_status=$?
+            if [[ "${artifact_status}" -ne 0 ]]; then
+              continue
+            fi
+            proof_file="$(find rollback-proof -maxdepth 2 -type f -name '*.json' | head -n 1 || true)"
+            test -n "${proof_file}" || continue
+            execute_mode="$(normalize_bool "$(jq -r '.executeMode // false' "${proof_file}")")"
+            production_gate_verified="$(normalize_bool "$(jq -r '.productionGateVerified // false' "${proof_file}")")"
+            npm_mutation_verified="$(normalize_bool "$(jq -r '.npmMutationPathVerified // false' "${proof_file}")")"
+            if [[ "${execute_mode}" != "true" ]] || [[ "${production_gate_verified}" != "true" ]] || [[ "${npm_mutation_verified}" != "true" ]]; then
+              continue
+            fi
+            proof_checked_at="$(jq -r '.checkedAt // empty' "${proof_file}")"
+            if [[ -n "${proof_checked_at}" ]]; then
+              proof_epoch="$(date -u -d "${proof_checked_at}" +%s)"
+              proof_age_seconds=$((now_epoch - proof_epoch))
+              if (( proof_age_seconds < 0 )) || (( proof_age_seconds > max_age_seconds )); then
+                continue
+              fi
+            fi
+            selected_run_id="${run_id}"
+            selected_run_created_at="${run_created_at}"
+            selected_proof_file="${proof_file}"
+            break
+          done < <(
+            echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.conclusion // "") == "success")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | select((.event // "") == "workflow_dispatch" or (.event // "") == "workflow_call")
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | reverse[]'
+          )
+          test -n "${selected_run_id}" || (echo "::error::No fresh execute-mode rollback lineage proof was found (requires executeMode=true, productionGateVerified=true, npmMutationPathVerified=true)." && exit 1)
+          test -n "${selected_proof_file}" || (echo "::error::Rollback freshness proof artifact is missing JSON summary." && exit 1)
+          echo "Rollback readiness freshness validated via run ${selected_run_id} (${selected_run_created_at}) using ${selected_proof_file}."
 
       - name: Verify Quality Summary gate for target SHA
         id: quality_gate
