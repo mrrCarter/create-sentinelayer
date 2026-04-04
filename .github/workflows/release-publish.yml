@@ -14,6 +14,10 @@ on:
         description: "Semver tag to publish (vX.Y.Z)"
         required: true
         type: string
+      release_run_id:
+        description: "Release workflow run id to promote (required for workflow_dispatch)"
+        required: true
+        type: string
       dry_run:
         description: "Run npm publish --dry-run"
         required: false
@@ -90,6 +94,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           EVENT_NAME: ${{ github.event_name }}
           RAW_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          RAW_RELEASE_RUN_ID: ${{ inputs.release_run_id || '' }}
           RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           RAW_BREAK_GLASS: ${{ inputs.break_glass || 'false' }}
           RAW_INCIDENT_ID: ${{ inputs.incident_id || '' }}
@@ -132,6 +137,16 @@ jobs:
                 echo "::error::workflow_dispatch requires release_tag."
                 exit 1
               fi
+              release_run_id="$(echo "${RAW_RELEASE_RUN_ID:-}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${release_run_id}" ]]; then
+                echo "::error::workflow_dispatch requires release_run_id from a successful Release workflow run."
+                exit 1
+              fi
+              case "${release_run_id}" in ''|*[!0-9]*)
+                echo "::error::release_run_id '${release_run_id}' must be a numeric workflow run id."
+                exit 1
+                ;;
+              esac
               if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
                 echo "::error::release_tag '${release_tag}' must match vX.Y.Z semver format."
                 exit 1
@@ -176,6 +191,33 @@ jobs:
                 target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
               elif [[ "${ref_type}" != "commit" ]]; then
                 echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
+                exit 1
+              fi
+              dispatch_release_run_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${release_run_id}" -H "Accept: application/vnd.github+json")"
+              dispatch_release_run_path="$(echo "${dispatch_release_run_json}" | jq -r '((.path // "") | split("@")[0])')"
+              dispatch_release_run_conclusion="$(echo "${dispatch_release_run_json}" | jq -r '.conclusion // ""')"
+              dispatch_release_run_status="$(echo "${dispatch_release_run_json}" | jq -r '.status // ""')"
+              dispatch_release_run_head_sha="$(echo "${dispatch_release_run_json}" | jq -r '.head_sha // ""')"
+              dispatch_release_run_event="$(echo "${dispatch_release_run_json}" | jq -r '.event // ""')"
+              dispatch_release_run_head_repo="$(echo "${dispatch_release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+              if [[ "${dispatch_release_run_path}" != ".github/workflows/release.yml" ]]; then
+                echo "::error::release_run_id '${release_run_id}' must reference .github/workflows/release.yml (received '${dispatch_release_run_path}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_status}" != "completed" ]] || [[ "${dispatch_release_run_conclusion}" != "success" ]]; then
+                echo "::error::release_run_id '${release_run_id}' is not a successful completed release run (status='${dispatch_release_run_status}', conclusion='${dispatch_release_run_conclusion}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_head_repo}" != "${REPO}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' head repository mismatch (expected '${REPO}', received '${dispatch_release_run_head_repo}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_event}" != "push" ]] && [[ "${dispatch_release_run_event}" != "workflow_dispatch" ]]; then
+                echo "::error::release_run_id '${release_run_id}' must originate from push/workflow_dispatch (received '${dispatch_release_run_event}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_head_sha}" != "${target_sha}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' head sha mismatch (run=${dispatch_release_run_head_sha}, tag=${target_sha})."
                 exit 1
               fi
               ;;
@@ -240,6 +282,23 @@ jobs:
             ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .id // empty
           ')"
           test -n "${resolved_release_run_id}" || (echo "::error::No successful release.yml run found for tag '${release_tag}' (${target_sha})." && exit 1)
+          if [[ -n "${release_run_id}" ]]; then
+            release_run_candidates="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select((.event // "") == "push" or (.event // "") == "workflow_dispatch")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | (.id | tostring)
+              ]
+            ')"
+            if ! echo "${release_run_candidates}" | jq -e --arg selected "${release_run_id}" 'index($selected) != null' >/dev/null; then
+              echo "::error::release_run_id '${release_run_id}' is not a valid successful release run for tag '${release_tag}' (${target_sha})."
+              exit 1
+            fi
+          fi
           if [[ -z "${release_run_id}" ]]; then
             release_run_id="${resolved_release_run_id}"
           fi

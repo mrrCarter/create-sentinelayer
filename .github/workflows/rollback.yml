@@ -64,6 +64,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     environment: production
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     env:
       RAW_TARGET_VERSION: ${{ inputs.target_version || github.event.inputs.target_version || '' }}
       RAW_BAD_VERSION: ${{ inputs.bad_version || github.event.inputs.bad_version || '' }}
@@ -421,6 +425,10 @@ jobs:
     if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     env:
       PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
       GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,168 @@
+{
+  "workflows": {
+    ".github/workflows/quality-gates.yml": {
+      "jobs": {
+        "lint": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "eval-impact": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "syntax-matrix": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "unit-coverage": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "e2e-packaging": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "security-scan": {
+          "required": { "contents": "read", "security-events": "write" },
+          "max": { "contents": "read", "security-events": "write" }
+        },
+        "build-artifact": {
+          "required": { "contents": "read", "id-token": "write", "attestations": "write" },
+          "max": { "contents": "read", "id-token": "write", "attestations": "write" }
+        },
+        "release-readiness": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "deploy-readiness": {
+          "required": { "contents": "read", "id-token": "write", "attestations": "read" },
+          "max": { "contents": "read", "id-token": "write", "attestations": "read" }
+        },
+        "deploy-stage": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
+        "deploy": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
+        "quality-summary": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "verify-gate-graph": {
+          "required": { "actions": "read" },
+          "max": { "actions": "read" }
+        }
+      }
+    },
+    ".github/workflows/omar-gate.yml": {
+      "jobs": {
+        "omar_gate": {
+          "required": {
+            "contents": "read",
+            "checks": "write",
+            "pull-requests": "write",
+            "id-token": "write"
+          },
+          "max": {
+            "contents": "read",
+            "checks": "write",
+            "pull-requests": "write",
+            "id-token": "write"
+          }
+        }
+      }
+    },
+    ".github/workflows/release.yml": {
+      "jobs": {
+        "resolve-release-flags": {
+          "required": { "contents": "read", "checks": "read", "actions": "read" },
+          "max": { "contents": "read", "checks": "read", "actions": "read" }
+        },
+        "verify-required-checks": {
+          "required": { "contents": "read", "checks": "read", "actions": "read" },
+          "max": { "contents": "read", "checks": "read", "actions": "read" }
+        },
+        "preflight": {
+          "required": {
+            "contents": "read",
+            "checks": "read",
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write"
+          },
+          "max": {
+            "contents": "read",
+            "checks": "read",
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write"
+          }
+        },
+        "rollback-readiness": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "authorize-production-publish": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "publish": {
+          "required": { "contents": "read", "actions": "read", "id-token": "write" },
+          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+        },
+        "request-rollback-validation": {
+          "required": { "contents": "write", "actions": "write" },
+          "max": { "contents": "write", "actions": "write" }
+        }
+      }
+    },
+    ".github/workflows/release-publish.yml": {
+      "jobs": {
+        "resolve-release-bundle": {
+          "required": { "contents": "read", "actions": "read", "checks": "read" },
+          "max": { "contents": "read", "actions": "read", "checks": "read" }
+        },
+        "prepare-release-bundle": {
+          "required": {
+            "contents": "read",
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write"
+          },
+          "max": {
+            "contents": "read",
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write"
+          }
+        },
+        "publish-dry-run": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "authorize-production-publish": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
+        "publish": {
+          "required": { "contents": "read", "id-token": "write" },
+          "max": { "contents": "read", "id-token": "write" }
+        }
+      }
+    },
+    ".github/workflows/rollback.yml": {
+      "jobs": {
+        "rollback": {
+          "required": { "contents": "read", "actions": "read", "id-token": "write" },
+          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+        },
+        "rollback-readiness-drill": {
+          "required": { "contents": "read", "actions": "read", "id-token": "write" },
+          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+        }
+      }
+    }
+  }
+}

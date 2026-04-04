@@ -228,3 +228,7 @@
 - Workflow least-privilege drift is easier to prevent with a structural YAML policy checker (top-level + per-job explicit permissions) wired into both local `npm run check` and CI lint gates.
 - Break-glass release paths should remain executable but heavily governed (dual control, validated incident id, immutable incident evidence artifact) rather than fully disabled into dry-run-only behavior.
 - Immutable artifact lineage controls are stronger when preflight emits a contract output set (artifact name, digests, commit/run provenance) that publish jobs must match exactly before mutation steps.
+- Workflow permission checks that only enforce "explicit object exists" are insufficient; use a checked-in per-workflow/per-job `required`+`max` policy map and fail on any out-of-policy scope or escalation.
+- For critical workflow contract assertions, parse YAML structurally and inspect `jobs`/`needs` DAG edges; regex/string matching of workflow text is too brittle for governance guarantees.
+- Manual release publish dispatches should be anchored to a specific successful release run id and validated against tag commit SHA, not reconstructed heuristically from "latest successful run for SHA".
+- When migrating direct publish controls out of release validation workflows, remove user-facing publish toggles from dispatch inputs first to eliminate accidental production path confusion.

@@ -10,11 +10,6 @@ on:
         description: "Semver tag to release (vX.Y.Z)"
         required: true
         type: string
-      publish:
-        description: "Execute production publish after validation gates"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -38,6 +33,10 @@ jobs:
     name: Resolve Release Flags
     runs-on: ubuntu-22.04
     timeout-minutes: 3
+    permissions:
+      contents: read
+      checks: read
+      actions: read
     outputs:
       publish_requested: ${{ steps.flags.outputs.publish_requested }}
       dry_run: ${{ steps.flags.outputs.dry_run }}
@@ -259,28 +258,15 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE_VALUE: ${{ github.ref_type }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
-          INPUT_PUBLISH: ${{ inputs.publish || 'false' }}
           ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           FALLBACK_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          normalize_bool() {
-            local raw
-            raw="$(echo "${1:-false}" | tr -d '\r' | xargs || true)"
-            case "$(echo "${raw}" | tr '[:upper:]' '[:lower:]')" in
-              1|true|yes|on) echo "true" ;;
-              0|false|no|off|'') echo "false" ;;
-              *)
-                echo "::error::Invalid boolean value '${raw}'."
-                exit 1
-                ;;
-            esac
-          }
           publish_requested="false"
           release_path_execution="false"
-          dry_run="false"
+          dry_run="true"
           release_tag=""
           release_ref_value="${GITHUB_REF_VALUE}"
           release_ref_type="${GITHUB_REF_TYPE_VALUE}"
@@ -302,12 +288,8 @@ jobs:
                 exit 1
               fi
               release_path_execution="true"
-              publish_requested="$(normalize_bool "${INPUT_PUBLISH:-false}")"
-              if [[ "${publish_requested}" == "true" ]]; then
-                dry_run="false"
-              else
-                dry_run="true"
-              fi
+              publish_requested="false"
+              dry_run="true"
               ;;
             *)
               release_path_execution="false"
@@ -339,9 +321,7 @@ jobs:
             fi
             release_ref_value="refs/tags/${release_tag}"
             release_ref_type="tag"
-            if [[ "${publish_requested}" != "true" ]]; then
-              dry_run="true"
-            fi
+            dry_run="true"
           fi
           if [[ "${publish_requested}" == "true" ]] && [[ "${release_ref_type}" != "tag" ]]; then
             echo "::error::Publish can only execute for tag-scoped releases."
@@ -1002,6 +982,8 @@ jobs:
     timeout-minutes: 10
     needs: [resolve-release-flags, verify-required-checks, preflight]
     if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1045,6 +1027,8 @@ jobs:
     needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
     if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' && needs.resolve-release-flags.outputs.dry_run != 'true' }}
     environment: production
+    permissions:
+      contents: read
     steps:
       - name: Confirm protected publish approval
         shell: bash
@@ -1059,6 +1043,10 @@ jobs:
     needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, authorize-production-publish]
     if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
     environment: production
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     env:
       NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
       PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}

@@ -820,4 +820,20 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass).
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass, `184/184`).
   - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
-- [ ] Commit/push twenty-fifth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twenty-fifth-cycle fixes (`5247376`) and rerun full gate loop:
+  - `gh run watch 23969294998 --exit-status` (Quality Gates: pass).
+  - Approve `security-review` pending deployment for Omar run `23969294996`.
+  - `gh run watch 23969294996 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=4`, `run_id=552453eb-ec45-46a5-b5af-4ab30619bdff`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=552453eb-ec45-46a5-b5af-4ab30619bdff`) and apply twenty-sixth-cycle hardening:
+  - `scripts/ci/verify-workflow-permissions.js`: migrate from schema-only checks to policy-map enforcement (`required` + `max`) with per-job least-privilege validation and fail-closed drift detection.
+  - `.github/security/workflow-permissions-policy.json`: add checked-in workflow/job permission contract for `quality-gates`, `omar-gate`, `release`, `release-publish`, and `rollback` workflows.
+  - `.github/workflows/quality-gates.yml`: replace regex/string deploy-chain contract assertion with structural YAML graph validator; expand permission-policy enforcement to all release-critical workflows.
+  - `scripts/ci/verify-quality-gate-graph.js`: new structural DAG validator for required deploy promotion chain (`deploy-readiness -> deploy-stage -> deploy -> quality-summary`).
+  - `.github/workflows/release.yml`: remove `workflow_dispatch` `publish` input (validation-only dispatch), and add explicit permissions for previously unscoped jobs (`resolve-release-flags`, `rollback-readiness`, `authorize-production-publish`, `publish`).
+  - `.github/workflows/release-publish.yml`: require `workflow_dispatch` `release_run_id` and bind manual dispatch to an exact successful `release.yml` run whose `head_sha` matches the requested `release_tag` commit.
+  - `.github/workflows/rollback.yml`: add explicit least-privilege job permissions to `rollback` and `rollback-readiness-drill` for policy conformance.
+  - `package.json`: wire `verify-quality-gate-graph` and multi-workflow permission policy checks into `npm run check` for local/CI parity.
+- [x] Twenty-sixth-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-sixth-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.

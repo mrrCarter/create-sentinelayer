@@ -36,32 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require("node:fs");
-          const content = fs.readFileSync(".github/workflows/quality-gates.yml", "utf8");
-          const requiredJobKeys = ["deploy-readiness:", "deploy-stage:", "deploy:", "quality-summary:"];
-          for (const key of requiredJobKeys) {
-            if (!content.includes(`\n  ${key}`)) {
-              console.error(`::error::Missing required quality gate job definition '${key}'.`);
-              process.exit(1);
-            }
-          }
-          const summaryNeedsMatch = content.match(/quality-summary:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
-          if (!summaryNeedsMatch) {
-            console.error("::error::Unable to resolve quality-summary needs graph in quality-gates workflow.");
-            process.exit(1);
-          }
-          const needsList = summaryNeedsMatch[1]
-            .split(",")
-            .map((entry) => entry.trim())
-            .filter(Boolean);
-          for (const expectedNeed of ["deploy-readiness", "deploy-stage", "deploy"]) {
-            if (!needsList.includes(expectedNeed)) {
-              console.error(`::error::quality-summary must depend on '${expectedNeed}' to enforce deploy gate chain.`);
-              process.exit(1);
-            }
-          }
-          NODE
+          node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -85,7 +60,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml
+          node scripts/ci/verify-workflow-permissions.js \
+            .github/workflows/quality-gates.yml \
+            .github/workflows/omar-gate.yml \
+            .github/workflows/release.yml \
+            .github/workflows/release-publish.yml \
+            .github/workflows/rollback.yml
 
       - name: Run lint/syntax gate
         run: npm run check
