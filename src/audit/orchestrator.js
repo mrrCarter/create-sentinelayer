@@ -37,6 +37,11 @@ import {
   summarizeBlackboard,
   writeBlackboardArtifact,
 } from "../memory/blackboard.js";
+import {
+  buildDocumentsFromBlackboardEntries,
+  buildSharedMemoryCorpus,
+  queryHybridRetriever,
+} from "../memory/retrieval.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -52,6 +57,14 @@ function formatTimestampToken() {
   return `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(
     now.getUTCHours()
   )}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+}
+
+function resolveMemoryProvider(env = process.env) {
+  const provider = normalizeString(env.SENTINELAYER_MEMORY_PROVIDER).toLowerCase();
+  if (provider === "api" || provider === "auto" || provider === "local") {
+    return provider;
+  }
+  return "local";
 }
 
 function severitySummary(findings = []) {
@@ -179,6 +192,9 @@ Shared memory:
 - Enabled: ${report.sharedMemory?.enabled ? "yes" : "no"}
 - Entries: ${report.sharedMemory?.entryCount || 0}
 - Queries: ${report.sharedMemory?.queryCount || 0}
+- Corpus docs: ${report.sharedMemory?.corpusDocumentCount || 0}
+- Retrieval provider: ${report.sharedMemory?.retrieval?.providerRequested || "local"}
+- Providers used: ${(report.sharedMemory?.retrieval?.providersUsed || []).join(", ") || "local"}
 - Artifact: ${report.sharedMemory?.artifactPath || "n/a"}
 
 Ingest:
@@ -247,6 +263,20 @@ export async function runAuditOrchestrator({
     findings: deterministicBaseline.findings,
     source: "deterministic-baseline",
   });
+  const memoryProvider = resolveMemoryProvider(process.env);
+  const memoryApiEndpoint = normalizeString(process.env.SENTINELAYER_MEMORY_API_ENDPOINT);
+  const memoryApiKey = normalizeString(
+    process.env.SENTINELAYER_MEMORY_API_KEY ||
+      process.env.SENTINELAYER_TOKEN ||
+      process.env.SENTINELAYER_API_TOKEN
+  );
+  const sharedMemoryCorpus = await buildSharedMemoryCorpus({
+    outputRoot,
+    targetPath: normalizedTargetPath,
+    ingest,
+    excludeRunId: runId,
+  });
+  const sharedMemoryQueries = [];
 
   const routeBuckets = new Map();
   for (const finding of deterministicBaseline.findings) {
@@ -263,6 +293,24 @@ export async function runAuditOrchestrator({
       query: `${agent.id} ${agent.domain} ${agent.persona}`,
       agentId: agent.id,
       limit: 24,
+    });
+    const hybridContext = await queryHybridRetriever({
+      query: `${agent.id} ${agent.domain} ${agent.persona}`,
+      documents: [
+        ...buildDocumentsFromBlackboardEntries(blackboard.entries),
+        ...sharedMemoryCorpus.documents,
+      ],
+      limit: 24,
+      provider: memoryProvider,
+      apiEndpoint: memoryApiEndpoint,
+      apiKey: memoryApiKey,
+    });
+    sharedMemoryQueries.push({
+      agentId: agent.id,
+      providerUsed: hybridContext.providerUsed,
+      apiFallback: Boolean(hybridContext.apiFallback),
+      resultCount: Array.isArray(hybridContext.results) ? hybridContext.results.length : 0,
+      apiError: hybridContext.apiError || "",
     });
     let findings = routeBuckets.get(agent.id) || [];
     let summary = severitySummary(findings);
@@ -380,6 +428,16 @@ export async function runAuditOrchestrator({
         line: entry.line,
         message: entry.message,
       })),
+      hybridContextProvider: hybridContext.providerUsed,
+      hybridContextApiFallback: Boolean(hybridContext.apiFallback),
+      hybridContextEntryCount: Array.isArray(hybridContext.results) ? hybridContext.results.length : 0,
+      hybridContextPreview: (hybridContext.results || []).slice(0, 5).map((entry) => ({
+        documentId: entry.documentId || "",
+        sourceType: entry.sourceType || "",
+        severity: entry.severity || "P3",
+        score: Number(entry.score || 0),
+        snippet: normalizeString(entry.snippet || ""),
+      })),
     };
     appendBlackboardFindings(blackboard, {
       agentId: agent.id,
@@ -416,6 +474,8 @@ export async function runAuditOrchestrator({
     outputRoot,
   });
   const sharedMemorySummary = summarizeBlackboard(blackboard);
+  sharedMemoryQueries.sort((left, right) => left.agentId.localeCompare(right.agentId));
+  const providersUsed = Array.from(new Set(sharedMemoryQueries.map((item) => item.providerUsed))).sort();
 
   const report = {
     schemaVersion: "1.0.0",
@@ -443,6 +503,17 @@ export async function runAuditOrchestrator({
       severity: sharedMemorySummary.severity,
       createdAt: sharedMemorySummary.createdAt,
       updatedAt: sharedMemorySummary.updatedAt,
+      corpusDocumentCount: sharedMemoryCorpus.documents.length,
+      corpusSourceCounts: sharedMemoryCorpus.sourceCounts,
+      retrieval: {
+        providerRequested: memoryProvider,
+        apiDelegationEnabled: Boolean(memoryApiEndpoint),
+        providersUsed,
+        queryCount: sharedMemoryQueries.length,
+        queries: sharedMemoryQueries,
+        hasSpecDocument: sharedMemoryCorpus.hasSpecDocument,
+        historyRunDocumentCount: sharedMemoryCorpus.historyRunDocumentCount,
+      },
     },
     selectedAgents: agents.map((agent) => agent.id),
     agentResults,
