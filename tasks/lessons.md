@@ -203,3 +203,9 @@
 - Release/publish workflows should use non-canceling concurrency; aborting in-flight release validation introduces race windows and partial-governance runs.
 - npm production publish should prefer OIDC trusted publishing (`id-token: write` + provenance) over long-lived `NPM_TOKEN` secrets to reduce secret lifetime and exfiltration blast radius.
 - File-backed auth metadata must aggressively scrub legacy plaintext `token` fields even when encrypted token material exists; treat any residual plaintext token as a fail-closed storage corruption state.
+- Retry-jitter entropy hardening must never fall back to process/time-derived salts; use CSPRNG (`randomBytes`, then `webcrypto.getRandomValues`) or fail closed with explicit initialization errors.
+- `auth status --verbose-errors` should be machine-output scoped; keep interactive terminal output limited to curated safe messages to avoid code/status/request-id leakage drift.
+- Release-publish workflows need both automated chain triggers (`workflow_run` from Release success) and explicit manual break-glass controls (`break_glass=true`) to avoid manual orchestration drift findings.
+- Release integrity preflight jobs that verify immutable bundles should run under the same protected environment (`release-management`) as tag/run resolution, not in unprotected default context.
+- Security-scan observability is stronger when deterministic audit evidence is mirrored into SARIF and uploaded through code-scanning (`security-events: write`) with fail-closed upload checks.
+- Dual-control for production publish should be enforced at runtime by comparing release initiator identity with workflow approval identities (`actions/runs/{run_id}/approvals`) and failing when no distinct approver exists.

@@ -222,6 +222,7 @@ jobs:
     needs: [eval-impact, syntax-matrix, unit-coverage, e2e-packaging]
     permissions:
       contents: read
+      security-events: write
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -369,6 +370,101 @@ jobs:
           rm -f security-audit.status.raw
           sha256sum security-audit.prod.json security-audit.full.json security-audit.status.json > security-audit.sha256
 
+      - name: Generate npm audit SARIF summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const status = JSON.parse(fs.readFileSync("security-audit.status.json", "utf8"));
+          const audits = status && typeof status === "object" ? status.audits || {} : {};
+          const runDate = new Date().toISOString();
+          const toLevel = (entry) => {
+            const high = Number(entry?.findings?.high || 0);
+            const critical = Number(entry?.findings?.critical || 0);
+            if (critical > 0) {
+              return "error";
+            }
+            if (high > 0) {
+              return "warning";
+            }
+            return "note";
+          };
+          const results = Object.entries(audits).map(([label, entry]) => {
+            const high = Number(entry?.findings?.high || 0);
+            const critical = Number(entry?.findings?.critical || 0);
+            const exitCode = Number(entry?.exitCode || 0);
+            return {
+              ruleId: "SL-NPM-AUDIT-SUMMARY",
+              level: toLevel(entry),
+              message: {
+                text: `npm audit ${label}: exit=${exitCode}, high=${high}, critical=${critical}`,
+              },
+              locations: [
+                {
+                  physicalLocation: {
+                    artifactLocation: { uri: "package-lock.json" },
+                    region: { startLine: 1 },
+                  },
+                },
+              ],
+            };
+          });
+          const sarif = {
+            version: "2.1.0",
+            $schema:
+              "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json",
+            runs: [
+              {
+                tool: {
+                  driver: {
+                    name: "sentinelayer-quality-audit",
+                    informationUri: "https://sentinelayer.com",
+                    version: "1.0.0",
+                    rules: [
+                      {
+                        id: "SL-NPM-AUDIT-SUMMARY",
+                        shortDescription: { text: "npm audit findings snapshot" },
+                        fullDescription: {
+                          text: "Structured npm audit summary generated during security gates.",
+                        },
+                        defaultConfiguration: { level: "warning" },
+                      },
+                    ],
+                  },
+                },
+                invocations: [{ executionSuccessful: true, endTimeUtc: runDate }],
+                results,
+              },
+            ],
+          };
+          fs.writeFileSync("security-audit.sarif", `${JSON.stringify(sarif, null, 2)}\n`, "utf8");
+          NODE
+
+      - name: Upload npm audit SARIF to GitHub code scanning
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -f security-audit.sarif || (echo "::error::Missing security-audit.sarif report." && exit 1)
+          sarif_payload="$(gzip -c security-audit.sarif | base64 -w0)"
+          started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          upload_response="$(timeout --preserve-status 30s gh api "repos/${GITHUB_REPOSITORY}/code-scanning/sarifs" \
+            -X POST \
+            -f commit_sha="${GITHUB_SHA}" \
+            -f ref="${GITHUB_REF}" \
+            -f sarif="${sarif_payload}" \
+            -f checkout_uri="file:///github/workspace" \
+            -f started_at="${started_at}")"
+          upload_id="$(echo "${upload_response}" | jq -r '.id // empty')"
+          if [[ -z "${upload_id}" ]]; then
+            echo "::error::SARIF upload did not return an upload id."
+            echo "${upload_response}"
+            exit 1
+          fi
+          echo "Uploaded security SARIF (id=${upload_id})."
+
       - name: Enforce workflow action SHA allowlist policy
         shell: bash
         run: |
@@ -392,6 +488,7 @@ jobs:
             security-audit.full.json
             security-audit.status.json
             security-audit.sha256
+            security-audit.sarif
           if-no-files-found: error
 
   build-artifact:

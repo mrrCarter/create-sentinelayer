@@ -94,8 +94,11 @@ function shouldExposeDebugRequestId() {
   return shouldEmitDebugErrorDetails() && process.stdout.isTTY === true && !isCiEnvironment();
 }
 
-function shouldExposeVerboseErrorDetails(options = {}) {
-  return Boolean(options.verboseErrors) || shouldExposeDebugRequestId();
+function shouldExposeVerboseErrorDetails(options = {}, { jsonOutput = false } = {}) {
+  if (!jsonOutput) {
+    return false;
+  }
+  return Boolean(options.verboseErrors) || shouldEmitDebugErrorDetails();
 }
 
 function formatDebugRequestId(rawRequestId) {
@@ -251,7 +254,7 @@ export function registerAuthCommand(program) {
     .option("--api-url <url>", "Override Sentinelayer API base URL")
     .option("--offline", "Skip remote token validation (`/auth/me`)")
     .option("--no-auto-rotate", "Disable near-expiry auto-rotation for this command")
-    .option("--verbose-errors", "Include backend error metadata in output (use only for local debugging)")
+    .option("--verbose-errors", "Include backend error metadata in JSON output (use only for local debugging)")
     .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -267,7 +270,10 @@ export function registerAuthCommand(program) {
       } catch (error) {
         throw new Error(formatApiError(error));
       }
-      const includeErrorDetails = shouldExposeVerboseErrorDetails(options);
+      const emitJson = shouldEmitJson(options, command);
+      const includeErrorDetails = shouldExposeVerboseErrorDetails(options, {
+        jsonOutput: emitJson,
+      });
 
       const payload = {
         command: "auth status",
@@ -276,7 +282,7 @@ export function registerAuthCommand(program) {
         defaultCredentialsPath: resolveCredentialsFilePath(),
       };
 
-      if (shouldEmitJson(options, command)) {
+      if (emitJson) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }

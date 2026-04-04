@@ -771,4 +771,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Twenty-second-cycle local evidence:
   - `npm run test:unit -- tests/unit.auth-session-store.test.mjs tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass, `176/176`).
   - `npm run verify` (pass, e2e `84/84`; unit `176/176`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
-- [ ] Commit/push twenty-second-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twenty-second-cycle fixes (`6f16dca`) and rerun Omar (`run_id=9b46220c-6992-490b-b874-fbfd3965e92f`): Omar regressed to `P2=6` (`P0=0`, `P1=0`) with new workflow-governance and auth-surface residuals.
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=9b46220c-6992-490b-b874-fbfd3965e92f`) and apply twenty-third-cycle hardening:
+  - `src/auth/http.js`: remove predictable process/time jitter fallback salt path, add CSPRNG fallback via `crypto.webcrypto.getRandomValues`, and fail closed on entropy unavailability.
+  - `src/commands/auth.js`: constrain `--verbose-errors` detail emission to JSON output only (interactive terminal path remains safe-message only).
+  - `.github/workflows/release-publish.yml`: add `workflow_run` trigger chaining from successful `Release` runs, require `break_glass=true` for manual dispatch, and resolve release tags deterministically from target commit.
+  - `.github/workflows/release-publish.yml`: promote `prepare-release-bundle` and `publish-dry-run` into `release-management` protected environment.
+  - `.github/workflows/quality-gates.yml`: add `security-events: write`, generate deterministic npm-audit SARIF summary, and upload SARIF via GitHub code-scanning API with fail-closed upload checks.
+  - `.github/workflows/release.yml`: record release initiator identity and enforce dual-control by requiring at least one production approval identity distinct from the initiator.
+- [x] Twenty-third-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-session-store.test.mjs` (pass, `176/176`).
+  - `npm run verify` (pass, e2e `84/84`; unit `176/176`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
+- [ ] Commit/push twenty-third-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.

@@ -1,6 +1,11 @@
 name: Release Publish
 
 on:
+  workflow_run:
+    workflows:
+      - Release
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       release_tag:
@@ -9,6 +14,11 @@ on:
         type: string
       dry_run:
         description: "Run npm publish --dry-run"
+        required: false
+        default: false
+        type: boolean
+      break_glass:
+        description: "Require explicit break-glass confirmation for manual publish dispatch"
         required: false
         default: false
         type: boolean
@@ -25,7 +35,7 @@ env:
   NPM_VERSION_PIN: "10.8.2"
 
 concurrency:
-  group: release-publish-${{ github.workflow }}-${{ inputs.release_tag }}
+  group: release-publish-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event_name == 'workflow_run' && format('run-{0}', github.event.workflow_run.id) || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -58,6 +68,11 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
       - name: Resolve publish target and verify release baseline
         id: resolve
         shell: bash
@@ -65,10 +80,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
-          RAW_RELEASE_TAG: ${{ inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          RAW_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          RAW_BREAK_GLASS: ${{ inputs.break_glass || 'false' }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event || '' }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || '' }}
+          WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
         run: |
           set -euo pipefail
+          git fetch --force --tags origin >/dev/null 2>&1 || true
           normalize_bool() {
             local raw
             raw="$(echo "${1:-false}" | tr -d '\r' | xargs || true)"
@@ -78,39 +102,91 @@ jobs:
               *) echo "::error::Invalid boolean value '${raw}'." ; exit 1 ;;
             esac
           }
-          release_tag="$(echo "${RAW_RELEASE_TAG}" | tr -d '\r' | xargs || true)"
-          if [[ -z "${release_tag}" ]]; then
-            echo "::error::release_tag is required."
-            exit 1
-          fi
-          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::release_tag '${release_tag}' must match vX.Y.Z semver format."
-            exit 1
-          fi
-          dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
-          permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // ""' 2>/dev/null || true)"
-          case "${permission}" in
-            admin|maintain) ;;
+          resolve_release_tag_from_sha() {
+            local target_sha="$1"
+            git tag --points-at "${target_sha}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' | sort -V | tail -n 1 || true
+          }
+
+          release_tag=""
+          target_sha=""
+          release_run_id=""
+          dry_run="false"
+
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              release_tag="$(echo "${RAW_RELEASE_TAG}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${release_tag}" ]]; then
+                echo "::error::workflow_dispatch requires release_tag."
+                exit 1
+              fi
+              if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+                echo "::error::release_tag '${release_tag}' must match vX.Y.Z semver format."
+                exit 1
+              fi
+              break_glass="$(normalize_bool "${RAW_BREAK_GLASS}")"
+              if [[ "${break_glass}" != "true" ]]; then
+                echo "::error::Manual workflow_dispatch publish requires break_glass=true."
+                exit 1
+              fi
+              dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
+              permission="$(timeout --preserve-status 30s gh api "repos/${REPO}/collaborators/${ACTOR}/permission" --jq '.permission // ""' 2>/dev/null || true)"
+              case "${permission}" in
+                admin|maintain) ;;
+                *)
+                  echo "::error::Actor '${ACTOR}' is not authorized to publish releases (permission='${permission}')."
+                  exit 1
+                  ;;
+              esac
+              tag_ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${release_tag}" -H "Accept: application/vnd.github+json")"
+              ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
+              ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
+              test -n "${ref_sha}" || (echo "::error::Unable to resolve tag object SHA for '${release_tag}'." && exit 1)
+              target_sha="${ref_sha}"
+              if [[ "${ref_type}" == "tag" ]]; then
+                tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}" -H "Accept: application/vnd.github+json")"
+                target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
+              elif [[ "${ref_type}" != "commit" ]]; then
+                echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
+                exit 1
+              fi
+              ;;
+            workflow_run)
+              if [[ "${WORKFLOW_RUN_CONCLUSION}" != "success" ]]; then
+                echo "::error::workflow_run trigger requires successful upstream Release conclusion."
+                exit 1
+              fi
+              normalized_run_path="$(echo "${WORKFLOW_RUN_PATH}" | sed -E 's/@.*$//')"
+              if [[ "${normalized_run_path}" != ".github/workflows/release.yml" ]]; then
+                echo "::error::workflow_run source path must be .github/workflows/release.yml (received '${WORKFLOW_RUN_PATH}')."
+                exit 1
+              fi
+              if [[ "${WORKFLOW_RUN_HEAD_REPO}" != "${REPO}" ]]; then
+                echo "::error::workflow_run head repository mismatch (expected '${REPO}', received '${WORKFLOW_RUN_HEAD_REPO}')."
+                exit 1
+              fi
+              if [[ "${WORKFLOW_RUN_EVENT}" != "push" && "${WORKFLOW_RUN_EVENT}" != "workflow_dispatch" ]]; then
+                echo "::error::workflow_run source event must be push or workflow_dispatch (received '${WORKFLOW_RUN_EVENT}')."
+                exit 1
+              fi
+              target_sha="$(echo "${WORKFLOW_RUN_HEAD_SHA}" | tr -d '\r' | xargs || true)"
+              test -n "${target_sha}" || (echo "::error::workflow_run head_sha is required." && exit 1)
+              release_tag="$(resolve_release_tag_from_sha "${target_sha}")"
+              if [[ -z "${release_tag}" ]]; then
+                echo "::error::Unable to resolve semver tag pointing at release head sha '${target_sha}'."
+                exit 1
+              fi
+              dry_run="false"
+              release_run_id="$(echo "${WORKFLOW_RUN_ID}" | tr -d '\r' | xargs || true)"
+              ;;
             *)
-              echo "::error::Actor '${ACTOR}' is not authorized to publish releases (permission='${permission}')."
+              echo "::error::Unsupported trigger '${EVENT_NAME}' for release-publish workflow."
               exit 1
               ;;
           esac
-          tag_ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${release_tag}" -H "Accept: application/vnd.github+json")"
-          ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
-          ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
-          test -n "${ref_sha}" || (echo "::error::Unable to resolve tag object SHA for '${release_tag}'." && exit 1)
-          target_sha="${ref_sha}"
-          if [[ "${ref_type}" == "tag" ]]; then
-            tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}" -H "Accept: application/vnd.github+json")"
-            target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
-          elif [[ "${ref_type}" != "commit" ]]; then
-            echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
-            exit 1
-          fi
-          test -n "${target_sha}" || (echo "::error::Unable to resolve commit SHA for tag '${release_tag}'." && exit 1)
+
+          test -n "${target_sha}" || (echo "::error::Unable to resolve target release commit SHA." && exit 1)
           release_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${target_sha}&per_page=30" -H "Accept: application/vnd.github+json")"
-          release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release.yml" --arg repo "${REPO}" '
+          resolved_release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release.yml" --arg repo "${REPO}" '
             [.workflow_runs[]
               | select((.head_sha // "") == $sha)
               | select(((.path // "") | split("@")[0]) == $path)
@@ -120,18 +196,22 @@ jobs:
               | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
             ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .id // empty
           ')"
-          test -n "${release_run_id}" || (echo "::error::No successful release.yml run found for tag '${release_tag}' (${target_sha})." && exit 1)
+          test -n "${resolved_release_run_id}" || (echo "::error::No successful release.yml run found for tag '${release_tag}' (${target_sha})." && exit 1)
+          if [[ -z "${release_run_id}" ]]; then
+            release_run_id="${resolved_release_run_id}"
+          fi
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
           echo "release_run_id=${release_run_id}" >> "$GITHUB_OUTPUT"
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
-          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}."
+          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}, trigger=${EVENT_NAME}."
 
   prepare-release-bundle:
     name: Prepare Release Bundle
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [resolve-release-bundle]
+    environment: release-management
     permissions:
       contents: read
       actions: read
@@ -259,6 +339,7 @@ jobs:
     timeout-minutes: 10
     needs: [resolve-release-bundle, prepare-release-bundle]
     if: ${{ needs.resolve-release-bundle.outputs.dry_run == 'true' }}
+    environment: release-management
     permissions:
       contents: read
     steps:

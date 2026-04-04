@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createHash, createHmac, randomBytes, randomInt } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, webcrypto } from "node:crypto";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 export const DEFAULT_REQUEST_MAX_ATTEMPTS = 3;
@@ -22,30 +22,57 @@ const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 
 const circuitBreakerStates = new Map();
-let requestJitterFallbackCounter = 0;
 const REQUEST_JITTER_STARTUP_SECRET = initializeRequestJitterStartupSecret();
 const REQUEST_JITTER_SHARED_SALT = initializeSharedRequestJitterSalt();
 
-function initializeRequestJitterStartupSecret() {
+function resolveCsprngSource() {
+  if (
+    globalThis.crypto &&
+    typeof globalThis.crypto === "object" &&
+    typeof globalThis.crypto.getRandomValues === "function"
+  ) {
+    return globalThis.crypto;
+  }
+  if (webcrypto && typeof webcrypto.getRandomValues === "function") {
+    return webcrypto;
+  }
+  return null;
+}
+
+function secureRandomBuffer(length) {
+  const normalizedLength = Math.max(1, Math.floor(Number(length) || 0));
   try {
-    return randomBytes(32);
+    return randomBytes(normalizedLength);
   } catch {
-    return null;
+    const csprng = resolveCsprngSource();
+    if (!csprng) {
+      return null;
+    }
+    const bytes = new Uint8Array(normalizedLength);
+    csprng.getRandomValues(bytes);
+    return Buffer.from(bytes);
   }
 }
 
+function initializeRequestJitterStartupSecret() {
+  return secureRandomBuffer(32);
+}
+
 function initializeSharedRequestJitterSalt() {
-  if (REQUEST_JITTER_STARTUP_SECRET) {
-    return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
-      .update("shared-retry-jitter-salt")
-      .digest("hex");
+  if (!REQUEST_JITTER_STARTUP_SECRET) {
+    return null;
   }
-  return createHash("sha256")
-    .update(["shared-retry-jitter-fallback", String(process.pid), String(resolveMonotonicEpochMs())].join(":"))
+  return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
+    .update("shared-retry-jitter-salt")
     .digest("hex");
 }
 
 export function getSharedRequestJitterSalt(scope = "global") {
+  if (!REQUEST_JITTER_SHARED_SALT) {
+    throw new Error(
+      "Unable to initialize retry jitter entropy. Restart CLI with CSPRNG support enabled."
+    );
+  }
   const normalizedScope = String(scope || "global").trim().toLowerCase() || "global";
   return createHash("sha256")
     .update(`${REQUEST_JITTER_SHARED_SALT}:${normalizedScope}`)
@@ -312,7 +339,8 @@ function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
 }
 
 function createRequestJitterSeed(url, method = "GET") {
-  if (!REQUEST_JITTER_STARTUP_SECRET) {
+  const entropyBuffer = secureRandomBuffer(16);
+  if (!REQUEST_JITTER_STARTUP_SECRET || !entropyBuffer) {
     throw new SentinelayerApiError("Unable to initialize retry jitter entropy.", {
       status: 500,
       code: "JITTER_ENTROPY_UNAVAILABLE",
@@ -320,33 +348,9 @@ function createRequestJitterSeed(url, method = "GET") {
   }
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
   const normalizedUrl = String(url || "").trim();
-  try {
-    const entropy = randomBytes(16).toString("hex");
-    return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
-      .update(
-        [
-          "primary",
-          normalizedMethod,
-          normalizedUrl,
-          String(process.pid),
-          String(resolveMonotonicEpochMs()),
-          entropy,
-        ].join(":")
-      )
-      .digest("hex");
-  } catch {
-    requestJitterFallbackCounter += 1;
-    return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
-      .update(
-        [
-          "fallback",
-          normalizedMethod,
-          normalizedUrl,
-          String(Math.max(0, requestJitterFallbackCounter)),
-        ].join(":")
-      )
-      .digest("hex");
-  }
+  return createHmac("sha256", REQUEST_JITTER_STARTUP_SECRET)
+    .update(["primary", normalizedMethod, normalizedUrl, entropyBuffer.toString("hex")].join(":"))
+    .digest("hex");
 }
 
 function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null, requestJitterSeed = "") {
@@ -364,7 +368,7 @@ function getRetryDelayMs(attemptIndex, retryBackoffMs, retryAfterMs = null, requ
   } catch {
     const normalizedSeed = String(requestJitterSeed || "global");
     const fallbackDigest = createHash("sha256")
-      .update(`${Math.max(0, attemptIndex)}:${base}:${process.pid}:${normalizedSeed}`)
+      .update(`${Math.max(0, attemptIndex)}:${base}:${normalizedSeed}`)
       .digest();
     jitterBucket = fallbackDigest.readUInt16BE(0) % (RANDOM_JITTER_BUCKETS + 1);
   }

@@ -46,6 +46,7 @@ jobs:
       release_ref_value: ${{ steps.flags.outputs.release_ref_value }}
       release_ref_type: ${{ steps.flags.outputs.release_ref_type }}
       target_sha: ${{ steps.flags.outputs.target_sha }}
+      release_initiator: ${{ steps.flags.outputs.release_initiator }}
     steps:
       - name: Validate trusted release invoker
         shell: bash
@@ -259,6 +260,7 @@ jobs:
           GITHUB_REF_TYPE_VALUE: ${{ github.ref_type }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           INPUT_PUBLISH: ${{ inputs.publish || 'false' }}
+          ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           FALLBACK_SHA: ${{ github.sha }}
@@ -352,6 +354,7 @@ jobs:
           echo "release_ref_value=${release_ref_value}" >> "$GITHUB_OUTPUT"
           echo "release_ref_type=${release_ref_type}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
+          echo "release_initiator=${ACTOR}" >> "$GITHUB_OUTPUT"
 
   verify-required-checks:
     name: Verify Required Checks
@@ -1034,6 +1037,7 @@ jobs:
       TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
       QUALITY_RUN_ID: ${{ needs.verify-required-checks.outputs.quality_run_id || '' }}
       RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
+      RELEASE_INITIATOR: ${{ needs.resolve-release-flags.outputs.release_initiator || '' }}
       EVENT_NAME: ${{ github.event_name }}
     steps:
       - name: Setup Node
@@ -1203,6 +1207,29 @@ jobs:
             echo "::error::Production environment must enforce deployment branch policy."
             exit 1
           fi
+
+      - name: Enforce dual-control publish approvals
+        if: env.PUBLISH_REQUESTED == 'true' && env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator identity for dual-control enforcement."
+            exit 1
+          fi
+          approvals_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals" -H "Accept: application/vnd.github+json")"
+          approver_count="$(echo "${approvals_json}" | jq -r '[.[] | select((.state // "") == "approved") | (.user.login // empty)] | unique | length')"
+          non_initiator_count="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(. != $initiator)] | unique | length')"
+          if [[ "${approver_count}" -lt 1 ]]; then
+            echo "::error::No production environment approval records found for this run."
+            exit 1
+          fi
+          if [[ "${non_initiator_count}" -lt 1 ]]; then
+            echo "::error::Dual-control violation: initiator '${initiator}' must be distinct from production approval identity."
+            exit 1
+          fi
+          echo "Dual-control approval validated (initiator=${initiator}, non_initiator_approvers=${non_initiator_count})."
 
       - name: Enforce NPM token when publish is requested
         if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT != 'true' && env.DRY_RUN != 'true'
