@@ -96,3 +96,5 @@
 - Secret injection success should be validated, not assumed: after `gh secret set`, confirm visibility with `gh secret list --repo <slug>` and fail closed when the secret is not listed.
 - Deterministic agent identity needs an explicit dictionary module: map coding-agent id -> prompt target -> config file so scaffold, prompting, and handoff all use one source of truth.
 - IDE detection order must be explicit and precedence-safe (`CURSOR_TRACE_ID` before `TERM_PROGRAM=vscode`) so telemetry does not misclassify Cursor sessions as VS Code.
+- Existing-repo scaffolds should not default to `greenfield` when `projectType` is omitted; derive `add_feature` automatically when repo-connect + clone/reuse context is present.
+- Keep `SPEC.md` phase plans parseable for downstream tooling: add phase metadata as non-numbered lines, but preserve numbered implementation tasks under each `### Phase` heading for guide parser compatibility.

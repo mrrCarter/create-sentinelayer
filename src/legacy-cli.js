@@ -225,14 +225,22 @@ function normalizeInterviewInput(
   const aiProvider = String(obj.aiProvider || "openai").trim().toLowerCase();
   const generationMode = String(obj.generationMode || "detailed").trim().toLowerCase();
   const audienceLevel = String(obj.audienceLevel || "developer").trim().toLowerCase();
-  const projectType = String(obj.projectType || "greenfield").trim().toLowerCase();
   const codingAgentCandidate = String(obj.codingAgent || detectedCodingAgent || DEFAULT_CODING_AGENT_ID)
     .trim()
     .toLowerCase();
   const authMode = String(obj.authMode || "sentinelayer").trim().toLowerCase();
-  const connectRepo = Boolean(obj.connectRepo);
+  const explicitRepoSlug = normalizeRepoSlug(obj.repoSlug || "");
+  const connectRepo = Boolean(obj.connectRepo) || isValidRepoSlug(explicitRepoSlug);
   const repoSlug = normalizeRepoSlug(obj.repoSlug || detectedRepo || "");
   const buildFromExistingRepo = connectRepo ? Boolean(obj.buildFromExistingRepo) : false;
+  const rawProjectType = String(obj.projectType || "")
+    .trim()
+    .toLowerCase();
+  const fallbackProjectType =
+    buildFromExistingRepo || (connectRepo && isValidRepoSlug(repoSlug)) || isValidRepoSlug(detectedRepo)
+      ? "add_feature"
+      : "greenfield";
+  const projectType = VALID_PROJECT_TYPES.has(rawProjectType) ? rawProjectType : fallbackProjectType;
   const normalizedAuthMode = VALID_AUTH_MODES.has(authMode) ? authMode : "sentinelayer";
   const derivedProjectName = sanitizeProjectName(obj.projectName || argProjectName) || getRepoNameFromSlug(repoSlug);
   let resolvedCodingAgent = DEFAULT_CODING_AGENT_ID;
@@ -248,7 +256,7 @@ function normalizeInterviewInput(
     aiProvider: VALID_AI_PROVIDERS.has(aiProvider) ? aiProvider : "openai",
     generationMode: VALID_GENERATION_MODES.has(generationMode) ? generationMode : "detailed",
     audienceLevel: VALID_AUDIENCE_LEVELS.has(audienceLevel) ? audienceLevel : "developer",
-    projectType: VALID_PROJECT_TYPES.has(projectType) ? projectType : "greenfield",
+    projectType,
     codingAgent: resolvedCodingAgent,
     techStack: normalizeListInput(obj.techStack),
     features: normalizeListInput(obj.features),
@@ -1817,6 +1825,16 @@ async function collectInterview({ initialProjectName, detectedRepo, detectedCodi
     0,
     codingAgentChoices.findIndex((choice) => choice.value === detectedAgentRecord.id)
   );
+  const projectTypeChoices = [
+    { title: "Greenfield", value: "greenfield" },
+    { title: "Add feature", value: "add_feature" },
+    { title: "Bugfix / hardening", value: "bugfix" },
+  ];
+  const inferredProjectType = isValidRepoSlug(detectedRepo || "") ? "add_feature" : "greenfield";
+  const defaultProjectTypeIndex = Math.max(
+    0,
+    projectTypeChoices.findIndex((choice) => choice.value === inferredProjectType)
+  );
 
   const base = await prompts(
     [
@@ -1881,12 +1899,8 @@ async function collectInterview({ initialProjectName, detectedRepo, detectedCodi
         type: "select",
         name: "projectType",
         message: "Project type",
-        choices: [
-          { title: "Greenfield", value: "greenfield" },
-          { title: "Add feature", value: "add_feature" },
-          { title: "Bugfix / hardening", value: "bugfix" },
-        ],
-        initial: 0,
+        choices: projectTypeChoices,
+        initial: defaultProjectTypeIndex,
       },
       {
         type: "text",
@@ -2084,7 +2098,7 @@ async function collectInterview({ initialProjectName, detectedRepo, detectedCodi
       { onCancel }
     );
     if (next.action === "restart") {
-      return collectInterview({ initialProjectName, detectedRepo });
+      return collectInterview({ initialProjectName, detectedRepo, detectedCodingAgent });
     }
     throw new Error("Prompt flow cancelled by user.");
   }

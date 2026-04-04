@@ -20,11 +20,18 @@ import {
   mergeSpecRegeneration,
   renderLineDiff,
 } from "../spec/regenerate.js";
-import { generateSpecMarkdown, resolveSpecTemplate } from "../spec/generator.js";
+import {
+  generateSpecMarkdown,
+  inferProjectTypeFromSpecMarkdown,
+  resolveProjectType,
+  resolveSpecTemplate,
+} from "../spec/generator.js";
 import { SPEC_TEMPLATES } from "../spec/templates.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 import { renderTerminalMarkdown } from "../ui/markdown.js";
 import { createProgressReporter } from "../ui/progress.js";
+
+const VALID_PROJECT_TYPES = new Set(["greenfield", "add_feature", "bugfix"]);
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -52,6 +59,19 @@ function parsePercent(rawValue, field) {
   const normalized = Number(rawValue || 0);
   if (!Number.isFinite(normalized) || normalized < 0 || normalized > 100) {
     throw new Error(`${field} must be between 0 and 100.`);
+  }
+  return normalized;
+}
+
+function parseProjectTypeOption(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (!VALID_PROJECT_TYPES.has(normalized)) {
+    throw new Error("projectType must be one of: greenfield, add_feature, bugfix.");
   }
   return normalized;
 }
@@ -411,6 +431,7 @@ export function registerSpecCommand(program) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--template <templateId>", "Template id (see spec list-templates)", "api-service")
     .option("--description <text>", "Optional primary goal override")
+    .option("--project-type <type>", "Project type override (greenfield|add_feature|bugfix)")
     .option("--output-file <path>", "Output file path relative to --path", "SPEC.md")
     .option("--output-dir <path>", "Optional output dir override for cost/telemetry artifacts")
     .option("--ai", "Enable AI-enhanced markdown refinement after deterministic spec generation")
@@ -439,12 +460,19 @@ export function registerSpecCommand(program) {
 
         const template = resolveSpecTemplate(options.template);
         const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+        const explicitProjectType = parseProjectTypeOption(options.projectType);
+        const resolvedProjectType = resolveProjectType({
+          projectType: explicitProjectType,
+          ingest,
+          description: options.description,
+        });
         progress.update(30, "spec generate: deterministic draft");
         const deterministicMarkdown = generateSpecMarkdown({
           template,
           description: options.description,
           ingest,
           projectPath: targetPath,
+          projectType: resolvedProjectType,
         });
 
         progress.update(65, "spec generate: optional AI refinement");
@@ -470,6 +498,7 @@ export function registerSpecCommand(program) {
           summary: ingest.summary,
           frameworks: ingest.frameworks,
           riskSurfaces: ingest.riskSurfaces,
+          projectType: resolvedProjectType,
           ai: aiResult.ai,
         };
 
@@ -501,6 +530,7 @@ export function registerSpecCommand(program) {
     .option("--file <path>", "Spec file path relative to --path")
     .option("--template <templateId>", "Template id override (defaults to template inferred from SPEC.md)")
     .option("--description <text>", "Optional goal override for regenerated deterministic sections")
+    .option("--project-type <type>", "Project type override (greenfield|add_feature|bugfix)")
     .option("--dry-run", "Preview merged SPEC and diff without writing file")
     .option("--no-diff", "Disable terminal diff output")
     .option("--plain", "Disable colorized diff output")
@@ -525,11 +555,19 @@ export function registerSpecCommand(program) {
           String(options.template || "").trim() || inferredTemplate || "api-service";
         const template = resolveSpecTemplate(resolvedTemplateId);
         const ingest = await collectCodebaseIngest({ rootPath: targetPath });
+        const explicitProjectType = parseProjectTypeOption(options.projectType);
+        const inferredProjectType = inferProjectTypeFromSpecMarkdown(existingMarkdown);
+        const resolvedProjectType = resolveProjectType({
+          projectType: explicitProjectType || inferredProjectType,
+          ingest,
+          description: options.description,
+        });
         const regeneratedMarkdown = generateSpecMarkdown({
           template,
           description: options.description,
           ingest,
           projectPath: targetPath,
+          projectType: resolvedProjectType,
         });
 
         progress.update(55, "spec regenerate: preserving manual sections");
@@ -556,6 +594,7 @@ export function registerSpecCommand(program) {
           targetPath,
           specPath,
           template: template.id,
+          projectType: resolvedProjectType,
           dryRun: Boolean(options.dryRun),
           preserveManual: Boolean(options.preserveManual),
           changed: diff.changed,
