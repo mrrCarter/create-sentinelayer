@@ -1086,7 +1086,19 @@ jobs:
         run: |
           set -euo pipefail
           timeout --preserve-status 30s npm ping
-          canary_latest="$(timeout --preserve-status 30s npm view create-sentinelayer dist-tags.latest --json | jq -r 'if type == "string" then . elif type == "object" then .latest // "" else "" end')"
+          canary_latest=""
+          view_status=0
+          canary_latest="$(timeout --preserve-status 30s npm view create-sentinelayer dist-tags.latest --json 2>/tmp/npm-canary-view.err | jq -r 'if type == "string" then . elif type == "object" then .latest // "" else "" end')" || view_status=$?
+          if [[ "${view_status}" -ne 0 ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+              echo "::notice::npm canary dist-tag lookup failed in pull_request context (likely unpublished package). Recording canary status as 'unpublished'."
+              canary_latest="unpublished"
+            else
+              cat /tmp/npm-canary-view.err >&2 || true
+              echo "::error::Canary health check failed: unable to resolve npm latest dist-tag for create-sentinelayer."
+              exit 1
+            fi
+          fi
           test -n "${canary_latest}" || (echo "::error::Canary health check failed: npm latest dist-tag is empty." && exit 1)
           cat > quality-deploy-proof/deploy.summary.json <<EOF
           {
