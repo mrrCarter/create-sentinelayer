@@ -1441,6 +1441,60 @@ test("CLI spec commands expose templates and generate SPEC.md offline", async ()
   }
 });
 
+test("CLI ingest resolver marks stale spec context and refreshes on demand", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-spec-ingest-refresh-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      `${JSON.stringify({ name: "spec-refresh-demo", version: "0.0.1" }, null, 2)}\n`,
+      "utf-8"
+    );
+    await writeFile(path.join(tempRoot, "src", "index.js"), "export const version = 'v1';\n", "utf-8");
+
+    runCommand({ cwd: tempRoot, command: "git", args: ["init"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["config", "user.name", "Sentinelayer E2E"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["config", "user.email", "e2e@sentinelayer.local"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "."] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
+
+    const firstGenerate = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "generate", "--path", tempRoot, "--json"],
+    });
+    assert.equal(firstGenerate.code, 0, firstGenerate.stderr || firstGenerate.stdout);
+    const firstPayload = JSON.parse(String(firstGenerate.stdout || "").trim());
+    assert.equal(firstPayload.ingestRefresh?.refreshed, true);
+
+    await writeFile(path.join(tempRoot, "src", "index.js"), "export const version = 'v2';\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "."] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "mutate"] });
+
+    const staleGenerate = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "generate", "--path", tempRoot, "--json"],
+    });
+    assert.equal(staleGenerate.code, 0, staleGenerate.stderr || staleGenerate.stdout);
+    const stalePayload = JSON.parse(String(staleGenerate.stdout || "").trim());
+    assert.equal(stalePayload.ingestRefresh?.stale, true);
+    assert.equal(stalePayload.ingestRefresh?.refreshed, false);
+
+    const refreshedGenerate = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["spec", "generate", "--path", tempRoot, "--refresh", "--json"],
+    });
+    assert.equal(refreshedGenerate.code, 0, refreshedGenerate.stderr || refreshedGenerate.stdout);
+    const refreshedPayload = JSON.parse(String(refreshedGenerate.stdout || "").trim());
+    assert.equal(refreshedPayload.ingestRefresh?.refreshed, true);
+    assert.equal(refreshedPayload.ingestRefresh?.stale, false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI spec regenerate preserves manual edits, supports dry-run, and emits deterministic diff summary", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-spec-regenerate-"));
   try {

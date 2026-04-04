@@ -104,3 +104,5 @@
 - In this Windows environment, avoid invoking bash-only helper scripts directly (`bash ...`) because WSL may be unavailable; run equivalent checks via PowerShell/Node or rely on CI execution.
 - Hybrid memory retrieval should fail closed to local deterministic results when API delegation fails or returns malformed payloads; never block audit orchestration on remote retrieval availability.
 - `node --test --test-name-pattern` is not a reliable shortcut for this suite in current tooling; assume full-file execution and budget validation time accordingly.
+- Ingest content-hash caches must exclude generated artifact roots (for example `.sentinelayer/`) or the ingest file invalidates its own fingerprint and appears perpetually stale.
+- Keep staleness semantics explicit during refresh flows: preserve stale-before-refresh reasoning for traceability, but report post-refresh state as non-stale to avoid misleading operator dashboards.

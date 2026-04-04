@@ -4,6 +4,7 @@ import process from "node:process";
 
 import pc from "picocolors";
 
+import { formatIngestResolutionNotice, resolveCodebaseIngest } from "../ingest/engine.js";
 import { runAiReviewLayer } from "../review/ai-review.js";
 import {
   formatFindingsMarkdown,
@@ -85,6 +86,7 @@ async function executeReviewRun({
   mode,
   outputDir = "",
   specFile = "",
+  refreshIngest = false,
   aiConfig = {},
   replaySourceRunId = "",
 } = {}) {
@@ -93,6 +95,7 @@ async function executeReviewRun({
     mode,
     outputDir,
     specFile,
+    refreshIngest,
   });
 
   let aiLayer = null;
@@ -154,6 +157,7 @@ async function executeReviewRun({
       warnAtPercent: aiConfig.warnAtPercent,
       outputDir,
       specFile,
+      refreshIngest: Boolean(refreshIngest),
     },
     replay: {
       sourceRunId: replaySourceRunId,
@@ -186,6 +190,7 @@ async function executeReviewRun({
     p3: summary.P3,
     blocking,
     deterministicSummary: deterministic.summary,
+    ingestRefresh: deterministic.layers?.ingest?.refresh || null,
     ai: aiLayer
       ? {
           enabled: true,
@@ -289,6 +294,7 @@ export function registerReviewCommand(program) {
     .option("--warn-at-percent <n>", "Warning threshold percentage for enabled budgets", "80")
     .option("--spec <path>", "Spec file path relative to target (defaults to SPEC.md or docs/spec.md)")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before deterministic review")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
       const emitJson = shouldEmitJson(options, command);
@@ -302,6 +308,7 @@ export function registerReviewCommand(program) {
         mode,
         outputDir: options.outputDir,
         specFile: options.spec,
+        refreshIngest: Boolean(options.refresh),
         aiConfig: {
           enable: Boolean(options.ai),
           aiDryRun: Boolean(options.aiDryRun),
@@ -330,6 +337,13 @@ export function registerReviewCommand(program) {
         console.log(pc.gray(`Unified report: ${outcome.unifiedArtifacts.reportMarkdownPath}`));
         console.log(pc.gray(`Unified JSON: ${outcome.unifiedArtifacts.reportJsonPath}`));
         console.log(pc.gray(`Run context: ${outcome.contextWrite.contextPath}`));
+        if (outcome.payload.ingestRefresh?.stale || outcome.payload.ingestRefresh?.refreshed) {
+          const color =
+            outcome.payload.ingestRefresh?.stale && !outcome.payload.ingestRefresh?.refreshed
+              ? pc.yellow
+              : pc.gray;
+          console.log(color(formatIngestResolutionNotice(outcome.payload.ingestRefresh)));
+        }
         if (outcome.aiLayer) {
           console.log(
             pc.gray(
@@ -434,6 +448,7 @@ export function registerReviewCommand(program) {
     .option("--path <path>", "Target workspace path override")
     .option("--spec <path>", "Spec file path override for replay run")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST before replay run")
     .option("--no-ai", "Disable AI layer for replay run")
     .option("--ai-dry-run", "Force AI dry-run during replay")
     .option("--json", "Emit machine-readable output")
@@ -465,6 +480,7 @@ export function registerReviewCommand(program) {
         mode: sourceContext?.context?.mode || source.report.mode || "full",
         outputDir: options.outputDir || invocation.outputDir || "",
         specFile: options.spec || invocation.specFile || "",
+        refreshIngest: Boolean(options.refresh || invocation.refreshIngest),
         aiConfig: {
           enable: aiEnabled,
           aiDryRun: Boolean(options.aiDryRun || invocation.aiDryRun),
@@ -592,10 +608,28 @@ export function registerReviewCommand(program) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--spec <path>", "Spec file path relative to target (defaults to SPEC.md or docs/spec.md)")
     .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--refresh", "Refresh CODEBASE_INGEST prior to compatibility scan")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const emitJson = shouldEmitJson(options, command);
       const targetPath = resolveTargetPath(".", options);
+      let ingestRefresh = null;
+      if (options.refresh) {
+        const ingestResolution = await resolveCodebaseIngest({
+          rootPath: targetPath,
+          outputDir: options.outputDir,
+          refresh: true,
+        });
+        ingestRefresh = {
+          outputPath: ingestResolution.outputPath,
+          refreshed: ingestResolution.refreshed,
+          stale: ingestResolution.stale,
+          reasons: ingestResolution.reasons,
+          refreshedBecause: ingestResolution.refreshedBecause,
+          lastCommitAt: ingestResolution.lastCommitAt,
+          contentHash: ingestResolution.fingerprint?.contentHash || "",
+        };
+      }
       const mode = resolveModeFromOptions(options, {
         defaultMode: String(options.mode || "full").trim().toLowerCase() || "full",
       });
@@ -642,6 +676,7 @@ ${formatFindingsMarkdown(scan.findings)}
         p1: scan.p1,
         p2: scan.p2,
         blocking: scan.p1 > 0,
+        ingestRefresh,
       };
 
       if (emitJson) {
@@ -650,6 +685,9 @@ ${formatFindingsMarkdown(scan.findings)}
         console.log(pc.bold("Local review scan complete"));
         console.log(pc.gray(`Mode: ${scan.mode}`));
         console.log(pc.gray(`Report: ${reportPath}`));
+        if (ingestRefresh) {
+          console.log(pc.gray(formatIngestResolutionNotice(ingestRefresh)));
+        }
         console.log(`Files scanned: ${scan.scannedFiles}`);
         console.log(`P1 findings: ${scan.p1}`);
         console.log(`P2 findings: ${scan.p2}`);

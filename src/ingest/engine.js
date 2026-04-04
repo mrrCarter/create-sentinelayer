@@ -1,7 +1,10 @@
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 
 import ignore from "ignore";
 
@@ -15,6 +18,7 @@ const DEFAULT_IGNORED_DIRS = new Set([
   "dist",
   "build",
   "coverage",
+  ".sentinelayer",
   ".turbo",
   ".idea",
   ".vscode",
@@ -22,6 +26,8 @@ const DEFAULT_IGNORED_DIRS = new Set([
 
 const MAX_FILE_SIZE_BYTES = 1024 * 1024;
 const FILE_INDEX_LIMIT = 5000;
+const execFileAsync = promisify(execFile);
+const INGEST_CACHE_SCHEMA = "path-size-mtime-sha256-v1";
 
 const LANGUAGE_BY_EXTENSION = {
   ".js": "JavaScript",
@@ -93,6 +99,35 @@ function toPosixPath(value) {
   return String(value || "").replace(/\\/g, "/");
 }
 
+function parseIsoToEpoch(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  const epoch = Date.parse(normalized);
+  if (!Number.isFinite(epoch)) {
+    return null;
+  }
+  return epoch;
+}
+
+function normalizeMtimeMs(value) {
+  const normalized = Number(value || 0);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return 0;
+  }
+  return Math.floor(normalized);
+}
+
+function appendFingerprintInput(hasher, relativePath, sizeBytes, mtimeMs) {
+  hasher.update(
+    `${toPosixPath(relativePath)}\u001f${String(Number(sizeBytes || 0))}\u001f${normalizeMtimeMs(
+      mtimeMs
+    )}\n`,
+    "utf-8"
+  );
+}
+
 function countLoc(text) {
   return String(text || "")
     .split(/\r?\n/)
@@ -140,6 +175,159 @@ async function createIgnoreMatcher(rootPath) {
       return matcher.ignores(candidate);
     },
   };
+}
+
+async function computeCodebaseContentFingerprint({ rootPath }) {
+  const resolvedRoot = path.resolve(rootPath || process.cwd());
+  const ignoreMatcher = await createIgnoreMatcher(resolvedRoot);
+  const stack = [resolvedRoot];
+  const hasher = createHash("sha256");
+  let filesCount = 0;
+  let latestFileMtimeMs = 0;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+
+    let entries = [];
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      const relativePath = toPosixPath(path.relative(resolvedRoot, fullPath));
+
+      if (entry.isDirectory()) {
+        if (!relativePath) {
+          continue;
+        }
+        if (DEFAULT_IGNORED_DIRS.has(entry.name)) {
+          continue;
+        }
+        if (ignoreMatcher.ignores(relativePath, true)) {
+          continue;
+        }
+        stack.push(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+      if (ignoreMatcher.ignores(relativePath, false)) {
+        continue;
+      }
+
+      let stat = null;
+      try {
+        stat = await fsp.stat(fullPath);
+      } catch {
+        stat = null;
+      }
+      if (!stat || stat.size > MAX_FILE_SIZE_BYTES) {
+        continue;
+      }
+
+      filesCount += 1;
+      latestFileMtimeMs = Math.max(latestFileMtimeMs, normalizeMtimeMs(stat.mtimeMs));
+      appendFingerprintInput(hasher, relativePath, stat.size, stat.mtimeMs);
+    }
+  }
+
+  return {
+    schema: INGEST_CACHE_SCHEMA,
+    contentHash: hasher.digest("hex"),
+    filesCount,
+    latestFileMtimeMs,
+  };
+}
+
+async function readExistingIngest(outputPath) {
+  try {
+    const parsed = JSON.parse(await fsp.readFile(outputPath, "utf-8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function resolveIngestOutputPath({ rootPath, outputFile = "", outputDir = "" }) {
+  const resolvedRoot = path.resolve(rootPath || process.cwd());
+  const explicitOutputFile = String(outputFile || "").trim();
+  if (explicitOutputFile) {
+    return path.resolve(resolvedRoot, explicitOutputFile);
+  }
+  const outputRoot = await resolveOutputRoot({
+    cwd: resolvedRoot,
+    outputDirOverride: outputDir,
+  });
+  return path.join(outputRoot, "CODEBASE_INGEST.json");
+}
+
+async function readGitLastCommitAt(rootPath) {
+  const resolvedRoot = path.resolve(rootPath || process.cwd());
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "-C",
+      resolvedRoot,
+      "log",
+      "-1",
+      "--format=%cI",
+    ]);
+    const normalized = String(stdout || "").trim();
+    return parseIsoToEpoch(normalized) === null ? "" : normalized;
+  } catch {
+    return "";
+  }
+}
+
+function buildIngestStaleness({ existingIngest, fingerprint, lastCommitAt }) {
+  if (!existingIngest) {
+    return {
+      stale: true,
+      reasons: ["missing_ingest"],
+    };
+  }
+
+  const reasons = [];
+  const generatedAtEpoch = parseIsoToEpoch(existingIngest.generatedAt);
+  const lastCommitEpoch = parseIsoToEpoch(lastCommitAt);
+  if (generatedAtEpoch === null) {
+    reasons.push("invalid_generated_at");
+  } else if (lastCommitEpoch !== null && generatedAtEpoch < lastCommitEpoch) {
+    reasons.push("older_than_last_commit");
+  }
+
+  const existingContentHash = String(existingIngest.cache?.contentHash || "").trim();
+  if (existingContentHash && existingContentHash !== fingerprint.contentHash) {
+    reasons.push("content_hash_mismatch");
+  } else if (!existingContentHash) {
+    reasons.push("missing_content_hash");
+  }
+
+  return {
+    stale: reasons.length > 0,
+    reasons,
+  };
+}
+
+export function formatIngestResolutionNotice(resolution = {}) {
+  const reasons = Array.isArray(resolution.reasons) ? resolution.reasons : [];
+  if (resolution.refreshed) {
+    return `ingest refreshed (${reasons.join(", ") || "requested"})`;
+  }
+  if (resolution.stale) {
+    return `ingest stale (${reasons.join(", ") || "unknown"}); re-run with --refresh`;
+  }
+  return "ingest cache hit";
 }
 
 function safeJsonParse(raw) {
@@ -415,6 +603,9 @@ export async function collectCodebaseIngest({ rootPath = process.cwd() } = {}) {
   const resolvedRoot = path.resolve(rootPath);
   const ignoreMatcher = await createIgnoreMatcher(resolvedRoot);
   const topLevel = await listTopLevel(resolvedRoot, ignoreMatcher);
+  const fingerprintHasher = createHash("sha256");
+  let fingerprintFilesCount = 0;
+  let latestFileMtimeMs = 0;
 
   const stack = [resolvedRoot];
   const fileSet = new Set();
@@ -475,6 +666,10 @@ export async function collectCodebaseIngest({ rootPath = process.cwd() } = {}) {
       if (!stat || stat.size > MAX_FILE_SIZE_BYTES) {
         continue;
       }
+
+      appendFingerprintInput(fingerprintHasher, relativePath, stat.size, stat.mtimeMs);
+      fingerprintFilesCount += 1;
+      latestFileMtimeMs = Math.max(latestFileMtimeMs, normalizeMtimeMs(stat.mtimeMs));
 
       let text = "";
       try {
@@ -549,6 +744,12 @@ export async function collectCodebaseIngest({ rootPath = process.cwd() } = {}) {
       omitted: indexedOmittedCount,
       files: indexedFiles,
     },
+    cache: {
+      schema: INGEST_CACHE_SCHEMA,
+      contentHash: fingerprintHasher.digest("hex"),
+      filesCount: fingerprintFilesCount,
+      latestFileMtimeMs,
+    },
   };
 }
 
@@ -608,6 +809,94 @@ export async function writeCodebaseIngest({ ingest, rootPath, outputFile = "", o
   await fsp.mkdir(path.dirname(outputPath), { recursive: true });
   await fsp.writeFile(outputPath, `${JSON.stringify(ingest, null, 2)}\n`, "utf-8");
   return outputPath;
+}
+
+export async function resolveCodebaseIngest({
+  rootPath = process.cwd(),
+  outputFile = "",
+  outputDir = "",
+  refresh = false,
+} = {}) {
+  const resolvedRoot = path.resolve(rootPath || process.cwd());
+  const outputPath = await resolveIngestOutputPath({
+    rootPath: resolvedRoot,
+    outputFile,
+    outputDir,
+  });
+  const existingIngest = await readExistingIngest(outputPath);
+  const fingerprint = await computeCodebaseContentFingerprint({
+    rootPath: resolvedRoot,
+  });
+  const lastCommitAt = await readGitLastCommitAt(resolvedRoot);
+  const staleness = buildIngestStaleness({
+    existingIngest,
+    fingerprint,
+    lastCommitAt,
+  });
+  const staleBeforeRefresh = staleness.stale;
+
+  let ingest = existingIngest;
+  let refreshed = false;
+  let refreshedBecause = "";
+  if (!existingIngest) {
+    refreshed = true;
+    refreshedBecause = "missing_ingest";
+  } else if (refresh) {
+    refreshed = true;
+    refreshedBecause = "refresh_requested";
+  }
+
+  if (refreshed) {
+    ingest = await collectCodebaseIngest({
+      rootPath: resolvedRoot,
+    });
+    ingest.generatedAt = new Date().toISOString();
+    if (!ingest.cache || typeof ingest.cache !== "object") {
+      ingest.cache = {};
+    }
+    ingest.cache.schema = INGEST_CACHE_SCHEMA;
+    ingest.cache.contentHash = fingerprint.contentHash;
+    ingest.cache.filesCount = fingerprint.filesCount;
+    ingest.cache.latestFileMtimeMs = fingerprint.latestFileMtimeMs;
+    await writeCodebaseIngest({
+      ingest,
+      rootPath: resolvedRoot,
+      outputFile,
+      outputDir,
+    });
+  }
+
+  const resolutionReasons = refreshed
+    ? [refreshedBecause, ...staleness.reasons].filter(Boolean)
+    : staleness.reasons;
+
+  return {
+    ingest,
+    outputPath,
+    refreshed,
+    stale: refreshed ? false : staleness.stale,
+    staleBeforeRefresh,
+    reasons: resolutionReasons,
+    refreshedBecause,
+    refreshRequested: Boolean(refresh),
+    lastCommitAt,
+    fingerprint,
+    event:
+      refreshed || staleBeforeRefresh
+        ? {
+            event: "ingest_refresh",
+            payload: {
+              refreshed,
+              stale: refreshed ? false : staleness.stale,
+              reason:
+                refreshedBecause || (staleness.reasons.length > 0 ? staleness.reasons.join(",") : "cache_hit"),
+              contentHash: fingerprint.contentHash,
+              filesCount: fingerprint.filesCount,
+              lastCommitAt,
+            },
+          }
+        : null,
+  };
 }
 
 export async function generateCodebaseIngest({

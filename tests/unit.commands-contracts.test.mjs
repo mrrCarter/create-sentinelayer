@@ -11,6 +11,9 @@ import { registerDaemonCommand } from "../src/commands/daemon.js";
 import { registerScanCommand } from "../src/commands/scan.js";
 import { registerReviewCommand } from "../src/commands/review.js";
 import { registerSwarmCommand } from "../src/commands/swarm.js";
+import { registerSpecCommand } from "../src/commands/spec.js";
+import { registerPromptCommand } from "../src/commands/prompt.js";
+import { registerAuditCommand } from "../src/commands/audit.js";
 
 function buildProgram(registerFn) {
   const program = new Command();
@@ -163,6 +166,7 @@ test("Unit command contracts: review command tree keeps deterministic + HITL flo
     "--ai",
     "--ai-dry-run",
     "--spec <path>",
+    "--refresh",
     "--max-cost <usd>",
     "--max-tokens <n>",
     "--max-runtime-ms <n>",
@@ -188,6 +192,10 @@ test("Unit command contracts: review command tree keeps deterministic + HITL flo
   assertCommandHasOption(reviewScan, "--diff");
   assertCommandHasOption(reviewScan, "--staged");
   assertCommandHasOption(reviewScan, "--spec <path>");
+  assertCommandHasOption(reviewScan, "--refresh");
+
+  const reviewReplay = getCommandByPath(program, "review replay");
+  assertCommandHasOption(reviewReplay, "--refresh");
 });
 
 test("Unit command contracts: swarm command tree keeps planning/runtime/report controls", () => {
@@ -231,6 +239,34 @@ test("Unit command contracts: swarm command tree keeps planning/runtime/report c
   ]) {
     assertCommandHasOption(run, flag);
   }
+});
+
+test("Unit command contracts: spec, prompt, and audit commands expose ingest refresh controls", () => {
+  const specProgram = buildProgram(registerSpecCommand);
+  assertCommandHasOption(getCommandByPath(specProgram, "spec generate"), "--refresh");
+  assertCommandHasOption(getCommandByPath(specProgram, "spec regenerate"), "--refresh");
+
+  const promptProgram = buildProgram(registerPromptCommand);
+  assertCommandHasOption(getCommandByPath(promptProgram, "prompt generate"), "--refresh");
+  assertCommandHasOption(getCommandByPath(promptProgram, "prompt preview"), "--refresh");
+
+  const auditProgram = new Command();
+  auditProgram
+    .name("sl")
+    .exitOverride()
+    .configureOutput({
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+  registerAuditCommand(auditProgram, async () => {});
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit replay"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit security"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit architecture"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit testing"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit performance"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit compliance"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit documentation"), "--refresh");
 });
 
 test("Unit command contracts: review rejects conflicting diff and staged flags", async () => {

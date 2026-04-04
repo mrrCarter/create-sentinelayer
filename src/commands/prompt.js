@@ -4,6 +4,7 @@ import path from "node:path";
 
 import pc from "picocolors";
 
+import { formatIngestResolutionNotice, resolveCodebaseIngest } from "../ingest/engine.js";
 import {
   defaultPromptFileName,
   generateExecutionPrompt,
@@ -33,7 +34,19 @@ function resolveSpecPath(targetPath, explicitSpecFile) {
   return found;
 }
 
-async function buildPromptOutput({ targetPath, specFile, agent, outputFile }) {
+async function buildPromptOutput({
+  targetPath,
+  specFile,
+  agent,
+  outputFile,
+  outputDir = "",
+  refresh = false,
+}) {
+  const ingestResolution = await resolveCodebaseIngest({
+    rootPath: targetPath,
+    outputDir,
+    refresh,
+  });
   const resolvedSpecPath = resolveSpecPath(targetPath, specFile);
   const specMarkdown = await fsp.readFile(resolvedSpecPath, "utf-8");
   const resolvedAgent = resolvePromptTarget(agent);
@@ -51,6 +64,15 @@ async function buildPromptOutput({ targetPath, specFile, agent, outputFile }) {
     specPath: resolvedSpecPath,
     promptMarkdown,
     outputPath,
+    ingestRefresh: {
+      outputPath: ingestResolution.outputPath,
+      refreshed: ingestResolution.refreshed,
+      stale: ingestResolution.stale,
+      reasons: ingestResolution.reasons,
+      refreshedBecause: ingestResolution.refreshedBecause,
+      lastCommitAt: ingestResolution.lastCommitAt,
+      contentHash: ingestResolution.fingerprint?.contentHash || "",
+    },
   };
 }
 
@@ -82,6 +104,8 @@ export function registerPromptCommand(program) {
     .option("--spec-file <path>", "Spec file path relative to --path")
     .option("--agent <target>", `Prompt target (${SUPPORTED_PROMPT_TARGETS.join("|")})`, "generic")
     .option("--output-file <path>", "Output prompt file path relative to --path")
+    .option("--output-dir <path>", "Optional output dir override for ingest cache")
+    .option("--refresh", "Refresh CODEBASE_INGEST before generating prompt")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -90,6 +114,8 @@ export function registerPromptCommand(program) {
         specFile: options.specFile,
         agent: options.agent,
         outputFile: options.outputFile,
+        outputDir: options.outputDir,
+        refresh: Boolean(options.refresh),
       });
 
       await fsp.mkdir(path.dirname(result.outputPath), { recursive: true });
@@ -103,6 +129,7 @@ export function registerPromptCommand(program) {
               agent: result.agent,
               specPath: result.specPath,
               outputPath: result.outputPath,
+              ingestRefresh: result.ingestRefresh,
             },
             null,
             2
@@ -115,6 +142,11 @@ export function registerPromptCommand(program) {
       console.log(pc.gray(`Agent: ${result.agent}`));
       console.log(pc.gray(`Spec: ${result.specPath}`));
       console.log(pc.gray(`Output: ${result.outputPath}`));
+      if (result.ingestRefresh?.stale || result.ingestRefresh?.refreshed) {
+        const color =
+          result.ingestRefresh?.stale && !result.ingestRefresh?.refreshed ? pc.yellow : pc.gray;
+        console.log(color(formatIngestResolutionNotice(result.ingestRefresh)));
+      }
     });
 
   prompt
@@ -124,6 +156,8 @@ export function registerPromptCommand(program) {
     .option("--spec-file <path>", "Spec file path relative to --path")
     .option("--agent <target>", `Prompt target (${SUPPORTED_PROMPT_TARGETS.join("|")})`, "generic")
     .option("--max-lines <n>", "Maximum lines to print (0 = unlimited)", "0")
+    .option("--output-dir <path>", "Optional output dir override for ingest cache")
+    .option("--refresh", "Refresh CODEBASE_INGEST before preview")
     .option("--plain", "Disable terminal markdown styling")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -132,6 +166,8 @@ export function registerPromptCommand(program) {
         targetPath,
         specFile: options.specFile,
         agent: options.agent,
+        outputDir: options.outputDir,
+        refresh: Boolean(options.refresh),
       });
 
       const maxLines = Number.parseInt(String(options.maxLines || "0"), 10);
@@ -147,6 +183,7 @@ export function registerPromptCommand(program) {
               specPath: result.specPath,
               lineCount: outputLines.length,
               preview: outputLines.join("\n"),
+              ingestRefresh: result.ingestRefresh,
             },
             null,
             2
@@ -155,6 +192,11 @@ export function registerPromptCommand(program) {
         return;
       }
 
+      if (result.ingestRefresh?.stale || result.ingestRefresh?.refreshed) {
+        const color =
+          result.ingestRefresh?.stale && !result.ingestRefresh?.refreshed ? pc.yellow : pc.gray;
+        console.log(color(formatIngestResolutionNotice(result.ingestRefresh)));
+      }
       console.log(renderTerminalMarkdown(outputLines.join("\n"), { plain: Boolean(options.plain) }));
     });
 
