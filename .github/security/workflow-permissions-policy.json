@@ -69,13 +69,13 @@
         "omar_gate": {
           "required": {
             "contents": "read",
-            "checks": "read",
+            "checks": "write",
             "pull-requests": "write",
             "id-token": "write"
           },
           "max": {
             "contents": "read",
-            "checks": "read",
+            "checks": "write",
             "pull-requests": "write",
             "id-token": "write"
           }

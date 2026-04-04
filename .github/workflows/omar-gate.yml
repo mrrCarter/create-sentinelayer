@@ -22,7 +22,7 @@ on:
 
 permissions:
   contents: read
-  checks: read
+  checks: write
   pull-requests: write
   id-token: write
 
@@ -44,7 +44,7 @@ jobs:
     environment: security-review
     permissions:
       contents: read
-      checks: read
+      checks: write
       pull-requests: write
       id-token: write
     steps:
