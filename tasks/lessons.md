@@ -338,3 +338,4 @@
 - OIDC governance is stronger when publish lanes verify actual token exchange/claims before mutation, not just static `id-token: write` permission presence.
 - When tightening localhost port policy, unit-test mock servers must also bind within that policy envelope; random OS port binding (`listen(0)`) can introduce CI-only flakes.
 - Shared auth HTTP circuit-breaker state must be reset per test (`beforeEach`/`afterEach`) across all auth-related suites to prevent cross-file state leakage (`CIRCUIT_OPEN`) from causing order-dependent failures.
+- On Linux runners, repeated `listen(0)` calls can allocate sequential low ephemeral ports; for port-policy-sensitive tests, bind explicit randomized high ports within the allowed range instead of retrying `port=0`.

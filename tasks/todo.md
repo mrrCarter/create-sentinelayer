@@ -1404,3 +1404,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
 - [ ] Commit + push fifty-sixth-cycle hardening batch.
 - [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Seventh Cycle (2026-04-04, CI parity correction after run `23982741052`)
+- [x] Capture CI divergence root cause:
+  - `listen(0)` retry strategy still produced low sequential Linux ports (<49152), so auth mock server setup failed repeatedly in GitHub Actions despite local pass.
+- [x] Apply deterministic parity fix:
+  - `tests/unit.auth-service.test.mjs`: replace `listen(0)` retries with explicit randomized high-port binds (`55000-60999`) and collision retries (`EADDRINUSE`/`EACCES` handling).
+- [x] Run fifty-seventh-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run test:unit` (pass; unit `207/213` with 6 env-skipped tests)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-seventh-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

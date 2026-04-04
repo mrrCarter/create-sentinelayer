@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { randomInt } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -83,25 +84,47 @@ async function readJsonBody(req) {
 }
 
 const MIN_INSECURE_LOCAL_HTTP_RANDOM_PORT = 49_152;
-const MAX_ALLOWLIST_PORT_BIND_ATTEMPTS = 32;
+const MOCK_SERVER_PORT_MIN = 55_000;
+const MOCK_SERVER_PORT_MAX = 60_999;
+const MAX_ALLOWLIST_PORT_BIND_ATTEMPTS = 48;
+
+async function listenOnLoopbackPort(server, port) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      server.removeListener("listening", onListening);
+      server.removeListener("error", onError);
+    };
+    const onListening = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    server.once("listening", onListening);
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1");
+  });
+}
 
 async function bindMockServerOnAllowlistedPort(server) {
   for (let attempt = 0; attempt < MAX_ALLOWLIST_PORT_BIND_ATTEMPTS; attempt += 1) {
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
+    const candidatePort = randomInt(MOCK_SERVER_PORT_MIN, MOCK_SERVER_PORT_MAX + 1);
+    try {
+      await listenOnLoopbackPort(server, candidatePort);
+    } catch (error) {
+      const code = String(error?.code || "").trim().toUpperCase();
+      if (code === "EADDRINUSE" || code === "EACCES") {
+        continue;
+      }
+      throw error;
+    }
     const address = server.address();
     if (address && typeof address !== "string" && Number(address.port) >= MIN_INSECURE_LOCAL_HTTP_RANDOM_PORT) {
       return address;
     }
-    await new Promise((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
+    await new Promise((resolve) => server.close(() => resolve()));
   }
   throw new Error(
     `Unable to bind mock API server on allowlisted random port >=${MIN_INSECURE_LOCAL_HTTP_RANDOM_PORT}.`
