@@ -199,3 +199,7 @@
 - Security evidence used across workflows should be promoted as immutable artifacts plus checksum validation (`sha256sum -c`) before downstream jobs consume it.
 - Jitter fallback hardening should use per-login random seeds rather than time-bucket coupling, so concurrent pollers do not share correlated backoff behavior when entropy paths degrade.
 - Release workflows need an explicit guarded `publish` dispatch input; forcing manual dispatches into validation-only mode introduces governance drift findings and operator confusion.
+- CI evidence capture steps must not suppress command failures with blanket `|| true`; persist command exit codes and reject artifacts that include npm audit `error` payloads or unexpected non-zero statuses.
+- Release/publish workflows should use non-canceling concurrency; aborting in-flight release validation introduces race windows and partial-governance runs.
+- npm production publish should prefer OIDC trusted publishing (`id-token: write` + provenance) over long-lived `NPM_TOKEN` secrets to reduce secret lifetime and exfiltration blast radius.
+- File-backed auth metadata must aggressively scrub legacy plaintext `token` fields even when encrypted token material exists; treat any residual plaintext token as a fail-closed storage corruption state.

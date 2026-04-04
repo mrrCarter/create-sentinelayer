@@ -313,8 +313,7 @@ jobs:
     environment: production
     permissions:
       contents: read
-    env:
-      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+      id-token: write
     steps:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -329,13 +328,6 @@ jobs:
           npm install --global "npm@${NPM_VERSION_PIN}"
           npm --version
 
-      - name: Enforce NPM token presence
-        if: env.NPM_TOKEN_PRESENT != 'true'
-        shell: bash
-        run: |
-          echo "::error::NPM_TOKEN is required for production publish."
-          exit 1
-
       - name: Download validated release bundle
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
@@ -348,5 +340,3 @@ jobs:
           set -euo pipefail
           tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
           npm publish "validated-release-bundle/release-bundle/${tarball_name}" --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

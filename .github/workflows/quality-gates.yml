@@ -247,14 +247,95 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          timeout --preserve-status 5m npm audit --omit=dev --json > security-audit.prod.json || true
-          timeout --preserve-status 5m npm audit --json > security-audit.full.json || true
+          run_audit_capture() {
+            local label="$1"
+            shift
+            local output_file="security-audit.${label}.json"
+            local started_at
+            local completed_at
+            local exit_code
+            started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            set +e
+            timeout --preserve-status 5m npm audit "$@" --json > "${output_file}"
+            exit_code=$?
+            set -e
+            completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            printf '{"label":"%s","exitCode":%s,"startedAt":"%s","completedAt":"%s"}\n' \
+              "${label}" \
+              "${exit_code}" \
+              "${started_at}" \
+              "${completed_at}" >> security-audit.status.raw
+          }
+
+          : > security-audit.status.raw
+          run_audit_capture "prod" --omit=dev
+          run_audit_capture "full"
+
           node <<'NODE'
           const fs = require("node:fs");
-          const files = ["security-audit.prod.json", "security-audit.full.json"];
-          for (const file of files) {
+          const statusRows = fs
+            .readFileSync("security-audit.status.raw", "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          if (statusRows.length !== 2) {
+            console.error(`::error::Expected exactly two npm audit status rows, received ${statusRows.length}.`);
+            process.exit(1);
+          }
+          const statusByLabel = {};
+          for (const row of statusRows) {
+            let payload = null;
+            try {
+              payload = JSON.parse(row);
+            } catch (error) {
+              console.error(`::error::Invalid npm audit status row '${row}' (${error?.message || "parse error"}).`);
+              process.exit(1);
+            }
+            const label = String(payload.label || "").trim();
+            const startedAt = String(payload.startedAt || "").trim();
+            const completedAt = String(payload.completedAt || "").trim();
+            if (!label || !startedAt || !completedAt) {
+              console.error(`::error::Incomplete npm audit status row '${row}'.`);
+              process.exit(1);
+            }
+            const exitCode = Number(payload.exitCode);
+            if (!Number.isInteger(exitCode)) {
+              console.error(`::error::Invalid npm audit exit code for '${label}': '${payload.exitCode}'.`);
+              process.exit(1);
+            }
+            statusByLabel[label] = {
+              command: label === "prod" ? "npm audit --omit=dev --json" : "npm audit --json",
+              exitCode,
+              startedAt,
+              completedAt,
+            };
+          }
+          const files = [
+            { label: "prod", file: "security-audit.prod.json" },
+            { label: "full", file: "security-audit.full.json" },
+          ];
+          for (const { label, file } of files) {
             const raw = fs.readFileSync(file, "utf8");
-            const parsed = JSON.parse(raw);
+            let parsed = null;
+            try {
+              parsed = JSON.parse(raw);
+            } catch (error) {
+              console.error(`::error::Unable to parse ${file} as JSON (${error?.message || "unknown parse error"}).`);
+              process.exit(1);
+            }
+            const status = statusByLabel[label];
+            if (!status) {
+              console.error(`::error::Missing status entry for ${label} npm audit evidence.`);
+              process.exit(1);
+            }
+            if (![0, 1].includes(status.exitCode)) {
+              console.error(`::error::Unexpected npm audit exit code for ${label}: ${status.exitCode}.`);
+              process.exit(1);
+            }
+            if (parsed && typeof parsed === "object" && parsed.error) {
+              console.error(`::error::npm audit ${label} payload contains error object; refusing to treat as valid evidence.`);
+              process.exit(1);
+            }
             const metadata = parsed && typeof parsed === "object" ? parsed.metadata || {} : {};
             const vulnerabilities = metadata && typeof metadata === "object" ? metadata.vulnerabilities || {} : {};
             const high = Number(vulnerabilities.high || 0);
@@ -263,9 +344,30 @@ jobs:
               console.error(`::error::Invalid vulnerability metadata in ${file}.`);
               process.exit(1);
             }
+            status.findings = {
+              info: Number(vulnerabilities.info || 0),
+              low: Number(vulnerabilities.low || 0),
+              moderate: Number(vulnerabilities.moderate || 0),
+              high,
+              critical,
+              total: Number(vulnerabilities.total || 0),
+            };
           }
+          fs.writeFileSync(
+            "security-audit.status.json",
+            `${JSON.stringify(
+              {
+                generatedAt: new Date().toISOString(),
+                audits: statusByLabel,
+              },
+              null,
+              2
+            )}\n`,
+            "utf8"
+          );
           NODE
-          sha256sum security-audit.prod.json security-audit.full.json > security-audit.sha256
+          rm -f security-audit.status.raw
+          sha256sum security-audit.prod.json security-audit.full.json security-audit.status.json > security-audit.sha256
 
       - name: Enforce workflow action SHA allowlist policy
         shell: bash
@@ -288,6 +390,7 @@ jobs:
           path: |
             security-audit.prod.json
             security-audit.full.json
+            security-audit.status.json
             security-audit.sha256
           if-no-files-found: error
 
@@ -336,8 +439,38 @@ jobs:
           set -euo pipefail
           test -f security-audit/security-audit.prod.json || (echo "::error::Missing security-audit.prod.json artifact." && exit 1)
           test -f security-audit/security-audit.full.json || (echo "::error::Missing security-audit.full.json artifact." && exit 1)
+          test -f security-audit/security-audit.status.json || (echo "::error::Missing security-audit.status.json artifact." && exit 1)
           test -f security-audit/security-audit.sha256 || (echo "::error::Missing security-audit.sha256 artifact." && exit 1)
           (cd security-audit && sha256sum -c security-audit.sha256)
+          node <<'NODE'
+          const fs = require("node:fs");
+          const status = JSON.parse(fs.readFileSync("security-audit/security-audit.status.json", "utf8"));
+          if (!status || typeof status !== "object" || !status.audits || typeof status.audits !== "object") {
+            console.error("::error::Invalid security-audit.status.json contract.");
+            process.exit(1);
+          }
+          for (const label of ["prod", "full"]) {
+            const entry = status.audits[label];
+            if (!entry || typeof entry !== "object") {
+              console.error(`::error::Missing ${label} audit entry in security-audit.status.json.`);
+              process.exit(1);
+            }
+            const exitCode = Number(entry.exitCode);
+            if (!Number.isInteger(exitCode) || ![0, 1].includes(exitCode)) {
+              console.error(`::error::Unexpected ${label} npm audit exit code '${entry.exitCode}'.`);
+              process.exit(1);
+            }
+            if (
+              !entry.findings ||
+              typeof entry.findings !== "object" ||
+              !Number.isFinite(Number(entry.findings.high)) ||
+              !Number.isFinite(Number(entry.findings.critical))
+            ) {
+              console.error(`::error::Missing vulnerability findings snapshot for ${label} audit evidence.`);
+              process.exit(1);
+            }
+          }
+          NODE
 
       - name: Validate lockfile dependency provenance metadata
         shell: bash

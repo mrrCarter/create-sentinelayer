@@ -204,6 +204,43 @@ test("Unit auth session store: legacy shared key path migrates to API-scoped key
   }
 });
 
+test("Unit auth session store: plaintext token field is scrubbed when encrypted metadata exists", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    const originalToken = "api_token_example_ciphertext";
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: originalToken,
+        tokenId: "token_cipher",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+
+    const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    const tampered = JSON.parse(await readFile(credentialsPath, "utf-8"));
+    tampered.token = "api_token_plaintext_tamper";
+    await writeFile(credentialsPath, `${JSON.stringify(tampered, null, 2)}\n`, "utf-8");
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored?.token, originalToken);
+
+    const persisted = JSON.parse(await readFile(credentialsPath, "utf-8"));
+    assert.equal(persisted.token, null);
+    assert.equal((await readFile(credentialsPath, "utf-8")).includes("api_token_plaintext_tamper"), false);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth session store: keyring disablement requires explicit file fallback consent", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";

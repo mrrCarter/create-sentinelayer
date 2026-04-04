@@ -464,6 +464,7 @@ export async function readStoredSession({ homeDir } = {}) {
   let token = null;
   let resolvedMetadata = metadata;
   if (metadata.tokenCiphertext && metadata.tokenIv && metadata.tokenTag) {
+    const hasPlaintextTokenField = Boolean(String(metadata.token || "").trim());
     const keyState = await loadFileTokenKey({
       homeDir,
       apiUrl: metadata.apiUrl,
@@ -478,13 +479,13 @@ export async function readStoredSession({ homeDir } = {}) {
       },
       keyState.keyMaterial
     );
-    if (requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath) {
+    if (requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath || hasPlaintextTokenField) {
       resolvedMetadata = await persistEncryptedFileTokenMetadata({
         filePath,
         metadata,
         token,
         homeDir,
-        rotateKey: true,
+        rotateKey: requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath,
       });
       if (keyState.usedLegacyKeyPath) {
         await deleteLegacyFileTokenKey({ homeDir });
@@ -503,6 +504,12 @@ export async function readStoredSession({ homeDir } = {}) {
     throw new StoredSessionError(
       "Stored file-backed session token is missing. Re-authenticate with `sl auth login`.",
       { code: "FILE_TOKEN_MISSING", filePath }
+    );
+  }
+  if (String(resolvedMetadata.token || "").trim()) {
+    throw new StoredSessionError(
+      "Stored file-backed session metadata still contains plaintext token material. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_PLAINTEXT_RESIDUAL", filePath }
     );
   }
   return {

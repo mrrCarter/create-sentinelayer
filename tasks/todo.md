@@ -761,4 +761,14 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Twenty-first-cycle local evidence:
   - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass, `175/175`).
   - `npm run verify` (pass, e2e `84/84`; unit `175/175`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
-- [ ] Commit/push twenty-first-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
+- [x] Commit/push twenty-first-cycle fixes (`1fd9172`) and rerun Omar (`run_id=c98684fd-5f63-4fc8-88ee-9ccaf7ca6ff4`): Omar reduced active findings to `P2=4` (`P0=0`, `P1=0`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=c98684fd-5f63-4fc8-88ee-9ccaf7ca6ff4`) and apply twenty-second-cycle hardening:
+  - `.github/workflows/quality-gates.yml`: harden audit evidence capture to fail on invalid exit/error payloads, record structured status metadata, and verify evidence contract + checksum before artifact promotion.
+  - `.github/workflows/release.yml`: set release concurrency `cancel-in-progress: false` to prevent in-flight release validation aborts.
+  - `.github/workflows/release-publish.yml`: migrate production publish path to OIDC trusted publishing (`id-token: write`) and remove `NPM_TOKEN` secret dependency.
+  - `src/auth/session-store.js`: force plaintext token scrubbing migration whenever encrypted metadata is present and fail closed on residual plaintext token fields.
+  - `tests/unit.auth-session-store.test.mjs`: add regression coverage proving plaintext token tamper data is scrubbed and never returned over ciphertext truth.
+- [x] Twenty-second-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-session-store.test.mjs tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass, `176/176`).
+  - `npm run verify` (pass, e2e `84/84`; unit `176/176`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
+- [ ] Commit/push twenty-second-cycle fixes and rerun Omar loop on PR #114 until `P2<=2`.
