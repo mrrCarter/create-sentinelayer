@@ -3,7 +3,14 @@ import path from "node:path";
 
 import { getConfigPaths } from "./paths.js";
 import { ensureConfigFile, readConfigFile, writeConfigFile } from "./io.js";
-import { CONFIG_KEYS, configSchema } from "./schema.js";
+import {
+  configSchema,
+  findPersistedSecretKeys,
+  getAllConfigKeys,
+  getRuntimeSecretSchema,
+  isSecretConfigKey,
+  SECRET_CONFIG_KEYS,
+} from "./schema.js";
 
 const ENV_MAPPING = Object.freeze({
   SENTINELAYER_API_URL: "apiUrl",
@@ -18,17 +25,19 @@ const ENV_MAPPING = Object.freeze({
 const WRITABLE_SCOPES = new Set(["global", "project"]);
 const LAYER_SCOPES = new Set(["global", "project", "env", "resolved"]);
 
-function normalizeKey(key) {
+function normalizeKey(key, { includeSecrets = false } = {}) {
   const normalized = String(key || "").trim();
-  if (!CONFIG_KEYS.includes(normalized)) {
-    throw new Error(`Unknown config key '${normalized}'. Allowed keys: ${CONFIG_KEYS.join(", ")}`);
+  const allowedKeys = getAllConfigKeys({ includeSecrets });
+  if (!allowedKeys.includes(normalized)) {
+    throw new Error(`Unknown config key '${normalized}'. Allowed keys: ${allowedKeys.join(", ")}`);
   }
   return normalized;
 }
 
-function normalizeValueForKey(key, value) {
+export function normalizeValueForKey(key, value) {
   const payload = { [key]: value };
-  const parsed = configSchema.partial().parse(payload);
+  const schema = isSecretConfigKey(key) ? getRuntimeSecretSchema() : configSchema;
+  const parsed = schema.partial().parse(payload);
   return parsed[key];
 }
 
@@ -56,6 +65,22 @@ function mergeLayers(...layers) {
   }, {});
 }
 
+function splitPersistedAndSecretLayers(layer) {
+  const persistedLayer = {};
+  const secretLayer = {};
+  for (const [key, value] of Object.entries(layer || {})) {
+    if (value === undefined) {
+      continue;
+    }
+    if (SECRET_CONFIG_KEYS.includes(key)) {
+      secretLayer[key] = value;
+    } else {
+      persistedLayer[key] = value;
+    }
+  }
+  return { persistedLayer, secretLayer };
+}
+
 function normalizeLayerScope(scope, { allowResolved = true } = {}) {
   const normalized = String(scope || "resolved").trim();
   if (!allowResolved && normalized === "resolved") {
@@ -75,7 +100,12 @@ export async function loadConfig({ cwd = process.cwd(), env = process.env, homeD
   ]);
 
   const envConfig = buildEnvLayer(env);
-  const resolved = configSchema.parse(mergeLayers(globalConfig, projectConfig, envConfig));
+  const merged = mergeLayers(globalConfig, projectConfig, envConfig);
+  const { persistedLayer, secretLayer } = splitPersistedAndSecretLayers(merged);
+  const resolved = {
+    ...configSchema.parse(persistedLayer),
+    ...getRuntimeSecretSchema().partial().parse(secretLayer),
+  };
 
   return {
     paths,
@@ -97,7 +127,7 @@ export function getLayer(config, scope) {
 }
 
 export function findConfigSource(config, key) {
-  const normalizedKey = normalizeKey(key);
+  const normalizedKey = normalizeKey(key, { includeSecrets: true });
   if (Object.prototype.hasOwnProperty.call(config.layers.env, normalizedKey)) {
     return "env";
   }
@@ -122,7 +152,12 @@ export async function setConfigValue({
     throw new Error(`Cannot write scope '${normalizedScope}'. Use global or project.`);
   }
 
-  const normalizedKey = normalizeKey(key);
+  const normalizedKey = normalizeKey(key, { includeSecrets: true });
+  if (isSecretConfigKey(normalizedKey)) {
+    throw new Error(
+      `Config key '${normalizedKey}' is blocked for plaintext persistence. Use environment variables or keyring-backed auth sessions instead.`
+    );
+  }
   const normalizedValue = normalizeValueForKey(normalizedKey, value);
 
   const paths = getConfigPaths({ cwd, homeDir });
@@ -132,6 +167,12 @@ export async function setConfigValue({
     ...current,
     [normalizedKey]: normalizedValue,
   };
+  const persistedSecretKeys = findPersistedSecretKeys(next);
+  if (persistedSecretKeys.length > 0) {
+    throw new Error(
+      `Config update refused: persisted plaintext secrets are blocked (${persistedSecretKeys.join(", ")}).`
+    );
+  }
 
   await writeConfigFile(targetPath, next);
 
@@ -159,8 +200,8 @@ export async function ensureEditableConfigPath({ scope = "project", cwd = proces
   };
 }
 
-export function listConfigKeys() {
-  return [...CONFIG_KEYS];
+export function listConfigKeys({ includeSecrets = false } = {}) {
+  return getAllConfigKeys({ includeSecrets });
 }
 
 export async function resolveOutputRoot({

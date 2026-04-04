@@ -6,6 +6,24 @@ import process from "node:process";
 
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
+const FILE_TOKEN_KEY_BYTES = 32;
+const FILE_TOKEN_IV_BYTES = 12;
+const FILE_TOKEN_KEY_VERSION = 1;
+const LEGACY_FILE_TOKEN_KEY_NAME = "credentials.key";
+const FILE_STORAGE_CONSENT_ENV = "SENTINELAYER_FILE_STORAGE_CONFIRM";
+const FILE_STORAGE_CONSENT_TOKEN = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+const FILE_STORAGE_CONSENT_DIGEST_HEX_LENGTH = 12;
+const API_SCOPE_DIGEST_HEX_LENGTH = 32;
+const LEGACY_API_SCOPE_DIGEST_HEX_LENGTH = 16;
+
+export class StoredSessionError extends Error {
+  constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
+    super(String(message || "Stored session error"));
+    this.name = "StoredSessionError";
+    this.code = String(code || "STORED_SESSION_ERROR");
+    this.filePath = filePath ? String(filePath) : null;
+  }
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -13,6 +31,17 @@ function nowIso() {
 
 function resolveHomeDir(homeDir) {
   return path.resolve(String(homeDir || os.homedir()));
+}
+
+function buildApiScopeDigest(apiUrl, { hexLength = API_SCOPE_DIGEST_HEX_LENGTH } = {}) {
+  const normalized = String(apiUrl || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  const normalizedLength = Number.isFinite(Number(hexLength))
+    ? Math.max(1, Math.floor(Number(hexLength)))
+    : API_SCOPE_DIGEST_HEX_LENGTH;
+  return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, normalizedLength);
 }
 
 /**
@@ -26,12 +55,39 @@ export function resolveCredentialsFilePath({ homeDir } = {}) {
   return path.join(resolvedHome, ".sentinelayer", "credentials.json");
 }
 
+function resolveCredentialsKeyPath({ homeDir } = {}) {
+  return resolveLegacyCredentialsKeyPath({ homeDir });
+}
+
+function resolveLegacyCredentialsKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer-secrets", LEGACY_FILE_TOKEN_KEY_NAME);
+}
+
+function resolveScopedCredentialsKeyPath({ homeDir, apiUrl, digestHexLength = API_SCOPE_DIGEST_HEX_LENGTH } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  const digest = buildApiScopeDigest(apiUrl, { hexLength: digestHexLength });
+  if (!digest) {
+    return resolveLegacyCredentialsKeyPath({ homeDir: resolvedHome });
+  }
+  return path.join(resolvedHome, ".sentinelayer-secrets", `credentials-${digest}.key`);
+}
+
+function resolveScopedCredentialsKeyPathCandidates({ homeDir, apiUrl } = {}) {
+  const primaryPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl, digestHexLength: API_SCOPE_DIGEST_HEX_LENGTH });
+  const legacyDigestPath = resolveScopedCredentialsKeyPath({
+    homeDir,
+    apiUrl,
+    digestHexLength: LEGACY_API_SCOPE_DIGEST_HEX_LENGTH,
+  });
+  if (legacyDigestPath && legacyDigestPath !== primaryPath) {
+    return [primaryPath, legacyDigestPath];
+  }
+  return [primaryPath];
+}
+
 function buildKeyringAccountName(apiUrl) {
-  const digest = crypto
-    .createHash("sha256")
-    .update(String(apiUrl || "").trim().toLowerCase())
-    .digest("hex")
-    .slice(0, 16);
+  const digest = buildApiScopeDigest(apiUrl);
   return `default-${digest}`;
 }
 
@@ -55,20 +111,27 @@ function normalizeMetadata(raw = {}) {
     tokenId: String(raw.tokenId || "").trim() || null,
     tokenPrefix: String(raw.tokenPrefix || "").trim() || null,
     tokenExpiresAt: String(raw.tokenExpiresAt || "").trim() || null,
+    storageDowngraded: Boolean(raw.storageDowngraded || raw.storage_downgraded),
     createdAt: String(raw.createdAt || "").trim() || nowIso(),
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
     token: String(raw.token || "").trim() || null,
+    tokenCiphertext: String(raw.tokenCiphertext || "").trim() || null,
+    tokenIv: String(raw.tokenIv || "").trim() || null,
+    tokenTag: String(raw.tokenTag || "").trim() || null,
+    fileTokenKeyVersion: Number(raw.fileTokenKeyVersion || 0),
+    fileTokenKeyRotatedAt: String(raw.fileTokenKeyRotatedAt || "").trim() || null,
   };
 }
 
-async function loadKeytarClient() {
+function isKeyringDisabledByEnv() {
   const disableKeyring = String(process.env.SENTINELAYER_DISABLE_KEYRING || "")
     .trim()
     .toLowerCase();
-  if (disableKeyring === "1" || disableKeyring === "true" || disableKeyring === "yes" || disableKeyring === "on") {
-    return null;
-  }
+  return disableKeyring === "1" || disableKeyring === "true" || disableKeyring === "yes" || disableKeyring === "on";
+}
+
+async function loadKeytarClient() {
   try {
     const mod = await import("keytar");
     const client = mod && typeof mod === "object" ? mod.default || mod : null;
@@ -105,16 +168,335 @@ async function readMetadata({ homeDir } = {}) {
   }
 }
 
-async function writeMetadata(filePath, metadata) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${JSON.stringify(metadata, null, 2)}\n`, {
-    encoding: "utf-8",
-    mode: 0o600,
+function resolveFileStorageConsentScope(apiUrl) {
+  const normalizedApiUrl = String(apiUrl || "").trim();
+  if (!normalizedApiUrl) {
+    return "";
+  }
+  try {
+    const parsed = new URL(normalizedApiUrl);
+    const protocol = String(parsed.protocol || "").trim().toLowerCase();
+    const hostname = String(parsed.hostname || "").trim().toLowerCase();
+    if (!protocol || !hostname) {
+      return normalizedApiUrl.toLowerCase();
+    }
+    return `${protocol}//${hostname}`;
+  } catch {
+    return normalizedApiUrl.toLowerCase();
+  }
+}
+
+function buildFileStorageConsentDigest(apiUrl) {
+  const scope = resolveFileStorageConsentScope(apiUrl);
+  return buildApiScopeDigest(scope, {
+    hexLength: FILE_STORAGE_CONSENT_DIGEST_HEX_LENGTH,
   });
+}
+
+function parseFileStorageConsentDigests(rawToken) {
+  const token = String(rawToken || "").trim();
+  if (!token.startsWith(`${FILE_STORAGE_CONSENT_TOKEN}:`)) {
+    return [];
+  }
+  const digestSegment = token.slice(`${FILE_STORAGE_CONSENT_TOKEN}:`.length);
+  if (!digestSegment) {
+    return [];
+  }
+  const parsedDigests = digestSegment
+    .split(",")
+    .map((entry) => String(entry || "").trim().toLowerCase())
+    .filter(Boolean);
+  const uniqueDigests = Array.from(new Set(parsedDigests));
+  const validDigestPattern = new RegExp(`^[0-9a-f]{${FILE_STORAGE_CONSENT_DIGEST_HEX_LENGTH}}$`);
+  return uniqueDigests.filter((digest) => validDigestPattern.test(digest));
+}
+
+function buildFileStorageConsentToken(apiUrl, { additionalApiUrls = [] } = {}) {
+  const digestInputs = [apiUrl, ...(Array.isArray(additionalApiUrls) ? additionalApiUrls : [])];
+  const digests = Array.from(
+    new Set(
+      digestInputs
+        .map((entry) => buildFileStorageConsentDigest(entry))
+        .filter(Boolean)
+    )
+  );
+  if (digests.length === 0) {
+    return `${FILE_STORAGE_CONSENT_TOKEN}:`;
+  }
+  return `${FILE_STORAGE_CONSENT_TOKEN}:${digests.join(",")}`;
+}
+
+function hasFileStorageConsent(apiUrl) {
+  const requiredDigest = buildFileStorageConsentDigest(apiUrl);
+  if (!requiredDigest) {
+    return false;
+  }
+  const token = String(process.env[FILE_STORAGE_CONSENT_ENV] || "").trim();
+  const grantedDigests = parseFileStorageConsentDigests(token);
+  return grantedDigests.includes(requiredDigest);
+}
+
+export function __buildFileStorageConsentTokenForTests(apiUrls = []) {
+  const entries = Array.isArray(apiUrls) ? apiUrls : [apiUrls];
+  if (entries.length === 0) {
+    throw new Error("At least one apiUrl is required to build a file storage consent token.");
+  }
+  const [firstApiUrl, ...restApiUrls] = entries;
+  return buildFileStorageConsentToken(firstApiUrl, { additionalApiUrls: restApiUrls });
+}
+
+async function syncDirectoryBestEffort(dirPath) {
+  let directoryHandle = null;
+  try {
+    directoryHandle = await fsp.open(dirPath, "r");
+    await directoryHandle.sync();
+  } catch (error) {
+    const code = String(error?.code || "");
+    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR", "ENOENT"].includes(code)) {
+      throw error;
+    }
+  } finally {
+    if (directoryHandle) {
+      await directoryHandle.close();
+    }
+  }
+}
+
+async function writeMetadata(filePath, metadata) {
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const serialized = `${JSON.stringify(metadata, null, 2)}\n`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempHandle = await fsp.open(tempPath, "w", 0o600);
+  try {
+    await tempHandle.writeFile(serialized, { encoding: "utf-8" });
+    await tempHandle.sync();
+  } finally {
+    await tempHandle.close();
+  }
+  try {
+    await fsp.chmod(tempPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  let renamed = false;
+  try {
+    await fsp.rename(tempPath, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await fsp.rm(tempPath, { force: true });
+    }
+  }
+  await syncDirectoryBestEffort(directoryPath);
   try {
     await fsp.chmod(filePath, 0o600);
   } catch {
     // Windows does not reliably support POSIX chmod semantics.
+  }
+}
+
+async function persistEncryptedFileTokenMetadata({
+  filePath,
+  metadata,
+  token,
+  homeDir,
+  rotateKey = false,
+} = {}) {
+  const keyState = rotateKey
+    ? await rotateFileTokenKey({ homeDir, apiUrl: metadata?.apiUrl })
+    : await loadFileTokenKey({
+        homeDir,
+        apiUrl: metadata?.apiUrl,
+        createIfMissing: true,
+        allowLegacyFallback: false,
+      });
+  const encrypted = encryptFileToken(token, keyState.keyMaterial);
+  const rotatedAt = nowIso();
+  const updatedMetadata = normalizeMetadata({
+    ...metadata,
+    storage: "file",
+    token: null,
+    tokenCiphertext: encrypted.tokenCiphertext,
+    tokenIv: encrypted.tokenIv,
+    tokenTag: encrypted.tokenTag,
+    fileTokenKeyVersion: FILE_TOKEN_KEY_VERSION,
+    fileTokenKeyRotatedAt: rotatedAt,
+    updatedAt: rotatedAt,
+  });
+  await writeMetadata(filePath, updatedMetadata);
+  return updatedMetadata;
+}
+
+async function writeSecretFile(filePath, contents) {
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempHandle = await fsp.open(tempPath, "w", 0o600);
+  try {
+    await tempHandle.writeFile(String(contents || ""), {
+      encoding: "utf-8",
+    });
+    await tempHandle.sync();
+  } finally {
+    await tempHandle.close();
+  }
+  try {
+    await fsp.chmod(tempPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  let renamed = false;
+  try {
+    await fsp.rename(tempPath, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await fsp.rm(tempPath, { force: true });
+    }
+  }
+  await syncDirectoryBestEffort(directoryPath);
+  try {
+    await fsp.chmod(filePath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+}
+
+function decodeKeyMaterial(raw, keyPath) {
+  const material = Buffer.from(String(raw || "").trim(), "base64");
+  if (material.length !== FILE_TOKEN_KEY_BYTES) {
+    throw new StoredSessionError(
+      "Stored file-token encryption key is invalid. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_KEY_INVALID", filePath: keyPath }
+    );
+  }
+  return material;
+}
+
+async function loadFileTokenKey({
+  homeDir,
+  apiUrl,
+  createIfMissing = false,
+  allowLegacyFallback = false,
+} = {}) {
+  const scopedKeyPaths = resolveScopedCredentialsKeyPathCandidates({ homeDir, apiUrl });
+  const scopedKeyPath = scopedKeyPaths[0];
+  const legacyKeyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  const candidatePaths = [...scopedKeyPaths];
+  if (allowLegacyFallback && legacyKeyPath !== scopedKeyPath && !candidatePaths.includes(legacyKeyPath)) {
+    candidatePaths.push(legacyKeyPath);
+  }
+
+  for (const candidatePath of candidatePaths) {
+    try {
+      const raw = await fsp.readFile(candidatePath, "utf-8");
+      return {
+        keyMaterial: decodeKeyMaterial(raw, candidatePath),
+        keyPath: candidatePath,
+        usedLegacyKeyPath: candidatePath !== scopedKeyPath,
+      };
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  if (createIfMissing) {
+    return rotateFileTokenKey({ homeDir, apiUrl });
+  }
+
+  throw new StoredSessionError(
+    "Stored file-token encryption key is missing. Re-authenticate with `sl auth login`.",
+    { code: "FILE_TOKEN_KEY_MISSING", filePath: scopedKeyPath }
+  );
+}
+
+async function rotateFileTokenKey({ homeDir, apiUrl } = {}) {
+  const keyPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl });
+  const generated = crypto.randomBytes(FILE_TOKEN_KEY_BYTES);
+  await writeSecretFile(keyPath, `${generated.toString("base64")}\n`);
+  return {
+    keyMaterial: generated,
+    keyPath,
+    usedLegacyKeyPath: false,
+  };
+}
+
+async function deleteFileTokenKey({ homeDir, apiUrl, includeLegacy = false } = {}) {
+  const keyPaths = resolveScopedCredentialsKeyPathCandidates({ homeDir, apiUrl });
+  const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  if (includeLegacy && legacyPath !== keyPaths[0] && !keyPaths.includes(legacyPath)) {
+    keyPaths.push(legacyPath);
+  }
+  for (const keyPath of keyPaths) {
+    try {
+      await fsp.rm(keyPath);
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+}
+
+async function deleteFileTokenKeyPath(keyPath) {
+  if (!keyPath) {
+    return;
+  }
+  try {
+    await fsp.rm(keyPath);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function deleteLegacyFileTokenKey({ homeDir } = {}) {
+  const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  await deleteFileTokenKeyPath(legacyPath);
+}
+
+function requiresFileTokenRekey(metadata = {}) {
+  if (String(metadata.storage || "").trim() !== "file") {
+    return false;
+  }
+  const version = Number(metadata.fileTokenKeyVersion || 0);
+  return !Number.isFinite(version) || version < FILE_TOKEN_KEY_VERSION;
+}
+
+function encryptFileToken(token, keyMaterial) {
+  const iv = crypto.randomBytes(FILE_TOKEN_IV_BYTES);
+  const cipher = crypto.createCipheriv("aes-256-gcm", keyMaterial, iv);
+  const ciphertext = Buffer.concat([cipher.update(String(token || ""), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    tokenCiphertext: ciphertext.toString("base64"),
+    tokenIv: iv.toString("base64"),
+    tokenTag: tag.toString("base64"),
+  };
+}
+
+function decryptFileToken({ tokenCiphertext, tokenIv, tokenTag }, keyMaterial) {
+  try {
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      keyMaterial,
+      Buffer.from(String(tokenIv || ""), "base64")
+    );
+    decipher.setAuthTag(Buffer.from(String(tokenTag || ""), "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(String(tokenCiphertext || ""), "base64")),
+      decipher.final(),
+    ]);
+    return plaintext.toString("utf8");
+  } catch {
+    throw new StoredSessionError(
+      "Stored file-backed session token could not be decrypted. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_DECRYPT_FAILED" }
+    );
   }
 }
 
@@ -151,16 +533,34 @@ export async function readStoredSession({ homeDir } = {}) {
   }
 
   if (metadata.storage === "keyring") {
+    if (!metadata.keyringAccount) {
+      throw new StoredSessionError(
+        "Stored keyring session metadata is missing keyringAccount. Re-authenticate with `sl auth login`.",
+        { code: "KEYRING_ACCOUNT_MISSING", filePath }
+      );
+    }
+    if (isKeyringDisabledByEnv()) {
+      throw new StoredSessionError(
+        "Stored session requires keyring access, but keyring is disabled by SENTINELAYER_DISABLE_KEYRING.",
+        { code: "KEYRING_UNAVAILABLE", filePath }
+      );
+    }
     const keytar = await loadKeytarClient();
-    if (!keytar || !metadata.keyringAccount) {
-      return null;
+    if (!keytar) {
+      throw new StoredSessionError(
+        "Stored session requires keyring access, but keyring is unavailable. Re-authenticate with `sl auth login --no-keyring` or enable keyring support.",
+        { code: "KEYRING_UNAVAILABLE", filePath }
+      );
     }
     const token = await keytar.getPassword(
       metadata.keyringService || KEYRING_SERVICE,
       metadata.keyringAccount
     );
     if (!token) {
-      return null;
+      throw new StoredSessionError(
+        "Stored keyring session token is missing. Re-authenticate with `sl auth login`.",
+        { code: "KEYRING_TOKEN_MISSING", filePath }
+      );
     }
     return {
       ...metadata,
@@ -170,13 +570,65 @@ export async function readStoredSession({ homeDir } = {}) {
     };
   }
 
-  if (!metadata.token) {
-    return null;
+  let token = null;
+  let resolvedMetadata = metadata;
+  if (metadata.tokenCiphertext && metadata.tokenIv && metadata.tokenTag) {
+    const hasPlaintextTokenField = Boolean(String(metadata.token || "").trim());
+    const keyState = await loadFileTokenKey({
+      homeDir,
+      apiUrl: metadata.apiUrl,
+      createIfMissing: false,
+      allowLegacyFallback: true,
+    });
+    token = decryptFileToken(
+      {
+        tokenCiphertext: metadata.tokenCiphertext,
+        tokenIv: metadata.tokenIv,
+        tokenTag: metadata.tokenTag,
+      },
+      keyState.keyMaterial
+    );
+    if (requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath || hasPlaintextTokenField) {
+      resolvedMetadata = await persistEncryptedFileTokenMetadata({
+        filePath,
+        metadata,
+        token,
+        homeDir,
+        rotateKey: requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath,
+      });
+      if (keyState.usedLegacyKeyPath) {
+        const canonicalKeyPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl: metadata.apiUrl });
+        if (keyState.keyPath && keyState.keyPath !== canonicalKeyPath) {
+          await deleteFileTokenKeyPath(keyState.keyPath);
+        }
+        await deleteLegacyFileTokenKey({ homeDir });
+      }
+    }
+  } else if (metadata.token) {
+    token = metadata.token;
+    resolvedMetadata = await persistEncryptedFileTokenMetadata({
+      filePath,
+      metadata,
+      token,
+      homeDir,
+      rotateKey: true,
+    });
+  } else {
+    throw new StoredSessionError(
+      "Stored file-backed session token is missing. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_MISSING", filePath }
+    );
+  }
+  if (String(resolvedMetadata.token || "").trim()) {
+    throw new StoredSessionError(
+      "Stored file-backed session metadata still contains plaintext token material. Re-authenticate with `sl auth login`.",
+      { code: "FILE_TOKEN_PLAINTEXT_RESIDUAL", filePath }
+    );
   }
   return {
-    ...metadata,
+    ...resolvedMetadata,
     filePath,
-    token: metadata.token,
+    token,
     storage: "file",
   };
 }
@@ -262,7 +714,7 @@ export async function writeStoredSession(
     tokenExpiresAt = null,
     user = {},
   } = {},
-  { homeDir } = {}
+  { homeDir, allowFileStorageFallback = false } = {}
 ) {
   const normalizedApiUrl = String(apiUrl || "").trim();
   const normalizedToken = String(token || "").trim();
@@ -274,11 +726,35 @@ export async function writeStoredSession(
   }
 
   const { filePath, metadata: existingMetadata } = await readMetadata({ homeDir });
+  const keyringDisabledByEnv = isKeyringDisabledByEnv();
+  const explicitFileStorageFallback = Boolean(allowFileStorageFallback);
+  const disableKeyringRequested = keyringDisabledByEnv || explicitFileStorageFallback;
   const keytar = await loadKeytarClient();
   const keyringAccount = buildKeyringAccountName(normalizedApiUrl);
   const updatedAt = nowIso();
+  const fileStorageConsentGranted = hasFileStorageConsent(normalizedApiUrl);
+  const requiredFileStorageConsentToken = buildFileStorageConsentToken(normalizedApiUrl);
 
-  const nextMetadata = normalizeMetadata({
+  if (keyringDisabledByEnv && !explicitFileStorageFallback) {
+    throw new StoredSessionError(
+      "Keyring is disabled by SENTINELAYER_DISABLE_KEYRING. Re-run `sl auth login --no-keyring` to explicitly allow file-backed credential storage.",
+      { code: "KEYRING_FALLBACK_REQUIRES_CONSENT", filePath }
+    );
+  }
+  if (!keytar && !explicitFileStorageFallback) {
+    throw new StoredSessionError(
+      "System keyring is unavailable. Re-run `sl auth login --no-keyring` to explicitly allow file-backed credential storage.",
+      { code: "KEYRING_FALLBACK_REQUIRES_CONSENT", filePath }
+    );
+  }
+  if (disableKeyringRequested && !fileStorageConsentGranted) {
+    throw new StoredSessionError(
+      `File-backed credential storage requires explicit consent. Set ${FILE_STORAGE_CONSENT_ENV}=${requiredFileStorageConsentToken} and re-run the command. Additional endpoint scopes can be appended as comma-separated digests using the same prefix token.`,
+      { code: "FILE_STORAGE_CONSENT_REQUIRED", filePath }
+    );
+  }
+
+  let nextMetadata = normalizeMetadata({
     version: CREDENTIALS_VERSION,
     apiUrl: normalizedApiUrl,
     tokenId,
@@ -289,7 +765,7 @@ export async function writeStoredSession(
     updatedAt,
   });
 
-  if (keytar) {
+  if (keytar && !disableKeyringRequested) {
     const previousKeyringAccount = String(existingMetadata?.keyringAccount || "").trim();
     const previousStorage = String(existingMetadata?.storage || "").trim();
     if (previousStorage === "keyring" && previousKeyringAccount && previousKeyringAccount !== keyringAccount) {
@@ -301,14 +777,32 @@ export async function writeStoredSession(
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
     nextMetadata.token = null;
+    nextMetadata.tokenCiphertext = null;
+    nextMetadata.tokenIv = null;
+    nextMetadata.tokenTag = null;
+    nextMetadata.fileTokenKeyVersion = 0;
+    nextMetadata.fileTokenKeyRotatedAt = null;
+    nextMetadata.storageDowngraded = false;
+    if (String(existingMetadata?.storage || "").trim() === "file") {
+      await deleteFileTokenKey({ homeDir, apiUrl: normalizedApiUrl, includeLegacy: true });
+    }
+    await writeMetadata(filePath, nextMetadata);
   } else {
-    nextMetadata.storage = "file";
-    nextMetadata.keyringService = KEYRING_SERVICE;
-    nextMetadata.keyringAccount = "";
-    nextMetadata.token = normalizedToken;
+    nextMetadata = await persistEncryptedFileTokenMetadata({
+      filePath,
+      metadata: {
+        ...nextMetadata,
+        storage: "file",
+        keyringService: KEYRING_SERVICE,
+        keyringAccount: "",
+        token: null,
+        storageDowngraded: Boolean(disableKeyringRequested || !keytar),
+      },
+      token: normalizedToken,
+      homeDir,
+      rotateKey: true,
+    });
   }
-
-  await writeMetadata(filePath, nextMetadata);
 
   return {
     ...nextMetadata,
@@ -321,7 +815,7 @@ export async function writeStoredSession(
  * Remove local session metadata and keyring credentials for the active account.
  *
  * @param {{ homeDir?: string }} [options]
- * @returns {Promise<{ filePath: string, hadSession: boolean }>}
+ * @returns {Promise<{ filePath: string, hadSession: boolean, clearedMetadata: boolean }>}
  */
 export async function clearStoredSession({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
@@ -330,16 +824,31 @@ export async function clearStoredSession({ homeDir } = {}) {
     if (keytar && metadata.keyringAccount) {
       await keytar.deletePassword(metadata.keyringService || KEYRING_SERVICE, metadata.keyringAccount);
     }
+  } else if (metadata && metadata.storage === "file") {
+    await deleteFileTokenKey({ homeDir, apiUrl: metadata.apiUrl, includeLegacy: true });
   }
 
   try {
-    await fsp.rm(filePath, { force: true });
-  } catch {
-    // Ignore cleanup errors.
+    await fsp.rm(filePath);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  let clearedMetadata = true;
+  try {
+    await fsp.access(filePath);
+    clearedMetadata = false;
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
   }
 
   return {
     filePath,
     hadSession: Boolean(metadata),
+    clearedMetadata,
   };
 }

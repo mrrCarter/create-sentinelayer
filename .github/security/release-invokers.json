@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0.0",
+  "workflowDispatch": {
+    "allowlist": [
+      "mrrCarter"
+    ],
+    "requireIncidentId": true,
+    "incidentIdPattern": "^INC-[A-Za-z0-9._-]{4,64}$"
+  }
+}

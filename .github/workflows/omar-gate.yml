@@ -6,6 +6,9 @@ on:
       - opened
       - synchronize
       - reopened
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       scan_mode:
@@ -16,57 +19,372 @@ on:
         options:
           - deep
           - nightly
-      severity_gate:
-        description: Severity threshold that blocks merge
-        required: false
-        default: P2
-        type: choice
-        options:
-          - P0
-          - P1
-          - P2
-          - none
-      p2_max_allowed:
-        description: Maximum allowed P2 findings before Omar Gate blocks merge
-        required: false
-        default: "5"
-        type: string
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OMAR_MODEL_ID: "gpt-5.3-codex"
+  OMAR_FALLBACK_MODEL_ID: "gpt-4.1-mini"
+  OMAR_MODEL_POLICY_SHA256: "a213b6bacc3fd8929301235755e860c0a6040081c479f5dc42bbc8a8d96ee1a0"
+
+concurrency:
+  group: omar-gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  omar_gate_untrusted:
+    name: Omar Gate (Untrusted PR)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    if: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.repo.fork == true) }}
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Validate untrusted pull_request profile
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          if [[ "${HEAD_REPOSITORY}" == "${REPOSITORY}" ]] && [[ "${HEAD_IS_FORK}" != "true" ]]; then
+            echo "::error::Untrusted Omar profile must run only for fork-origin pull requests."
+            exit 1
+          fi
+      - name: Run deterministic untrusted Omar baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/verify-action-shas.sh \
+            .github/workflows/quality-gates.yml \
+            .github/workflows/release.yml \
+            .github/workflows/release-publish.yml \
+            .github/workflows/rollback.yml \
+            .github/workflows/omar-gate.yml
+          node scripts/ci/verify-workflow-permissions.js \
+            .github/workflows/quality-gates.yml \
+            .github/workflows/omar-gate.yml \
+            .github/workflows/release.yml \
+            .github/workflows/release-publish.yml \
+            .github/workflows/release-please.yml \
+            .github/workflows/rollback.yml
+          node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml
+      - name: Emit untrusted Omar summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- profile: \`untrusted-pr\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- findings: \`deterministic-policy-checks-only\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- note: \`Fork-origin pull requests run without secrets and execute deterministic CI policy checks.\`" >> "$GITHUB_STEP_SUMMARY"
+
   omar_gate:
-    name: Omar Gate
-    runs-on: ubuntu-latest
+    name: Omar Gate (Trusted)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false) }}
     environment: security-review
     permissions:
       contents: read
       checks: write
       pull-requests: write
-      id-token: write
+      actions: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - name: Validate Sentinelayer token secret
+      - name: Enforce trusted PR source for secret-backed scan
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]] || [[ "${HEAD_IS_FORK}" == "true" ]]; then
+            echo "::error::Omar Gate secrets are restricted to trusted same-repo pull requests."
+            exit 1
+          fi
+      - name: Verify security-review environment protections
+        id: verify_security_review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/security-review" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::security-review environment must require at least one reviewer."
+            exit 1
+          fi
+          wait_timer_seconds="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "wait_timer") | (.wait_timer // 0)] | max // 0')"
+          if [[ "${wait_timer_seconds}" =~ ^[0-9]+$ ]] && [[ "${wait_timer_seconds}" -lt 1 ]]; then
+            echo "::warning::security-review environment has no wait timer configured; consider enabling a non-zero timer for additional review control."
+          fi
+          echo "security_review_verified=true" >> "$GITHUB_OUTPUT"
+      - name: Wait for Quality Summary gate
+        id: wait_quality
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TARGET_HEAD_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          source scripts/release/backoff.sh
+          deadline=$((SECONDS + 900))
+          quality_lookup_attempt=0
+          quality_status_attempt=0
+          check_run_attempt=0
+          while (( SECONDS < deadline )); do
+            api_status=0
+            runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              quality_lookup_attempt=$((quality_lookup_attempt + 1))
+              echo "quality-gates run lookup timed out or failed (status=${api_status}); retrying."
+              sl_backoff_sleep "omar-quality-run-lookup" "${quality_lookup_attempt}"
+              continue
+            fi
+            quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "pull_request" or (.event // "") == "push")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+            ')"
+            if [[ -z "${quality_run}" ]]; then
+              quality_status_attempt=$((quality_status_attempt + 1))
+              echo "Waiting for canonical quality-gates run on ${TARGET_SHA}."
+              sl_backoff_sleep "omar-quality-run-await" "${quality_status_attempt}"
+              continue
+            fi
+            run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
+            run_url="$(echo "${quality_run}" | jq -r '.html_url // ""')"
+            run_head_sha="$(echo "${quality_run}" | jq -r '.head_sha // ""')"
+            run_head_branch="$(echo "${quality_run}" | jq -r '.head_branch // ""')"
+            run_path="$(echo "${quality_run}" | jq -r '((.path // "") | split("@")[0])')"
+            if [[ "${run_head_sha}" != "${TARGET_SHA}" ]] || [[ "${run_path}" != ".github/workflows/quality-gates.yml" ]]; then
+              echo "::error::Quality Summary anchor run mismatch (run=${run_id}, head_sha=${run_head_sha}, path=${run_path}, expected_sha=${TARGET_SHA})."
+              exit 1
+            fi
+            if [[ "${EVENT_NAME}" == "pull_request" ]] && [[ -n "${TARGET_HEAD_BRANCH}" ]] && [[ "${run_head_branch}" != "${TARGET_HEAD_BRANCH}" ]]; then
+              echo "::error::Quality Summary anchor run branch mismatch (run=${run_id}, head_branch=${run_head_branch}, expected_head_branch=${TARGET_HEAD_BRANCH})."
+              exit 1
+            fi
+            status="$(echo "${quality_run}" | jq -r '.status')"
+            conclusion="$(echo "${quality_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              quality_status_attempt=$((quality_status_attempt + 1))
+              echo "quality-gates run ${run_id} status=${status}; waiting."
+              sl_backoff_sleep "omar-quality-run-status" "${quality_status_attempt}"
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::Quality Summary gate must pass before Omar Gate (run=${run_id}, conclusion=${conclusion}, url=${run_url})."
+              exit 1
+            fi
+            quality_lookup_attempt=0
+            quality_status_attempt=0
+            check_runs_status=0
+            check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")" || check_runs_status=$?
+            if [[ "${check_runs_status}" -ne 0 ]]; then
+              check_run_attempt=$((check_run_attempt + 1))
+              echo "Quality Summary check-run lookup timed out or failed (status=${check_runs_status}); retrying."
+              sl_backoff_sleep "omar-quality-checkrun-lookup" "${check_run_attempt}"
+              continue
+            fi
+            quality_details_url="$(echo "${check_runs_json}" | jq -r '
+              [
+                .check_runs[]
+                | select((.name // "") == "Quality Summary")
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select((.app.slug // "") == "github-actions")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.completed_at // ""), (.id // 0)) | last | .details_url // ""
+            ')"
+            if [[ -z "${quality_details_url}" ]]; then
+              check_run_attempt=$((check_run_attempt + 1))
+              echo "Quality Summary check-run anchor is not available yet on ${TARGET_SHA}; waiting."
+              sl_backoff_sleep "omar-quality-checkrun-await" "${check_run_attempt}"
+              continue
+            fi
+            check_run_attempt=0
+            anchor_run_id="$(echo "${quality_details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+).*$#\1#p')"
+            if [[ -z "${anchor_run_id}" ]]; then
+              echo "::error::Unable to parse workflow run id from Quality Summary details URL (${quality_details_url})."
+              exit 1
+            fi
+            if [[ "${anchor_run_id}" != "${run_id}" ]]; then
+              echo "::error::Quality Summary anchor mismatch (selected_run=${run_id}, check_run_anchor=${anchor_run_id}, details_url=${quality_details_url})."
+              exit 1
+            fi
+            echo "quality_run_id=${run_id}" >> "$GITHUB_OUTPUT"
+            echo "Quality Summary gate passed via workflow run ${run_id} (${run_url})."
+            exit 0
+          done
+          echo "::error::Timed out waiting for Quality Summary check on ${TARGET_SHA}."
+          exit 1
+      - name: Bind Quality Summary promotion proof to target SHA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_RUN_ID: ${{ steps.wait_quality.outputs.quality_run_id }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          quality_run_id="$(echo "${QUALITY_RUN_ID}" | tr -d '\r' | xargs || true)"
+          target_sha="$(echo "${TARGET_SHA}" | tr -d '\r' | xargs || true)"
+          test -n "${quality_run_id}" || (echo "::error::Missing anchored quality_run_id output from Wait for Quality Summary gate." && exit 1)
+          test -n "${target_sha}" || (echo "::error::Missing TARGET_SHA for quality artifact binding." && exit 1)
+          rm -rf omar-quality-proof
+          mkdir -p omar-quality-proof
+          timeout --preserve-status 120s gh run download "${quality_run_id}" --name quality-summary-promotion-proof --dir omar-quality-proof
+          proof_file="omar-quality-proof/quality-summary.promotion-proof.json"
+          test -f "${proof_file}" || (echo "::error::Missing quality summary promotion proof artifact for quality run ${quality_run_id}." && exit 1)
+          proof_workflow="$(jq -r '.workflow // ""' "${proof_file}")"
+          proof_gate="$(jq -r '.gate // ""' "${proof_file}")"
+          proof_run_id="$(jq -r '.runId // ""' "${proof_file}")"
+          proof_head_sha="$(jq -r '.headSha // .commitSha // ""' "${proof_file}")"
+          proof_workflow_sha="$(jq -r '.workflowSha // ""' "${proof_file}")"
+          proof_artifact_sha="$(jq -r '.artifactSha256 // ""' "${proof_file}")"
+          if [[ "${proof_workflow}" != "quality-gates" ]] || [[ "${proof_gate}" != "Quality Summary" ]]; then
+            echo "::error::Invalid quality summary proof identity (workflow='${proof_workflow}', gate='${proof_gate}')."
+            exit 1
+          fi
+          if [[ "${proof_run_id}" != "${quality_run_id}" ]]; then
+            echo "::error::Quality summary proof runId mismatch (proof='${proof_run_id}', expected='${quality_run_id}')."
+            exit 1
+          fi
+          if [[ "${proof_head_sha}" != "${target_sha}" ]]; then
+            echo "::error::Quality summary proof head SHA mismatch (proof='${proof_head_sha}', expected='${target_sha}', workflow_sha='${proof_workflow_sha}')."
+            exit 1
+          fi
+          if [[ ! "${proof_artifact_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Quality summary proof artifact digest is missing or invalid."
+            exit 1
+          fi
+      - name: Validate and mask scan secrets
+        if: ${{ steps.verify_security_review.outputs.security_review_verified == 'true' && github.job == 'omar_gate' }}
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
-      - name: Validate OpenAI key secret for Omar LLM scan
-        shell: bash
-        env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+          test -n "${SENTINELAYER_TOKEN}" || (echo "::error::Missing SENTINELAYER_TOKEN" && exit 1)
+          test -n "${OPENAI_API_KEY}" || (echo "::error::Missing OPENAI_API_KEY" && exit 1)
+          if [[ -n "${SENTINELAYER_TOKEN}" ]]; then
+            echo "::add-mask::${SENTINELAYER_TOKEN}"
+          fi
+          if [[ -n "${OPENAI_API_KEY}" ]]; then
+            echo "::add-mask::${OPENAI_API_KEY}"
+          fi
+      - name: Enforce pinned Omar action SHA policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowlist_file=".github/security/action-sha-allowlist.txt"
+          test -f "${allowlist_file}" || (echo "::error::Missing ${allowlist_file}." && exit 1)
+          expected_sha="$(awk -F'=' '$1=="mrrCarter/sentinelayer-v1-action" {print $2}' "${allowlist_file}" | tr -d '[:space:]')"
+          test -n "${expected_sha}" || (echo "::error::Missing mrrCarter/sentinelayer-v1-action allowlist entry in ${allowlist_file}." && exit 1)
+          if [[ ! "${expected_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid Omar action allowlist SHA '${expected_sha}'."
+            exit 1
+          fi
+          configured_sha="$(grep -E "mrrCarter/sentinelayer-v1-action@[0-9a-f]{40}" .github/workflows/omar-gate.yml | head -n 1 | sed -E 's/.*@([0-9a-f]{40}).*/\1/')"
+          test -n "${configured_sha}" || (echo "::error::Unable to resolve Omar action SHA from .github/workflows/omar-gate.yml." && exit 1)
+          if [[ "${configured_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Omar action SHA drift detected (configured=${configured_sha}, allowlist=${expected_sha})."
+            exit 1
+          fi
+      - name: Validate pinned Omar model policy
+        shell: bash
+        env:
+          OMAR_MODEL_ID: ${{ env.OMAR_MODEL_ID }}
+          OMAR_FALLBACK_MODEL_ID: ${{ env.OMAR_FALLBACK_MODEL_ID }}
+          OMAR_MODEL_POLICY_SHA256: ${{ env.OMAR_MODEL_POLICY_SHA256 }}
+        run: |
+          set -euo pipefail
+          test -n "${OMAR_MODEL_ID}" || (echo "::error::Missing OMAR_MODEL_ID." && exit 1)
+          test -n "${OMAR_FALLBACK_MODEL_ID}" || (echo "::error::Missing OMAR_FALLBACK_MODEL_ID." && exit 1)
+          test -n "${OMAR_MODEL_POLICY_SHA256}" || (echo "::error::Missing OMAR_MODEL_POLICY_SHA256." && exit 1)
+          descriptor="${OMAR_MODEL_ID}|${OMAR_FALLBACK_MODEL_ID}"
+          resolved_sha="$(printf '%s' "${descriptor}" | sha256sum | awk '{print $1}')"
+          if [[ "${resolved_sha}" != "${OMAR_MODEL_POLICY_SHA256}" ]]; then
+            echo "::error::Omar model policy digest mismatch (expected=${OMAR_MODEL_POLICY_SHA256}, actual=${resolved_sha})."
+            exit 1
+          fi
+      - name: Resolve protected-branch gate policy
+        id: gate_policy
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          REF_NAME: ${{ github.ref_name || '' }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          THRESHOLDS_FILE: .github/security/omar-thresholds.json
+        run: |
+          set -euo pipefail
+          default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${default_branch}" ]]; then
+            default_branch="main"
+          fi
+          thresholds_file="$(echo "${THRESHOLDS_FILE}" | tr -d '\r' | xargs || true)"
+          test -n "${thresholds_file}" || (echo "::error::Missing threshold policy path." && exit 1)
+          test -f "${thresholds_file}" || (echo "::error::Missing threshold policy file '${thresholds_file}'." && exit 1)
+
+          severity_input="$(jq -r '.defaults.severity_gate // empty' "${thresholds_file}")"
+          p2_input="$(jq -r '.defaults.p2_max_allowed // empty' "${thresholds_file}")"
+          protected_severity_input="$(jq -r '.protected_branch_overrides.severity_gate // empty' "${thresholds_file}")"
+          protected_p2_input="$(jq -r '.protected_branch_overrides.p2_max_allowed // empty' "${thresholds_file}")"
+
+          case "${severity_input}" in
+            P0|P1|P2|none) ;;
+            *) echo "::error::Invalid defaults.severity_gate '${severity_input}' in ${thresholds_file}." ; exit 1 ;;
+          esac
+          case "${protected_severity_input}" in
+            P0|P1|P2|none) ;;
+            *) echo "::error::Invalid protected_branch_overrides.severity_gate '${protected_severity_input}' in ${thresholds_file}." ; exit 1 ;;
+          esac
+          case "${p2_input}" in ''|*[!0-9]*) echo "::error::Invalid defaults.p2_max_allowed '${p2_input}' in ${thresholds_file}." ; exit 1 ;; esac
+          case "${protected_p2_input}" in ''|*[!0-9]*) echo "::error::Invalid protected_branch_overrides.p2_max_allowed '${protected_p2_input}' in ${thresholds_file}." ; exit 1 ;; esac
+
+          protected_ref="false"
+          case "${EVENT_NAME}" in
+            pull_request)
+              if [[ "${PR_BASE_REF}" == "${default_branch}" ]]; then
+                protected_ref="true"
+              fi
+              ;;
+            push|workflow_dispatch)
+              if [[ "${REF_NAME}" == "${default_branch}" ]]; then
+                protected_ref="true"
+              fi
+              ;;
+          esac
+
+          severity_gate="${severity_input}"
+          p2_max_allowed="${p2_input}"
+          if [[ "${protected_ref}" == "true" ]]; then
+            severity_gate="${protected_severity_input}"
+            p2_max_allowed="${protected_p2_input}"
+          fi
+
+          echo "protected_ref=${protected_ref}" >> "$GITHUB_OUTPUT"
+          echo "severity_gate=${severity_gate}" >> "$GITHUB_OUTPUT"
+          echo "p2_max_allowed=${p2_max_allowed}" >> "$GITHUB_OUTPUT"
       - name: Run Omar Gate
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
@@ -77,10 +395,10 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
+          severity_gate: ${{ steps.gate_policy.outputs.severity_gate }}
+          model: ${{ env.OMAR_MODEL_ID }}
+          codex_model: ${{ env.OMAR_MODEL_ID }}
+          model_fallback: ${{ env.OMAR_FALLBACK_MODEL_ID }}
           use_codex: "true"
           codex_only: "false"
           llm_failure_policy: block
@@ -90,8 +408,8 @@ jobs:
           P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
           P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
           P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
-          P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          P2_MAX_ALLOWED: ${{ steps.gate_policy.outputs.p2_max_allowed }}
+          SEVERITY_GATE_SELECTED: ${{ steps.gate_policy.outputs.severity_gate }}
         run: |
           set -euo pipefail
           p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
@@ -104,12 +422,6 @@ jobs:
           case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
           case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
           case "${severity_gate}" in
-            P0)
-              if [ "${p0}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
-                exit 1
-              fi
-              ;;
             P1)
               if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
                 echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
@@ -126,9 +438,6 @@ jobs:
                 exit 1
               fi
               ;;
-            none)
-              echo "::notice::Omar Gate threshold enforcement disabled (severity_gate=none)."
-              ;;
             *)
               echo "::error::Invalid severity_gate value: ${severity_gate}"
               exit 1
@@ -138,19 +447,109 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
-          p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
+          severity_gate="${{ steps.gate_policy.outputs.severity_gate }}"
+          p2_max="${{ steps.gate_policy.outputs.p2_max_allowed }}"
+          protected_ref="${{ steps.gate_policy.outputs.protected_ref }}"
           threshold_line="P0=0, P1=0"
-          if [ "${severity_gate}" = "P0" ]; then
-            threshold_line="P0=0"
-          elif [ "${severity_gate}" = "P2" ]; then
+          if [ "${severity_gate}" = "P2" ]; then
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
-          elif [ "${severity_gate}" = "none" ]; then
-            threshold_line="none"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
           echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- model_policy: \`${{ env.OMAR_MODEL_ID }} | fallback=${{ env.OMAR_FALLBACK_MODEL_ID }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- model_policy_sha256: \`${{ env.OMAR_MODEL_POLICY_SHA256 }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- protected_ref_policy: \`${protected_ref}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Assert workflow outputs and artifacts exclude raw secrets
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          for secret_name in SENTINELAYER_TOKEN OPENAI_API_KEY; do
+            secret_value="$(printenv "${secret_name}" || true)"
+            if [[ -z "${secret_value}" ]]; then
+              continue
+            fi
+            if [[ -f "${GITHUB_STEP_SUMMARY}" ]] && grep -F -- "${secret_value}" "${GITHUB_STEP_SUMMARY}" >/dev/null; then
+              echo "::error::${secret_name} leaked into workflow summary."
+              exit 1
+            fi
+            scan_targets=()
+            if [[ -f "${GITHUB_STEP_SUMMARY}" ]]; then
+              scan_targets+=("${GITHUB_STEP_SUMMARY}")
+            fi
+            for candidate_path in \
+              ".sentinelayer/runs" \
+              ".sentinelayer/artifacts" \
+              "AUDIT_REPORT.md" \
+              "REVIEW_BRIEF.md" \
+              "FINDINGS.jsonl" \
+              "PACK_SUMMARY.json" \
+              "CODEBASE_INGEST_SUMMARY.md" \
+              "CODEBASE_INGEST_SUMMARY.json" \
+              "CODEBASE_INGEST.md" \
+              "CODEBASE_INGEST.json"; do
+              if [[ -e "${candidate_path}" ]]; then
+                scan_targets+=("${candidate_path}")
+              fi
+            done
+            for scan_target in "${scan_targets[@]}"; do
+              if [[ -d "${scan_target}" ]]; then
+                if grep -R -F --binary-files=without-match --exclude='*.tgz' --exclude='*.zip' -- "${secret_value}" "${scan_target}" >/dev/null; then
+                  echo "::error::${secret_name} detected in allowed output path '${scan_target}'."
+                  exit 1
+                fi
+              elif [[ -f "${scan_target}" ]]; then
+                if grep -F -- "${secret_value}" "${scan_target}" >/dev/null; then
+                  echo "::error::${secret_name} detected in allowed output file '${scan_target}'."
+                  exit 1
+                fi
+              fi
+            done
+          done
+
+  omar_gate_result:
+    name: Omar Gate
+    runs-on: ubuntu-22.04
+    if: ${{ always() }}
+    needs: [omar_gate_untrusted, omar_gate]
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve Omar profile outcome
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          TRUSTED_RESULT: ${{ needs.omar_gate.result }}
+          UNTRUSTED_RESULT: ${{ needs.omar_gate_untrusted.result }}
+        run: |
+          set -euo pipefail
+          trusted_result="$(echo "${TRUSTED_RESULT}" | tr -d '\r' | xargs || true)"
+          untrusted_result="$(echo "${UNTRUSTED_RESULT}" | tr -d '\r' | xargs || true)"
+          is_untrusted_pr="false"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]] || [[ "${HEAD_IS_FORK}" == "true" ]]; then
+              is_untrusted_pr="true"
+            fi
+          fi
+          if [[ "${is_untrusted_pr}" == "true" ]]; then
+            if [[ "${untrusted_result}" != "success" ]]; then
+              echo "::error::Untrusted Omar profile did not succeed (result='${untrusted_result}')."
+              exit 1
+            fi
+            echo "Omar Gate passed via untrusted deterministic profile."
+            exit 0
+          fi
+          if [[ "${trusted_result}" != "success" ]]; then
+            echo "::error::Trusted Omar profile did not succeed (result='${trusted_result}')."
+            exit 1
+          fi
+          echo "Omar Gate passed via trusted secrets-backed profile."

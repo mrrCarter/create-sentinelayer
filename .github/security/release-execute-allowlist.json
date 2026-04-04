@@ -1,0 +1,5 @@
+{
+  "schema_version": "1.0.0",
+  "description": "GitHub actors allowed to invoke release-publish workflow_dispatch with execute_mode=true.",
+  "allowed_actors": ["mrrCarter"]
+}

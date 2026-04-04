@@ -1,0 +1,1356 @@
+name: Release Publish
+# GitHub Actions does not support workflow-level timeout-minutes.
+# This workflow enforces bounded runtime via per-job timeout-minutes and a timeout-contract gate.
+
+on:
+  workflow_run:
+    workflows:
+      - Release
+    branches:
+      - main
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Semver tag to publish (vX.Y.Z)"
+        required: true
+        type: string
+      release_run_id:
+        description: "Release workflow run id to promote (required for workflow_dispatch)"
+        required: true
+        type: string
+      execute_mode:
+        description: "Allow controlled publish execution path for incident recovery"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Run validation and npm publish --dry-run only"
+        required: false
+        default: true
+        type: boolean
+      incident_id:
+        description: "Required when execute_mode=true (format: INC-xxxx)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.2.4"
+  RELEASE_RUN_MAX_AGE_HOURS: "72"
+  REQUIRED_CONTEXT_MAX_AGE_HOURS: "168"
+  WORKFLOW_MAX_AGE_MINUTES: "120"
+
+concurrency:
+  group: release-publish-${{ github.repository }}-release-run-${{ github.event_name == 'workflow_dispatch' && inputs.release_run_id || github.event_name == 'workflow_run' && github.event.workflow_run.id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  enforce-timeout-contract:
+    name: Enforce Timeout Contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify all release-publish jobs define timeout-minutes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/release-publish.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const parsed = YAML.parse(raw);
+          const jobs = parsed && typeof parsed === "object" ? parsed.jobs || {} : {};
+          const offenders = [];
+          for (const [jobId, job] of Object.entries(jobs)) {
+            if (!job || typeof job !== "object") {
+              continue;
+            }
+            const timeout = Number(job["timeout-minutes"]);
+            if (!Number.isFinite(timeout) || timeout <= 0) {
+              offenders.push(jobId);
+              continue;
+            }
+            if (timeout > 120) {
+              offenders.push(`${jobId} (timeout=${timeout})`);
+            }
+          }
+          if (offenders.length > 0) {
+            console.error(
+              `::error::release-publish timeout contract violation: ${offenders.join(", ")}.`
+            );
+            process.exit(1);
+          }
+          NODE
+
+  enforce-oidc-contract:
+    name: Enforce OIDC Contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify publish job enforces OIDC permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/release-publish.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const parsed = YAML.parse(raw);
+          const publishJob = parsed && parsed.jobs && parsed.jobs.publish ? parsed.jobs.publish : null;
+          if (!publishJob || typeof publishJob !== "object") {
+            console.error("::error::Missing release-publish 'publish' job.");
+            process.exit(1);
+          }
+          const permissions =
+            publishJob.permissions && typeof publishJob.permissions === "object"
+              ? publishJob.permissions
+              : {};
+          if (permissions["id-token"] !== "write") {
+            console.error(
+              "::error::release-publish OIDC contract violation: jobs.publish.permissions.id-token must be 'write'."
+            );
+            process.exit(1);
+          }
+          NODE
+
+  runtime-budget-guard:
+    name: Workflow Runtime Guard
+    runs-on: ubuntu-22.04
+    needs: [enforce-timeout-contract, enforce-oidc-contract]
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run_age_minutes: ${{ steps.guard.outputs.run_age_minutes }}
+    steps:
+      - name: Enforce workflow runtime budget
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW_MAX_AGE_MINUTES: ${{ env.WORKFLOW_MAX_AGE_MINUTES }}
+        run: |
+          set -euo pipefail
+          max_age_minutes="$(echo "${WORKFLOW_MAX_AGE_MINUTES:-120}" | tr -d '\r' | xargs || true)"
+          case "${max_age_minutes}" in ''|*[!0-9]*)
+            echo "::error::Invalid WORKFLOW_MAX_AGE_MINUTES value '${max_age_minutes}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${max_age_minutes}" -lt 5 ]]; then
+            echo "::error::WORKFLOW_MAX_AGE_MINUTES must be >= 5."
+            exit 1
+          fi
+          run_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${RUN_ID}" -H "Accept: application/vnd.github+json")"
+          run_created_at="$(echo "${run_json}" | jq -r '.created_at // ""')"
+          test -n "${run_created_at}" || (echo "::error::Unable to resolve run created_at for runtime guard." && exit 1)
+          run_created_epoch="$(date -u -d "${run_created_at}" +%s 2>/dev/null || true)"
+          now_epoch="$(date -u +%s)"
+          if [[ -z "${run_created_epoch}" ]] || ! [[ "${run_created_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to parse workflow run created_at '${run_created_at}'."
+            exit 1
+          fi
+          if [[ "${run_created_epoch}" -gt "${now_epoch}" ]]; then
+            echo "::error::Workflow run created_at '${run_created_at}' is in the future."
+            exit 1
+          fi
+          run_age_minutes="$(( (now_epoch - run_created_epoch) / 60 ))"
+          if [[ "${run_age_minutes}" -gt "${max_age_minutes}" ]]; then
+            echo "::error::Workflow runtime guard exceeded (${run_age_minutes}m > ${max_age_minutes}m). Cancel and rerun with a fresh release lock."
+            exit 1
+          fi
+          echo "run_age_minutes=${run_age_minutes}" >> "$GITHUB_OUTPUT"
+          echo "Workflow runtime guard passed (age=${run_age_minutes}m, max=${max_age_minutes}m)."
+
+  resolve-release-bundle:
+    name: Resolve Release Bundle
+    runs-on: ubuntu-22.04
+    needs: [runtime-budget-guard]
+    timeout-minutes: 10
+    environment: release-management
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+      release_run_id: ${{ steps.resolve.outputs.release_run_id }}
+      release_lock_key: ${{ steps.resolve.outputs.release_lock_key }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      incident_id: ${{ steps.resolve.outputs.incident_id }}
+      execute_mode: ${{ steps.resolve.outputs.execute_mode }}
+      already_published: ${{ steps.resolve.outputs.already_published }}
+      release_initiator: ${{ steps.resolve.outputs.release_initiator }}
+    steps:
+      - name: Verify release-management environment protections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          env_json="$(gh_api_json "repos/${REPO}/environments/release-management")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve publish target and verify release baseline
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          RAW_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          RAW_RELEASE_RUN_ID: ${{ inputs.release_run_id || '' }}
+          RAW_EXECUTE_MODE: ${{ inputs.execute_mode || 'false' }}
+          RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          RAW_INCIDENT_ID: ${{ inputs.incident_id || '' }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event || '' }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+          WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || '' }}
+          WORKFLOW_RUN_ACTOR: ${{ github.event.workflow_run.actor.login || '' }}
+          WORKFLOW_RUN_CREATED_AT: ${{ github.event.workflow_run.created_at || '' }}
+          WORKFLOW_RUN_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id || '' }}
+          WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          RELEASE_RUN_MAX_AGE_HOURS: ${{ env.RELEASE_RUN_MAX_AGE_HOURS }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          timeout --preserve-status 60s git fetch --force --tags origin
+          normalize_bool() {
+            local raw
+            raw="$(echo "${1:-false}" | tr -d '\r' | xargs || true)"
+            case "$(echo "${raw}" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) echo "true" ;;
+              0|false|no|off|'') echo "false" ;;
+              *) echo "::error::Invalid boolean value '${raw}'." ; exit 1 ;;
+            esac
+          }
+          resolve_release_tag_from_sha() {
+            local target_sha="$1"
+            git tag --points-at "${target_sha}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' | sort -V | tail -n 1 || true
+          }
+
+          release_tag=""
+          target_sha=""
+          release_run_id=""
+          dry_run="false"
+          incident_id=""
+          execute_mode="false"
+          release_run_created_at=""
+          already_published="false"
+          release_initiator="$(echo "${ACTOR}" | tr -d '\r' | xargs || true)"
+          release_run_max_age_hours="$(echo "${RELEASE_RUN_MAX_AGE_HOURS:-72}" | tr -d '\r' | xargs || true)"
+          case "${release_run_max_age_hours}" in ''|*[!0-9]*)
+            echo "::error::Invalid RELEASE_RUN_MAX_AGE_HOURS value '${release_run_max_age_hours}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${release_run_max_age_hours}" -lt 1 ]]; then
+            echo "::error::RELEASE_RUN_MAX_AGE_HOURS must be >= 1."
+            exit 1
+          fi
+          release_workflow_policy_file=".github/security/release-workflow-source-policy.json"
+          test -f "${release_workflow_policy_file}" || (echo "::error::Missing ${release_workflow_policy_file}." && exit 1)
+          release_workflow_path="$(jq -r '.release_workflow.path // ""' "${release_workflow_policy_file}")"
+          expected_release_workflow_id="$(jq -r '.release_workflow.workflow_id // ""' "${release_workflow_policy_file}")"
+          if [[ -z "${release_workflow_path}" ]]; then
+            echo "::error::release_workflow.path is required in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          case "${expected_release_workflow_id}" in ''|*[!0-9]*)
+            echo "::error::release_workflow.workflow_id must be a numeric value in ${release_workflow_policy_file}."
+            exit 1
+            ;;
+          esac
+          mapfile -t approved_release_workflow_shas < <(
+            jq -r '.release_workflow.approved_sha256[]? // empty' "${release_workflow_policy_file}" \
+              | awk 'NF {print tolower($0)}'
+          )
+          if [[ "${#approved_release_workflow_shas[@]}" -lt 1 ]]; then
+            echo "::error::release_workflow.approved_sha256 must include at least one digest in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          for approved_release_workflow_sha in "${approved_release_workflow_shas[@]}"; do
+            if [[ ! "${approved_release_workflow_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid release_workflow.approved_sha256 digest '${approved_release_workflow_sha}' in ${release_workflow_policy_file}."
+              exit 1
+            fi
+          done
+
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              release_tag="$(echo "${RAW_RELEASE_TAG}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${release_tag}" ]]; then
+                echo "::error::workflow_dispatch requires release_tag."
+                exit 1
+              fi
+              release_run_id="$(echo "${RAW_RELEASE_RUN_ID:-}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${release_run_id}" ]]; then
+                echo "::error::workflow_dispatch requires release_run_id from a successful Release workflow run."
+                exit 1
+              fi
+              case "${release_run_id}" in ''|*[!0-9]*)
+                echo "::error::release_run_id '${release_run_id}' must be a numeric workflow run id."
+                exit 1
+                ;;
+              esac
+              if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+                echo "::error::release_tag '${release_tag}' must match vX.Y.Z semver format."
+                exit 1
+              fi
+              input_execute_mode="$(normalize_bool "${RAW_EXECUTE_MODE:-false}")"
+              input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
+              incident_id="$(echo "${RAW_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
+              permission_json="$(gh_api_json_soft "repos/${REPO}/collaborators/${ACTOR}/permission" || true)"
+              permission="$(echo "${permission_json:-}" | jq -r '.permission // ""' 2>/dev/null || true)"
+              case "${permission}" in
+                admin|maintain) ;;
+                *)
+                  echo "::error::Actor '${ACTOR}' is not authorized to publish releases (permission='${permission}')."
+                  exit 1
+                  ;;
+              esac
+              if [[ "${input_execute_mode}" == "true" ]]; then
+                echo "::error::workflow_dispatch execute_mode=true is disabled by default. Use provenance-anchored workflow_run release path for publish mutation."
+                exit 1
+              fi
+              if [[ "${input_dry_run}" != "true" ]]; then
+                echo "::error::workflow_dispatch validation path requires dry_run=true; manual dispatch cannot mutate npm."
+                exit 1
+              fi
+              dry_run="true"
+              execute_mode="false"
+              incident_id=""
+              tag_ref_json="$(gh_api_json "repos/${REPO}/git/ref/tags/${release_tag}")"
+              ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
+              ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
+              test -n "${ref_sha}" || (echo "::error::Unable to resolve tag object SHA for '${release_tag}'." && exit 1)
+              target_sha="${ref_sha}"
+              if [[ "${ref_type}" == "tag" ]]; then
+                tag_json="$(gh_api_json "repos/${REPO}/git/tags/${ref_sha}")"
+                tag_target_type="$(echo "${tag_json}" | jq -r '.object.type // ""')"
+                if [[ "${tag_target_type}" != "commit" ]]; then
+                  echo "::error::Annotated tag '${release_tag}' must reference a commit object (received '${tag_target_type}')."
+                  exit 1
+                fi
+                target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
+              elif [[ "${ref_type}" != "commit" ]]; then
+                echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
+                exit 1
+              fi
+              test -n "${target_sha}" || (echo "::error::Unable to resolve commit SHA for tag '${release_tag}'." && exit 1)
+              target_commit_json="$(gh_api_json "repos/${REPO}/git/commits/${target_sha}")"
+              resolved_target_sha="$(echo "${target_commit_json}" | jq -r '.sha // ""')"
+              if [[ -z "${resolved_target_sha}" ]] || [[ "${resolved_target_sha}" != "${target_sha}" ]]; then
+                echo "::error::Tag '${release_tag}' must resolve to a concrete commit object (expected='${target_sha}', resolved='${resolved_target_sha}')."
+                exit 1
+              fi
+              dispatch_release_run_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}")"
+              dispatch_release_run_path="$(echo "${dispatch_release_run_json}" | jq -r '((.path // "") | split("@")[0])')"
+              dispatch_release_run_conclusion="$(echo "${dispatch_release_run_json}" | jq -r '.conclusion // ""')"
+              dispatch_release_run_status="$(echo "${dispatch_release_run_json}" | jq -r '.status // ""')"
+              dispatch_release_run_head_sha="$(echo "${dispatch_release_run_json}" | jq -r '.head_sha // ""')"
+              dispatch_release_run_event="$(echo "${dispatch_release_run_json}" | jq -r '.event // ""')"
+              dispatch_release_run_head_repo="$(echo "${dispatch_release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+              dispatch_release_workflow_id="$(echo "${dispatch_release_run_json}" | jq -r '.workflow_id // ""')"
+              release_run_created_at="$(echo "${dispatch_release_run_json}" | jq -r '.created_at // ""')"
+              if [[ "${dispatch_release_run_path}" != "${release_workflow_path}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' must reference ${release_workflow_path} (received '${dispatch_release_run_path}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_workflow_id}" != "${expected_release_workflow_id}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' workflow_id mismatch (expected='${expected_release_workflow_id}', actual='${dispatch_release_workflow_id}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_status}" != "completed" ]] || [[ "${dispatch_release_run_conclusion}" != "success" ]]; then
+                echo "::error::release_run_id '${release_run_id}' is not a successful completed release run (status='${dispatch_release_run_status}', conclusion='${dispatch_release_run_conclusion}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_head_repo}" != "${REPO}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' head repository mismatch (expected '${REPO}', received '${dispatch_release_run_head_repo}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_event}" != "push" ]] && [[ "${dispatch_release_run_event}" != "workflow_dispatch" ]]; then
+                echo "::error::release_run_id '${release_run_id}' must originate from push/workflow_dispatch (received '${dispatch_release_run_event}')."
+                exit 1
+              fi
+              if [[ "${dispatch_release_run_head_sha}" != "${target_sha}" ]]; then
+                echo "::error::release_run_id '${release_run_id}' head sha mismatch (run=${dispatch_release_run_head_sha}, tag=${target_sha})."
+                exit 1
+              fi
+              ;;
+            workflow_run)
+              if [[ "${WORKFLOW_RUN_CONCLUSION}" != "success" ]]; then
+                echo "::error::workflow_run trigger requires successful upstream Release conclusion."
+                exit 1
+              fi
+              default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${default_branch}" ]]; then
+                default_branch="main"
+              fi
+              workflow_run_head_branch="$(echo "${WORKFLOW_RUN_HEAD_BRANCH:-}" | tr -d '\r' | xargs || true)"
+              if [[ -z "${workflow_run_head_branch}" ]]; then
+                echo "::error::workflow_run source must include a resolved head branch."
+                exit 1
+              fi
+              if [[ "${workflow_run_head_branch}" != "${default_branch}" ]]; then
+                echo "::error::workflow_run source branch '${workflow_run_head_branch}' is not the protected default branch '${default_branch}'."
+                exit 1
+              fi
+              normalized_run_path="$(echo "${WORKFLOW_RUN_PATH}" | sed -E 's/@.*$//')"
+              workflow_run_workflow_id="$(echo "${WORKFLOW_RUN_WORKFLOW_ID:-}" | tr -d '\r' | xargs || true)"
+              if [[ "${normalized_run_path}" != "${release_workflow_path}" ]]; then
+                echo "::error::workflow_run source path must be ${release_workflow_path} (received '${WORKFLOW_RUN_PATH}')."
+                exit 1
+              fi
+              if [[ "${workflow_run_workflow_id}" != "${expected_release_workflow_id}" ]]; then
+                echo "::error::workflow_run source workflow_id mismatch (expected='${expected_release_workflow_id}', actual='${workflow_run_workflow_id}')."
+                exit 1
+              fi
+              if [[ "${WORKFLOW_RUN_HEAD_REPO}" != "${REPO}" ]]; then
+                echo "::error::workflow_run head repository mismatch (expected '${REPO}', received '${WORKFLOW_RUN_HEAD_REPO}')."
+                exit 1
+              fi
+              if [[ "${WORKFLOW_RUN_EVENT}" != "push" && "${WORKFLOW_RUN_EVENT}" != "workflow_dispatch" ]]; then
+                echo "::error::workflow_run source event must be push or workflow_dispatch (received '${WORKFLOW_RUN_EVENT}')."
+                exit 1
+              fi
+              target_sha="$(echo "${WORKFLOW_RUN_HEAD_SHA}" | tr -d '\r' | xargs || true)"
+              test -n "${target_sha}" || (echo "::error::workflow_run head_sha is required." && exit 1)
+              release_tag="$(resolve_release_tag_from_sha "${target_sha}")"
+              if [[ -z "${release_tag}" ]]; then
+                echo "::error::Unable to resolve semver tag pointing at release head sha '${target_sha}'."
+                exit 1
+              fi
+              dry_run="false"
+              release_run_id="$(echo "${WORKFLOW_RUN_ID}" | tr -d '\r' | xargs || true)"
+              execute_mode="true"
+              release_run_created_at="$(echo "${WORKFLOW_RUN_CREATED_AT:-}" | tr -d '\r' | xargs || true)"
+              workflow_run_actor="$(echo "${WORKFLOW_RUN_ACTOR:-}" | tr -d '\r' | xargs || true)"
+              if [[ -n "${workflow_run_actor}" ]]; then
+                release_initiator="${workflow_run_actor}"
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported trigger '${EVENT_NAME}' for release-publish workflow."
+              exit 1
+              ;;
+          esac
+
+          test -n "${target_sha}" || (echo "::error::Unable to resolve target release commit SHA." && exit 1)
+          release_workflow_blob=""
+          if ! release_workflow_blob="$(git show "${target_sha}:${release_workflow_path}" 2>/dev/null)"; then
+            echo "::error::Unable to read ${release_workflow_path} at target commit ${target_sha}."
+            exit 1
+          fi
+          release_workflow_sha="$(printf '%s' "${release_workflow_blob}" | sha256sum | awk '{print $1}')"
+          if [[ ! "${release_workflow_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to compute ${release_workflow_path} digest at target commit ${target_sha}."
+            exit 1
+          fi
+          release_workflow_sha_approved="false"
+          for approved_release_workflow_sha in "${approved_release_workflow_shas[@]}"; do
+            if [[ "${release_workflow_sha}" == "${approved_release_workflow_sha}" ]]; then
+              release_workflow_sha_approved="true"
+              break
+            fi
+          done
+          if [[ "${release_workflow_sha_approved}" != "true" ]]; then
+            echo "::error::${release_workflow_path} digest ${release_workflow_sha} for target ${target_sha} is not approved in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/${expected_release_workflow_id}/runs?head_sha=${target_sha}&per_page=30")"
+          resolved_release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path "${release_workflow_path}" --arg repo "${REPO}" --arg workflowId "${expected_release_workflow_id}" '
+            [.workflow_runs[]
+              | select((.head_sha // "") == $sha)
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.workflow_id // 0) | tostring) == $workflowId)
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select((.event // "") == "push" or (.event // "") == "workflow_dispatch")
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .id // empty
+          ')"
+          test -n "${resolved_release_run_id}" || (echo "::error::No successful ${release_workflow_path} run found for tag '${release_tag}' (${target_sha})." && exit 1)
+          if [[ -n "${release_run_id}" ]]; then
+            release_run_candidates="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path "${release_workflow_path}" --arg repo "${REPO}" --arg workflowId "${expected_release_workflow_id}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select(((.workflow_id // 0) | tostring) == $workflowId)
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select((.event // "") == "push" or (.event // "") == "workflow_dispatch")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | (.id | tostring)
+              ]
+            ')"
+            if ! echo "${release_run_candidates}" | jq -e --arg selected "${release_run_id}" 'index($selected) != null' >/dev/null; then
+              echo "::error::release_run_id '${release_run_id}' is not a valid successful release run for tag '${release_tag}' (${target_sha})."
+              exit 1
+            fi
+          fi
+          if [[ -z "${release_run_id}" ]]; then
+            release_run_id="${resolved_release_run_id}"
+          fi
+          if [[ -z "${release_run_created_at}" ]]; then
+            release_run_created_at="$(echo "${release_runs_json}" | jq -r --arg selected "${release_run_id}" '
+              [.workflow_runs[]
+                | select((.id | tostring) == $selected)
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .created_at // empty
+            ')"
+          fi
+          test -n "${release_run_created_at}" || (echo "::error::Unable to resolve created_at for release run '${release_run_id}'." && exit 1)
+          release_run_created_epoch="$(date -u -d "${release_run_created_at}" +%s 2>/dev/null || true)"
+          now_epoch="$(date -u +%s)"
+          if [[ -z "${release_run_created_epoch}" ]] || ! [[ "${release_run_created_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to parse release run created_at '${release_run_created_at}'."
+            exit 1
+          fi
+          if [[ "${release_run_created_epoch}" -gt "${now_epoch}" ]]; then
+            echo "::error::Release run '${release_run_id}' has future created_at '${release_run_created_at}'."
+            exit 1
+          fi
+          release_run_age_hours="$(( (now_epoch - release_run_created_epoch) / 3600 ))"
+          if [[ "${release_run_age_hours}" -gt "${release_run_max_age_hours}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' is stale (age=${release_run_age_hours}h > max ${release_run_max_age_hours}h)."
+            exit 1
+          fi
+          release_lock_key="$(printf '%s' "${release_tag}:${target_sha}" | sha256sum | awk '{print $1}')"
+          test -n "${release_lock_key}" || (echo "::error::Unable to compute release lock key." && exit 1)
+          release_version="${release_tag#v}"
+          npm_probe_status=0
+          npm_probe_error_file="$(mktemp)"
+          set +e
+          published_version="$(timeout --preserve-status 30s npm view "create-sentinelayer@${release_version}" version --json 2>"${npm_probe_error_file}" | jq -r 'if type == "string" then . elif type == "array" then .[0] // "" else "" end')"
+          npm_probe_status=$?
+          set -e
+          if [[ "${npm_probe_status}" -ne 0 ]]; then
+            probe_stderr="$(cat "${npm_probe_error_file}" 2>/dev/null || true)"
+            if echo "${probe_stderr}" | grep -qiE 'E404|404 Not Found|No match found'; then
+              published_version=""
+            else
+              echo "${probe_stderr}" >&2
+              echo "::error::Unable to verify existing npm publication for create-sentinelayer@${release_version}."
+              rm -f "${npm_probe_error_file}" || true
+              exit 1
+            fi
+          fi
+          rm -f "${npm_probe_error_file}" || true
+          if [[ "${published_version}" == "${release_version}" ]]; then
+            already_published="true"
+            echo "::notice::create-sentinelayer@${release_version} is already published; forcing dry_run short-circuit."
+            dry_run="true"
+            execute_mode="false"
+          fi
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
+          echo "release_run_id=${release_run_id}" >> "$GITHUB_OUTPUT"
+          echo "release_lock_key=${release_lock_key}" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+          echo "incident_id=${incident_id}" >> "$GITHUB_OUTPUT"
+          echo "execute_mode=${execute_mode}" >> "$GITHUB_OUTPUT"
+          echo "already_published=${already_published}" >> "$GITHUB_OUTPUT"
+          echo "release_initiator=${release_initiator}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), lock=${release_lock_key}, dry_run=${dry_run}, execute_mode=${execute_mode}, already_published=${already_published}, trigger=${EVENT_NAME}."
+
+      - name: Verify branch protection and required contexts for publish target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          RELEASE_RUN_ID: ${{ steps.resolve.outputs.release_run_id }}
+          REQUIRED_CONTEXT_MAX_AGE_HOURS: ${{ env.REQUIRED_CONTEXT_MAX_AGE_HOURS }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          target_sha="$(echo "${TARGET_SHA:-}" | tr -d '\r' | xargs || true)"
+          test -n "${target_sha}" || (echo "::error::Missing target SHA for publish target governance checks." && exit 1)
+          release_run_id="$(echo "${RELEASE_RUN_ID:-}" | tr -d '\r' | xargs || true)"
+          test -n "${release_run_id}" || (echo "::error::Missing release run id for required-context verification." && exit 1)
+          required_context_max_age_hours="$(echo "${REQUIRED_CONTEXT_MAX_AGE_HOURS:-168}" | tr -d '\r' | xargs || true)"
+          case "${required_context_max_age_hours}" in ''|*[!0-9]*)
+            echo "::error::Invalid REQUIRED_CONTEXT_MAX_AGE_HOURS value '${required_context_max_age_hours}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${required_context_max_age_hours}" -lt 1 ]]; then
+            echo "::error::REQUIRED_CONTEXT_MAX_AGE_HOURS must be >= 1."
+            exit 1
+          fi
+          now_epoch="$(date -u +%s)"
+          release_workflow_policy_file=".github/security/release-workflow-source-policy.json"
+          test -f "${release_workflow_policy_file}" || (echo "::error::Missing ${release_workflow_policy_file}." && exit 1)
+          release_workflow_path="$(jq -r '.release_workflow.path // ""' "${release_workflow_policy_file}")"
+          expected_release_workflow_id="$(jq -r '.release_workflow.workflow_id // ""' "${release_workflow_policy_file}")"
+          if [[ -z "${release_workflow_path}" ]]; then
+            echo "::error::release_workflow.path is required in ${release_workflow_policy_file}."
+            exit 1
+          fi
+          case "${expected_release_workflow_id}" in ''|*[!0-9]*)
+            echo "::error::release_workflow.workflow_id must be numeric in ${release_workflow_policy_file}."
+            exit 1
+            ;;
+          esac
+          release_run_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}")"
+          release_run_status="$(echo "${release_run_json}" | jq -r '.status // ""')"
+          release_run_conclusion="$(echo "${release_run_json}" | jq -r '.conclusion // ""')"
+          release_run_path="$(echo "${release_run_json}" | jq -r '((.path // "") | split("@")[0])')"
+          release_run_workflow_id="$(echo "${release_run_json}" | jq -r '.workflow_id // ""')"
+          release_run_head_sha="$(echo "${release_run_json}" | jq -r '.head_sha // ""')"
+          release_run_event="$(echo "${release_run_json}" | jq -r '.event // ""')"
+          release_run_head_repo="$(echo "${release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+          if [[ "${release_run_status}" != "completed" ]] || [[ "${release_run_conclusion}" != "success" ]]; then
+            echo "::error::release_run_id '${release_run_id}' is not a successful completed release run (status='${release_run_status}', conclusion='${release_run_conclusion}')."
+            exit 1
+          fi
+          if [[ "${release_run_path}" != "${release_workflow_path}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' must reference ${release_workflow_path} (received '${release_run_path}')."
+            exit 1
+          fi
+          if [[ "${release_run_workflow_id}" != "${expected_release_workflow_id}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' workflow_id mismatch (expected='${expected_release_workflow_id}', actual='${release_run_workflow_id}')."
+            exit 1
+          fi
+          if [[ "${release_run_head_sha}" != "${target_sha}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' head sha mismatch (release='${release_run_head_sha}', target='${target_sha}')."
+            exit 1
+          fi
+          if [[ "${release_run_head_repo}" != "${REPO}" ]]; then
+            echo "::error::release_run_id '${release_run_id}' repository mismatch (expected='${REPO}', actual='${release_run_head_repo}')."
+            exit 1
+          fi
+          if [[ "${release_run_event}" != "push" ]] && [[ "${release_run_event}" != "workflow_dispatch" ]]; then
+            echo "::error::release_run_id '${release_run_id}' event '${release_run_event}' is not allowlisted."
+            exit 1
+          fi
+          release_run_jobs_json="$(gh_api_json "repos/${REPO}/actions/runs/${release_run_id}/jobs?per_page=100")"
+          required_release_jobs=(
+            "Verify Required Checks"
+            "Release Preflight (Verify + Security)"
+            "Rollback Readiness"
+          )
+          for required_release_job in "${required_release_jobs[@]}"; do
+            required_release_job_count="$(echo "${release_run_jobs_json}" | jq -r --arg name "${required_release_job}" '
+              [
+                .jobs[]
+                | select((.name // "") == $name)
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+              ] | length
+            ')"
+            if [[ "${required_release_job_count}" -lt 1 ]]; then
+              echo "::error::release_run_id '${release_run_id}' is missing successful upstream gate-chain job '${required_release_job}'."
+              exit 1
+            fi
+          done
+          branch_name="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${branch_name}" ]]; then
+            branch_name="main"
+          fi
+
+          protection_json="$(gh_api_json "repos/${REPO}/branches/${branch_name}/protection")"
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [[ "${strict_checks}" != "true" ]]; then
+            echo "::error::Branch protection for '${branch_name}' must enforce strict required checks."
+            exit 1
+          fi
+          required_review_count="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')"
+          if [[ "${required_review_count}" -lt 1 ]]; then
+            echo "::error::Branch protection for '${branch_name}' must require at least one approving review."
+            exit 1
+          fi
+
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
+          required_context_count="$(jq -r '.requiredContexts | length // 0' "${required_context_manifest}")"
+          if [[ "${required_context_count}" -lt 1 ]]; then
+            echo "::error::No required contexts defined in ${required_context_manifest}."
+            exit 1
+          fi
+          for critical_context in "Quality Summary" "Omar Gate"; do
+            if ! jq -e --arg context "${critical_context}" '.requiredContexts[] | select((.name // "") == $context)' "${required_context_manifest}" >/dev/null; then
+              echo "::error::Required context manifest must include critical gate '${critical_context}'."
+              exit 1
+            fi
+          done
+          configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
+          mapfile -t required_contexts < <(jq -c '.requiredContexts[]' "${required_context_manifest}")
+          check_runs_json="$(gh_api_json "repos/${REPO}/commits/${target_sha}/check-runs?per_page=100")"
+          validated_context_names=()
+          for required_context_json in "${required_contexts[@]}"; do
+            required_context="$(echo "${required_context_json}" | jq -r '.name // ""')"
+            workflow_path="$(echo "${required_context_json}" | jq -r '.workflowPath // ""')"
+            allowed_events_json="$(echo "${required_context_json}" | jq -c '.allowedEvents // []')"
+            if [[ -z "${required_context}" ]] || [[ -z "${workflow_path}" ]]; then
+              echo "::error::Invalid required context contract entry: ${required_context_json}"
+              exit 1
+            fi
+            if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
+              echo "::error::Branch protection for '${branch_name}' is missing required status context '${required_context}'."
+              exit 1
+            fi
+            matched_check="$(echo "${check_runs_json}" | jq -c --arg name "${required_context}" '
+              [.check_runs[]
+                | select((.name // "") == $name)
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select((.app.slug // "") == "github-actions")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            if [[ -z "${matched_check}" ]]; then
+              echo "::error::Required context '${required_context}' is missing a successful check run on commit ${target_sha}."
+              exit 1
+            fi
+            check_completed_at="$(echo "${matched_check}" | jq -r '.completed_at // ""')"
+            check_completed_epoch="$(date -u -d "${check_completed_at}" +%s 2>/dev/null || true)"
+            if [[ -z "${check_completed_epoch}" ]] || ! [[ "${check_completed_epoch}" =~ ^[0-9]+$ ]]; then
+              echo "::error::Required context '${required_context}' returned unparsable completed_at timestamp '${check_completed_at}'."
+              exit 1
+            fi
+            if [[ "${check_completed_epoch}" -gt "${now_epoch}" ]]; then
+              echo "::error::Required context '${required_context}' has future completed_at '${check_completed_at}'."
+              exit 1
+            fi
+            check_age_hours="$(( (now_epoch - check_completed_epoch) / 3600 ))"
+            if [[ "${check_age_hours}" -gt "${required_context_max_age_hours}" ]]; then
+              echo "::error::Required context '${required_context}' is stale (${check_age_hours}h > ${required_context_max_age_hours}h)."
+              exit 1
+            fi
+            details_url="$(echo "${matched_check}" | jq -r '.details_url // ""')"
+            run_id="$(echo "${details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+)/?.*$#\1#p')"
+            if [[ -z "${run_id}" ]]; then
+              echo "::error::Unable to resolve workflow run id from check details_url '${details_url}' for context '${required_context}'."
+              exit 1
+            fi
+            run_json="$(gh_api_json "repos/${REPO}/actions/runs/${run_id}")"
+            run_path="$(echo "${run_json}" | jq -r '((.path // "") | split("@")[0])')"
+            run_head_sha="$(echo "${run_json}" | jq -r '.head_sha // ""')"
+            run_event="$(echo "${run_json}" | jq -r '.event // ""')"
+            run_head_repo="$(echo "${run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+            if [[ "${run_path}" != "${workflow_path}" ]]; then
+              echo "::error::Required context '${required_context}' run path mismatch (expected='${workflow_path}', actual='${run_path}')."
+              exit 1
+            fi
+            if [[ "${run_head_sha}" != "${target_sha}" ]]; then
+              echo "::error::Required context '${required_context}' run ${run_id} head_sha mismatch (expected='${target_sha}', actual='${run_head_sha}')."
+              exit 1
+            fi
+            if [[ "${run_head_repo}" != "${REPO}" ]]; then
+              echo "::error::Required context '${required_context}' run ${run_id} repository mismatch (expected='${REPO}', actual='${run_head_repo}')."
+              exit 1
+            fi
+            if ! echo "${allowed_events_json}" | jq -e --arg event "${run_event}" 'index($event) != null' >/dev/null; then
+              echo "::error::Required context '${required_context}' run ${run_id} event '${run_event}' is not allowlisted by policy."
+              exit 1
+            fi
+            validated_context_names+=("${required_context}")
+          done
+          for critical_context in "Quality Summary" "Omar Gate"; do
+            if ! printf '%s\n' "${validated_context_names[@]}" | grep -Fx -- "${critical_context}" >/dev/null; then
+              echo "::error::Critical gate '${critical_context}' did not validate for release run '${release_run_id}' and target '${target_sha}'."
+              exit 1
+            fi
+          done
+          echo "Publish target ${target_sha} satisfies branch-protection required context checks."
+
+  verify-provenance:
+    name: Verify Release Provenance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [resolve-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    environment: release-management
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RELEASE_RUN_ID: ${{ needs.resolve-release-bundle.outputs.release_run_id }}
+      TARGET_SHA: ${{ needs.resolve-release-bundle.outputs.target_sha }}
+      RELEASE_TAG: ${{ needs.resolve-release-bundle.outputs.release_tag }}
+    steps:
+      - name: Download immutable release artifact bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${RELEASE_RUN_ID}" || (echo "::error::Missing release workflow run id." && exit 1)
+          timeout --preserve-status 120s gh run download "${RELEASE_RUN_ID}" --name create-sentinelayer-release-bundle --dir provenance-proof
+
+      - name: Verify promoted quality artifact attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < provenance-proof/create-sentinelayer.tarball)"
+          tarball_path="provenance-proof/${tarball_name}"
+          expected_sha="$(awk 'NF {print $1; exit}' provenance-proof/create-sentinelayer.sha256)"
+          manifest_path="provenance-proof/quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
+          test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
+          test -f "${tarball_path}" || (echo "::error::Tarball '${tarball_name}' missing from release artifact bundle." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_commit="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          if [[ "${manifest_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release artifact digest mismatch between manifest (${manifest_sha}) and promoted tarball digest (${expected_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Release artifact manifest commit mismatch (manifest=${manifest_commit}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          timeout --preserve-status 90s gh attestation verify "${tarball_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > provenance-proof/release-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' provenance-proof/release-attestation.verify.json >/dev/null; then
+            echo "::error::Release artifact attestation does not include expected digest ${expected_sha}."
+            exit 1
+          fi
+          echo "Release provenance verified for ${RELEASE_TAG} (${TARGET_SHA})."
+
+  prepare-release-bundle:
+    name: Prepare Release Bundle
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [resolve-release-bundle, verify-provenance]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    environment: release-management
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.resolve-release-bundle.outputs.release_tag }}
+      TARGET_SHA: ${{ needs.resolve-release-bundle.outputs.target_sha }}
+      RELEASE_RUN_ID: ${{ needs.resolve-release-bundle.outputs.release_run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+
+      - name: Download immutable release artifact bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${RELEASE_RUN_ID}" || (echo "::error::Missing release workflow run id." && exit 1)
+          timeout --preserve-status 120s gh run download "${RELEASE_RUN_ID}" --name create-sentinelayer-release-bundle --dir release-bundle
+
+      - name: Verify immutable artifact promotion lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_path="release-bundle/quality-proof/quality-build.manifest.json"
+          lock_path="release-bundle/quality-proof/quality-release-input.lock.json"
+          invariant_path="release-bundle/quality-proof/quality-promotion-invariant.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
+          test -f "${lock_path}" || (echo "::error::Missing quality release-input lock ${lock_path} in release artifact bundle." && exit 1)
+          test -f "${invariant_path}" || (echo "::error::Missing quality promotion invariant ${invariant_path} in release artifact bundle." && exit 1)
+          tarball_name="$(tr -d '\r\n' < release-bundle/create-sentinelayer.tarball)"
+          expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Missing promoted release tarball digest." && exit 1)
+          manifest_artifact="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_commit="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_run_id="$(jq -r '.runId // ""' "${manifest_path}")"
+          lock_artifact="$(jq -r '.artifactName // ""' "${lock_path}")"
+          lock_sha="$(jq -r '.artifactSha256 // ""' "${lock_path}")"
+          lock_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${lock_path}")"
+          lock_commit="$(jq -r '.sourceCommitSha // ""' "${lock_path}")"
+          lock_run_id="$(jq -r '.sourceRunId // ""' "${lock_path}")"
+          invariant_artifact="$(jq -r '.artifactName // ""' "${invariant_path}")"
+          invariant_sha="$(jq -r '.artifactSha256 // ""' "${invariant_path}")"
+          invariant_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${invariant_path}")"
+          invariant_commit="$(jq -r '.sourceCommitSha // ""' "${invariant_path}")"
+          invariant_run_id="$(jq -r '.sourceRunId // ""' "${invariant_path}")"
+          if [[ "${manifest_artifact}" != "${tarball_name}" ]] || [[ "${manifest_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release artifact lineage mismatch between promoted files and quality manifest."
+            exit 1
+          fi
+          if [[ "${lock_artifact}" != "${manifest_artifact}" ]] || [[ "${lock_sha}" != "${manifest_sha}" ]] || [[ "${lock_rebuild_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Release-input lock mismatch with quality manifest."
+            exit 1
+          fi
+          if [[ "${lock_commit}" != "${manifest_commit}" ]] || [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Release commit mismatch (lock=${lock_commit}, manifest=${manifest_commit}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ "${lock_run_id}" != "${manifest_run_id}" ]] || [[ "${manifest_run_id}" != "${RELEASE_RUN_ID}" ]]; then
+            echo "::error::Release run mismatch (lock=${lock_run_id}, manifest=${manifest_run_id}, release=${RELEASE_RUN_ID})."
+            exit 1
+          fi
+          if [[ "${invariant_artifact}" != "${manifest_artifact}" ]] || [[ "${invariant_sha}" != "${manifest_sha}" ]] || [[ "${invariant_rebuild_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Release promotion invariant mismatch with quality manifest."
+            exit 1
+          fi
+          if [[ "${invariant_commit}" != "${manifest_commit}" ]] || [[ "${invariant_run_id}" != "${manifest_run_id}" ]]; then
+            echo "::error::Release promotion invariant source mismatch (commit/run) with quality manifest."
+            exit 1
+          fi
+
+      - name: Verify promoted quality artifact attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          TARBALL_PATH="release-bundle/${TARBALL_NAME}"
+          test -f "${TARBALL_PATH}" || (echo "::error::Tarball '${TARBALL_NAME}' missing from release artifact bundle." && exit 1)
+          expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          timeout --preserve-status 90s gh attestation verify "${TARBALL_PATH}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > release-bundle/release-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' release-bundle/release-attestation.verify.json >/dev/null; then
+            echo "::error::Release artifact attestation does not include expected digest ${expected_sha}."
+            exit 1
+          fi
+
+      - name: Verify artifact digest and deterministic rebuild proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-bundle && sha256sum -c create-sentinelayer.sha256)
+          baseline_hash="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          rebuild_hash="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.rebuild.sha256)"
+          if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
+            echo "::error::Deterministic rebuild proof failed (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
+            exit 1
+          fi
+
+      - name: Emit manual-dispatch validation evidence
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          INCIDENT_ID: ${{ needs.resolve-release-bundle.outputs.incident_id }}
+          RELEASE_TAG: ${{ needs.resolve-release-bundle.outputs.release_tag }}
+          TARGET_SHA: ${{ needs.resolve-release-bundle.outputs.target_sha }}
+          EXECUTE_MODE: ${{ needs.resolve-release-bundle.outputs.execute_mode }}
+          DRY_RUN: ${{ needs.resolve-release-bundle.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          cat > release-bundle/dispatch-validation-evidence.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release-publish",
+            "runId": "${GITHUB_RUN_ID}",
+            "actor": "${GITHUB_ACTOR}",
+            "releaseTag": "${RELEASE_TAG}",
+            "targetSha": "${TARGET_SHA}",
+            "executeMode": "${EXECUTE_MODE}",
+            "dryRun": "${DRY_RUN}",
+            "incidentId": "${INCIDENT_ID}",
+            "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
+      - name: Validate packaged CLI install
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          TARBALL_PATH="release-bundle/${TARBALL_NAME}"
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "${TARBALL_PATH}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
+
+      - name: Upload validated release bundle
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: validated-release-bundle
+          path: release-bundle
+          if-no-files-found: error
+
+  publish-dry-run:
+    name: Publish Dry Run
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [resolve-release-bundle, prepare-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    if: ${{ needs.resolve-release-bundle.outputs.dry_run == 'true' }}
+    environment: release-management
+    permissions:
+      contents: read
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+
+      - name: Download validated release bundle
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: validated-release-bundle
+          path: validated-release-bundle
+
+      - name: Execute npm publish dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
+          npm publish "validated-release-bundle/release-bundle/${tarball_name}" --access public --provenance --dry-run
+
+  authorize-production-publish:
+    name: Authorize Production Publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [resolve-release-bundle, prepare-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    if: ${{ needs.resolve-release-bundle.outputs.execute_mode == 'true' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    environment: production
+    outputs:
+      approver_login: ${{ steps.approval.outputs.approver_login }}
+      approval_count: ${{ steps.approval.outputs.approval_count }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Confirm protected publish approval
+        id: approval
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator identity for dual-control authorization."
+            exit 1
+          fi
+          approvals_json="$(gh_api_json "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals")"
+          approver_count="$(echo "${approvals_json}" | jq -r '[.[] | select((.state // "") == "approved") | (.user.login // empty)] | unique | length')"
+          selected_approver="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator)] | unique | first // empty')"
+          if [[ "${approver_count}" -lt 1 ]]; then
+            echo "::error::No production approval records found for this publish run."
+            exit 1
+          fi
+          if [[ -z "${selected_approver}" ]]; then
+            echo "::error::Dual-control violation: initiator '${initiator}' must differ from production approver."
+            exit 1
+          fi
+          echo "approver_login=${selected_approver}" >> "$GITHUB_OUTPUT"
+          echo "approval_count=${approver_count}" >> "$GITHUB_OUTPUT"
+          echo "Production publish authorization approved by '${selected_approver}' (initiator='${initiator}', approvals=${approver_count})."
+
+  second-human-publish-gate:
+    name: Second Human Publish Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    if: ${{ needs.resolve-release-bundle.outputs.execute_mode == 'true' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    environment: release-management
+    outputs:
+      second_approver_login: ${{ steps.second.outputs.second_approver_login }}
+      second_approval_count: ${{ steps.second.outputs.second_approval_count }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Confirm second human approval gate
+        id: second
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
+          PRIMARY_APPROVER: ${{ needs.authorize-production-publish.outputs.approver_login || '' }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          primary_approver="$(echo "${PRIMARY_APPROVER}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator identity for second-human publish gate."
+            exit 1
+          fi
+          if [[ -z "${primary_approver}" ]]; then
+            echo "::error::Missing primary production approver identity for second-human publish gate."
+            exit 1
+          fi
+          approvals_json="$(gh_api_json "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals")"
+          second_approver="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" --arg primary "${primary_approver}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator) | select(. != $primary)] | unique | first // empty')"
+          second_count="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" --arg primary "${primary_approver}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator) | select(. != $primary)] | unique | length')"
+          if [[ -z "${second_approver}" ]]; then
+            echo "::error::Missing second human approval distinct from initiator '${initiator}' and primary approver '${primary_approver}'."
+            exit 1
+          fi
+          if [[ "${second_count}" -lt 1 ]]; then
+            echo "::error::No valid second-human approver recorded for publish execution path."
+            exit 1
+          fi
+          echo "second_approver_login=${second_approver}" >> "$GITHUB_OUTPUT"
+          echo "second_approval_count=${second_count}" >> "$GITHUB_OUTPUT"
+          echo "Second human publish approval captured from '${second_approver}' (initiator='${initiator}', primary='${primary_approver}')."
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish, second-human-publish-gate]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    if: ${{ needs.resolve-release-bundle.outputs.execute_mode == 'true' && needs.resolve-release-bundle.outputs.dry_run != 'true' }}
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    env:
+      RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
+      APPROVER_LOGIN: ${{ needs.authorize-production-publish.outputs.approver_login || '' }}
+      APPROVAL_COUNT: ${{ needs.authorize-production-publish.outputs.approval_count || '0' }}
+      SECOND_APPROVER_LOGIN: ${{ needs.second-human-publish-gate.outputs.second_approver_login || '' }}
+      SECOND_APPROVAL_COUNT: ${{ needs.second-human-publish-gate.outputs.second_approval_count || '0' }}
+      INCIDENT_ID: ${{ needs.resolve-release-bundle.outputs.incident_id || '' }}
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+
+      - name: Download validated release bundle
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: validated-release-bundle
+          path: validated-release-bundle
+
+      - name: Enforce dual-control authorization metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          approver="$(echo "${APPROVER_LOGIN}" | tr -d '\r' | xargs || true)"
+          approval_count="$(echo "${APPROVAL_COUNT}" | tr -d '\r' | xargs || true)"
+          second_approver="$(echo "${SECOND_APPROVER_LOGIN}" | tr -d '\r' | xargs || true)"
+          second_approval_count="$(echo "${SECOND_APPROVAL_COUNT}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator metadata."
+            exit 1
+          fi
+          case "${approval_count}" in ''|*[!0-9]*)
+            echo "::error::Invalid approval_count '${approval_count}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${approval_count}" -lt 1 ]]; then
+            echo "::error::Production publish requires at least one recorded approval."
+            exit 1
+          fi
+          case "${second_approval_count}" in ''|*[!0-9]*)
+            echo "::error::Invalid second_approval_count '${second_approval_count}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${second_approval_count}" -lt 1 ]]; then
+            echo "::error::Production publish requires a second human approval gate."
+            exit 1
+          fi
+          if [[ -z "${approver}" ]]; then
+            echo "::error::Missing non-initiator approver identity from authorization stage."
+            exit 1
+          fi
+          if [[ "${approver}" == "${initiator}" ]]; then
+            echo "::error::Dual-control violation: initiator '${initiator}' cannot self-approve production publish."
+            exit 1
+          fi
+          if [[ -z "${second_approver}" ]]; then
+            echo "::error::Missing second human approver identity."
+            exit 1
+          fi
+          if [[ "${second_approver}" == "${initiator}" ]]; then
+            echo "::error::Second human approver cannot match release initiator '${initiator}'."
+            exit 1
+          fi
+          if [[ "${second_approver}" == "${approver}" ]]; then
+            echo "::error::Second human approver must differ from primary production approver '${approver}'."
+            exit 1
+          fi
+          if [[ -n "${INCIDENT_ID}" ]] && [[ ! "${INCIDENT_ID}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
+            echo "::error::Invalid incident_id '${INCIDENT_ID}' in publish authorization metadata."
+            exit 1
+          fi
+
+      - name: Re-verify publish artifact attestation and digest
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
+          tarball_path="validated-release-bundle/release-bundle/${tarball_name}"
+          expected_sha="$(awk 'NF {print $1; exit}' validated-release-bundle/release-bundle/create-sentinelayer.sha256)"
+          test -f "${tarball_path}" || (echo "::error::Release tarball '${tarball_name}' missing from validated bundle." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          actual_sha="$(sha256sum "${tarball_path}" | awk '{print $1}')"
+          if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release tarball digest mismatch before publish (expected='${expected_sha}', actual='${actual_sha}')."
+            exit 1
+          fi
+          timeout --preserve-status 90s gh attestation verify "${tarball_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > validated-release-bundle/release-bundle/publish-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' validated-release-bundle/release-bundle/publish-attestation.verify.json >/dev/null; then
+            echo "::error::Publish attestation verification did not include expected digest ${expected_sha}."
+            exit 1
+          fi
+
+      - name: Verify OIDC token exchange before publish
+        shell: bash
+        env:
+          OIDC_AUDIENCE: sentinelayer-release-publish
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || (echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_URL for OIDC exchange." && exit 1)
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" || (echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_TOKEN for OIDC exchange." && exit 1)
+          oidc_response="$(timeout --preserve-status 30s curl -fsSL -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}")"
+          oidc_token="$(echo "${oidc_response}" | jq -r '.value // ""')"
+          if [[ -z "${oidc_token}" ]]; then
+            echo "::error::OIDC provider response did not include a token value."
+            exit 1
+          fi
+          node - "${oidc_token}" "${OIDC_AUDIENCE}" <<'NODE'
+          const token = String(process.argv[2] || "");
+          const expectedAudience = String(process.argv[3] || "");
+          const segments = token.split(".");
+          if (segments.length !== 3) {
+            throw new Error("OIDC token format is invalid.");
+          }
+          const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
+          const audience = payload && payload.aud;
+          const audienceMatches = Array.isArray(audience)
+            ? audience.includes(expectedAudience)
+            : audience === expectedAudience;
+          if (!audienceMatches) {
+            throw new Error(`OIDC token audience mismatch (expected='${expectedAudience}').`);
+          }
+          if (!payload || !payload.sub) {
+            throw new Error("OIDC token missing required subject claim.");
+          }
+          NODE
+
+      - name: Publish to npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
+          npm publish "validated-release-bundle/release-bundle/${tarball_name}" --access public --provenance
+
+      - name: Emit publish authorization evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
+          cat > publish-authorization.evidence.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release-publish",
+            "runId": "${GITHUB_RUN_ID}",
+            "releaseTag": "${{ needs.resolve-release-bundle.outputs.release_tag }}",
+            "targetSha": "${{ needs.resolve-release-bundle.outputs.target_sha }}",
+            "tarballName": "${tarball_name}",
+            "releaseInitiator": "${RELEASE_INITIATOR}",
+            "productionApprover": "${APPROVER_LOGIN}",
+            "secondHumanApprover": "${SECOND_APPROVER_LOGIN}",
+            "approvalCount": ${APPROVAL_COUNT},
+            "secondApprovalCount": ${SECOND_APPROVAL_COUNT},
+            "incidentId": "${INCIDENT_ID}",
+            "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
+      - name: Upload publish authorization evidence
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: publish-authorization-evidence
+          path: publish-authorization.evidence.json
+          if-no-files-found: error

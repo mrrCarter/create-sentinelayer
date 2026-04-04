@@ -1,0 +1,731 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: "Known-good version to promote as latest (semver, no v-prefix)"
+        required: false
+        type: string
+      bad_version:
+        description: "Optional bad version to deprecate"
+        required: false
+        type: string
+      reason:
+        description: "Rollback reason for npm deprecate message"
+        required: false
+        default: "Rollback in progress due to regression"
+        type: string
+      execute:
+        description: "Execute rollback mutations (false = validation only)"
+        required: false
+        default: false
+        type: boolean
+      allow_local_validation_only:
+        description: "Allow validation-only fallback to local package version when npm registry metadata is unavailable"
+        required: false
+        default: false
+        type: boolean
+      lineage_exception_id:
+        description: "Required when allow_local_validation_only=true (format: LV-<context>)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      target_version:
+        description: "Known-good version to promote as latest (semver, no v-prefix)"
+        required: false
+        type: string
+      bad_version:
+        description: "Optional bad version to deprecate"
+        required: false
+        type: string
+      reason:
+        description: "Rollback reason for npm deprecate message"
+        required: false
+        type: string
+      execute:
+        description: "Execute rollback mutations (false = validation only)"
+        required: false
+        type: boolean
+        default: false
+      allow_local_validation_only:
+        description: "Allow validation-only fallback to local package version when npm registry metadata is unavailable"
+        required: false
+        type: boolean
+        default: false
+      lineage_exception_id:
+        description: "Required when allow_local_validation_only=true (format: LV-<context>)"
+        required: false
+        type: string
+  schedule:
+    - cron: "23 6 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.2.4"
+  PACKAGE_NAME: create-sentinelayer
+
+concurrency:
+  group: rollback-control-create-sentinelayer
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Rollback Validation and Promote
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    environment: ${{ (inputs.execute == true || github.event.inputs.execute == 'true') && 'production' || 'quality-deploy' }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RAW_TARGET_VERSION: ${{ inputs.target_version || github.event.inputs.target_version || '' }}
+      RAW_BAD_VERSION: ${{ inputs.bad_version || github.event.inputs.bad_version || '' }}
+      RAW_REASON: ${{ inputs.reason || github.event.inputs.reason || '' }}
+      RAW_EXECUTE: ${{ inputs.execute || github.event.inputs.execute || 'false' }}
+      RAW_ALLOW_LOCAL_VALIDATION_ONLY: ${{ inputs.allow_local_validation_only || github.event.inputs.allow_local_validation_only || 'false' }}
+      RAW_LINEAGE_EXCEPTION_ID: ${{ inputs.lineage_exception_id || github.event.inputs.lineage_exception_id || '' }}
+      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version)"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm version pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
+      - name: Resolve rollback intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_version="$(echo "${RAW_TARGET_VERSION:-}" | tr -d '\r' | xargs || true)"
+          bad_version="$(echo "${RAW_BAD_VERSION:-}" | tr -d '\r' | xargs || true)"
+          reason="$(echo "${RAW_REASON:-}" | tr -d '\r' | xargs || true)"
+          execute_raw="$(echo "${RAW_EXECUTE:-false}" | tr -d '\r' | xargs || true)"
+          allow_local_validation_raw="$(echo "${RAW_ALLOW_LOCAL_VALIDATION_ONLY:-false}" | tr -d '\r' | xargs || true)"
+          lineage_exception_id="$(echo "${RAW_LINEAGE_EXCEPTION_ID:-}" | tr -d '\r' | xargs || true)"
+          parse_bool_input() {
+            local raw_value="${1:-false}"
+            local key_name="${2:-value}"
+            local normalized
+            normalized="$(echo "${raw_value}" | tr '[:upper:]' '[:lower:]')"
+            case "${normalized}" in
+              1|true|yes|on) echo "true" ;;
+              0|false|no|off|'') echo "false" ;;
+              *)
+                echo "::error::Invalid ${key_name} value '${raw_value}'. Expected true/false."
+                exit 1
+                ;;
+            esac
+          }
+          execute="$(parse_bool_input "${execute_raw}" "execute")"
+          allow_local_validation_only="$(parse_bool_input "${allow_local_validation_raw}" "allow_local_validation_only")"
+          if [[ -z "${reason}" ]]; then
+            reason="Rollback in progress due to regression"
+          fi
+          echo "TARGET_VERSION=${target_version}" >> "$GITHUB_ENV"
+          echo "BAD_VERSION=${bad_version}" >> "$GITHUB_ENV"
+          echo "REASON=${reason}" >> "$GITHUB_ENV"
+          echo "EXECUTE=${execute}" >> "$GITHUB_ENV"
+          echo "ALLOW_LOCAL_VALIDATION_ONLY=${allow_local_validation_only}" >> "$GITHUB_ENV"
+          echo "LINEAGE_EXCEPTION_ID=${lineage_exception_id}" >> "$GITHUB_ENV"
+
+      - name: Verify production environment protections
+        if: env.EXECUTE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/production" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          wait_timer_rule_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "wait_timer")] | length')"
+          branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::production environment must require at least one reviewer for rollback execute mode."
+            exit 1
+          fi
+          if [[ "${wait_timer_rule_count}" -lt 1 ]]; then
+            echo "::error::production environment must define a wait-timer protection for rollback execute mode."
+            exit 1
+          fi
+          if [[ "${branch_policy_enabled}" != "true" ]]; then
+            echo "::error::production environment must enforce deployment branch policy for rollback execute mode."
+            exit 1
+          fi
+
+      - name: Validate rollback inputs and package availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_version="$(echo "${TARGET_VERSION:-}" | tr -d '\r' | xargs || true)"
+          lineage_exception_id="$(echo "${LINEAGE_EXCEPTION_ID:-}" | tr -d '\r' | xargs || true)"
+          target_version_local_only="false"
+          if [[ -z "${target_version}" ]]; then
+            if [[ "${EXECUTE}" == "true" ]]; then
+              echo "::error::target_version is required when execute=true."
+              exit 1
+            fi
+            latest_tag_json=""
+            latest_tag_status=0
+            set +e
+            latest_tag_json="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/dev/null)"
+            latest_tag_status=$?
+            set -e
+            if [[ "${latest_tag_status}" -eq 0 ]]; then
+              target_version="$(echo "${latest_tag_json}" | jq -r '
+                if type == "string" then .
+                elif type == "object" then .latest // ""
+                else ""
+                end
+              ')"
+            fi
+            if [[ -z "${target_version}" ]]; then
+              target_version="$(jq -r '.version // ""' package.json)"
+              if [[ -z "${target_version}" ]]; then
+                echo "::error::Unable to infer rollback target version from npm dist-tag or local package.json."
+                exit 1
+              fi
+              if [[ "${ALLOW_LOCAL_VALIDATION_ONLY:-false}" != "true" ]]; then
+                echo "::error::Local rollback validation fallback is disabled. Set allow_local_validation_only=true only for explicitly approved validation-only workflows."
+                exit 1
+              fi
+              if [[ -z "${lineage_exception_id}" ]]; then
+                echo "::error::lineage_exception_id is required when local rollback validation fallback is used."
+                exit 1
+              fi
+              if [[ ! "${lineage_exception_id}" =~ ^LV-[A-Za-z0-9._-]{6,80}$ ]]; then
+                echo "::error::lineage_exception_id must match ^LV-[A-Za-z0-9._-]{6,80}$ when local rollback validation fallback is used."
+                exit 1
+              fi
+              target_version_local_only="true"
+              echo "::warning::Unable to resolve published dist-tag for ${PACKAGE_NAME}; using local package.json version ${target_version} for validation-only rollback readiness (lineage_exception_id=${lineage_exception_id})."
+            else
+              echo "No target_version supplied; inferred latest published version ${target_version} for validation mode."
+            fi
+          fi
+          if [[ "${target_version_local_only}" != "true" ]] && [[ -n "${lineage_exception_id}" ]]; then
+            echo "::warning::lineage_exception_id was provided but local rollback validation fallback is not active; ignoring value."
+          fi
+          if [[ "${target_version}" == v* ]]; then
+            target_version="${target_version#v}"
+          fi
+          bad_version="$(echo "${BAD_VERSION:-}" | tr -d '\r' | xargs || true)"
+          if [[ "${bad_version}" == v* ]]; then
+            bad_version="${bad_version#v}"
+          fi
+          echo "TARGET_VERSION=${target_version}" >> "$GITHUB_ENV"
+          echo "BAD_VERSION=${bad_version}" >> "$GITHUB_ENV"
+          if [[ ! "${target_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::target_version must be semver without v-prefix."
+            exit 1
+          fi
+          if [[ "${target_version_local_only}" != "true" ]]; then
+            versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
+            if ! echo "${versions_json}" | jq -e --arg target "${target_version}" '
+              if type == "array" then any(.[]; . == $target) else . == $target end
+            ' >/dev/null; then
+              echo "::error::Target version ${target_version} is not published for ${PACKAGE_NAME}."
+              exit 1
+            fi
+          fi
+          if [[ -n "${bad_version}" ]] && [[ ! "${bad_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::bad_version must be semver without v-prefix."
+            exit 1
+          fi
+          echo "TARGET_VERSION_LOCAL_ONLY=${target_version_local_only}" >> "$GITHUB_ENV"
+          echo "LINEAGE_EXCEPTION_ID=${lineage_exception_id}" >> "$GITHUB_ENV"
+
+      - name: Smoke-check target version install
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_with_retry() {
+            local package_spec="${1}"
+            local prefix_dir="${2}"
+            local attempts=0
+            local max_attempts=2
+            local status=0
+            while (( attempts < max_attempts )); do
+              attempts=$((attempts + 1))
+              status=0
+              timeout --preserve-status 120s npm install --prefix "${prefix_dir}" "${package_spec}" --ignore-scripts || status=$?
+              if [[ "${status}" -eq 0 ]]; then
+                return 0
+              fi
+              if (( attempts >= max_attempts )); then
+                break
+              fi
+              sleep $((attempts * 2))
+            done
+            echo "::error::Failed to install '${package_spec}' after ${max_attempts} attempts (status=${status})."
+            exit 1
+          }
+          prefix_dir="$(mktemp -d)"
+          package_spec="${PACKAGE_NAME}@${TARGET_VERSION}"
+          if [[ "${TARGET_VERSION_LOCAL_ONLY:-false}" == "true" ]]; then
+            pack_json="$(npm pack --json)"
+            local_tarball="$(echo "${pack_json}" | jq -r '
+              if type == "array" then .[0].filename // ""
+              elif type == "object" then .filename // ""
+              else ""
+              end
+            ')"
+            test -n "${local_tarball}" || (echo "::error::Unable to resolve local package tarball for rollback validation mode." && exit 1)
+            test -f "${local_tarball}" || (echo "::error::Local package tarball '${local_tarball}' was not created." && exit 1)
+            package_spec="./${local_tarball}"
+          fi
+          install_with_retry "${package_spec}" "${prefix_dir}"
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
+
+      - name: Validate target release lineage evidence
+        if: env.TARGET_VERSION_LOCAL_ONLY != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/releases/tags/v${TARGET_VERSION}" -H "Accept: application/vnd.github+json")"
+          release_target="$(echo "${release_json}" | jq -r '.target_commitish // ""')"
+          test -n "${release_target}" || (echo "::error::Unable to resolve target commit for release tag v${TARGET_VERSION}." && exit 1)
+          target_sha="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${release_target}" --jq '.sha // ""' -H "Accept: application/vnd.github+json")"
+          test -n "${target_sha}" || (echo "::error::Unable to resolve commit SHA for release target '${release_target}'." && exit 1)
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+          quality_run="$(echo "${runs_json}" | jq -c --arg sha "${target_sha}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select((.head_sha // "") == $sha)
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${quality_run}" ]]; then
+            echo "::error::No successful quality-gates lineage run found for release commit ${target_sha}."
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
+          test -n "${quality_run_id}" || (echo "::error::Unable to resolve quality-gates run id for release commit ${target_sha}." && exit 1)
+          timeout --preserve-status 120s gh run download "${quality_run_id}" --name quality-build-package --dir rollback-quality-proof
+          manifest_path="rollback-quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality-build.manifest.json from quality run ${quality_run_id}." && exit 1)
+          manifest_commit_sha="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_artifact_name="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_rebuild_sha="$(jq -r '.rebuildSha256 // ""' "${manifest_path}")"
+          test -n "${manifest_commit_sha}" || (echo "::error::Missing commitSha in ${manifest_path}." && exit 1)
+          test -n "${manifest_artifact_name}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
+          test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          test -n "${manifest_rebuild_sha}" || (echo "::error::Missing rebuildSha256 in ${manifest_path}." && exit 1)
+          if [[ "${manifest_commit_sha}" != "${target_sha}" ]]; then
+            echo "::error::Quality manifest commit (${manifest_commit_sha}) does not match target SHA (${target_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${manifest_rebuild_sha}" ]]; then
+            echo "::error::Quality manifest reproducibility mismatch (sha256=${manifest_sha}, rebuild=${manifest_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_artifact_name}" != *"-${TARGET_VERSION}.tgz" ]]; then
+            echo "::error::Quality artifact '${manifest_artifact_name}' does not match target version ${TARGET_VERSION}."
+            exit 1
+          fi
+          artifact_path="rollback-quality-proof/${manifest_artifact_name}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality artifact ${artifact_path}." && exit 1)
+          artifact_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${artifact_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Quality artifact digest mismatch (artifact=${artifact_sha}, manifest=${manifest_sha})."
+            exit 1
+          fi
+          timeout --preserve-status 60s gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > rollback-quality-proof/quality-attestation.verify.json
+          if ! jq -e --arg expectedSha "${manifest_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' rollback-quality-proof/quality-attestation.verify.json >/dev/null; then
+            echo "::error::Quality attestation missing expected digest ${manifest_sha} for rollback target ${TARGET_VERSION}."
+            exit 1
+          fi
+          cat > rollback-lineage.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "targetVersion": "${TARGET_VERSION}",
+            "targetSha": "${target_sha}",
+            "executeMode": ${EXECUTE},
+            "productionGateVerified": ${EXECUTE},
+            "npmMutationPathVerified": false,
+            "qualityRunId": "${quality_run_id}",
+            "qualityArtifactName": "${manifest_artifact_name}",
+            "qualityArtifactSha256": "${manifest_sha}",
+            "qualityArtifactRebuildSha256": "${manifest_rebuild_sha}",
+            "attestationVerified": true,
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "Rollback lineage proof validated for ${PACKAGE_NAME}@${TARGET_VERSION} (commit=${target_sha}, quality_run=${quality_run_id})."
+
+      - name: Emit local rollback lineage summary fallback
+        if: env.TARGET_VERSION_LOCAL_ONLY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > rollback-lineage.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "targetVersion": "${TARGET_VERSION}",
+            "targetSha": "${GITHUB_SHA}",
+            "executeMode": ${EXECUTE},
+            "productionGateVerified": false,
+            "npmMutationPathVerified": false,
+            "qualityRunId": "",
+            "qualityArtifactName": "",
+            "qualityArtifactSha256": "",
+            "qualityArtifactRebuildSha256": "",
+            "attestationVerified": false,
+            "lineageMode": "local_validation",
+            "lineageExceptionId": "${LINEAGE_EXCEPTION_ID}",
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Require NPM token for execute mode
+        if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT != 'true'
+        shell: bash
+        run: |
+          echo "::error::NPM_TOKEN is required when execute=true."
+          exit 1
+
+      - name: Verify rollback execute provenance contract
+        if: env.EXECUTE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          lineage_summary_path="rollback-lineage.summary.json"
+          test -f "${lineage_summary_path}" || (echo "::error::Missing rollback lineage summary ${lineage_summary_path} before execute-mode mutation." && exit 1)
+          lineage_mode="$(jq -r '.lineageMode // "quality_attested"' "${lineage_summary_path}")"
+          lineage_attestation_verified="$(jq -r '.attestationVerified // false' "${lineage_summary_path}")"
+          lineage_artifact_sha="$(jq -r '.qualityArtifactSha256 // ""' "${lineage_summary_path}")"
+          lineage_target_sha="$(jq -r '.targetSha // ""' "${lineage_summary_path}")"
+          if [[ "${lineage_mode}" == "local_validation" ]]; then
+            echo "::error::Execute mode cannot proceed with local_validation lineage mode."
+            exit 1
+          fi
+          if [[ "${lineage_attestation_verified}" != "true" ]]; then
+            echo "::error::Execute mode requires attestationVerified=true lineage proof."
+            exit 1
+          fi
+          test -n "${lineage_artifact_sha}" || (echo "::error::Execute mode requires qualityArtifactSha256 in rollback lineage summary." && exit 1)
+          test -n "${lineage_target_sha}" || (echo "::error::Execute mode requires targetSha in rollback lineage summary." && exit 1)
+          if [[ ! "${lineage_artifact_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Invalid qualityArtifactSha256 digest '${lineage_artifact_sha}' in rollback lineage summary."
+            exit 1
+          fi
+          pack_dir="$(mktemp -d)"
+          timeout --preserve-status 120s npm pack "${PACKAGE_NAME}@${TARGET_VERSION}" --pack-destination "${pack_dir}" >/dev/null
+          packed_tarball="$(find "${pack_dir}" -maxdepth 1 -type f -name '*.tgz' | head -n 1)"
+          test -n "${packed_tarball}" || (echo "::error::Unable to resolve packed rollback tarball for ${PACKAGE_NAME}@${TARGET_VERSION}." && exit 1)
+          packed_sha="$(sha256sum "${packed_tarball}" | awk '{print $1}')"
+          if [[ "${packed_sha}" != "${lineage_artifact_sha}" ]]; then
+            echo "::error::Rollback execute provenance digest mismatch (packed=${packed_sha}, lineage=${lineage_artifact_sha})."
+            exit 1
+          fi
+          echo "Rollback execute provenance verified for ${PACKAGE_NAME}@${TARGET_VERSION} (sha=${packed_sha}, target_sha=${lineage_target_sha})."
+
+      - name: Promote target version and deprecate bad version
+        if: env.EXECUTE == 'true' && env.NPM_TOKEN_PRESENT == 'true'
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          dist_tags_before="$(timeout --preserve-status 30s npm view "${PACKAGE_NAME}" dist-tags --json)"
+          latest_before="$(echo "${dist_tags_before}" | jq -r '.latest // ""')"
+          promoted_latest="false"
+          if [[ "${latest_before}" != "${TARGET_VERSION}" ]]; then
+            timeout --preserve-status 120s npm dist-tag add "${PACKAGE_NAME}@${TARGET_VERSION}" latest
+            promoted_latest="true"
+          else
+            echo "Skipping dist-tag add; latest already points to ${TARGET_VERSION}."
+          fi
+          deprecated_bad_version="false"
+          bad_version_existing_deprecation=""
+          if [[ -n "${BAD_VERSION}" ]]; then
+            bad_version_existing_deprecation="$(timeout --preserve-status 30s npm view "${PACKAGE_NAME}@${BAD_VERSION}" deprecated --json 2>/dev/null | jq -r 'if type == "string" then . else "" end' || true)"
+            if [[ "${bad_version_existing_deprecation}" != "${REASON}" ]]; then
+              timeout --preserve-status 120s npm deprecate "${PACKAGE_NAME}@${BAD_VERSION}" "${REASON}"
+              deprecated_bad_version="true"
+            else
+              echo "Skipping deprecate; ${PACKAGE_NAME}@${BAD_VERSION} already has matching deprecation reason."
+            fi
+          fi
+          dist_tags_after="$(timeout --preserve-status 30s npm view "${PACKAGE_NAME}" dist-tags --json)"
+          latest_after="$(echo "${dist_tags_after}" | jq -r '.latest // ""')"
+          bad_version_existing_deprecation_json="$(printf '%s' "${bad_version_existing_deprecation}" | jq -R .)"
+          cat > rollback-operation.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "targetVersion": "${TARGET_VERSION}",
+            "badVersion": "${BAD_VERSION}",
+            "reason": "${REASON}",
+            "latestBefore": "${latest_before}",
+            "latestAfter": "${latest_after}",
+            "promotedLatest": ${promoted_latest},
+            "deprecatedBadVersion": ${deprecated_bad_version},
+            "existingBadVersionDeprecation": ${bad_version_existing_deprecation_json}
+          }
+          EOF
+
+      - name: Emit rollback summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f rollback-lineage.summary.json ]]; then
+            now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            tmp_lineage="$(mktemp)"
+            if [[ "${EXECUTE}" == "true" ]] && [[ -f rollback-operation.summary.json ]]; then
+              jq --arg now "${now_utc}" '.npmMutationPathVerified = true | .checkedAt = $now' rollback-lineage.summary.json > "${tmp_lineage}"
+            else
+              jq --arg now "${now_utc}" '.checkedAt = $now' rollback-lineage.summary.json > "${tmp_lineage}"
+            fi
+            mv "${tmp_lineage}" rollback-lineage.summary.json
+          fi
+          echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
+          echo "- execute: \`${EXECUTE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- allow_local_validation_only: \`${ALLOW_LOCAL_VALIDATION_ONLY:-false}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${LINEAGE_EXCEPTION_ID:-}" ]]; then
+            echo "- lineage_exception_id: \`${LINEAGE_EXCEPTION_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- lineage_exception_id: \`(none)\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- target_version: \`${TARGET_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${BAD_VERSION}" ]]; then
+            echo "- bad_version: \`${BAD_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- bad_version: \`(none)\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -f rollback-lineage.summary.json ]]; then
+            lineage_quality_run_id="$(jq -r '.qualityRunId // ""' rollback-lineage.summary.json)"
+            lineage_target_sha="$(jq -r '.targetSha // ""' rollback-lineage.summary.json)"
+            lineage_attestation_verified="$(jq -r '.attestationVerified // false' rollback-lineage.summary.json)"
+            lineage_execute_mode="$(jq -r '.executeMode // false' rollback-lineage.summary.json)"
+            lineage_production_gate_verified="$(jq -r '.productionGateVerified // false' rollback-lineage.summary.json)"
+            lineage_npm_mutation_verified="$(jq -r '.npmMutationPathVerified // false' rollback-lineage.summary.json)"
+            echo "- lineage_verified: \`true\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_quality_run_id: \`${lineage_quality_run_id}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_target_sha: \`${lineage_target_sha}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_attestation_verified: \`${lineage_attestation_verified}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_execute_mode: \`${lineage_execute_mode}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_production_gate_verified: \`${lineage_production_gate_verified}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- lineage_npm_mutation_verified: \`${lineage_npm_mutation_verified}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::rollback-lineage.summary.json is missing."
+            exit 1
+          fi
+          if [[ "${EXECUTE}" == "true" ]]; then
+            if [[ -f rollback-operation.summary.json ]]; then
+              latest_after="$(jq -r '.latestAfter // ""' rollback-operation.summary.json)"
+              promoted_latest="$(jq -r '.promotedLatest // false' rollback-operation.summary.json)"
+              deprecated_bad_version="$(jq -r '.deprecatedBadVersion // false' rollback-operation.summary.json)"
+              echo "- latest_after: \`${latest_after}\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "- promoted_latest: \`${promoted_latest}\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "- deprecated_bad_version: \`${deprecated_bad_version}\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- rollback_operation_summary: \`(missing)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload rollback lineage summary
+        if: always()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: rollback-lineage-summary
+          path: rollback-lineage.summary.json
+          if-no-files-found: error
+
+      - name: Upload rollback operation summary
+        if: always() && env.EXECUTE == 'true'
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: rollback-operation-summary
+          path: rollback-operation.summary.json
+          if-no-files-found: error
+
+  rollback-readiness-drill:
+    name: Rollback Readiness Drill
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PACKAGE_NAME: create-sentinelayer
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version)"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm version pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
+      - name: Validate rollback drill install path
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions_json="$(npm view "${PACKAGE_NAME}" versions --json)"
+          latest_version="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json | jq -r '
+            if type == "string" then .
+            elif type == "object" then .latest // ""
+            else ""
+            end
+          ')"
+          previous_version="$(echo "${versions_json}" | jq -r --arg latest "${latest_version}" '
+            if type == "array" then
+              (map(select(. != $latest)) | last // empty)
+            elif type == "string" then
+              (if . == $latest then empty else . end)
+            else
+              empty
+            end
+          ')"
+          test -n "${latest_version}" || (echo "::error::Unable to resolve latest version for ${PACKAGE_NAME}." && exit 1)
+          test -n "${previous_version}" || (echo "::error::Unable to resolve previous version for ${PACKAGE_NAME} rollback drill." && exit 1)
+
+          release_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/releases/tags/v${latest_version}" -H "Accept: application/vnd.github+json")"
+          release_target="$(echo "${release_json}" | jq -r '.target_commitish // ""')"
+          test -n "${release_target}" || (echo "::error::Unable to resolve release target commit for v${latest_version}." && exit 1)
+          latest_target_sha="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${release_target}" --jq '.sha // \"\"' -H "Accept: application/vnd.github+json")"
+          test -n "${latest_target_sha}" || (echo "::error::Unable to resolve commit SHA for release target '${release_target}'." && exit 1)
+
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${latest_target_sha}&per_page=20" -H "Accept: application/vnd.github+json")"
+          quality_run="$(echo "${runs_json}" | jq -c --arg sha "${latest_target_sha}" --arg path ".github/workflows/quality-gates.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select((.head_sha // "") == $sha)
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${quality_run}" ]]; then
+            echo "::error::No successful quality-gates lineage run found for latest release commit ${latest_target_sha}."
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_run}" | jq -r '.id // ""')"
+          test -n "${quality_run_id}" || (echo "::error::Unable to resolve quality-gates run id for release commit ${latest_target_sha}." && exit 1)
+          timeout --preserve-status 120s gh run download "${quality_run_id}" --name quality-build-package --dir rollback-drill-quality-proof
+          manifest_path="rollback-drill-quality-proof/quality-build.manifest.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality-build.manifest.json from quality run ${quality_run_id}." && exit 1)
+          manifest_commit_sha="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_artifact_name="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_rebuild_sha="$(jq -r '.rebuildSha256 // ""' "${manifest_path}")"
+          test -n "${manifest_commit_sha}" || (echo "::error::Missing commitSha in ${manifest_path}." && exit 1)
+          test -n "${manifest_artifact_name}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
+          test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          test -n "${manifest_rebuild_sha}" || (echo "::error::Missing rebuildSha256 in ${manifest_path}." && exit 1)
+          if [[ "${manifest_commit_sha}" != "${latest_target_sha}" ]]; then
+            echo "::error::Rollback drill quality manifest commit (${manifest_commit_sha}) does not match target SHA (${latest_target_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${manifest_rebuild_sha}" ]]; then
+            echo "::error::Rollback drill quality manifest reproducibility mismatch (sha256=${manifest_sha}, rebuild=${manifest_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_artifact_name}" != *"-${latest_version}.tgz" ]]; then
+            echo "::error::Rollback drill quality artifact '${manifest_artifact_name}' does not match latest version ${latest_version}."
+            exit 1
+          fi
+          artifact_path="rollback-drill-quality-proof/${manifest_artifact_name}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality artifact ${artifact_path} for rollback drill." && exit 1)
+          artifact_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${artifact_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Rollback drill quality artifact digest mismatch (artifact=${artifact_sha}, manifest=${manifest_sha})."
+            exit 1
+          fi
+          timeout --preserve-status 60s gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > rollback-drill-quality-proof/quality-attestation.verify.json
+          if ! jq -e --arg expectedSha "${manifest_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' rollback-drill-quality-proof/quality-attestation.verify.json >/dev/null; then
+            echo "::error::Rollback drill quality attestation missing expected digest ${manifest_sha}."
+            exit 1
+          fi
+
+          install_with_retry() {
+            local package_spec="${1}"
+            local prefix_dir="${2}"
+            local attempts=0
+            local max_attempts=2
+            local status=0
+            while (( attempts < max_attempts )); do
+              attempts=$((attempts + 1))
+              status=0
+              timeout --preserve-status 120s npm install --prefix "${prefix_dir}" "${package_spec}" --ignore-scripts || status=$?
+              if [[ "${status}" -eq 0 ]]; then
+                return 0
+              fi
+              if (( attempts >= max_attempts )); then
+                break
+              fi
+              sleep $((attempts * 2))
+            done
+            echo "::error::Failed to install '${package_spec}' after ${max_attempts} attempts (status=${status})."
+            exit 1
+          }
+          prefix_latest="$(mktemp -d)"
+          install_with_retry "${PACKAGE_NAME}@${latest_version}" "${prefix_latest}"
+          PATH="${prefix_latest}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          prefix_previous="$(mktemp -d)"
+          install_with_retry "${PACKAGE_NAME}@${previous_version}" "${prefix_previous}"
+          PATH="${prefix_previous}/node_modules/.bin:${PATH}" sentinel --version
+          cat > rollback-drill.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "packageName": "${PACKAGE_NAME}",
+            "latestVersion": "${latest_version}",
+            "previousVersion": "${previous_version}",
+            "targetSha": "${latest_target_sha}",
+            "qualityRunId": "${quality_run_id}",
+            "qualityArtifactName": "${manifest_artifact_name}",
+            "qualityArtifactSha256": "${manifest_sha}",
+            "attestationVerified": true,
+            "checkedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload rollback drill summary
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: rollback-drill-summary
+          path: rollback-drill.summary.json
+          if-no-files-found: error

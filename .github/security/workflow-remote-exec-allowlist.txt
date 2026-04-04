@@ -1,0 +1,2 @@
+# Regex allowlist for workflow `run:` commands that intentionally fetch and execute remote scripts.
+# Keep this list empty by default; every entry should be reviewed and justified in PR history.

@@ -88,3 +88,254 @@
 - Treat release-tag findings as stateful: verify `release-please` manifest/version and open release PRs before cutting tags, so manual tags are never created against stale audit assumptions.
 - For mechanical file splits, extract contiguous command blocks and keep a thin orchestrator entrypoint; this minimizes behavior drift while reducing top-level file size.
 - When `npm run check` only validates entry files, run explicit `node --check` on newly added module files before full test runs to catch extraction syntax regressions early.
+- For release workflows that allow `workflow_dispatch`, force non-tag dispatches into dry-run validation mode and still enforce required-check verification so manual runs cannot bypass gate assumptions.
+- Atomic JSON writes must never delete destination files as a rename fallback; stage via `.new`, promote with bounded retry, and include startup fallback recovery to avoid transient data-loss windows.
+- Human-readable CLI auth output should avoid exposing local credential metadata paths by default; require explicit `--show-paths` opt-in while retaining full paths in JSON mode for automation.
+- Session metadata durability requires fsync on both the temp file and the parent directory after atomic rename (best-effort across platforms), otherwise power-loss windows can corrupt auth state.
+- Cross-runtime HTTP helpers cannot assume `AbortSignal.any` exists; provide a compatibility bridge that forwards external abort signals and always unregisters listeners in `finally`.
+- Check-run name matching is insufficient for release trust boundaries; bind required checks to expected workflow file paths and matching `head_sha` before accepting pass status.
+- Secret-bearing CI jobs should assert environment protection policy (at least required reviewers) in-workflow before consuming secrets, so accidental environment misconfiguration fails closed.
+- Secret/key file writes need the same atomic durability guarantees as metadata files (temp write + fsync + rename + directory sync) to avoid partial-write corruption under crash scenarios.
+
+## 2026-04-03
+
+- Before coding against Omar findings, anchor them to the exact commented commit SHA/run id; if local branch is ahead, push and rerun Omar first so remediation targets active findings, not stale annotations.
+- Reproducibility claims must cross workflow boundaries: emit immutable build digest artifacts in quality gates and re-verify the publish candidate digest in release jobs before any publish path proceeds.
+- Environment-protected Omar runs can remain `waiting` indefinitely; check `/pending_deployments`, approve explicitly, then run `gh run watch --exit-status` as the blocking loop gate.
+- Eliminate latent security backdoors (for example env-only plaintext-secret opt-ins) when hardening config persistence; security exceptions should not be toggleable through ambient process env alone.
+- Eval-impact diff baselines should derive from explicit merge-base resolution against the target branch, never `HEAD~1` fallback, to keep PR and squash-history behavior deterministic.
+- Release workflows need both a single-flight concurrency lock and a controlled tagged `workflow_dispatch` publish path; forcing all manual dispatches to dry-run triggers governance drift findings.
+- Treat Omar P2 churn as an iterative moving target: after each fix batch, re-anchor to the newest comment before coding again, because prior findings can disappear while new governance findings surface.
+- Required-check trust for release gating is stronger when sourced from workflow-run APIs (`actions/workflows/*/runs` filtered by `head_sha` + workflow path) rather than check-run name ordering.
+- Release-automation jobs that mutate repo state (`release-please`) should explicitly verify upstream quality gates on the same SHA before execution.
+- Auth endpoint normalization should fail closed for non-HTTPS remote hosts while allowing explicit localhost HTTP for deterministic local test infrastructure.
+- Keep GitHub Actions token scopes least-privilege by default (`pull-requests: read` unless write is strictly required by a concrete step), especially in third-party action workflows.
+- Enforce lockfile immutability as a deterministic gate by hashing `package-lock.json` before/after dependency install; fail when install mutates lock state.
+- Some Omar P2 findings are architectural (single immutable build promoted across all quality stages); treat them as dedicated refactor tracks rather than incremental line edits.
+- Omar Gate’s publish stage updates PR comments; downgrading `.github/workflows/omar-gate.yml` `pull-requests` permission to read causes a hard `403` and invalidates the full scan loop.
+- Pending deployment approvals should be submitted with a JSON body (`environment_ids` as integers) to avoid `HTTP 422` type coercion errors from form-encoded CLI flags.
+- For Omar pre-gate dependency checks, bind to the upstream workflow run identity (`actions/workflows/<file>/runs` + `head_sha` + workflow path) rather than check-run display names alone.
+- Omar findings can oscillate when a mitigation over-corrects policy (`cancel-in-progress` true vs false); prefer event-scoped controls (`pull_request` strict, non-PR relaxed) over one global toggle.
+- Retry jitter hardening should avoid both deterministic lockstep and weak RNG fallbacks; use cryptographic randomness first and deterministic hash fallback only when crypto entropy is unavailable.
+- Persisted config security should not expose bypass toggles (`allowPlaintextSecrets`) even for compatibility paths; secret keys must stay blocked at schema and write-time validation layers.
+- Polling APIs should avoid static idempotency keys across attempts; suffix keys with attempt/sequence (`session:poll:<n>`) so server-side dedupe does not mask status transitions.
+
+## 2026-04-03 (Execution Layer Architecture)
+
+- The gap between a governance platform and a coding agent is exactly 3 things: tool runtime, agentic query loop, and context management. Everything else (budgets, telemetry, security review) is already stronger in the governance platform.
+- Budget enforcement must be a mandatory gate BEFORE each tool execution, not just after each LLM turn; this prevents a single expensive tool call from blowing past limits.
+- Tool concurrency classification (read-only vs write) is essential: read-only tools (FileRead, Grep, Glob) can run in parallel, write tools (FileEdit, Shell) must run serially.
+- The tool interface should use fail-closed defaults: isConcurrencySafe=false, isReadOnly=false, so new tools are serial/write until explicitly proven safe.
+- Shell security analysis should reuse existing deterministic review rules rather than building a separate pattern library; the same regex patterns that catch secrets in code catch them in shell commands.
+- Subagent isolation has three valid modes (in-process, worktree, remote); each maps to different security profiles. Audit agents need plan-mode (read-only tools), fix agents need worktree (isolated writes), pen-test agents need remote (network-restricted).
+- Domain-scoped agent context (primary/secondary/tertiary paths from ingest) is strictly superior to "search the whole repo" for precision and token efficiency; the agent knows where to look before it starts looking.
+- Entitlement tiers should map to permission modes (Free=plan, Pro=default, Team/Enterprise=execute) so the subscription itself is the security policy.
+- Context compaction must preserve the telemetry ledger reference even when compacting the conversation; this gives reproducibility that conversation-only compaction cannot.
+- The query loop's stop-condition check must happen at two points: before LLM call (prevent wasted API spend) and after tool execution (prevent tool-cost blowout). Both are necessary.
+- Token estimation via char/4 is adequate for budget governance (order-of-magnitude correct) but real token counts from API response headers should replace estimates in the telemetry record when available.
+- SL CLI is a governed tool that coding agents invoke (like aws/gh/kubectl), NOT a coding agent itself. The execution layer adds internal specialist agents with tool access, not a general-purpose REPL competing with Claude Code.
+- The streaming event protocol (`--json --stream` NDJSON) is the most important interface for external agent consumption; it must be designed BEFORE internal tools because it's the contract external agents build on.
+- Per-agent event attribution (which persona, which domain, which files) in the streaming protocol is what makes SL CLI uniquely valuable to the calling agent -- no other CLI tool tells you WHO is doing WHAT in real time.
+- Heartbeat events prevent external agents from timing out on long-running SL commands; emit them on a cadence even when no findings are produced.
+- The `run_complete` event must include the artifact report path so external agents can read the full structured output without parsing the stream.
+- Scaffold flows that write tokens to `.env` MUST also ensure `.gitignore` covers `.env`; the CLI created the secret leak vector it was supposed to prevent.
+- IDE detection must distinguish Cursor from VSCode (check `CURSOR_TRACE_ID` before falling back to `TERM_PROGRAM`); misidentification breaks per-agent config generation.
+- Coding agent selection (Claude Code, Cursor, Copilot, etc.) should be a deterministic dictionary lookup, not a web search; network failures during scaffold are unacceptable friction.
+- Spec generator must consume `projectType` (greenfield vs add_feature vs bugfix) to avoid generating greenfield templates for existing codebases; the spec generator currently ignores this field entirely.
+- Phase count must be dynamic, derived from project scope (risk surfaces, description complexity), not hardcoded at 3; enterprise projects routinely need 8-15 phases.
+- Spec-bound pre-commit review catches drift BEFORE push, reducing expensive Omar Gate round-trips; the spec hash should be the same binding mechanism the v1-action already uses.
+- Cross-agent shared memory (blackboard) is the minimum viable coordination mechanism; agents don't need shared conversation context, they need shared findings to avoid duplication.
+- The sentinelayer-api already has a production FAISS hybrid retrieval engine (dense 60% + sparse 25% + recency 10% + severity 5%) with CI-enforced recall@k >= 0.90; the CLI should delegate to it for enterprise tier rather than reimplementing.
+- Stuck-agent detection should fire on state CHANGES (stuck -> active, budget threshold crossed), not on periodic timers; periodic alerts burn attention and tokens.
+- Stale ingest detection is simple: compare ingest timestamp vs `git log -1 --format=%cI`; if ingest predates last commit, warn and offer refresh.
+- Alert payloads to Slack/Telegram must be concise (<200 chars headline + structured fields) to avoid notification fatigue; include run ID, agent persona, budget status, and findings count only.
+- For auth controls, treat privileged token scopes and storage-downgrade paths as explicit consent flows (`--allow-privileged-scope`, `--no-keyring`) instead of silent option/env behavior.
+- Quality pipelines need a dedicated release-readiness smoke stage (artifact install + binary checks) to avoid recurring CI governance findings even when lint/test/security/build pass.
+- Release provenance checks should validate workflow-run source event constraints and cryptographic attestation verification, not just digest lineage and workflow path matching.
+- In GitHub Actions, `actions/setup-node` with `cache: npm` requires a checked-out workspace with `package-lock.json`; new jobs should checkout before setup-node to avoid immediate gate failure.
+- In CI smoke installs, local tarball paths passed to `npm install` must be prefixed with `./` (or absolute path); otherwise npm can reinterpret `path/file.tgz` as a GitHub shorthand and fail with git SSH errors.
+- Release automation that mutates repo state (`release-please`) should verify both `Quality Summary` and `Omar Gate` on the exact target SHA before creating/updating release PRs.
+- Required-check policies in release workflows must be event-aware: tag-triggered release runs cannot block on checks that never run for tags (for example Omar Gate pull-request checks).
+- Rollback preflight checks need fresh proof of rollback exercisability (recent successful rollback workflow run), not just existence of rollback docs/workflow files.
+- CLI auth error surfaces should default to curated, code-based safe messages and only include raw backend error detail behind an explicit debug flag.
+- Retry jitter fallback paths must incorporate per-request entropy/seed, otherwise crypto-failure fallback can synchronize backoff timing across in-process requests.
+- For tag-triggered release workflows, PR-only security checks (for example Omar Gate) should be validated via commit check-runs on the resolved tag commit rather than skipped outright.
+- GitHub Actions workflow-level permissions should remain least-privilege (`contents: read`), with `id-token`/`attestations` granted only to jobs that actually attest artifacts.
+- Third-party security action pins should be enforced by a deterministic SHA allowlist check in CI, not only by comments near the `uses:` line.
+- Polling idempotency keys should include a per-login client nonce in addition to attempt counters to avoid server-side dedupe collisions across concurrent clients/restarts.
+- CLI auth command output should never emit raw upstream backend error strings in user-visible mode, even when debug environment flags are set.
+- API error normalization should capture both snake_case and camelCase request-id fields (`request_id`, `requestId`) to preserve trace correlation across heterogeneous backend serializers.
+- For idempotent poll endpoints, reuse one stable idempotency key per logical poll session and carry retry attempt count in a separate observability header rather than mutating the idempotency key per retry.
+- Release-automation polling loops should wrap each network-bound `gh api`/artifact command with explicit per-call timeouts in addition to job-level timeout budgets.
+- Rollback execute paths must verify release lineage (tag -> commit -> quality manifest digest -> attestation) before npm mutation commands (`dist-tag`/`deprecate`) run.
+- Required-check event filters should include sanctioned manual pathways (`workflow_dispatch`) where the same control can run outside PR events, otherwise release gates can deadlock despite valid successful runs.
+- Auth CLI output should redact upstream correlation identifiers by default; if debugging is needed, expose only a short request-id tail behind an explicit debug flag.
+- File-backed session encryption keys need lifecycle coupling: rotate keys on new login/legacy rekey paths and delete key files when file sessions are cleared or migrated to keyring.
+- Release automation workflows should combine event/path trigger scoping with an in-job changed-file gate to avoid unnecessary release-control churn.
+- Tag-release required-check validation should resolve prior successful Omar workflow runs on the target commit and fail fast with guidance when missing, instead of polling for tag-native runs that cannot exist.
+- Auth poll reliability findings can swing between "static key" and "collision risk"; the stable compromise is per-attempt idempotency keys plus explicit attempt telemetry headers and matching unit assertions.
+- Release required-check verification should reject ambiguous multi-run candidates and cross-anchor selected run ids with commit check-run detail URLs before trusting artifacts.
+- External action supply-chain hardening should include deterministic SHA allowlist enforcement in-workflow, not only pinned `uses:` references.
+- GitHub Actions expression contexts can fail at workflow-parse time in some `env` scopes; when in doubt, derive runner-dependent paths (for example cache dirs) from runtime shell vars like `RUNNER_TEMP` inside steps.
+- For cross-workflow gate dependencies, "latest run for SHA" is not strong enough; require unique candidate selection and anchor run IDs against commit check-run `details_url` before trusting pass status.
+- Event stream append paths should be lock-protected even when higher-level operations already use coarse locks, so concurrent writers cannot interleave JSONL records if append is reused elsewhere.
+- Required-check provenance for release gating should reject `workflow_dispatch` as authoritative evidence for protected checks; accept only protected `pull_request`/`push` lineage.
+- Trusted invoker controls must cover both manual dispatch and tag-push release paths; if bot actors are allowed, require deterministic provenance linkage to a successful upstream release-control workflow on the same commit.
+- Reproducibility checks need a clean-room second install with an isolated empty npm cache (no `--offline` warm-cache reuse) plus lockfile hash parity validation, otherwise cache state can mask non-determinism.
+- In workflow dependency gates, deterministic selection should be anchored to commit check-run `details_url` run IDs instead of failing on multiple candidate workflow runs for the same SHA.
+- Release provenance gates need a squash-merge fallback path (`target commit -> merged PR head -> Omar check-run`) so release automation does not deadlock on commits without direct same-SHA PR runs.
+- Config key enumeration should default to persisted non-secret keys and require explicit opt-in for secret-bearing key namespaces to prevent accidental generic key disclosure.
+- File-lock reliability for daemon ledgers should include owner-token metadata, lock-file fsync, ownership-aware release, and stale-lock reclaim with metadata compare-before-remove semantics.
+- CLI auth error rendering should default to safe high-level messages only; internal status/code context should stay behind explicit debug gating.
+- Required PR quality workflows should avoid `cancel-in-progress` to prevent transient missing/queued required checks and merge-gate race windows.
+- Deterministic build-proof lanes are stronger when both packs are produced from isolated clean git clones and validated by both digest parity and packed-file-list parity.
+- Release tag trust gates should verify both annotated tag object signatures (when present) and target commit verification before allowing publish-path execution.
+- Time-sensitive polling tests should assert deterministic ceilings/invariants (`<= max attempts`, unique idempotency keys), not exact poll-call counts that can vary by scheduler timing.
+- Workflow policy scanners that parse YAML with line regexes are brittle; use structural YAML parsing (`yaml`/AST-style traversal) and fail closed on parse errors.
+- `Retry-After` absolute-date handling must use wall-clock deltas (`retry_epoch - Date.now()`), while monotonic clocks should stay scoped to elapsed-time budgets only.
+- Localhost plaintext API allowances should require explicit opt-in (`SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true`) and be rejected under `CI=true` to prevent silent insecure transport in automation environments.
+- Release-control trigger surfaces should prefer explicit `workflow_dispatch` and `workflow_call`; avoid `repository_dispatch` for high-risk rollback/publish paths unless there is a strict provenance need that cannot be satisfied otherwise.
+- Placeholder-secret denylist controls can over-block legitimate fixtures if test tokens include terms like `test`; keep fixtures provider-shaped and non-placeholder while retaining strict runtime placeholder rejection.
+- Security evidence used across workflows should be promoted as immutable artifacts plus checksum validation (`sha256sum -c`) before downstream jobs consume it.
+- Jitter fallback hardening should use per-login random seeds rather than time-bucket coupling, so concurrent pollers do not share correlated backoff behavior when entropy paths degrade.
+- Release workflows need an explicit guarded `publish` dispatch input; forcing manual dispatches into validation-only mode introduces governance drift findings and operator confusion.
+- CI evidence capture steps must not suppress command failures with blanket `|| true`; persist command exit codes and reject artifacts that include npm audit `error` payloads or unexpected non-zero statuses.
+- Release/publish workflows should use non-canceling concurrency; aborting in-flight release validation introduces race windows and partial-governance runs.
+- npm production publish should prefer OIDC trusted publishing (`id-token: write` + provenance) over long-lived `NPM_TOKEN` secrets to reduce secret lifetime and exfiltration blast radius.
+- File-backed auth metadata must aggressively scrub legacy plaintext `token` fields even when encrypted token material exists; treat any residual plaintext token as a fail-closed storage corruption state.
+- Retry-jitter entropy hardening must never fall back to process/time-derived salts; use CSPRNG (`randomBytes`, then `webcrypto.getRandomValues`) or fail closed with explicit initialization errors.
+- `auth status --verbose-errors` should be machine-output scoped; keep interactive terminal output limited to curated safe messages to avoid code/status/request-id leakage drift.
+- Release-publish workflows need both automated chain triggers (`workflow_run` from Release success) and explicit manual break-glass controls (`break_glass=true`) to avoid manual orchestration drift findings.
+- Release integrity preflight jobs that verify immutable bundles should run under the same protected environment (`release-management`) as tag/run resolution, not in unprotected default context.
+- Security-scan observability is stronger when deterministic audit evidence is mirrored into SARIF and uploaded through code-scanning (`security-events: write`) with fail-closed upload checks.
+- Dual-control for production publish should be enforced at runtime by comparing release initiator identity with workflow approval identities (`actions/runs/{run_id}/approvals`) and failing when no distinct approver exists.
+- Release-intent scoping on `main` should trust `github.event.before` when present and use default-branch merge-base only as bounded fallback; if merge-base equals target SHA, fail open (`release_relevant=true`) to avoid under-scoping release mutations.
+- Secret leakage checks in CI should scan explicit output/artifact paths only; repository-wide recursive grep against runtime secret values creates avoidable false positives and noisy gate churn.
+- Runtime secret schemas should reject leading/trailing whitespace explicitly (`SL-CONFIG-SECRET-WHITESPACE`) rather than silently trimming; auth/session entrypoints must parse env secrets through schema helpers before use.
+- Manual publish workflows need in-workflow branch-protection + required-context verification on the resolved target commit, even when actor permissions and break-glass controls already pass.
+- Poll jitter seed generation should never derive entropy from wall-clock/time-based fallbacks; use cryptographic RNG (`randomBytes` then `webcrypto`) and fail closed when no CSPRNG is available.
+- Atomic filesystem retry loops should include bounded jitter in exponential backoff; deterministic waits can synchronize concurrent workers and increase contention amplification.
+- `workflow_run` release-publish triggers should be narrowed at both trigger and runtime guard layers (protected branch filter + upstream head-branch check) to reduce accidental publish-surface activation.
+- In backend-outage auth tests, request-id propagation can legitimately vary with timeout/backoff path; assert deterministic error class/status first, then conditionally assert request-id when present.
+- Privileged token scopes need three local controls together: explicit CLI opt-in flag, interactive TTY presence, and deterministic policy-confirmation token (`SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM`) before API token issuance.
+- Poll replay defenses should enforce monotonic `poll_sequence` progression when provided by backend responses; request-id windows alone are insufficient over long sessions.
+- High-risk publish workflows should treat `workflow_dispatch` as dry-run validation only and reserve mutation paths for chained, provenance-anchored `workflow_run` executions.
+- Rollback freshness proofs must verify execute-path contract booleans (`executeMode`, `productionGateVerified`, `npmMutationPathVerified`), not timestamp recency alone.
+- Deploy-proof lanes are more defensible when they bind immutable promotion artifacts to both rollback-drill freshness and explicit canary health checks, then emit a dedicated proof artifact.
+- Security-gate workflow inputs should be policy-resolved before scan invocation; protected/default-branch refs must ignore operator-provided weakening knobs and enforce pinned merge thresholds.
+- Request correlation identifiers from backend payloads should be sanitized as untrusted input (charset + length) before surfacing in any error path to prevent trace/log spoofing.
+- For abort-aware polling delays, prefer native `timers/promises` signal support over custom timer/listener promises to avoid cleanup edge-case leaks and inconsistent cancellation semantics.
+- Workflow least-privilege drift is easier to prevent with a structural YAML policy checker (top-level + per-job explicit permissions) wired into both local `npm run check` and CI lint gates.
+- Break-glass release paths should remain executable but heavily governed (dual control, validated incident id, immutable incident evidence artifact) rather than fully disabled into dry-run-only behavior.
+- Immutable artifact lineage controls are stronger when preflight emits a contract output set (artifact name, digests, commit/run provenance) that publish jobs must match exactly before mutation steps.
+- Workflow permission checks that only enforce "explicit object exists" are insufficient; use a checked-in per-workflow/per-job `required`+`max` policy map and fail on any out-of-policy scope or escalation.
+- For critical workflow contract assertions, parse YAML structurally and inspect `jobs`/`needs` DAG edges; regex/string matching of workflow text is too brittle for governance guarantees.
+- Manual release publish dispatches should be anchored to a specific successful release run id and validated against tag commit SHA, not reconstructed heuristically from "latest successful run for SHA".
+- When migrating direct publish controls out of release validation workflows, remove user-facing publish toggles from dispatch inputs first to eliminate accidental production path confusion.
+- CI steps that execute Node scripts with third-party imports must run only after dependency installation; pre-install contract checks must use shell/native tooling or explicitly bootstrap deps first.
+- Release dispatch trust should be policy-file driven (`.github/security/release-invokers.json`) with explicit actor allowlist + incident-id regex enforcement, not ad-hoc per-workflow shell logic.
+- Production dual-control evidence is strongest when `authorize-production-publish` reads run approvals (`actions/runs/{run_id}/approvals`) and hard-fails if approver identity equals initiator.
+- Auth poll replay protection must survive process restarts; persist bounded resume state keyed by a session digest with TTL, and treat read/write/cleanup failures as best-effort so auth flow availability is not degraded.
+- Release-publish manual promotion should enforce deterministic run staleness bounds (created_at age window) and only allow stale overrides through explicit emergency controls that are separately signaled and incident-bound.
+- Release workflow triggers should be tightened at the event filter (`v*.*.*`) and revalidated by an early guard job before any privileged release logic runs.
+- To eliminate npm lockfile interpretation drift in CI, pin npm CLI immediately after `setup-node` in every job that executes `npm ci`, not only downstream build jobs.
+- YAML governance scanners should parse with strict duplicate-key rejection and fail on parser warnings/errors; best-effort parse modes leave policy-bypass ambiguity.
+- File-backed auth poll resume state needs explicit per-session lock files and stale-lock reclaim to preserve monotonic replay windows under concurrent processes.
+- Probabilistic jitter regression tests should assert diversity across a seed set rather than strict inequality for a single pair, which can collide under bounded jitter windows.
+- Localhost HTTP auth endpoints should require dual consent (`SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true` plus explicit runtime opt-in flag) and remain blocked in CI.
+- For large Windows test files, prefer structured/scripted AST-safe edits over brittle regex replacements that can inject literal escape sequences into source.
+- Reusable workflow-call jobs surface as `Parent Job / Child Job` names in run metadata; gate-verification checks should use regex matching, not exact single-name assertions.
+- In `set -euo pipefail` shells, expected non-zero probes (for example `npm view` on unpublished versions) must be wrapped with temporary `set +e` capture to differentiate benign `E404` from real registry/network faults.
+- Cross-process reliability features in CLI modules should expose deterministic test overrides for state paths (env-scoped temp directories) so persisted-state behavior is verifiable without mutating the developer's real home cache.
+- In bash `[[ ... =~ ... ]]` checks, complex regex with `;`/`|` should be assigned to variables first; inline patterns can trigger parser tokenization errors in CI even when logically valid as regex.
+- Reusable rollback/readiness workflows must support unpublished-package repos in validation-only mode (`execute=false`): fall back to local package version/tarball checks and still emit required summary artifacts, while keeping execute-mode npm lineage checks strict.
+- Runtime gate-verification scripts that query run jobs must target the exact required job identity (or explicitly ignore skipped schedule-only siblings); broad regex matching across reusable workflow children can falsely fail successful runs.
+- Omar-gate dependency polling must use bounded exponential backoff with jitter and per-phase attempt counters; fixed-interval polling creates predictable load spikes and avoidable transient gate noise.
+- Validation-only unpublished-package fallback in rollback workflows should be behind an explicit boolean policy input (`allow_local_validation_only`) and fail closed when not authorized.
+- Release-governance coupling checks should validate workflow DAG edges structurally (`jobs` + `needs` via YAML parse) rather than relying on text/regex assertions.
+- Shared-lock retry jitter in auth paths should be CSPRNG-backed; avoid `Math.random` for contention-sensitive reliability/security behavior.
+- Manual Omar dispatch inputs that weaken merge thresholds (`severity_gate`, `p2_max_allowed`) should be removed or policy-clamped; runtime knobs on high-risk gates create governance bypass surfaces.
+- Release-publish promotion must revalidate upstream release gate-chain job outcomes on the selected `release_run_id`, not just tag/run identity and branch-protection context checks.
+- Env-overridable local state directories need explicit hardening (no UNC paths, no symlinks, private permissions) before read/write/lock operations to prevent path hijack/tamper channels.
+- Poll idempotency keys should be per-attempt and resume-state aware; bucketed/windowed reuse can allow duplicate mutation windows under retries and restarts.
+- File-backed credential fallback should require explicit policy-confirmation tokens in addition to `--no-keyring`; fallback without deterministic operator acknowledgment is an avoidable secret-handling risk.
+- When using `pull_request_target` for secret-backed workflows, pair it with strict same-repo/non-fork guards and event-aware policy logic so privileged scans cannot execute against untrusted fork context.
+- Release mutation jobs should require explicit successful upstream gate-run IDs (`quality` and `Omar`) before execution; checking only release-scope booleans is not sufficient provenance.
+- Jitter/random helper fallbacks must avoid modulo reduction on bounded integer ranges; use rejection sampling to prevent bias in retry timing distributions.
+- Remote-exec detection for workflow shell commands should treat network-fetch + obfuscated shell indirection (`$()`, backticks, `eval`, `*-c $...`) as high-risk even when direct pipe patterns are absent.
+- Toolchain provenance checks are stronger when CI asserts both expected toolcache source paths and cryptographic digests for active `node`/`npm` binaries.
+- Trigger-model edits on required workflows must be validated by checking actual PR check presence (`gh pr checks`) after push; a syntactically valid workflow can still silently stop firing on the expected event.
+- When widening deterministic key namespace digests (for example 16 -> 32 hex), include backward-compatible lookup candidates and post-read migration cleanup so existing encrypted material remains decryptable and converges to the new path.
+- If emergency/manual release routes are retained, force `workflow_dispatch` into validation-only mode unless explicitly required; keep production mutation jobs gated to provenance-anchored `workflow_run` paths.
+- Toolchain digest allowlists should be keyed by runner image + pinned version tuple, and CI should fail closed when the tuple is missing from the checked-in manifest.
+- Third-party action jobs should minimize high-value secret exposure: if managed LLM mode is available, avoid passing `OPENAI_API_KEY` and assert only secrets that are strictly required for the step.
+- Required-check workflows should use SHA-scoped concurrency keys (`pull_request.head.sha`/`github.sha`) instead of PR-number/ref keys to prevent stale-run collisions across synchronize pushes.
+- Request correlation fidelity needs dual-source capture in HTTP clients: sanitize and propagate IDs from both backend payload fields and response headers (`x-request-id`) for invalid JSON and transport failures.
+- Publish paths need a final just-before-mutation attestation/digest verification step even when upstream quality gates already validated provenance; downstream job context is a distinct trust boundary.
+- For this repository's Omar workflow, switching to `sentinelayer_managed_llm: "true"` changed scanner behavior and triggered lockfile entropy failures in `Run Omar Gate`; keep the OpenAI-keyed scan path (`openai_api_key` + `sentinelayer_managed_llm: "false"`) unless policy is explicitly updated.
+- For secret-bearing scan workflows, prefer reducing `checks` to read-only unless the scan step proves a write requirement; retaining `pull-requests: write` alone can preserve PR comment output while shrinking token mutation surface.
+- "Rollback readiness" findings are reduced when release workflows run rollback validation as a first-class transaction gate (`uses: rollback.yml`) and then verify rollback-lineage artifacts against preflight commit/digest contracts before publish authorization.
+- CI immutability findings are easier to suppress when lint includes explicit structural checks that deploy-path jobs only consume immutable build artifacts and forbid rebuild commands (`npm pack`, `npm publish`, `npm run build`) in promotion stages.
+- For automated release publishing, add a second human gate with explicit distinctness checks (`initiator != primary approver != second approver`) and persist both approval identities in publish evidence artifacts.
+- Fork-origin PRs still need a deterministic Omar check result; use split trusted/untrusted jobs plus a single final `Omar Gate` aggregator check so branch protection always has coverage.
+- Break-glass `workflow_dispatch` publish paths should be policy-file driven (allowlisted actors + incident id contract) rather than globally forced to validation-only mode.
+- Rollback workflows should enforce npm pin equality (`resolved == NPM_VERSION_PIN`) instead of merely printing `npm --version`, or deterministic toolchain guarantees are illusory.
+- Structured CLI JSON errors should expose only safe message + optional redacted request-id tail; do not leak raw backend `code/status` taxonomy, especially in CI output.
+- If local Windows lacks WSL/bash, treat bash-based CI policy scripts as locally skipped and rely on ubuntu CI jobs for authoritative execution evidence.
+
+## 2026-04-04
+
+- Localhost HTTP dev escape hatches should require three simultaneous controls: env flag, runtime flag, and deterministic cryptographic consent token scoped to loopback host; this prevents accidental plaintext auth transport activation.
+- Insecure localhost HTTP should enforce explicit high/random-port policy with a small curated dev allowlist, rather than accepting arbitrary loopback ports.
+- Privileged token scopes (`github_app_bridge`) must be hard-disabled on insecure HTTP transport even when operator consent flags are present.
+- Shared-state security controls must fail closed: do not swallow policy/path-validation errors in snapshot load/persist helpers, or guardrails become no-ops.
+- Env-overridable shared-state paths should be root-contained under `${HOME}/.sentinelayer`; in CI, unsafe overrides should be ignored unless an explicit secure test override is set.
+- Command handlers that rethrow sanitized strings as `Error` lose machine-triage metadata; prefer structured error payload emission + `process.exitCode=1` for deterministic automation.
+- Release governance workflows should use the shared `gh_api_json` retry/timeout helper for control-plane API lookups to avoid bespoke timeout logic drift.
+- Omar least-privilege findings can be reduced by keeping workflow-level permissions read-only and moving write scopes strictly to the scanning job.
+- Provenance findings are easier to close when release-publish has a dedicated workflow-boundary provenance gate job that all publish-capable paths depend on.
+- Required-check reliability improves when quality-gate concurrency cancels superseded runs for the same SHA; leaving stale runs active can surface duplicate or drifting required-check states.
+- Release-intent and release-publish workflows should enforce immutable dependency install (`npm ci`/lockfile gate) before governance or mutation logic to prevent toolchain drift.
+- Local rollback lineage fallback must require an explicit, structured exception identifier and persist that exception into lineage artifacts; otherwise validation-only fallback weakens auditability.
+- Auth poll backend outage handling should persist circuit-open state across process restarts so retry storms do not resume immediately after CLI restart.
+- Duplicate quality-gate execution across `pull_request` and `push main` should be controlled by an explicit canonical-run selector job; concurrency keys alone do not suppress post-completion duplicates.
+- Upstream workflow provenance pinning is stronger when release workflows validate both immutable workflow identity (`workflow_id`) and approved workflow-file digest at target commit against a policy file.
+- Remote-exec detection in workflow `run` blocks should be parser/dataflow driven (tainted-variable tracking + execution sink detection), with regex checks treated as secondary defense only.
+- Reusable rollback validation callers should not request `id-token: write` unless the called path actually performs OIDC trust exchange.
+- Production-deploy assurance in quality workflows should be represented as a first-class protected-environment proof job that emits immutable evidence artifacts, not inferred indirectly from prior checks.
+- Release-publish orchestration should enforce deterministic run-age budgets before selecting upstream artifacts; stale-run guards belong in workflow logic, not operator convention.
+- Rollback execute paths need strict provenance contract validation (`attestationVerified`, lineage mode, quality artifact digest parity) immediately before npm mutation commands.
+- Policy-map coverage must evolve with workflow DAG changes; every new governance job requires explicit `required`+`max` permission policy entries to keep local/CI drift checks authoritative.
+- Poll attempt ceilings should be derived from timeout-window math (deadline, interval, backoff cap) rather than static constants so auth loops cannot silently exceed configured duration budgets.
+- Parser/dataflow security-detector rewrites must ship with dedicated cross-platform unit tests that exercise the exact vulnerable pattern (for example variable-assignment -> `eval` sink), because bash-gated fixtures can be skipped on Windows and hide regressions until CI.
+- Security gates that depend on upstream required checks should bind to immutable proof artifacts from the anchored workflow run (not status checks alone) to close run-selection integrity gaps.
+- Workflow-wide SHA concurrency can still leave external-resource race windows; high-risk deploy-simulation stages should have a separate non-canceling global concurrency lock.
+- Shared GitHub API retry helpers must enforce hard upper bounds (`max attempts`, `max backoff`, `max total wait`) so callers cannot accidentally create effectively unbounded retry envelopes via env overrides.
+- Shell remote-exec analyzers need both token-aware command matching and fail-closed high-risk indirection detection (`eval`, command substitution, backticks) when network fetch signals are present.
+- Auth backend outage handling should fail faster with tighter circuit thresholds and surface explicit cooldown/failure-count context in user-visible error messages for clearer operator recovery signals.
+- Remote-exec correlation must be command-local, not whole-step-global; mixing network signals from one command with benign `$()`/template constructs in other commands causes high-noise false positives that break CI gates.
+- PR workflow provenance artifacts should record both PR head SHA and workflow execution SHA; using merge SHA alone breaks downstream gates that intentionally validate source-head commit lineage.
+- Push-vs-PR canonical-run dedupe heuristics can undercut required-check determinism; for protected default-branch pushes, execute the full quality chain and treat duplicate-cost optimization as secondary.
+- npm patch-version pin checks on hosted runners should use deterministic bootstrap-to-pin plus digest allowlist validation, not raw runner-image version equality assumptions.
+- Unknown client-side auth HTTP exceptions must not be bucketed into `NETWORK_ERROR`; classify non-transport failures as non-retryable processing errors so retry/backoff logic remains actionable.
+- CI state-directory override flags need layered controls (`CI override flag` + `NODE_ENV=test` + `GitHub Actions policy opt-in`) to prevent accidental path-control drift in automation.
+- Manual `workflow_dispatch` release-publish paths should default to validation-only mode; keep publish mutation on provenance-anchored `workflow_run` path unless an explicitly gated break-glass lane is implemented.
+- Push-tag release triggers should enforce canonical bot provenance (`release-please` lineage) and block manual human tag pushes from entering release mutation workflows.
+- Canonical required-check dedupe should be anchored to explicit GitHub run metadata (`event + head_sha + workflow path`) and fail open to full execution when API lookup fails; silent skip heuristics on protected pushes produce governance drift.
+- Workflow permission-policy updates must ship in lockstep with new workflow jobs; adding a governance job without policy entry causes immediate deterministic gate failure.
+- Action SHA pinning alone is not enough for supply-chain governance; enforce owner allowlists and commit provenance/signature checks via GitHub API with bounded local fallback semantics.
+- Auth poll replay protection should persist issued idempotency-key history across restarts and reject reused keys in resumed loops; in-memory-only tracking is insufficient under process restarts.
+- If CI policy scripts require GitHub API auth (`gh api`), propagate `GH_TOKEN: ${{ github.token }}` explicitly into every test/coverage step that can execute those scripts; the token is not auto-exported into shell environments.
+- Apply the same `GH_TOKEN` propagation rule to dedicated security jobs (not only test lanes); allowlist/provenance checks in security stages hit the same auth requirement.
+- For canonical-run dedupe safety, API-failure fallback paths must still enforce repository identity (`event.repository` and PR head repository) before allowing full execution.
+- Secret-presence checks are not sufficient for trusted scans; tie secret-consuming steps to explicit environment-protection verification outputs and trusted job identity.
+- Tag-push release trust paths should avoid collaborator-permission API coupling for bot actors; keep collaborator checks scoped to manual-dispatch governance paths.
+- Action provenance fallback-by-availability weakens guarantees; prefer fail-closed commit-provenance checks over tarball HEAD existence probes unless immutable digest verification is implemented.
+- Some pinned GitHub Actions SHAs (for example `actions/attest-build-provenance`) can intermittently fail commits-API resolution; robust provenance gates should allow fallback only with explicit tarball SHA-256 allowlist verification.
+- Canonical-run fallback logic for required CI gates should fail closed (error) for non-canonical repository contexts when run-selection API lookups fail; skipping full gates creates merge-policy blind spots.
+- Quality-check anchoring in cross-workflow gates should bind both commit SHA and expected branch/ref context to avoid selecting unrelated successful runs for the same commit.
+- Insecure localhost HTTP dev allowances should treat `49152+` as the random-port boundary; lower ephemeral ranges are too broad for auth-sensitive workflows.
+- OIDC governance is stronger when publish lanes verify actual token exchange/claims before mutation, not just static `id-token: write` permission presence.
+- When tightening localhost port policy, unit-test mock servers must also bind within that policy envelope; random OS port binding (`listen(0)`) can introduce CI-only flakes.
+- Shared auth HTTP circuit-breaker state must be reset per test (`beforeEach`/`afterEach`) across all auth-related suites to prevent cross-file state leakage (`CIRCUIT_OPEN`) from causing order-dependent failures.
+- On Linux runners, repeated `listen(0)` calls can allocate sequential low ephemeral ports; for port-policy-sensitive tests, bind explicit randomized high ports within the allowed range instead of retrying `port=0`.

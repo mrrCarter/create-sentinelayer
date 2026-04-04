@@ -1,72 +1,1818 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish to npm (requires NPM_TOKEN)"
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Semver tag to release (vX.Y.Z)"
+        required: true
+        type: string
+      incident_id:
+        description: "Required incident/change ticket id for manual release dispatch (INC-XXXX...)"
+        required: true
+        type: string
 
 permissions:
   contents: read
+  checks: read
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.2.4"
+  ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
+  OMAR_PR_RUN_MAX_AGE_HOURS: "24"
+
+concurrency:
+  group: release-control-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
-      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+  release-management-gate:
+    name: Release Management Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    environment: release-management
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate package
-        run: npm run verify
-
-      - name: Build release tarball
-        run: npm pack
-
-      - name: Validate packaged CLI install
+      - name: Require release-management approval context
+        shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
-          npm install --global "${TARBALL}"
-          create-sentinelayer --version
-          sentinel --version
+          echo "Release management approval captured for ${GITHUB_WORKFLOW} run ${GITHUB_RUN_ID}."
 
-      - name: Upload release tarball artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: create-sentinelayer-tarball
-          path: create-sentinelayer-*.tgz
-
-      - name: Publish skipped (missing NPM_TOKEN)
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT != 'true'
+  validate-release-trigger:
+    name: Validate Release Trigger
+    runs-on: ubuntu-22.04
+    needs: [release-management-gate]
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+    steps:
+      - name: Validate release tag format early
+        id: validate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
         run: |
-          echo "NPM_TOKEN is not configured. Skipping npm publish."
-          echo "Set repository/org secret NPM_TOKEN and rerun with publish=true."
+          set -euo pipefail
+          release_tag=""
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "${GITHUB_REF_VALUE}" == refs/tags/* ]]; then
+                release_tag="${GITHUB_REF_VALUE#refs/tags/}"
+              fi
+              ;;
+            workflow_dispatch)
+              release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
+              ;;
+            *)
+              echo "::error::Unsupported release event '${EVENT_NAME}'."
+              exit 1
+              ;;
+          esac
+          if [[ -z "${release_tag}" ]]; then
+            echo "::error::Unable to resolve release tag for event '${EVENT_NAME}'."
+            exit 1
+          fi
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '${release_tag}' must match vX.Y.Z semver format."
+            exit 1
+          fi
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "Validated release trigger tag '${release_tag}'."
+
+  resolve-release-flags:
+    name: Resolve Release Flags
+    runs-on: ubuntu-22.04
+    needs: [validate-release-trigger]
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+    outputs:
+      publish_requested: ${{ steps.flags.outputs.publish_requested }}
+      dry_run: ${{ steps.flags.outputs.dry_run }}
+      release_path_execution: ${{ steps.flags.outputs.release_path_execution }}
+      release_tag: ${{ steps.flags.outputs.release_tag }}
+      release_ref_value: ${{ steps.flags.outputs.release_ref_value }}
+      release_ref_type: ${{ steps.flags.outputs.release_ref_type }}
+      target_sha: ${{ steps.flags.outputs.target_sha }}
+      release_initiator: ${{ steps.flags.outputs.release_initiator }}
+      incident_id: ${{ steps.flags.outputs.incident_id }}
+    steps:
+      - name: Validate trusted release invoker
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          ACTOR: ${{ github.actor }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
+            echo "::error::Release workflow must originate from canonical repository '${REPO}' (received '${EVENT_REPOSITORY}')."
+            exit 1
+          fi
+          input_release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
+          input_incident_id="$(echo "${INPUT_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
+          invoker_policy_path=".github/security/release-invokers.json"
+          requires_invoker_validation="false"
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+                requires_invoker_validation="true"
+              fi
+              ;;
+            workflow_dispatch)
+              requires_invoker_validation="true"
+              ;;
+            *)
+              echo "Trusted invoker validation not required for event '${EVENT_NAME}'."
+              exit 0
+              ;;
+          esac
+          if [[ "${requires_invoker_validation}" != "true" ]]; then
+            echo "Trusted invoker validation skipped for ref '${GITHUB_REF_VALUE}'."
+            exit 0
+          fi
+          trusted_actor="false"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            permission_json="$(gh_api_json "repos/${REPO}/collaborators/${ACTOR}/permission")"
+            permission="$(echo "${permission_json}" | jq -r '.permission // ""')"
+            case "${permission}" in
+              admin|maintain)
+                trusted_actor="true"
+                echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
+                ;;
+              *)
+                echo "::error::workflow_dispatch release requires admin/maintain permission (actor='${ACTOR}', permission='${permission}')."
+                exit 1
+                ;;
+            esac
+            test -f "${invoker_policy_path}" || (echo "::error::Missing trusted invoker policy file ${invoker_policy_path}." && exit 1)
+            allowlist_count="$(jq -r '.workflowDispatch.allowlist | length // 0' "${invoker_policy_path}")"
+            if [[ "${allowlist_count}" -lt 1 ]]; then
+              echo "::error::Trusted invoker policy must define at least one workflowDispatch allowlist entry."
+              exit 1
+            fi
+            allowlist_match="$(jq -r --arg actor "${ACTOR}" '.workflowDispatch.allowlist | map(select(type == "string")) | index($actor) != null' "${invoker_policy_path}")"
+            if [[ "${allowlist_match}" != "true" ]]; then
+              echo "::error::Actor '${ACTOR}' is not in trusted workflow_dispatch release allowlist."
+              exit 1
+            fi
+            require_incident_id="$(jq -r '.workflowDispatch.requireIncidentId // true' "${invoker_policy_path}")"
+            incident_pattern="$(jq -r '.workflowDispatch.incidentIdPattern // "^INC-[A-Za-z0-9._-]{4,64}$"' "${invoker_policy_path}")"
+            if [[ "${require_incident_id}" == "true" ]]; then
+              if [[ -z "${input_incident_id}" ]]; then
+                echo "::error::workflow_dispatch release requires incident_id input."
+                exit 1
+              fi
+              if [[ ! "${input_incident_id}" =~ ${incident_pattern} ]]; then
+                echo "::error::incident_id '${input_incident_id}' does not match required policy pattern."
+                exit 1
+              fi
+            fi
+            release_env_json="$(gh_api_json "repos/${REPO}/environments/release-management")"
+            release_reviewer_count="$(echo "${release_env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]? | ((.reviewer.login // .reviewer.slug // .login // .slug // "") | select(length > 0))] | unique | length')"
+            case "${release_reviewer_count}" in ''|*[!0-9]*)
+              echo "::error::Unable to resolve release-management required reviewer count."
+              exit 1
+              ;;
+            esac
+            if [[ "${release_reviewer_count}" -lt 1 ]]; then
+              echo "::error::release-management environment must define at least one required reviewer."
+              exit 1
+            fi
+            distinct_non_actor_reviewers="$(echo "${release_env_json}" | jq -r --arg actor "${ACTOR}" '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]? | ((.reviewer.login // .reviewer.slug // .login // .slug // "") | select(length > 0) | ascii_downcase) | select(. != ($actor | ascii_downcase))] | unique | length')"
+            case "${distinct_non_actor_reviewers}" in ''|*[!0-9]*)
+              echo "::error::Unable to resolve non-actor release-management reviewer count."
+              exit 1
+              ;;
+            esac
+            if [[ "${distinct_non_actor_reviewers}" -lt 1 ]]; then
+              echo "::error::workflow_dispatch release requires at least one release-management required reviewer distinct from actor '${ACTOR}'."
+              exit 1
+            fi
+          fi
+          tag_name=""
+          ref_type=""
+          ref_sha=""
+          target_sha=""
+          annotated_tag_json=""
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+            tag_name="${GITHUB_REF_VALUE#refs/tags/}"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag_name="${input_release_tag}"
+          fi
+          if [[ -n "${tag_name}" ]]; then
+            if [[ ! "${tag_name}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::release_tag '${tag_name}' must match vX.Y.Z semantic version format."
+              exit 1
+            fi
+            tag_ref_json="$(gh_api_json "repos/${REPO}/git/ref/tags/${tag_name}")"
+            ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
+            ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
+            if [[ -z "${ref_sha}" ]]; then
+              echo "::error::Unable to resolve tag object SHA for '${tag_name}'."
+              exit 1
+            fi
+            target_sha="${ref_sha}"
+            if [[ "${ref_type}" == "tag" ]]; then
+              annotated_tag_json="$(gh_api_json "repos/${REPO}/git/tags/${ref_sha}")"
+              target_sha="$(echo "${annotated_tag_json}" | jq -r '.object.sha // ""')"
+            elif [[ "${ref_type}" != "commit" ]]; then
+              echo "::error::Tag '${tag_name}' points to unsupported object type '${ref_type}'."
+              exit 1
+            fi
+            if [[ -z "${target_sha}" ]]; then
+              echo "::error::Unable to resolve commit SHA for tag '${tag_name}'."
+              exit 1
+            fi
+          fi
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ -z "${tag_name}" ]]; then
+            echo "::error::workflow_dispatch release requires release_tag input."
+            exit 1
+          fi
+          if [[ "${EVENT_NAME}" == "push" ]] && [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+            if [[ "${ACTOR}" != "github-actions[bot]" ]]; then
+              echo "::error::Tag-push release requires canonical bot actor 'github-actions[bot]' with release-please provenance; manual tag pushes are not allowed."
+              exit 1
+            fi
+            release_runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release-please.yml/runs?head_sha=${target_sha}&per_page=20")"
+            release_run_id="$(echo "${release_runs_json}" | jq -r --arg sha "${target_sha}" --arg path ".github/workflows/release-please.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "push")
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .id // empty
+            ')"
+            if [[ -z "${release_run_id}" ]]; then
+              echo "::error::Tag push by github-actions[bot] requires successful release-please provenance on commit ${target_sha}."
+              exit 1
+            fi
+            echo "Trusted bot invoker '${ACTOR}' validated via release-please run ${release_run_id} on commit ${target_sha}."
+            trusted_actor="true"
+          fi
+          if [[ "${trusted_actor}" != "true" ]]; then
+            echo "::error::Actor '${ACTOR}' is not authorized for release event '${EVENT_NAME}' on '${GITHUB_REF_VALUE}' (permission='${permission}')."
+            exit 1
+          fi
+          if [[ -n "${tag_name}" ]]; then
+            if [[ "${ref_type}" == "tag" ]]; then
+              tag_verified="$(echo "${annotated_tag_json}" | jq -r '.verification.verified // false')"
+              if [[ "${tag_verified}" != "true" ]]; then
+                echo "::error::Annotated tag '${tag_name}' is not cryptographically verified."
+                exit 1
+              fi
+            fi
+            commit_json="$(gh_api_json "repos/${REPO}/commits/${target_sha}")"
+            commit_verified="$(echo "${commit_json}" | jq -r '.commit.verification.verified // false')"
+            if [[ "${commit_verified}" != "true" ]]; then
+              echo "::error::Tag target commit '${target_sha}' is not cryptographically verified."
+              exit 1
+            fi
+            default_branch="${DEFAULT_BRANCH:-main}"
+            default_branch_json="$(gh_api_json "repos/${REPO}/branches/${default_branch}")"
+            default_branch_sha="$(echo "${default_branch_json}" | jq -r '.commit.sha // ""')"
+            test -n "${default_branch_sha}" || (echo "::error::Unable to resolve default branch head SHA for '${default_branch}'." && exit 1)
+            compare_json="$(gh_api_json "repos/${REPO}/compare/${target_sha}...${default_branch_sha}")"
+            compare_status="$(echo "${compare_json}" | jq -r '.status // ""')"
+            if [[ "${compare_status}" != "ahead" ]] && [[ "${compare_status}" != "identical" ]]; then
+              echo "::error::Release tag commit ${target_sha} is not on protected default branch '${default_branch}' lineage (compare_status=${compare_status})."
+              exit 1
+            fi
+            echo "Verified signed release provenance for tag '${tag_name}' (commit=${target_sha})."
+          fi
+
+      - name: Assert rollback-readiness gate contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          if (!/\n  rollback-readiness:\s*\n/m.test(content)) {
+            console.error("::error::Missing rollback-readiness job in release workflow.");
+            process.exit(1);
+          }
+          if (!/\n  verify-rollback-transaction-lineage:\s*\n/m.test(content)) {
+            console.error("::error::Missing verify-rollback-transaction-lineage job in release workflow.");
+            process.exit(1);
+          }
+          const authorizeNeedsMatch = content.match(/authorize-production-publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!authorizeNeedsMatch) {
+            console.error("::error::Unable to resolve authorize-production-publish.needs in release workflow.");
+            process.exit(1);
+          }
+          const authorizeNeeds = authorizeNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!authorizeNeeds.includes("verify-rollback-transaction-lineage")) {
+            console.error("::error::authorize-production-publish must depend on verify-rollback-transaction-lineage.");
+            process.exit(1);
+          }
+          const verifyNeedsMatch = content.match(/verify-rollback-transaction-lineage:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!verifyNeedsMatch) {
+            console.error("::error::Unable to resolve verify-rollback-transaction-lineage.needs in release workflow.");
+            process.exit(1);
+          }
+          const verifyNeeds = verifyNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!verifyNeeds.includes("rollback-readiness")) {
+            console.error("::error::verify-rollback-transaction-lineage must depend on rollback-readiness.");
+            process.exit(1);
+          }
+          if (!verifyNeeds.includes("preflight")) {
+            console.error("::error::verify-rollback-transaction-lineage must depend on preflight.");
+            process.exit(1);
+          }
+          const publishNeedsMatch = content.match(/publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!publishNeedsMatch) {
+            console.error("::error::Unable to resolve publish.needs in release workflow.");
+            process.exit(1);
+          }
+          const publishNeeds = publishNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!publishNeeds.includes("verify-rollback-transaction-lineage")) {
+            console.error("::error::publish must depend on verify-rollback-transaction-lineage.");
+            process.exit(1);
+          }
+          NODE
+
+      - name: Assert production dual-control publish contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          if (!/\n  authorize-production-publish:\s*\n[\s\S]*?environment:\s*production/m.test(content)) {
+            console.error("::error::Missing authorize-production-publish production environment gate.");
+            process.exit(1);
+          }
+          if (!/\n  publish:\s*\n[\s\S]*?environment:\s*production/m.test(content)) {
+            console.error("::error::Missing publish production environment gate.");
+            process.exit(1);
+          }
+          const publishNeedsMatch = content.match(/publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!publishNeedsMatch) {
+            console.error("::error::Unable to resolve publish.needs for dual-control verification.");
+            process.exit(1);
+          }
+          const publishNeeds = publishNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!publishNeeds.includes("authorize-production-publish")) {
+            console.error("::error::publish must depend on authorize-production-publish for dual-control approval.");
+            process.exit(1);
+          }
+          NODE
+
+      - name: Normalize release tag inputs
+        id: flags
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          GITHUB_REF_TYPE_VALUE: ${{ github.ref_type }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FALLBACK_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          publish_requested="false"
+          release_path_execution="false"
+          dry_run="true"
+          release_tag=""
+          release_ref_value="${GITHUB_REF_VALUE}"
+          release_ref_type="${GITHUB_REF_TYPE_VALUE}"
+          target_sha="${FALLBACK_SHA}"
+          incident_id=""
+          incident_pattern='^INC-[A-Za-z0-9._-]{4,64}$'
+          invoker_policy_path=".github/security/release-invokers.json"
+          if [[ -f "${invoker_policy_path}" ]]; then
+            incident_pattern="$(jq -r '.workflowDispatch.incidentIdPattern // "^INC-[A-Za-z0-9._-]{4,64}$"' "${invoker_policy_path}")"
+          fi
+          input_release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
+          input_incident_id="$(echo "${INPUT_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
+          compare_semver_tags() {
+            local requested_tag="$1"
+            local latest_tag="$2"
+            node - "${requested_tag}" "${latest_tag}" <<'NODE'
+          const requestedRaw = String(process.argv[2] || "").trim();
+          const latestRaw = String(process.argv[3] || "").trim();
+          const semverRegex = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+          const parseTag = (value) => {
+            const match = semverRegex.exec(String(value || "").trim());
+            if (!match) {
+              return null;
+            }
+            return {
+              major: Number(match[1]),
+              minor: Number(match[2]),
+              patch: Number(match[3]),
+              prerelease: match[4] ? match[4].split(".") : [],
+            };
+          };
+          const compareIdentifiers = (left, right) => {
+            const leftNumeric = /^\d+$/.test(left);
+            const rightNumeric = /^\d+$/.test(right);
+            if (leftNumeric && rightNumeric) {
+              return Number(left) - Number(right);
+            }
+            if (leftNumeric && !rightNumeric) {
+              return -1;
+            }
+            if (!leftNumeric && rightNumeric) {
+              return 1;
+            }
+            if (left < right) {
+              return -1;
+            }
+            if (left > right) {
+              return 1;
+            }
+            return 0;
+          };
+          const comparePrerelease = (left = [], right = []) => {
+            const leftHas = left.length > 0;
+            const rightHas = right.length > 0;
+            if (!leftHas && !rightHas) {
+              return 0;
+            }
+            if (!leftHas && rightHas) {
+              return 1;
+            }
+            if (leftHas && !rightHas) {
+              return -1;
+            }
+            const maxLength = Math.max(left.length, right.length);
+            for (let index = 0; index < maxLength; index += 1) {
+              const leftPart = left[index];
+              const rightPart = right[index];
+              if (leftPart === undefined && rightPart !== undefined) {
+                return -1;
+              }
+              if (leftPart !== undefined && rightPart === undefined) {
+                return 1;
+              }
+              const delta = compareIdentifiers(String(leftPart), String(rightPart));
+              if (delta !== 0) {
+                return delta;
+              }
+            }
+            return 0;
+          };
+          const compareTags = (left, right) => {
+            for (const field of ["major", "minor", "patch"]) {
+              if (left[field] !== right[field]) {
+                return left[field] - right[field];
+              }
+            }
+            return comparePrerelease(left.prerelease, right.prerelease);
+          };
+          const requested = parseTag(requestedRaw);
+          const latest = parseTag(latestRaw);
+          if (!requested || !latest) {
+            console.log("invalid");
+            process.exit(0);
+          }
+          const comparison = compareTags(requested, latest);
+          if (comparison > 0) {
+            console.log("greater");
+          } else if (comparison < 0) {
+            console.log("lower");
+          } else {
+            console.log("equal");
+          }
+          NODE
+          }
+          resolve_npm_latest_tag_json() {
+            local latest_json=""
+            local status=0
+            local error_file
+            error_file="$(mktemp)"
+            for attempt in 1 2 3; do
+              set +e
+              latest_json="$(timeout --preserve-status 30s npm view create-sentinelayer dist-tags.latest --json 2>"${error_file}")"
+              status=$?
+              set -e
+              if [[ "${status}" -eq 0 ]]; then
+                rm -f "${error_file}"
+                printf '%s\n' "${latest_json}"
+                return 0
+              fi
+              if grep -qiE "E404|404 Not Found" "${error_file}"; then
+                rm -f "${error_file}"
+                printf '""\n'
+                return 0
+              fi
+              if [[ "${attempt}" -lt 3 ]]; then
+                sleep $((attempt * 2))
+              fi
+            done
+            cat "${error_file}" >&2 || true
+            rm -f "${error_file}"
+            return 1
+          }
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
+                release_tag="${GITHUB_REF_VALUE#refs/tags/}"
+                release_path_execution="true"
+                publish_requested="false"
+                dry_run="true"
+              fi
+              ;;
+            workflow_dispatch)
+              release_tag="${input_release_tag}"
+              incident_id="${input_incident_id}"
+              if [[ -z "${release_tag}" ]]; then
+                echo "::error::workflow_dispatch requires release_tag input."
+                exit 1
+              fi
+              if [[ -z "${incident_id}" ]]; then
+                echo "::error::workflow_dispatch requires incident_id input."
+                exit 1
+              fi
+              if [[ ! "${incident_id}" =~ ${incident_pattern} ]]; then
+                echo "::error::incident_id '${incident_id}' does not match required policy pattern."
+                exit 1
+              fi
+              release_path_execution="true"
+              publish_requested="false"
+              dry_run="true"
+              ;;
+            *)
+              release_path_execution="false"
+              ;;
+          esac
+          if [[ "${release_path_execution}" == "true" ]]; then
+            if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::release_tag '${release_tag}' must match vX.Y.Z semantic version format."
+              exit 1
+            fi
+            tag_ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${release_tag}")"
+            ref_type="$(echo "${tag_ref_json}" | jq -r '.object.type // ""')"
+            ref_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // ""')"
+            if [[ -z "${ref_sha}" ]]; then
+              echo "::error::Unable to resolve tag object SHA for '${release_tag}'."
+              exit 1
+            fi
+            target_sha="${ref_sha}"
+            if [[ "${ref_type}" == "tag" ]]; then
+              tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}")"
+              target_sha="$(echo "${tag_json}" | jq -r '.object.sha // ""')"
+            elif [[ "${ref_type}" != "commit" ]]; then
+              echo "::error::Tag '${release_tag}' points to unsupported object type '${ref_type}'."
+              exit 1
+            fi
+            if [[ -z "${target_sha}" ]]; then
+              echo "::error::Unable to resolve commit SHA for tag '${release_tag}'."
+              exit 1
+            fi
+            release_ref_value="refs/tags/${release_tag}"
+            release_ref_type="tag"
+            dry_run="true"
+            latest_tag_json="$(resolve_npm_latest_tag_json)" || (echo "::error::Unable to resolve npm dist-tags.latest for non-forward release guard." && exit 1)
+            latest_tag="$(echo "${latest_tag_json}" | jq -r 'if type == "string" then . elif type == "object" then .latest // "" else "" end' | tr -d '\r' | xargs || true)"
+            if [[ -n "${latest_tag}" ]]; then
+              semver_relation="$(compare_semver_tags "${release_tag}" "${latest_tag}")"
+              case "${semver_relation}" in
+                greater)
+                  echo "Release tag '${release_tag}' is forward relative to npm latest '${latest_tag}'."
+                  ;;
+                equal|lower)
+                  if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ -n "${incident_id}" ]]; then
+                    echo "::warning::Non-forward release tag '${release_tag}' vs npm latest '${latest_tag}' allowed due to workflow_dispatch incident '${incident_id}'."
+                  else
+                    echo "::error::release_tag '${release_tag}' is not forward relative to npm latest '${latest_tag}'."
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "::error::Unable to compare release_tag '${release_tag}' against npm latest '${latest_tag}' for ordering guard."
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "No published npm latest dist-tag found; allowing initial release tag '${release_tag}'."
+            fi
+          fi
+          if [[ "${publish_requested}" == "true" ]] && [[ "${release_ref_type}" != "tag" ]]; then
+            echo "::error::Publish can only execute for tag-scoped releases."
+            exit 1
+          fi
+          echo "publish_requested=${publish_requested}" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+          echo "release_path_execution=${release_path_execution}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_ref_value=${release_ref_value}" >> "$GITHUB_OUTPUT"
+          echo "release_ref_type=${release_ref_type}" >> "$GITHUB_OUTPUT"
+          echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
+          echo "release_initiator=${ACTOR}" >> "$GITHUB_OUTPUT"
+          echo "incident_id=${incident_id}" >> "$GITHUB_OUTPUT"
+
+  verify-required-checks:
+    name: Verify Required Checks
+    runs-on: ubuntu-22.04
+    needs: [resolve-release-flags]
+    if: ${{ needs.resolve-release-flags.outputs.release_path_execution == 'true' }}
+    environment: release-management
+    timeout-minutes: 12
+    outputs:
+      target_sha: ${{ steps.verify.outputs.target_sha }}
+      quality_run_id: ${{ steps.verify.outputs.quality_run_id }}
+      omar_run_id: ${{ steps.verify.outputs.omar_run_id }}
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+    steps:
+      - name: Verify release-management environment protections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+
+      - name: Verify branch-protection required check contexts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          branch_name="${DEFAULT_BRANCH:-main}"
+          protection_status=0
+          protection_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")" || protection_status=$?
+          if [[ "${protection_status}" -ne 0 ]]; then
+            echo "::error::Branch '${branch_name}' must have protection enabled with strict required checks."
+            exit 1
+          fi
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [[ "${strict_checks}" != "true" ]]; then
+            echo "::error::Branch protection must enforce strict required status checks for '${branch_name}'."
+            exit 1
+          fi
+          required_review_count="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')"
+          dismiss_stale_reviews="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.dismiss_stale_reviews // false')"
+          if [[ "${required_review_count}" -lt 1 ]]; then
+            echo "::error::Branch protection must require at least one approving pull request review for '${branch_name}'."
+            exit 1
+          fi
+          if [[ "${dismiss_stale_reviews}" != "true" ]]; then
+            echo "::error::Branch protection must enforce stale-review dismissal for '${branch_name}'."
+            exit 1
+          fi
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
+          configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
+          mapfile -t required_contexts < <(jq -r '.requiredContexts[]?.name // empty' "${required_context_manifest}")
+          if [[ "${#required_contexts[@]}" -eq 0 ]]; then
+            echo "::error::No required contexts defined in ${required_context_manifest}."
+            exit 1
+          fi
+          for required_context in "${required_contexts[@]}"; do
+            if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
+              echo "::error::Branch protection for ${branch_name} is missing required status context '${required_context}'."
+              exit 1
+            fi
+          done
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+          env_reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          env_branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
+          if [[ "${env_reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+          if [[ "${env_branch_policy_enabled}" != "true" ]]; then
+            echo "::error::release-management environment must enforce deployment branch policy."
+            exit 1
+          fi
+
+      - name: Verify release commit checks
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ needs.resolve-release-flags.outputs.target_sha || github.sha }}
+          GITHUB_REF_VALUE: ${{ needs.resolve-release-flags.outputs.release_ref_value || github.ref }}
+          GITHUB_REF_TYPE: ${{ needs.resolve-release-flags.outputs.release_ref_type || github.ref_type }}
+          MAX_OMAR_PR_RUN_AGE_HOURS: ${{ env.OMAR_PR_RUN_MAX_AGE_HOURS }}
+        run: |
+          set -euo pipefail
+          max_omar_age_hours="$(echo "${MAX_OMAR_PR_RUN_AGE_HOURS:-24}" | tr -d '\r' | xargs || true)"
+          case "${max_omar_age_hours}" in ''|*[!0-9]*)
+            echo "::error::Invalid OMAR_PR_RUN_MAX_AGE_HOURS value '${max_omar_age_hours}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${max_omar_age_hours}" -le 0 ]]; then
+            echo "::error::OMAR_PR_RUN_MAX_AGE_HOURS must be greater than zero."
+            exit 1
+          fi
+          max_omar_age_seconds=$((max_omar_age_hours * 3600))
+          resolved_sha="${TARGET_SHA}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_name="${GITHUB_REF_VALUE#refs/tags/}"
+            if [[ -n "${tag_name}" ]]; then
+              ref_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/ref/tags/${tag_name}")"
+              ref_type="$(echo "${ref_json}" | jq -r '.object.type')"
+              ref_sha="$(echo "${ref_json}" | jq -r '.object.sha')"
+              if [[ "${ref_type}" == "tag" ]]; then
+                tag_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/git/tags/${ref_sha}")"
+                resolved_sha="$(echo "${tag_json}" | jq -r '.object.sha')"
+              elif [[ "${ref_type}" == "commit" ]]; then
+                resolved_sha="${ref_sha}"
+              fi
+            fi
+          fi
+          TARGET_SHA="${resolved_sha}"
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
+          required_checks_csv="$(jq -r '[.requiredContexts[]?.name] | map(select(length > 0)) | join(",")' "${required_context_manifest}")"
+          echo "Validating required checks for commit ${TARGET_SHA} (event ref: ${GITHUB_REF_VALUE})."
+          IFS=',' read -r -a required_checks <<< "${required_checks_csv}"
+          if [[ "${#required_checks[@]}" -eq 0 ]]; then
+            echo "::error::No required checks configured."
+            exit 1
+          fi
+          for critical_context in "Quality Summary" "Omar Gate"; do
+            if ! jq -e --arg context "${critical_context}" '.requiredContexts[] | select(.name == $context)' "${required_context_manifest}" >/dev/null; then
+              echo "::error::Required check manifest must include critical context '${critical_context}'."
+              exit 1
+            fi
+          done
+          quality_run_id=""
+          omar_run_id=""
+          workflow_file_for_check() {
+            jq -r --arg name "${1}" '.requiredContexts[] | select(.name == $name) | .workflowFile // empty' "${required_context_manifest}" | head -n 1
+          }
+          workflow_path_for_check() {
+            jq -r --arg name "${1}" '.requiredContexts[] | select(.name == $name) | .workflowPath // empty' "${required_context_manifest}" | head -n 1
+          }
+          allowed_events_for_check() {
+            jq -c --arg name "${1}" '.requiredContexts[] | select(.name == $name) | (.allowedEvents // [])' "${required_context_manifest}" | head -n 1
+          }
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            pending=0
+            for required in "${required_checks[@]}"; do
+              check_name="$(echo "${required}" | xargs)"
+              if [[ -z "${check_name}" ]]; then
+                continue
+              fi
+              if [[ "${check_name}" == "Omar Gate" ]] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+                runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/omar-gate.yml/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+                latest_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/omar-gate.yml" --arg repo "${REPO}" '
+                  [.workflow_runs[]
+                    | select((.head_sha // "") == $sha)
+                    | select(((.path // "") | split("@")[0]) == $path)
+                    | select((.event // "") == "pull_request" or (.event // "") == "push")
+                    | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                  ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+                ')"
+                if [[ -z "${latest_run}" ]]; then
+                  echo "::error::No prior Omar Gate pull_request workflow run found for tag target commit ${TARGET_SHA}. Trigger Omar Gate on the source PR before publishing ${GITHUB_REF_VALUE}."
+                  exit 1
+                fi
+                run_id="$(echo "${latest_run}" | jq -r '.id // ""')"
+                if [[ -z "${run_id}" ]]; then
+                  echo "::error::Unable to resolve workflow run id for required check '${check_name}' on tag commit ${TARGET_SHA}."
+                  exit 1
+                fi
+                status="$(echo "${latest_run}" | jq -r '.status // ""')"
+                conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"
+                if [[ "${status}" != "completed" ]]; then
+                  echo "::error::Required check '${check_name}' workflow run ${run_id} is ${status}; wait for completion before running release on tag ${GITHUB_REF_VALUE}."
+                  exit 1
+                fi
+                if [[ "${conclusion}" != "success" ]]; then
+                  echo "::error::Required check '${check_name}' workflow run ${run_id} concluded with '${conclusion}'."
+                  exit 1
+                fi
+                updated_at="$(echo "${latest_run}" | jq -r '.updated_at // .created_at // ""')"
+                if [[ -z "${updated_at}" ]]; then
+                  echo "::error::Required check '${check_name}' workflow run ${run_id} is missing updated_at timestamp."
+                  exit 1
+                fi
+                updated_epoch="$(date -u -d "${updated_at}" +%s 2>/dev/null || true)"
+                if [[ -z "${updated_epoch}" ]]; then
+                  echo "::error::Unable to parse updated_at timestamp '${updated_at}' for required check '${check_name}' run ${run_id}."
+                  exit 1
+                fi
+                now_epoch="$(date -u +%s)"
+                age_seconds=$((now_epoch - updated_epoch))
+                if [[ "${age_seconds}" -lt 0 ]]; then
+                  age_seconds=0
+                fi
+                if [[ "${age_seconds}" -gt "${max_omar_age_seconds}" ]]; then
+                  echo "::error::Required check '${check_name}' workflow run ${run_id} is stale (${age_seconds}s old; max ${max_omar_age_seconds}s). Trigger a fresh Omar Gate run before publishing ${GITHUB_REF_VALUE}."
+                  exit 1
+                fi
+                omar_run_id="${run_id}"
+                echo "Required check '${check_name}' passed via prior workflow run ${run_id}."
+                continue
+              fi
+              workflow_file="$(workflow_file_for_check "${check_name}" || true)"
+              workflow_path="$(workflow_path_for_check "${check_name}" || true)"
+              if [[ -z "${workflow_file}" ]] || [[ -z "${workflow_path}" ]]; then
+                echo "::error::Missing workflow identity mapping for required check '${check_name}'."
+                exit 1
+              fi
+              allowed_events_json="$(allowed_events_for_check "${check_name}" || true)"
+              if [[ -z "${allowed_events_json}" ]]; then
+                echo "::error::Missing allowed event mapping for required check '${check_name}'."
+                exit 1
+              fi
+              runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/${workflow_file}/runs?head_sha=${TARGET_SHA}&per_page=20" -H "Accept: application/vnd.github+json")"
+              candidate_runs="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path "${workflow_path}" --arg repo "${REPO}" --argjson allowedEvents "${allowed_events_json}" '
+                [.workflow_runs[]
+                  | select((.head_sha // "") == $sha)
+                  | select(((.path // "") | split("@")[0]) == $path)
+                  | (.event // "") as $event
+                  | select((($allowedEvents | index($event)) != null))
+                  | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | reverse
+              ')"
+              candidate_count="$(echo "${candidate_runs}" | jq -r 'length')"
+              if [[ "${candidate_count}" -gt 1 ]]; then
+                echo "::error::Multiple workflow runs matched required check '${check_name}' on ${TARGET_SHA}; refusing heuristic selection."
+                exit 1
+              fi
+              latest_run="$(echo "${candidate_runs}" | jq -c '.[0] // empty')"
+              if [[ -z "${latest_run}" ]]; then
+                echo "Waiting for required check '${check_name}' on ${TARGET_SHA}."
+                pending=1
+                continue
+              fi
+              run_id="$(echo "${latest_run}" | jq -r '.id // ""')"
+              if [[ -z "${run_id}" ]]; then
+                echo "::error::Unable to resolve workflow run id for required check '${check_name}'."
+                exit 1
+              fi
+              status="$(echo "${latest_run}" | jq -r '.status')"
+              conclusion="$(echo "${latest_run}" | jq -r '.conclusion // ""')"
+              event_name="$(echo "${latest_run}" | jq -r '.event // ""')"
+              check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+              anchored_check_run="$(echo "${check_runs_json}" | jq -c --arg name "${check_name}" '
+                [.check_runs[]
+                  | select((.name // "") == $name)
+                  | select(((.details_url // "") | contains("/actions/runs/")))
+                ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+              ')"
+              anchored_run_id="$(echo "${anchored_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
+              if [[ -n "${anchored_run_id}" ]] && [[ "${anchored_run_id}" != "${run_id}" ]]; then
+                echo "::error::Required check '${check_name}' run identity mismatch (workflow run=${run_id}, check-run anchor=${anchored_run_id})."
+                exit 1
+              fi
+              if [[ "${status}" != "completed" ]]; then
+                echo "Required check '${check_name}' status=${status}; waiting."
+                pending=1
+                continue
+              fi
+              if [[ "${conclusion}" != "success" ]]; then
+                echo "::error::Required check '${check_name}' concluded with '${conclusion}'."
+                exit 1
+              fi
+              if [[ "${check_name}" == "Quality Summary" ]]; then
+                quality_run_id="${run_id}"
+              fi
+              if [[ "${check_name}" == "Omar Gate" ]]; then
+                omar_run_id="${run_id}"
+              fi
+              echo "Required check '${check_name}' passed (event=${event_name}, run=${run_id})."
+            done
+            if [[ "${pending}" -eq 0 ]]; then
+              if [[ -z "${quality_run_id}" ]]; then
+                echo "::error::Missing successful Quality Summary run for target commit ${TARGET_SHA}."
+                exit 1
+              fi
+              if [[ -z "${omar_run_id}" ]]; then
+                echo "::error::Missing successful Omar Gate run for target commit ${TARGET_SHA}."
+                exit 1
+              fi
+              echo "target_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+              echo "quality_run_id=${quality_run_id}" >> "$GITHUB_OUTPUT"
+              echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
+              echo "Required checks validated for ${TARGET_SHA}."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Timed out waiting for required checks on ${TARGET_SHA}."
+          exit 1
+
+  preflight:
+    name: Release Preflight (Verify + Security)
+    runs-on: ubuntu-22.04
+    needs: [resolve-release-flags, verify-required-checks]
+    if: ${{ needs.resolve-release-flags.outputs.release_path_execution == 'true' }}
+    environment: release-management
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_sha256: ${{ steps.contract.outputs.artifact_sha256 }}
+      artifact_rebuild_sha256: ${{ steps.contract.outputs.artifact_rebuild_sha256 }}
+      artifact_commit_sha: ${{ steps.contract.outputs.artifact_commit_sha }}
+      artifact_run_id: ${{ steps.contract.outputs.artifact_run_id }}
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      QUALITY_RUN_ID: ${{ needs.verify-required-checks.outputs.quality_run_id }}
+      TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
+      RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate rollback automation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/RELEASE_ROLLBACK.md || (echo "::error::Missing rollback runbook docs/RELEASE_ROLLBACK.md." && exit 1)
+          test -f .github/workflows/rollback.yml || (echo "::error::Missing rollback workflow .github/workflows/rollback.yml." && exit 1)
+
+      - name: Validate recent rollback proof run
+        shell: bash
+        env:
+          MAX_AGE_DAYS: ${{ env.ROLLBACK_PROOF_MAX_AGE_DAYS }}
+        run: |
+          set -euo pipefail
+          max_age_days="$(echo "${MAX_AGE_DAYS:-14}" | tr -d '\r' | xargs || true)"
+          case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid ROLLBACK_PROOF_MAX_AGE_DAYS value '${max_age_days}'." ; exit 1 ;; esac
+          if [[ "${max_age_days}" -le 0 ]]; then
+            echo "::error::ROLLBACK_PROOF_MAX_AGE_DAYS must be > 0."
+            exit 1
+          fi
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?per_page=50" -H "Accept: application/vnd.github+json")"
+          latest_success_run="$(echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select((.status // "") == "completed")
+              | select((.conclusion // "") == "success")
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${latest_success_run}" ]]; then
+            echo "::error::No successful rollback workflow run found for .github/workflows/rollback.yml."
+            exit 1
+          fi
+          rollback_run_id="$(echo "${latest_success_run}" | jq -r '.id // ""')"
+          rollback_run_url="$(echo "${latest_success_run}" | jq -r '.html_url // ""')"
+          rollback_created_at="$(echo "${latest_success_run}" | jq -r '.created_at // ""')"
+          test -n "${rollback_run_id}" || (echo "::error::Unable to resolve rollback run id." && exit 1)
+          test -n "${rollback_created_at}" || (echo "::error::Unable to resolve rollback run created_at timestamp." && exit 1)
+          rollback_epoch="$(date -u -d "${rollback_created_at}" +%s 2>/dev/null || true)"
+          if [[ -z "${rollback_epoch}" ]]; then
+            echo "::error::Unable to parse rollback run timestamp '${rollback_created_at}'."
+            exit 1
+          fi
+          now_epoch="$(date -u +%s)"
+          age_seconds=$((now_epoch - rollback_epoch))
+          if [[ "${age_seconds}" -lt 0 ]]; then
+            age_seconds=0
+          fi
+          max_age_seconds=$((max_age_days * 86400))
+          if [[ "${age_seconds}" -gt "${max_age_seconds}" ]]; then
+            echo "::error::Latest successful rollback proof is stale (${age_seconds}s old, max ${max_age_seconds}s). Run ${rollback_run_url}"
+            exit 1
+          fi
+          echo "Rollback proof run ${rollback_run_id} is within recency window (${max_age_days} days)."
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+
+      - name: Pin npm registry and snapshot lock hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config set registry "https://registry.npmjs.org/"
+          sha256sum package-lock.json > package-lock.sha256
+
+      - name: Configure npm cache for deterministic rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${GITHUB_WORKSPACE}/.npm-cache-release"
+          mkdir -p "${cache_dir}"
+          npm config set cache "${cache_dir}"
+          echo "NPM_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Snapshot production dependency graph
+        shell: bash
+        run: npm ls --omit=dev --json > npm-prod-tree.json
+
+      - name: Validate release workspace integrity
+        run: npm run check
+
+      - name: Run npm audit (prod deps only)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Assert release preflight does not rebuild publish artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          const offenders = [];
+          for (const [index, line] of content.split(/\r?\n/).entries()) {
+            if (/^\s*#/.test(line)) {
+              continue;
+            }
+            if (/npm\s+pack\b/.test(line)) {
+              offenders.push(index + 1);
+            }
+          }
+          if (offenders.length > 0) {
+            console.error(`::error::Release workflow must promote immutable quality artifacts and avoid package rebuild commands (lines: ${offenders.join(", ")}).`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Download quality workflow artifact proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality workflow run id from verify-required-checks." && exit 1)
+          gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
+
+      - name: Download quality deploy-stage promotion proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality workflow run id from verify-required-checks." && exit 1)
+          gh run download "${QUALITY_RUN_ID}" --name deploy-stage-proof --dir quality-proof/deploy-stage-proof
+
+      - name: Verify quality-build attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json from quality workflow artifacts." && exit 1)
+          quality_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-build.manifest.json)"
+          quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
+          test -n "${quality_artifact_name}" || (echo "::error::Unable to parse quality artifact name from manifest." && exit 1)
+          test -n "${quality_sha}" || (echo "::error::Unable to parse quality artifact sha256 from manifest." && exit 1)
+          test -f "quality-proof/${quality_artifact_name}" || (echo "::error::Missing quality artifact file quality-proof/${quality_artifact_name}." && exit 1)
+          gh attestation verify "quality-proof/${quality_artifact_name}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-proof/quality-attestation.verify.json
+          if ! jq -e --arg expectedSha "${quality_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' quality-proof/quality-attestation.verify.json >/dev/null; then
+            echo "::error::Quality artifact attestation does not include expected digest ${quality_sha}."
+            exit 1
+          fi
+
+      - name: Verify deploy-stage promotion proof lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_summary_path="quality-proof/deploy-stage-proof/deploy.summary.json"
+          test -f "${deploy_summary_path}" || (echo "::error::Missing deploy-stage proof ${deploy_summary_path}." && exit 1)
+          deploy_commit_sha="$(jq -r '.commitSha // ""' "${deploy_summary_path}")"
+          deploy_stage_name="$(jq -r '.stage // ""' "${deploy_summary_path}")"
+          deploy_artifact_name="$(jq -r '.artifactName // ""' "${deploy_summary_path}")"
+          deploy_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_summary_path}")"
+          if [[ "${deploy_commit_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Deploy-stage proof commit (${deploy_commit_sha}) does not match release target (${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ "${deploy_stage_name}" != "deploy-stage-promotion-gate" ]]; then
+            echo "::error::Deploy-stage proof stage must be deploy-stage-promotion-gate (received '${deploy_stage_name}')."
+            exit 1
+          fi
+          test -n "${deploy_artifact_name}" || (echo "::error::Deploy-stage proof missing artifactName." && exit 1)
+          test -n "${deploy_artifact_sha}" || (echo "::error::Deploy-stage proof missing artifactSha256." && exit 1)
+
+      - name: Promote immutable quality artifact to release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          quality_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-build.manifest.json)"
+          quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
+          quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
+          test -n "${quality_artifact_name}" || (echo "::error::Unable to parse quality artifact name from manifest." && exit 1)
+          test -n "${quality_sha}" || (echo "::error::Unable to parse quality artifact sha256 from manifest." && exit 1)
+          test -n "${quality_rebuild_sha}" || (echo "::error::Unable to parse quality artifact rebuild sha256 from manifest." && exit 1)
+          test -f "quality-proof/${quality_artifact_name}" || (echo "::error::Missing quality artifact quality-proof/${quality_artifact_name}." && exit 1)
+          cp "quality-proof/${quality_artifact_name}" "./${quality_artifact_name}"
+          printf "%s" "${quality_artifact_name}" > create-sentinelayer.tarball
+          printf "%s  %s\n" "${quality_sha}" "${quality_artifact_name}" > create-sentinelayer.sha256
+          printf "%s\n" "${quality_rebuild_sha}" > create-sentinelayer.rebuild.sha256
+
+      - name: Verify cross-workflow build digest lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json from quality workflow artifacts." && exit 1)
+          test -f quality-proof/quality-release-input.lock.json || (echo "::error::Missing quality-release-input.lock.json from quality workflow artifacts." && exit 1)
+          test -f quality-proof/quality-promotion-invariant.json || (echo "::error::Missing quality-promotion-invariant.json from quality workflow artifacts." && exit 1)
+          quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
+          quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
+          quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
+          quality_run_id_manifest="$(jq -r '.runId // ""' quality-proof/quality-build.manifest.json)"
+          quality_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-build.manifest.json)"
+          lock_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-release-input.lock.json)"
+          lock_artifact_sha="$(jq -r '.artifactSha256 // ""' quality-proof/quality-release-input.lock.json)"
+          lock_artifact_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' quality-proof/quality-release-input.lock.json)"
+          lock_source_commit_sha="$(jq -r '.sourceCommitSha // ""' quality-proof/quality-release-input.lock.json)"
+          lock_source_run_id="$(jq -r '.sourceRunId // ""' quality-proof/quality-release-input.lock.json)"
+          invariant_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_artifact_sha="$(jq -r '.artifactSha256 // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_artifact_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_source_commit_sha="$(jq -r '.sourceCommitSha // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_source_run_id="$(jq -r '.sourceRunId // ""' quality-proof/quality-promotion-invariant.json)"
+          deploy_summary_path="quality-proof/deploy-stage-proof/deploy.summary.json"
+          deploy_artifact_name="$(jq -r '.artifactName // ""' "${deploy_summary_path}")"
+          deploy_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_summary_path}")"
+          release_artifact_name="$(tr -d '\r\n' < create-sentinelayer.tarball)"
+          package_name="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).name")"
+          package_version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
+          baseline_hash="$(awk 'NF {print $1; exit}' create-sentinelayer.sha256)"
+          test -n "${baseline_hash}" || (echo "::error::Unable to parse release baseline hash." && exit 1)
+          test -n "${quality_sha}" || (echo "::error::Unable to parse quality baseline hash." && exit 1)
+          test -n "${quality_rebuild_sha}" || (echo "::error::Unable to parse quality rebuild hash." && exit 1)
+          test -n "${release_artifact_name}" || (echo "::error::Unable to parse release artifact name." && exit 1)
+          test -n "${quality_artifact_name}" || (echo "::error::Unable to parse quality artifact name." && exit 1)
+          test -n "${lock_artifact_name}" || (echo "::error::Unable to parse lock artifact name." && exit 1)
+          test -n "${lock_artifact_sha}" || (echo "::error::Unable to parse lock artifact sha256." && exit 1)
+          test -n "${lock_artifact_rebuild_sha}" || (echo "::error::Unable to parse lock artifact rebuild sha256." && exit 1)
+          test -n "${lock_source_commit_sha}" || (echo "::error::Unable to parse lock source commit." && exit 1)
+          test -n "${lock_source_run_id}" || (echo "::error::Unable to parse lock source run id." && exit 1)
+          test -n "${invariant_artifact_name}" || (echo "::error::Unable to parse invariant artifact name." && exit 1)
+          test -n "${invariant_artifact_sha}" || (echo "::error::Unable to parse invariant artifact sha256." && exit 1)
+          test -n "${invariant_artifact_rebuild_sha}" || (echo "::error::Unable to parse invariant artifact rebuild sha256." && exit 1)
+          test -n "${invariant_source_commit_sha}" || (echo "::error::Unable to parse invariant source commit." && exit 1)
+          test -n "${invariant_source_run_id}" || (echo "::error::Unable to parse invariant source run id." && exit 1)
+          test -n "${package_version}" || (echo "::error::Unable to parse package version from package.json." && exit 1)
+          if [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality workflow reproducibility proof mismatch (baseline=${quality_sha}, rebuild=${quality_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${lock_artifact_sha}" != "${quality_sha}" ]] || [[ "${lock_artifact_rebuild_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality release-input lock digest mismatch (lock=${lock_artifact_sha}/${lock_artifact_rebuild_sha}, quality=${quality_sha}/${quality_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${quality_artifact_name}" != "${release_artifact_name}" ]]; then
+            echo "::error::Artifact identity mismatch between quality (${quality_artifact_name}) and release (${release_artifact_name})."
+            exit 1
+          fi
+          if [[ "${lock_artifact_name}" != "${quality_artifact_name}" ]]; then
+            echo "::error::Quality release-input lock artifact mismatch (lock=${lock_artifact_name}, quality=${quality_artifact_name})."
+            exit 1
+          fi
+          if [[ "${invariant_artifact_name}" != "${quality_artifact_name}" ]]; then
+            echo "::error::Quality promotion invariant artifact mismatch (invariant=${invariant_artifact_name}, quality=${quality_artifact_name})."
+            exit 1
+          fi
+          if [[ "${invariant_artifact_sha}" != "${quality_sha}" ]] || [[ "${invariant_artifact_rebuild_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality promotion invariant digest mismatch (invariant=${invariant_artifact_sha}/${invariant_artifact_rebuild_sha}, quality=${quality_sha}/${quality_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${invariant_source_commit_sha}" != "${quality_commit_sha}" ]]; then
+            echo "::error::Quality promotion invariant commit mismatch (invariant=${invariant_source_commit_sha}, quality=${quality_commit_sha})."
+            exit 1
+          fi
+          if [[ "${invariant_source_run_id}" != "${quality_run_id_manifest}" ]]; then
+            echo "::error::Quality promotion invariant run mismatch (invariant=${invariant_source_run_id}, quality=${quality_run_id_manifest})."
+            exit 1
+          fi
+          if [[ "${deploy_artifact_name}" != "${quality_artifact_name}" ]]; then
+            echo "::error::Artifact identity mismatch between deploy-stage proof (${deploy_artifact_name}) and quality manifest (${quality_artifact_name})."
+            exit 1
+          fi
+          if [[ "${deploy_artifact_sha}" != "${quality_sha}" ]]; then
+            echo "::error::Artifact digest mismatch between deploy-stage proof (${deploy_artifact_sha}) and quality manifest (${quality_sha})."
+            exit 1
+          fi
+          if [[ "${release_artifact_name}" != *"-${package_version}.tgz" ]]; then
+            echo "::error::Release artifact '${release_artifact_name}' is not bound to package.json version '${package_version}'."
+            exit 1
+          fi
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            expected_tag="v${package_version}"
+            if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]; then
+              echo "::error::Tag '${RELEASE_TAG}' does not match package version '${package_version}' (expected ${expected_tag})."
+              exit 1
+            fi
+          fi
+          if [[ "${baseline_hash}" != "${quality_sha}" ]]; then
+            echo "::error::Release baseline hash (${baseline_hash}) does not match quality workflow hash (${quality_sha})."
+            exit 1
+          fi
+          if [[ -n "${TARGET_SHA}" ]] && [[ "${quality_commit_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Quality workflow commit (${quality_commit_sha}) does not match release target (${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ "${lock_source_commit_sha}" != "${quality_commit_sha}" ]]; then
+            echo "::error::Quality release-input lock commit mismatch (lock=${lock_source_commit_sha}, quality=${quality_commit_sha})."
+            exit 1
+          fi
+          if [[ -n "${quality_run_id_manifest}" ]] && [[ "${quality_run_id_manifest}" != "${QUALITY_RUN_ID}" ]]; then
+            echo "::error::Quality manifest run id (${quality_run_id_manifest}) does not match selected run (${QUALITY_RUN_ID})."
+            exit 1
+          fi
+          if [[ "${lock_source_run_id}" != "${quality_run_id_manifest}" ]]; then
+            echo "::error::Quality release-input lock run id mismatch (lock=${lock_source_run_id}, quality=${quality_run_id_manifest})."
+            exit 1
+          fi
+          echo "Verified release artifact lineage for ${package_name}@${package_version}."
+
+      - name: Emit immutable release artifact contract
+        id: contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_name="$(tr -d '\r\n' < create-sentinelayer.tarball)"
+          artifact_sha="$(awk 'NF {print $1; exit}' create-sentinelayer.sha256)"
+          artifact_rebuild_sha="$(awk 'NF {print $1; exit}' create-sentinelayer.rebuild.sha256)"
+          artifact_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
+          artifact_run_id="$(jq -r '.runId // ""' quality-proof/quality-build.manifest.json)"
+          test -n "${artifact_name}" || (echo "::error::Release artifact contract missing artifact name." && exit 1)
+          test -n "${artifact_sha}" || (echo "::error::Release artifact contract missing artifact sha256." && exit 1)
+          test -n "${artifact_rebuild_sha}" || (echo "::error::Release artifact contract missing rebuild sha256." && exit 1)
+          test -n "${artifact_commit_sha}" || (echo "::error::Release artifact contract missing commit sha." && exit 1)
+          test -n "${artifact_run_id}" || (echo "::error::Release artifact contract missing source run id." && exit 1)
+          if [[ "${artifact_sha}" != "${artifact_rebuild_sha}" ]]; then
+            echo "::error::Release artifact contract requires matching baseline and rebuild digests."
+            exit 1
+          fi
+          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
+          echo "artifact_sha256=${artifact_sha}" >> "$GITHUB_OUTPUT"
+          echo "artifact_rebuild_sha256=${artifact_rebuild_sha}" >> "$GITHUB_OUTPUT"
+          echo "artifact_commit_sha=${artifact_commit_sha}" >> "$GITHUB_OUTPUT"
+          echo "artifact_run_id=${artifact_run_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable release artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: create-sentinelayer-release-bundle
+          path: |
+            create-sentinelayer-*.tgz
+            create-sentinelayer.tarball
+            create-sentinelayer.sha256
+            create-sentinelayer.rebuild.sha256
+            package-lock.sha256
+            npm-prod-tree.json
+            quality-proof/quality-build.manifest.json
+            quality-proof/quality-release-input.lock.json
+            quality-proof/quality-promotion-invariant.json
+            quality-proof/quality-attestation.verify.json
+            quality-proof/deploy-stage-proof/deploy.summary.json
+
+      - name: Attest immutable release artifact provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: create-sentinelayer-*.tgz
+
+  resolve-rollback-target:
+    name: Resolve Rollback Target
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    needs: [resolve-release-flags, verify-required-checks, preflight]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    outputs:
+      target_version: ${{ steps.resolve.outputs.target_version }}
+      bad_version: ${{ steps.resolve.outputs.bad_version }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          cache: npm
+
+      - name: Validate rollback runbook and prior published package
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/RELEASE_ROLLBACK.md || (echo "::error::Missing rollback runbook docs/RELEASE_ROLLBACK.md." && exit 1)
+          package_name="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).name")"
+          current_version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")"
+          versions_json="$(npm view "${package_name}" versions --json)"
+          previous_version="$(echo "${versions_json}" | jq -r --arg current "${current_version}" '
+            if type == "array" then
+              (map(select(. != $current)) | last // empty)
+            elif type == "string" then
+              (if . == $current then empty else . end)
+            else
+              empty
+            end
+          ')"
+          if [[ -z "${previous_version}" ]]; then
+            echo "::error::No previous published package version available to validate rollback readiness."
+            exit 1
+          fi
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "${package_name}@${previous_version}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          current_version="${current_version#v}"
+          previous_version="${previous_version#v}"
+          if [[ ! "${current_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Current package version '${current_version}' is not valid semver."
+            exit 1
+          fi
+          if [[ ! "${previous_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Rollback target version '${previous_version}' is not valid semver."
+            exit 1
+          fi
+          echo "target_version=${previous_version}" >> "$GITHUB_OUTPUT"
+          echo "bad_version=${current_version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved rollback transaction pair: target=${previous_version} bad=${current_version}."
+
+  rollback-readiness:
+    name: Rollback Readiness
+    needs: [resolve-release-flags, verify-required-checks, preflight, resolve-rollback-target]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/rollback.yml
+    with:
+      execute: false
+      target_version: ${{ needs.resolve-rollback-target.outputs.target_version }}
+      bad_version: ${{ needs.resolve-rollback-target.outputs.bad_version }}
+      reason: release-transaction-rollback-validation
+      allow_local_validation_only: false
+
+  verify-rollback-transaction-lineage:
+    name: Verify Rollback Transaction Lineage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
+      PREFLIGHT_ARTIFACT_SHA256: ${{ needs.preflight.outputs.artifact_sha256 || '' }}
+      PREFLIGHT_ARTIFACT_COMMIT_SHA: ${{ needs.preflight.outputs.artifact_commit_sha || '' }}
+    steps:
+      - name: Download rollback lineage summary
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: rollback-lineage-summary
+          path: rollback-lineage-proof
+
+      - name: Validate rollback lineage against release transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          lineage_path="rollback-lineage-proof/rollback-lineage.summary.json"
+          test -f "${lineage_path}" || (echo "::error::Missing rollback lineage summary artifact '${lineage_path}'." && exit 1)
+          lineage_target_sha="$(jq -r '.targetSha // ""' "${lineage_path}")"
+          lineage_execute_mode="$(jq -r '.executeMode // false' "${lineage_path}")"
+          lineage_attestation_verified="$(jq -r '.attestationVerified // false' "${lineage_path}")"
+          lineage_quality_sha="$(jq -r '.qualityArtifactSha256 // ""' "${lineage_path}")"
+          lineage_quality_rebuild_sha="$(jq -r '.qualityArtifactRebuildSha256 // ""' "${lineage_path}")"
+          test -n "${lineage_target_sha}" || (echo "::error::Rollback lineage summary missing targetSha." && exit 1)
+          if [[ "${lineage_execute_mode}" != "false" ]]; then
+            echo "::error::Rollback readiness validation must run with executeMode=false (received '${lineage_execute_mode}')."
+            exit 1
+          fi
+          if [[ "${lineage_attestation_verified}" != "true" ]]; then
+            echo "::error::Rollback lineage summary requires attestationVerified=true."
+            exit 1
+          fi
+          if [[ "${lineage_target_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Rollback lineage target SHA mismatch (lineage=${lineage_target_sha}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ -n "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" ]] && [[ "${lineage_target_sha}" != "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" ]]; then
+            echo "::error::Rollback lineage target SHA mismatch with preflight artifact commit (${PREFLIGHT_ARTIFACT_COMMIT_SHA})."
+            exit 1
+          fi
+          test -n "${lineage_quality_sha}" || (echo "::error::Rollback lineage summary missing qualityArtifactSha256." && exit 1)
+          test -n "${lineage_quality_rebuild_sha}" || (echo "::error::Rollback lineage summary missing qualityArtifactRebuildSha256." && exit 1)
+          if [[ "${lineage_quality_sha}" != "${lineage_quality_rebuild_sha}" ]]; then
+            echo "::error::Rollback lineage quality artifact digest mismatch (${lineage_quality_sha} vs ${lineage_quality_rebuild_sha})."
+            exit 1
+          fi
+          if [[ -n "${PREFLIGHT_ARTIFACT_SHA256}" ]] && [[ "${lineage_quality_sha}" != "${PREFLIGHT_ARTIFACT_SHA256}" ]]; then
+            echo "::error::Rollback lineage digest mismatch with preflight artifact digest (${PREFLIGHT_ARTIFACT_SHA256})."
+            exit 1
+          fi
+          echo "Rollback lineage transaction proof verified (target=${lineage_target_sha}, digest=${lineage_quality_sha})."
+
+  authorize-production-publish:
+    name: Authorize Production Publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, verify-rollback-transaction-lineage]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' && needs.resolve-release-flags.outputs.dry_run != 'true' }}
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Confirm protected publish approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Production publish authorization approved."
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, verify-rollback-transaction-lineage, authorize-production-publish]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+      PUBLISH_REQUESTED: ${{ needs.resolve-release-flags.outputs.publish_requested }}
+      DRY_RUN: ${{ needs.resolve-release-flags.outputs.dry_run }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
+      QUALITY_RUN_ID: ${{ needs.verify-required-checks.outputs.quality_run_id || '' }}
+      PREFLIGHT_ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name || '' }}
+      PREFLIGHT_ARTIFACT_SHA256: ${{ needs.preflight.outputs.artifact_sha256 || '' }}
+      PREFLIGHT_ARTIFACT_REBUILD_SHA256: ${{ needs.preflight.outputs.artifact_rebuild_sha256 || '' }}
+      PREFLIGHT_ARTIFACT_COMMIT_SHA: ${{ needs.preflight.outputs.artifact_commit_sha || '' }}
+      PREFLIGHT_ARTIFACT_RUN_ID: ${{ needs.preflight.outputs.artifact_run_id || '' }}
+      RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
+      RELEASE_INITIATOR: ${{ needs.resolve-release-flags.outputs.release_initiator || '' }}
+      INCIDENT_ID: ${{ needs.resolve-release-flags.outputs.incident_id || '' }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.11.1"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+
+      - name: Download immutable release artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: create-sentinelayer-release-bundle
+          path: release-bundle
+
+      - name: Verify immutable artifact promotion lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${PREFLIGHT_ARTIFACT_NAME}" || (echo "::error::Missing preflight artifact contract name output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_SHA256}" || (echo "::error::Missing preflight artifact contract sha output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_REBUILD_SHA256}" || (echo "::error::Missing preflight artifact contract rebuild sha output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" || (echo "::error::Missing preflight artifact contract commit output." && exit 1)
+          test -n "${PREFLIGHT_ARTIFACT_RUN_ID}" || (echo "::error::Missing preflight artifact contract run output." && exit 1)
+          if [[ "${PREFLIGHT_ARTIFACT_SHA256}" != "${PREFLIGHT_ARTIFACT_REBUILD_SHA256}" ]]; then
+            echo "::error::Preflight artifact contract digest mismatch (${PREFLIGHT_ARTIFACT_SHA256} vs ${PREFLIGHT_ARTIFACT_REBUILD_SHA256})."
+            exit 1
+          fi
+          manifest_path="release-bundle/quality-proof/quality-build.manifest.json"
+          lock_path="release-bundle/quality-proof/quality-release-input.lock.json"
+          test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
+          test -f "${lock_path}" || (echo "::error::Missing quality release-input lock ${lock_path} in release artifact bundle." && exit 1)
+          tarball_name="$(tr -d '\r\n' < release-bundle/create-sentinelayer.tarball)"
+          expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
+          test -n "${expected_sha}" || (echo "::error::Missing promoted release tarball digest." && exit 1)
+          manifest_artifact="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          manifest_commit="$(jq -r '.commitSha // ""' "${manifest_path}")"
+          manifest_run_id="$(jq -r '.runId // ""' "${manifest_path}")"
+          lock_artifact="$(jq -r '.artifactName // ""' "${lock_path}")"
+          lock_sha="$(jq -r '.artifactSha256 // ""' "${lock_path}")"
+          lock_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${lock_path}")"
+          lock_commit="$(jq -r '.sourceCommitSha // ""' "${lock_path}")"
+          lock_run_id="$(jq -r '.sourceRunId // ""' "${lock_path}")"
+          test -n "${manifest_artifact}" || (echo "::error::Missing artifactName in ${manifest_path}." && exit 1)
+          test -n "${manifest_sha}" || (echo "::error::Missing sha256 in ${manifest_path}." && exit 1)
+          test -n "${lock_artifact}" || (echo "::error::Missing artifactName in ${lock_path}." && exit 1)
+          test -n "${lock_sha}" || (echo "::error::Missing artifactSha256 in ${lock_path}." && exit 1)
+          test -n "${lock_rebuild_sha}" || (echo "::error::Missing artifactRebuildSha256 in ${lock_path}." && exit 1)
+          test -n "${lock_commit}" || (echo "::error::Missing sourceCommitSha in ${lock_path}." && exit 1)
+          test -n "${lock_run_id}" || (echo "::error::Missing sourceRunId in ${lock_path}." && exit 1)
+          if [[ "${manifest_artifact}" != "${tarball_name}" ]]; then
+            echo "::error::Release artifact identity mismatch (manifest=${manifest_artifact}, promoted=${tarball_name})."
+            exit 1
+          fi
+          if [[ "${manifest_artifact}" != "${PREFLIGHT_ARTIFACT_NAME}" ]] || [[ "${tarball_name}" != "${PREFLIGHT_ARTIFACT_NAME}" ]]; then
+            echo "::error::Release artifact identity mismatch with preflight contract (${PREFLIGHT_ARTIFACT_NAME})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Release artifact digest mismatch (manifest=${manifest_sha}, promoted=${expected_sha})."
+            exit 1
+          fi
+          if [[ "${manifest_sha}" != "${PREFLIGHT_ARTIFACT_SHA256}" ]] || [[ "${expected_sha}" != "${PREFLIGHT_ARTIFACT_SHA256}" ]]; then
+            echo "::error::Release artifact digest mismatch with preflight contract (${PREFLIGHT_ARTIFACT_SHA256})."
+            exit 1
+          fi
+          if [[ "${lock_artifact}" != "${manifest_artifact}" ]] || [[ "${lock_sha}" != "${manifest_sha}" ]] || [[ "${lock_rebuild_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Release-input lock mismatch (lock=${lock_artifact}/${lock_sha}/${lock_rebuild_sha}, manifest=${manifest_artifact}/${manifest_sha})."
+            exit 1
+          fi
+          if [[ "${lock_commit}" != "${manifest_commit}" ]]; then
+            echo "::error::Release-input lock commit mismatch (lock=${lock_commit}, manifest=${manifest_commit})."
+            exit 1
+          fi
+          if [[ "${manifest_commit}" != "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" ]]; then
+            echo "::error::Release artifact commit mismatch with preflight contract (manifest=${manifest_commit}, contract=${PREFLIGHT_ARTIFACT_COMMIT_SHA})."
+            exit 1
+          fi
+          if [[ "${lock_run_id}" != "${manifest_run_id}" ]]; then
+            echo "::error::Release-input lock run mismatch (lock=${lock_run_id}, manifest=${manifest_run_id})."
+            exit 1
+          fi
+          if [[ "${manifest_run_id}" != "${PREFLIGHT_ARTIFACT_RUN_ID}" ]]; then
+            echo "::error::Release artifact run mismatch with preflight contract (manifest=${manifest_run_id}, contract=${PREFLIGHT_ARTIFACT_RUN_ID})."
+            exit 1
+          fi
+          if [[ -n "${TARGET_SHA}" ]] && [[ "${manifest_commit}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Release artifact commit mismatch (manifest=${manifest_commit}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ -n "${QUALITY_RUN_ID}" ]] && [[ "${manifest_run_id}" != "${QUALITY_RUN_ID}" ]]; then
+            echo "::error::Release artifact run mismatch (manifest=${manifest_run_id}, quality=${QUALITY_RUN_ID})."
+            exit 1
+          fi
+          if [[ ! -f "release-bundle/${tarball_name}" ]]; then
+            echo "::error::Promoted tarball release-bundle/${tarball_name} is missing."
+            exit 1
+          fi
+          echo "Verified immutable artifact promotion lineage (run=${manifest_run_id}, sha=${manifest_sha})."
+
+      - name: Verify promoted quality artifact attestation provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          TARBALL_PATH="release-bundle/${TARBALL_NAME}"
+          test -f "${TARBALL_PATH}" || (echo "::error::Tarball '${TARBALL_NAME}' missing from release artifact bundle." && exit 1)
+          expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          test -n "${expected_sha}" || (echo "::error::Unable to parse expected release tarball digest." && exit 1)
+          gh attestation verify "${TARBALL_PATH}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > release-bundle/release-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' release-bundle/release-attestation.verify.json >/dev/null; then
+            echo "::error::Release artifact attestation does not include expected digest ${expected_sha}."
+            exit 1
+          fi
+          echo "Release artifact attestation verified for digest ${expected_sha} (target=${TARGET_SHA})."
+
+      - name: Verify artifact digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          test -f "release-bundle/${TARBALL_NAME}" || (echo "::error::Tarball '${TARBALL_NAME}' missing from artifact bundle." && exit 1)
+          (cd release-bundle && sha256sum -c create-sentinelayer.sha256)
+
+      - name: Verify deterministic rebuild proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-bundle/create-sentinelayer.rebuild.sha256 || (echo "::error::Missing create-sentinelayer.rebuild.sha256 in release bundle." && exit 1)
+          baseline_hash="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
+          rebuild_hash="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.rebuild.sha256)"
+          test -n "${baseline_hash}" || (echo "::error::Unable to parse baseline release hash." && exit 1)
+          test -n "${rebuild_hash}" || (echo "::error::Unable to parse rebuild release hash." && exit 1)
+          if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
+            echo "::error::Deterministic rebuild proof failed (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
+            exit 1
+          fi
+
+      - name: Validate packaged CLI install
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          TARBALL_PATH="release-bundle/${TARBALL_NAME}"
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "${TARBALL_PATH}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sentinel --version
+
+      - name: Enforce tag-only semver publish source
+        if: env.PUBLISH_REQUESTED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
+            echo "::error::Publish is only permitted through workflow_dispatch."
+            exit 1
+          fi
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "::error::Publish requires resolved release_tag."
+            exit 1
+          fi
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Publish tag '${RELEASE_TAG}' is not a valid semver tag (expected vX.Y.Z)."
+            exit 1
+          fi
+          if [[ -z "${INCIDENT_ID}" ]]; then
+            echo "::error::Publish requires incident_id bound in resolve-release-flags."
+            exit 1
+          fi
+          if [[ ! "${INCIDENT_ID}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
+            echo "::error::Publish incident_id '${INCIDENT_ID}' is invalid."
+            exit 1
+          fi
+
+      - name: Validate production environment protection rules
+        if: env.PUBLISH_REQUESTED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/production" -H "Accept: application/vnd.github+json")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          branch_policy_enabled="$(echo "${env_json}" | jq -r '((.deployment_branch_policy.protected_branches // false) or (.deployment_branch_policy.custom_branch_policies // false))')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::Production environment must require at least one reviewer."
+            exit 1
+          fi
+          if [[ "${branch_policy_enabled}" != "true" ]]; then
+            echo "::error::Production environment must enforce deployment branch policy."
+            exit 1
+          fi
+
+      - name: Enforce dual-control publish approvals
+        if: env.PUBLISH_REQUESTED == 'true' && env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator identity for dual-control enforcement."
+            exit 1
+          fi
+          approvals_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals" -H "Accept: application/vnd.github+json")"
+          approver_count="$(echo "${approvals_json}" | jq -r '[.[] | select((.state // "") == "approved") | (.user.login // empty)] | unique | length')"
+          non_initiator_count="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(. != $initiator)] | unique | length')"
+          if [[ "${approver_count}" -lt 1 ]]; then
+            echo "::error::No production environment approval records found for this run."
+            exit 1
+          fi
+          if [[ "${non_initiator_count}" -lt 1 ]]; then
+            echo "::error::Dual-control violation: initiator '${initiator}' must be distinct from production approval identity."
+            exit 1
+          fi
+          echo "Dual-control approval validated (initiator=${initiator}, non_initiator_approvers=${non_initiator_count})."
+
+      - name: Enforce NPM token when publish is requested
+        if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT != 'true' && env.DRY_RUN != 'true'
+        run: |
+          echo "::error::NPM_TOKEN is required when publish is requested."
+          exit 1
+
+      - name: Publish skipped (dry-run)
+        if: env.PUBLISH_REQUESTED == 'true' && env.DRY_RUN == 'true'
+        run: echo "Dry-run enabled. Skipping npm publish."
 
       - name: Publish to npm
-        if: (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true') && env.NPM_TOKEN_PRESENT == 'true'
-        run: npm publish --access public
+        if: env.PUBLISH_REQUESTED == 'true' && env.NPM_TOKEN_PRESENT == 'true' && env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL_NAME="$(cat release-bundle/create-sentinelayer.tarball)"
+          npm publish "release-bundle/${TARBALL_NAME}" --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Emit rollback runbook guidance
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger rollback workflow: \`gh workflow run rollback.yml -f target_version=<previous-version> -f execute=true\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Runbook: \`docs/RELEASE_ROLLBACK.md\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emit release dispatch evidence
+        if: env.PUBLISH_REQUESTED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-bundle
+          cat > release-bundle/release-dispatch-evidence.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release",
+            "runId": "${GITHUB_RUN_ID}",
+            "releaseTag": "${RELEASE_TAG}",
+            "targetSha": "${TARGET_SHA}",
+            "releaseInitiator": "${RELEASE_INITIATOR}",
+            "incidentId": "${INCIDENT_ID}",
+            "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
+      - name: Upload release dispatch evidence
+        if: env.PUBLISH_REQUESTED == 'true'
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-dispatch-evidence
+          path: release-bundle/release-dispatch-evidence.json
+          if-no-files-found: error
+
+  request-rollback-validation:
+    name: Request Rollback Validation
+    runs-on: ubuntu-22.04
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, verify-rollback-transaction-lineage, authorize-production-publish, publish]
+    if: ${{ always() && needs.resolve-release-flags.outputs.publish_requested == 'true' && (needs.verify-required-checks.result == 'failure' || needs.preflight.result == 'failure' || needs.rollback-readiness.result == 'failure' || needs.verify-rollback-transaction-lineage.result == 'failure' || needs.authorize-production-publish.result == 'failure' || needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Dispatch rollback validation workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad_version=""
+          if [[ -n "${RELEASE_TAG}" ]] && [[ "${RELEASE_TAG}" == v* ]]; then
+            bad_version="${RELEASE_TAG#v}"
+          fi
+          reason="Automated rollback validation requested from failed release workflow (${RUN_URL})."
+          run_args=(
+            workflow run rollback.yml
+            --repo "${REPO}"
+            -f execute=false
+            -f reason="${reason}"
+          )
+          if [[ -n "${bad_version}" ]]; then
+            run_args+=(-f bad_version="${bad_version}")
+          fi
+          timeout --preserve-status 30s gh "${run_args[@]}"
+          echo "Requested automated rollback validation via workflow_dispatch (bad_version='${bad_version}')."
+

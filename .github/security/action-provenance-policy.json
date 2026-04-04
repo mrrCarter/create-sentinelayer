@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "trustedOwners": [
+    "actions",
+    "gitleaks",
+    "mrrCarter"
+  ],
+  "requireVerifiedCommitSignatures": true,
+  "tarballDigestAllowlist": {
+    "actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45": "e39fdc7f8ffad58fb181df3496736a03d0be55adad73d8d88d15dcf1cf7a3438"
+  }
+}

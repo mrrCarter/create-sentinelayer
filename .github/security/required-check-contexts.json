@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0.0",
+  "requiredContexts": [
+    {
+      "name": "Omar Gate",
+      "workflowFile": "omar-gate.yml",
+      "workflowPath": ".github/workflows/omar-gate.yml",
+      "allowedEvents": ["pull_request"]
+    },
+    {
+      "name": "Quality Summary",
+      "workflowFile": "quality-gates.yml",
+      "workflowPath": ".github/workflows/quality-gates.yml",
+      "allowedEvents": ["pull_request", "push"]
+    },
+    {
+      "name": "Release Readiness",
+      "workflowFile": "quality-gates.yml",
+      "workflowPath": ".github/workflows/quality-gates.yml",
+      "allowedEvents": ["pull_request", "push"]
+    },
+    {
+      "name": "Deploy Readiness",
+      "workflowFile": "quality-gates.yml",
+      "workflowPath": ".github/workflows/quality-gates.yml",
+      "allowedEvents": ["pull_request", "push"]
+    },
+    {
+      "name": "Deploy Stage",
+      "workflowFile": "quality-gates.yml",
+      "workflowPath": ".github/workflows/quality-gates.yml",
+      "allowedEvents": ["pull_request", "push"]
+    }
+  ]
+}

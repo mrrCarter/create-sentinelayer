@@ -22,6 +22,13 @@ function shouldEmitJson(options, command) {
   return local || globalFromCommand;
 }
 
+function shouldShowPaths(options, command) {
+  const local = Boolean(options && options.showPaths);
+  const globalFromCommand =
+    command && command.optsWithGlobals ? Boolean(command.optsWithGlobals().showPaths) : false;
+  return local || globalFromCommand;
+}
+
 function parsePositiveNumber(rawValue, field, fallbackValue) {
   if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
     return fallbackValue;
@@ -49,12 +56,146 @@ function renderUserSummary(user = {}) {
   return `${identity}${normalized.isAdmin ? " (admin)" : ""}`;
 }
 
-function formatApiError(error) {
+const API_ERROR_MESSAGE_BY_CODE = Object.freeze({
+  AUTH_REQUIRED: "Authentication is required. Run `sl auth login` and retry.",
+  ACCESS_DENIED: "Access denied for this operation.",
+  FORBIDDEN: "Access denied for this operation.",
+  TIMEOUT: "Request timed out while contacting the Sentinelayer API.",
+  NETWORK_ERROR: "Unable to reach the Sentinelayer API. Check network connectivity and retry.",
+  INVALID_JSON: "Received an invalid response from the Sentinelayer API.",
+  CIRCUIT_OPEN: "The Sentinelayer API circuit breaker is open. Retry after cooldown.",
+  MAX_RETRIES_EXHAUSTED: "Request failed after retry attempts.",
+  CLIENT_ABORTED: "Request was canceled before completion.",
+  CLI_AUTH_BACKEND_UNAVAILABLE:
+    "Authentication polling could not reach the Sentinelayer API reliably. Retry once service health recovers.",
+  TOKEN_SCOPE_REQUIRES_CONSENT:
+    "Privileged token scope requires explicit consent. Re-run with --allow-privileged-scope.",
+  TOKEN_SCOPE_INVALID: "Token scope override is invalid for this command.",
+});
+
+const DEBUG_ERROR_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
+const CI_TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function shouldEmitDebugErrorDetails() {
+  const raw = String(process.env.SL_DEBUG_ERRORS || "")
+    .trim()
+    .toLowerCase();
+  return DEBUG_ERROR_FLAG_VALUES.has(raw);
+}
+
+function isCiEnvironment() {
+  const raw = String(process.env.CI || "")
+    .trim()
+    .toLowerCase();
+  return CI_TRUE_VALUES.has(raw);
+}
+
+function shouldExposeDebugRequestId() {
+  return shouldEmitDebugErrorDetails() && process.stdout.isTTY === true && !isCiEnvironment();
+}
+
+function shouldExposeVerboseErrorDetails(options = {}, { jsonOutput = false } = {}) {
+  if (!jsonOutput) {
+    return false;
+  }
+  if (isCiEnvironment()) {
+    return false;
+  }
+  return Boolean(options.verboseErrors) || shouldEmitDebugErrorDetails();
+}
+
+function toRedactedRequestId(rawRequestId) {
+  const requestId = String(rawRequestId || "").trim();
+  if (!requestId || !shouldExposeDebugRequestId()) {
+    return null;
+  }
+  return requestId.length > 8 ? `...${requestId.slice(-8)}` : requestId;
+}
+
+function formatDebugRequestId(rawRequestId) {
+  const redacted = toRedactedRequestId(rawRequestId);
+  if (!redacted) {
+    return "";
+  }
+  return ` request_id=${redacted}`;
+}
+
+function resolveSafeApiErrorMessage(error) {
+  const code = String(error?.code || "UNKNOWN")
+    .trim()
+    .toUpperCase();
+  return API_ERROR_MESSAGE_BY_CODE[code] || "Sentinelayer API request failed.";
+}
+
+function sanitizeRemoteError(remoteError, { includeDetails = false } = {}) {
+  if (!remoteError || typeof remoteError !== "object") {
+    return null;
+  }
+  const safeMessage = resolveSafeApiErrorMessage(remoteError);
+  if (!includeDetails) {
+    return { message: safeMessage };
+  }
+  return {
+    message: safeMessage,
+    requestId: toRedactedRequestId(remoteError.requestId),
+  };
+}
+
+export function formatApiError(error) {
   if (!(error instanceof SentinelayerApiError)) {
     return error instanceof Error ? error.message : String(error || "Unknown error");
   }
-  const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
-  return `${error.message} [${error.code}] status=${error.status}${requestId}`;
+  const safeMessage = resolveSafeApiErrorMessage(error);
+  const requestId = formatDebugRequestId(error.requestId);
+  if (shouldEmitDebugErrorDetails()) {
+    return `${safeMessage} [${error.code}] status=${error.status}${requestId}`;
+  }
+  return safeMessage;
+}
+
+function toStructuredApiError(error, { includeDebugRequestId = false } = {}) {
+  const requestId = includeDebugRequestId ? toRedactedRequestId(error?.requestId) : null;
+  if (error instanceof SentinelayerApiError) {
+    return {
+      message: resolveSafeApiErrorMessage(error),
+      requestId,
+    };
+  }
+  return {
+    message: error instanceof Error ? error.message : String(error || "Unknown error"),
+    requestId,
+  };
+}
+
+export function __serializeAuthCommandErrorForTests(error, options = {}) {
+  return toStructuredApiError(error, options);
+}
+
+export function __sanitizeRemoteAuthErrorForTests(remoteError, options = {}) {
+  return sanitizeRemoteError(remoteError, options);
+}
+
+function emitAuthCommandError(error, { options, command, commandName }) {
+  const emitJson = shouldEmitJson(options, command);
+  const structuredError = toStructuredApiError(error, {
+    includeDebugRequestId: shouldExposeDebugRequestId(),
+  });
+  if (emitJson) {
+    console.error(
+      JSON.stringify(
+        {
+          command: commandName,
+          ok: false,
+          error: structuredError,
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    console.error(pc.red(formatApiError(error)));
+  }
+  process.exitCode = 1;
 }
 
 function printAuthHint() {
@@ -70,6 +211,10 @@ export function registerAuthCommand(program) {
     .command("login")
     .description("Authenticate in browser and persist a long-lived API token")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--skip-browser-open", "Do not auto-open browser; print authorize URL instead")
     .option(
       "--timeout-ms <ms>",
@@ -82,6 +227,19 @@ export function registerAuthCommand(program) {
       "Issued API token lifetime in days",
       String(DEFAULT_API_TOKEN_TTL_DAYS)
     )
+    .option(
+      "--token-scope <scope>",
+      "API token scope override (default: cli_session; elevated: github_app_bridge)"
+    )
+    .option(
+      "--allow-privileged-scope",
+      "Allow high-risk token scope overrides (required for tokenScope=github_app_bridge)"
+    )
+    .option(
+      "--no-keyring",
+      "Explicitly allow file-backed session storage (requires SENTINELAYER_FILE_STORAGE_CONFIRM=I_ACKNOWLEDGE_FILE_STORAGE_RISK)"
+    )
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const timeoutMs = parsePositiveNumber(options.timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
@@ -97,14 +255,19 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           skipBrowserOpen: Boolean(options.skipBrowserOpen),
           timeoutMs,
           tokenLabel: options.tokenLabel,
           tokenTtlDays,
+          tokenScope: options.tokenScope,
+          allowPrivilegedScope: Boolean(options.allowPrivilegedScope),
+          allowFileStorageFallback: Boolean(options.noKeyring),
           cliVersion: CLI_VERSION,
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth login" });
+        return;
       }
 
       const payload = {
@@ -117,16 +280,26 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       console.log(pc.bold("Authentication successful"));
       console.log(pc.gray(`API: ${result.apiUrl}`));
       console.log(pc.gray(`User: ${renderUserSummary(result.user)}`));
       console.log(pc.gray(`Storage: ${result.storage}`));
+      if (result.storageDowngraded) {
+        console.log(
+          pc.yellow(
+            "Storage downgraded to file-backed mode because keyring access is disabled; review local credential policy."
+          )
+        );
+      }
       if (result.tokenExpiresAt) {
         console.log(pc.gray(`Token expiry: ${result.tokenExpiresAt}`));
       }
-      if (result.filePath) {
+      if (result.filePath && showPaths) {
         console.log(pc.gray(`Session metadata: ${result.filePath}`));
+      } else if (result.filePath) {
+        console.log(pc.gray("Session metadata saved locally (use --show-paths to display path)."));
       }
       if (!result.browserOpened && result.authorizeUrl) {
         console.log(pc.yellow("Open this URL to approve sign-in:"));
@@ -138,8 +311,14 @@ export function registerAuthCommand(program) {
     .command("status")
     .description("Show current authentication/session status")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--offline", "Skip remote token validation (`/auth/me`)")
     .option("--no-auto-rotate", "Disable near-expiry auto-rotation for this command")
+    .option("--verbose-errors", "Include backend error metadata in JSON output (use only for local debugging)")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let status;
@@ -148,23 +327,31 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           checkRemote: !options.offline,
           autoRotate: Boolean(options.autoRotate),
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth status" });
+        return;
       }
+      const emitJson = shouldEmitJson(options, command);
+      const includeErrorDetails = shouldExposeVerboseErrorDetails(options, {
+        jsonOutput: emitJson,
+      });
 
       const payload = {
         command: "auth status",
         ...status,
+        remoteError: sanitizeRemoteError(status.remoteError, { includeDetails: includeErrorDetails }),
         defaultCredentialsPath: resolveCredentialsFilePath(),
       };
 
-      if (shouldEmitJson(options, command)) {
+      if (emitJson) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       console.log(pc.bold("Authentication status"));
       console.log(pc.gray(`API: ${status.apiUrl}`));
@@ -177,8 +364,17 @@ export function registerAuthCommand(program) {
       console.log(pc.gray(`Token source: ${status.source}`));
       if (status.source === "session") {
         console.log(pc.gray(`Session storage: ${status.storage || "unknown"}`));
-        if (status.filePath) {
+        if (status.storageDowngraded) {
+          console.log(
+            pc.yellow(
+              "Session storage is running in downgraded file-backed mode because keyring access is disabled."
+            )
+          );
+        }
+        if (status.filePath && showPaths) {
           console.log(pc.gray(`Session metadata: ${status.filePath}`));
+        } else if (status.filePath) {
+          console.log(pc.gray("Session metadata present locally (use --show-paths to display path)."));
         }
       }
       if (status.tokenExpiresAt) {
@@ -195,14 +391,11 @@ export function registerAuthCommand(program) {
       }
 
       if (status.remoteError) {
-        console.log(pc.red(`Remote validation failed: ${status.remoteError.message}`));
-        console.log(
-          pc.gray(
-            `Error code: ${status.remoteError.code} status=${status.remoteError.status}${
-              status.remoteError.requestId ? ` request_id=${status.remoteError.requestId}` : ""
-            }`
-          )
-        );
+        const safeMessage = resolveSafeApiErrorMessage(status.remoteError);
+        console.log(pc.red(`Remote validation failed: ${safeMessage}`));
+        if (includeErrorDetails && status.remoteError.requestId) {
+          console.log(pc.gray(`Request id: ${status.remoteError.requestId}`));
+        }
       } else {
         console.log(pc.yellow("Remote validation was skipped (`--offline`)."));
       }
@@ -214,6 +407,11 @@ export function registerAuthCommand(program) {
     .alias("list")
     .description("List persisted local session metadata for resume and auditability")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let result;
@@ -222,9 +420,11 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth sessions" });
+        return;
       }
 
       const payload = {
@@ -237,6 +437,8 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
+      let hiddenPathCount = 0;
 
       console.log(pc.bold("Stored sessions"));
       console.log(pc.gray(`API: ${result.apiUrl}`));
@@ -259,9 +461,14 @@ export function registerAuthCommand(program) {
         if (session.updatedAt) {
           console.log(pc.gray(`  updated_at: ${session.updatedAt}`));
         }
-        if (session.filePath) {
+        if (session.filePath && showPaths) {
           console.log(pc.gray(`  metadata: ${session.filePath}`));
+        } else if (session.filePath) {
+          hiddenPathCount += 1;
         }
+      }
+      if (hiddenPathCount > 0) {
+        console.log(pc.gray(`Metadata paths hidden for ${hiddenPathCount} session(s); use --show-paths to display.`));
       }
     });
 
@@ -269,7 +476,12 @@ export function registerAuthCommand(program) {
     .command("revoke")
     .description("Revoke a remote API token and clear matching local session metadata")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--token-id <id>", "API token id to revoke (defaults to active session token id)")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let result;
@@ -278,10 +490,12 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           tokenId: options.tokenId,
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth revoke" });
+        return;
       }
 
       const payload = {
@@ -293,6 +507,7 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       console.log(pc.green(`Revoked token: ${result.tokenId}`));
       console.log(pc.gray(`API: ${result.apiUrl}`));
@@ -307,8 +522,10 @@ export function registerAuthCommand(program) {
       } else {
         console.log(pc.gray("No local session metadata matched the revoked token id."));
       }
-      if (result.filePath) {
+      if (result.filePath && showPaths) {
         console.log(pc.gray(`Session metadata path: ${result.filePath}`));
+      } else if (result.filePath) {
+        console.log(pc.gray("Session metadata was updated locally (use --show-paths to display path)."));
       }
     });
 
@@ -316,7 +533,12 @@ export function registerAuthCommand(program) {
     .command("logout")
     .description("Clear local session and optionally revoke remote API token")
     .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option(
+      "--allow-insecure-local-http",
+      "Explicit runtime opt-in for localhost HTTP API URLs (requires SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true)"
+    )
     .option("--local-only", "Clear local session only (skip remote revoke)")
+    .option("--show-paths", "Display local credential metadata paths in terminal output")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       let result;
@@ -325,10 +547,12 @@ export function registerAuthCommand(program) {
           cwd: process.cwd(),
           env: process.env,
           explicitApiUrl: options.apiUrl,
+          allowInsecureLocalHttp: Boolean(options.allowInsecureLocalHttp),
           revokeRemote: !options.localOnly,
         });
       } catch (error) {
-        throw new Error(formatApiError(error));
+        emitAuthCommandError(error, { options, command, commandName: "auth logout" });
+        return;
       }
 
       const payload = {
@@ -340,6 +564,7 @@ export function registerAuthCommand(program) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+      const showPaths = shouldShowPaths(options, command);
 
       if (!result.hadStoredSession) {
         console.log(pc.yellow("No stored session was found."));
@@ -359,8 +584,10 @@ export function registerAuthCommand(program) {
           )
         );
       }
-      if (result.filePath) {
+      if (result.filePath && showPaths) {
         console.log(pc.gray(`Session metadata path: ${result.filePath}`));
+      } else if (result.filePath) {
+        console.log(pc.gray("Session metadata was cleared locally (use --show-paths to display path)."));
       }
     });
 }

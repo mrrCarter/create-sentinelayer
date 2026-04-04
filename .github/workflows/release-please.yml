@@ -3,21 +3,672 @@ name: Release Please
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "bin/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+      - ".github/security/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".release-please-config.json"
+      - ".release-please-manifest.json"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
+  checks: read
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION_PIN: "20.11.1"
+  NPM_VERSION_PIN: "10.2.4"
+  ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
+  GH_API_TIMEOUT_SECONDS: "20"
+  GH_API_MAX_ATTEMPTS: "3"
+  GH_API_BACKOFF_SECONDS: "2"
+  GH_API_MAX_TOTAL_WAIT_SECONDS: "60"
+
+concurrency:
+  group: release-control-create-sentinelayer
+  cancel-in-progress: false
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment: release-management
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
+      - name: Install dependencies (lockfile immutable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install-immutable.sh .
+
+      - name: Determine release-intent delta
+        id: release_scope
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          TARGET_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          target_sha="$(echo "${TARGET_SHA}" | tr -d '\r' | xargs || true)"
+          test -n "${target_sha}" || (echo "::error::TARGET_SHA is required for release scope detection." && exit 1)
+          default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${default_branch}" ]]; then
+            default_branch="main"
+          fi
+
+          base_sha="$(echo "${BEFORE_SHA:-}" | tr -d '\r' | xargs || true)"
+          if [[ -n "${base_sha}" ]] && [[ "${base_sha}" != "0000000000000000000000000000000000000000" ]]; then
+            if ! timeout --preserve-status 10s git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+              base_sha=""
+            fi
+          else
+            base_sha=""
+          fi
+
+          if [[ -z "${base_sha}" ]]; then
+            timeout --preserve-status 60s git fetch --no-tags --prune --depth=256 origin "${default_branch}" >/dev/null 2>&1 || true
+            base_sha="$(timeout --preserve-status 20s git merge-base "origin/${default_branch}" "${target_sha}" 2>/dev/null || true)"
+          fi
+
+          if [[ -z "${base_sha}" ]]; then
+            echo "::error::Unable to resolve release scope base SHA via event.before or merge-base with origin/${default_branch}."
+            exit 1
+          fi
+
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+          if [[ "${base_sha}" == "${target_sha}" ]]; then
+            echo "Merge-base equals target SHA; failing open to avoid under-scoping release relevance."
+            echo "release_relevant=true" >> "$GITHUB_OUTPUT"
+            echo "changed_file_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_files="$(timeout --preserve-status 20s git diff --name-only "${base_sha}" "${target_sha}")"
+          changed_file_count="$(printf "%s\n" "${changed_files}" | sed '/^$/d' | wc -l | xargs)"
+          echo "changed_file_count=${changed_file_count}" >> "$GITHUB_OUTPUT"
+          if grep -Eq '^(\.github/workflows/|\.github/security/|src/|bin/|scripts/|package\.json$|package-lock\.json$|\.release-please-config\.json$|\.release-please-manifest\.json$)' <<< "${changed_files}"; then
+            echo "release_relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No release-relevant files detected between ${base_sha} and ${target_sha}; skipping release mutation."
+          fi
+
+      - name: Emit release-intent scope manifest
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.release_scope.outputs.base_sha }}
+          TARGET_SHA: ${{ github.sha }}
+          RELEASE_RELEVANT: ${{ steps.release_scope.outputs.release_relevant }}
+          CHANGED_FILE_COUNT: ${{ steps.release_scope.outputs.changed_file_count }}
+        run: |
+          set -euo pipefail
+          changed_count="$(echo "${CHANGED_FILE_COUNT:-0}" | tr -d '\r' | xargs || true)"
+          case "${changed_count}" in ''|*[!0-9]*) changed_count="0" ;; esac
+          cat > release-intent.scope.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release-please",
+            "runId": "${GITHUB_RUN_ID}",
+            "baseSha": "${BASE_SHA}",
+            "targetSha": "${TARGET_SHA}",
+            "releaseRelevant": ${RELEASE_RELEVANT:-false},
+            "changedFileCount": ${changed_count}
+          }
+          EOF
+
+      - name: Upload release-intent scope manifest
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-intent-scope
+          path: release-intent.scope.json
+          if-no-files-found: error
+
+      - name: Verify release-management environment protections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          env_json="$(gh_api_json "repos/${REPO}/environments/release-management")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | ((.reviewers // []) | length)] | add // 0')"
+          if [[ "${reviewer_count}" -lt 1 ]]; then
+            echo "::error::release-management environment must require at least one reviewer."
+            exit 1
+          fi
+
+      - name: Verify default-branch protection release controls
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          branch_name="${DEFAULT_BRANCH:-main}"
+          protection_json="$(gh_api_json "repos/${REPO}/branches/${branch_name}/protection")"
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [[ "${strict_checks}" != "true" ]]; then
+            echo "::error::Branch protection for '${branch_name}' must enforce strict required checks."
+            exit 1
+          fi
+          required_review_count="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')"
+          if [[ "${required_review_count}" -lt 1 ]]; then
+            echo "::error::Branch protection for '${branch_name}' must require at least one approving review."
+            exit 1
+          fi
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
+          configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
+          mapfile -t required_contexts < <(jq -r '.requiredContexts[]?.name // empty' "${required_context_manifest}")
+          if [[ "${#required_contexts[@]}" -eq 0 ]]; then
+            echo "::error::No required contexts defined in ${required_context_manifest}."
+            exit 1
+          fi
+          for required_context in "${required_contexts[@]}"; do
+            if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
+              echo "::error::Branch protection for '${branch_name}' is missing required status context '${required_context}'."
+              exit 1
+            fi
+          done
+
+      - name: Verify rollback readiness freshness
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ROLLBACK_PROOF_MAX_AGE_DAYS: ${{ env.ROLLBACK_PROOF_MAX_AGE_DAYS }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          normalize_bool() {
+            local raw
+            raw="$(echo "${1:-false}" | tr -d '\r' | xargs || true)"
+            case "$(echo "${raw}" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) echo "true" ;;
+              0|false|no|off|'') echo "false" ;;
+              *) echo "false" ;;
+            esac
+          }
+          max_age_days="$(echo "${ROLLBACK_PROOF_MAX_AGE_DAYS}" | tr -d '\r' | xargs || true)"
+          case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid rollback freshness window '${max_age_days}'." ; exit 1 ;; esac
+          now_epoch="$(date -u +%s)"
+          max_age_seconds=$((max_age_days * 86400))
+          runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=50")"
+          selected_run_id=""
+          selected_run_created_at=""
+          selected_proof_file=""
+          while IFS= read -r candidate; do
+            run_id="$(echo "${candidate}" | jq -r '.id // ""')"
+            run_created_at="$(echo "${candidate}" | jq -r '.created_at // ""')"
+            test -n "${run_id}" || continue
+            test -n "${run_created_at}" || continue
+            created_epoch="$(date -u -d "${run_created_at}" +%s)"
+            run_age_seconds=$((now_epoch - created_epoch))
+            if (( run_age_seconds < 0 )) || (( run_age_seconds > max_age_seconds )); then
+              continue
+            fi
+            rm -rf rollback-proof
+            mkdir -p rollback-proof
+            artifact_status=0
+            timeout --preserve-status 120s gh run download "${run_id}" --name rollback-lineage-summary --dir rollback-proof || artifact_status=$?
+            if [[ "${artifact_status}" -ne 0 ]]; then
+              continue
+            fi
+            proof_file="$(find rollback-proof -maxdepth 2 -type f -name '*.json' | head -n 1 || true)"
+            test -n "${proof_file}" || continue
+            execute_mode="$(normalize_bool "$(jq -r '.executeMode // false' "${proof_file}")")"
+            production_gate_verified="$(normalize_bool "$(jq -r '.productionGateVerified // false' "${proof_file}")")"
+            npm_mutation_verified="$(normalize_bool "$(jq -r '.npmMutationPathVerified // false' "${proof_file}")")"
+            if [[ "${execute_mode}" != "true" ]] || [[ "${production_gate_verified}" != "true" ]] || [[ "${npm_mutation_verified}" != "true" ]]; then
+              continue
+            fi
+            proof_checked_at="$(jq -r '.checkedAt // empty' "${proof_file}")"
+            if [[ -n "${proof_checked_at}" ]]; then
+              proof_epoch="$(date -u -d "${proof_checked_at}" +%s)"
+              proof_age_seconds=$((now_epoch - proof_epoch))
+              if (( proof_age_seconds < 0 )) || (( proof_age_seconds > max_age_seconds )); then
+                continue
+              fi
+            fi
+            selected_run_id="${run_id}"
+            selected_run_created_at="${run_created_at}"
+            selected_proof_file="${proof_file}"
+            break
+          done < <(
+            echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
+              [.workflow_runs[]
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.conclusion // "") == "success")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | select((.event // "") == "workflow_dispatch" or (.event // "") == "workflow_call")
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | reverse[]'
+          )
+          test -n "${selected_run_id}" || (echo "::error::No fresh execute-mode rollback lineage proof was found (requires executeMode=true, productionGateVerified=true, npmMutationPathVerified=true)." && exit 1)
+          test -n "${selected_proof_file}" || (echo "::error::Rollback freshness proof artifact is missing JSON summary." && exit 1)
+          echo "Rollback readiness freshness validated via run ${selected_run_id} (${selected_run_created_at}) using ${selected_proof_file}."
+
+      - name: Verify Quality Summary gate for target SHA
+        id: quality_gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source scripts/release/backoff.sh
+          source scripts/ci/gh-api-retry.sh
+          retry_attempt=0
+          max_backoff_retries=24
+          retry_with_backoff() {
+            local context="${1:-quality-summary}"
+            retry_attempt=$((retry_attempt + 1))
+            if (( retry_attempt > max_backoff_retries )); then
+              echo "::error::Exceeded bounded retry budget while waiting for ${context}."
+              exit 1
+            fi
+            sl_backoff_sleep "${context}" "${retry_attempt}"
+          }
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            api_status=0
+            runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${TARGET_SHA}&per_page=20")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              echo "quality-gates lookup timed out or failed (status=${api_status}); retrying."
+              retry_with_backoff "quality-gates lookup"
+              continue
+            fi
+            latest_quality_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/quality-gates.yml" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "push" or (.event // "") == "pull_request")
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+            ')"
+            if [[ -z "${latest_quality_run}" ]]; then
+              echo "Waiting for quality-gates workflow run on ${TARGET_SHA}."
+              retry_with_backoff "quality-gates missing run"
+              continue
+            fi
+            quality_run_id="$(echo "${latest_quality_run}" | jq -r '.id // ""')"
+            quality_run_url="$(echo "${latest_quality_run}" | jq -r '.html_url // ""')"
+            status="$(echo "${latest_quality_run}" | jq -r '.status')"
+            conclusion="$(echo "${latest_quality_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              echo "quality-gates run ${quality_run_id} status=${status}; waiting."
+              retry_with_backoff "quality-gates incomplete run"
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::Quality Summary concluded with '${conclusion}' for ${TARGET_SHA} (run=${quality_run_id})."
+              exit 1
+            fi
+            echo "quality_run_id=${quality_run_id}" >> "$GITHUB_OUTPUT"
+            echo "Quality Summary passed for ${TARGET_SHA} via run ${quality_run_id} (${quality_run_url})."
+            exit 0
+          done
+          echo "::error::Timed out waiting for Quality Summary on ${TARGET_SHA}."
+          exit 1
+
+      - name: Verify Omar Gate for target SHA
+        id: omar_gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source scripts/release/backoff.sh
+          source scripts/ci/gh-api-retry.sh
+          retry_attempt=0
+          max_backoff_retries=24
+          retry_with_backoff() {
+            local context="${1:-omar-gate}"
+            retry_attempt=$((retry_attempt + 1))
+            if (( retry_attempt > max_backoff_retries )); then
+              echo "::error::Exceeded bounded retry budget while waiting for ${context}."
+              exit 1
+            fi
+            sl_backoff_sleep "${context}" "${retry_attempt}"
+          }
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            api_status=0
+            check_runs_json="$(gh_api_json "repos/${REPO}/commits/${TARGET_SHA}/check-runs?per_page=100")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              echo "omar-gate check-run lookup timed out or failed (status=${api_status}); retrying."
+              retry_with_backoff "omar check-run lookup"
+              continue
+            fi
+            anchored_check_run="$(echo "${check_runs_json}" | jq -c '
+              [.check_runs[]
+                | select((.name // "") == "Omar Gate")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            if [[ -n "${anchored_check_run}" ]]; then
+              omar_run_id="$(echo "${anchored_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
+              status="$(echo "${anchored_check_run}" | jq -r '.status // ""')"
+              conclusion="$(echo "${anchored_check_run}" | jq -r '.conclusion // ""')"
+              if [[ "${status}" != "completed" ]]; then
+                echo "Omar Gate check-run on ${TARGET_SHA} status=${status}; waiting."
+                retry_with_backoff "omar check-run pending"
+                continue
+              fi
+              if [[ "${conclusion}" != "success" ]]; then
+                echo "::error::Omar Gate check-run concluded with '${conclusion}' for ${TARGET_SHA}."
+                exit 1
+              fi
+              run_lookup_status=0
+              omar_run="$(gh_api_json "repos/${REPO}/actions/runs/${omar_run_id}")" || run_lookup_status=$?
+              if [[ "${run_lookup_status}" -ne 0 ]]; then
+                echo "Unable to resolve Omar workflow run metadata for run_id=${omar_run_id}; retrying."
+                retry_with_backoff "omar run metadata lookup"
+                continue
+              fi
+              run_head_sha="$(echo "${omar_run}" | jq -r '.head_sha // ""')"
+              run_path="$(echo "${omar_run}" | jq -r '((.path // "") | split("@")[0])')"
+              omar_run_url="$(echo "${omar_run}" | jq -r '.html_url // ""')"
+              if [[ "${run_head_sha}" != "${TARGET_SHA}" ]] || [[ "${run_path}" != ".github/workflows/omar-gate.yml" ]]; then
+                echo "::error::Omar Gate check-run anchor mismatch for ${TARGET_SHA} (run=${omar_run_id}, head_sha=${run_head_sha}, path=${run_path})."
+                exit 1
+              fi
+              echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
+              echo "Omar Gate passed for ${TARGET_SHA} via check-run and workflow run ${omar_run_id} (${omar_run_url})."
+              exit 0
+            fi
+            pr_lookup_status=0
+            commit_prs_json="$(gh_api_json "repos/${REPO}/commits/${TARGET_SHA}/pulls")" || pr_lookup_status=$?
+            if [[ "${pr_lookup_status}" -ne 0 ]]; then
+              echo "Unable to resolve associated pull requests for ${TARGET_SHA}; retrying."
+              retry_with_backoff "canonical PR lookup"
+              continue
+            fi
+            canonical_pr_count="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
+              [.[] 
+                | select((.state // "") == "closed")
+                | select((.merged_at // "") != "")
+                | select((.head.repo.full_name // "") == $repo)
+                | select((.merge_commit_sha // "") == $sha)
+              ] | length
+            ')"
+            if [[ "${canonical_pr_count}" -eq 0 ]]; then
+              echo "Waiting for canonical merged PR provenance for ${TARGET_SHA}."
+              retry_with_backoff "canonical PR provenance"
+              continue
+            fi
+            if [[ "${canonical_pr_count}" -ne 1 ]]; then
+              echo "::error::Expected exactly one canonical merged PR for ${TARGET_SHA}, found ${canonical_pr_count}."
+              exit 1
+            fi
+            source_pr_head_sha="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
+              [.[] 
+                | select((.state // "") == "closed")
+                | select((.merged_at // "") != "")
+                | select((.head.repo.full_name // "") == $repo)
+                | select((.merge_commit_sha // "") == $sha)
+              ][0].head.sha // empty
+            ')"
+            source_pr_number="$(echo "${commit_prs_json}" | jq -r --arg repo "${REPO}" --arg sha "${TARGET_SHA}" '
+              [.[] 
+                | select((.state // "") == "closed")
+                | select((.merged_at // "") != "")
+                | select((.head.repo.full_name // "") == $repo)
+                | select((.merge_commit_sha // "") == $sha)
+              ][0].number // empty
+            ')"
+            if [[ -z "${source_pr_head_sha}" ]]; then
+              echo "::error::Canonical PR mapping for ${TARGET_SHA} did not include a head SHA."
+              exit 1
+            fi
+            pr_check_status=0
+            pr_check_runs_json="$(gh_api_json "repos/${REPO}/commits/${source_pr_head_sha}/check-runs?per_page=100")" || pr_check_status=$?
+            if [[ "${pr_check_status}" -ne 0 ]]; then
+              echo "Unable to resolve Omar check-runs for source PR head ${source_pr_head_sha}; retrying."
+              retry_with_backoff "source PR omar check-run lookup"
+              continue
+            fi
+            pr_omar_check_run="$(echo "${pr_check_runs_json}" | jq -c '
+              [.check_runs[]
+                | select((.name // "") == "Omar Gate")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.started_at // ""), (.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            if [[ -z "${pr_omar_check_run}" ]]; then
+              echo "Waiting for Omar Gate check-run on associated PR head ${source_pr_head_sha}."
+              retry_with_backoff "source PR omar check-run missing"
+              continue
+            fi
+            pr_status="$(echo "${pr_omar_check_run}" | jq -r '.status // ""')"
+            pr_conclusion="$(echo "${pr_omar_check_run}" | jq -r '.conclusion // ""')"
+            if [[ "${pr_status}" != "completed" ]]; then
+              echo "Omar Gate check-run on PR head ${source_pr_head_sha} status=${pr_status}; waiting."
+              retry_with_backoff "source PR omar check-run pending"
+              continue
+            fi
+            if [[ "${pr_conclusion}" != "success" ]]; then
+              echo "::error::Omar Gate check-run for source PR head ${source_pr_head_sha} concluded with '${pr_conclusion}'."
+              exit 1
+            fi
+            omar_run_id="$(echo "${pr_omar_check_run}" | jq -r '.details_url // ""' | sed -nE 's#^.*/actions/runs/([0-9]+)/.*#\1#p')"
+            run_lookup_status=0
+            omar_run="$(gh_api_json "repos/${REPO}/actions/runs/${omar_run_id}")" || run_lookup_status=$?
+            if [[ "${run_lookup_status}" -ne 0 ]]; then
+              echo "Unable to resolve Omar workflow run metadata for fallback run_id=${omar_run_id}; retrying."
+              retry_with_backoff "fallback omar run metadata lookup"
+              continue
+            fi
+            run_head_sha="$(echo "${omar_run}" | jq -r '.head_sha // ""')"
+            run_path="$(echo "${omar_run}" | jq -r '((.path // "") | split("@")[0])')"
+            omar_run_url="$(echo "${omar_run}" | jq -r '.html_url // ""')"
+            if [[ "${run_head_sha}" != "${source_pr_head_sha}" ]] || [[ "${run_path}" != ".github/workflows/omar-gate.yml" ]]; then
+              echo "::error::Fallback Omar provenance mismatch (run=${omar_run_id}, head_sha=${run_head_sha}, expected_head=${source_pr_head_sha}, path=${run_path})."
+              exit 1
+            fi
+            echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"
+            echo "Omar Gate passed for ${TARGET_SHA} via canonical PR #${source_pr_number} head ${source_pr_head_sha} run ${omar_run_id} (${omar_run_url})."
+            exit 0
+          done
+          echo "::error::Timed out waiting for Omar Gate on ${TARGET_SHA}."
+          exit 1
+
+      - name: Verify release workflow baseline run for target SHA
+        id: release_workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          if ! grep -Eq '^[[:space:]]+branches:' .github/workflows/release.yml; then
+            echo "Release workflow push trigger is tag-only; skipping same-SHA baseline run assertion for ${TARGET_SHA}."
+            echo "release_run_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          source scripts/release/backoff.sh
+          retry_attempt=0
+          max_backoff_retries=24
+          retry_with_backoff() {
+            local context="${1:-release-workflow}"
+            retry_attempt=$((retry_attempt + 1))
+            if (( retry_attempt > max_backoff_retries )); then
+              echo "::error::Exceeded bounded retry budget while waiting for ${context}."
+              exit 1
+            fi
+            sl_backoff_sleep "${context}" "${retry_attempt}"
+          }
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            api_status=0
+            runs_json="$(gh_api_json "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${TARGET_SHA}&per_page=20")" || api_status=$?
+            if [[ "${api_status}" -ne 0 ]]; then
+              echo "release workflow lookup timed out or failed (status=${api_status}); retrying."
+              retry_with_backoff "release workflow lookup"
+              continue
+            fi
+            release_run="$(echo "${runs_json}" | jq -c --arg sha "${TARGET_SHA}" --arg path ".github/workflows/release.yml" '
+              [.workflow_runs[]
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == $path)
+                | select((.event // "") == "push")
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+            ')"
+            if [[ -z "${release_run}" ]]; then
+              echo "Waiting for release workflow push baseline run on ${TARGET_SHA}."
+              retry_with_backoff "release workflow missing run"
+              continue
+            fi
+            release_run_id="$(echo "${release_run}" | jq -r '.id // ""')"
+            release_run_url="$(echo "${release_run}" | jq -r '.html_url // ""')"
+            status="$(echo "${release_run}" | jq -r '.status // ""')"
+            conclusion="$(echo "${release_run}" | jq -r '.conclusion // ""')"
+            if [[ "${status}" != "completed" ]]; then
+              echo "release workflow run ${release_run_id} status=${status}; waiting."
+              retry_with_backoff "release workflow pending run"
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::error::release workflow run ${release_run_id} for ${TARGET_SHA} concluded with '${conclusion}'."
+              exit 1
+            fi
+            echo "release_run_id=${release_run_id}" >> "$GITHUB_OUTPUT"
+            echo "Release workflow baseline run passed for ${TARGET_SHA} via run ${release_run_id} (${release_run_url})."
+            exit 0
+          done
+          echo "::error::Timed out waiting for release workflow baseline run on ${TARGET_SHA}."
+          exit 1
+
+      - name: Validate quality build artifact lineage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_RUN_ID: ${{ steps.quality_gate.outputs.quality_run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality_run_id from Quality Summary gate step." && exit 1)
+          timeout --preserve-status 120s gh run download "${QUALITY_RUN_ID}" --name quality-build-package --dir quality-proof
+          test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json artifact from quality run ${QUALITY_RUN_ID}." && exit 1)
+          quality_tarball="$(tr -d '\r\n' < quality-proof/quality-build.tarball)"
+          test -n "${quality_tarball}" || (echo "::error::Missing tarball identity in quality-build.tarball for quality run ${QUALITY_RUN_ID}." && exit 1)
+          test -f "quality-proof/${quality_tarball}" || (echo "::error::Missing quality tarball quality-proof/${quality_tarball}." && exit 1)
+          quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
+          quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
+          quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
+          if [[ -z "${quality_commit_sha}" ]] || [[ "${quality_commit_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Quality artifact commit (${quality_commit_sha}) does not match target SHA (${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ -z "${quality_sha}" ]] || [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality artifact reproducibility proof mismatch (sha256=${quality_sha}, rebuild=${quality_rebuild_sha})."
+            exit 1
+          fi
+          timeout --preserve-status 90s gh attestation verify "quality-proof/${quality_tarball}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-proof/quality-build.attestation.verify.json
+          if ! jq -e --arg sha "${quality_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($sha) != null' quality-proof/quality-build.attestation.verify.json >/dev/null; then
+            echo "::error::Attestation verification output did not include expected quality digest ${quality_sha}."
+            exit 1
+          fi
+
+      - name: Validate deploy-stage promotion proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_RUN_ID: ${{ steps.quality_gate.outputs.quality_run_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "${QUALITY_RUN_ID}" || (echo "::error::Missing quality_run_id from Quality Summary gate step." && exit 1)
+          timeout --preserve-status 120s gh run download "${QUALITY_RUN_ID}" --name deploy-stage-proof --dir quality-proof/deploy-stage
+          deploy_summary_path="quality-proof/deploy-stage/deploy.summary.json"
+          test -f "${deploy_summary_path}" || (echo "::error::Missing deploy-stage proof ${deploy_summary_path} from quality run ${QUALITY_RUN_ID}." && exit 1)
+          deploy_commit_sha="$(jq -r '.commitSha // ""' "${deploy_summary_path}")"
+          deploy_stage_name="$(jq -r '.stage // ""' "${deploy_summary_path}")"
+          if [[ "${deploy_commit_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Deploy-stage proof commit (${deploy_commit_sha}) does not match target SHA (${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ "${deploy_stage_name}" != "deploy-stage-promotion-gate" ]]; then
+            echo "::error::Deploy-stage proof stage must be deploy-stage-promotion-gate (received '${deploy_stage_name}')."
+            exit 1
+          fi
+
+      - name: Assert release workflow publishes immutable promoted artifact only
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const content = fs.readFileSync(".github/workflows/release.yml", "utf8");
+          const offenders = [];
+          for (const [index, line] of content.split(/\r?\n/).entries()) {
+            if (/^\s*#/.test(line)) {
+              continue;
+            }
+            if (/npm\s+pack\b/.test(line)) {
+              offenders.push(index + 1);
+            }
+          }
+          if (offenders.length > 0) {
+            console.error(`::error::release.yml must avoid package rebuild commands and publish only immutable quality artifacts (lines: ${offenders.join(", ")}).`);
+            process.exit(1);
+          }
+          NODE
+
       - name: Run release-please
+        if: steps.release_scope.outputs.release_relevant == 'true' && steps.quality_gate.outputs.quality_run_id != '' && steps.omar_gate.outputs.omar_run_id != ''
+        timeout-minutes: 5
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Skip release-please (no release-intent changes)
+        if: steps.release_scope.outputs.release_relevant != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Release Please skipped: no release-intent files changed."

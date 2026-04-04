@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1.0.0",
+  "defaults": {
+    "severity_gate": "P1",
+    "p2_max_allowed": 5
+  },
+  "protected_branch_overrides": {
+    "severity_gate": "P1",
+    "p2_max_allowed": 0
+  }
+}

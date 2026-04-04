@@ -1,10 +1,21 @@
 import fsp from "node:fs/promises";
+import crypto, { randomUUID } from "node:crypto";
 import path from "node:path";
+import process from "node:process";
 
 import { WORK_ITEM_STATUSES, resolveErrorDaemonStorage } from "./error-worker.js";
 
 const LEDGER_SCHEMA_VERSION = "1.0.0";
 const QUEUE_SCHEMA_VERSION = "1.0.0";
+const ASSIGNMENT_STORAGE_LOCK_FILE = "assignment-ledger.lock";
+const ASSIGNMENT_EVENTS_LOCK_FILE = "assignment-events.lock";
+const DEFAULT_LOCK_TIMEOUT_MS = 5000;
+const DEFAULT_LOCK_RETRY_MS = 50;
+const STALE_LOCK_TTL_MS = 30000;
+const ATOMIC_RENAME_RETRY_LIMIT = 6;
+const ATOMIC_RENAME_RETRY_BASE_MS = 25;
+const ATOMIC_RECONCILE_RETRY_LIMIT = 3;
+const ATOMIC_RENAME_RETRY_CODES = new Set(["EEXIST", "EPERM", "EBUSY"]);
 
 export const ASSIGNMENT_STATUSES = Object.freeze([
   "QUEUED",
@@ -44,6 +55,17 @@ function normalizePositiveInteger(value, fallbackValue = 1) {
   const normalized = Number(value);
   if (!Number.isFinite(normalized) || normalized <= 0) {
     throw new Error("Value must be a positive integer.");
+  }
+  return Math.floor(normalized);
+}
+
+function normalizeNonNegativeInteger(value, fallbackValue = 0) {
+  if (value === undefined || value === null || normalizeString(value) === "") {
+    return fallbackValue;
+  }
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return fallbackValue;
   }
   return Math.floor(normalized);
 }
@@ -93,6 +115,7 @@ function parseStatusList(statuses = []) {
 function createInitialLedger(nowIso = new Date().toISOString()) {
   return {
     schemaVersion: LEDGER_SCHEMA_VERSION,
+    revision: 0,
     generatedAt: normalizeIsoTimestamp(nowIso, nowIso),
     assignments: [],
   };
@@ -101,6 +124,7 @@ function createInitialLedger(nowIso = new Date().toISOString()) {
 function createInitialQueue(nowIso = new Date().toISOString()) {
   return {
     schemaVersion: QUEUE_SCHEMA_VERSION,
+    revision: 0,
     generatedAt: normalizeIsoTimestamp(nowIso, nowIso),
     items: [],
   };
@@ -148,32 +172,395 @@ function normalizeQueueItem(item = {}, nowIso = new Date().toISOString()) {
   };
 }
 
-async function loadJsonFile(filePath, defaultFactory) {
+function isAtomicRenameRetryable(error) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      ATOMIC_RENAME_RETRY_CODES.has(String(error.code || "").toUpperCase())
+  );
+}
+
+function resolveAtomicFallbackPath(filePath) {
+  return `${filePath}.new`;
+}
+
+function resolveAtomicBackupPath(filePath) {
+  return `${filePath}.${process.pid}.${Date.now()}.bak`;
+}
+
+function resolveRetryJitterOffset(maxJitterMs) {
+  const normalizedJitter = Math.max(0, Math.floor(Number(maxJitterMs) || 0));
+  if (normalizedJitter <= 0) {
+    return 0;
+  }
   try {
-    const raw = await fsp.readFile(filePath, "utf-8");
-    return JSON.parse(raw);
+    return crypto.randomInt(-normalizedJitter, normalizedJitter + 1);
+  } catch {
+    const webCryptoSource =
+      (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function"
+        ? globalThis.crypto
+        : crypto.webcrypto && typeof crypto.webcrypto.getRandomValues === "function"
+          ? crypto.webcrypto
+          : null);
+    if (!webCryptoSource) {
+      return 0;
+    }
+    const randomWord = new Uint32Array(1);
+    webCryptoSource.getRandomValues(randomWord);
+    const range = normalizedJitter * 2 + 1;
+    return Number(randomWord[0] % range) - normalizedJitter;
+  }
+}
+
+function resolveAtomicRetryDelayMs(attempt, baseDelayMs, { maxDelayMs = 1000 } = {}) {
+  const normalizedAttempt = Math.max(0, Math.floor(Number(attempt) || 0));
+  const normalizedBaseDelay = Math.max(1, Math.floor(Number(baseDelayMs) || ATOMIC_RENAME_RETRY_BASE_MS));
+  const cappedBaseDelay = Math.min(normalizedBaseDelay * 2 ** normalizedAttempt, maxDelayMs);
+  const jitterWindowMs = Math.max(1, Math.floor(cappedBaseDelay * 0.2));
+  const jitterOffsetMs = resolveRetryJitterOffset(jitterWindowMs);
+  return Math.max(1, Math.min(maxDelayMs, cappedBaseDelay + jitterOffsetMs));
+}
+
+async function renameWithRetry(fromPath, toPath, {
+  maxAttempts = ATOMIC_RENAME_RETRY_LIMIT,
+  baseDelayMs = ATOMIC_RENAME_RETRY_BASE_MS,
+} = {}) {
+  const attempts = Math.max(1, Number(maxAttempts) || ATOMIC_RENAME_RETRY_LIMIT);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fsp.rename(fromPath, toPath);
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt >= attempts - 1;
+      if (!isAtomicRenameRetryable(error) || isLastAttempt) {
+        throw error;
+      }
+      const waitMs = resolveAtomicRetryDelayMs(attempt, baseDelayMs);
+      await delay(waitMs);
+    }
+  }
+}
+
+async function removeWithRetry(targetPath, {
+  maxAttempts = ATOMIC_RECONCILE_RETRY_LIMIT,
+  baseDelayMs = ATOMIC_RENAME_RETRY_BASE_MS,
+} = {}) {
+  const attempts = Math.max(1, Number(maxAttempts) || ATOMIC_RECONCILE_RETRY_LIMIT);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fsp.rm(targetPath, { force: true });
+      return;
+    } catch (error) {
+      const code = String(error?.code || "").toUpperCase();
+      if (code === "ENOENT") {
+        return;
+      }
+      const isLastAttempt = attempt >= attempts - 1;
+      if (!isAtomicRenameRetryable(error) || isLastAttempt) {
+        throw error;
+      }
+      const waitMs = resolveAtomicRetryDelayMs(attempt, baseDelayMs);
+      await delay(waitMs);
+    }
+  }
+}
+
+async function listAtomicBackupPaths(filePath) {
+  const directoryPath = path.dirname(filePath);
+  const basename = path.basename(filePath);
+  let directoryEntries = [];
+  try {
+    directoryEntries = await fsp.readdir(directoryPath, { withFileTypes: true });
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  return directoryEntries
+    .filter(
+      (entry) =>
+        entry &&
+        typeof entry.isFile === "function" &&
+        entry.isFile() &&
+        entry.name.startsWith(`${basename}.`) &&
+        entry.name.endsWith(".bak")
+    )
+    .map((entry) => path.join(directoryPath, entry.name));
+}
+
+async function readJsonCandidate(candidatePath) {
+  let stat = null;
+  try {
+    stat = await fsp.stat(candidatePath);
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  try {
+    const payload = await readJsonFile(candidatePath);
+    return {
+      path: candidatePath,
+      payload,
+      mtimeMs: Number(stat?.mtimeMs || 0),
+      revision: resolveCandidateRevision(payload),
+      valid: true,
+    };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return {
+        path: candidatePath,
+        payload: null,
+        mtimeMs: Number(stat?.mtimeMs || 0),
+        revision: -1,
+        valid: false,
+      };
+    }
+    throw error;
+  }
+}
+
+function resolveCandidateRevision(payload) {
+  if (!payload || typeof payload !== "object") {
+    return -1;
+  }
+  const revision = Number(payload.revision);
+  if (!Number.isFinite(revision) || revision < 0) {
+    return -1;
+  }
+  return Math.floor(revision);
+}
+
+async function promoteCandidateToCanonical(candidatePath, canonicalPath) {
+  if (candidatePath === canonicalPath) {
+    return;
+  }
+  await removeWithRetry(canonicalPath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+  await renameWithRetry(candidatePath, canonicalPath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+  await syncDirectoryBestEffort(path.dirname(canonicalPath));
+}
+
+async function reconcileAtomicArtifacts(filePath) {
+  const fallbackPath = resolveAtomicFallbackPath(filePath);
+  const backupPaths = await listAtomicBackupPaths(filePath);
+  const candidates = await Promise.all(
+    [filePath, fallbackPath, ...backupPaths].map((candidatePath) => readJsonCandidate(candidatePath))
+  );
+  const presentCandidates = candidates.filter(Boolean);
+  if (presentCandidates.length === 0) {
+    return;
+  }
+  const validCandidates = presentCandidates.filter((candidate) => candidate.valid);
+  if (validCandidates.length === 0) {
+    return;
+  }
+  const highestRevision = [...validCandidates].reduce(
+    (maxRevision, candidate) => Math.max(maxRevision, Number(candidate.revision || -1)),
+    -1
+  );
+  const revisionCandidates = validCandidates.filter(
+    (candidate) => Number(candidate.revision || -1) === highestRevision
+  );
+  const canonicalCandidate = revisionCandidates.find((candidate) => candidate.path === filePath);
+  const selectedCandidate =
+    canonicalCandidate ||
+    [...revisionCandidates].sort((left, right) => {
+      const mtimeDiff = Number(right.mtimeMs || 0) - Number(left.mtimeMs || 0);
+      if (mtimeDiff !== 0) {
+        return mtimeDiff;
+      }
+      return String(left.path || "").localeCompare(String(right.path || ""));
+    })[0];
+  await promoteCandidateToCanonical(selectedCandidate.path, filePath);
+  const stalePaths = [fallbackPath, ...backupPaths];
+  for (const stalePath of stalePaths) {
+    await removeWithRetry(stalePath, { maxAttempts: ATOMIC_RECONCILE_RETRY_LIMIT });
+  }
+}
+
+async function readJsonFile(filePath) {
+  const raw = await fsp.readFile(filePath, "utf-8");
+  return JSON.parse(raw);
+}
+
+async function tryLoadAtomicFallbackFile(filePath, fallbackPath) {
+  try {
+    const payload = await readJsonFile(fallbackPath);
+    try {
+      await renameWithRetry(fallbackPath, filePath, { maxAttempts: 3 });
+      await syncDirectoryBestEffort(path.dirname(filePath));
+    } catch (promoteError) {
+      if (!isAtomicRenameRetryable(promoteError)) {
+        throw promoteError;
+      }
+    }
+    return payload;
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function loadJsonFile(filePath, defaultFactory) {
+  await reconcileAtomicArtifacts(filePath);
+  const fallbackPath = resolveAtomicFallbackPath(filePath);
+  try {
+    return await readJsonFile(filePath);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      const fallbackPayload = await tryLoadAtomicFallbackFile(filePath, fallbackPath);
+      if (fallbackPayload) {
+        return fallbackPayload;
+      }
+      throw error;
+    }
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      const fallbackPayload = await tryLoadAtomicFallbackFile(filePath, fallbackPath);
+      if (fallbackPayload) {
+        return fallbackPayload;
+      }
       return defaultFactory();
     }
     throw error;
   }
 }
 
+async function promoteAtomicFallback(filePath, fallbackPath) {
+  const backupPath = resolveAtomicBackupPath(filePath);
+  let hasExistingDestination = false;
+  try {
+    await fsp.access(filePath);
+    hasExistingDestination = true;
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  if (hasExistingDestination) {
+    await renameWithRetry(filePath, backupPath, { maxAttempts: 3 });
+  }
+
+  try {
+    await renameWithRetry(fallbackPath, filePath, { maxAttempts: 3 });
+  } catch (error) {
+    let restoreError = null;
+    if (hasExistingDestination) {
+      try {
+        await renameWithRetry(backupPath, filePath, { maxAttempts: 3 });
+      } catch (innerError) {
+        restoreError = innerError;
+      }
+    }
+    if (restoreError) {
+      const ambiguousRecoveryError = new Error(
+        `Atomic write recovery failed for ${path.basename(filePath)}: destination promotion and backup restore both failed.`
+      );
+      ambiguousRecoveryError.code = "ATOMIC_RECOVERY_AMBIGUOUS";
+      ambiguousRecoveryError.cause = error;
+      ambiguousRecoveryError.restoreCause = restoreError;
+      throw ambiguousRecoveryError;
+    }
+    throw error;
+  }
+
+  if (hasExistingDestination) {
+    try {
+      await fsp.rm(backupPath, { force: true });
+    } catch (error) {
+      const cleanupError = new Error(
+        `Atomic write recovery left backup cleanup unresolved for ${path.basename(filePath)}.`
+      );
+      cleanupError.code = "ATOMIC_BACKUP_CLEANUP_FAILED";
+      cleanupError.cause = error;
+      throw cleanupError;
+    }
+  }
+}
+
+async function syncDirectoryBestEffort(dirPath) {
+  let directoryHandle = null;
+  try {
+    directoryHandle = await fsp.open(dirPath, "r");
+    await directoryHandle.sync();
+  } catch (error) {
+    const code = String(error?.code || "");
+    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR", "ENOENT"].includes(code)) {
+      throw error;
+    }
+  } finally {
+    if (directoryHandle) {
+      await directoryHandle.close();
+    }
+  }
+}
+
 async function writeJsonFile(filePath, payload = {}) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  await reconcileAtomicArtifacts(filePath);
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const fallbackPath = resolveAtomicFallbackPath(filePath);
+  const payloadBody = `${JSON.stringify(payload, null, 2)}\n`;
+  const fileHandle = await fsp.open(tempPath, "w", 0o600);
+  try {
+    await fileHandle.writeFile(payloadBody, "utf-8");
+    await fileHandle.sync();
+  } finally {
+    await fileHandle.close();
+  }
+  try {
+    await fsp.chmod(tempPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  try {
+    await renameWithRetry(tempPath, filePath);
+  } catch (error) {
+    if (!isAtomicRenameRetryable(error)) {
+      throw error;
+    }
+    await fsp.rm(fallbackPath, { force: true });
+    await renameWithRetry(tempPath, fallbackPath, { maxAttempts: 3 });
+    await promoteAtomicFallback(filePath, fallbackPath);
+  } finally {
+    await fsp.rm(tempPath, { force: true });
+  }
+  await syncDirectoryBestEffort(directoryPath);
+  try {
+    await fsp.chmod(filePath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
 }
 
 async function appendEvent(filePath, payload = {}) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.appendFile(filePath, `${JSON.stringify(payload)}\n`, "utf-8");
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const releaseEventLock = await acquireFileLock(path.join(directoryPath, ASSIGNMENT_EVENTS_LOCK_FILE));
+  try {
+    const handle = await fsp.open(filePath, "a");
+    try {
+      await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf-8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await syncDirectoryBestEffort(directoryPath);
+  } finally {
+    await releaseEventLock();
+  }
 }
 
 async function loadLedger(ledgerPath, nowIso = new Date().toISOString()) {
   const parsed = await loadJsonFile(ledgerPath, () => createInitialLedger(nowIso));
   return {
     schemaVersion: normalizeString(parsed.schemaVersion) || LEDGER_SCHEMA_VERSION,
+    revision: normalizeNonNegativeInteger(parsed.revision, 0),
     generatedAt: normalizeIsoTimestamp(parsed.generatedAt, nowIso),
     assignments: Array.isArray(parsed.assignments)
       ? parsed.assignments
@@ -186,6 +573,7 @@ async function loadLedger(ledgerPath, nowIso = new Date().toISOString()) {
 async function writeLedger(ledgerPath, ledger = {}, nowIso = new Date().toISOString()) {
   const normalized = {
     schemaVersion: LEDGER_SCHEMA_VERSION,
+    revision: normalizeNonNegativeInteger(ledger.revision, 0) + 1,
     generatedAt: normalizeIsoTimestamp(nowIso, nowIso),
     assignments: Array.isArray(ledger.assignments)
       ? ledger.assignments
@@ -201,6 +589,7 @@ async function loadQueue(queuePath, nowIso = new Date().toISOString()) {
   const parsed = await loadJsonFile(queuePath, () => createInitialQueue(nowIso));
   return {
     schemaVersion: normalizeString(parsed.schemaVersion) || QUEUE_SCHEMA_VERSION,
+    revision: normalizeNonNegativeInteger(parsed.revision, 0),
     generatedAt: normalizeIsoTimestamp(parsed.generatedAt, nowIso),
     items: Array.isArray(parsed.items)
       ? parsed.items.map((item) => normalizeQueueItem(item, nowIso)).filter((item) => item.workItemId)
@@ -211,6 +600,7 @@ async function loadQueue(queuePath, nowIso = new Date().toISOString()) {
 async function writeQueue(queuePath, queue = {}, nowIso = new Date().toISOString()) {
   const normalized = {
     schemaVersion: QUEUE_SCHEMA_VERSION,
+    revision: normalizeNonNegativeInteger(queue.revision, 0) + 1,
     generatedAt: normalizeIsoTimestamp(nowIso, nowIso),
     items: Array.isArray(queue.items)
       ? queue.items.map((item) => normalizeQueueItem(item, nowIso)).filter((item) => item.workItemId)
@@ -234,6 +624,155 @@ async function loadLedgerAndQueue(storage, nowIso) {
     loadQueue(storage.queuePath, nowIso),
   ]);
   return { ledger, queue };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function buildLockMetadata(ownerToken, staleMs) {
+  const nowMs = Date.now();
+  const ttlMs = Math.max(1000, Number(staleMs) || STALE_LOCK_TTL_MS);
+  return {
+    schemaVersion: "1.0.0",
+    ownerToken,
+    pid: process.pid,
+    createdAt: new Date(nowMs).toISOString(),
+    expiresAt: new Date(nowMs + ttlMs).toISOString(),
+  };
+}
+
+function parseLockMetadata(raw) {
+  if (!raw || typeof raw !== "string") {
+    return null;
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  return {
+    ownerToken: normalizeString(parsed.ownerToken),
+    createdAt: normalizeString(parsed.createdAt),
+    expiresAt: normalizeString(parsed.expiresAt),
+  };
+}
+
+async function readLockMetadata(lockPath) {
+  try {
+    const raw = await fsp.readFile(lockPath, "utf-8");
+    return parseLockMetadata(raw);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+    return null;
+  }
+}
+
+function isExpiredLockMetadata(lockMetadata, nowMs = Date.now()) {
+  if (!lockMetadata) {
+    return true;
+  }
+  const expiresAtMs = Date.parse(normalizeString(lockMetadata.expiresAt));
+  if (Number.isFinite(expiresAtMs)) {
+    return nowMs >= expiresAtMs;
+  }
+  const createdAtMs = Date.parse(normalizeString(lockMetadata.createdAt));
+  if (!Number.isFinite(createdAtMs)) {
+    return true;
+  }
+  return nowMs - createdAtMs >= STALE_LOCK_TTL_MS;
+}
+
+async function writeLockMetadata(handle, lockMetadata) {
+  await handle.truncate(0);
+  await handle.writeFile(`${JSON.stringify(lockMetadata)}\n`, "utf-8");
+  await handle.sync();
+}
+
+async function releaseOwnedLock(lockPath, ownerToken) {
+  const currentLockMetadata = await readLockMetadata(lockPath);
+  if (!currentLockMetadata) {
+    return false;
+  }
+  if (currentLockMetadata.ownerToken && currentLockMetadata.ownerToken !== ownerToken) {
+    return false;
+  }
+  await fsp.rm(lockPath, { force: true });
+  await syncDirectoryBestEffort(path.dirname(lockPath));
+  return true;
+}
+
+async function acquireFileLock(lockPath, {
+  timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+  retryMs = DEFAULT_LOCK_RETRY_MS,
+  staleMs = STALE_LOCK_TTL_MS,
+} = {}) {
+  const deadline = Date.now() + Math.max(100, Number(timeoutMs) || DEFAULT_LOCK_TIMEOUT_MS);
+  const ownerToken = `${process.pid}-${Date.now()}-${randomUUID()}`;
+  while (Date.now() < deadline) {
+    let handle = null;
+    try {
+      await fsp.mkdir(path.dirname(lockPath), { recursive: true });
+      handle = await fsp.open(lockPath, "wx");
+      const lockMetadata = buildLockMetadata(ownerToken, staleMs);
+      await writeLockMetadata(handle, lockMetadata);
+      await syncDirectoryBestEffort(path.dirname(lockPath));
+      return async () => {
+        try {
+          await handle.close();
+        } finally {
+          await releaseOwnedLock(lockPath, ownerToken);
+        }
+      };
+    } catch (error) {
+      if (handle) {
+        await handle.close();
+      }
+      if (!error || typeof error !== "object" || error.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const observedLockMetadata = await readLockMetadata(lockPath);
+        if (isExpiredLockMetadata(observedLockMetadata, Date.now())) {
+          const observedOwnerToken = normalizeString(observedLockMetadata?.ownerToken);
+          const observedExpiresAt = normalizeString(observedLockMetadata?.expiresAt);
+          const reloadedLockMetadata = await readLockMetadata(lockPath);
+          const reloadedOwnerToken = normalizeString(reloadedLockMetadata?.ownerToken);
+          const reloadedExpiresAt = normalizeString(reloadedLockMetadata?.expiresAt);
+          const lockStateUnchanged = observedOwnerToken === reloadedOwnerToken &&
+            observedExpiresAt === reloadedExpiresAt;
+          if (lockStateUnchanged) {
+            await fsp.rm(lockPath, { force: true });
+            await syncDirectoryBestEffort(path.dirname(lockPath));
+          }
+          continue;
+        }
+      } catch (statError) {
+        if (!statError || typeof statError !== "object" || statError.code !== "ENOENT") {
+          throw statError;
+        }
+      }
+      await delay(retryMs);
+    }
+  }
+  throw new Error(`Timed out acquiring assignment ledger lock at '${lockPath}'.`);
+}
+
+async function withStorageLock(storage, operation) {
+  const releaseLock = await acquireFileLock(path.join(storage.baseDir, ASSIGNMENT_STORAGE_LOCK_FILE));
+  try {
+    return await operation();
+  } finally {
+    await releaseLock();
+  }
 }
 
 function findQueueItem(queue = {}, workItemId = "") {
@@ -337,86 +876,86 @@ export async function claimAssignment({
     env,
     homeDir,
   });
-  const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
+  return withStorageLock(storage, async () => {
+    const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
 
-  const queueItem = findQueueItem(queue, normalizedWorkItemId);
-  if (!queueItem) {
-    throw new Error(`Work item '${normalizedWorkItemId}' was not found in daemon queue.`);
-  }
+    const queueItem = findQueueItem(queue, normalizedWorkItemId);
+    if (!queueItem) {
+      throw new Error(`Work item '${normalizedWorkItemId}' was not found in daemon queue.`);
+    }
 
-  const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
-  const existingAssignment = assignmentIndex >= 0 ? ledger.assignments[assignmentIndex] : null;
-  if (
-    existingAssignment &&
-    ACTIVE_ASSIGNMENT_STATUSES.has(existingAssignment.status) &&
-    !isAssignmentExpired(existingAssignment, normalizedNow) &&
-    existingAssignment.assignedAgentIdentity !== normalizedAgentIdentity
-  ) {
-    throw new Error(
-      `Work item '${normalizedWorkItemId}' is currently leased by '${existingAssignment.assignedAgentIdentity}'.`
+    const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
+    const existingAssignment = assignmentIndex >= 0 ? ledger.assignments[assignmentIndex] : null;
+    if (
+      existingAssignment &&
+      ACTIVE_ASSIGNMENT_STATUSES.has(existingAssignment.status) &&
+      !isAssignmentExpired(existingAssignment, normalizedNow) &&
+      existingAssignment.assignedAgentIdentity !== normalizedAgentIdentity
+    ) {
+      throw new Error(
+        `Work item '${normalizedWorkItemId}' is currently leased by '${existingAssignment.assignedAgentIdentity}'.`
+      );
+    }
+
+    const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
+    const nextRecord = normalizeAssignmentRecord(
+      {
+        workItemId: normalizedWorkItemId,
+        assignedAgentIdentity: normalizedAgentIdentity,
+        leasedAt: normalizedNow,
+        leaseTtlSeconds: normalizedTtl,
+        leaseExpiresAt,
+        status: "CLAIMED",
+        stage,
+        runId,
+        jiraIssueKey,
+        budgetSnapshot: normalizeMetadata(budgetSnapshot),
+        heartbeatAt: null,
+        releasedAt: null,
+        releaseReason: null,
+        updatedAt: normalizedNow,
+      },
+      normalizedNow
     );
-  }
 
-  const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
-  const nextRecord = normalizeAssignmentRecord(
-    {
+    if (assignmentIndex >= 0) {
+      ledger.assignments[assignmentIndex] = nextRecord;
+    } else {
+      ledger.assignments.push(nextRecord);
+    }
+    updateQueueItem({
+      queue,
       workItemId: normalizedWorkItemId,
+      status: "ASSIGNED",
       assignedAgentIdentity: normalizedAgentIdentity,
-      leasedAt: normalizedNow,
-      leaseTtlSeconds: normalizedTtl,
-      leaseExpiresAt,
-      status: "CLAIMED",
       stage,
       runId,
       jiraIssueKey,
-      budgetSnapshot: normalizeMetadata(budgetSnapshot),
-      heartbeatAt: null,
-      releasedAt: null,
-      releaseReason: null,
-      updatedAt: normalizedNow,
-    },
-    normalizedNow
-  );
+      nowIso: normalizedNow,
+    });
 
-  if (assignmentIndex >= 0) {
-    ledger.assignments[assignmentIndex] = nextRecord;
-  } else {
-    ledger.assignments.push(nextRecord);
-  }
-  updateQueueItem({
-    queue,
-    workItemId: normalizedWorkItemId,
-    status: "ASSIGNED",
-    assignedAgentIdentity: normalizedAgentIdentity,
-    stage,
-    runId,
-    jiraIssueKey,
-    nowIso: normalizedNow,
+    const savedLedger = await writeLedger(storage.ledgerPath, ledger, normalizedNow);
+    const savedQueue = await writeQueue(storage.queuePath, queue, normalizedNow);
+
+    await appendEvent(storage.eventsPath, {
+      timestamp: normalizedNow,
+      eventType: "claim",
+      workItemId: normalizedWorkItemId,
+      agentIdentity: normalizedAgentIdentity,
+      leaseTtlSeconds: normalizedTtl,
+      leaseExpiresAt,
+      stage: normalizeString(stage) || "triage",
+      runId: normalizeString(runId) || null,
+      jiraIssueKey: normalizeString(jiraIssueKey) || null,
+    });
+
+    return {
+      ...storage,
+      ledger: savedLedger,
+      queue: savedQueue,
+      assignment: nextRecord,
+    };
   });
-
-  const [savedLedger, savedQueue] = await Promise.all([
-    writeLedger(storage.ledgerPath, ledger, normalizedNow),
-    writeQueue(storage.queuePath, queue, normalizedNow),
-  ]);
-
-  await appendEvent(storage.eventsPath, {
-    timestamp: normalizedNow,
-    eventType: "claim",
-    workItemId: normalizedWorkItemId,
-    agentIdentity: normalizedAgentIdentity,
-    leaseTtlSeconds: normalizedTtl,
-    leaseExpiresAt,
-    stage: normalizeString(stage) || "triage",
-    runId: normalizeString(runId) || null,
-    jiraIssueKey: normalizeString(jiraIssueKey) || null,
-  });
-
-  return {
-    ...storage,
-    ledger: savedLedger,
-    queue: savedQueue,
-    assignment: nextRecord,
-  };
 }
 
 export async function heartbeatAssignment({
@@ -446,70 +985,70 @@ export async function heartbeatAssignment({
     env,
     homeDir,
   });
-  const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
+  return withStorageLock(storage, async () => {
+    const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
 
-  const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
-  if (assignmentIndex < 0) {
-    throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
-  }
-  const existing = ledger.assignments[assignmentIndex];
-  if (existing.assignedAgentIdentity !== normalizedAgentIdentity) {
-    throw new Error(
-      `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedAgentIdentity}'.`
+    const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
+    if (assignmentIndex < 0) {
+      throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
+    }
+    const existing = ledger.assignments[assignmentIndex];
+    if (existing.assignedAgentIdentity !== normalizedAgentIdentity) {
+      throw new Error(
+        `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedAgentIdentity}'.`
+      );
+    }
+
+    const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
+    const next = normalizeAssignmentRecord(
+      {
+        ...existing,
+        status: "IN_PROGRESS",
+        leaseTtlSeconds: normalizedTtl,
+        leaseExpiresAt,
+        heartbeatAt: normalizedNow,
+        stage: normalizeString(stage) || existing.stage,
+        runId: normalizeString(runId) || existing.runId,
+        jiraIssueKey: normalizeString(jiraIssueKey) || existing.jiraIssueKey,
+        budgetSnapshot:
+          Object.keys(normalizeMetadata(budgetSnapshot)).length > 0
+            ? normalizeMetadata(budgetSnapshot)
+            : existing.budgetSnapshot,
+        updatedAt: normalizedNow,
+      },
+      normalizedNow
     );
-  }
-
-  const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
-  const next = normalizeAssignmentRecord(
-    {
-      ...existing,
+    ledger.assignments[assignmentIndex] = next;
+    updateQueueItem({
+      queue,
+      workItemId: normalizedWorkItemId,
       status: "IN_PROGRESS",
-      leaseTtlSeconds: normalizedTtl,
+      assignedAgentIdentity: normalizedAgentIdentity,
+      stage: next.stage,
+      runId: next.runId,
+      jiraIssueKey: next.jiraIssueKey,
+      nowIso: normalizedNow,
+    });
+
+    const savedLedger = await writeLedger(storage.ledgerPath, ledger, normalizedNow);
+    const savedQueue = await writeQueue(storage.queuePath, queue, normalizedNow);
+
+    await appendEvent(storage.eventsPath, {
+      timestamp: normalizedNow,
+      eventType: "heartbeat",
+      workItemId: normalizedWorkItemId,
+      agentIdentity: normalizedAgentIdentity,
+      stage: next.stage,
       leaseExpiresAt,
-      heartbeatAt: normalizedNow,
-      stage: normalizeString(stage) || existing.stage,
-      runId: normalizeString(runId) || existing.runId,
-      jiraIssueKey: normalizeString(jiraIssueKey) || existing.jiraIssueKey,
-      budgetSnapshot:
-        Object.keys(normalizeMetadata(budgetSnapshot)).length > 0
-          ? normalizeMetadata(budgetSnapshot)
-          : existing.budgetSnapshot,
-      updatedAt: normalizedNow,
-    },
-    normalizedNow
-  );
-  ledger.assignments[assignmentIndex] = next;
-  updateQueueItem({
-    queue,
-    workItemId: normalizedWorkItemId,
-    status: "IN_PROGRESS",
-    assignedAgentIdentity: normalizedAgentIdentity,
-    stage: next.stage,
-    runId: next.runId,
-    jiraIssueKey: next.jiraIssueKey,
-    nowIso: normalizedNow,
+    });
+
+    return {
+      ...storage,
+      ledger: savedLedger,
+      queue: savedQueue,
+      assignment: next,
+    };
   });
-
-  const [savedLedger, savedQueue] = await Promise.all([
-    writeLedger(storage.ledgerPath, ledger, normalizedNow),
-    writeQueue(storage.queuePath, queue, normalizedNow),
-  ]);
-
-  await appendEvent(storage.eventsPath, {
-    timestamp: normalizedNow,
-    eventType: "heartbeat",
-    workItemId: normalizedWorkItemId,
-    agentIdentity: normalizedAgentIdentity,
-    stage: next.stage,
-    leaseExpiresAt,
-  });
-
-  return {
-    ...storage,
-    ledger: savedLedger,
-    queue: savedQueue,
-    assignment: next,
-  };
 }
 
 export async function releaseAssignment({
@@ -540,72 +1079,72 @@ export async function releaseAssignment({
     env,
     homeDir,
   });
-  const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
+  return withStorageLock(storage, async () => {
+    const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
 
-  const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
-  if (assignmentIndex < 0) {
-    throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
-  }
-  const existing = ledger.assignments[assignmentIndex];
-  if (
-    normalizedAgentIdentity &&
-    normalizeString(existing.assignedAgentIdentity) &&
-    existing.assignedAgentIdentity !== normalizedAgentIdentity
-  ) {
-    throw new Error(
-      `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedAgentIdentity}'.`
+    const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
+    if (assignmentIndex < 0) {
+      throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
+    }
+    const existing = ledger.assignments[assignmentIndex];
+    if (
+      normalizedAgentIdentity &&
+      normalizeString(existing.assignedAgentIdentity) &&
+      existing.assignedAgentIdentity !== normalizedAgentIdentity
+    ) {
+      throw new Error(
+        `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedAgentIdentity}'.`
+      );
+    }
+
+    const next = normalizeAssignmentRecord(
+      {
+        ...existing,
+        status: normalizedStatus,
+        stage: normalizeString(stage) || existing.stage,
+        runId: normalizeString(runId) || existing.runId,
+        jiraIssueKey: normalizeString(jiraIssueKey) || existing.jiraIssueKey,
+        budgetSnapshot:
+          Object.keys(normalizeMetadata(budgetSnapshot)).length > 0
+            ? normalizeMetadata(budgetSnapshot)
+            : existing.budgetSnapshot,
+        releasedAt: normalizedNow,
+        releaseReason: normalizeString(reason) || null,
+        updatedAt: normalizedNow,
+      },
+      normalizedNow
     );
-  }
-
-  const next = normalizeAssignmentRecord(
-    {
-      ...existing,
+    ledger.assignments[assignmentIndex] = next;
+    updateQueueItem({
+      queue,
+      workItemId: normalizedWorkItemId,
       status: normalizedStatus,
-      stage: normalizeString(stage) || existing.stage,
-      runId: normalizeString(runId) || existing.runId,
-      jiraIssueKey: normalizeString(jiraIssueKey) || existing.jiraIssueKey,
-      budgetSnapshot:
-        Object.keys(normalizeMetadata(budgetSnapshot)).length > 0
-          ? normalizeMetadata(budgetSnapshot)
-          : existing.budgetSnapshot,
-      releasedAt: normalizedNow,
-      releaseReason: normalizeString(reason) || null,
-      updatedAt: normalizedNow,
-    },
-    normalizedNow
-  );
-  ledger.assignments[assignmentIndex] = next;
-  updateQueueItem({
-    queue,
-    workItemId: normalizedWorkItemId,
-    status: normalizedStatus,
-    assignedAgentIdentity: next.assignedAgentIdentity,
-    stage: next.stage,
-    runId: next.runId,
-    jiraIssueKey: next.jiraIssueKey,
-    nowIso: normalizedNow,
+      assignedAgentIdentity: next.assignedAgentIdentity,
+      stage: next.stage,
+      runId: next.runId,
+      jiraIssueKey: next.jiraIssueKey,
+      nowIso: normalizedNow,
+    });
+
+    const savedLedger = await writeLedger(storage.ledgerPath, ledger, normalizedNow);
+    const savedQueue = await writeQueue(storage.queuePath, queue, normalizedNow);
+
+    await appendEvent(storage.eventsPath, {
+      timestamp: normalizedNow,
+      eventType: "release",
+      workItemId: normalizedWorkItemId,
+      agentIdentity: next.assignedAgentIdentity,
+      status: normalizedStatus,
+      reason: next.releaseReason,
+    });
+
+    return {
+      ...storage,
+      ledger: savedLedger,
+      queue: savedQueue,
+      assignment: next,
+    };
   });
-
-  const [savedLedger, savedQueue] = await Promise.all([
-    writeLedger(storage.ledgerPath, ledger, normalizedNow),
-    writeQueue(storage.queuePath, queue, normalizedNow),
-  ]);
-
-  await appendEvent(storage.eventsPath, {
-    timestamp: normalizedNow,
-    eventType: "release",
-    workItemId: normalizedWorkItemId,
-    agentIdentity: next.assignedAgentIdentity,
-    status: normalizedStatus,
-    reason: next.releaseReason,
-  });
-
-  return {
-    ...storage,
-    ledger: savedLedger,
-    queue: savedQueue,
-    assignment: next,
-  };
 }
 
 export async function reassignAssignment({
@@ -637,80 +1176,80 @@ export async function reassignAssignment({
     env,
     homeDir,
   });
-  const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
+  return withStorageLock(storage, async () => {
+    const { ledger, queue } = await loadLedgerAndQueue(storage, normalizedNow);
 
-  const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
-  if (assignmentIndex < 0) {
-    throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
-  }
-  const existing = ledger.assignments[assignmentIndex];
-  if (
-    normalizedFromAgent &&
-    normalizeString(existing.assignedAgentIdentity) &&
-    existing.assignedAgentIdentity !== normalizedFromAgent
-  ) {
-    throw new Error(
-      `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedFromAgent}'.`
+    const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
+    if (assignmentIndex < 0) {
+      throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
+    }
+    const existing = ledger.assignments[assignmentIndex];
+    if (
+      normalizedFromAgent &&
+      normalizeString(existing.assignedAgentIdentity) &&
+      existing.assignedAgentIdentity !== normalizedFromAgent
+    ) {
+      throw new Error(
+        `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedFromAgent}'.`
+      );
+    }
+
+    const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
+    const next = normalizeAssignmentRecord(
+      {
+        ...existing,
+        assignedAgentIdentity: normalizedToAgent,
+        leasedAt: normalizedNow,
+        leaseTtlSeconds: normalizedTtl,
+        leaseExpiresAt,
+        status: "CLAIMED",
+        stage: normalizeString(stage) || existing.stage,
+        runId: normalizeString(runId) || existing.runId,
+        jiraIssueKey: normalizeString(jiraIssueKey) || existing.jiraIssueKey,
+        budgetSnapshot:
+          Object.keys(normalizeMetadata(budgetSnapshot)).length > 0
+            ? normalizeMetadata(budgetSnapshot)
+            : existing.budgetSnapshot,
+        heartbeatAt: null,
+        releasedAt: null,
+        releaseReason: null,
+        updatedAt: normalizedNow,
+      },
+      normalizedNow
     );
-  }
-
-  const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
-  const next = normalizeAssignmentRecord(
-    {
-      ...existing,
+    ledger.assignments[assignmentIndex] = next;
+    updateQueueItem({
+      queue,
+      workItemId: normalizedWorkItemId,
+      status: "ASSIGNED",
       assignedAgentIdentity: normalizedToAgent,
-      leasedAt: normalizedNow,
+      stage: next.stage,
+      runId: next.runId,
+      jiraIssueKey: next.jiraIssueKey,
+      nowIso: normalizedNow,
+    });
+
+    const savedLedger = await writeLedger(storage.ledgerPath, ledger, normalizedNow);
+    const savedQueue = await writeQueue(storage.queuePath, queue, normalizedNow);
+
+    await appendEvent(storage.eventsPath, {
+      timestamp: normalizedNow,
+      eventType: "reassign",
+      workItemId: normalizedWorkItemId,
+      fromAgentIdentity: existing.assignedAgentIdentity,
+      toAgentIdentity: normalizedToAgent,
       leaseTtlSeconds: normalizedTtl,
       leaseExpiresAt,
-      status: "CLAIMED",
-      stage: normalizeString(stage) || existing.stage,
-      runId: normalizeString(runId) || existing.runId,
-      jiraIssueKey: normalizeString(jiraIssueKey) || existing.jiraIssueKey,
-      budgetSnapshot:
-        Object.keys(normalizeMetadata(budgetSnapshot)).length > 0
-          ? normalizeMetadata(budgetSnapshot)
-          : existing.budgetSnapshot,
-      heartbeatAt: null,
-      releasedAt: null,
-      releaseReason: null,
-      updatedAt: normalizedNow,
-    },
-    normalizedNow
-  );
-  ledger.assignments[assignmentIndex] = next;
-  updateQueueItem({
-    queue,
-    workItemId: normalizedWorkItemId,
-    status: "ASSIGNED",
-    assignedAgentIdentity: normalizedToAgent,
-    stage: next.stage,
-    runId: next.runId,
-    jiraIssueKey: next.jiraIssueKey,
-    nowIso: normalizedNow,
+      stage: next.stage,
+    });
+
+    return {
+      ...storage,
+      ledger: savedLedger,
+      queue: savedQueue,
+      assignment: next,
+    };
   });
-
-  const [savedLedger, savedQueue] = await Promise.all([
-    writeLedger(storage.ledgerPath, ledger, normalizedNow),
-    writeQueue(storage.queuePath, queue, normalizedNow),
-  ]);
-
-  await appendEvent(storage.eventsPath, {
-    timestamp: normalizedNow,
-    eventType: "reassign",
-    workItemId: normalizedWorkItemId,
-    fromAgentIdentity: existing.assignedAgentIdentity,
-    toAgentIdentity: normalizedToAgent,
-    leaseTtlSeconds: normalizedTtl,
-    leaseExpiresAt,
-    stage: next.stage,
-  });
-
-  return {
-    ...storage,
-    ledger: savedLedger,
-    queue: savedQueue,
-    assignment: next,
-  };
 }
 
 export async function listAssignments({

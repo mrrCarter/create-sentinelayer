@@ -1,23 +1,470 @@
 name: Quality Gates
+# Release-safety deploy simulation gate chain (no external deployment mutation) is enforced in this workflow:
+# lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> rollback-readiness + deploy -> quality-summary
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NPM_VERSION_PIN: "10.2.4"
+  NPM_VERSION_LEGACY_PIN: "10.7.0"
+  NODE_VERSION_PIN: "20.11.1"
+  NODE_VERSION_LEGACY_PIN: "18.20.4"
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 
 jobs:
+  canonical-run:
+    name: Canonical Run Selection
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      execute_full: ${{ steps.select.outputs.execute_full }}
+      skip_reason: ${{ steps.select.outputs.skip_reason }}
+    steps:
+      - name: Resolve canonical quality execution
+        id: select
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          execute_full="true"
+          skip_reason="canonical_full_execution"
+          runs_status=0
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/quality-gates.yml/runs?head_sha=${HEAD_SHA}&event=${EVENT_NAME}&per_page=30" -H "Accept: application/vnd.github+json")" || runs_status=$?
+          if [[ "${runs_status}" -eq 0 ]]; then
+            canonical_run_id="$(echo "${runs_json}" | jq -r --arg repo "${REPO}" --arg sha "${HEAD_SHA}" --arg event "${EVENT_NAME}" '
+              [.workflow_runs[]
+                | select((.event // "") == $event)
+                | select((.head_sha // "") == $sha)
+                | select(((.path // "") | split("@")[0]) == ".github/workflows/quality-gates.yml")
+                | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+                | select(
+                    ((.status // "") == "in_progress") or
+                    ((.status // "") == "queued") or
+                    (((.status // "") == "completed") and ((.conclusion // "") == "success"))
+                  )
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | (.id | tostring) // ""
+            ')"
+            if [[ -n "${canonical_run_id}" ]] && [[ "${canonical_run_id}" != "${RUN_ID}" ]]; then
+              execute_full="false"
+              skip_reason="non_canonical_run_for_sha_${canonical_run_id}"
+              echo "::notice::Skipping non-canonical quality run ${RUN_ID} for SHA ${HEAD_SHA}; canonical run is ${canonical_run_id}."
+            elif [[ -n "${canonical_run_id}" ]]; then
+              if [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+                skip_reason="protected_branch_push_canonical_execution"
+              fi
+              echo "::notice::Run ${RUN_ID} is canonical for event '${EVENT_NAME}' and SHA ${HEAD_SHA}."
+            fi
+          else
+            if [[ "${EVENT_REPOSITORY}" != "${REPO}" ]]; then
+              echo "::error::Canonical-run lookup failed (status=${runs_status}) and event repository '${EVENT_REPOSITORY}' does not match canonical repository '${REPO}'."
+              exit 1
+            elif [[ "${EVENT_NAME}" == "pull_request" ]] && [[ "${PR_HEAD_REPOSITORY}" != "${REPO}" ]]; then
+              echo "::error::Canonical-run lookup failed (status=${runs_status}) and PR head repository '${PR_HEAD_REPOSITORY}' does not match canonical repository '${REPO}'."
+              exit 1
+            else
+              echo "::warning::Unable to resolve canonical-run metadata (status=${runs_status}); executing full gate chain."
+            fi
+            if [[ "${execute_full}" == "true" ]] && [[ "${EVENT_NAME}" == "push" ]] && [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+              skip_reason="protected_branch_push_forced_full_execution"
+            fi
+          fi
+          echo "execute_full=${execute_full}" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    needs: [canonical-run]
+    if: ${{ needs.canonical-run.outputs.execute_full == 'true' }}
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::notice::Bootstrapping npm to pinned version '${NPM_VERSION_PIN}' from '${resolved_npm_version}'."
+            timeout --preserve-status 120s npm install --global --no-audit --no-fund "npm@${NPM_VERSION_PIN}"
+            resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          fi
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin bootstrap failed (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
+      - name: Verify pinned toolchain provenance baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_path="$(readlink -f "$(command -v node)")"
+          npm_path="$(readlink -f "$(command -v npm)")"
+          digest_manifest_path=".github/security/toolchain-digests.json"
+          digest_manifest_key="ubuntu-22.04/node-${NODE_VERSION_PIN}/npm-${NPM_VERSION_PIN}"
+          if [[ ! -f "${digest_manifest_path}" ]]; then
+            echo "::error::Missing toolchain digest manifest '${digest_manifest_path}'."
+            exit 1
+          fi
+          if [[ "${node_path}" != *"/hostedtoolcache/"* ]]; then
+            echo "::error::Node binary is not sourced from hosted toolcache (${node_path})."
+            exit 1
+          fi
+          if [[ ! -x "${npm_path}" ]]; then
+            echo "::error::Resolved npm binary is not executable (${npm_path})."
+            exit 1
+          fi
+          node_sha="$(sha256sum "${node_path}" | awk '{print $1}')"
+          npm_sha="$(sha256sum "${npm_path}" | awk '{print $1}')"
+          if [[ ! "${node_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to compute valid Node SHA-256 digest."
+            exit 1
+          fi
+          if [[ ! "${npm_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to compute valid npm SHA-256 digest."
+            exit 1
+          fi
+          mapfile -t expected_node_shas < <(
+            jq -r --arg key "${digest_manifest_key}" '
+              .[$key].node_sha256 as $value
+              | if ($value | type) == "array" then
+                  $value[]
+                elif ($value | type) == "string" then
+                  $value
+                else
+                  empty
+                end
+            ' "${digest_manifest_path}" \
+              | awk 'NF {print tolower($0)}'
+          )
+          mapfile -t expected_npm_shas < <(
+            jq -r --arg key "${digest_manifest_key}" '
+              .[$key].npm_sha256 as $value
+              | if ($value | type) == "array" then
+                  $value[]
+                elif ($value | type) == "string" then
+                  $value
+                else
+                  empty
+                end
+            ' "${digest_manifest_path}" \
+              | awk 'NF {print tolower($0)}'
+          )
+          if [[ "${#expected_node_shas[@]}" -eq 0 ]] || [[ "${#expected_npm_shas[@]}" -eq 0 ]]; then
+            echo "::error::Missing expected digests for key '${digest_manifest_key}' in '${digest_manifest_path}'."
+            exit 1
+          fi
+          for expected_node_sha in "${expected_node_shas[@]}"; do
+            if [[ ! "${expected_node_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid expected node_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+              exit 1
+            fi
+          done
+          for expected_npm_sha in "${expected_npm_shas[@]}"; do
+            if [[ ! "${expected_npm_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid expected npm_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+              exit 1
+            fi
+          done
+          node_digest_match="false"
+          for expected_node_sha in "${expected_node_shas[@]}"; do
+            if [[ "${node_sha}" == "${expected_node_sha}" ]]; then
+              node_digest_match="true"
+              break
+            fi
+          done
+          if [[ "${node_digest_match}" != "true" ]]; then
+            echo "::error::Node digest mismatch for '${digest_manifest_key}' (actual='${node_sha}', allowed='${expected_node_shas[*]}')."
+            exit 1
+          fi
+          npm_digest_match="false"
+          for expected_npm_sha in "${expected_npm_shas[@]}"; do
+            if [[ "${npm_sha}" == "${expected_npm_sha}" ]]; then
+              npm_digest_match="true"
+              break
+            fi
+          done
+          if [[ "${npm_digest_match}" != "true" ]]; then
+            echo "::error::npm digest mismatch for '${digest_manifest_key}' (actual='${npm_sha}', allowed='${expected_npm_shas[*]}')."
+            exit 1
+          fi
+          echo "Pinned toolchain digests verified for ${digest_manifest_key}: node=${node_sha} npm=${npm_sha}"
+
+      - name: Install dependencies (lockfile immutable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install-immutable.sh .
+
+      - name: Assert deploy gate-chain contract is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml
+
+      - name: Assert release path consumes quality required checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/release.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const doc = YAML.parseDocument(raw, {
+            uniqueKeys: true,
+            strict: true,
+            merge: false,
+            prettyErrors: true,
+          });
+          if (Array.isArray(doc.errors) && doc.errors.length > 0) {
+            throw new Error(
+              `Unable to parse ${workflowPath}: ${doc.errors.map((entry) => entry.message || String(entry)).join("; ")}`
+            );
+          }
+          const parsed = doc.toJS();
+          const jobs = parsed && typeof parsed === "object" ? parsed.jobs || {} : {};
+          const requiredJobs = [
+            "verify-required-checks",
+            "preflight",
+            "rollback-readiness",
+            "authorize-production-publish",
+            "publish",
+          ];
+          for (const jobId of requiredJobs) {
+            if (!Object.prototype.hasOwnProperty.call(jobs, jobId)) {
+              throw new Error(`Missing required release workflow job '${jobId}'.`);
+            }
+          }
+          const normalizeNeeds = (value) => {
+            if (!value) {
+              return [];
+            }
+            if (Array.isArray(value)) {
+              return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+            }
+            return [String(value || "").trim()].filter(Boolean);
+          };
+          for (const jobId of ["preflight", "rollback-readiness", "authorize-production-publish", "publish"]) {
+            const needs = normalizeNeeds(jobs[jobId] && jobs[jobId].needs);
+            if (!needs.includes("verify-required-checks")) {
+              throw new Error(`Release job '${jobId}' must depend on 'verify-required-checks'.`);
+            }
+          }
+          const triggers =
+            (parsed && typeof parsed === "object" ? parsed.on || parsed["on"] : null) || {};
+          const pushTrigger = triggers.push || {};
+          const tagFilters = Array.isArray(pushTrigger.tags) ? pushTrigger.tags : [];
+          if (!tagFilters.includes("v*.*.*")) {
+            throw new Error("Release workflow push trigger must include semver tag filter 'v*.*.*'.");
+          }
+          NODE
+
+      - name: Assert Omar threshold policy is file-backed
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const workflowPath = ".github/workflows/omar-gate.yml";
+          const thresholdsPath = ".github/security/omar-thresholds.json";
+          const workflowRaw = fs.readFileSync(workflowPath, "utf8");
+          if (/severity_input\s*=\s*"P1"/.test(workflowRaw) || /p2_input\s*=\s*"5"/.test(workflowRaw)) {
+            throw new Error("Omar gate policy drift: hardcoded severity/p2 defaults are forbidden; use .github/security/omar-thresholds.json.");
+          }
+          if (!/THRESHOLDS_FILE:\s*\.github\/security\/omar-thresholds\.json/.test(workflowRaw)) {
+            throw new Error("Omar gate policy must source THRESHOLDS_FILE from .github/security/omar-thresholds.json.");
+          }
+          let parsed;
+          try {
+            parsed = JSON.parse(fs.readFileSync(thresholdsPath, "utf8"));
+          } catch (error) {
+            throw new Error(`Failed to parse ${thresholdsPath}: ${error.message || String(error)}`);
+          }
+          const defaults = parsed && typeof parsed === "object" ? parsed.defaults : null;
+          const protectedOverrides =
+            parsed && typeof parsed === "object" ? parsed.protected_branch_overrides : null;
+          if (!defaults || typeof defaults !== "object") {
+            throw new Error(`${thresholdsPath} must include object field defaults.`);
+          }
+          if (!protectedOverrides || typeof protectedOverrides !== "object") {
+            throw new Error(`${thresholdsPath} must include object field protected_branch_overrides.`);
+          }
+          const allowedSeverity = new Set(["P0", "P1", "P2", "none"]);
+          const validateSeverity = (label, value) => {
+            if (!allowedSeverity.has(String(value || ""))) {
+              throw new Error(`${thresholdsPath} ${label} must be one of ${Array.from(allowedSeverity).join(", ")}.`);
+            }
+          };
+          const validateP2 = (label, value) => {
+            if (!Number.isInteger(value) || value < 0) {
+              throw new Error(`${thresholdsPath} ${label} must be a non-negative integer.`);
+            }
+          };
+          validateSeverity("defaults.severity_gate", defaults.severity_gate);
+          validateSeverity(
+            "protected_branch_overrides.severity_gate",
+            protectedOverrides.severity_gate
+          );
+          validateP2("defaults.p2_max_allowed", defaults.p2_max_allowed);
+          validateP2(
+            "protected_branch_overrides.p2_max_allowed",
+            protectedOverrides.p2_max_allowed
+          );
+          NODE
+
+      - name: Assert deploy promotion jobs are immutable-artifact only
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/quality-gates.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const doc = YAML.parseDocument(raw, {
+            uniqueKeys: true,
+            strict: true,
+            merge: false,
+            prettyErrors: true,
+          });
+          if (Array.isArray(doc.errors) && doc.errors.length > 0) {
+            throw new Error(
+              `Unable to parse ${workflowPath}: ${doc.errors.map((entry) => entry.message || String(entry)).join("; ")}`
+            );
+          }
+          const parsed = doc.toJS();
+          const jobs = parsed && typeof parsed === "object" ? parsed.jobs || {} : {};
+          const guardedJobs = ["release-readiness", "deploy-readiness", "deploy-stage", "deploy"];
+          const disallowedRunPatterns = [
+            /\bnpm\s+pack\b/i,
+            /\bnpm\s+run\s+build\b/i,
+            /\bnpm\s+run\s+compile\b/i,
+          ];
+
+          const findJob = (jobId) => {
+            const job = jobs[jobId];
+            if (!job || typeof job !== "object") {
+              throw new Error(`Missing required quality job '${jobId}' for immutable-promotion checks.`);
+            }
+            return job;
+          };
+          const getSteps = (jobId) => {
+            const job = findJob(jobId);
+            const steps = Array.isArray(job.steps) ? job.steps : [];
+            if (steps.length < 1) {
+              throw new Error(`Job '${jobId}' must define explicit artifact-promotion steps.`);
+            }
+            return steps;
+          };
+          const assertDownloadArtifact = (jobId, artifactName) => {
+            const steps = getSteps(jobId);
+            const matched = steps.some((step) => {
+              if (!step || typeof step !== "object") {
+                return false;
+              }
+              const uses = String(step.uses || "");
+              if (!uses.startsWith("actions/download-artifact@")) {
+                return false;
+              }
+              const withBlock = step.with && typeof step.with === "object" ? step.with : {};
+              return String(withBlock.name || "").trim() === artifactName;
+            });
+            if (!matched) {
+              throw new Error(`Job '${jobId}' must download immutable artifact '${artifactName}'.`);
+            }
+          };
+
+          for (const jobId of guardedJobs) {
+            const steps = getSteps(jobId);
+            for (const [index, step] of steps.entries()) {
+              if (!step || typeof step !== "object") {
+                continue;
+              }
+              const run = typeof step.run === "string" ? step.run : "";
+              if (!run) {
+                continue;
+              }
+              for (const pattern of disallowedRunPatterns) {
+                if (pattern.test(run)) {
+                  throw new Error(
+                    `Job '${jobId}' step #${index + 1} contains forbidden rebuild/mutation command (${pattern}).`
+                  );
+                }
+              }
+              if (/\bnpm\s+publish\b/i.test(run) && !/--dry-run\b/i.test(run)) {
+                throw new Error(
+                  `Job '${jobId}' step #${index + 1} contains npm publish without --dry-run safeguard.`
+                );
+              }
+            }
+          }
+
+          assertDownloadArtifact("release-readiness", "quality-build-package");
+          assertDownloadArtifact("deploy-readiness", "quality-build-package");
+          assertDownloadArtifact("deploy-stage", "quality-build-package");
+          assertDownloadArtifact("deploy-stage", "release-readiness-proof");
+          assertDownloadArtifact("deploy-stage", "deploy-readiness-proof");
+          assertDownloadArtifact("deploy", "deploy-stage-proof");
+          NODE
+
+      - name: Enforce explicit workflow permissions policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/ci/verify-workflow-permissions.js \
+            .github/workflows/quality-gates.yml \
+            .github/workflows/omar-gate.yml \
+            .github/workflows/release.yml \
+            .github/workflows/release-publish.yml \
+            .github/workflows/rollback.yml
+
+      - name: Run lint/syntax gate
+        run: npm run check
+
   eval-impact:
     name: Eval Impact Gate
     runs-on: ubuntu-22.04
+    needs: [lint]
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -29,34 +476,47 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             base_sha="${PR_BASE_SHA}"
             head_sha="${PR_HEAD_SHA}"
+            target_branch="${PR_BASE_REF}"
           else
             base_sha="${PUSH_BEFORE_SHA}"
             head_sha="${PUSH_HEAD_SHA}"
+            target_branch="${DEFAULT_BRANCH}"
           fi
           if [ -z "${head_sha}" ]; then
-            head_sha="HEAD"
+            head_sha="${PUSH_HEAD_SHA:-HEAD}"
           fi
           if [ -z "${base_sha}" ] || [ "${base_sha}" = "0000000000000000000000000000000000000000" ]; then
-            base_sha="HEAD~1"
+            target_branch="${target_branch:-main}"
+            git fetch --no-tags --prune --depth=200 origin "${target_branch}"
+            base_sha="$(git merge-base "origin/${target_branch}" "${head_sha}")"
+            if [ -z "${base_sha}" ]; then
+              echo "::error::Unable to resolve deterministic merge-base for eval-impact (target=${target_branch}, head=${head_sha})."
+              exit 1
+            fi
           fi
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
 
   syntax-matrix:
     name: Syntax & Sanity (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
+    needs: [lint]
     timeout-minutes: 10
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        node: ["18", "20"]
+        node: ["18.20.4", "20.11.1"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -67,19 +527,39 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_npm_version="${NPM_VERSION_PIN}"
+          if [[ "${{ matrix.node }}" == "${NODE_VERSION_LEGACY_PIN}" ]]; then
+            expected_npm_version="${NPM_VERSION_LEGACY_PIN}"
+          fi
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${expected_npm_version}" ]]; then
+            echo "::error::npm pin mismatch (expected='${expected_npm_version}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Validate CLI syntax
         run: npm run check
 
       - name: Run unit tests
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: npm run test:unit
 
   unit-coverage:
     name: Unit Coverage (>=80%)
     runs-on: ubuntu-22.04
+    needs: [lint]
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -87,13 +567,26 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Enforce unit coverage thresholds
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: npm run test:coverage
 
       - name: Upload coverage report
@@ -104,9 +597,12 @@ jobs:
           if-no-files-found: error
 
   e2e-packaging:
-    name: E2E & Package
+    name: E2E Tests
     runs-on: ubuntu-22.04
+    needs: [lint]
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -114,30 +610,1321 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Run E2E tests
         run: npm run test:e2e
 
-      - name: Validate package tarball
-        run: npm pack --dry-run
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    needs: [eval-impact, syntax-matrix, unit-coverage, e2e-packaging]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
+
+      - name: Run npm audit (prod deps only)
+        run: timeout --preserve-status 5m npm audit --omit=dev --audit-level=high
+
+      - name: Run npm audit (full dependency graph)
+        run: timeout --preserve-status 5m npm audit --audit-level=high
+
+      - name: Capture npm audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_audit_capture() {
+            local label="$1"
+            shift
+            local output_file="security-audit.${label}.json"
+            local started_at
+            local completed_at
+            local exit_code
+            started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            set +e
+            timeout --preserve-status 5m npm audit "$@" --json > "${output_file}"
+            exit_code=$?
+            set -e
+            completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            printf '{"label":"%s","exitCode":%s,"startedAt":"%s","completedAt":"%s"}\n' \
+              "${label}" \
+              "${exit_code}" \
+              "${started_at}" \
+              "${completed_at}" >> security-audit.status.raw
+          }
+
+          : > security-audit.status.raw
+          run_audit_capture "prod" --omit=dev
+          run_audit_capture "full"
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const statusRows = fs
+            .readFileSync("security-audit.status.raw", "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          if (statusRows.length !== 2) {
+            console.error(`::error::Expected exactly two npm audit status rows, received ${statusRows.length}.`);
+            process.exit(1);
+          }
+          const statusByLabel = {};
+          for (const row of statusRows) {
+            let payload = null;
+            try {
+              payload = JSON.parse(row);
+            } catch (error) {
+              console.error(`::error::Invalid npm audit status row '${row}' (${error?.message || "parse error"}).`);
+              process.exit(1);
+            }
+            const label = String(payload.label || "").trim();
+            const startedAt = String(payload.startedAt || "").trim();
+            const completedAt = String(payload.completedAt || "").trim();
+            if (!label || !startedAt || !completedAt) {
+              console.error(`::error::Incomplete npm audit status row '${row}'.`);
+              process.exit(1);
+            }
+            const exitCode = Number(payload.exitCode);
+            if (!Number.isInteger(exitCode)) {
+              console.error(`::error::Invalid npm audit exit code for '${label}': '${payload.exitCode}'.`);
+              process.exit(1);
+            }
+            statusByLabel[label] = {
+              command: label === "prod" ? "npm audit --omit=dev --json" : "npm audit --json",
+              exitCode,
+              startedAt,
+              completedAt,
+            };
+          }
+          const files = [
+            { label: "prod", file: "security-audit.prod.json" },
+            { label: "full", file: "security-audit.full.json" },
+          ];
+          for (const { label, file } of files) {
+            const raw = fs.readFileSync(file, "utf8");
+            let parsed = null;
+            try {
+              parsed = JSON.parse(raw);
+            } catch (error) {
+              console.error(`::error::Unable to parse ${file} as JSON (${error?.message || "unknown parse error"}).`);
+              process.exit(1);
+            }
+            const status = statusByLabel[label];
+            if (!status) {
+              console.error(`::error::Missing status entry for ${label} npm audit evidence.`);
+              process.exit(1);
+            }
+            if (![0, 1].includes(status.exitCode)) {
+              console.error(`::error::Unexpected npm audit exit code for ${label}: ${status.exitCode}.`);
+              process.exit(1);
+            }
+            if (parsed && typeof parsed === "object" && parsed.error) {
+              console.error(`::error::npm audit ${label} payload contains error object; refusing to treat as valid evidence.`);
+              process.exit(1);
+            }
+            const metadata = parsed && typeof parsed === "object" ? parsed.metadata || {} : {};
+            const vulnerabilities = metadata && typeof metadata === "object" ? metadata.vulnerabilities || {} : {};
+            const high = Number(vulnerabilities.high || 0);
+            const critical = Number(vulnerabilities.critical || 0);
+            if (!Number.isFinite(high) || !Number.isFinite(critical)) {
+              console.error(`::error::Invalid vulnerability metadata in ${file}.`);
+              process.exit(1);
+            }
+            status.findings = {
+              info: Number(vulnerabilities.info || 0),
+              low: Number(vulnerabilities.low || 0),
+              moderate: Number(vulnerabilities.moderate || 0),
+              high,
+              critical,
+              total: Number(vulnerabilities.total || 0),
+            };
+          }
+          fs.writeFileSync(
+            "security-audit.status.json",
+            `${JSON.stringify(
+              {
+                generatedAt: new Date().toISOString(),
+                audits: statusByLabel,
+              },
+              null,
+              2
+            )}\n`,
+            "utf8"
+          );
+          NODE
+          rm -f security-audit.status.raw
+          sha256sum security-audit.prod.json security-audit.full.json security-audit.status.json > security-audit.sha256
+
+      - name: Generate npm audit SARIF summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const status = JSON.parse(fs.readFileSync("security-audit.status.json", "utf8"));
+          const audits = status && typeof status === "object" ? status.audits || {} : {};
+          const runDate = new Date().toISOString();
+          const toLevel = (entry) => {
+            const high = Number(entry?.findings?.high || 0);
+            const critical = Number(entry?.findings?.critical || 0);
+            if (critical > 0) {
+              return "error";
+            }
+            if (high > 0) {
+              return "warning";
+            }
+            return "note";
+          };
+          const results = Object.entries(audits).map(([label, entry]) => {
+            const high = Number(entry?.findings?.high || 0);
+            const critical = Number(entry?.findings?.critical || 0);
+            const exitCode = Number(entry?.exitCode || 0);
+            return {
+              ruleId: "SL-NPM-AUDIT-SUMMARY",
+              level: toLevel(entry),
+              message: {
+                text: `npm audit ${label}: exit=${exitCode}, high=${high}, critical=${critical}`,
+              },
+              locations: [
+                {
+                  physicalLocation: {
+                    artifactLocation: { uri: "package-lock.json" },
+                    region: { startLine: 1 },
+                  },
+                },
+              ],
+            };
+          });
+          const sarif = {
+            version: "2.1.0",
+            $schema:
+              "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json",
+            runs: [
+              {
+                tool: {
+                  driver: {
+                    name: "sentinelayer-quality-audit",
+                    informationUri: "https://sentinelayer.com",
+                    version: "1.0.0",
+                    rules: [
+                      {
+                        id: "SL-NPM-AUDIT-SUMMARY",
+                        shortDescription: { text: "npm audit findings snapshot" },
+                        fullDescription: {
+                          text: "Structured npm audit summary generated during security gates.",
+                        },
+                        defaultConfiguration: { level: "warning" },
+                      },
+                    ],
+                  },
+                },
+                invocations: [{ executionSuccessful: true, endTimeUtc: runDate }],
+                results,
+              },
+            ],
+          };
+          fs.writeFileSync("security-audit.sarif", `${JSON.stringify(sarif, null, 2)}\n`, "utf8");
+          NODE
+
+      - name: Upload npm audit SARIF to GitHub code scanning
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -f security-audit.sarif || (echo "::error::Missing security-audit.sarif report." && exit 1)
+          sarif_payload="$(gzip -c security-audit.sarif | base64 -w0)"
+          started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          upload_response="$(timeout --preserve-status 30s gh api "repos/${GITHUB_REPOSITORY}/code-scanning/sarifs" \
+            -X POST \
+            -f commit_sha="${GITHUB_SHA}" \
+            -f ref="${GITHUB_REF}" \
+            -f sarif="${sarif_payload}" \
+            -f checkout_uri="file:///github/workspace" \
+            -f started_at="${started_at}")"
+          upload_id="$(echo "${upload_response}" | jq -r '.id // empty')"
+          if [[ -z "${upload_id}" ]]; then
+            echo "::error::SARIF upload did not return an upload id."
+            echo "${upload_response}"
+            exit 1
+          fi
+          echo "Uploaded security SARIF (id=${upload_id})."
+
+      - name: Enforce workflow action SHA allowlist policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/verify-action-shas.sh .github/workflows/quality-gates.yml
+
+      - name: Run gitleaks secret scan gate
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.6 (sha pinned)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Upload security audit evidence
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: security-audit-evidence
+          path: |
+            security-audit.prod.json
+            security-audit.full.json
+            security-audit.status.json
+            security-audit.sha256
+            security-audit.sarif
+          if-no-files-found: error
+
+  build-artifact:
+    name: Build Artifact
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    needs: [security-scan]
+    env:
+      TZ: UTC
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="${RUNNER_TEMP}/npm-cache-quality"
+          echo "NPM_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
+          npm config set cache "${cache_dir}"
+          npm --version
+
+      - name: Download security audit evidence
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: security-audit-evidence
+          path: security-audit
+
+      - name: Verify security audit evidence integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f security-audit/security-audit.prod.json || (echo "::error::Missing security-audit.prod.json artifact." && exit 1)
+          test -f security-audit/security-audit.full.json || (echo "::error::Missing security-audit.full.json artifact." && exit 1)
+          test -f security-audit/security-audit.status.json || (echo "::error::Missing security-audit.status.json artifact." && exit 1)
+          test -f security-audit/security-audit.sha256 || (echo "::error::Missing security-audit.sha256 artifact." && exit 1)
+          (cd security-audit && sha256sum -c security-audit.sha256)
+          node <<'NODE'
+          const fs = require("node:fs");
+          const status = JSON.parse(fs.readFileSync("security-audit/security-audit.status.json", "utf8"));
+          if (!status || typeof status !== "object" || !status.audits || typeof status.audits !== "object") {
+            console.error("::error::Invalid security-audit.status.json contract.");
+            process.exit(1);
+          }
+          for (const label of ["prod", "full"]) {
+            const entry = status.audits[label];
+            if (!entry || typeof entry !== "object") {
+              console.error(`::error::Missing ${label} audit entry in security-audit.status.json.`);
+              process.exit(1);
+            }
+            const exitCode = Number(entry.exitCode);
+            if (!Number.isInteger(exitCode) || ![0, 1].includes(exitCode)) {
+              console.error(`::error::Unexpected ${label} npm audit exit code '${entry.exitCode}'.`);
+              process.exit(1);
+            }
+            if (
+              !entry.findings ||
+              typeof entry.findings !== "object" ||
+              !Number.isFinite(Number(entry.findings.high)) ||
+              !Number.isFinite(Number(entry.findings.critical))
+            ) {
+              console.error(`::error::Missing vulnerability findings snapshot for ${label} audit evidence.`);
+              process.exit(1);
+            }
+          }
+          NODE
+
+      - name: Validate lockfile dependency provenance metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const lockfile = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const packages = lockfile && typeof lockfile === "object" ? lockfile.packages || {} : {};
+          const missingIntegrity = [];
+          const missingResolved = [];
+          const nonRegistryResolved = [];
+          for (const [pkgPath, pkg] of Object.entries(packages)) {
+            if (pkgPath === "" || !pkg || typeof pkg !== "object") {
+              continue;
+            }
+            if (pkg.link === true) {
+              continue;
+            }
+            const resolved = String(pkg.resolved || "").trim();
+            if (!resolved) {
+              missingResolved.push(pkgPath);
+            } else if (!resolved.startsWith("https://registry.npmjs.org/")) {
+              nonRegistryResolved.push(`${pkgPath}:${resolved}`);
+            }
+            const integrity = String(pkg.integrity || "").trim();
+            if (!integrity) {
+              missingIntegrity.push(pkgPath);
+            }
+          }
+          const formatPreview = (entries) => entries.slice(0, 10).join(", ");
+          if (missingIntegrity.length > 0) {
+            console.error(`::error::Missing lockfile integrity metadata for ${missingIntegrity.length} package(s): ${formatPreview(missingIntegrity)}`);
+            process.exit(1);
+          }
+          if (missingResolved.length > 0) {
+            console.error(`::error::Missing lockfile resolved metadata for ${missingResolved.length} package(s): ${formatPreview(missingResolved)}`);
+            process.exit(1);
+          }
+          if (nonRegistryResolved.length > 0) {
+            console.error(`::error::Detected non-registry lockfile sources (${nonRegistryResolved.length}): ${formatPreview(nonRegistryResolved)}`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Build package tarball and digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_hash_expected="$(sha256sum package-lock.json | awk '{print $1}')"
+          baseline_dir="$(mktemp -d)"
+          rebuild_dir="$(mktemp -d)"
+          baseline_cache_dir="$(mktemp -d)"
+          rebuild_cache_dir="$(mktemp -d)"
+          git clone --local --quiet "." "${baseline_dir}"
+          git -C "${baseline_dir}" checkout --detach "${GITHUB_SHA}" >/dev/null
+          git -C "${baseline_dir}" clean -ffdqx
+          git clone --local --quiet "." "${rebuild_dir}"
+          git -C "${rebuild_dir}" checkout --detach "${GITHUB_SHA}" >/dev/null
+          git -C "${rebuild_dir}" clean -ffdqx
+          pushd "${baseline_dir}" >/dev/null
+          npm config set registry "https://registry.npmjs.org/"
+          npm config set cache "${baseline_cache_dir}"
+          bash "${GITHUB_WORKSPACE}/scripts/ci/install-immutable.sh" "."
+          baseline_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
+          if [[ "${baseline_lock_hash}" != "${lock_hash_expected}" ]]; then
+            echo "::error::Lockfile drift detected during baseline clean-tree build (expected=${lock_hash_expected}, actual=${baseline_lock_hash})."
+            exit 1
+          fi
+          baseline_pack_json="$(npm pack --json)"
+          baseline_tarball="$(echo "${baseline_pack_json}" | jq -r '.[0].filename')"
+          test -n "${baseline_tarball}" || (echo "::error::Unable to resolve baseline packed tarball filename." && exit 1)
+          baseline_hash="$(sha256sum "${baseline_tarball}" | awk '{print $1}')"
+          tar -tf "${baseline_tarball}" | LC_ALL=C sort > "${GITHUB_WORKSPACE}/quality-build.files.baseline.txt"
+          popd >/dev/null
+          pushd "${rebuild_dir}" >/dev/null
+          npm config set registry "https://registry.npmjs.org/"
+          npm config set cache "${rebuild_cache_dir}"
+          bash "${GITHUB_WORKSPACE}/scripts/ci/install-immutable.sh" "."
+          rebuild_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
+          if [[ "${rebuild_lock_hash}" != "${lock_hash_expected}" ]]; then
+            echo "::error::Lockfile drift detected during clean-room rebuild (expected=${lock_hash_expected}, actual=${rebuild_lock_hash})."
+            exit 1
+          fi
+          rebuild_pack_json="$(npm pack --json)"
+          rebuild_tarball="$(echo "${rebuild_pack_json}" | jq -r '.[0].filename')"
+          test -n "${rebuild_tarball}" || (echo "::error::Unable to resolve rebuild tarball filename." && exit 1)
+          rebuild_hash="$(sha256sum "${rebuild_tarball}" | awk '{print $1}')"
+          tar -tf "${rebuild_tarball}" | LC_ALL=C sort > "${GITHUB_WORKSPACE}/quality-build.files.rebuild.txt"
+          popd >/dev/null
+          if [[ "${baseline_tarball}" != "${rebuild_tarball}" ]]; then
+            echo "::error::Tarball identity mismatch across clean trees (baseline=${baseline_tarball}, rebuild=${rebuild_tarball})."
+            exit 1
+          fi
+          if ! cmp -s "${baseline_dir}/${baseline_tarball}" "${rebuild_dir}/${rebuild_tarball}"; then
+            echo "::error::Tarball byte mismatch across clean-tree builds."
+            exit 1
+          fi
+          if ! cmp -s quality-build.files.baseline.txt quality-build.files.rebuild.txt; then
+            echo "::error::Packed file list drift detected across clean-tree builds."
+            exit 1
+          fi
+          cp "${baseline_dir}/${baseline_tarball}" "./${baseline_tarball}"
+          printf "%s\n" "${baseline_hash}" > quality-build.sha256
+          printf "%s\n" "${baseline_tarball}" > quality-build.tarball
+          printf "%s\n" "${rebuild_hash}" > quality-build.rebuild.sha256
+          if [[ "${baseline_hash}" != "${rebuild_hash}" ]]; then
+            echo "::error::Non-deterministic quality build hash detected (baseline=${baseline_hash}, rebuild=${rebuild_hash})."
+            exit 1
+          fi
+          cat > quality-build.manifest.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "artifactName": "${baseline_tarball}",
+            "sha256": "${baseline_hash}",
+            "rebuildSha256": "${rebuild_hash}"
+          }
+          EOF
+          cat > quality-release-input.lock.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "sourceWorkflow": "quality-gates",
+            "sourceRunId": "${GITHUB_RUN_ID}",
+            "sourceCommitSha": "${GITHUB_SHA}",
+            "artifactName": "${baseline_tarball}",
+            "artifactSha256": "${baseline_hash}",
+            "artifactRebuildSha256": "${rebuild_hash}",
+            "releaseVerifyWorkflowPath": ".github/workflows/release.yml",
+            "releasePublishWorkflowPath": ".github/workflows/release-publish.yml"
+          }
+          EOF
+          cat > quality-promotion-invariant.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "qualitySummaryGate": "Quality Summary",
+            "sourceRunId": "${GITHUB_RUN_ID}",
+            "sourceCommitSha": "${GITHUB_SHA}",
+            "artifactName": "${baseline_tarball}",
+            "artifactSha256": "${baseline_hash}",
+            "artifactRebuildSha256": "${rebuild_hash}",
+            "artifactManifest": "quality-build.manifest.json",
+            "releaseInputLock": "quality-release-input.lock.json"
+          }
+          EOF
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-build-package
+          path: |
+            create-sentinelayer-*.tgz
+            quality-build.sha256
+            quality-build.rebuild.sha256
+            quality-build.tarball
+            quality-build.manifest.json
+            quality-release-input.lock.json
+            quality-promotion-invariant.json
+            quality-build.files.baseline.txt
+            quality-build.files.rebuild.txt
+          if-no-files-found: error
+
+      - name: Attest quality build provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: create-sentinelayer-*.tgz
+
+  artifact-attestation-gate:
+    name: Artifact Attestation Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    needs: [build-artifact]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Enforce build-artifact success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
+            echo "::error::build-artifact must succeed before artifact-attestation-gate (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-attestation
+
+      - name: Verify immutable artifact digest + attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(tr -d '\r\n' < quality-attestation/quality-build.tarball)"
+          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball identity for artifact-attestation-gate." && exit 1)
+          artifact_path="quality-attestation/${tarball}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality tarball ${artifact_path}." && exit 1)
+          expected_sha="$(awk 'NF {print $1; exit}' quality-attestation/quality-build.sha256)"
+          test -n "${expected_sha}" || (echo "::error::Missing quality-build.sha256 digest for artifact-attestation-gate." && exit 1)
+          actual_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${expected_sha}" != "${actual_sha}" ]]; then
+            echo "::error::Artifact-attestation gate digest mismatch (expected=${expected_sha}, actual=${actual_sha})."
+            exit 1
+          fi
+          gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-attestation/artifact-attestation.verify.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' quality-attestation/artifact-attestation.verify.json >/dev/null; then
+            echo "::error::Artifact-attestation gate verification is missing expected digest ${expected_sha}."
+            exit 1
+          fi
+          cat > quality-attestation/artifact-attestation.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "stage": "artifact-attestation-gate",
+            "artifactName": "${tarball}",
+            "artifactSha256": "${actual_sha}",
+            "checks": ["sha256 parity", "gh attestation verify"]
+          }
+          EOF
+
+      - name: Upload artifact-attestation proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: artifact-attestation-proof
+          path: |
+            quality-attestation/artifact-attestation.summary.json
+            quality-attestation/artifact-attestation.verify.json
+          if-no-files-found: error
+
+  release-readiness:
+    name: Release Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [build-artifact, artifact-attestation-gate]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Enforce build-artifact success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
+            echo "::error::build-artifact must succeed before release-readiness (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+          if [[ "${RESULT_ARTIFACT_ATTESTATION_GATE}" != "success" ]]; then
+            echo "::error::artifact-attestation-gate must succeed before release-readiness (result=${RESULT_ARTIFACT_ATTESTATION_GATE})."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-readiness
+
+      - name: Verify CLI package smoke install from quality artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(tr -d '\r\n' < quality-readiness/quality-build.tarball)"
+          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball path." && exit 1)
+          test -f "quality-readiness/${tarball}" || (echo "::error::Missing quality tarball quality-readiness/${tarball}." && exit 1)
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" "./quality-readiness/${tarball}" --ignore-scripts
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-readiness/create-sentinelayer.version.txt
+          PATH="${prefix_dir}/node_modules/.bin:${PATH}" sl --version | tee quality-readiness/sl.version.txt
+          sha256="$(awk 'NF {print $1; exit}' quality-readiness/quality-build.sha256)"
+          cat > quality-readiness/release-readiness.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "artifactName": "${tarball}",
+            "artifactSha256": "${sha256}",
+            "smokeChecks": ["create-sentinelayer --version", "sl --version"]
+          }
+          EOF
+
+      - name: Upload release-readiness proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-readiness-proof
+          path: |
+            quality-readiness/release-readiness.summary.json
+            quality-readiness/create-sentinelayer.version.txt
+            quality-readiness/sl.version.txt
+          if-no-files-found: error
+
+  deploy-readiness:
+    name: Deploy Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [build-artifact, artifact-attestation-gate]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Enforce build-artifact success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_BUILD_ARTIFACT}" != "success" ]]; then
+            echo "::error::build-artifact must succeed before deploy-readiness (result=${RESULT_BUILD_ARTIFACT})."
+            exit 1
+          fi
+          if [[ "${RESULT_ARTIFACT_ATTESTATION_GATE}" != "success" ]]; then
+            echo "::error::artifact-attestation-gate must succeed before deploy-readiness (result=${RESULT_ARTIFACT_ATTESTATION_GATE})."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION_PIN }}
+          cache: npm
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-deploy
+
+      - name: Run staging deployment smoke gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(tr -d '\r\n' < quality-deploy/quality-build.tarball)"
+          test -n "${tarball}" || (echo "::error::Unable to resolve quality tarball identity for deploy-readiness gate." && exit 1)
+          artifact_path="quality-deploy/${tarball}"
+          test -f "${artifact_path}" || (echo "::error::Missing quality tarball ${artifact_path}." && exit 1)
+          expected_sha="$(awk 'NF {print $1; exit}' quality-deploy/quality-build.sha256)"
+          test -n "${expected_sha}" || (echo "::error::Missing quality-build.sha256 digest for deploy-readiness gate." && exit 1)
+          actual_sha="$(sha256sum "${artifact_path}" | awk '{print $1}')"
+          if [[ "${expected_sha}" != "${actual_sha}" ]]; then
+            echo "::error::Deploy-readiness artifact digest mismatch (expected=${expected_sha}, actual=${actual_sha})."
+            exit 1
+          fi
+          gh attestation verify "${artifact_path}" \
+            --repo "${REPO}" \
+            --signer-workflow "${REPO}/.github/workflows/quality-gates.yml" \
+            --format json > quality-deploy/deploy-readiness.attestation.json
+          if ! jq -e --arg expectedSha "${expected_sha}" '[.[].verificationResult.statement.subject[]?.digest.sha256 // empty] | index($expectedSha) != null' quality-deploy/deploy-readiness.attestation.json >/dev/null; then
+            echo "::error::Deploy-readiness attestation verification is missing expected digest ${expected_sha}."
+            exit 1
+          fi
+          npm publish "./${artifact_path}" --dry-run --access public >/dev/null
+          staging_prefix="$(mktemp -d)"
+          npm install --prefix "${staging_prefix}" "./${artifact_path}" --ignore-scripts
+          PATH="${staging_prefix}/node_modules/.bin:${PATH}" create-sentinelayer --version | tee quality-deploy/deploy-readiness.version.txt
+          cat > quality-deploy/deploy-readiness.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "stage": "deploy-readiness",
+            "artifactName": "${tarball}",
+            "artifactSha256": "${actual_sha}",
+            "checks": ["sha256 parity", "attestation verify", "npm publish --dry-run", "create-sentinelayer --version"]
+          }
+          EOF
+
+      - name: Upload deploy-readiness proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: deploy-readiness-proof
+          path: |
+            quality-deploy/deploy-readiness.summary.json
+            quality-deploy/deploy-readiness.version.txt
+            quality-deploy/deploy-readiness.attestation.json
+          if-no-files-found: error
+
+  deploy-stage:
+    name: Deploy Stage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    needs: [build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness]
+    if: ${{ always() }}
+    environment: quality-deploy
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Enforce readiness-gate success
+        shell: bash
+        env:
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
+          RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
+          RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
+        run: |
+          set -euo pipefail
+          for gate in RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS; do
+            result="${!gate}"
+            if [[ "${result}" != "success" ]]; then
+              echo "::error::Deploy stage prerequisite ${gate} did not succeed (result=${result})."
+              exit 1
+            fi
+          done
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-deploy-stage/build-artifact
+
+      - name: Download release-readiness proof
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: release-readiness-proof
+          path: quality-deploy-stage/release-readiness
+
+      - name: Download deploy-readiness proof
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: deploy-readiness-proof
+          path: quality-deploy-stage/deploy-readiness
+
+      - name: Validate terminal deploy gate artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_summary="quality-deploy-stage/release-readiness/release-readiness.summary.json"
+          deploy_summary="quality-deploy-stage/deploy-readiness/deploy-readiness.summary.json"
+          artifact_manifest="quality-deploy-stage/build-artifact/quality-build.manifest.json"
+          test -f "${release_summary}" || (echo "::error::Missing ${release_summary}." && exit 1)
+          test -f "${deploy_summary}" || (echo "::error::Missing ${deploy_summary}." && exit 1)
+          test -f "${artifact_manifest}" || (echo "::error::Missing ${artifact_manifest}." && exit 1)
+          release_commit="$(jq -r '.commitSha // ""' "${release_summary}")"
+          deploy_commit="$(jq -r '.commitSha // ""' "${deploy_summary}")"
+          build_commit="$(jq -r '.commitSha // ""' "${artifact_manifest}")"
+          release_artifact_name="$(jq -r '.artifactName // ""' "${release_summary}")"
+          release_artifact_sha="$(jq -r '.artifactSha256 // ""' "${release_summary}")"
+          deploy_artifact_name="$(jq -r '.artifactName // ""' "${deploy_summary}")"
+          deploy_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_summary}")"
+          build_artifact_name="$(jq -r '.artifactName // ""' "${artifact_manifest}")"
+          build_artifact_sha="$(jq -r '.sha256 // ""' "${artifact_manifest}")"
+          if [[ "${release_commit}" != "${GITHUB_SHA}" ]] || [[ "${deploy_commit}" != "${GITHUB_SHA}" ]] || [[ "${build_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy gate artifact commit mismatch (release=${release_commit}, deploy=${deploy_commit}, build=${build_commit}, expected=${GITHUB_SHA})."
+            exit 1
+          fi
+          test -n "${build_artifact_name}" || (echo "::error::Missing artifactName in ${artifact_manifest}." && exit 1)
+          test -n "${build_artifact_sha}" || (echo "::error::Missing sha256 in ${artifact_manifest}." && exit 1)
+          if [[ "${release_artifact_name}" != "${build_artifact_name}" ]] || [[ "${deploy_artifact_name}" != "${build_artifact_name}" ]]; then
+            echo "::error::Deploy gate artifact identity mismatch (release=${release_artifact_name}, deploy=${deploy_artifact_name}, build=${build_artifact_name})."
+            exit 1
+          fi
+          if [[ "${release_artifact_sha}" != "${build_artifact_sha}" ]] || [[ "${deploy_artifact_sha}" != "${build_artifact_sha}" ]]; then
+            echo "::error::Deploy gate artifact digest mismatch (release=${release_artifact_sha}, deploy=${deploy_artifact_sha}, build=${build_artifact_sha})."
+            exit 1
+          fi
+          cat > quality-deploy-stage/deploy.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "stage": "deploy-stage-promotion-gate",
+            "artifactName": "${build_artifact_name}",
+            "artifactSha256": "${build_artifact_sha}",
+            "inputs": [
+              "release-readiness.summary.json",
+              "deploy-readiness.summary.json"
+            ]
+          }
+          EOF
+
+      - name: Upload deploy-stage proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: deploy-stage-proof
+          path: quality-deploy-stage/deploy.summary.json
+          if-no-files-found: error
+
+  rollback-readiness:
+    name: Rollback Readiness
+    needs: [deploy-stage]
+    if: ${{ always() && needs.deploy-stage.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/rollback.yml
+    with:
+      execute: false
+      allow_local_validation_only: true
+      lineage_exception_id: LV-QUALITY-${{ github.run_id }}
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-22.04
+    needs: [canonical-run, deploy-stage, rollback-readiness]
+    if: ${{ always() && needs.canonical-run.outputs.execute_full == 'true' }}
+    environment: quality-deploy
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: quality-deploy-sim-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      ROLLBACK_PROOF_MAX_AGE_DAYS: "14"
+    steps:
+      - name: Enforce deploy-stage success
+        shell: bash
+        env:
+          RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
+          RESULT_ROLLBACK_READINESS: ${{ needs.rollback-readiness.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_DEPLOY_STAGE}" != "success" ]]; then
+            echo "::error::deploy-stage must succeed before deploy (result=${RESULT_DEPLOY_STAGE})."
+            exit 1
+          fi
+          if [[ "${RESULT_ROLLBACK_READINESS}" != "success" ]]; then
+            echo "::error::rollback-readiness must succeed before deploy (result=${RESULT_ROLLBACK_READINESS})."
+            exit 1
+          fi
+      - name: Download deploy-stage proof
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: deploy-stage-proof
+          path: quality-deploy-proof/deploy-stage
+
+      - name: Verify immutable deployment promotion contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_stage_summary="quality-deploy-proof/deploy-stage/deploy.summary.json"
+          test -f "${deploy_stage_summary}" || (echo "::error::Missing deploy-stage summary ${deploy_stage_summary}." && exit 1)
+          stage_name="$(jq -r '.stage // ""' "${deploy_stage_summary}")"
+          stage_commit="$(jq -r '.commitSha // ""' "${deploy_stage_summary}")"
+          stage_artifact_name="$(jq -r '.artifactName // ""' "${deploy_stage_summary}")"
+          stage_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_stage_summary}")"
+          if [[ "${stage_name}" != "deploy-stage-promotion-gate" ]]; then
+            echo "::error::Deploy-stage proof must originate from deploy-stage-promotion-gate (received '${stage_name}')."
+            exit 1
+          fi
+          if [[ "${stage_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy-stage proof commit (${stage_commit}) does not match workflow SHA (${GITHUB_SHA})."
+            exit 1
+          fi
+          test -n "${stage_artifact_name}" || (echo "::error::Deploy-stage proof missing artifactName." && exit 1)
+          test -n "${stage_artifact_sha}" || (echo "::error::Deploy-stage proof missing artifactSha256." && exit 1)
+
+      - name: Verify rollback drill linkage freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          max_age_days="$(echo "${ROLLBACK_PROOF_MAX_AGE_DAYS}" | tr -d '\r' | xargs || true)"
+          case "${max_age_days}" in ''|*[!0-9]*) echo "::error::Invalid rollback proof max age '${max_age_days}'." ; exit 1 ;; esac
+          max_age_seconds=$((max_age_days * 86400))
+          now_epoch="$(date -u +%s)"
+          runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/workflows/rollback.yml/runs?status=completed&per_page=30" -H "Accept: application/vnd.github+json")"
+          rollback_run="$(echo "${runs_json}" | jq -c --arg path ".github/workflows/rollback.yml" --arg repo "${REPO}" '
+            [.workflow_runs[]
+              | select(((.path // "") | split("@")[0]) == $path)
+              | select((.conclusion // "") == "success")
+              | select(((.head_repository.full_name // .repository.full_name // "") == $repo))
+              | select((.event // "") == "schedule")
+            ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last // empty
+          ')"
+          if [[ -z "${rollback_run}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+              echo "::notice::No successful scheduled rollback drill run found in pull_request context; deferring strict rollback freshness enforcement to release controls."
+              exit 0
+            fi
+            echo "::error::No successful scheduled rollback drill run was found."
+            exit 1
+          fi
+          rollback_run_id="$(echo "${rollback_run}" | jq -r '.id // ""')"
+          rollback_created_at="$(echo "${rollback_run}" | jq -r '.created_at // ""')"
+          test -n "${rollback_run_id}" || (echo "::error::Unable to resolve rollback run id for drill linkage." && exit 1)
+          test -n "${rollback_created_at}" || (echo "::error::Unable to resolve rollback run timestamp for drill linkage." && exit 1)
+          rollback_created_epoch="$(date -u -d "${rollback_created_at}" +%s)"
+          rollback_age_seconds=$((now_epoch - rollback_created_epoch))
+          if (( rollback_age_seconds < 0 )) || (( rollback_age_seconds > max_age_seconds )); then
+            echo "::error::Rollback drill run ${rollback_run_id} is stale (${rollback_age_seconds}s old; max=${max_age_seconds}s)."
+            exit 1
+          fi
+          timeout --preserve-status 120s gh run download "${rollback_run_id}" --name rollback-drill-summary --dir quality-deploy-proof/rollback
+          rollback_summary_path="quality-deploy-proof/rollback/rollback-drill.summary.json"
+          test -f "${rollback_summary_path}" || (echo "::error::Missing rollback drill summary ${rollback_summary_path}." && exit 1)
+          rollback_checked_at="$(jq -r '.checkedAt // ""' "${rollback_summary_path}")"
+          test -n "${rollback_checked_at}" || (echo "::error::Rollback drill summary missing checkedAt timestamp." && exit 1)
+          rollback_checked_epoch="$(date -u -d "${rollback_checked_at}" +%s)"
+          rollback_summary_age_seconds=$((now_epoch - rollback_checked_epoch))
+          if (( rollback_summary_age_seconds < 0 )) || (( rollback_summary_age_seconds > max_age_seconds )); then
+            echo "::error::Rollback drill summary timestamp is stale (${rollback_summary_age_seconds}s old; max=${max_age_seconds}s)."
+            exit 1
+          fi
+
+      - name: Execute canary registry health checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 30s npm ping
+          canary_latest=""
+          view_status=0
+          canary_latest="$(timeout --preserve-status 30s npm view create-sentinelayer dist-tags.latest --json 2>/tmp/npm-canary-view.err | jq -r 'if type == "string" then . elif type == "object" then .latest // "" else "" end')" || view_status=$?
+          if [[ "${view_status}" -ne 0 ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+              echo "::notice::npm canary dist-tag lookup failed in pull_request context (likely unpublished package). Recording canary status as 'unpublished'."
+              canary_latest="unpublished"
+            else
+              cat /tmp/npm-canary-view.err >&2 || true
+              echo "::error::Canary health check failed: unable to resolve npm latest dist-tag for create-sentinelayer."
+              exit 1
+            fi
+          fi
+          test -n "${canary_latest}" || (echo "::error::Canary health check failed: npm latest dist-tag is empty." && exit 1)
+          cat > quality-deploy-proof/deploy.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "stage": "deploy-promotion-proof",
+            "checks": [
+              "deploy-stage artifact promotion proof",
+              "scheduled rollback drill freshness",
+              "npm canary registry health"
+            ],
+            "npmLatestDistTag": "${canary_latest}"
+          }
+          EOF
+
+      - name: Upload deploy promotion proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: deploy-proof
+          path: quality-deploy-proof/deploy.summary.json
+          if-no-files-found: error
+
+  deploy-production-proof:
+    name: Deploy Production Proof
+    runs-on: ubuntu-22.04
+    needs: [deploy]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.deploy.result == 'success' }}
+    timeout-minutes: 6
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Download deploy promotion proof
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: deploy-proof
+          path: quality-production-proof/deploy
+
+      - name: Emit production deployment proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_summary_path="quality-production-proof/deploy/deploy.summary.json"
+          test -f "${deploy_summary_path}" || (echo "::error::Missing deploy promotion summary ${deploy_summary_path}." && exit 1)
+          deploy_stage="$(jq -r '.stage // ""' "${deploy_summary_path}")"
+          deploy_commit="$(jq -r '.commitSha // ""' "${deploy_summary_path}")"
+          if [[ "${deploy_stage}" != "deploy-promotion-proof" ]]; then
+            echo "::error::Deploy promotion summary stage mismatch (expected='deploy-promotion-proof', actual='${deploy_stage}')."
+            exit 1
+          fi
+          if [[ "${deploy_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Deploy promotion summary commit mismatch (expected='${GITHUB_SHA}', actual='${deploy_commit}')."
+            exit 1
+          fi
+          cat > quality-production-proof/deploy-production.summary.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "releaseTag": "${GITHUB_REF_NAME}",
+            "proofType": "deploy-production-proof",
+            "sourceProof": "deploy-proof/deploy.summary.json",
+            "productionGateApproved": true,
+            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload production deployment proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: deploy-production-proof
+          path: quality-production-proof/deploy-production.summary.json
+          if-no-files-found: error
 
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-impact, syntax-matrix, unit-coverage, e2e-packaging]
-    if: >-
-      ${{
-        always() &&
-        needs.eval-impact.result == 'success' &&
-        needs.syntax-matrix.result == 'success' &&
-        needs.unit-coverage.result == 'success' &&
-        needs.e2e-packaging.result == 'success'
-      }}
+    needs: [canonical-run, lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness, deploy-stage, rollback-readiness, deploy]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+    env:
+      EXECUTE_FULL: ${{ needs.canonical-run.outputs.execute_full }}
     steps:
-      - name: Confirm all quality gates passed
-        run: echo "All quality checks passed."
+      - name: Evaluate gate outcomes
+        shell: bash
+        env:
+          RESULT_CANONICAL_RUN: ${{ needs.canonical-run.result }}
+          EXECUTE_FULL: ${{ needs.canonical-run.outputs.execute_full }}
+          CANONICAL_SKIP_REASON: ${{ needs.canonical-run.outputs.skip_reason }}
+          RESULT_EVAL_IMPACT: ${{ needs.eval-impact.result }}
+          RESULT_LINT: ${{ needs.lint.result }}
+          RESULT_SYNTAX_MATRIX: ${{ needs.syntax-matrix.result }}
+          RESULT_UNIT_COVERAGE: ${{ needs.unit-coverage.result }}
+          RESULT_E2E_PACKAGING: ${{ needs.e2e-packaging.result }}
+          RESULT_SECURITY_SCAN: ${{ needs.security-scan.result }}
+          RESULT_BUILD_ARTIFACT: ${{ needs.build-artifact.result }}
+          RESULT_ARTIFACT_ATTESTATION_GATE: ${{ needs.artifact-attestation-gate.result }}
+          RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
+          RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
+          RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
+          RESULT_ROLLBACK_READINESS: ${{ needs.rollback-readiness.result }}
+          RESULT_DEPLOY: ${{ needs.deploy.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RESULT_CANONICAL_RUN}" != "success" ]]; then
+            echo "::error::Canonical run selector failed (result=${RESULT_CANONICAL_RUN})."
+            exit 1
+          fi
+          if [[ "${EXECUTE_FULL}" != "true" ]]; then
+            echo "Quality Summary dedupe: canonical pull_request run already covers this SHA. skip_reason=${CANONICAL_SKIP_REASON}."
+            echo "## Quality Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: \`deduped\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- skip_reason: \`${CANONICAL_SKIP_REASON}\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          failures=0
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_ROLLBACK_READINESS RESULT_DEPLOY; do
+            result="${!gate}"
+            name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
+            echo "${name}: ${result}"
+            if [[ "${result}" != "success" ]]; then
+              echo "::error::${name} did not succeed (result=${result})."
+              failures=$((failures + 1))
+            fi
+          done
+
+          if (( failures > 0 )); then
+            echo "::error::Quality Summary failing due to ${failures} upstream gate(s)."
+            exit 1
+          fi
+
+          echo "All quality checks passed."
+
+      - name: Download quality build package
+        if: env.EXECUTE_FULL == 'true'
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-summary-proof
+
+      - name: Assert immutable promotion invariant
+        if: env.EXECUTE_FULL == 'true'
+        shell: bash
+        env:
+          TARGET_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          target_head_sha="$(echo "${TARGET_HEAD_SHA}" | tr -d '\r' | xargs || true)"
+          test -n "${target_head_sha}" || target_head_sha="${GITHUB_SHA}"
+          manifest_path="quality-summary-proof/quality-build.manifest.json"
+          lock_path="quality-summary-proof/quality-release-input.lock.json"
+          invariant_path="quality-summary-proof/quality-promotion-invariant.json"
+          tarball_name="$(tr -d '\r\n' < quality-summary-proof/quality-build.tarball)"
+          test -n "${tarball_name}" || (echo "::error::Missing quality-build.tarball identity." && exit 1)
+          test -f "${manifest_path}" || (echo "::error::Missing ${manifest_path}." && exit 1)
+          test -f "${lock_path}" || (echo "::error::Missing ${lock_path}." && exit 1)
+          test -f "${invariant_path}" || (echo "::error::Missing ${invariant_path}." && exit 1)
+          test -f "quality-summary-proof/${tarball_name}" || (echo "::error::Missing promoted tarball quality-summary-proof/${tarball_name}." && exit 1)
+          actual_sha="$(sha256sum "quality-summary-proof/${tarball_name}" | awk '{print $1}')"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          lock_sha="$(jq -r '.artifactSha256 // ""' "${lock_path}")"
+          lock_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${lock_path}")"
+          invariant_sha="$(jq -r '.artifactSha256 // ""' "${invariant_path}")"
+          manifest_name="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          lock_name="$(jq -r '.artifactName // ""' "${lock_path}")"
+          invariant_name="$(jq -r '.artifactName // ""' "${invariant_path}")"
+          if [[ "${manifest_name}" != "${tarball_name}" ]] || [[ "${lock_name}" != "${tarball_name}" ]] || [[ "${invariant_name}" != "${tarball_name}" ]]; then
+            echo "::error::Promotion invariant artifact-name mismatch (manifest=${manifest_name}, lock=${lock_name}, invariant=${invariant_name}, tarball=${tarball_name})."
+            exit 1
+          fi
+          if [[ "${actual_sha}" != "${manifest_sha}" ]] || [[ "${actual_sha}" != "${lock_sha}" ]] || [[ "${actual_sha}" != "${lock_rebuild_sha}" ]] || [[ "${actual_sha}" != "${invariant_sha}" ]]; then
+            echo "::error::Promotion invariant digest mismatch (actual=${actual_sha}, manifest=${manifest_sha}, lock=${lock_sha}, lockRebuild=${lock_rebuild_sha}, invariant=${invariant_sha})."
+            exit 1
+          fi
+          cat > quality-summary-proof/quality-summary.promotion-proof.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "gate": "Quality Summary",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${target_head_sha}",
+            "workflowSha": "${GITHUB_SHA}",
+            "artifactName": "${tarball_name}",
+            "artifactSha256": "${actual_sha}",
+            "artifactManifest": "quality-build.manifest.json",
+            "releaseInputLock": "quality-release-input.lock.json",
+            "promotionInvariant": "quality-promotion-invariant.json"
+          }
+          EOF
+
+      - name: Upload quality summary promotion proof
+        if: env.EXECUTE_FULL == 'true'
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-summary-promotion-proof
+          path: quality-summary-proof/quality-summary.promotion-proof.json
+          if-no-files-found: error
+
+  verify-gate-graph:
+    name: Verify Gate Graph
+    runs-on: ubuntu-22.04
+    needs: [canonical-run, quality-summary]
+    if: ${{ always() && needs.canonical-run.outputs.execute_full == 'true' }}
+    permissions:
+      actions: read
+    steps:
+      - name: Validate gate graph completion for this run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          jobs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" -H "Accept: application/vnd.github+json")"
+          assert_exact_success() {
+            local job_name="${1}"
+            local total_count
+            total_count="$(echo "${jobs_json}" | jq -r --arg name "${job_name}" '[.jobs[] | select((.name // "") == $name)] | length')"
+            if [[ "${total_count}" -lt 1 ]]; then
+              echo "::error::Missing required gate job '${job_name}' in run ${RUN_ID}."
+              exit 1
+            fi
+            local success_count
+            success_count="$(echo "${jobs_json}" | jq -r --arg name "${job_name}" '[.jobs[] | select((.name // "") == $name) | select((.status // "") == "completed") | select((.conclusion // "") == "success")] | length')"
+            if [[ "${success_count}" != "${total_count}" ]]; then
+              echo "::error::Gate job '${job_name}' did not complete successfully in run ${RUN_ID} (success=${success_count}, total=${total_count})."
+              exit 1
+            fi
+          }
+          assert_regex_success() {
+            local job_name_pattern="${1}"
+            local min_count="${2}"
+            local total_count
+            total_count="$(echo "${jobs_json}" | jq -r --arg pattern "${job_name_pattern}" '[.jobs[] | select(((.name // "") | test($pattern)))] | length')"
+            if [[ "${total_count}" -lt "${min_count}" ]]; then
+              echo "::error::Expected at least ${min_count} jobs matching /${job_name_pattern}/ in run ${RUN_ID}, found ${total_count}."
+              exit 1
+            fi
+            local success_count
+            success_count="$(echo "${jobs_json}" | jq -r --arg pattern "${job_name_pattern}" '[.jobs[] | select(((.name // "") | test($pattern))) | select((.status // "") == "completed") | select((.conclusion // "") == "success")] | length')"
+            if [[ "${success_count}" != "${total_count}" ]]; then
+              echo "::error::One or more jobs matching /${job_name_pattern}/ did not succeed in run ${RUN_ID} (success=${success_count}, total=${total_count})."
+              exit 1
+            fi
+          }
+          assert_exact_success "Lint"
+          assert_exact_success "Canonical Run Selection"
+          assert_exact_success "Eval Impact Gate"
+          assert_regex_success "^Syntax & Sanity \\(Node .+\\)$" 2
+          assert_exact_success "Unit Coverage (>=80%)"
+          assert_exact_success "E2E Tests"
+          assert_exact_success "Security Scan"
+          assert_exact_success "Build Artifact"
+          assert_exact_success "Artifact Attestation Gate"
+          assert_exact_success "Release Readiness"
+          assert_exact_success "Deploy Readiness"
+          assert_exact_success "Deploy Stage"
+          assert_exact_success "Rollback Readiness / Rollback Validation and Promote"
+          assert_exact_success "Deploy"
+          assert_exact_success "Quality Summary"
+          echo "Gate graph verification passed for run ${RUN_ID}."
+

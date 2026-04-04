@@ -2,15 +2,44 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 
 import {
+  __buildFileStorageConsentTokenForTests,
   clearStoredSession,
   readStoredSession,
   readStoredSessionMetadata,
   resolveCredentialsFilePath,
+  StoredSessionError,
   writeStoredSession,
 } from "../src/auth/session-store.js";
+
+const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = __buildFileStorageConsentTokenForTests([
+  "https://api.sentinelayer.dev",
+  "https://api.sentinelayer.com",
+  "http://127.0.0.1",
+]);
+test.after(() => {
+  if (previousFileStorageConsent === undefined) {
+    delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+  } else {
+    process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = previousFileStorageConsent;
+  }
+});
+
+async function listKeyFiles(homeDir) {
+  const keyDir = path.join(homeDir, ".sentinelayer-secrets");
+  try {
+    const entries = await readdir(keyDir);
+    return entries.filter((entry) => entry.endsWith(".key")).sort();
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
 
 test("Unit auth session store: file storage round-trip is deterministic when keyring is disabled", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
@@ -32,13 +61,25 @@ test("Unit auth session store: file storage round-trip is deterministic when key
           isAdmin: true,
         },
       },
-      { homeDir: tempRoot }
+      { homeDir: tempRoot, allowFileStorageFallback: true }
     );
 
     assert.equal(persisted.storage, "file");
+    assert.equal(persisted.storageDowngraded, true);
     assert.equal(persisted.token, "api_token_example_1");
     assert.equal(persisted.user.githubUsername, "demo-user");
     assert.equal(persisted.user.isAdmin, true);
+
+    const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    const keyFiles = await listKeyFiles(tempRoot);
+    assert.equal(keyFiles.length, 1);
+    assert.match(keyFiles[0], /^credentials-[0-9a-f]{32}\.key$/);
+    const keyPath = path.join(tempRoot, ".sentinelayer-secrets", keyFiles[0]);
+    const rawCredentials = await readFile(credentialsPath, "utf-8");
+    assert.ok(rawCredentials.includes("\"tokenCiphertext\""));
+    assert.ok(rawCredentials.includes("\"fileTokenKeyVersion\": 1"));
+    assert.equal(rawCredentials.includes("api_token_example_1"), false);
+    const firstKeyMaterial = await readFile(keyPath, "utf-8");
 
     const stored = await readStoredSession({ homeDir: tempRoot });
     assert.equal(stored?.token, "api_token_example_1");
@@ -49,12 +90,28 @@ test("Unit auth session store: file storage round-trip is deterministic when key
     assert.equal(metadata?.token, null);
     assert.equal(metadata?.tokenId, "token_1");
     assert.equal(metadata?.user.email, "demo@example.com");
+    assert.equal(metadata?.fileTokenKeyVersion, 1);
+
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: "api_token_example_2",
+        tokenId: "token_2",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+    const nextKeyFiles = await listKeyFiles(tempRoot);
+    assert.deepEqual(nextKeyFiles, keyFiles);
+    const secondKeyMaterial = await readFile(keyPath, "utf-8");
+    assert.notEqual(secondKeyMaterial.trim(), firstKeyMaterial.trim());
 
     const clearResult = await clearStoredSession({ homeDir: tempRoot });
     assert.equal(clearResult.hadSession, true);
+    assert.equal(clearResult.clearedMetadata, true);
 
     const postClear = await readStoredSession({ homeDir: tempRoot });
     assert.equal(postClear, null);
+    assert.deepEqual(await listKeyFiles(tempRoot), []);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
@@ -65,7 +122,7 @@ test("Unit auth session store: file storage round-trip is deterministic when key
   }
 });
 
-test("Unit auth session store: keyring metadata without keytar returns null and clears locally", async () => {
+test("Unit auth session store: keyring metadata without keytar fails closed with remediation error", async () => {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
 
@@ -97,8 +154,14 @@ test("Unit auth session store: keyring metadata without keytar returns null and 
       "utf-8"
     );
 
-    const stored = await readStoredSession({ homeDir: tempRoot });
-    assert.equal(stored, null);
+    await assert.rejects(
+      () => readStoredSession({ homeDir: tempRoot }),
+      (error) => {
+        assert.ok(error instanceof StoredSessionError);
+        assert.equal(error.code, "KEYRING_UNAVAILABLE");
+        return true;
+      }
+    );
 
     const metadata = await readStoredSessionMetadata({ homeDir: tempRoot });
     assert.equal(metadata?.storage, "keyring");
@@ -107,11 +170,204 @@ test("Unit auth session store: keyring metadata without keytar returns null and 
 
     const clearResult = await clearStoredSession({ homeDir: tempRoot });
     assert.equal(clearResult.hadSession, true);
+    assert.equal(clearResult.clearedMetadata, true);
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;
     } else {
       process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: legacy shared key path migrates to API-scoped key path on read", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: "api_token_example_legacy",
+        tokenId: "token_legacy",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+    const keyDir = path.join(tempRoot, ".sentinelayer-secrets");
+    const scopedBefore = await listKeyFiles(tempRoot);
+    assert.equal(scopedBefore.length, 1);
+    const scopedPath = path.join(keyDir, scopedBefore[0]);
+    const legacyPath = path.join(keyDir, "credentials.key");
+    await rename(scopedPath, legacyPath);
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored?.token, "api_token_example_legacy");
+
+    const scopedAfter = await listKeyFiles(tempRoot);
+    assert.equal(scopedAfter.length, 1);
+    assert.match(scopedAfter[0], /^credentials-[0-9a-f]{32}\.key$/);
+    await assert.rejects(() => access(legacyPath), { code: "ENOENT" });
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: legacy scoped digest key path migrates to expanded digest length", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: "api_token_example_digest_migration",
+        tokenId: "token_digest_migration",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+
+    const keyDir = path.join(tempRoot, ".sentinelayer-secrets");
+    const scopedBefore = await listKeyFiles(tempRoot);
+    assert.equal(scopedBefore.length, 1);
+    assert.match(scopedBefore[0], /^credentials-[0-9a-f]{32}\.key$/);
+
+    const expandedPath = path.join(keyDir, scopedBefore[0]);
+    const legacyDigestName = scopedBefore[0].replace(
+      /^credentials-([0-9a-f]{32})\.key$/,
+      (_, digest) => `credentials-${digest.slice(0, 16)}.key`
+    );
+    assert.match(legacyDigestName, /^credentials-[0-9a-f]{16}\.key$/);
+    const legacyDigestPath = path.join(keyDir, legacyDigestName);
+    await rename(expandedPath, legacyDigestPath);
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored?.token, "api_token_example_digest_migration");
+
+    const scopedAfter = await listKeyFiles(tempRoot);
+    assert.equal(scopedAfter.length, 1);
+    assert.match(scopedAfter[0], /^credentials-[0-9a-f]{32}\.key$/);
+    await assert.rejects(() => access(legacyDigestPath), { code: "ENOENT" });
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: plaintext token field is scrubbed when encrypted metadata exists", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    const originalToken = "api_token_example_ciphertext";
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: originalToken,
+        tokenId: "token_cipher",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+
+    const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    const tampered = JSON.parse(await readFile(credentialsPath, "utf-8"));
+    tampered.token = "api_token_plaintext_tamper";
+    await writeFile(credentialsPath, `${JSON.stringify(tampered, null, 2)}\n`, "utf-8");
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored?.token, originalToken);
+
+    const persisted = JSON.parse(await readFile(credentialsPath, "utf-8"));
+    assert.equal(persisted.token, null);
+    assert.equal((await readFile(credentialsPath, "utf-8")).includes("api_token_plaintext_tamper"), false);
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: keyring disablement requires explicit file fallback consent", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await assert.rejects(
+      () =>
+        writeStoredSession(
+          {
+            apiUrl: "https://api.sentinelayer.dev",
+            token: "api_token_example_2",
+            tokenId: "token_2",
+          },
+          { homeDir: tempRoot }
+        ),
+      (error) => {
+        assert.ok(error instanceof StoredSessionError);
+        assert.equal(error.code, "KEYRING_FALLBACK_REQUIRES_CONSENT");
+        return true;
+      }
+    );
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: file fallback requires policy confirmation token", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  const previousFileStorageConsent = process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+  delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await assert.rejects(
+      () =>
+        writeStoredSession(
+          {
+            apiUrl: "https://api.sentinelayer.dev",
+            token: "api_token_example_3",
+            tokenId: "token_3",
+          },
+          { homeDir: tempRoot, allowFileStorageFallback: true }
+        ),
+      (error) => {
+        assert.ok(error instanceof StoredSessionError);
+        assert.equal(error.code, "FILE_STORAGE_CONSENT_REQUIRED");
+        return true;
+      }
+    );
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    if (previousFileStorageConsent === undefined) {
+      delete process.env.SENTINELAYER_FILE_STORAGE_CONFIRM;
+    } else {
+      process.env.SENTINELAYER_FILE_STORAGE_CONFIRM = previousFileStorageConsent;
     }
     await rm(tempRoot, { recursive: true, force: true });
   }

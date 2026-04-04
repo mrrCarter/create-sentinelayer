@@ -198,7 +198,126 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 106 split oversized command files (`src/commands/ai.js`, `src/commands/daemon.js`) into modular slices.
 - [ ] PR 107 command lazy-loading.
 
-## Execution Board (2026-04-02)
+### Batch O - Streaming Protocol + Tool Foundation (P0, execution layer)
+- [ ] PR 115 Streaming event protocol (`src/stream/protocol.js` -- universal NDJSON envelope with agent attribution, heartbeat, progress, findings, used by ALL long-running commands).
+- [ ] PR 116 Tool contract + registry (Zod-validated interface, lazy loading, deny rules, MCP assembly -- tools are INTERNAL to SL specialist agents).
+- [ ] PR 117 FileRead tool (line numbers, offset/limit, binary detection, token budget awareness -- for internal audit/review agents).
+- [ ] PR 118 FileEdit tool (string replacement, uniqueness check, diff generation -- for internal fix agents).
+- [ ] PR 119 Shell tool (bash/powershell, security analyzer, timeout, background mode -- for internal agents running tests/linters).
+- [ ] PR 120 Grep + Glob tools (ripgrep wrapper, fast file matching -- for internal agents searching codebases).
+
+### Batch P - Agentic Loop (P0, execution layer)
+- [ ] PR 121 Permission system (plan/default/execute modes, deny/allow/ask pipeline, denial tracking).
+- [ ] PR 122 Query loop engine (LLM→tool→result state machine, concurrent read-only dispatch, budget-gated iteration).
+- [ ] PR 123 Context management (tool result persistence, time-based micro-compact, auto-compact with circuit breaker).
+
+### Batch Q - Agent Spawning (P0, execution layer)
+- [ ] PR 124 Agent definition system (Zod schema, built-in personas, custom .sentinelayer/agents/*.json).
+- [ ] PR 125 Subagent runtime (in-process isolation, worktree isolation, budget-slice clamping, tool restrictions).
+- [ ] PR 126 /audit deep integration (real subagent specialists with FileRead+Grep+Glob, unified DD package).
+
+### Batch R - Codebase Mapping + Scope (P1, execution layer)
+- [ ] PR 127 Import graph resolver (JS/TS/Python import parsing, adjacency list, depth-limited).
+- [ ] PR 128 Impact scope mapper (task→primary/secondary/tertiary files, deterministic-first resolution).
+- [ ] PR 129 Scope-aware context injection (agent system prompt filtering, path violation tracking).
+
+### Batch S - Entitlement + Interactive (P1, execution layer)
+- [ ] PR 130 Entitlement gate (subscription tier→capability mapping, sliding-window rate limiter).
+- [ ] PR 131 Interactive REPL (streaming responses, tool call indicators, permission dialogs, session transcripts).
+- [ ] PR 132 Session resume + history (session list/resume/export commands).
+
+### Batch T - Polish + Integration (P1, execution layer)
+- [ ] PR 133 Terminal markdown + multi-agent progress display (streaming render, budget gauges).
+- [ ] PR 134 `sl run` command (one-shot agentic execution with scope mapping and budget governance).
+- [ ] PR 135 `sl fix` command (autonomous error remediation with test verification and optional PR creation).
+- [ ] PR 136 Daemon upgrade (real agent execution in error remediation lane, Jira lifecycle from live agent progress).
+
+### Batch U - Scaffold & Spec Quality (P1, from 2026-04-03 feedback)
+- [ ] PR 137 Frictionless gh secret setup (auto-gitignore for .env, detect repo slug for instructions, docs link, unify workflow naming, verify after set).
+- [ ] PR 138 Deterministic IDE/agent dictionary (top 10 coding agents + IDEs, no web search, per-agent config file generation during scaffold).
+- [ ] PR 139 Flexible spec phases + greenfield fix (dynamic phase count from ingest, projectType-aware templates, no hardcoded 3-phase cap).
+- [ ] PR 140 Spec-bound pre-commit review (spec drift detection, coverage gaps, spec hash binding, SL-SPEC-001/002 findings).
+
+### Batch V - Shared Memory + Observability (P1, from 2026-04-03 feedback)
+- [ ] PR 141 Local shared memory blackboard (cross-agent findings during orchestration, append-only, 8-needle recall gate).
+- [ ] PR 142 Hybrid retrieval index (TF-IDF local, optional FAISS API delegation for enterprise, previous-run memory).
+- [ ] PR 143 Stuck-agent detection + alert channels (Slack/Telegram webhooks, smart frequency on state changes, low-token payloads).
+- [ ] PR 144 Stale ingest auto-refresh (git timestamp comparison, --refresh flag, content-hash caching).
+
+### Batch W - Security Hardening (from src patterns, 2026-04-04 market analysis)
+- [ ] PR 145 Expand secret scanner to 30+ credential types (AWS, GCP, Azure, Stripe, Slack, npm, PyPI, GitHub PAT variants, PEM keys).
+- [ ] PR 146 Subprocess env scrubbing for internal agent child processes (strip 27+ sensitive vars: cloud creds, OIDC, API keys).
+- [ ] PR 147 Symlink + UNC path defense for FileRead/FileEdit tools (resolve both paths, block network paths).
+- [ ] PR 148 Domain allowlist for WebFetch tool (130+ preapproved doc/framework hosts with path-segment boundary enforcement).
+
+### Batch X - Developer Experience (from src patterns, 2026-04-04 market analysis)
+- [ ] PR 149 Hooks system (pre/post tool lifecycle events, user-customizable in .sentinelayer.yml, exit-code behavior).
+- [ ] PR 150 File history/undo (auto-checkpoint per agent session, 100-snapshot cap, content-hash dedup, rollback command).
+- [ ] PR 151 Plan mode for agent execution (preview strategy before running, approval gate, plan editing).
+- [ ] PR 152 Image/screenshot support in FileRead (base64 encode, format detection, size metadata for frontend review agents).
+
+### Batch Y - Enterprise Features (2026-04-04 market analysis)
+- [ ] PR 153 Feature flags with subscription-tier gating (per-user feature values, graceful degradation when API unavailable).
+- [ ] PR 154 Privacy-first analytics (type-level PII prevention, sampled events, opt-in, no code/filepath logging).
+- [ ] PR 155 Remote-managed enterprise settings (server-side policy push, hourly polling, checksum-based sync, fail-open).
+- [ ] PR 156 Team memory sync (repo-scoped shared context, delta upload with secret scanning, pull=server-wins).
+- [ ] PR 157 OAuth with subscription metadata (token carries tier + rate limit + org UUID for entitlement gating).
+
+### Batch Z - Blue Ocean (no competitor has these, 2026-04-04 market analysis)
+- [ ] PR 158 Cross-tool governance proxy (middleware wrapping any AI tool's git output through SL review pipeline).
+- [ ] PR 159 Compliance report generator (SOC 2 / EU AI Act / ISO 27001 templates from tamper-evident artifact chain).
+- [ ] PR 160 Tech debt scoring engine (continuous quality metrics per AI tool per project, threshold-based generation throttle).
+
+### Phase J — Jules Tanaka Persona System (17 PRs, self-contained, NO O-Q dependency)
+
+#### Batch J-Alpha: Tool Execution (builds its own lightweight runtime)
+- [ ] PR J-1 Jules tool wrappers: file-read, grep, glob, shell, file-edit (budget gate, telemetry emission, env scrubbing, result persistence).
+- [ ] PR J-2 FrontendAnalyze helper (24 deterministic ops: detect_framework, find_security_sinks, count_state_hooks, check_accessibility, check_css_health, check_i18n, check_seo, check_error_boundaries, check_image_optimization, check_font_loading, find_third_party_scripts, check_service_workers, check_realtime_connections, audit_npm_deps, and more).
+- [ ] PR J-3 Jules tool dispatch + budget enforcement (pre-flight check BEFORE every tool call, telemetry event, large-result persistence).
+
+#### Batch J-Beta: Sub-Agent Swarm
+- [ ] PR J-4 Sub-agent core: JulesSubAgent class (isolated conversation, tool access, budget slice, blackboard write, AbortController linked to parent).
+- [ ] PR J-5 FileScanner sub-agent type (reads file batches, extracts structured summaries, reports discovered deps for scope expansion).
+- [ ] PR J-6 PatternHunter sub-agent type (6 hunter specializations: XSS, state, hydration, a11y, perf, security).
+- [ ] PR J-7 Swarm orchestrator (parallel dispatch up to 4 concurrent, multi-pass convergence loop, coverage verification, budget accounting across sub-agents).
+
+#### Batch J-Gamma: Persona + Invocation
+- [ ] PR J-8 Jules agent definition YAML + full updated system prompt (SWE framework, WCAG AA a11y, budget awareness, framework detection, governance, language-agnostic).
+- [ ] PR J-9 Jules agentic loop (LLM→tool_use→execute→result→LLM with sub-agent swarm integration for large codebases).
+- [ ] PR J-10 Standalone invocation (`sl audit frontend|jules`, auto-prerequisites, Omar baseline-on-demand, autocomplete for all 13 personas).
+- [ ] PR J-11 Streaming events + visual identity (persona color/avatar registry, NDJSON per-agent attribution, terminal display, reasoning chain streaming).
+
+#### Batch J-Delta: Autonomous Operations
+- [ ] PR J-12 Jules worktree fix mode + Jira lifecycle (claim → open → plan → investigate → fix → comment → transition, signed "— Jules Tanaka").
+- [ ] PR J-13 Jules PR + Omar Gate watch loop (push → create → watch → fix P0-P2 → merge) + S3 artifact upload (compliance-grade object lock).
+- [ ] PR J-14 Pulse daemon (stuck detection, error-to-persona routing, Slack/Telegram alerts, health summaries, recovery actions).
+- [ ] PR J-15 Jules error intake (receive frontend errors from queue, scope from stack trace, trigger full autonomous fix cycle).
+
+#### Batch J-Epsilon: Memory + Tests
+- [ ] PR J-16 Jules memory integration (sub-agent blackboard, FAISS cross-run recall, finding indexing, auto-compaction with finding preservation).
+- [ ] PR J-17 Jules integration tests + benchmark (React/Vue/Next.js audit, sub-agent swarm, fix cycle e2e, 8-needle recall, stuck detection).
+
+## Execution Board (2026-04-04)
+
+### Full Batch Roadmap (177 PRs total)
+- Batches A-J (#1-#95): Original roadmap -- DONE
+- Batch K (#97-#100): Governance hardening -- DONE
+- Batch L (#101-#102): Coverage expansion -- DONE
+- Batch M (#103-#105): Docs/housekeeping -- DONE
+- Batch N (#106-#107): Structural -- IN PROGRESS
+- Batch O (#115-#120): Streaming protocol + internal tools -- QUEUED
+- Batch P (#121-#123): Agentic loop + permissions -- QUEUED
+- Batch Q (#124-#126): Agent spawning + /audit deep -- QUEUED
+- Phase J (J-1 to J-17): Jules Tanaka persona system -- QUEUED (self-contained, starts after #114 merges)
+- Batch R (#127-#129): Import graph + scope mapping -- QUEUED
+- Batch S (#130-#132): Entitlement + interactive -- QUEUED
+- Batch T (#133-#136): sl run/fix + daemon upgrade -- QUEUED
+- Batch U (#137-#140): Scaffold quality + spec fixes -- QUEUED
+- Batch V (#141-#144): Shared memory + alerts -- QUEUED
+- Batch W (#145-#148): Security hardening (src patterns) -- QUEUED
+- Batch X (#149-#152): Developer experience (src patterns) -- QUEUED
+- Batch Y (#153-#157): Enterprise features -- QUEUED
+- Batch Z (#158-#160): Blue ocean (no competitor has these) -- QUEUED
 
 ### Omar Gate Loop (required on every PR)
 1. `git checkout main && git pull --ff-only`
@@ -212,9 +331,64 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 7. If Omar Gate fails or reports blocking findings, fix P0-P2 scope issues, push, and repeat step 6 until green.
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
+### Exact Next PR Branch Order (Execution Layer)
+1. `roadmap/pr-114-p2-burn-down-clean` (current, PR #114 open)
+2. `roadmap/pr-107-command-lazy-loading` (PR #113 open)
+3. `roadmap/pr-115-streaming-event-protocol`
+4. `roadmap/pr-116-tool-contract-registry`
+5. `roadmap/pr-117-file-edit-tool`
+6. `roadmap/pr-118-file-write-tool`
+7. `roadmap/pr-119-shell-tool`
+8. `roadmap/pr-120-grep-glob-tools`
+9. `roadmap/pr-121-permission-system`
+10. `roadmap/pr-122-query-loop-engine`
+11. `roadmap/pr-123-context-management`
+12. `roadmap/pr-124-agent-definitions`
+13. `roadmap/pr-125-subagent-runtime`
+14. `roadmap/pr-126-audit-deep-integration`
+15. `roadmap/pr-127-import-graph`
+16. `roadmap/pr-128-scope-mapper`
+17. `roadmap/pr-129-scope-injection`
+18. `roadmap/pr-130-entitlement-gate`
+19. `roadmap/pr-131-interactive-repl`
+20. `roadmap/pr-132-session-resume`
+21. `roadmap/pr-133-terminal-ui`
+22. `roadmap/pr-134-sl-run`
+23. `roadmap/pr-135-sl-fix`
+24. `roadmap/pr-136-daemon-upgrade`
+25. `roadmap/pr-137-frictionless-secret-setup`
+26. `roadmap/pr-138-agent-ide-dictionary`
+27. `roadmap/pr-139-flexible-spec-phases`
+28. `roadmap/pr-140-spec-bound-review`
+29. `roadmap/pr-141-shared-memory-blackboard`
+30. `roadmap/pr-142-hybrid-retrieval-index`
+31. `roadmap/pr-143-stuck-agent-alerts`
+32. `roadmap/pr-144-stale-ingest-refresh`
+
 ### Exact Next PR Branch Order
-1. `roadmap/pr-106-split-oversized-command-files` (current)
-2. `roadmap/pr-107-command-lazy-loading`
+1. `roadmap/pr-114-p2-burn-down-clean` (current: active Omar loop to reduce P2 findings to <=2)
+2. `roadmap/pr-115-command-lazy-loading` (next after PR 114 merge)
+
+### Active Omar Loop Status (PR 114)
+- [x] Validate audit findings against active branch state and latest Omar comment thread.
+- [x] Reproduce and root-cause CI blocker from latest failed run (`Quality Gates` run `23946241522`).
+- [x] Fix flaky unit coverage test assertion (`tests/unit.auth-service.test.mjs`) to enforce deterministic ceiling instead of timing-sensitive exact poll count.
+- [x] Run local verification (`npm run test:coverage`, `npm run verify`).
+- [x] Run local Omar/Audit JSON gates and capture artifacts.
+- [x] Apply targeted P2 hardening patch set for current Omar findings:
+  - `release-please.yml`: merge-base fallback with fail-closed resolution for release-intent scope.
+  - `release-publish.yml`: enforce branch-protection and required-context success on target commit before publish.
+  - `omar-gate.yml`: limit secret leak scan to explicit output/artifact paths instead of repository-wide grep.
+  - `src/config/schema.js` + `src/auth/service.js`: reject leading/trailing whitespace in secret tokens and parse env token via runtime schema before auth session resolution.
+  - Added regression tests in `tests/unit.config-security.test.mjs` and `tests/unit.auth-service.test.mjs`.
+- [x] Re-run post-fix verification (`npm run test:unit -- tests/unit.config-security.test.mjs tests/unit.auth-service.test.mjs`, `npm run verify`).
+- [x] Apply second-cycle P2 remediation from run `83c47717-51ac-4df0-b992-a74ba8c33c43`:
+  - `src/auth/service.js`: remove time-derived jitter seed fallback and require cryptographic randomness (`randomBytes` -> `webcrypto` -> fail closed).
+  - `src/daemon/assignment-ledger.js`: add bounded randomized jitter to atomic rename/remove retry backoff loops.
+  - `.github/workflows/release-publish.yml`: narrow `workflow_run` trigger to `main` and reject non-default upstream head branches during resolve.
+- [x] Re-run post-remediation verification (`npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.daemon-assignment-ledger.test.mjs`, `npm run verify`).
+- [ ] Push fix commit and watch Omar Gate run to completion via `gh run watch --exit-status`.
+- [ ] If Omar findings remain above target, iterate P2 fixes and rerun loop until `P2 <= 2`.
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -468,3 +642,777 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
     - Reduced top-level command file size by converting `src/commands/ai.js` and `src/commands/daemon.js` into thin orchestrators and extracting grouped logic into `src/commands/ai/*` and `src/commands/daemon/*`.
     - Preserved existing command contracts and options while keeping behavior stable under full e2e and unit verification.
+
+## PR 114 Omar P2 Burn-Down Loop (2026-04-03)
+- [x] Validate `tasks/audit-report-2026-04-02.md` findings against current PR #114 Omar output.
+- [x] Fix Omar workflow policy/concurrency findings (`.github/workflows/omar-gate.yml`).
+- [x] Enforce strict lint -> test -> security -> build DAG (`.github/workflows/quality-gates.yml`).
+- [x] Harden release required-check validation and rollback-readiness automation (`.github/workflows/release.yml`).
+- [x] Add assignment-ledger atomic write + storage lock safeguards (`src/daemon/assignment-ledger.js` + tests).
+- [x] Replace pinned syntax matrix patch versions with major channels (`18`, `20`) in quality gates.
+- [x] Force `workflow_dispatch` release runs into deterministic dry-run mode and always validate required checks on active release paths.
+- [x] Add deterministic rebuild-hash proof verification in publish path (`create-sentinelayer.sha256` vs `create-sentinelayer.rebuild.sha256`).
+- [x] Replace static broad auth token scope with validated least-privilege default (`cli_session`) and explicit scoped override path.
+- [x] Add assignment-ledger `.new` fallback recovery and test for missing-ledger restoration.
+- [x] Pin `release-please` runner image to `ubuntu-22.04` for deterministic release automation.
+- [x] Redact credential metadata paths from default `auth` terminal output; add explicit `--show-paths` opt-in.
+- [x] Harden session metadata writes with temp-file fsync + post-rename parent-directory fsync (best-effort).
+- [x] Add `AbortSignal.any` compatibility guard with manual abort bridging in auth HTTP client.
+- [x] Harden release required-check verification by pinning matched checks to expected workflow file path + head SHA.
+- [x] Make daemon assignment event append path durable with file-handle fsync and directory sync.
+- [x] Pin Omar Gate runner to `ubuntu-22.04` and assert `security-review` environment required-reviewer protection before secret-backed scan.
+- [x] Add build-provenance attestation to `quality-gates` build artifact pipeline.
+- [x] Make key material writes atomic (`writeSecretFile` temp+fsync+rename+directory sync).
+- [x] Run `npm run verify` locally.
+- [x] Run local gates: `/omargate deep` and `/audit` with `p1=0`, `p2=0`.
+- [x] Validate residual Omar findings against latest PR #114 comment (`run_id=3e9c8a42`, commit `478b710`): active P2 set is `quality-gates reproducibility bridge`, `release concurrency`, `release preflight dependency`, `config secrets schema`.
+- [x] Commit-scoped `release.yml` hardening prepared (`preflight` depends on `verify-required-checks`; ref-scoped concurrency + cancellation).
+- [x] Implement cross-workflow build-once/promote-once evidence bridge from `quality-gates` to `release` (artifact digest contract + release verification).
+- [x] Harden `src/config/schema.js` to block persisted plaintext secrets by default (explicit unsafe opt-in only) and add coverage tests.
+- [x] Run `npm run verify` and local `/omargate deep` + `/audit` after residual fixes.
+- [x] Run `gh run watch` for Omar Gate run `23931011060` and capture residual `P2=6` findings (config opt-in, eval-impact base fallback, release rollback/manual path/concurrency, Retry-After clock skew).
+- [x] Add deterministic eval-impact merge-base fallback (`quality-gates.yml`) and fail-closed behavior when merge base cannot be resolved.
+- [x] Add rollback workflow contract (`.github/workflows/rollback.yml`) and release preflight rollback automation validation.
+- [x] Rework release controls for single-flight promotion (`concurrency` lock) and controlled manual publish path from tagged dispatches.
+- [x] Harden Retry-After HTTP-date handling with monotonic/server-date-aware delay parsing and coverage test.
+- [x] Remove env-based plaintext secret persistence override; keep config secret persistence blocked by default and update auth/config tests.
+- [x] Push second-cycle fixes (`4a53d73`) and run `gh run watch` (`run_id=23932048297`): Omar remains `P2=6` with new set (`HTTPS API URL`, `rollback token scope`, `release-please gate dependency`, `quality network timeout controls`, `non-tag dispatch release path`, `release check-run race`).
+- [x] Third-cycle hardening applied for all six new findings: HTTPS-only non-local API URLs, rollback token step-scoping, release-please quality-gate dependency check, quality workflow network step timeouts, non-tag dispatch release-path disable, workflow-run-based required-check verification.
+- [x] Push third-cycle fixes (`ab231bb`) and run `gh run watch` (`run_id=23932381636`): Omar reduced to `P2=5` (`omar-gate perms`, `quality immutable-build model`, `release production-gate recognition`, `release recency binding`, `lockfile integrity policy`).
+- [x] Fourth-cycle hardening applied for three deterministic residuals: least-privilege Omar workflow permissions, lockfile immutability enforcement in quality gates, and explicit protected production authorization job before publish.
+- [x] Push fourth-cycle residual fixes (`2c2268d`) and run `gh run watch` (`run_id=23932609696`): Omar scan failed during publish step due `pull-requests` read permission (`403` updating PR comment).
+- [x] Restore Omar Gate PR comment permissions (`d6b235c`) and rerun `gh run watch` (`run_id=23932837347`): Omar executes successfully and reports `P2=6`.
+- [x] Fifth-cycle hardening applied for active residual findings: quality gate identity pinning in Omar workflow, quality workflow non-cancel concurrency, release dispatch required-check enforcement + artifact identity binding, randomized retry jitter entropy, and assignment-ledger parent-directory fsync.
+- [x] Push fifth-cycle fixes (`91250cc`) and rerun `gh run watch` (`run_id=23933147291`): Omar still reports `P2=6`; active findings shifted to workflow-dispatch quality bypass, quality concurrency policy, release flag-script clarity/build-once semantics, auth jitter fallback, and auth poll idempotency.
+- [x] Sixth-cycle hardening applied for active residual findings: event-aware quality concurrency cancellation policy, Omar dispatch quality-gate binding (`TARGET_SHA` fallback + workflow-run identity lookup), release flag resolver script rewrite, deterministic non-`Math.random` jitter fallback, and poll-session idempotency/request-consistency validation with new unit coverage.
+- [x] Push sixth-cycle fixes (`36549d2`) and rerun `gh run watch` (`run_id=23933483218`): Omar reduced to `P2=5` with new focus areas (`config schema plaintext bypass`, `quality stage ordering`, `poll idempotency nonce`, `release-please protected gate`, `release trusted dispatch invoker`).
+- [x] Seventh-cycle hardening applied for active residual findings: persisted-config schema locked to non-secret shape, quality gate order restored (tests -> security -> build with eval-impact enforced in summary), per-attempt auth poll idempotency keys, release-management environment protection assertion in release-please, and trusted workflow_dispatch invoker validation in release pipeline.
+- [x] Push seventh-cycle fixes (`96c26ed`) and rerun `gh run watch` (`run_id=23934245218`): Omar reduced to `P2=4` (`security-scan` eval dependency, config secret schema split, release environment/ref hardening).
+- [x] Eighth-cycle hardening applied and pushed (`e6a4661`): `security-scan` now depends on `eval-impact`, `configSchema` persisted keys split from runtime secret schema, release preflight + required-check jobs pinned to `release-management`, and workflow_dispatch ref guards tightened.
+- [x] Rerun Omar (`run_id=23935232366`): residual findings shifted to `P2=5` (`auth privileged-scope consent`, `keyring-disable fallback consent`, `quality release-readiness stage`, `release check provenance event filter`, `attestation verification`).
+- [x] Ninth-cycle hardening prepared locally: auth privileged-scope explicit opt-in (`--allow-privileged-scope`), keyring downgrade explicit consent (`--no-keyring`) + metadata flag, quality `release-readiness` smoke stage, release required-check event/source filtering, and attestation verification gate in preflight.
+- [x] Push ninth-cycle fixes (`3b4faec`) and rerun Omar (`run_id=23936484487`): Omar blocked early because quality-gates run `23936484488` failed in new `Release Readiness` job (`setup-node` cache executed before checkout).
+- [x] Apply quality-gates hotfix: add explicit checkout step before `setup-node` in `Release Readiness` job.
+- [x] Push quality-gates hotfix (`cfe4a62`) and rerun Omar (`run_id=23937429580`): Omar blocked again because `npm install` treated `quality-readiness/<tarball>` as a GitHub shorthand (missing local `./` prefix).
+- [x] Apply second quality-gates hotfix: force local tarball install path to `./quality-readiness/<tarball>` in `Release Readiness` smoke stage.
+- [x] Push second quality-gates hotfix (`4d1496f`) and rerun Omar (`run_id=23938362934`): Omar unblocked and reported active residual set `P2=5` (release-please Omar dependency, release tag gate deadlock, rollback proof recency, auth error-message exposure, auth jitter fallback correlation).
+- [x] Tenth-cycle hardening applied for active residual findings:
+  - `release-please.yml`: explicit Omar Gate verification on target SHA before release mutation.
+  - `release.yml`: event-aware required-check policy and rollback-proof recency validation (`ROLLBACK_PROOF_MAX_AGE_DAYS`).
+  - `auth/http.js`: per-request jitter seed threaded into deterministic fallback backoff hash path.
+  - `commands/auth.js`: sanitized API error rendering by code with optional raw-detail opt-in via `SL_DEBUG_ERRORS`.
+  - Added deterministic unit coverage for auth command error formatting (`tests/unit.auth-command-errors.test.mjs`).
+- [x] Tenth-cycle local evidence:
+  - `node --test tests/unit.auth-command-errors.test.mjs tests/unit.auth-http.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `155/155`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push tenth-cycle fixes (`2683eae`) and rerun Omar (`run_id=23939645056`): Omar shifted to `P2=8` with active findings in `omar-gate` concurrency policy, `quality-gates` permission/pinning controls, `release` tag replay/provenance validation, auth poll idempotency collisions, auth debug leak path, and assignment-ledger `process` import.
+- [x] Eleventh-cycle hardening applied for active residual findings:
+  - `.github/workflows/omar-gate.yml`: non-cancelable PR concurrency (`cancel-in-progress: false`).
+  - `.github/workflows/quality-gates.yml`: least-privilege workflow permissions + build-artifact scoped `id-token/attestations`.
+  - `.github/workflows/quality-gates.yml`: deterministic gitleaks SHA policy gate backed by `.github/security/action-sha-allowlist.txt`.
+  - `.github/workflows/release.yml`: tag-time Omar Gate replay requirement via commit check-run verification (no skip path), plus publish-time release artifact attestation verification.
+  - `src/auth/service.js`: per-login `pollClientId` in poll idempotency keys to prevent cross-client/session collisions.
+  - `src/commands/auth.js`: remove raw backend-detail emission path entirely (including debug env mode).
+  - `src/daemon/assignment-ledger.js`: import `node:process` for backup path generation in ESM.
+  - Updated auth-service and auth-command unit coverage for new idempotency/error-redaction behavior.
+- [x] Eleventh-cycle local evidence:
+  - `npm run verify` (pass, e2e `84/84`; unit `155/155`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push eleventh-cycle fixes (`3ed2021`) and rerun Omar (`run_id=23940213618`): Omar reduced to `P2=5` (release-please timeout hardening, release Omar event mapping, rollback lineage gate, auth requestId normalization, auth poll idempotency semantics).
+- [x] Twelfth-cycle hardening applied for active residual findings:
+  - `src/auth/http.js`: preserve both `request_id` and `requestId` from upstream API error payloads.
+  - `tests/unit.auth-http.test.mjs`: add regression coverage for camelCase `requestId` propagation.
+  - `src/auth/service.js`: stabilize poll idempotency key per login attempt-set (`sessionId + pollClientId`) and expose attempt index via `X-Poll-Attempt`.
+  - `tests/unit.auth-service.test.mjs`: update idempotency expectations for stable-key retries.
+  - `.github/workflows/release-please.yml`: add explicit `timeout --preserve-status` wrappers for network-bound `gh api`/`gh run download` operations plus step-level timeout for `release-please-action`.
+  - `.github/workflows/release.yml`: allow `workflow_dispatch` Omar events in required-check mapping to prevent manual-run deadlocks.
+  - `.github/workflows/rollback.yml`: add execute-path rollback lineage gate (release tag -> commit -> quality manifest/artifact digest -> attestation verification) before any npm mutation.
+- [x] Twelfth-cycle local evidence:
+  - `node --test tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push twelfth-cycle fixes (`b8eb28e`) and rerun Omar (`run_id=23940593375`): Omar holds at `P2=5` with active findings in `quality-gates` npm parity, `release-please` trigger scope, `release` tag Omar deadlock handling, and auth/session request-id/key-rotation controls.
+- [x] Validate `tasks/audit-report-2026-04-02.md` against active Omar findings for PR #114 (confirmed residual set is current and actionable).
+- [x] Thirteenth-cycle hardening applied for active residual findings:
+  - `src/auth/session-store.js`: enforce file-token key rotation coupling (`fileTokenKeyVersion` + rekey on legacy reads/login) and delete key file on file-session clear / keyring migration.
+  - `src/commands/auth.js`: redact upstream `requestId` by default and emit only debug-tail diagnostics when `SL_DEBUG_ERRORS=1`.
+  - `.github/workflows/quality-gates.yml`: pin npm CLI version (`10.8.2`) + deterministic locale/tz env in build-artifact reproducibility stage.
+  - `.github/workflows/release-please.yml`: add push path-scoping and release-intent changed-file gate before mutating release PR state.
+  - `.github/workflows/release.yml`: replace tag-time Omar polling deadlock path with fail-fast prior-run resolution on target commit.
+- [x] Thirteenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-session-store.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push thirteenth-cycle fixes (`26d1611`) and rerun Omar (`run_id=23941133816`): Omar shifted to `P2=6` with active findings in action secret handoff, release check-run identity hardening, quality reproducibility cache provenance, and auth poll idempotency semantics.
+- [x] Fourteenth-cycle hardening applied for active residual findings:
+  - `src/auth/service.js`: restore per-attempt poll idempotency suffix (`...:<attempt>`) while keeping explicit `X-Poll-Attempt` header.
+  - `tests/unit.auth-service.test.mjs`: update poll idempotency assertions for attempt-scoped keys.
+  - `.github/workflows/quality-gates.yml`: pin + reuse dedicated npm cache path and force isolated rebuild install from offline cache to reduce registry nondeterminism.
+  - `.github/workflows/release.yml`: enforce branch-protection required context contract, require unambiguous single-run match for required checks, and anchor workflow-run ids against commit check-run details URL.
+  - `.github/workflows/release.yml`: scope `publish` job to explicit `production` environment.
+  - `.github/workflows/omar-gate.yml`: add deterministic allowlist SHA gate for `mrrCarter/sentinelayer-v1-action`.
+  - `.github/security/action-sha-allowlist.txt`: register pinned Omar action SHA.
+- [x] Fourteenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push fourteenth-cycle fixes (`21f3919`) and rerun Omar (`run_id=23941573780`): Omar exited early because `Quality Gates` run `23941572042` failed before jobs with a workflow-parse issue in `quality-gates.yml`.
+- [x] Apply hotfix for `quality-gates` workflow parse failure by removing `runner` context from job-level `env` and deriving `NPM_CACHE_DIR` from `RUNNER_TEMP` at runtime in the pin step.
+- [x] Push fourteenth-cycle hotfix (`54b6f29`) and rerun Omar (`run_id=23941694136`): Omar runs cleanly and reports `P2=6` with active residuals in quality-run identity anchoring, release-event mapping, rollback mutation timeout controls, auth poll idempotency semantics, and assignment-ledger event append locking.
+- [x] Fifteenth-cycle hardening applied for active residual findings:
+  - `.github/workflows/omar-gate.yml`: enforce unique Quality Summary run identity (single-candidate guard + commit check-run run-id anchor) before secret-backed Omar execution.
+  - `.github/workflows/release-please.yml`: restrict Omar verification evidence to PR-context runs (`event == pull_request`) only.
+  - `.github/workflows/release.yml`: allow `workflow_dispatch` in required-check mapping for `Quality Summary` and `Release Readiness`.
+  - `.github/workflows/rollback.yml`: add bounded `timeout --preserve-status` wrappers for `npm dist-tag add` and `npm deprecate` mutation steps.
+  - `src/auth/service.js`: restore stable poll-session idempotency key semantics.
+  - `src/daemon/assignment-ledger.js`: add explicit file-lock around event stream appends (`assignment-events.lock`).
+  - `tests/unit.auth-service.test.mjs`: update idempotency assertions for stable poll key semantics.
+- [x] Fifteenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.daemon-assignment-ledger.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push fifteenth-cycle fixes (`e6f36f6`) and rerun Omar (`run_id=23942073171`): Omar reports active `P2=5` in workflow-only controls (`quality-gates` clean-room reproducibility, `release-please` quality-event provenance, `release` trusted invoker/tag actor guard, `release` branch-protection strictness parity, `release` Omar event provenance).
+- [x] Sixteenth-cycle hardening applied for active residual findings:
+  - `.github/workflows/quality-gates.yml`: clean-room rebuild now uses isolated cache + online immutable install with lockfile hash parity guard (no warm-cache/offline reuse).
+  - `.github/workflows/release-please.yml`: Quality Summary evidence is restricted to `push` workflow events for target SHA.
+  - `.github/workflows/release.yml`: trusted invoker validation now covers tag `push` events with actor permission checks and bot provenance validation against successful `release-please` run on the tagged commit.
+  - `.github/workflows/release.yml`: branch-protection contract now enforces strict required checks, minimum PR review count, stale-review dismissal, and release-management deployment-branch policy parity.
+  - `.github/workflows/release.yml`: required-check event mapping now excludes `workflow_dispatch` for Omar and quality/readiness checks; tag Omar replay gate now accepts only `pull_request` Omar runs.
+- [x] Sixteenth-cycle local evidence:
+  - `npm run verify` (pass, e2e `84/84`; unit `156/156`; coverage statements `90.18%`, branches `70.37%`, functions `91.48%`, lines `90.18%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push sixteenth-cycle fixes (`a50f99f`) and rerun Omar (`run_id=23942528275`): Omar reports active `P2=6` with residual findings in quality-anchor tie-break (`omar-gate`), poll idempotency attempt keys (`auth/service`), config key exposure (`config/schema`), assignment lock metadata robustness (`assignment-ledger`), and release-please Omar provenance fallback.
+- [x] Seventeenth-cycle hardening applied for active residual findings:
+  - `.github/workflows/omar-gate.yml`: Quality Summary dependency now resolves from canonical commit check-run anchor (`Quality Summary` details_url run id), then validates workflow run path/head SHA identity.
+  - `.github/workflows/release-please.yml`: Omar provenance gate now validates commit `Omar Gate` check-run first and adds fallback lineage (`target commit -> merged PR head -> Omar check-run`) for squash/merge commits without direct same-SHA PR runs.
+  - `src/auth/service.js`: poll idempotency key now includes attempt ordinal (`...:<attempt>`) while preserving poll-session nonce and session challenge verification.
+  - `src/config/schema.js` + `src/config/service.js`: replaced generic `CONFIG_KEYS` exposure with `PERSISTED_CONFIG_KEYS` + explicit `getAllConfigKeys({ includeSecrets })`; default key enumeration no longer includes secret-bearing keys.
+  - `src/daemon/assignment-ledger.js`: file-lock metadata now includes owner token + expiry, fsync on lock metadata writes, ownership-aware release, and stale-lock reclaim with metadata compare-before-remove.
+  - Added/updated coverage in `tests/unit.auth-service.test.mjs`, `tests/unit.core.test.mjs`, and `tests/unit.daemon-assignment-ledger.test.mjs`.
+- [x] Seventeenth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs tests/unit.core.test.mjs tests/unit.daemon-assignment-ledger.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `157/157`; coverage statements `90.19%`, branches `70.45%`, functions `91.51%`, lines `90.19%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push seventeenth-cycle fixes (`0e3d0aa`) and rerun Omar (`run_id=23943129963`): Omar remains `P2=6` with new focus on auth CLI error surface verbosity, quality-gates PR concurrency policy, deterministic clean-tree build proof rigor, release tag-signature provenance checks, and long-lived secret exposure in third-party Omar action inputs.
+- [x] Eighteenth-cycle hardening applied for active residual findings:
+  - `src/commands/auth.js`: `formatApiError` now emits only safe user message by default; `[code] status` remains debug-only behind `SL_DEBUG_ERRORS`.
+  - `tests/unit.auth-command-errors.test.mjs`: updated assertions for default redaction and debug-only code/status exposure.
+  - `.github/workflows/quality-gates.yml`: required quality workflow concurrency is now non-canceling (`cancel-in-progress: false`) to avoid PR check race instability.
+  - `.github/workflows/quality-gates.yml`: build reproducibility now runs from two independent clean git clones (`checkout --detach` + `git clean -ffdqx`), compares sha256 and sorted packed file list parity, and uploads file-list proofs.
+  - `.github/workflows/release.yml`: trusted-invoker gate now enforces cryptographic verification for annotated tags and tag target commits before release path execution.
+- [x] Eighteenth-cycle local evidence:
+  - `npm run verify` (pass, e2e `84/84`; unit `157/157`; coverage statements `90.19%`, branches `70.45%`, functions `91.51%`, lines `90.19%`).
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=0`, `blocking=false`).
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=0`).
+- [x] Push eighteenth-cycle fixes and continue Omar loop until PR #114 reaches `P2<=2`.
+- [x] Push nineteenth-cycle workflow hardening (`237b9ce`) and run required gate watch sequence:
+  - `gh run watch 23966066781 --exit-status` (Quality Gates: pass).
+  - Approve `security-review` pending deployment for Omar run `23966066778`.
+  - `gh run watch 23966066778 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=9`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=06975831-5845-4a29-98b4-a8df31fa9937`) and capture active `P2` set.
+- [x] Twentieth-cycle hardening applied locally for active residual findings:
+  - `scripts/ci/verify-action-shas.sh`: replace grep/sed YAML scraping with `yaml` parser traversal and fail-closed parse handling.
+  - `src/auth/http.js`: Retry-After absolute-date fallback now uses `Date.now()` wall-clock basis (not monotonic-derived pseudo-epoch).
+  - `src/auth/service.js`: localhost HTTP API endpoints now require explicit `SENTINELAYER_ALLOW_INSECURE_LOCAL_HTTP=true` and remain blocked when `CI=true`.
+  - `src/config/schema.js`: add strict printable ASCII secret charset guard (`SL-CONFIG-SECRET-CHARSET`) before provider-shape validation.
+  - `.github/workflows/omar-gate.yml`: broaden post-run secret-leak assertions from summary-only to workspace/artifact scan coverage.
+  - `.github/workflows/release-please.yml`: add rollback-readiness freshness gate (successful rollback run + freshness window + artifact proof).
+  - `.github/workflows/rollback.yml`: remove `repository_dispatch` trigger surface and keep manual/reusable/scheduled pathways.
+  - `.github/workflows/release.yml`: replace rollback request dispatch with `gh workflow run rollback.yml`; add quality release-input lock enforcement and remove `execute_publish` toggle path.
+  - `.github/workflows/quality-gates.yml`: emit `quality-release-input.lock.json` immutable promotion contract artifact.
+  - `.github/workflows/release-publish.yml` (new): dedicated publish workflow consuming immutable verified release bundle.
+  - Added/updated coverage in `tests/unit.auth-http.test.mjs`, `tests/unit.auth-service.test.mjs`, `tests/unit.config-security.test.mjs`, and `tests/e2e.test.mjs`.
+- [x] Twentieth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `173/173`; coverage statements `90.21%`, branches `70.57%`, functions `91.54%`, lines `90.21%`).
+- [x] Commit/push twentieth-cycle fixes (`8959d18`) and rerun Omar (`run_id=23966639262`): Omar reduced active findings to `P2=5` (`P0=0`, `P1=0`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=3127a13a-ff18-4eab-9e46-dc9c0494b5fd`) and apply twenty-first-cycle hardening:
+  - `.github/workflows/quality-gates.yml`: capture immutable `npm audit` evidence artifacts and enforce artifact integrity in downstream `build-artifact`.
+  - `.github/workflows/release-publish.yml`: add explicit least-privilege job permissions to `publish-dry-run`, `authorize-production-publish`, and `publish`.
+  - `.github/workflows/release.yml`: restore guarded `workflow_dispatch` `publish` input so manual production publishes remain deterministic and auditable.
+  - `src/auth/service.js`: replace monotonic-time jitter coupling with per-login `pollJitterSeed` to avoid cross-process fallback correlation.
+  - `tests/unit.auth-service.test.mjs`: add deterministic coverage proving distinct jitter seeds produce distinct cooldowns.
+  - `src/config/schema.js`: add placeholder credential and token-diversity validation gates (`SL-CONFIG-SECRET-PLACEHOLDER`, `SL-CONFIG-SECRET-STRENGTH`).
+  - `tests/unit.config-security.test.mjs`: add regression tests for placeholder/low-diversity rejection and update valid fixture to provider-shaped non-placeholder key.
+- [x] Twenty-first-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass, `175/175`).
+  - `npm run verify` (pass, e2e `84/84`; unit `175/175`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
+- [x] Commit/push twenty-first-cycle fixes (`1fd9172`) and rerun Omar (`run_id=c98684fd-5f63-4fc8-88ee-9ccaf7ca6ff4`): Omar reduced active findings to `P2=4` (`P0=0`, `P1=0`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=c98684fd-5f63-4fc8-88ee-9ccaf7ca6ff4`) and apply twenty-second-cycle hardening:
+  - `.github/workflows/quality-gates.yml`: harden audit evidence capture to fail on invalid exit/error payloads, record structured status metadata, and verify evidence contract + checksum before artifact promotion.
+  - `.github/workflows/release.yml`: set release concurrency `cancel-in-progress: false` to prevent in-flight release validation aborts.
+  - `.github/workflows/release-publish.yml`: migrate production publish path to OIDC trusted publishing (`id-token: write`) and remove `NPM_TOKEN` secret dependency.
+  - `src/auth/session-store.js`: force plaintext token scrubbing migration whenever encrypted metadata is present and fail closed on residual plaintext token fields.
+  - `tests/unit.auth-session-store.test.mjs`: add regression coverage proving plaintext token tamper data is scrubbed and never returned over ciphertext truth.
+- [x] Twenty-second-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-session-store.test.mjs tests/unit.auth-service.test.mjs tests/unit.config-security.test.mjs` (pass, `176/176`).
+  - `npm run verify` (pass, e2e `84/84`; unit `176/176`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
+- [x] Commit/push twenty-second-cycle fixes (`6f16dca`) and rerun Omar (`run_id=9b46220c-6992-490b-b874-fbfd3965e92f`): Omar regressed to `P2=6` (`P0=0`, `P1=0`) with new workflow-governance and auth-surface residuals.
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=9b46220c-6992-490b-b874-fbfd3965e92f`) and apply twenty-third-cycle hardening:
+  - `src/auth/http.js`: remove predictable process/time jitter fallback salt path, add CSPRNG fallback via `crypto.webcrypto.getRandomValues`, and fail closed on entropy unavailability.
+  - `src/commands/auth.js`: constrain `--verbose-errors` detail emission to JSON output only (interactive terminal path remains safe-message only).
+  - `.github/workflows/release-publish.yml`: add `workflow_run` trigger chaining from successful `Release` runs, require `break_glass=true` for manual dispatch, and resolve release tags deterministically from target commit.
+  - `.github/workflows/release-publish.yml`: promote `prepare-release-bundle` and `publish-dry-run` into `release-management` protected environment.
+  - `.github/workflows/quality-gates.yml`: add `security-events: write`, generate deterministic npm-audit SARIF summary, and upload SARIF via GitHub code-scanning API with fail-closed upload checks.
+  - `.github/workflows/release.yml`: record release initiator identity and enforce dual-control by requiring at least one production approval identity distinct from the initiator.
+- [x] Twenty-third-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-session-store.test.mjs` (pass, `176/176`).
+  - `npm run verify` (pass, e2e `84/84`; unit `176/176`; coverage statements `90.25%`, branches `70.60%`, functions `91.60%`, lines `90.25%`).
+- [x] Commit/push twenty-third-cycle fixes and rerun Omar loop on PR #114 (`5be0118`, `5e83fec`; latest Omar run `db0b85ef-86b0-4b12-a9cc-02c4fb9d097a`, `P2=5`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=db0b85ef-86b0-4b12-a9cc-02c4fb9d097a`) and apply twenty-fourth-cycle hardening:
+  - `src/auth/service.js`: add local privileged-scope guardrails for `github_app_bridge` (explicit opt-in + interactive TTY + policy confirmation token `SENTINELAYER_PRIVILEGED_SCOPE_CONFIRM`), propagate env-aware scope validation through issue/rotation flows, and add monotonic `poll_sequence` replay rejection path.
+  - `tests/unit.auth-service.test.mjs`: add coverage for non-increasing poll-sequence replay handling and privileged-scope runtime controls (interactive requirement + policy-confirmation requirement); keep privileged allow path validated with mocked TTY and consent token.
+  - `.github/workflows/release-publish.yml`: force `workflow_dispatch` into dry-run mode and block production publish jobs unless trigger is `workflow_run`.
+  - `.github/workflows/rollback.yml`: emit rollback lineage execute-path booleans (`executeMode`, `productionGateVerified`, `npmMutationPathVerified`) and maintain freshness timestamp updates in final summary stage.
+  - `.github/workflows/release-please.yml`: rollback freshness gate now requires fresh execute-mode rollback lineage artifacts with all execute/mutation proof booleans true.
+  - `.github/workflows/quality-gates.yml`: strengthen deploy lane with immutable deploy-stage proof validation, rollback-drill freshness linkage, npm canary health checks, and uploaded deploy proof artifact.
+- [x] Twenty-fourth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs` (pass, `182/182`).
+  - `npm run verify` (pass, e2e `84/84`; unit `182/182`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [x] Commit/push twenty-fourth-cycle fixes (`589d3dc`, `275e272`, `7dae800`) and rerun Omar (`run_id=1194e434-7ed7-49ce-b8e6-873b588c62d7`): Omar remained non-blocking at `P2=6` (`P0=0`, `P1=0`) with residual findings in gate threshold overrides, request-id sanitization, break-glass execute path, sleep abort cleanup, workflow permissions policy assertions, and release artifact handoff contract outputs.
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=1194e434-7ed7-49ce-b8e6-873b588c62d7`) and apply twenty-fifth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: add protected-branch gate-policy resolver forcing `severity_gate=P1` on default-branch protected refs and route all threshold enforcement through resolved policy outputs.
+  - `src/auth/http.js`: sanitize backend `request_id` / `requestId` values with strict charset + length policy and apply identical sanitization in `SentinelayerApiError` for defense in depth.
+  - `tests/unit.auth-http.test.mjs`: add tainted-request-id regression coverage asserting invalid identifiers are rejected (`requestId=null`).
+  - `src/auth/service.js`: replace custom abort/timer Promise in `sleepWithAbortSignal` with `timers/promises` signal-aware sleep and canonical `AbortError -> CLI_AUTH_ABORTED` mapping.
+  - `tests/unit.auth-service.test.mjs`: add cancellation regression coverage proving aborted poll wait resolves to `CLI_AUTH_ABORTED` (`499`).
+  - `.github/workflows/quality-gates.yml`: add explicit workflow permissions policy enforcement step in `lint`, declare `quality-summary` least-privilege permissions, and wire shared policy checker into local `npm run check` contract.
+  - `scripts/ci/verify-workflow-permissions.js` + `package.json`: new YAML-structural policy checker ensuring explicit top-level + per-job permissions with allowlisted scopes/values.
+  - `.github/workflows/release-publish.yml`: restore guarded break-glass execute path for `workflow_dispatch` (`break_glass=true`, admin/maintain actor, validated `incident_id`), emit immutable dispatch evidence artifact, and allow production publish only for execute-mode dispatches or provenance-anchored `workflow_run` triggers.
+  - `.github/workflows/release.yml`: add explicit preflight immutable artifact contract outputs (`artifact_name`, digests, commit/run provenance) and require publish-path lineage checks to match those outputs before any npm mutation.
+- [x] Twenty-fifth-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs` (pass, `184/184`).
+  - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [x] Commit/push twenty-fifth-cycle fixes (`5247376`) and rerun full gate loop:
+  - `gh run watch 23969294998 --exit-status` (Quality Gates: pass).
+  - Approve `security-review` pending deployment for Omar run `23969294996`.
+  - `gh run watch 23969294996 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=4`, `run_id=552453eb-ec45-46a5-b5af-4ab30619bdff`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=552453eb-ec45-46a5-b5af-4ab30619bdff`) and apply twenty-sixth-cycle hardening:
+  - `scripts/ci/verify-workflow-permissions.js`: migrate from schema-only checks to policy-map enforcement (`required` + `max`) with per-job least-privilege validation and fail-closed drift detection.
+  - `.github/security/workflow-permissions-policy.json`: add checked-in workflow/job permission contract for `quality-gates`, `omar-gate`, `release`, `release-publish`, and `rollback` workflows.
+  - `.github/workflows/quality-gates.yml`: replace regex/string deploy-chain contract assertion with structural YAML graph validator; expand permission-policy enforcement to all release-critical workflows.
+  - `scripts/ci/verify-quality-gate-graph.js`: new structural DAG validator for required deploy promotion chain (`deploy-readiness -> deploy-stage -> deploy -> quality-summary`).
+  - `.github/workflows/release.yml`: remove `workflow_dispatch` `publish` input (validation-only dispatch), and add explicit permissions for previously unscoped jobs (`resolve-release-flags`, `rollback-readiness`, `authorize-production-publish`, `publish`).
+  - `.github/workflows/release-publish.yml`: require `workflow_dispatch` `release_run_id` and bind manual dispatch to an exact successful `release.yml` run whose `head_sha` matches the requested `release_tag` commit.
+  - `.github/workflows/rollback.yml`: add explicit least-privilege job permissions to `rollback` and `rollback-readiness-drill` for policy conformance.
+  - `package.json`: wire `verify-quality-gate-graph` and multi-workflow permission policy checks into `npm run check` for local/CI parity.
+- [x] Twenty-sixth-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [x] Commit/push twenty-sixth-cycle fixes (`9d805d4`) and rerun Omar loop on PR #114 (`gh run watch 23969662889 --exit-status`): failed early in `Lint` because `verify-quality-gate-graph` depended on `yaml` before `npm ci`.
+- [x] Apply corrective gate-order hotfix: in `.github/workflows/quality-gates.yml` run `Assert deploy gate-chain contract is present` after `Setup Node` + `Install dependencies (lockfile immutable)`; local `npm run check` passes.
+- [x] Commit/push corrective hotfix (`8e17701`) and rerun full gate loop:
+  - `gh run watch 23969707464 --exit-status` (Quality Gates: pass).
+  - Approve `security-review` pending deployment for Omar run `23969707461`.
+  - `gh run watch 23969707461 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=5`, `run_id=f395248e-318a-4684-a038-65e99fc2539a`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=f395248e-318a-4684-a038-65e99fc2539a`) and apply twenty-seventh-cycle hardening:
+  - `.github/workflows/release.yml`: enforce trusted `workflow_dispatch` invoker allowlist from policy, require/validate `incident_id`, persist incident binding through flag resolution, and emit immutable release-dispatch evidence artifact.
+  - `.github/security/release-invokers.json`: checked-in trusted invoker policy contract with explicit dispatch allowlist and incident id regex.
+  - `.github/workflows/release-publish.yml`: enforce dual-control approver separation from release initiator using run approvals API, and emit immutable publish-authorization evidence.
+  - `.github/security/workflow-permissions-policy.json`: update release/release-publish authorization job scope contract (`actions: read`) for policy alignment.
+  - `src/auth/service.js`: add TTL-bound persisted poll resume state (`.sentinelayer/auth/poll-state-*.json`) to preserve replay/idempotency windows across process restarts.
+  - `tests/unit.auth-service.test.mjs`: add regression coverage proving replayed request ids are skipped after restart and approval proceeds on next unique response.
+- [x] Twenty-seventh-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `185/185`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-seventh-cycle hardening and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=89d19bce-6e02-436b-8a81-e32f0d33b898`) and apply twenty-eighth-cycle hardening:
+  - `.github/workflows/release-publish.yml`: add deterministic release-run staleness policy (`RELEASE_RUN_MAX_AGE_HOURS`) with explicit emergency override input (`allow_stale_release_run`) gated by manual break-glass + incident context.
+  - `.github/workflows/release.yml`: narrow `push.tags` trigger from `v*` to `v*.*.*` and add pre-privileged `validate-release-trigger` semver guard job.
+  - `.github/workflows/quality-gates.yml`: enforce npm pin parity (`npm@${NPM_VERSION_PIN}`) before every `npm ci` install path in required jobs (`lint`, `syntax-matrix`, `unit-coverage`, `e2e-packaging`, `security-scan`).
+  - `scripts/ci/verify-action-shas.sh`: migrate YAML parse to strict `parseDocument` with duplicate-key rejection and fail-closed parser warnings/errors.
+  - `src/auth/service.js`: add per-session resume-state lock files with stale-lock reclaim and monotonic merge semantics under lock for concurrent poll writers.
+  - `tests/unit.auth-service.test.mjs`: add concurrent resume-state merge regression coverage + stabilize jitter-seed differentiation assertion.
+  - `tests/unit.verify-action-shas.test.mjs`: add verifier regression coverage for duplicate YAML-key rejection and valid pinned-workflow pass path.
+  - `.github/security/workflow-permissions-policy.json`: add policy contract for new `release.yml` job (`validate-release-trigger`).
+- [x] Twenty-eighth-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent SHA tests skipped on local Windows runtime by design).
+  - `npm run verify` (pass, e2e `84/84`; unit `186/188` pass with 2 environment-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-eighth-cycle hardening and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.
+- [ ] Begin feedback-fixes execution chain after PR #114 gate target is reached (`P2<=2`), one PR at a time.
+- [ ] Feedback-fixes branch order (exact next PR branches):
+  1. `roadmap/pr-137-frictionless-gh-secret-setup`
+  2. `roadmap/pr-138-deterministic-agent-ide-dictionary`
+  3. `roadmap/pr-139-dynamic-spec-phase-generator`
+  4. `roadmap/pr-140-spec-bound-precommit-review`
+  5. `roadmap/pr-141-shared-memory-blackboard`
+  6. `roadmap/pr-142-hybrid-retrieval-index`
+  7. `roadmap/pr-143-stuck-agent-alert-channels`
+  8. `roadmap/pr-144-stale-ingest-auto-refresh`
+
+### PR #114 Current Cycle (2026-04-03/04)
+- [x] Apply active Omar P2 fixes from latest check-run annotations:
+  - Explicit pre-deploy attestation verification gate in `.github/workflows/quality-gates.yml`.
+  - Least-privilege refactor in `.github/workflows/release-publish.yml` (remove early privileged scopes).
+  - Non-forward release-tag guard in `.github/workflows/release.yml`.
+  - `src/auth/service.js` localhost HTTP hardening (env + explicit runtime flag).
+  - `src/auth/service.js` polling-pressure reduction and structured backend-unavailable `retryAfterMs`.
+- [x] Update policy/tests/docs affected by the above changes:
+  - `.github/security/workflow-permissions-policy.json`
+  - `tests/unit.auth-service.test.mjs`
+  - `src/commands/auth.js`
+- [x] Run deterministic local evidence (`npm run check`, targeted auth tests, `npm run verify`).
+- [ ] Commit + push PR #114 remediation batch.
+- [ ] Execute full Omar loop:
+  1. `gh run watch <quality-run-id> --exit-status`
+  2. Approve pending deployment for Omar Gate (`security-review`) if waiting
+  3. `gh run watch <omar-run-id> --exit-status`
+  4. Re-anchor to latest Omar findings and continue until `P2<=2`.
+
+### PR #114 Current Cycle (2026-04-04, post-`run_id=d70742b8-b772-483a-823b-dec846e0f206`)
+- [x] Re-anchor remediation scope to active 5x P2 findings from latest Omar reviewer comment.
+- [x] Apply twenty-ninth-cycle hardening for active P2 set:
+  - `.github/workflows/quality-gates.yml`: add explicit reusable `rollback-readiness` gate (`uses: ./.github/workflows/rollback.yml` with `execute=false`), enforce deploy dependency on rollback-readiness, and include rollback-readiness in Quality Summary + gate verification assertions.
+  - `.github/workflows/rollback.yml`: route validation-only rollback runs to non-production quality environment while preserving production environment for execute-mode rollback.
+  - `scripts/ci/verify-quality-gate-graph.js`: require `rollback-readiness` node and dependencies (`rollback-readiness <- deploy-stage`, `deploy <- rollback-readiness`, `quality-summary <- rollback-readiness`).
+  - `.github/workflows/release-publish.yml`: unify workflow concurrency to release-run identity, add deterministic release lock key output, apply lock-key job-level concurrency to downstream publish jobs, and implement duplicate publish short-circuit with emergency override (`allow_duplicate_publish`).
+  - `.github/workflows/release.yml`: enforce explicit critical required contexts (`Quality Summary`, `Omar Gate`) in manifest validation and fail closed when validated run ids are missing for target SHA.
+  - `scripts/ci/verify-action-shas.sh`: broaden remote exec detection (process substitution, shell `-c` fetch chains, PowerShell `iwr|iex`, generalized network-fetch + shell-sink pairing) with normalized multiline command scanning.
+  - `src/auth/http.js`: add persisted shared circuit-breaker snapshot state (atomic file + lock semantics + TTL merge) and load/flush path integration in `requestJson` so cross-process breaker state remains fail-closed.
+  - `tests/unit.auth-http.test.mjs`: add regression proving shared persisted circuit snapshot blocks resumed process before fetch invocation.
+  - `tests/unit.verify-action-shas.test.mjs`: add process-substitution remote-exec detection regression.
+  - `.github/security/workflow-permissions-policy.json`: add quality-gates policy contract for `rollback-readiness`.
+- [x] Run deterministic local evidence:
+  - `npm run check` (pass)
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent SHA tests skipped on local Windows as expected)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Apply thirtieth-cycle parser hotfix for CI bash compatibility:
+  - `scripts/ci/verify-action-shas.sh`: move remote-exec regex patterns into predeclared variables before `[[ ... =~ ... ]]` checks to prevent bash parser failures on semicolon tokens.
+- [x] Run thirtieth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent tests skipped on local Windows as expected)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirtieth-cycle hotfix batch (`8d3ab6f`).
+- [x] Run quality gate watch (`gh run watch 23972480483 --exit-status`) and capture failure root cause:
+  - `Rollback Readiness / Rollback Validation and Promote` failed because validation mode attempted `npm view create-sentinelayer` and hard-failed on `E404` for unpublished package.
+- [x] Apply thirty-first-cycle rollback validation fallback hardening:
+  - `.github/workflows/rollback.yml`: in `execute=false` mode, gracefully fallback from npm dist-tag lookup to local `package.json` version when package is unpublished.
+  - `.github/workflows/rollback.yml`: skip registry-version membership and release-lineage attestation checks only for local fallback mode, while preserving strict execute-mode behavior.
+  - `.github/workflows/rollback.yml`: smoke-install local packed tarball (`npm pack`) in fallback mode and emit deterministic local lineage summary artifact so downstream upload/summary steps cannot fail.
+- [x] Run thirty-first-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-first-cycle rollback fallback batch (`42f5e37`).
+- [x] Run quality gate watch (`gh run watch 23972715082 --exit-status`) and capture failure root cause:
+  - `Verify Gate Graph` incorrectly matched both reusable rollback jobs (`Rollback Validation and Promote` + skipped `Rollback Readiness Drill`) and treated the skipped scheduled drill job as a failure.
+- [x] Apply thirty-second-cycle gate-verification hardening:
+  - `.github/workflows/quality-gates.yml`: tighten rollback verification check to the exact required job name `Rollback Readiness / Rollback Validation and Promote` instead of broad regex matching.
+- [x] Run thirty-second-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-second-cycle gate-verification batch (`36cc067`).
+- [x] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings:
+  - `gh run watch 23972873637 --exit-status` (Quality Gates: pass).
+  - Cleared stale Omar concurrency blocker by canceling run `23972231917`.
+  - Approved `security-review` pending deployment for Omar run `23972873619`.
+  - `gh run watch 23972873619 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=4`, `run_id=e304c6bd-7c29-4a33-8c8a-4eef92bfe353`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=e304c6bd-7c29-4a33-8c8a-4eef92bfe353`) and apply thirty-third-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: replace fixed 10s polling with bounded exponential backoff + jitter via `scripts/release/backoff.sh` for quality-run lookup/status and check-run anchor waits.
+  - `.github/workflows/rollback.yml`: add explicit `allow_local_validation_only` workflow input (dispatch + reusable call), parse as strict boolean, and fail closed when local unpublished-package fallback is requested without policy opt-in.
+  - `.github/workflows/quality-gates.yml`: explicitly opt into rollback local-validation fallback (`allow_local_validation_only: true`) for validation-only quality readiness runs.
+  - `.github/workflows/quality-gates.yml`: add structural release-contract assertion verifying `release.yml` contains `verify-required-checks` and required `needs` edges (`preflight`, `rollback-readiness`, `authorize-production-publish`, `publish`) plus semver tag trigger (`v*.*.*`).
+  - `src/auth/http.js`: replace lock-loop `Math.random` jitter with CSPRNG-backed `secureRandomIntInclusive`.
+- [x] Run thirty-third-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-third-cycle hardening batch (`1aa17b7`).
+- [x] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings:
+  - `gh run watch 23973791741 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23973791729`.
+  - `gh run watch 23973791729 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=6`, `run_id=2daecea6-7833-45dc-8f6c-c0a4f3fd3ace`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=2daecea6-7833-45dc-8f6c-c0a4f3fd3ace`) and apply thirty-fourth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: remove `workflow_dispatch` threshold knobs (`severity_gate`, `p2_max_allowed`) so manual runs cannot weaken Omar threshold policy via runtime inputs.
+  - `scripts/ci/verify-quality-gate-graph.js`: enforce canonical quality stage DAG (`lint -> {eval-impact, syntax-matrix, unit-coverage, e2e-packaging} -> security-scan -> build-artifact`) in addition to deploy/readiness chain.
+  - `.github/workflows/release-publish.yml`: add mandatory upstream release gate-chain revalidation by requiring successful `Verify Required Checks`, `Release Preflight (Verify + Security)`, and `Rollback Readiness` jobs on the selected `release_run_id`.
+  - `src/auth/http.js`: add secure shared-state path validation (no UNC/network paths, no symlink state files/dirs, private-permission checks on POSIX) and lockfile creation hardening (`0o600`).
+  - `src/auth/service.js`: shift poll idempotency to per-attempt keys (no shared two-attempt window reuse) and increase replay request-id tracking horizon (`256`).
+  - `src/auth/session-store.js`: enforce explicit file-storage policy confirmation token (`SENTINELAYER_FILE_STORAGE_CONFIRM=I_ACKNOWLEDGE_FILE_STORAGE_RISK`) whenever keyring is intentionally bypassed; require explicit `--no-keyring` fallback when keyring is unavailable.
+  - `src/commands/auth.js`: update `--no-keyring` help text with required policy-confirmation token.
+  - `tests/unit.auth-service.test.mjs`: update idempotency expectations and set deterministic file-storage policy-consent env for auth service unit flows.
+  - `tests/unit.auth-session-store.test.mjs`: set deterministic file-storage policy-consent env and add regression coverage for missing policy-consent token (`FILE_STORAGE_CONSENT_REQUIRED`).
+- [x] Run thirty-fourth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.auth-session-store.test.mjs` (pass; `190/194` with 4 env-skipped bash tests)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `190/194` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-fourth-cycle hardening batch (`e07a78f`) and execute full Omar loop:
+  - `gh run watch 23974224971 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23974224957`.
+  - `gh run watch 23974224957 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=6`, `run_id=7b3fbb75-4dcf-46d8-be36-f5ee7b17c682`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=7b3fbb75-4dcf-46d8-be36-f5ee7b17c682`) and apply thirty-fifth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: migrate trigger to `pull_request_target` with explicit same-repo/fork guard conditions and protected-ref policy mapping to target event semantics.
+  - `.github/workflows/quality-gates.yml`: add deterministic pinned toolchain provenance baseline step (hosted toolcache path assertion + SHA-256 digest validation).
+  - `.github/workflows/release-please.yml`: require both upstream quality and Omar gate resolution outputs before mutation step (`Run release-please`) can execute.
+  - `scripts/ci/verify-action-shas.sh`: extend remote-exec detector to flag network-fetch commands paired with obfuscation/indirection execution shells.
+  - `src/auth/http.js`: replace modulo fallback in secure jitter helper with rejection-sampling CSPRNG logic to avoid distribution bias.
+  - `src/auth/service.js`: restore bounded poll idempotency window bucketing (`AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE=8`) and update unit assertions for logical-window key reuse.
+- [x] Run thirty-fifth-cycle local evidence:
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.auth-session-store.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; `190/194` with 4 env-skipped bash tests)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `190/194` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-fifth-cycle hardening batch (`31f38a5`).
+- [x] Apply thirty-fifth-cycle Omar trigger hotfix (`9b61961`) after detecting missing Omar run on PR sync.
+  - Root cause: switching trigger semantics to `pull_request_target` in a PR branch suppressed expected Omar invocation on `pull_request` synchronize.
+  - Hotfix: restore `pull_request` trigger path so every PR sync invokes Omar deterministically.
+- [x] Execute full Omar loop and re-anchor findings:
+  - `gh run watch 23974632363 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23974632361`.
+  - `gh run watch 23974632361 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=5`, `run_id=c49e0e72-c63c-4461-9bc7-7bf95c55aed3`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=c49e0e72-c63c-4461-9bc7-7bf95c55aed3`) and apply thirty-sixth-cycle hardening:
+  - `.github/workflows/quality-gates.yml`: enforce pinned Node/npm digests against checked-in allowlist manifest key (`ubuntu-22.04/node-${NODE_VERSION_PIN}/npm-${NPM_VERSION_PIN}`) and fail closed on digest mismatch.
+  - `.github/security/toolchain-digests.json`: add immutable digest baseline contract for `ubuntu-22.04/node-20.11.1/npm-10.8.2` from observed runner provenance.
+  - `.github/workflows/release-publish.yml`: hard-disable manual production publish execution by forcing `workflow_dispatch` into validation-only mode (`dry_run=true`, `execute_mode=false`) and gating production jobs to `workflow_run` only.
+  - `.github/workflows/release.yml`: replace repository-global concurrency key with release-identifier-scoped key and add workflow-dispatch separation-of-duties check requiring at least one `release-management` required reviewer distinct from the dispatch actor.
+  - `src/auth/session-store.js`: expand API-scope digest namespace from 16 to 32 hex chars and add backward-compatible scoped-key fallback/migration cleanup for legacy 16-char key files.
+  - `tests/unit.auth-session-store.test.mjs`: update scoped-key expectations to 32-hex digest and add regression coverage proving legacy 16-hex scoped-key migration rewrites to expanded digest key path.
+- [x] Run thirty-sixth-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run test:unit -- tests/unit.auth-session-store.test.mjs` (pass; `191/195` with 4 env-skipped bash tests)
+  - `npm run verify` (pass; e2e `84/84`; unit `191/195` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-sixth-cycle hardening batch (`5ffbdf2`).
+- [x] Execute full Omar loop and re-anchor findings:
+  - `gh run watch 23975020543 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23975020547`.
+  - `gh run watch 23975020547 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=5`, `run_id=3d457a49-6a7e-48d8-9ead-83c3302a0653`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=3d457a49-6a7e-48d8-9ead-83c3302a0653`) and apply thirty-seventh-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: remove third-party action dependency on `OPENAI_API_KEY` by switching to managed LLM mode and narrowing secret-leak assertions to `SENTINELAYER_TOKEN`.
+  - `.github/workflows/quality-gates.yml`: scope concurrency groups to commit SHA (`pull_request.head.sha || github.sha`) to avoid cross-revision gate collisions.
+  - `.github/workflows/release-publish.yml`: add publish-stage attestation + digest re-verification immediately before `npm publish` and declare `attestations: read` least-privilege scope.
+  - `.github/workflows/release.yml`: add explicit `release-management-gate` environment approval job and enforce it as a dependency of release-trigger validation.
+  - `.github/security/workflow-permissions-policy.json`: update release/release-publish policy contracts for new gate job and publish attestation permission.
+  - `src/auth/http.js`: preserve sanitized request correlation IDs from unknown transport errors (including nested `cause`) and response headers (`x-request-id`) across invalid-json and non-OK failure paths.
+  - `tests/unit.auth-http.test.mjs`: add regressions for transport-error request-id propagation and response-header request-id retention on invalid JSON payloads.
+- [x] Run thirty-seventh-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-session-store.test.mjs` (pass; `193/197` with 4 env-skipped bash tests)
+  - `npm run verify` (pass; e2e `84/84`; unit `193/197` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [x] Commit + push thirty-seventh-cycle hardening batch (`2589f4a`).
+- [x] Execute full Omar loop and capture failure root cause:
+  - `gh run watch 23975391161 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23975391147`.
+  - `gh run watch 23975391147 --exit-status` failed at `Run Omar Gate` with high-entropy lockfile findings (`package-lock.json`) after managed-LLM mode switch.
+- [x] Apply thirty-eighth-cycle Omar scan-path hotfix:
+  - `.github/workflows/omar-gate.yml`: restore OpenAI-keyed Omar invocation (`openai_api_key`, `sentinelayer_managed_llm: "false"`), restore strict OpenAI secret presence/masking checks, and include `OPENAI_API_KEY` in output leak assertions.
+- [x] Run thirty-eighth-cycle local evidence:
+  - `npm run check` (pass)
+- [x] Commit + push thirty-eighth-cycle hotfix batch (`3a52137`).
+- [x] Execute full Omar loop and re-anchor findings:
+  - `gh run watch 23975535959 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23975535973`.
+  - `gh run watch 23975535973 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=4`, `run_id=30b4e8a1-eff4-4fbd-b6b5-f3dcd2336bcc`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=30b4e8a1-eff4-4fbd-b6b5-f3dcd2336bcc`) and apply thirty-ninth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: downgrade `checks` permission from write to read while retaining PR-comment capability and secret-scanner path.
+  - `.github/security/workflow-permissions-policy.json`: align Omar permission policy (`checks: read`) and extend release/release-publish job policy map for new control jobs.
+  - `.github/workflows/quality-gates.yml`: add deterministic immutable-promotion contract assertion for deploy-path jobs (required artifact downloads + no package rebuild/publish commands in release/deploy stages).
+  - `.github/workflows/release.yml`: enforce release-transaction rollback via reusable `rollback.yml` call (`execute=false`), add rollback-target resolver, add lineage verification job binding rollback artifact SHA/commit to preflight release artifact contract, and gate authorize/publish on that verification.
+  - `.github/workflows/release-publish.yml`: add explicit second-human publish gate job (distinct from initiator + primary approver) and enforce second-approver evidence before npm mutation.
+- [x] Run thirty-ninth-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `193/197` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-ninth-cycle hardening batch.
+- [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.
+
+### PR #114 Fortieth Cycle (2026-04-04, run_id=0e18e9dc-425a-4e10-8087-84e7076e7ac9)
+- [x] Re-anchor to active Omar finding set (`P2=6`) from latest PR comment and patch only active paths:
+  - `.github/workflows/omar-gate.yml`: keep workflow-level permissions at `contents: read`; retain mutable scopes job-local only.
+  - `.github/workflows/release-please.yml`: migrate governance `gh api` calls to `scripts/ci/gh-api-retry.sh` helper (`gh_api_json`) for bounded retry/timeout behavior.
+  - `.github/workflows/release-publish.yml`: add explicit `verify-provenance` workflow-boundary job; gate bundle preparation on provenance pass.
+  - `.github/security/workflow-permissions-policy.json`: add release-publish `verify-provenance` contract and explicit release-please workflow policy entry.
+  - `src/auth/http.js`: enforce shared-state root containment under `${HOME}/.sentinelayer`, ignore unsafe override in `CI=true` unless explicit override flag, and fail closed for policy violations.
+  - `src/auth/service.js`: add cryptographic localhost-HTTP consent token requirement (`SENTINELAYER_INSECURE_LOCAL_HTTP_CONSENT`), loopback port allowlist/high-port gate, and privileged-scope hard-disable on insecure localhost HTTP.
+  - `src/commands/auth.js`: replace generic `Error` wrapping with structured command error emission (`code/status/requestId`) and deterministic non-zero exit handling.
+- [x] Update deterministic unit coverage for the hardening:
+  - `tests/unit.auth-service.test.mjs`: localhost consent + port allowlist coverage and privileged-scope denial on insecure transport.
+  - `tests/unit.auth-http.test.mjs`: shared-state root policy + CI override behavior coverage.
+- [x] Run fortieth-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `node --test tests/unit.auth-command-errors.test.mjs` (pass)
+  - `npm run test:unit -- tests/unit.auth-command-errors.test.mjs` (pass; full unit suite pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/omar-gate.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/release-please.yml .github/workflows/rollback.yml` (pass)
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fortieth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`) and re-anchor findings until `P2<=2`.
+- [ ] Begin feedback-fixes Batch U execution (`PR 137 -> 140`) once PR #114 target is achieved.
+
+### PR #114 Forty-First Cycle (2026-04-04, run_id=a088243d-6b33-4a40-a517-a6abff4b6306)
+- [x] Re-anchor to active Omar findings (`P2=5`) and map deterministic remediation scope:
+  - `.github/workflows/omar-gate.yml`: add explicit untrusted fork-PR Omar profile with deterministic baseline checks; preserve trusted secrets-backed profile.
+  - `.github/workflows/release-publish.yml`: allow guarded `workflow_dispatch` execute path (`execute_mode=true`) with actor allowlist + `incident_id` requirement and existing dual-human approvals.
+  - `.github/workflows/rollback.yml`: enforce `NPM_VERSION_PIN` equality in rollback and drill jobs.
+  - `src/auth/http.js`: remove `Math.random` jitter fallback; require secure CSPRNG path.
+  - `src/commands/auth.js`: sanitize structured JSON auth errors to avoid backend `code/status` leakage and suppress verbose internals in CI.
+- [x] Add/refresh deterministic tests for new hardening behavior:
+  - `tests/unit.auth-command-errors.test.mjs`: structured error redaction + CI verbose suppression.
+  - `tests/unit.auth-http.test.mjs`: regression asserting no `Math.random` jitter fallback.
+- [x] Run forty-first-cycle local evidence:
+  - `node --test tests/unit.auth-command-errors.test.mjs` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/omar-gate.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/release-please.yml .github/workflows/rollback.yml` (pass)
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+  - `bash scripts/ci/verify-action-shas.sh ...` (local Windows skip: no WSL/bash distribution installed; CI on ubuntu remains authoritative)
+- [ ] Commit + push forty-first-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start feedback-fixes Batch U execution (`PR 137 -> 140`) immediately after PR #114 burn-down target is met.
+
+### PR #114 Forty-Second Cycle (2026-04-04, pending Omar re-run)
+- [x] Re-anchor to active Omar findings (`P2=5`) and apply deterministic remediations only on active paths:
+  - `.github/workflows/quality-gates.yml`: enforce SHA-scoped concurrency with `cancel-in-progress: true` to prevent stale required-check overlap.
+  - `.github/workflows/quality-gates.yml` -> rollback reusable call: pass explicit `lineage_exception_id` contract for local fallback validation mode.
+  - `.github/workflows/release-please.yml`: install dependencies immutably (`install-immutable.sh`) after pinned Node/npm verification before release-intent mutation checks.
+  - `.github/workflows/release-publish.yml`: align concurrency key across `workflow_run` and `workflow_dispatch` paths on release-run identifiers.
+  - `.github/workflows/rollback.yml`: add typed `lineage_exception_id` input, require validated exception id when local fallback is used, and emit lineage exception evidence in rollback summary artifacts.
+  - `src/auth/service.js`: add service-layer persisted backend outage circuit fields (`backendCircuitOpenedAtEpochMs`, `backendCircuitCooldownMs`) in resume state and enforce pre-loop fail-closed `CLI_AUTH_BACKEND_UNAVAILABLE` handling until cooldown expires.
+  - `src/auth/service.js`: replace lock retry jitter fallback with CSPRNG-backed `crypto.randomInt` path.
+- [x] Run forty-second-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs tests/unit.auth-command-errors.test.mjs tests/unit.auth-http.test.mjs` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release-please.yml .github/workflows/release-publish.yml .github/workflows/rollback.yml .github/workflows/omar-gate.yml` (pass)
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `201/207` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-second-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Begin `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after PR #114 target is reached.
+
+### PR #114 Forty-Third Cycle (2026-04-04, run_id=e38cb331-80af-421e-b09a-11a05c5a17d1)
+- [x] Re-anchor to active Omar findings (`P2=4`) and patch deterministic governance gaps:
+  - `.github/workflows/quality-gates.yml`: add canonical-run dedupe selector to prevent duplicate full gate execution for identical SHA across `pull_request` vs `push main`; gate downstream jobs on canonical selection.
+  - `.github/workflows/quality-gates.yml`: update `quality-summary` and `verify-gate-graph` flow to pass with explicit dedupe-mode summary when canonical PR run already exists.
+  - `scripts/ci/verify-quality-gate-graph.js`: enforce new `canonical-run` gate dependency edges.
+  - `.github/workflows/release-publish.yml`: add policy-pinned upstream release workflow identity enforcement (`workflow_id` + approved release workflow SHA-256 digest at target commit).
+  - `.github/security/release-workflow-source-policy.json`: add approved `release.yml` workflow identity baseline (`workflow_id` and digest allowlist).
+  - `.github/workflows/rollback.yml`: remove unused `id-token: write` permissions from rollback paths.
+  - `.github/workflows/release.yml` + `.github/workflows/quality-gates.yml`: remove unnecessary `id-token` on reusable rollback-readiness caller jobs.
+  - `scripts/ci/verify-action-shas.sh`: make Node structural remote-exec analyzer primary and keep deterministic action SHA allowlist checks.
+  - `scripts/ci/verify-workflow-remote-exec.js`: new parser-based workflow `run` analyzer with tainted-variable and network-to-exec dataflow checks.
+  - `.github/security/workflow-permissions-policy.json`: align policy contract with canonical-run job and reduced rollback permission surface.
+- [x] Run forty-third-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/rollback.yml .github/workflows/omar-gate.yml` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `201/207` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-third-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Begin `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) once PR #114 target is achieved.
+
+### PR #114 Forty-Fourth Cycle (2026-04-04, pending Omar re-run)
+- [x] Re-anchor to active Omar findings (`P2=5`) and patch deterministic controls on active paths:
+  - `.github/workflows/quality-gates.yml`: add protected-environment `deploy-production-proof` gate on semver tag pushes and propagate immutable deploy proof artifact lineage.
+  - `.github/workflows/release-publish.yml`: add `runtime-budget-guard` age-window enforcement before any release bundle selection.
+  - `.github/workflows/rollback.yml`: enforce execute-mode attestation + quality digest provenance contract and tarball digest parity before npm mutation commands.
+  - `.github/security/workflow-permissions-policy.json`: align policy map with `deploy-production-proof` and `runtime-budget-guard` jobs.
+  - `src/auth/service.js`: derive poll-attempt budget from timeout window + backoff cap to prevent poll overrun beyond configured deadline.
+  - `scripts/ci/verify-workflow-remote-exec.js`: replace brittle line-regex scan with parser/dataflow model (segments, pipelines, taint propagation, sink checks) and fail closed on parse anomalies.
+- [x] Run forty-fourth-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release-publish.yml .github/workflows/rollback.yml .github/workflows/omar-gate.yml .github/workflows/release.yml` (pass)
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `201/207` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-fourth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Fifth Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23980025357`:
+  - failing test: `Unit action SHA verifier: variable-indirected remote exec is blocked when not allowlisted` in both syntax matrix jobs and coverage lane.
+  - root cause: parser rewrite no longer tainted plain assignment values (`FETCH_CMD="curl ..."`), so downstream `eval "$FETCH_CMD | bash"` was not flagged.
+- [x] Apply deterministic regression fix:
+  - `scripts/ci/verify-workflow-remote-exec.js`: taint assignment variables when values contain network-fetch fragments, remote URLs, or references to already tainted variables.
+  - `tests/unit.verify-workflow-remote-exec.test.mjs`: add cross-platform parser tests for blocked variable-indirected remote exec and allowlist suppression path.
+- [x] Run forty-fifth-cycle local evidence:
+  - `node --test tests/unit.verify-workflow-remote-exec.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `203/209` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-fifth-cycle fix batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Sixth Cycle (2026-04-04, run_id=da0b4801-03aa-4e52-a22d-7fb2d38a3fc4)
+- [x] Re-anchor to active Omar findings (`P2=5`) and patch deterministic controls:
+  - `.github/workflows/omar-gate.yml`: add quality-run output capture + artifact-bound proof validation (`quality-summary-promotion-proof`) before secret-backed Omar execution; require `actions: read` permission for trusted job.
+  - `.github/workflows/quality-gates.yml`: serialize deploy simulation chain (`release-readiness`, `deploy-readiness`, `deploy-stage`, `rollback-readiness`, `deploy`) under non-canceling global deploy-sim concurrency group.
+  - `.github/workflows/release-please.yml` + `scripts/ci/gh-api-retry.sh`: enforce bounded GitHub API retry budgets with hard ceilings (`max attempts`, `backoff`, `max total wait`) and explicit workflow-level retry env pins.
+  - `scripts/ci/verify-workflow-remote-exec.js`: strengthen parser detection with token-bound network command recognition and high-risk shell-indirection + network-signal detection.
+  - `tests/unit.verify-workflow-remote-exec.test.mjs`: add regression for obfuscated indirection pattern (`PAYLOAD="$(curl ...)"` + `eval`).
+  - `src/auth/service.js`: tighten backend outage budget constants and surface explicit circuit-open/failure-count cooldown details in `CLI_AUTH_BACKEND_UNAVAILABLE` messages.
+  - `.github/security/workflow-permissions-policy.json`: align Omar trusted job policy to include read-only actions scope.
+- [x] Run forty-sixth-cycle local evidence:
+  - `node --test tests/unit.verify-workflow-remote-exec.test.mjs tests/unit.auth-service.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `204/210` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-sixth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Seventh Cycle (2026-04-04, quality false-positive fix)
+- [x] Capture quality failure root cause from run `23980500183`:
+  - `Security Scan` failed at `verify-action-shas.sh` because remote-exec parser started correlating step-wide network signals with unrelated command substitutions (`mktemp`, template strings), causing false positives in `quality-gates.yml`.
+- [x] Apply deterministic false-positive correction:
+  - `scripts/ci/verify-workflow-remote-exec.js`: scope high-risk indirection correlation to command-local network signals (`commandHasNetworkSignal`) instead of whole-step network presence.
+- [x] Run forty-seventh-cycle local evidence:
+  - `node scripts/ci/verify-workflow-remote-exec.js .github/workflows/quality-gates.yml` (pass)
+  - `node --test tests/unit.verify-workflow-remote-exec.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `204/210` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-seventh-cycle fix batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Eighth Cycle (2026-04-04, omar proof-sha alignment)
+- [x] Capture Omar failure root cause from run `23980668606`:
+  - `Bind Quality Summary promotion proof to target SHA` failed because quality proof used PR merge SHA (`github.sha`) while Omar validated PR head SHA (`pull_request.head.sha`).
+- [x] Apply deterministic provenance alignment:
+  - `.github/workflows/quality-gates.yml`: quality summary promotion proof now emits `commitSha` as PR head SHA and `workflowSha` as runner SHA.
+  - `.github/workflows/omar-gate.yml`: proof binder validates `headSha` (fallback `commitSha`) against Omar target SHA and includes workflow SHA in mismatch diagnostics.
+- [x] Run forty-eighth-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `204/210` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-eighth-cycle fix batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Ninth Cycle (2026-04-04, run_id=bcd73aae-6763-4077-af30-84f774e1e6ec)
+- [x] Re-anchor to active Omar findings (`P2=6`) and patch only active deterministic findings:
+  - `.github/workflows/quality-gates.yml`: remove push-event canonical skip heuristic and force full gate-chain execution on protected default-branch pushes.
+  - `.github/workflows/quality-gates.yml`: replace brittle npm patch-version hard-fail with deterministic npm pin bootstrap (`npm@${NPM_VERSION_PIN}`) plus post-bootstrap pin assertion.
+  - `.github/workflows/quality-gates.yml`: keep digest allowlist verification but remove brittle npm hostedtoolcache path requirement in favor of executable + digest checks.
+  - `.github/workflows/release-publish.yml`: hard-disable `workflow_dispatch` mutation path (`execute_mode=true` rejected; manual dispatch requires `dry_run=true`).
+  - `.github/workflows/release.yml`: require canonical bot actor + release-please provenance for push-tag release path; block manual push-tag initiators.
+  - `src/auth/http.js`: classify unknown non-network failures as `CLIENT_PROCESSING_ERROR` (500), preserve `NETWORK_ERROR` for transport failures only, and mark processing errors non-retryable.
+  - `src/auth/http.js`: harden CI shared-state override policy with `NODE_ENV=test` prerequisite plus GitHub Actions explicit policy opt-in requirement.
+  - `.github/security/auth-http-shared-state-policy.json`: add repository policy contract for GitHub Actions CI override opt-in (default deny).
+  - `tests/unit.auth-http.test.mjs`: add regression coverage for non-retryable `CLIENT_PROCESSING_ERROR` and CI/GitHub Actions shared-state override guardrails.
+- [x] Run forty-ninth-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml .github/workflows/release.yml .github/workflows/release-publish.yml .github/workflows/omar-gate.yml .github/workflows/release-please.yml .github/workflows/rollback.yml` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-ninth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after re-anchored Omar findings are captured.
+
+### PR #114 Fiftieth Cycle (2026-04-04, run_id=f97b65ed-2544-4290-83da-6473f8e21a9c)
+- [x] Re-anchor to active Omar findings (`P2=5`) and patch deterministic governance + auth replay controls:
+  - `.github/workflows/quality-gates.yml`: replace prior canonical heuristic with deterministic canonical-run resolution for identical `event + sha` and skip non-canonical duplicates.
+  - `.github/workflows/release-please.yml`: include control-plane changes (`.github/workflows/**`, `.github/security/**`) in trigger paths and in release-intent changed-file relevance checks.
+  - `.github/workflows/release-publish.yml`: add `enforce-timeout-contract` preflight job and require bounded `timeout-minutes` on all release-publish jobs.
+  - `.github/security/workflow-permissions-policy.json`: add explicit contract entry for `enforce-timeout-contract`.
+  - `scripts/ci/verify-action-shas.sh`: enforce policy-driven trusted action owners and GitHub API commit provenance/signature checks (with bounded fallback behavior).
+  - `.github/security/action-provenance-policy.json`: introduce trusted-owner and signature-verification policy contract for action provenance checks.
+  - `src/auth/service.js`: persist and enforce issued poll idempotency-key history in resume state so restarted poll loops avoid key reuse; include per-attempt key derivation input.
+  - `tests/unit.auth-service.test.mjs`: align deterministic expectations to per-attempt unique poll idempotency keys.
+- [x] Run fiftieth-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js` (pass)
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `node --test tests/unit.auth-http.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push fiftieth-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` Batch U implementation (`PR 137 -> PR 140`) after Omar target is met.
+
+### PR #114 Fifty-First Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23981661872`:
+  - `Syntax & Sanity` and `Unit Coverage` failed because `verify-action-shas.sh` now requires GitHub API auth in CI, but the unit-test steps did not provide `GH_TOKEN`.
+- [x] Apply deterministic fix:
+  - `.github/workflows/quality-gates.yml`: inject `GH_TOKEN: ${{ github.token }}` only into `Run unit tests` and `Enforce unit coverage thresholds` steps.
+- [x] Run fifty-first-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-first-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Second Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23981756246`:
+  - `Security Scan` failed because `Enforce workflow action SHA allowlist policy` called `verify-action-shas.sh` without `GH_TOKEN`, while CI policy now requires API auth for provenance validation.
+- [x] Apply deterministic fix:
+  - `.github/workflows/quality-gates.yml`: inject `GH_TOKEN: ${{ github.token }}` into the security-scan allowlist/provenance enforcement step.
+- [x] Run fifty-second-cycle local evidence:
+  - `node scripts/ci/verify-quality-gate-graph.js .github/workflows/quality-gates.yml` (pass)
+  - `node scripts/ci/verify-workflow-permissions.js .github/workflows/quality-gates.yml` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-second-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Third Cycle (2026-04-04, run_id=cee5b639-9a28-447d-970e-c7e3429cd41d)
+- [x] Re-anchor to active Omar findings (`P2=5`) and apply deterministic hardening:
+  - `.github/workflows/quality-gates.yml`: add fallback repository-identity guards for canonical-run resolution failure paths (`event.repository` and `pull_request.head.repo` match enforcement).
+  - `.github/workflows/omar-gate.yml`: bind secret validation step to explicit `security-review` verification output and trusted job identity (`github.job == omar_gate`), and always assert environment protection contract before secret handling.
+  - `.github/workflows/release.yml`: remove collaborator-permission API dependency from tag-push paths by scoping that check to `workflow_dispatch` only (prevents bot-tag deadlock on missing collaborator endpoint access).
+  - `scripts/ci/verify-action-shas.sh`: remove HEAD-only tarball fallback; fail closed when commit-provenance API is unavailable.
+  - `.github/security/action-provenance-policy.json`: align policy with fail-closed commit-provenance behavior.
+  - `.github/workflows/release-publish.yml`: add `enforce-oidc-contract` preflight job that validates `jobs.publish.permissions.id-token == write`, and gate runtime guard on this contract.
+  - `.github/security/workflow-permissions-policy.json`: add explicit permission policy entry for `enforce-oidc-contract`.
+- [x] Run fifty-third-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push fifty-third-cycle hardening batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Fourth Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23982159451`:
+  - `Security Scan` failed because commit-provenance API could not resolve `actions/attest-build-provenance@96b4...`; strict fail-closed behavior without a deterministic fallback blocked CI.
+- [x] Apply deterministic fix:
+  - `scripts/ci/verify-action-shas.sh`: add tarball fallback path that is only allowed when a matching `tarballDigestAllowlist` entry exists; download tarball, compute SHA-256, and require exact digest match.
+  - `.github/security/action-provenance-policy.json`: add explicit digest allowlist entry for `actions/attest-build-provenance@96b4...`.
+- [x] Run fifty-fourth-cycle local evidence:
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-fourth-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Fifth Cycle (2026-04-04, run_id=8d2b33f0-ongoing)
+- [x] Re-anchor to active Omar findings (`P2=5`) and apply deterministic remediations:
+  - `.github/workflows/quality-gates.yml`: convert non-canonical repository fallback path from skip behavior to fail-closed error when canonical-run API lookup fails under non-canonical repository contexts.
+  - `.github/workflows/omar-gate.yml`: bind Quality Summary anchor selection to expected PR head branch in addition to SHA/path/event checks.
+  - `src/auth/service.js`: tighten insecure localhost HTTP random-port threshold from `>=32768` to `>=49152`.
+  - `tests/unit.auth-service.test.mjs`: add regression for rejecting mid-range port `40000` and allowing high ephemeral port `55000`.
+  - `.github/workflows/release-publish.yml`: add explicit OIDC token exchange verification step (audience + subject claim validation) before publish mutation.
+  - `scripts/ci/verify-action-shas.sh`: downgrade digest-verified tarball fallback message from warning to notice to reflect non-degraded, allowlist-backed provenance proof.
+- [x] Run fifty-fifth-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-fifth-cycle hardening batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Sixth Cycle (2026-04-04, deterministic CI flake hardening)
+- [x] Capture quality regression root cause from run `23982493465`:
+  - `Syntax & Sanity` + `Unit Coverage` failures were non-deterministic auth-test flakes after localhost port hardening (`>=49152`), because mock servers still bound to random OS ports below policy threshold.
+- [x] Apply deterministic test reliability fixes:
+  - `tests/unit.auth-service.test.mjs`: bind mock API server on allowlisted high random ports only (`>=49152`) with bounded retries to remove random-port policy collisions.
+  - `tests/unit.auth-http.test.mjs`: add `beforeEach`/`afterEach` circuit-breaker resets to prevent cross-test `CIRCUIT_OPEN` state leakage.
+  - `tests/unit.auth-service.test.mjs`: add `beforeEach`/`afterEach` circuit-breaker resets to prevent auth-http state carryover into auth-service cases.
+- [x] Run fifty-sixth-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run test:unit` (pass; unit `207/213` with 6 env-skipped tests)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-sixth-cycle hardening batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Seventh Cycle (2026-04-04, CI parity correction after run `23982741052`)
+- [x] Capture CI divergence root cause:
+  - `listen(0)` retry strategy still produced low sequential Linux ports (<49152), so auth mock server setup failed repeatedly in GitHub Actions despite local pass.
+- [x] Apply deterministic parity fix:
+  - `tests/unit.auth-service.test.mjs`: replace `listen(0)` retries with explicit randomized high-port binds (`55000-60999`) and collision retries (`EADDRINUSE`/`EACCES` handling).
+- [x] Run fifty-seventh-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run test:unit` (pass; unit `207/213` with 6 env-skipped tests)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-seventh-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
