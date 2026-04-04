@@ -302,6 +302,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Fix flaky unit coverage test assertion (`tests/unit.auth-service.test.mjs`) to enforce deterministic ceiling instead of timing-sensitive exact poll count.
 - [x] Run local verification (`npm run test:coverage`, `npm run verify`).
 - [x] Run local Omar/Audit JSON gates and capture artifacts.
+- [x] Apply targeted P2 hardening patch set for current Omar findings:
+  - `release-please.yml`: merge-base fallback with fail-closed resolution for release-intent scope.
+  - `release-publish.yml`: enforce branch-protection and required-context success on target commit before publish.
+  - `omar-gate.yml`: limit secret leak scan to explicit output/artifact paths instead of repository-wide grep.
+  - `src/config/schema.js` + `src/auth/service.js`: reject leading/trailing whitespace in secret tokens and parse env token via runtime schema before auth session resolution.
+  - Added regression tests in `tests/unit.config-security.test.mjs` and `tests/unit.auth-service.test.mjs`.
+- [x] Re-run post-fix verification (`npm run test:unit -- tests/unit.config-security.test.mjs tests/unit.auth-service.test.mjs`, `npm run verify`).
 - [ ] Push fix commit and watch Omar Gate run to completion via `gh run watch --exit-status`.
 - [ ] If Omar findings remain above target, iterate P2 fixes and rerun loop until `P2 <= 2`.
 

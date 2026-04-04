@@ -320,13 +320,36 @@ jobs:
               echo "::error::${secret_name} leaked into workflow summary."
               exit 1
             fi
-            if grep -R -F --binary-files=without-match \
-              --exclude-dir=.git \
-              --exclude-dir=node_modules \
-              --exclude='*.tgz' \
-              --exclude='*.zip' \
-              -- "${secret_value}" . >/dev/null; then
-              echo "::error::${secret_name} detected in repository workspace/artifact outputs."
-              exit 1
+            scan_targets=()
+            if [[ -f "${GITHUB_STEP_SUMMARY}" ]]; then
+              scan_targets+=("${GITHUB_STEP_SUMMARY}")
             fi
+            for candidate_path in \
+              ".sentinelayer/runs" \
+              ".sentinelayer/artifacts" \
+              "AUDIT_REPORT.md" \
+              "REVIEW_BRIEF.md" \
+              "FINDINGS.jsonl" \
+              "PACK_SUMMARY.json" \
+              "CODEBASE_INGEST_SUMMARY.md" \
+              "CODEBASE_INGEST_SUMMARY.json" \
+              "CODEBASE_INGEST.md" \
+              "CODEBASE_INGEST.json"; do
+              if [[ -e "${candidate_path}" ]]; then
+                scan_targets+=("${candidate_path}")
+              fi
+            done
+            for scan_target in "${scan_targets[@]}"; do
+              if [[ -d "${scan_target}" ]]; then
+                if grep -R -F --binary-files=without-match --exclude='*.tgz' --exclude='*.zip' -- "${secret_value}" "${scan_target}" >/dev/null; then
+                  echo "::error::${secret_name} detected in allowed output path '${scan_target}'."
+                  exit 1
+                fi
+              elif [[ -f "${scan_target}" ]]; then
+                if grep -F -- "${secret_value}" "${scan_target}" >/dev/null; then
+                  echo "::error::${secret_name} detected in allowed output file '${scan_target}'."
+                  exit 1
+                fi
+              fi
+            done
           done

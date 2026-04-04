@@ -206,6 +206,67 @@ jobs:
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
           echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}, trigger=${EVENT_NAME}."
 
+      - name: Verify branch protection and required contexts for publish target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          target_sha="$(echo "${TARGET_SHA:-}" | tr -d '\r' | xargs || true)"
+          test -n "${target_sha}" || (echo "::error::Missing target SHA for publish target governance checks." && exit 1)
+          branch_name="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${branch_name}" ]]; then
+            branch_name="main"
+          fi
+
+          protection_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/branches/${branch_name}/protection" -H "Accept: application/vnd.github+json")"
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [[ "${strict_checks}" != "true" ]]; then
+            echo "::error::Branch protection for '${branch_name}' must enforce strict required checks."
+            exit 1
+          fi
+          required_review_count="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')"
+          if [[ "${required_review_count}" -lt 1 ]]; then
+            echo "::error::Branch protection for '${branch_name}' must require at least one approving review."
+            exit 1
+          fi
+
+          required_context_manifest=".github/security/required-check-contexts.json"
+          test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
+          mapfile -t required_contexts < <(jq -r '.requiredContexts[]?.name // empty' "${required_context_manifest}")
+          if [[ "${#required_contexts[@]}" -eq 0 ]]; then
+            echo "::error::No required contexts defined in ${required_context_manifest}."
+            exit 1
+          fi
+          configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
+          for required_context in "${required_contexts[@]}"; do
+            if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
+              echo "::error::Branch protection for '${branch_name}' is missing required status context '${required_context}'."
+              exit 1
+            fi
+          done
+
+          check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${target_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+          for required_context in "${required_contexts[@]}"; do
+            matched_check="$(echo "${check_runs_json}" | jq -c --arg name "${required_context}" '
+              [.check_runs[]
+                | select((.name // "") == $name)
+                | select((.status // "") == "completed")
+                | select((.conclusion // "") == "success")
+                | select((.app.slug // "") == "github-actions")
+                | select(((.details_url // "") | contains("/actions/runs/")))
+              ] | sort_by((.completed_at // ""), (.id // 0)) | last // empty
+            ')"
+            if [[ -z "${matched_check}" ]]; then
+              echo "::error::Required context '${required_context}' is missing a successful check run on commit ${target_sha}."
+              exit 1
+            fi
+          done
+          echo "Publish target ${target_sha} satisfies branch-protection required context checks."
+
   prepare-release-bundle:
     name: Prepare Release Bundle
     runs-on: ubuntu-22.04

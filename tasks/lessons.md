@@ -209,3 +209,7 @@
 - Release integrity preflight jobs that verify immutable bundles should run under the same protected environment (`release-management`) as tag/run resolution, not in unprotected default context.
 - Security-scan observability is stronger when deterministic audit evidence is mirrored into SARIF and uploaded through code-scanning (`security-events: write`) with fail-closed upload checks.
 - Dual-control for production publish should be enforced at runtime by comparing release initiator identity with workflow approval identities (`actions/runs/{run_id}/approvals`) and failing when no distinct approver exists.
+- Release-intent scoping on `main` should trust `github.event.before` when present and use default-branch merge-base only as bounded fallback; if merge-base equals target SHA, fail open (`release_relevant=true`) to avoid under-scoping release mutations.
+- Secret leakage checks in CI should scan explicit output/artifact paths only; repository-wide recursive grep against runtime secret values creates avoidable false positives and noisy gate churn.
+- Runtime secret schemas should reject leading/trailing whitespace explicitly (`SL-CONFIG-SECRET-WHITESPACE`) rather than silently trimming; auth/session entrypoints must parse env secrets through schema helpers before use.
+- Manual publish workflows need in-workflow branch-protection + required-context verification on the resolved target commit, even when actor permissions and break-glass controls already pass.

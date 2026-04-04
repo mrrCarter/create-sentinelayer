@@ -8,6 +8,17 @@ function emptyToUndefined(value) {
   return normalized ? normalized : undefined;
 }
 
+function secretValueToUndefined(value) {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  const raw = String(value);
+  if (!raw.trim()) {
+    return undefined;
+  }
+  return raw;
+}
+
 const optionalTrimmedString = z.preprocess(emptyToUndefined, z.string().min(1)).optional();
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url()).optional();
 const PLACEHOLDER_TOKEN_PATTERNS = [
@@ -40,10 +51,13 @@ function createOptionalSecretSchema({
 }) {
   return z
     .preprocess(
-      emptyToUndefined,
+      secretValueToUndefined,
       z
         .string()
-        .trim()
+        .refine(
+          (value) => value === value.trim(),
+          `${field} must not include leading or trailing whitespace [SL-CONFIG-SECRET-WHITESPACE].`
+        )
         .min(minLength, `${field} must be at least ${minLength} characters.`)
         .max(maxLength, `${field} must be at most ${maxLength} characters.`)
         .refine(

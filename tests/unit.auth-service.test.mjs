@@ -469,6 +469,27 @@ test("Unit auth service: env token bypasses legacy config and legacy plaintext c
   }
 });
 
+test("Unit auth service: env token rejects leading/trailing whitespace before session resolution", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  try {
+    await assert.rejects(
+      () =>
+        resolveActiveAuthSession({
+          cwd: tempRoot,
+          env: {
+            SENTINELAYER_TOKEN: " sl_env_0123456789abcdef0123456789",
+          },
+          explicitApiUrl: "https://api.example.com",
+          autoRotate: false,
+          homeDir: tempRoot,
+        }),
+      /SL-CONFIG-SECRET-WHITESPACE/i
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth service: reject insecure non-local HTTP API URL overrides", async () => {
   await assert.rejects(
     () =>

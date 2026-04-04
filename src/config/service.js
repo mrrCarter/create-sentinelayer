@@ -34,7 +34,7 @@ function normalizeKey(key, { includeSecrets = false } = {}) {
   return normalized;
 }
 
-function normalizeValueForKey(key, value) {
+export function normalizeValueForKey(key, value) {
   const payload = { [key]: value };
   const schema = isSecretConfigKey(key) ? getRuntimeSecretSchema() : configSchema;
   const parsed = schema.partial().parse(payload);

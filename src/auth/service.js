@@ -4,7 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import open from "open";
 
-import { loadConfig } from "../config/service.js";
+import { loadConfig, normalizeValueForKey } from "../config/service.js";
 import { getSharedRequestJitterSalt, SentinelayerApiError, requestJson } from "./http.js";
 import {
   clearStoredSession,
@@ -1030,7 +1030,7 @@ export async function resolveActiveAuthSession({
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
 
-  const envToken = String(env.SENTINELAYER_TOKEN || "").trim();
+  const envToken = normalizeValueForKey("sentinelayerToken", env?.SENTINELAYER_TOKEN) || "";
   if (envToken) {
     return {
       apiUrl,

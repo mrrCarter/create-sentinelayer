@@ -40,7 +40,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Determine release-intent delta
         id: release_scope
@@ -48,26 +48,51 @@ jobs:
         env:
           BEFORE_SHA: ${{ github.event.before }}
           TARGET_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
-          base_sha="${BEFORE_SHA}"
-          if [[ -z "${base_sha}" ]] || [[ "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
-            base_sha="$(timeout --preserve-status 10s git rev-parse "${TARGET_SHA}^" 2>/dev/null || true)"
+          target_sha="$(echo "${TARGET_SHA}" | tr -d '\r' | xargs || true)"
+          test -n "${target_sha}" || (echo "::error::TARGET_SHA is required for release scope detection." && exit 1)
+          default_branch="$(echo "${DEFAULT_BRANCH:-main}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${default_branch}" ]]; then
+            default_branch="main"
           fi
-          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+
+          base_sha="$(echo "${BEFORE_SHA:-}" | tr -d '\r' | xargs || true)"
+          if [[ -n "${base_sha}" ]] && [[ "${base_sha}" != "0000000000000000000000000000000000000000" ]]; then
+            if ! timeout --preserve-status 10s git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+              base_sha=""
+            fi
+          else
+            base_sha=""
+          fi
+
           if [[ -z "${base_sha}" ]]; then
+            timeout --preserve-status 60s git fetch --no-tags --prune --depth=256 origin "${default_branch}" >/dev/null 2>&1 || true
+            base_sha="$(timeout --preserve-status 20s git merge-base "origin/${default_branch}" "${target_sha}" 2>/dev/null || true)"
+          fi
+
+          if [[ -z "${base_sha}" ]]; then
+            echo "::error::Unable to resolve release scope base SHA via event.before or merge-base with origin/${default_branch}."
+            exit 1
+          fi
+
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+          if [[ "${base_sha}" == "${target_sha}" ]]; then
+            echo "Merge-base equals target SHA; failing open to avoid under-scoping release relevance."
             echo "release_relevant=true" >> "$GITHUB_OUTPUT"
             echo "changed_file_count=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed_files="$(timeout --preserve-status 20s git diff --name-only "${base_sha}" "${TARGET_SHA}")"
+
+          changed_files="$(timeout --preserve-status 20s git diff --name-only "${base_sha}" "${target_sha}")"
           changed_file_count="$(printf "%s\n" "${changed_files}" | sed '/^$/d' | wc -l | xargs)"
           echo "changed_file_count=${changed_file_count}" >> "$GITHUB_OUTPUT"
           if grep -Eq '^(src/|bin/|scripts/|package\.json$|package-lock\.json$|\.release-please-config\.json$|\.release-please-manifest\.json$)' <<< "${changed_files}"; then
             echo "release_relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "release_relevant=false" >> "$GITHUB_OUTPUT"
-            echo "No release-relevant files detected between ${base_sha} and ${TARGET_SHA}; skipping release mutation."
+            echo "No release-relevant files detected between ${base_sha} and ${target_sha}; skipping release mutation."
           fi
 
       - name: Emit release-intent scope manifest
