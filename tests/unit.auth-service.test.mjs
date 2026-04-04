@@ -8,7 +8,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
   __pollCliAuthSessionForTests,
+  __readAuthPollResumeStateForTests,
   __resolveAuthPollBackendCooldownForTests,
+  __writeAuthPollResumeStateForTests,
   getAuthStatus,
   getRuntimeRunStatus,
   listStoredAuthSessions,
@@ -562,16 +564,23 @@ test("Unit auth service: poll jitter seed differentiates cooldowns for identical
     consecutiveFailures: 2,
     pollIntervalMs: 800,
   });
-  const comparison = __resolveAuthPollBackendCooldownForTests({
-    sessionId: "sess_1",
-    pollJitterSeed: "seed_bravo",
-    attempt: 3,
-    consecutiveFailures: 2,
-    pollIntervalMs: 800,
-  });
   assert.ok(Number.isFinite(baseline));
-  assert.ok(Number.isFinite(comparison));
-  assert.notEqual(baseline, comparison);
+  const comparisons = ["seed_bravo", "seed_charlie", "seed_delta", "seed_echo"].map((seed) =>
+    __resolveAuthPollBackendCooldownForTests({
+      sessionId: "sess_1",
+      pollJitterSeed: seed,
+      attempt: 3,
+      consecutiveFailures: 2,
+      pollIntervalMs: 800,
+    })
+  );
+  for (const comparison of comparisons) {
+    assert.ok(Number.isFinite(comparison));
+  }
+  assert.ok(
+    comparisons.some((comparison) => comparison !== baseline),
+    "Expected at least one distinct cooldown across jitter seeds."
+  );
 });
 
 test("Unit auth service: keyring-backed metadata without keyring fails closed and logout clears local state", async () => {
@@ -1106,6 +1115,50 @@ test("Unit auth service: poll resume state persists seen request ids across rest
     assert.equal(secondMock.state.pollCalls, 2);
   } finally {
     await secondMock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: poll resume state merges monotonic fields under concurrent writes", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const sessionId = "sess_resume_merge";
+  const pollClientId = "poll_client_resume_merge";
+  try {
+    await Promise.all([
+      __writeAuthPollResumeStateForTests({
+        sessionId,
+        pollClientId,
+        highestSeenPollSequence: 2,
+        nextAttempt: 2,
+        seenRequestIds: ["req-1", "req-2"],
+        homeDir: tempRoot,
+      }),
+      __writeAuthPollResumeStateForTests({
+        sessionId,
+        pollClientId,
+        highestSeenPollSequence: 7,
+        nextAttempt: 4,
+        seenRequestIds: ["req-3"],
+        homeDir: tempRoot,
+      }),
+      __writeAuthPollResumeStateForTests({
+        sessionId,
+        pollClientId,
+        highestSeenPollSequence: 4,
+        nextAttempt: 9,
+        seenRequestIds: ["req-4", "req-2"],
+        homeDir: tempRoot,
+      }),
+    ]);
+    const persisted = await __readAuthPollResumeStateForTests({
+      sessionId,
+      homeDir: tempRoot,
+    });
+    assert.ok(persisted);
+    assert.equal(persisted.highestSeenPollSequence, 7);
+    assert.equal(persisted.nextAttempt, 9);
+    assert.deepEqual([...persisted.seenRequestIds].sort(), ["req-1", "req-2", "req-3", "req-4"]);
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

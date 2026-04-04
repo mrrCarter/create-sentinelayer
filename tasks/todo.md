@@ -853,6 +853,20 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass).
   - `npm run verify` (pass, e2e `84/84`; unit `185/185`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
 - [ ] Commit/push twenty-seventh-cycle hardening and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=89d19bce-6e02-436b-8a81-e32f0d33b898`) and apply twenty-eighth-cycle hardening:
+  - `.github/workflows/release-publish.yml`: add deterministic release-run staleness policy (`RELEASE_RUN_MAX_AGE_HOURS`) with explicit emergency override input (`allow_stale_release_run`) gated by manual break-glass + incident context.
+  - `.github/workflows/release.yml`: narrow `push.tags` trigger from `v*` to `v*.*.*` and add pre-privileged `validate-release-trigger` semver guard job.
+  - `.github/workflows/quality-gates.yml`: enforce npm pin parity (`npm@${NPM_VERSION_PIN}`) before every `npm ci` install path in required jobs (`lint`, `syntax-matrix`, `unit-coverage`, `e2e-packaging`, `security-scan`).
+  - `scripts/ci/verify-action-shas.sh`: migrate YAML parse to strict `parseDocument` with duplicate-key rejection and fail-closed parser warnings/errors.
+  - `src/auth/service.js`: add per-session resume-state lock files with stale-lock reclaim and monotonic merge semantics under lock for concurrent poll writers.
+  - `tests/unit.auth-service.test.mjs`: add concurrent resume-state merge regression coverage + stabilize jitter-seed differentiation assertion.
+  - `tests/unit.verify-action-shas.test.mjs`: add verifier regression coverage for duplicate YAML-key rejection and valid pinned-workflow pass path.
+  - `.github/security/workflow-permissions-policy.json`: add policy contract for new `release.yml` job (`validate-release-trigger`).
+- [x] Twenty-eighth-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run test:unit -- tests/unit.auth-service.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent SHA tests skipped on local Windows runtime by design).
+  - `npm run verify` (pass, e2e `84/84`; unit `186/188` pass with 2 environment-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-eighth-cycle hardening and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.
 - [ ] Begin feedback-fixes execution chain after PR #114 gate target is reached (`P2<=2`), one PR at a time.
 - [ ] Feedback-fixes branch order (exact next PR branches):
   1. `roadmap/pr-137-frictionless-gh-secret-setup`

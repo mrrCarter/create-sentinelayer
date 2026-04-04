@@ -35,6 +35,10 @@ const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 2;
 const MAX_TRACKED_POLL_REQUEST_IDS = 64;
 const AUTH_POLL_RESUME_STATE_VERSION = 1;
 const AUTH_POLL_RESUME_STATE_TTL_MS = 2 * 60 * 60 * 1000;
+const AUTH_POLL_RESUME_LOCK_TIMEOUT_MS = 5_000;
+const AUTH_POLL_RESUME_LOCK_STALE_MS = 60_000;
+const AUTH_POLL_RESUME_LOCK_RETRY_BASE_MS = 25;
+const AUTH_POLL_RESUME_LOCK_RETRY_JITTER_MS = 40;
 const RETRYABLE_AUTH_POLL_CODES = new Set([
   "TIMEOUT",
   "NETWORK_ERROR",
@@ -286,6 +290,11 @@ function resolveAuthPollResumeStateFilePath({ sessionId, homeDir } = {}) {
   return path.join(resolvedHome, ".sentinelayer", "auth", `poll-state-${stateKey}.json`);
 }
 
+function resolveAuthPollResumeStateLockFilePath({ sessionId, homeDir } = {}) {
+  const stateFilePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+  return `${stateFilePath}.lock`;
+}
+
 function normalizeTrackedPollRequestIds(entries = []) {
   const normalized = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
@@ -347,12 +356,11 @@ function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
   };
 }
 
-async function readAuthPollResumeState({ sessionId, homeDir } = {}) {
-  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+async function readAuthPollResumeStateFromFile(filePath, { expectedSessionId } = {}) {
   try {
     const raw = await fsp.readFile(filePath, "utf-8");
     const parsed = JSON.parse(raw);
-    return normalizeAuthPollResumeState(parsed, { expectedSessionId: sessionId });
+    return normalizeAuthPollResumeState(parsed, { expectedSessionId });
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
       return null;
@@ -364,6 +372,76 @@ async function readAuthPollResumeState({ sessionId, homeDir } = {}) {
   }
 }
 
+async function withAuthPollResumeStateLock({ sessionId, homeDir } = {}, operation) {
+  if (typeof operation !== "function") {
+    throw new Error("operation callback is required.");
+  }
+  const lockPath = resolveAuthPollResumeStateLockFilePath({ sessionId, homeDir });
+  const stateFilePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+  const directoryPath = path.dirname(stateFilePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const deadlineMs = Date.now() + AUTH_POLL_RESUME_LOCK_TIMEOUT_MS;
+  let lockHandle = null;
+  while (!lockHandle) {
+    try {
+      lockHandle = await fsp.open(lockPath, "wx");
+      await lockHandle.writeFile(
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        "utf-8"
+      );
+      await lockHandle.sync();
+      break;
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const lockStats = await fsp.stat(lockPath);
+        if (Date.now() - Number(lockStats.mtimeMs || 0) > AUTH_POLL_RESUME_LOCK_STALE_MS) {
+          await fsp.rm(lockPath, { force: true });
+          continue;
+        }
+      } catch (lockError) {
+        if (!lockError || typeof lockError !== "object" || lockError.code !== "ENOENT") {
+          throw lockError;
+        }
+      }
+      if (Date.now() >= deadlineMs) {
+        throw new Error(
+          `Timed out acquiring auth poll resume-state lock for session '${String(sessionId || "").trim() || "unknown"}'.`
+        );
+      }
+      const retryDelayMs =
+        AUTH_POLL_RESUME_LOCK_RETRY_BASE_MS +
+        Math.floor(Math.random() * (AUTH_POLL_RESUME_LOCK_RETRY_JITTER_MS + 1));
+      await sleep(retryDelayMs);
+    }
+  }
+  try {
+    return await operation({ stateFilePath, lockPath });
+  } finally {
+    try {
+      if (lockHandle) {
+        await lockHandle.close();
+      }
+    } catch {
+      // Best-effort close before lock cleanup.
+    }
+    try {
+      await fsp.rm(lockPath, { force: true });
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+}
+
+async function readAuthPollResumeState({ sessionId, homeDir } = {}) {
+  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+  return readAuthPollResumeStateFromFile(filePath, { expectedSessionId: sessionId });
+}
+
 async function writeAuthPollResumeState({
   sessionId,
   pollClientId,
@@ -372,41 +450,67 @@ async function writeAuthPollResumeState({
   seenRequestIds,
   homeDir,
 } = {}) {
-  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
-  const directoryPath = path.dirname(filePath);
-  await fsp.mkdir(directoryPath, { recursive: true });
-  const payload = {
-    version: AUTH_POLL_RESUME_STATE_VERSION,
-    sessionId: String(sessionId || "").trim(),
-    pollClientId: String(pollClientId || "").trim(),
-    highestSeenPollSequence: Math.max(-1, Math.floor(Number(highestSeenPollSequence) || -1)),
-    nextAttempt: Math.max(0, Math.floor(Number(nextAttempt) || 0)),
-    seenRequestIds: normalizeTrackedPollRequestIds(seenRequestIds),
-    updatedAt: new Date().toISOString(),
-  };
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
-  await fsp.writeFile(tempPath, serialized, "utf-8");
-  let renamed = false;
-  try {
-    await fsp.rename(tempPath, filePath);
-    renamed = true;
-  } finally {
-    if (!renamed) {
-      await fsp.rm(tempPath, { force: true });
-    }
+  const normalizedSessionId = String(sessionId || "").trim();
+  const normalizedPollClientId = String(pollClientId || "").trim();
+  if (!normalizedSessionId) {
+    throw new Error("sessionId is required to persist auth poll resume state.");
   }
+  if (!normalizedPollClientId) {
+    throw new Error("pollClientId is required to persist auth poll resume state.");
+  }
+  const requestedHighestSequence = Math.max(-1, Math.floor(Number(highestSeenPollSequence) || -1));
+  const requestedNextAttempt = Math.max(0, Math.floor(Number(nextAttempt) || 0));
+  const requestedSeenRequestIds = normalizeTrackedPollRequestIds(seenRequestIds);
+  await withAuthPollResumeStateLock(
+    { sessionId: normalizedSessionId, homeDir },
+    async ({ stateFilePath }) => {
+      const existingState = await readAuthPollResumeStateFromFile(stateFilePath, {
+        expectedSessionId: normalizedSessionId,
+      });
+      const mergedHighestSequence = Math.max(
+        requestedHighestSequence,
+        Number(existingState?.highestSeenPollSequence ?? -1)
+      );
+      const mergedNextAttempt = Math.max(requestedNextAttempt, Number(existingState?.nextAttempt ?? 0));
+      const mergedSeenRequestIds = normalizeTrackedPollRequestIds([
+        ...(existingState?.seenRequestIds || []),
+        ...requestedSeenRequestIds,
+      ]);
+      const payload = {
+        version: AUTH_POLL_RESUME_STATE_VERSION,
+        sessionId: normalizedSessionId,
+        pollClientId: normalizedPollClientId,
+        highestSeenPollSequence: mergedHighestSequence,
+        nextAttempt: mergedNextAttempt,
+        seenRequestIds: mergedSeenRequestIds,
+        updatedAt: new Date().toISOString(),
+      };
+      const tempPath = `${stateFilePath}.${process.pid}.${Date.now()}.tmp`;
+      const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+      await fsp.writeFile(tempPath, serialized, "utf-8");
+      let renamed = false;
+      try {
+        await fsp.rename(tempPath, stateFilePath);
+        renamed = true;
+      } finally {
+        if (!renamed) {
+          await fsp.rm(tempPath, { force: true });
+        }
+      }
+    }
+  );
 }
 
 async function clearAuthPollResumeState({ sessionId, homeDir } = {}) {
-  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
-  try {
-    await fsp.rm(filePath);
-  } catch (error) {
-    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
-      throw error;
+  await withAuthPollResumeStateLock({ sessionId, homeDir }, async ({ stateFilePath }) => {
+    try {
+      await fsp.rm(stateFilePath);
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+        throw error;
+      }
     }
-  }
+  });
 }
 
 function normalizeOptionalInteger(value) {
@@ -879,6 +983,14 @@ async function pollCliAuthSession({
 
 export async function __pollCliAuthSessionForTests(options = {}) {
   return pollCliAuthSession(options);
+}
+
+export async function __writeAuthPollResumeStateForTests(options = {}) {
+  return writeAuthPollResumeState(options);
+}
+
+export async function __readAuthPollResumeStateForTests(options = {}) {
+  return readAuthPollResumeState(options);
 }
 
 async function fetchCurrentUser({ apiUrl, token }) {

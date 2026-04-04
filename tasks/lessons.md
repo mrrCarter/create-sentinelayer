@@ -236,3 +236,9 @@
 - Release dispatch trust should be policy-file driven (`.github/security/release-invokers.json`) with explicit actor allowlist + incident-id regex enforcement, not ad-hoc per-workflow shell logic.
 - Production dual-control evidence is strongest when `authorize-production-publish` reads run approvals (`actions/runs/{run_id}/approvals`) and hard-fails if approver identity equals initiator.
 - Auth poll replay protection must survive process restarts; persist bounded resume state keyed by a session digest with TTL, and treat read/write/cleanup failures as best-effort so auth flow availability is not degraded.
+- Release-publish manual promotion should enforce deterministic run staleness bounds (created_at age window) and only allow stale overrides through explicit emergency controls that are separately signaled and incident-bound.
+- Release workflow triggers should be tightened at the event filter (`v*.*.*`) and revalidated by an early guard job before any privileged release logic runs.
+- To eliminate npm lockfile interpretation drift in CI, pin npm CLI immediately after `setup-node` in every job that executes `npm ci`, not only downstream build jobs.
+- YAML governance scanners should parse with strict duplicate-key rejection and fail on parser warnings/errors; best-effort parse modes leave policy-bypass ambiguity.
+- File-backed auth poll resume state needs explicit per-session lock files and stale-lock reclaim to preserve monotonic replay windows under concurrent processes.
+- Probabilistic jitter regression tests should assert diversity across a seed set rather than strict inequality for a single pair, which can collide under bounded jitter windows.

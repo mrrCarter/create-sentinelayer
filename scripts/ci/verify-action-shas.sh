@@ -57,7 +57,27 @@ if (!workflowFile) {
 let parsed;
 try {
   const raw = fs.readFileSync(workflowFile, "utf8");
-  parsed = YAML.parse(raw);
+  const document = YAML.parseDocument(raw, {
+    uniqueKeys: true,
+    strict: true,
+    merge: false,
+    prettyErrors: true,
+  });
+  if (Array.isArray(document.errors) && document.errors.length > 0) {
+    const errorSummary = document.errors
+      .map((entry) => String(entry && entry.message ? entry.message : entry))
+      .join("; ");
+    process.stderr.write(`Failed to parse workflow YAML '${workflowFile}': ${errorSummary}\n`);
+    process.exit(1);
+  }
+  if (Array.isArray(document.warnings) && document.warnings.length > 0) {
+    const warningSummary = document.warnings
+      .map((entry) => String(entry && entry.message ? entry.message : entry))
+      .join("; ");
+    process.stderr.write(`Workflow YAML '${workflowFile}' emitted parser warnings: ${warningSummary}\n`);
+    process.exit(1);
+  }
+  parsed = document.toJS();
 } catch (error) {
   const message = error && error.message ? error.message : String(error);
   process.stderr.write(`Failed to parse workflow YAML '${workflowFile}': ${message}\n`);

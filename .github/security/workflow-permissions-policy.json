@@ -76,6 +76,10 @@
     },
     ".github/workflows/release.yml": {
       "jobs": {
+        "validate-release-trigger": {
+          "required": { "contents": "read" },
+          "max": { "contents": "read" }
+        },
         "resolve-release-flags": {
           "required": { "contents": "read", "checks": "read", "actions": "read" },
           "max": { "contents": "read", "checks": "read", "actions": "read" }

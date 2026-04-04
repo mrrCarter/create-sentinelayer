@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow_stale_release_run:
+        description: "Emergency override to allow stale release_run_id beyond policy window"
+        required: false
+        default: false
+        type: boolean
       incident_id:
         description: "Required incident id for manual execute mode (format INC-XXXX...)"
         required: false
@@ -43,6 +48,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NPM_VERSION_PIN: "10.8.2"
+  RELEASE_RUN_MAX_AGE_HOURS: "72"
 
 concurrency:
   group: release-publish-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event_name == 'workflow_run' && format('run-{0}', github.event.workflow_run.id) || github.ref }}
@@ -98,6 +104,7 @@ jobs:
           RAW_RELEASE_RUN_ID: ${{ inputs.release_run_id || '' }}
           RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           RAW_BREAK_GLASS: ${{ inputs.break_glass || 'false' }}
+          RAW_ALLOW_STALE_RELEASE_RUN: ${{ inputs.allow_stale_release_run || 'false' }}
           RAW_INCIDENT_ID: ${{ inputs.incident_id || '' }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
@@ -106,8 +113,10 @@ jobs:
           WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
           WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || '' }}
           WORKFLOW_RUN_ACTOR: ${{ github.event.workflow_run.actor.login || '' }}
+          WORKFLOW_RUN_CREATED_AT: ${{ github.event.workflow_run.created_at || '' }}
           WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          RELEASE_RUN_MAX_AGE_HOURS: ${{ env.RELEASE_RUN_MAX_AGE_HOURS }}
         run: |
           set -euo pipefail
           git fetch --force --tags origin >/dev/null 2>&1 || true
@@ -131,7 +140,20 @@ jobs:
           dry_run="false"
           incident_id=""
           execute_mode="false"
+          break_glass="false"
+          allow_stale_release_run="false"
+          release_run_created_at=""
           release_initiator="$(echo "${ACTOR}" | tr -d '\r' | xargs || true)"
+          release_run_max_age_hours="$(echo "${RELEASE_RUN_MAX_AGE_HOURS:-72}" | tr -d '\r' | xargs || true)"
+          case "${release_run_max_age_hours}" in ''|*[!0-9]*)
+            echo "::error::Invalid RELEASE_RUN_MAX_AGE_HOURS value '${release_run_max_age_hours}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${release_run_max_age_hours}" -lt 1 ]]; then
+            echo "::error::RELEASE_RUN_MAX_AGE_HOURS must be >= 1."
+            exit 1
+          fi
 
           case "${EVENT_NAME}" in
             workflow_dispatch)
@@ -159,6 +181,7 @@ jobs:
                 echo "::error::Manual workflow_dispatch publish requires break_glass=true."
                 exit 1
               fi
+              allow_stale_release_run="$(normalize_bool "${RAW_ALLOW_STALE_RELEASE_RUN}")"
               input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
               incident_id="$(echo "${RAW_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
               if [[ "${input_dry_run}" == "true" ]]; then
@@ -203,6 +226,7 @@ jobs:
               dispatch_release_run_head_sha="$(echo "${dispatch_release_run_json}" | jq -r '.head_sha // ""')"
               dispatch_release_run_event="$(echo "${dispatch_release_run_json}" | jq -r '.event // ""')"
               dispatch_release_run_head_repo="$(echo "${dispatch_release_run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+              release_run_created_at="$(echo "${dispatch_release_run_json}" | jq -r '.created_at // ""')"
               if [[ "${dispatch_release_run_path}" != ".github/workflows/release.yml" ]]; then
                 echo "::error::release_run_id '${release_run_id}' must reference .github/workflows/release.yml (received '${dispatch_release_run_path}')."
                 exit 1
@@ -265,6 +289,7 @@ jobs:
               dry_run="false"
               release_run_id="$(echo "${WORKFLOW_RUN_ID}" | tr -d '\r' | xargs || true)"
               execute_mode="true"
+              release_run_created_at="$(echo "${WORKFLOW_RUN_CREATED_AT:-}" | tr -d '\r' | xargs || true)"
               workflow_run_actor="$(echo "${WORKFLOW_RUN_ACTOR:-}" | tr -d '\r' | xargs || true)"
               if [[ -n "${workflow_run_actor}" ]]; then
                 release_initiator="${workflow_run_actor}"
@@ -308,6 +333,33 @@ jobs:
           fi
           if [[ -z "${release_run_id}" ]]; then
             release_run_id="${resolved_release_run_id}"
+          fi
+          if [[ -z "${release_run_created_at}" ]]; then
+            release_run_created_at="$(echo "${release_runs_json}" | jq -r --arg selected "${release_run_id}" '
+              [.workflow_runs[]
+                | select((.id | tostring) == $selected)
+              ] | sort_by((.run_number // 0), (.run_attempt // 0), (.created_at // "")) | last | .created_at // empty
+            ')"
+          fi
+          test -n "${release_run_created_at}" || (echo "::error::Unable to resolve created_at for release run '${release_run_id}'." && exit 1)
+          release_run_created_epoch="$(date -u -d "${release_run_created_at}" +%s 2>/dev/null || true)"
+          now_epoch="$(date -u +%s)"
+          if [[ -z "${release_run_created_epoch}" ]] || ! [[ "${release_run_created_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to parse release run created_at '${release_run_created_at}'."
+            exit 1
+          fi
+          if [[ "${release_run_created_epoch}" -gt "${now_epoch}" ]]; then
+            echo "::error::Release run '${release_run_id}' has future created_at '${release_run_created_at}'."
+            exit 1
+          fi
+          release_run_age_hours="$(( (now_epoch - release_run_created_epoch) / 3600 ))"
+          if [[ "${release_run_age_hours}" -gt "${release_run_max_age_hours}" ]]; then
+            if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ "${allow_stale_release_run}" == "true" ]] && [[ "${break_glass}" == "true" ]] && [[ "${execute_mode}" == "true" ]] && [[ -n "${incident_id}" ]]; then
+              echo "::warning::Emergency stale-run override accepted for release run '${release_run_id}' (age=${release_run_age_hours}h > policy ${release_run_max_age_hours}h, incident=${incident_id})."
+            else
+              echo "::error::release_run_id '${release_run_id}' is stale (age=${release_run_age_hours}h > max ${release_run_max_age_hours}h)."
+              exit 1
+            fi
           fi
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"

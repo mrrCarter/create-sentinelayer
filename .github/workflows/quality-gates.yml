@@ -38,6 +38,17 @@ jobs:
           node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
       - name: Install dependencies (lockfile immutable)
         shell: bash
         run: |
@@ -139,6 +150,17 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
       - name: Install dependencies
         run: timeout --preserve-status 8m npm ci --ignore-scripts
 
@@ -164,6 +186,17 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: timeout --preserve-status 8m npm ci --ignore-scripts
@@ -195,6 +228,17 @@ jobs:
           node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
 
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
+
       - name: Install dependencies
         run: timeout --preserve-status 8m npm ci --ignore-scripts
 
@@ -220,6 +264,17 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION_PIN }}
           cache: npm
+
+      - name: Pin npm CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${NPM_VERSION_PIN}"
+          resolved_npm_version="$(npm --version | tr -d '\r\n')"
+          if [[ "${resolved_npm_version}" != "${NPM_VERSION_PIN}" ]]; then
+            echo "::error::npm pin mismatch (expected='${NPM_VERSION_PIN}', actual='${resolved_npm_version}')."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: timeout --preserve-status 8m npm ci --ignore-scripts

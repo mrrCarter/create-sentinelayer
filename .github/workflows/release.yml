@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -33,9 +33,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-release-trigger:
+    name: Validate Release Trigger
+    runs-on: ubuntu-22.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+    steps:
+      - name: Validate release tag format early
+        id: validate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          release_tag=""
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "${GITHUB_REF_VALUE}" == refs/tags/* ]]; then
+                release_tag="${GITHUB_REF_VALUE#refs/tags/}"
+              fi
+              ;;
+            workflow_dispatch)
+              release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
+              ;;
+            *)
+              echo "::error::Unsupported release event '${EVENT_NAME}'."
+              exit 1
+              ;;
+          esac
+          if [[ -z "${release_tag}" ]]; then
+            echo "::error::Unable to resolve release tag for event '${EVENT_NAME}'."
+            exit 1
+          fi
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '${release_tag}' must match vX.Y.Z semver format."
+            exit 1
+          fi
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "Validated release trigger tag '${release_tag}'."
+
   resolve-release-flags:
     name: Resolve Release Flags
     runs-on: ubuntu-22.04
+    needs: [validate-release-trigger]
     timeout-minutes: 3
     permissions:
       contents: read
