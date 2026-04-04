@@ -200,7 +200,6 @@ jobs:
           const guardedJobs = ["release-readiness", "deploy-readiness", "deploy-stage", "deploy"];
           const disallowedRunPatterns = [
             /\bnpm\s+pack\b/i,
-            /\bnpm\s+publish\b/i,
             /\bnpm\s+run\s+build\b/i,
             /\bnpm\s+run\s+compile\b/i,
           ];
@@ -254,6 +253,11 @@ jobs:
                     `Job '${jobId}' step #${index + 1} contains forbidden rebuild/mutation command (${pattern}).`
                   );
                 }
+              }
+              if (/\bnpm\s+publish\b/i.test(run) && !/--dry-run\b/i.test(run)) {
+                throw new Error(
+                  `Job '${jobId}' step #${index + 1} contains npm publish without --dry-run safeguard.`
+                );
               }
             }
           }
