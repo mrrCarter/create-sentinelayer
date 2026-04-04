@@ -865,7 +865,7 @@ test("CLI end-to-end: builds deterministically into a cloned empty GitHub repo",
         baseInterview({
           projectName: "",
           projectDescription: "Scaffold into an empty repository with deterministic outputs.",
-          projectType: "add_feature",
+          projectType: "",
           connectRepo: true,
           repoSlug: repoFixture.repoSlug,
           buildFromExistingRepo: true,
@@ -888,9 +888,11 @@ test("CLI end-to-end: builds deterministically into a cloned empty GitHub repo",
     assert.match(String(pkg.scripts["sentinel:audit"] || ""), /\/audit --path \./);
     assert.match(specText, /# Spec/);
     assert.match(todoText, /Workspace mode: `existing repo clone`/);
+    assert.match(todoText, /Project type: `add_feature`/);
     assert.match(todoText, /Repo: `acme\/greenfield-empty`/);
     assert.match(String(mock.state.generatePayload?.description || ""), /Top-level files: none/);
     assert.match(String(mock.state.generatePayload?.description || ""), /Top-level directories: none/);
+    assert.equal(String(mock.state.generatePayload?.project_type || ""), "add_feature");
 
     const remote = runCommand({
       cwd: repoDir,
@@ -1414,6 +1416,8 @@ test("CLI spec commands expose templates and generate SPEC.md offline", async ()
         tempRoot,
         "--template",
         "api-service",
+        "--project-type",
+        "add_feature",
         "--description",
         "Build hardened API review automation.",
         "--json",
@@ -1423,12 +1427,15 @@ test("CLI spec commands expose templates and generate SPEC.md offline", async ()
     const generatePayload = JSON.parse(String(generateResult.stdout || "").trim());
     assert.equal(generatePayload.command, "spec generate");
     assert.match(String(generatePayload.outputPath || ""), /[\\/]SPEC\.md$/);
+    assert.equal(generatePayload.projectType, "add_feature");
 
     const specText = await readFile(generatePayload.outputPath, "utf-8");
     assert.match(specText, /# SPEC - spec-demo/);
     assert.match(specText, /Build hardened API review automation\./);
+    assert.match(specText, /- Project type: `add_feature` \(Add feature\)/);
     assert.match(specText, /## Security Checklist/);
     assert.match(specText, /## Phase Plan/);
+    assert.match(specText, /Phase 1 - Impact Analysis/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -19,7 +19,9 @@ import {
 } from "../src/prompt/generator.js";
 import {
   generateSpecMarkdown,
+  inferProjectTypeFromIngest,
   inferProjectName,
+  resolveProjectType,
   resolveSpecTemplate,
 } from "../src/spec/generator.js";
 import {
@@ -190,9 +192,12 @@ test("Unit: spec generator renders deterministic sections from template + ingest
   assert.match(markdown, /# SPEC - demo-service/);
   assert.match(markdown, /Template: api-service/);
   assert.match(markdown, /Deliver secure API hardening in iterative phases\./);
+  assert.match(markdown, /- Project type: `add_feature` \(Add feature\)/);
   assert.match(markdown, /## Security Checklist/);
   assert.match(markdown, /## Phase Plan/);
-  assert.match(markdown, /Phase 1 - Foundation/);
+  assert.match(markdown, /Phase 1 - Impact Analysis/);
+  assert.match(markdown, /Estimated effort:/);
+  assert.match(markdown, /Dependencies:/);
 });
 
 test("Unit: spec helpers validate template ids and project-name inference", () => {
@@ -232,6 +237,72 @@ test("Unit: spec helpers validate template ids and project-name inference", () =
   });
   assert.match(fallbackMarkdown, /Entry points: none detected/);
   assert.match(fallbackMarkdown, /Risk surfaces: code_quality/);
+});
+
+test("Unit: spec project-type helpers infer deterministic defaults from ingest/description", () => {
+  assert.equal(
+    resolveProjectType({
+      projectType: "greenfield",
+      description: "Fix auth bug",
+      ingest: { summary: { filesScanned: 120 } },
+    }),
+    "greenfield"
+  );
+
+  assert.equal(
+    resolveProjectType({
+      description: "Fix recurring login regression and patch timeout",
+      ingest: { summary: { filesScanned: 120 } },
+    }),
+    "bugfix"
+  );
+
+  assert.equal(
+    inferProjectTypeFromIngest({
+      summary: { filesScanned: 0 },
+      frameworks: [],
+      entryPoints: [],
+      manifests: { detected: [] },
+      indexedFiles: { files: [] },
+    }),
+    "greenfield"
+  );
+});
+
+test("Unit: spec generator expands dynamic phases for high-complexity bugfix scope", () => {
+  const template = resolveSpecTemplate("api-service");
+  const markdown = generateSpecMarkdown({
+    template,
+    description:
+      "Fix recurring auth timeout regression and harden session validation, token rotation, observability, and release checks for the existing production service.",
+    projectPath: "/repo/demo",
+    ingest: {
+      rootPath: "/repo/demo",
+      summary: {
+        filesScanned: 420,
+        totalLoc: 22500,
+      },
+      languages: [{ language: "TypeScript", loc: 18000 }],
+      frameworks: ["express", "jest", "prisma"],
+      entryPoints: ["src/server.ts"],
+      riskSurfaces: [
+        { surface: "security_overlay" },
+        { surface: "backend_runtime" },
+        { surface: "release_engineering" },
+        { surface: "observability" },
+        { surface: "testing_correctness" },
+        { surface: "data_layer" },
+        { surface: "supply_chain" },
+      ],
+      packageMetadata: { name: "bugfix-demo" },
+    },
+  });
+
+  assert.match(markdown, /- Project type: `bugfix` \(Bugfix\)/);
+  assert.match(markdown, /Phase 1 - Root Cause Analysis/);
+  assert.match(markdown, /Phase 2 - Fix Implementation/);
+  assert.match(markdown, /Phase 3 - Regression Prevention/);
+  assert.match(markdown, /### Phase 4 - /);
 });
 
 test("Unit: prompt generator resolves target and embeds authoritative spec block", () => {
