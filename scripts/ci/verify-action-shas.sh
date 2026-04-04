@@ -194,6 +194,7 @@ base64_pipe_shell_pattern='(base64|openssl[[:space:]]+base64)[^|;]*\|[[:space:]]
 network_variable_assignment_pattern='[a-z_][a-z0-9_]*[[:space:]]*=[[:space:]]*["'"'"'`]*(curl|wget|invoke-webrequest|iwr|irm)([[:space:]]|$)'
 variable_exec_pattern='(eval|bash[[:space:]]+-c|sh[[:space:]]+-c|pwsh[[:space:]]+-c|powershell[[:space:]]+-c)[^[:cntrl:]]*\$[a-z_][a-z0-9_]*'
 variable_eval_shell_pattern='eval[[:space:]]+["'"'"'`]*[^[:cntrl:]]*\$[a-z_][a-z0-9_]*[^[:cntrl:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)'
+variable_eval_pipe_shell_pattern='eval[[:space:]]+["'"'"'`]*\$[a-z_][a-z0-9_]*[[:space:]]*\|[[:space:]]*(bash|sh|zsh|ksh|pwsh|powershell|iex)'
 tokenized_network_pattern='(^| )(curl|wget|invoke-webrequest|iwr|irm)( |$)'
 tokenized_shell_pattern='(^| )(bash|sh|zsh|ksh|pwsh|powershell|iex)( |$)'
 tokenized_obfuscation_pattern='(^| )(eval|base64|openssl|bash -c|sh -c|pwsh -c|powershell -c)( |$)'
@@ -337,6 +338,9 @@ for workflow_file in "${workflow_files[@]}"; do
       remote_exec_detected="true"
     fi
     if [[ "${normalized_run}" =~ ${network_variable_assignment_pattern} ]] && [[ "${normalized_run}" =~ ${variable_eval_shell_pattern} ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${variable_eval_pipe_shell_pattern} ]]; then
       remote_exec_detected="true"
     fi
     if [[ "${contains_network_fetch}" == "true" && "${normalized_run}" =~ ${obfuscation_indirection_pattern} ]]; then
