@@ -268,9 +268,35 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] PR 159 Compliance report generator (SOC 2 / EU AI Act / ISO 27001 templates from tamper-evident artifact chain).
 - [ ] PR 160 Tech debt scoring engine (continuous quality metrics per AI tool per project, threshold-based generation throttle).
 
+### Phase J — Jules Tanaka Persona System (14 PRs, 2026-04-04)
+
+#### Batch J-Alpha: Foundation Tools
+- [ ] PR J-1 FrontendAnalyze helper tool (16 deterministic operations: detect_framework, find_security_sinks, count_state_hooks, check_accessibility, etc.).
+- [ ] PR J-2 Jules agent definition YAML + full updated system prompt (budget awareness, framework detection, SWE framework, enhanced a11y WCAG AA, governance integration, language-agnostic fallback).
+- [ ] PR J-3 Standalone invocation flow (`sl audit frontend|jules`, auto-prerequisites, Omar baseline-on-demand, autocomplete for all 13 personas).
+
+#### Batch J-Beta: Execution Layer
+- [ ] PR J-4 Sub-agent spawning for large frontends (route group partitioning, shared infra partition, proportional budget, sub-agent reconciliation).
+- [ ] PR J-5 Jules streaming events + visual identity (persona color/avatar registry, NDJSON per-agent attribution, terminal display, reasoning events, heartbeat).
+- [ ] PR J-6 Jules memory integration (blackboard read/write, FAISS cross-run recall, finding indexing, compaction with finding preservation).
+
+#### Batch J-Gamma: Autonomous Fix Cycle
+- [ ] PR J-7 Jules worktree isolation for fix mode (git worktree create, FileEdit in worktree, test execution in worktree, cleanup on completion/failure).
+- [ ] PR J-8 Jules → Jira lifecycle integration (claim work item, open ticket, comment plan/finding/fix, transition statuses, sign "— Jules Tanaka").
+- [ ] PR J-9 Jules → PR creation + Omar Gate watch loop (push branch, gh pr create, gh run watch, fix P0-P2 from comments, merge when green).
+- [ ] PR J-10 Jules → S3 artifact upload (audit report, fix diff, Omar log, Jira lifecycle, telemetry — compliance-grade with object lock).
+
+#### Batch J-Delta: Daemon Integration
+- [ ] PR J-11 Pulse daemon monitor (stuck detection heuristics, health checks, recovery actions, error-to-persona routing by domain).
+- [ ] PR J-12 Pulse → Slack/Telegram alert channels (smart frequency on state changes, health summaries, low-token payloads).
+- [ ] PR J-13 Jules error intake flow (receive frontend errors from queue, scope from stack trace, trigger autonomous fix cycle).
+
+#### Batch J-Epsilon: Polish + Tests
+- [ ] PR J-14 Jules integration tests + benchmark (React/Vue/Next.js audit, fix cycle e2e, sub-agent test, 8-needle recall, budget enforcement, stuck detection).
+
 ## Execution Board (2026-04-04)
 
-### Full Batch Roadmap (160 PRs total)
+### Full Batch Roadmap (174 PRs total)
 - Batches A-J (#1-#95): Original roadmap -- DONE
 - Batch K (#97-#100): Governance hardening -- DONE
 - Batch L (#101-#102): Coverage expansion -- DONE
@@ -279,6 +305,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - Batch O (#115-#120): Streaming protocol + internal tools -- QUEUED
 - Batch P (#121-#123): Agentic loop + permissions -- QUEUED
 - Batch Q (#124-#126): Agent spawning + /audit deep -- QUEUED
+- Phase J (J-1 to J-14): Jules Tanaka persona system -- QUEUED (after Q)
 - Batch R (#127-#129): Import graph + scope mapping -- QUEUED
 - Batch S (#130-#132): Entitlement + interactive -- QUEUED
 - Batch T (#133-#136): sl run/fix + daemon upgrade -- QUEUED
@@ -1031,5 +1058,24 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.auth-service.test.mjs tests/unit.auth-session-store.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; `190/194` with 4 env-skipped bash tests)
   - `npm run check` (pass)
   - `npm run verify` (pass; e2e `84/84`; unit `190/194` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
-- [ ] Commit + push thirty-fifth-cycle hardening batch.
+- [x] Commit + push thirty-fifth-cycle hardening batch (`31f38a5`).
+- [x] Apply thirty-fifth-cycle Omar trigger hotfix (`9b61961`) after detecting missing Omar run on PR sync.
+  - Root cause: switching trigger semantics to `pull_request_target` in a PR branch suppressed expected Omar invocation on `pull_request` synchronize.
+  - Hotfix: restore `pull_request` trigger path so every PR sync invokes Omar deterministically.
+- [x] Execute full Omar loop and re-anchor findings:
+  - `gh run watch 23974632363 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23974632361`.
+  - `gh run watch 23974632361 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=5`, `run_id=c49e0e72-c63c-4461-9bc7-7bf95c55aed3`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=c49e0e72-c63c-4461-9bc7-7bf95c55aed3`) and apply thirty-sixth-cycle hardening:
+  - `.github/workflows/quality-gates.yml`: enforce pinned Node/npm digests against checked-in allowlist manifest key (`ubuntu-22.04/node-${NODE_VERSION_PIN}/npm-${NPM_VERSION_PIN}`) and fail closed on digest mismatch.
+  - `.github/security/toolchain-digests.json`: add immutable digest baseline contract for `ubuntu-22.04/node-20.11.1/npm-10.8.2` from observed runner provenance.
+  - `.github/workflows/release-publish.yml`: hard-disable manual production publish execution by forcing `workflow_dispatch` into validation-only mode (`dry_run=true`, `execute_mode=false`) and gating production jobs to `workflow_run` only.
+  - `.github/workflows/release.yml`: replace repository-global concurrency key with release-identifier-scoped key and add workflow-dispatch separation-of-duties check requiring at least one `release-management` required reviewer distinct from the dispatch actor.
+  - `src/auth/session-store.js`: expand API-scope digest namespace from 16 to 32 hex chars and add backward-compatible scoped-key fallback/migration cleanup for legacy 16-char key files.
+  - `tests/unit.auth-session-store.test.mjs`: update scoped-key expectations to 32-hex digest and add regression coverage proving legacy 16-hex scoped-key migration rewrites to expanded digest key path.
+- [x] Run thirty-sixth-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run test:unit -- tests/unit.auth-session-store.test.mjs` (pass; `191/195` with 4 env-skipped bash tests)
+  - `npm run verify` (pass; e2e `84/84`; unit `191/195` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-sixth-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

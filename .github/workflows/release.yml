@@ -29,7 +29,7 @@ env:
   OMAR_PR_RUN_MAX_AGE_HOURS: "24"
 
 concurrency:
-  group: release-control-production-global
+  group: release-control-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -168,6 +168,27 @@ jobs:
                 echo "::error::incident_id '${input_incident_id}' does not match required policy pattern."
                 exit 1
               fi
+            fi
+            release_env_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/environments/release-management" -H "Accept: application/vnd.github+json")"
+            release_reviewer_count="$(echo "${release_env_json}" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]? | ((.reviewer.login // .reviewer.slug // .login // .slug // "") | select(length > 0))] | unique | length')"
+            case "${release_reviewer_count}" in ''|*[!0-9]*)
+              echo "::error::Unable to resolve release-management required reviewer count."
+              exit 1
+              ;;
+            esac
+            if [[ "${release_reviewer_count}" -lt 1 ]]; then
+              echo "::error::release-management environment must define at least one required reviewer."
+              exit 1
+            fi
+            distinct_non_actor_reviewers="$(echo "${release_env_json}" | jq -r --arg actor "${ACTOR}" '[.protection_rules[]? | select(.type == "required_reviewers") | (.reviewers // [])[]? | ((.reviewer.login // .reviewer.slug // .login // .slug // "") | select(length > 0) | ascii_downcase) | select(. != ($actor | ascii_downcase))] | unique | length')"
+            case "${distinct_non_actor_reviewers}" in ''|*[!0-9]*)
+              echo "::error::Unable to resolve non-actor release-management reviewer count."
+              exit 1
+              ;;
+            esac
+            if [[ "${distinct_non_actor_reviewers}" -lt 1 ]]; then
+              echo "::error::workflow_dispatch release requires at least one release-management required reviewer distinct from actor '${ACTOR}'."
+              exit 1
             fi
           fi
           tag_name=""

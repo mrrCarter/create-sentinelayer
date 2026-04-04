@@ -264,3 +264,7 @@
 - Jitter/random helper fallbacks must avoid modulo reduction on bounded integer ranges; use rejection sampling to prevent bias in retry timing distributions.
 - Remote-exec detection for workflow shell commands should treat network-fetch + obfuscated shell indirection (`$()`, backticks, `eval`, `*-c $...`) as high-risk even when direct pipe patterns are absent.
 - Toolchain provenance checks are stronger when CI asserts both expected toolcache source paths and cryptographic digests for active `node`/`npm` binaries.
+- Trigger-model edits on required workflows must be validated by checking actual PR check presence (`gh pr checks`) after push; a syntactically valid workflow can still silently stop firing on the expected event.
+- When widening deterministic key namespace digests (for example 16 -> 32 hex), include backward-compatible lookup candidates and post-read migration cleanup so existing encrypted material remains decryptable and converges to the new path.
+- If emergency/manual release routes are retained, force `workflow_dispatch` into validation-only mode unless explicitly required; keep production mutation jobs gated to provenance-anchored `workflow_run` paths.
+- Toolchain digest allowlists should be keyed by runner image + pinned version tuple, and CI should fail closed when the tuple is missing from the checked-in manifest.

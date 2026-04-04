@@ -68,7 +68,7 @@ test("Unit auth session store: file storage round-trip is deterministic when key
     const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
     const keyFiles = await listKeyFiles(tempRoot);
     assert.equal(keyFiles.length, 1);
-    assert.match(keyFiles[0], /^credentials-[0-9a-f]{16}\.key$/);
+    assert.match(keyFiles[0], /^credentials-[0-9a-f]{32}\.key$/);
     const keyPath = path.join(tempRoot, ".sentinelayer-secrets", keyFiles[0]);
     const rawCredentials = await readFile(credentialsPath, "utf-8");
     assert.ok(rawCredentials.includes("\"tokenCiphertext\""));
@@ -202,8 +202,54 @@ test("Unit auth session store: legacy shared key path migrates to API-scoped key
 
     const scopedAfter = await listKeyFiles(tempRoot);
     assert.equal(scopedAfter.length, 1);
-    assert.match(scopedAfter[0], /^credentials-[0-9a-f]{16}\.key$/);
+    assert.match(scopedAfter[0], /^credentials-[0-9a-f]{32}\.key$/);
     await assert.rejects(() => access(legacyPath), { code: "ENOENT" });
+  } finally {
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth session store: legacy scoped digest key path migrates to expanded digest length", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  try {
+    await writeStoredSession(
+      {
+        apiUrl: "https://api.sentinelayer.dev",
+        token: "api_token_example_digest_migration",
+        tokenId: "token_digest_migration",
+      },
+      { homeDir: tempRoot, allowFileStorageFallback: true }
+    );
+
+    const keyDir = path.join(tempRoot, ".sentinelayer-secrets");
+    const scopedBefore = await listKeyFiles(tempRoot);
+    assert.equal(scopedBefore.length, 1);
+    assert.match(scopedBefore[0], /^credentials-[0-9a-f]{32}\.key$/);
+
+    const expandedPath = path.join(keyDir, scopedBefore[0]);
+    const legacyDigestName = scopedBefore[0].replace(
+      /^credentials-([0-9a-f]{32})\.key$/,
+      (_, digest) => `credentials-${digest.slice(0, 16)}.key`
+    );
+    assert.match(legacyDigestName, /^credentials-[0-9a-f]{16}\.key$/);
+    const legacyDigestPath = path.join(keyDir, legacyDigestName);
+    await rename(expandedPath, legacyDigestPath);
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored?.token, "api_token_example_digest_migration");
+
+    const scopedAfter = await listKeyFiles(tempRoot);
+    assert.equal(scopedAfter.length, 1);
+    assert.match(scopedAfter[0], /^credentials-[0-9a-f]{32}\.key$/);
+    await assert.rejects(() => access(legacyDigestPath), { code: "ENOENT" });
   } finally {
     if (previousDisableKeyring === undefined) {
       delete process.env.SENTINELAYER_DISABLE_KEYRING;

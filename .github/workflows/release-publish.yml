@@ -19,28 +19,9 @@ on:
         required: true
         type: string
       dry_run:
-        description: "Run npm publish --dry-run"
+        description: "Run validation and npm publish --dry-run only"
         required: false
-        default: false
-        type: boolean
-      break_glass:
-        description: "Require explicit break-glass confirmation for manual publish dispatch"
-        required: false
-        default: false
-        type: boolean
-      allow_stale_release_run:
-        description: "Emergency override to allow stale release_run_id beyond policy window"
-        required: false
-        default: false
-        type: boolean
-      incident_id:
-        description: "Required incident id for manual execute mode (format INC-XXXX...)"
-        required: false
-        type: string
-      allow_duplicate_publish:
-        description: "Emergency override to execute publish even when target version is already on npm"
-        required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -110,10 +91,6 @@ jobs:
           RAW_RELEASE_TAG: ${{ inputs.release_tag || '' }}
           RAW_RELEASE_RUN_ID: ${{ inputs.release_run_id || '' }}
           RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
-          RAW_BREAK_GLASS: ${{ inputs.break_glass || 'false' }}
-          RAW_ALLOW_STALE_RELEASE_RUN: ${{ inputs.allow_stale_release_run || 'false' }}
-          RAW_ALLOW_DUPLICATE_PUBLISH: ${{ inputs.allow_duplicate_publish || 'false' }}
-          RAW_INCIDENT_ID: ${{ inputs.incident_id || '' }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event || '' }}
@@ -149,9 +126,6 @@ jobs:
           dry_run="false"
           incident_id=""
           execute_mode="false"
-          break_glass="false"
-          allow_stale_release_run="false"
-          allow_duplicate_publish="false"
           release_run_created_at=""
           already_published="false"
           release_initiator="$(echo "${ACTOR}" | tr -d '\r' | xargs || true)"
@@ -187,30 +161,13 @@ jobs:
                 echo "::error::release_tag '${release_tag}' must match vX.Y.Z semver format."
                 exit 1
               fi
-              break_glass="$(normalize_bool "${RAW_BREAK_GLASS}")"
-              if [[ "${break_glass}" != "true" ]]; then
-                echo "::error::Manual workflow_dispatch publish requires break_glass=true."
+              input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
+              if [[ "${input_dry_run}" != "true" ]]; then
+                echo "::error::workflow_dispatch in release-publish is validation-only. Set dry_run=true."
                 exit 1
               fi
-              allow_stale_release_run="$(normalize_bool "${RAW_ALLOW_STALE_RELEASE_RUN}")"
-              allow_duplicate_publish="$(normalize_bool "${RAW_ALLOW_DUPLICATE_PUBLISH}")"
-              input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
-              incident_id="$(echo "${RAW_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
-              if [[ "${input_dry_run}" == "true" ]]; then
-                dry_run="true"
-                execute_mode="false"
-              else
-                if [[ -z "${incident_id}" ]]; then
-                  echo "::error::Manual execute mode requires incident_id (for example INC-12345)."
-                  exit 1
-                fi
-                if [[ ! "${incident_id}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
-                  echo "::error::incident_id '${incident_id}' is invalid (expected ^INC-[A-Za-z0-9._-]{4,64}$)."
-                  exit 1
-                fi
-                dry_run="false"
-                execute_mode="true"
-              fi
+              dry_run="true"
+              execute_mode="false"
               permission_json="$(gh_api_json_soft "repos/${REPO}/collaborators/${ACTOR}/permission" || true)"
               permission="$(echo "${permission_json:-}" | jq -r '.permission // ""' 2>/dev/null || true)"
               case "${permission}" in
@@ -367,12 +324,8 @@ jobs:
           fi
           release_run_age_hours="$(( (now_epoch - release_run_created_epoch) / 3600 ))"
           if [[ "${release_run_age_hours}" -gt "${release_run_max_age_hours}" ]]; then
-            if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ "${allow_stale_release_run}" == "true" ]] && [[ "${break_glass}" == "true" ]] && [[ "${execute_mode}" == "true" ]] && [[ -n "${incident_id}" ]]; then
-              echo "::warning::Emergency stale-run override accepted for release run '${release_run_id}' (age=${release_run_age_hours}h > policy ${release_run_max_age_hours}h, incident=${incident_id})."
-            else
-              echo "::error::release_run_id '${release_run_id}' is stale (age=${release_run_age_hours}h > max ${release_run_max_age_hours}h)."
-              exit 1
-            fi
+            echo "::error::release_run_id '${release_run_id}' is stale (age=${release_run_age_hours}h > max ${release_run_max_age_hours}h)."
+            exit 1
           fi
           release_lock_key="$(printf '%s' "${release_tag}:${target_sha}" | sha256sum | awk '{print $1}')"
           test -n "${release_lock_key}" || (echo "::error::Unable to compute release lock key." && exit 1)
@@ -397,13 +350,9 @@ jobs:
           rm -f "${npm_probe_error_file}" || true
           if [[ "${published_version}" == "${release_version}" ]]; then
             already_published="true"
-            if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ "${allow_duplicate_publish}" == "true" ]] && [[ "${break_glass}" == "true" ]] && [[ "${execute_mode}" == "true" ]] && [[ -n "${incident_id}" ]]; then
-              echo "::warning::Duplicate publish override accepted for create-sentinelayer@${release_version} (incident=${incident_id})."
-            else
-              echo "::notice::create-sentinelayer@${release_version} is already published; forcing dry_run short-circuit."
-              dry_run="true"
-              execute_mode="false"
-            fi
+            echo "::notice::create-sentinelayer@${release_version} is already published; forcing dry_run short-circuit."
+            dry_run="true"
+            execute_mode="false"
           fi
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
@@ -727,7 +676,7 @@ jobs:
             exit 1
           fi
 
-      - name: Emit break-glass incident evidence
+      - name: Emit manual-dispatch validation evidence
         if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         env:
@@ -738,7 +687,7 @@ jobs:
           DRY_RUN: ${{ needs.resolve-release-bundle.outputs.dry_run }}
         run: |
           set -euo pipefail
-          cat > release-bundle/breakglass-dispatch-evidence.json <<EOF
+          cat > release-bundle/dispatch-validation-evidence.json <<EOF
           {
             "schemaVersion": "1.0.0",
             "workflow": "release-publish",
@@ -818,7 +767,7 @@ jobs:
     concurrency:
       group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
       cancel-in-progress: false
-    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
+    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && github.event_name == 'workflow_run' }}
     environment: production
     outputs:
       approver_login: ${{ steps.approval.outputs.approver_login }}
@@ -865,7 +814,7 @@ jobs:
     concurrency:
       group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
       cancel-in-progress: false
-    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
+    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && github.event_name == 'workflow_run' }}
     environment: production
     permissions:
       contents: read

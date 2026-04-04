@@ -57,6 +57,12 @@ jobs:
           set -euo pipefail
           node_path="$(readlink -f "$(command -v node)")"
           npm_path="$(readlink -f "$(command -v npm)")"
+          digest_manifest_path=".github/security/toolchain-digests.json"
+          digest_manifest_key="ubuntu-22.04/node-${NODE_VERSION_PIN}/npm-${NPM_VERSION_PIN}"
+          if [[ ! -f "${digest_manifest_path}" ]]; then
+            echo "::error::Missing toolchain digest manifest '${digest_manifest_path}'."
+            exit 1
+          fi
           if [[ "${node_path}" != *"/hostedtoolcache/"* ]]; then
             echo "::error::Node binary is not sourced from hosted toolcache (${node_path})."
             exit 1
@@ -75,7 +81,29 @@ jobs:
             echo "::error::Unable to compute valid npm SHA-256 digest."
             exit 1
           fi
-          echo "Pinned toolchain digests: node=${node_sha} npm=${npm_sha}"
+          expected_node_sha="$(jq -r --arg key "${digest_manifest_key}" '.[$key].node_sha256 // ""' "${digest_manifest_path}")"
+          expected_npm_sha="$(jq -r --arg key "${digest_manifest_key}" '.[$key].npm_sha256 // ""' "${digest_manifest_path}")"
+          if [[ -z "${expected_node_sha}" ]] || [[ -z "${expected_npm_sha}" ]]; then
+            echo "::error::Missing expected digests for key '${digest_manifest_key}' in '${digest_manifest_path}'."
+            exit 1
+          fi
+          if [[ ! "${expected_node_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Invalid expected node_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+            exit 1
+          fi
+          if [[ ! "${expected_npm_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Invalid expected npm_sha256 digest in '${digest_manifest_path}' for key '${digest_manifest_key}'."
+            exit 1
+          fi
+          if [[ "${node_sha}" != "${expected_node_sha}" ]]; then
+            echo "::error::Node digest mismatch for '${digest_manifest_key}' (expected='${expected_node_sha}', actual='${node_sha}')."
+            exit 1
+          fi
+          if [[ "${npm_sha}" != "${expected_npm_sha}" ]]; then
+            echo "::error::npm digest mismatch for '${digest_manifest_key}' (expected='${expected_npm_sha}', actual='${npm_sha}')."
+            exit 1
+          fi
+          echo "Pinned toolchain digests verified for ${digest_manifest_key}: node=${node_sha} npm=${npm_sha}"
 
       - name: Install dependencies (lockfile immutable)
         shell: bash

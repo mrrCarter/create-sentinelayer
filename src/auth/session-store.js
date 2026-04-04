@@ -12,6 +12,8 @@ const FILE_TOKEN_KEY_VERSION = 1;
 const LEGACY_FILE_TOKEN_KEY_NAME = "credentials.key";
 const FILE_STORAGE_CONSENT_ENV = "SENTINELAYER_FILE_STORAGE_CONFIRM";
 const FILE_STORAGE_CONSENT_TOKEN = "I_ACKNOWLEDGE_FILE_STORAGE_RISK";
+const API_SCOPE_DIGEST_HEX_LENGTH = 32;
+const LEGACY_API_SCOPE_DIGEST_HEX_LENGTH = 16;
 
 export class StoredSessionError extends Error {
   constructor(message, { code = "STORED_SESSION_ERROR", filePath = null } = {}) {
@@ -30,12 +32,15 @@ function resolveHomeDir(homeDir) {
   return path.resolve(String(homeDir || os.homedir()));
 }
 
-function buildApiScopeDigest(apiUrl) {
+function buildApiScopeDigest(apiUrl, { hexLength = API_SCOPE_DIGEST_HEX_LENGTH } = {}) {
   const normalized = String(apiUrl || "").trim().toLowerCase();
   if (!normalized) {
     return "";
   }
-  return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  const normalizedLength = Number.isFinite(Number(hexLength))
+    ? Math.max(1, Math.floor(Number(hexLength)))
+    : API_SCOPE_DIGEST_HEX_LENGTH;
+  return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, normalizedLength);
 }
 
 /**
@@ -58,13 +63,26 @@ function resolveLegacyCredentialsKeyPath({ homeDir } = {}) {
   return path.join(resolvedHome, ".sentinelayer-secrets", LEGACY_FILE_TOKEN_KEY_NAME);
 }
 
-function resolveScopedCredentialsKeyPath({ homeDir, apiUrl } = {}) {
+function resolveScopedCredentialsKeyPath({ homeDir, apiUrl, digestHexLength = API_SCOPE_DIGEST_HEX_LENGTH } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
-  const digest = buildApiScopeDigest(apiUrl);
+  const digest = buildApiScopeDigest(apiUrl, { hexLength: digestHexLength });
   if (!digest) {
     return resolveLegacyCredentialsKeyPath({ homeDir: resolvedHome });
   }
   return path.join(resolvedHome, ".sentinelayer-secrets", `credentials-${digest}.key`);
+}
+
+function resolveScopedCredentialsKeyPathCandidates({ homeDir, apiUrl } = {}) {
+  const primaryPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl, digestHexLength: API_SCOPE_DIGEST_HEX_LENGTH });
+  const legacyDigestPath = resolveScopedCredentialsKeyPath({
+    homeDir,
+    apiUrl,
+    digestHexLength: LEGACY_API_SCOPE_DIGEST_HEX_LENGTH,
+  });
+  if (legacyDigestPath && legacyDigestPath !== primaryPath) {
+    return [primaryPath, legacyDigestPath];
+  }
+  return [primaryPath];
 }
 
 function buildKeyringAccountName(apiUrl) {
@@ -289,10 +307,11 @@ async function loadFileTokenKey({
   createIfMissing = false,
   allowLegacyFallback = false,
 } = {}) {
-  const scopedKeyPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl });
+  const scopedKeyPaths = resolveScopedCredentialsKeyPathCandidates({ homeDir, apiUrl });
+  const scopedKeyPath = scopedKeyPaths[0];
   const legacyKeyPath = resolveLegacyCredentialsKeyPath({ homeDir });
-  const candidatePaths = [scopedKeyPath];
-  if (allowLegacyFallback && legacyKeyPath !== scopedKeyPath) {
+  const candidatePaths = [...scopedKeyPaths];
+  if (allowLegacyFallback && legacyKeyPath !== scopedKeyPath && !candidatePaths.includes(legacyKeyPath)) {
     candidatePaths.push(legacyKeyPath);
   }
 
@@ -302,7 +321,7 @@ async function loadFileTokenKey({
       return {
         keyMaterial: decodeKeyMaterial(raw, candidatePath),
         keyPath: candidatePath,
-        usedLegacyKeyPath: candidatePath === legacyKeyPath && candidatePath !== scopedKeyPath,
+        usedLegacyKeyPath: candidatePath !== scopedKeyPath,
       };
     } catch (error) {
       if (!error || typeof error !== "object" || error.code !== "ENOENT") {
@@ -333,9 +352,9 @@ async function rotateFileTokenKey({ homeDir, apiUrl } = {}) {
 }
 
 async function deleteFileTokenKey({ homeDir, apiUrl, includeLegacy = false } = {}) {
-  const keyPaths = [resolveScopedCredentialsKeyPath({ homeDir, apiUrl })];
+  const keyPaths = resolveScopedCredentialsKeyPathCandidates({ homeDir, apiUrl });
   const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
-  if (includeLegacy && legacyPath !== keyPaths[0]) {
+  if (includeLegacy && legacyPath !== keyPaths[0] && !keyPaths.includes(legacyPath)) {
     keyPaths.push(legacyPath);
   }
   for (const keyPath of keyPaths) {
@@ -349,15 +368,22 @@ async function deleteFileTokenKey({ homeDir, apiUrl, includeLegacy = false } = {
   }
 }
 
-async function deleteLegacyFileTokenKey({ homeDir } = {}) {
-  const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+async function deleteFileTokenKeyPath(keyPath) {
+  if (!keyPath) {
+    return;
+  }
   try {
-    await fsp.rm(legacyPath);
+    await fsp.rm(keyPath);
   } catch (error) {
     if (!error || typeof error !== "object" || error.code !== "ENOENT") {
       throw error;
     }
   }
+}
+
+async function deleteLegacyFileTokenKey({ homeDir } = {}) {
+  const legacyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  await deleteFileTokenKeyPath(legacyPath);
 }
 
 function requiresFileTokenRekey(metadata = {}) {
@@ -498,6 +524,10 @@ export async function readStoredSession({ homeDir } = {}) {
         rotateKey: requiresFileTokenRekey(metadata) || keyState.usedLegacyKeyPath,
       });
       if (keyState.usedLegacyKeyPath) {
+        const canonicalKeyPath = resolveScopedCredentialsKeyPath({ homeDir, apiUrl: metadata.apiUrl });
+        if (keyState.keyPath && keyState.keyPath !== canonicalKeyPath) {
+          await deleteFileTokenKeyPath(keyState.keyPath);
+        }
         await deleteLegacyFileTokenKey({ homeDir });
       }
     }
