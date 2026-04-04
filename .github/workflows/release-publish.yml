@@ -37,6 +37,11 @@ on:
         description: "Required incident id for manual execute mode (format INC-XXXX...)"
         required: false
         type: string
+      allow_duplicate_publish:
+        description: "Emergency override to execute publish even when target version is already on npm"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -50,7 +55,7 @@ env:
   REQUIRED_CONTEXT_MAX_AGE_HOURS: "168"
 
 concurrency:
-  group: release-publish-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event_name == 'workflow_run' && format('run-{0}', github.event.workflow_run.id) || github.ref }}
+  group: release-publish-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && format('release-run-{0}', inputs.release_run_id) || github.event_name == 'workflow_run' && format('release-run-{0}', github.event.workflow_run.id) || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -67,9 +72,11 @@ jobs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       target_sha: ${{ steps.resolve.outputs.target_sha }}
       release_run_id: ${{ steps.resolve.outputs.release_run_id }}
+      release_lock_key: ${{ steps.resolve.outputs.release_lock_key }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
       incident_id: ${{ steps.resolve.outputs.incident_id }}
       execute_mode: ${{ steps.resolve.outputs.execute_mode }}
+      already_published: ${{ steps.resolve.outputs.already_published }}
       release_initiator: ${{ steps.resolve.outputs.release_initiator }}
     steps:
       - name: Verify release-management environment protections
@@ -105,6 +112,7 @@ jobs:
           RAW_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           RAW_BREAK_GLASS: ${{ inputs.break_glass || 'false' }}
           RAW_ALLOW_STALE_RELEASE_RUN: ${{ inputs.allow_stale_release_run || 'false' }}
+          RAW_ALLOW_DUPLICATE_PUBLISH: ${{ inputs.allow_duplicate_publish || 'false' }}
           RAW_INCIDENT_ID: ${{ inputs.incident_id || '' }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
@@ -143,7 +151,9 @@ jobs:
           execute_mode="false"
           break_glass="false"
           allow_stale_release_run="false"
+          allow_duplicate_publish="false"
           release_run_created_at=""
+          already_published="false"
           release_initiator="$(echo "${ACTOR}" | tr -d '\r' | xargs || true)"
           release_run_max_age_hours="$(echo "${RELEASE_RUN_MAX_AGE_HOURS:-72}" | tr -d '\r' | xargs || true)"
           case "${release_run_max_age_hours}" in ''|*[!0-9]*)
@@ -183,6 +193,7 @@ jobs:
                 exit 1
               fi
               allow_stale_release_run="$(normalize_bool "${RAW_ALLOW_STALE_RELEASE_RUN}")"
+              allow_duplicate_publish="$(normalize_bool "${RAW_ALLOW_DUPLICATE_PUBLISH}")"
               input_dry_run="$(normalize_bool "${RAW_DRY_RUN}")"
               incident_id="$(echo "${RAW_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
               if [[ "${input_dry_run}" == "true" ]]; then
@@ -363,14 +374,47 @@ jobs:
               exit 1
             fi
           fi
+          release_lock_key="$(printf '%s' "${release_tag}:${target_sha}" | sha256sum | awk '{print $1}')"
+          test -n "${release_lock_key}" || (echo "::error::Unable to compute release lock key." && exit 1)
+          release_version="${release_tag#v}"
+          npm_probe_status=0
+          npm_probe_error_file="$(mktemp)"
+          set +e
+          published_version="$(timeout --preserve-status 30s npm view "create-sentinelayer@${release_version}" version --json 2>"${npm_probe_error_file}" | jq -r 'if type == "string" then . elif type == "array" then .[0] // "" else "" end')"
+          npm_probe_status=$?
+          set -e
+          if [[ "${npm_probe_status}" -ne 0 ]]; then
+            probe_stderr="$(cat "${npm_probe_error_file}" 2>/dev/null || true)"
+            if echo "${probe_stderr}" | grep -qiE 'E404|404 Not Found|No match found'; then
+              published_version=""
+            else
+              echo "${probe_stderr}" >&2
+              echo "::error::Unable to verify existing npm publication for create-sentinelayer@${release_version}."
+              rm -f "${npm_probe_error_file}" || true
+              exit 1
+            fi
+          fi
+          rm -f "${npm_probe_error_file}" || true
+          if [[ "${published_version}" == "${release_version}" ]]; then
+            already_published="true"
+            if [[ "${EVENT_NAME}" == "workflow_dispatch" ]] && [[ "${allow_duplicate_publish}" == "true" ]] && [[ "${break_glass}" == "true" ]] && [[ "${execute_mode}" == "true" ]] && [[ -n "${incident_id}" ]]; then
+              echo "::warning::Duplicate publish override accepted for create-sentinelayer@${release_version} (incident=${incident_id})."
+            else
+              echo "::notice::create-sentinelayer@${release_version} is already published; forcing dry_run short-circuit."
+              dry_run="true"
+              execute_mode="false"
+            fi
+          fi
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
           echo "release_run_id=${release_run_id}" >> "$GITHUB_OUTPUT"
+          echo "release_lock_key=${release_lock_key}" >> "$GITHUB_OUTPUT"
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
           echo "incident_id=${incident_id}" >> "$GITHUB_OUTPUT"
           echo "execute_mode=${execute_mode}" >> "$GITHUB_OUTPUT"
+          echo "already_published=${already_published}" >> "$GITHUB_OUTPUT"
           echo "release_initiator=${release_initiator}" >> "$GITHUB_OUTPUT"
-          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}, execute_mode=${execute_mode}, trigger=${EVENT_NAME}."
+          echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), lock=${release_lock_key}, dry_run=${dry_run}, execute_mode=${execute_mode}, already_published=${already_published}, trigger=${EVENT_NAME}."
 
       - name: Verify branch protection and required contexts for publish target
         shell: bash
@@ -542,6 +586,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [resolve-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
     environment: release-management
     permissions:
       contents: read
@@ -709,6 +756,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [resolve-release-bundle, prepare-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
     if: ${{ needs.resolve-release-bundle.outputs.dry_run == 'true' }}
     environment: release-management
     permissions:
@@ -745,6 +795,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     needs: [resolve-release-bundle, prepare-release-bundle]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
     if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
     environment: production
     outputs:
@@ -789,6 +842,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
     if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
     environment: production
     permissions:

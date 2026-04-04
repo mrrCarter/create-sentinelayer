@@ -47,6 +47,7 @@ function verifyQualityGateGraph(workflowPath) {
     "release-readiness",
     "deploy-readiness",
     "deploy-stage",
+    "rollback-readiness",
     "deploy",
     "quality-summary",
   ];
@@ -78,9 +79,23 @@ function verifyQualityGateGraph(workflowPath) {
   if (!deployNeeds.has("deploy-stage")) {
     fail(`Workflow '${workflowPath}' job 'deploy' must depend on 'deploy-stage'.`);
   }
+  if (!deployNeeds.has("rollback-readiness")) {
+    fail(`Workflow '${workflowPath}' job 'deploy' must depend on 'rollback-readiness'.`);
+  }
+
+  const rollbackReadinessNeeds = new Set(normalizeNeeds(jobs["rollback-readiness"]?.needs));
+  if (!rollbackReadinessNeeds.has("deploy-stage")) {
+    fail(`Workflow '${workflowPath}' job 'rollback-readiness' must depend on 'deploy-stage'.`);
+  }
 
   const qualitySummaryNeeds = new Set(normalizeNeeds(jobs["quality-summary"]?.needs));
-  for (const requiredNeed of ["artifact-attestation-gate", "deploy-readiness", "deploy-stage", "deploy"]) {
+  for (const requiredNeed of [
+    "artifact-attestation-gate",
+    "deploy-readiness",
+    "deploy-stage",
+    "rollback-readiness",
+    "deploy",
+  ]) {
     if (!qualitySummaryNeeds.has(requiredNeed)) {
       fail(
         `Workflow '${workflowPath}' job 'quality-summary' must depend on '${requiredNeed}' for deploy gate-chain enforcement.`

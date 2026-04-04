@@ -236,12 +236,38 @@ for workflow_file in "${workflow_files[@]}"; do
     if [[ -z "${run_value}" ]]; then
       continue
     fi
-    normalized_run="$(printf '%s' "${run_value}" | tr '[:upper:]' '[:lower:]')"
+    normalized_run="$(
+      printf '%s' "${run_value}" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr '\n' ' ' \
+        | sed -E 's/[[:space:]]+/ /g'
+    )"
     remote_exec_detected="false"
-    if [[ "${normalized_run}" =~ curl[^|]*\|[[:space:]]*(bash|sh) ]]; then
+    contains_network_fetch="false"
+    contains_shell_sink="false"
+
+    if [[ "${normalized_run}" =~ (curl|wget|invoke-webrequest|iwr|irm)[[:space:]] ]]; then
+      contains_network_fetch="true"
+    fi
+    if [[ "${normalized_run}" =~ [\|;][[:space:]]*(env[[:space:]]+)?(bash|sh|zsh|ksh|pwsh|powershell|iex)([[:space:]]|$) ]]; then
+      contains_shell_sink="true"
+    fi
+    if [[ "${normalized_run}" =~ (bash|sh|zsh|ksh)[[:space:]]*<\([[:space:]]*(curl|wget)[[:space:]] ]]; then
       remote_exec_detected="true"
     fi
-    if [[ "${normalized_run}" =~ wget[^|]*-o-[^|]*\|[[:space:]]*(bash|sh) ]]; then
+    if [[ "${normalized_run}" =~ (source|\.)[[:space:]]*<\([[:space:]]*(curl|wget)[[:space:]] ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${normalized_run}" =~ (bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]*[^[:space:]]*(curl|wget) ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${normalized_run}" =~ (powershell|pwsh)[^|;]*(iwr|invoke-webrequest|irm)[^|;]*\|[[:space:]]*iex ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${normalized_run}" =~ iex[[:space:]]*\([[:space:]]*(iwr|invoke-webrequest|irm) ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${contains_network_fetch}" == "true" && "${contains_shell_sink}" == "true" ]]; then
       remote_exec_detected="true"
     fi
     if [[ "${remote_exec_detected}" != "true" ]]; then

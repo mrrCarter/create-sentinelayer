@@ -710,6 +710,12 @@ jobs:
             echo "::error::No required checks configured."
             exit 1
           fi
+          for critical_context in "Quality Summary" "Omar Gate"; do
+            if ! jq -e --arg context "${critical_context}" '.requiredContexts[] | select(.name == $context)' "${required_context_manifest}" >/dev/null; then
+              echo "::error::Required check manifest must include critical context '${critical_context}'."
+              exit 1
+            fi
+          done
           quality_run_id=""
           omar_run_id=""
           workflow_file_for_check() {
@@ -851,6 +857,14 @@ jobs:
               echo "Required check '${check_name}' passed (event=${event_name}, run=${run_id})."
             done
             if [[ "${pending}" -eq 0 ]]; then
+              if [[ -z "${quality_run_id}" ]]; then
+                echo "::error::Missing successful Quality Summary run for target commit ${TARGET_SHA}."
+                exit 1
+              fi
+              if [[ -z "${omar_run_id}" ]]; then
+                echo "::error::Missing successful Omar Gate run for target commit ${TARGET_SHA}."
+                exit 1
+              fi
               echo "target_sha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
               echo "quality_run_id=${quality_run_id}" >> "$GITHUB_OUTPUT"
               echo "omar_run_id=${omar_run_id}" >> "$GITHUB_OUTPUT"

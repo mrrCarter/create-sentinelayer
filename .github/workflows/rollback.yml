@@ -63,7 +63,7 @@ jobs:
     if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
-    environment: production
+    environment: ${{ (inputs.execute == true || github.event.inputs.execute == 'true') && 'production' || 'quality-deploy' }}
     permissions:
       contents: read
       actions: read

@@ -1,6 +1,6 @@
 name: Quality Gates
 # Release-safety deploy simulation gate chain (no external deployment mutation) is enforced in this workflow:
-# lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> deploy -> quality-summary
+# lint/eval/syntax/unit/e2e/security -> build-artifact -> release-readiness + deploy-readiness -> deploy-stage -> rollback-readiness + deploy -> quality-summary
 
 on:
   pull_request:
@@ -1124,10 +1124,22 @@ jobs:
           path: quality-deploy-stage/deploy.summary.json
           if-no-files-found: error
 
+  rollback-readiness:
+    name: Rollback Readiness
+    needs: [deploy-stage]
+    if: ${{ always() && needs.deploy-stage.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/rollback.yml
+    with:
+      execute: false
+
   deploy:
     name: Deploy
     runs-on: ubuntu-22.04
-    needs: [deploy-stage]
+    needs: [deploy-stage, rollback-readiness]
     if: ${{ always() }}
     environment: quality-deploy
     permissions:
@@ -1142,10 +1154,15 @@ jobs:
         shell: bash
         env:
           RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
+          RESULT_ROLLBACK_READINESS: ${{ needs.rollback-readiness.result }}
         run: |
           set -euo pipefail
           if [[ "${RESULT_DEPLOY_STAGE}" != "success" ]]; then
             echo "::error::deploy-stage must succeed before deploy (result=${RESULT_DEPLOY_STAGE})."
+            exit 1
+          fi
+          if [[ "${RESULT_ROLLBACK_READINESS}" != "success" ]]; then
+            echo "::error::rollback-readiness must succeed before deploy (result=${RESULT_ROLLBACK_READINESS})."
             exit 1
           fi
       - name: Download deploy-stage proof
@@ -1267,7 +1284,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness, deploy-stage, deploy]
+    needs: [lint, eval-impact, syntax-matrix, unit-coverage, e2e-packaging, security-scan, build-artifact, artifact-attestation-gate, release-readiness, deploy-readiness, deploy-stage, rollback-readiness, deploy]
     if: ${{ always() }}
     permissions:
       contents: read
@@ -1286,11 +1303,12 @@ jobs:
           RESULT_RELEASE_READINESS: ${{ needs.release-readiness.result }}
           RESULT_DEPLOY_READINESS: ${{ needs.deploy-readiness.result }}
           RESULT_DEPLOY_STAGE: ${{ needs.deploy-stage.result }}
+          RESULT_ROLLBACK_READINESS: ${{ needs.rollback-readiness.result }}
           RESULT_DEPLOY: ${{ needs.deploy.result }}
         run: |
           set -euo pipefail
           failures=0
-          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_DEPLOY; do
+          for gate in RESULT_LINT RESULT_EVAL_IMPACT RESULT_SYNTAX_MATRIX RESULT_UNIT_COVERAGE RESULT_E2E_PACKAGING RESULT_SECURITY_SCAN RESULT_BUILD_ARTIFACT RESULT_ARTIFACT_ATTESTATION_GATE RESULT_RELEASE_READINESS RESULT_DEPLOY_READINESS RESULT_DEPLOY_STAGE RESULT_ROLLBACK_READINESS RESULT_DEPLOY; do
             result="${!gate}"
             name="$(echo "${gate}" | sed 's/^RESULT_//; s/_/ /g')"
             echo "${name}: ${result}"
@@ -1423,6 +1441,7 @@ jobs:
           assert_exact_success "Release Readiness"
           assert_exact_success "Deploy Readiness"
           assert_exact_success "Deploy Stage"
+          assert_regex_success "^Rollback Readiness( / .+)?$" 1
           assert_exact_success "Deploy"
           assert_exact_success "Quality Summary"
           echo "Gate graph verification passed for run ${RUN_ID}."

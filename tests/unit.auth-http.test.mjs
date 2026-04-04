@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -141,6 +144,77 @@ test("Unit auth http: sustained 429 responses open rate-limit circuit and stop r
     assert.ok(calls <= 2, `Expected retry loop to stop after rate-limit circuit opens, got ${calls} calls.`);
   } finally {
     __resetAuthHttpCircuitBreakerForTests();
+  }
+});
+
+test("Unit auth http: shared circuit snapshot is loaded after in-memory reset", async () => {
+  __resetAuthHttpCircuitBreakerForTests();
+  const tempStateDir = await mkdtemp(path.join(os.tmpdir(), "sl-auth-http-state-"));
+  process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR = tempStateDir;
+  let primingCalls = 0;
+  let resumedCalls = 0;
+  const rateLimitBody = JSON.stringify({
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requests",
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/shared-rate-limit", {
+          method: "GET",
+          maxAttempts: 5,
+          retryBackoffMs: 1,
+          fetchImpl: async () => {
+            primingCalls += 1;
+            return new Response(rateLimitBody, {
+              status: 429,
+              headers: {
+                "Content-Type": "application/json",
+                "Retry-After": "1",
+              },
+            });
+          },
+        }),
+      (error) => {
+        assert.equal(error?.status, 429);
+        assert.equal(error?.code, "RATE_LIMITED");
+        return true;
+      }
+    );
+    assert.ok(primingCalls <= 2, `Expected priming circuit to open quickly, got ${primingCalls} calls.`);
+
+    __resetAuthHttpCircuitBreakerForTests({ clearSharedSnapshot: false });
+
+    await assert.rejects(
+      () =>
+        requestJson("https://api.sentinelayer.example/shared-rate-limit", {
+          method: "GET",
+          maxAttempts: 1,
+          fetchImpl: async () => {
+            resumedCalls += 1;
+            return new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+      (error) => {
+        assert.equal(error?.status, 429);
+        assert.equal(error?.code, "RATE_LIMITED");
+        return true;
+      }
+    );
+    assert.equal(
+      resumedCalls,
+      0,
+      "Expected shared persisted circuit snapshot to short-circuit before fetch in resumed process."
+    );
+  } finally {
+    delete process.env.SENTINELAYER_AUTH_HTTP_STATE_DIR;
+    __resetAuthHttpCircuitBreakerForTests();
+    await rm(tempStateDir, { recursive: true, force: true });
   }
 });
 

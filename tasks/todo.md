@@ -896,3 +896,23 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   2. Approve pending deployment for Omar Gate (`security-review`) if waiting
   3. `gh run watch <omar-run-id> --exit-status`
   4. Re-anchor to latest Omar findings and continue until `P2<=2`.
+
+### PR #114 Current Cycle (2026-04-04, post-`run_id=d70742b8-b772-483a-823b-dec846e0f206`)
+- [x] Re-anchor remediation scope to active 5x P2 findings from latest Omar reviewer comment.
+- [x] Apply twenty-ninth-cycle hardening for active P2 set:
+  - `.github/workflows/quality-gates.yml`: add explicit reusable `rollback-readiness` gate (`uses: ./.github/workflows/rollback.yml` with `execute=false`), enforce deploy dependency on rollback-readiness, and include rollback-readiness in Quality Summary + gate verification assertions.
+  - `.github/workflows/rollback.yml`: route validation-only rollback runs to non-production quality environment while preserving production environment for execute-mode rollback.
+  - `scripts/ci/verify-quality-gate-graph.js`: require `rollback-readiness` node and dependencies (`rollback-readiness <- deploy-stage`, `deploy <- rollback-readiness`, `quality-summary <- rollback-readiness`).
+  - `.github/workflows/release-publish.yml`: unify workflow concurrency to release-run identity, add deterministic release lock key output, apply lock-key job-level concurrency to downstream publish jobs, and implement duplicate publish short-circuit with emergency override (`allow_duplicate_publish`).
+  - `.github/workflows/release.yml`: enforce explicit critical required contexts (`Quality Summary`, `Omar Gate`) in manifest validation and fail closed when validated run ids are missing for target SHA.
+  - `scripts/ci/verify-action-shas.sh`: broaden remote exec detection (process substitution, shell `-c` fetch chains, PowerShell `iwr|iex`, generalized network-fetch + shell-sink pairing) with normalized multiline command scanning.
+  - `src/auth/http.js`: add persisted shared circuit-breaker snapshot state (atomic file + lock semantics + TTL merge) and load/flush path integration in `requestJson` so cross-process breaker state remains fail-closed.
+  - `tests/unit.auth-http.test.mjs`: add regression proving shared persisted circuit snapshot blocks resumed process before fetch invocation.
+  - `tests/unit.verify-action-shas.test.mjs`: add process-substitution remote-exec detection regression.
+  - `.github/security/workflow-permissions-policy.json`: add quality-gates policy contract for `rollback-readiness`.
+- [x] Run deterministic local evidence:
+  - `npm run check` (pass)
+  - `npm run test:unit -- tests/unit.auth-http.test.mjs tests/unit.verify-action-shas.test.mjs` (pass; bash-dependent SHA tests skipped on local Windows as expected)
+  - `npm run verify` (pass; e2e `84/84`; unit `189/193` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push twenty-ninth-cycle hardening batch.
+- [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

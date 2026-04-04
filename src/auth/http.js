@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createHash, createHmac, randomBytes, randomInt, webcrypto } from "node:crypto";
 
@@ -22,10 +26,19 @@ const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 const MAX_ERROR_RESPONSE_BODY_BYTES = 128_000;
 const MAX_REQUEST_ID_LENGTH = 128;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const AUTH_HTTP_SHARED_STATE_DIR_ENV = "SENTINELAYER_AUTH_HTTP_STATE_DIR";
+const AUTH_HTTP_SHARED_STATE_FILENAME = "circuit-breaker-state.v1.json";
+const AUTH_HTTP_SHARED_STATE_RELOAD_INTERVAL_MS = 750;
+const AUTH_HTTP_SHARED_STATE_LOCK_WAIT_MS = 1_500;
+const AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MIN_MS = 15;
+const AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS = 75;
+const AUTH_HTTP_SHARED_STATE_LOCK_STALE_MS = 10_000;
 
 const circuitBreakerStates = new Map();
 const REQUEST_JITTER_STARTUP_SECRET = initializeRequestJitterStartupSecret();
 const REQUEST_JITTER_SHARED_SALT = initializeSharedRequestJitterSalt();
+let sharedCircuitBreakerLastLoadedEpochMs = 0;
+let sharedCircuitBreakerPersistPromise = null;
 
 function resolveCsprngSource() {
   if (
@@ -162,6 +175,236 @@ function resolveCircuitBreakerScope(url) {
   }
 }
 
+function resolveAuthHttpSharedStateDirectory() {
+  const explicitDirectory = String(process.env[AUTH_HTTP_SHARED_STATE_DIR_ENV] || "").trim();
+  if (explicitDirectory) {
+    return explicitDirectory;
+  }
+  return path.join(os.homedir(), ".sentinelayer", "auth");
+}
+
+function resolveAuthHttpSharedStateFilePath() {
+  return path.join(resolveAuthHttpSharedStateDirectory(), AUTH_HTTP_SHARED_STATE_FILENAME);
+}
+
+function resolveAuthHttpSharedStateLockPath() {
+  return `${resolveAuthHttpSharedStateFilePath()}.lock`;
+}
+
+function normalizeCircuitBreakerSnapshotState(rawState = {}, nowEpochMs = Date.now()) {
+  if (!rawState || typeof rawState !== "object" || Array.isArray(rawState)) {
+    return null;
+  }
+  const touchedAtEpochMs = Number(rawState.touchedAtEpochMs || 0);
+  if (!Number.isFinite(touchedAtEpochMs) || touchedAtEpochMs <= 0) {
+    return null;
+  }
+  if (nowEpochMs - touchedAtEpochMs > CIRCUIT_BREAKER_STALE_WINDOW_MS) {
+    return null;
+  }
+  const consecutiveFailures = Math.max(0, Math.floor(Number(rawState.consecutiveFailures || 0)));
+  const consecutiveRateLimits = Math.max(0, Math.floor(Number(rawState.consecutiveRateLimits || 0)));
+  const openedAtEpochMs = Math.max(0, Math.floor(Number(rawState.openedAtEpochMs || 0)));
+  const rateLimitOpenedAtEpochMs = Math.max(
+    0,
+    Math.floor(Number(rawState.rateLimitOpenedAtEpochMs || 0))
+  );
+  const rateLimitCooldownMs = Math.max(
+    RATE_LIMIT_CIRCUIT_COOLDOWN_MS,
+    Math.floor(Number(rawState.rateLimitCooldownMs || RATE_LIMIT_CIRCUIT_COOLDOWN_MS))
+  );
+  return {
+    consecutiveFailures,
+    consecutiveRateLimits,
+    openedAtEpochMs,
+    rateLimitOpenedAtEpochMs,
+    rateLimitCooldownMs,
+    touchedAtEpochMs,
+  };
+}
+
+function mergeCircuitBreakerState(targetState, incomingState = {}, nowEpochMs = Date.now()) {
+  const normalizedIncoming = normalizeCircuitBreakerSnapshotState(incomingState, nowEpochMs);
+  if (!normalizedIncoming) {
+    return targetState;
+  }
+  targetState.consecutiveFailures = Math.max(
+    Math.floor(Number(targetState.consecutiveFailures || 0)),
+    normalizedIncoming.consecutiveFailures
+  );
+  targetState.consecutiveRateLimits = Math.max(
+    Math.floor(Number(targetState.consecutiveRateLimits || 0)),
+    normalizedIncoming.consecutiveRateLimits
+  );
+  targetState.openedAtEpochMs = Math.max(
+    Math.floor(Number(targetState.openedAtEpochMs || 0)),
+    normalizedIncoming.openedAtEpochMs
+  );
+  targetState.rateLimitOpenedAtEpochMs = Math.max(
+    Math.floor(Number(targetState.rateLimitOpenedAtEpochMs || 0)),
+    normalizedIncoming.rateLimitOpenedAtEpochMs
+  );
+  targetState.rateLimitCooldownMs = Math.max(
+    RATE_LIMIT_CIRCUIT_COOLDOWN_MS,
+    Math.floor(Number(targetState.rateLimitCooldownMs || RATE_LIMIT_CIRCUIT_COOLDOWN_MS)),
+    normalizedIncoming.rateLimitCooldownMs
+  );
+  targetState.touchedAtEpochMs = Math.max(
+    Math.floor(Number(targetState.touchedAtEpochMs || 0)),
+    normalizedIncoming.touchedAtEpochMs
+  );
+  return targetState;
+}
+
+function mergeSharedCircuitBreakerSnapshot(snapshot = {}, nowEpochMs = Date.now()) {
+  const scopes = snapshot && typeof snapshot === "object" ? snapshot.scopes : null;
+  if (!scopes || typeof scopes !== "object" || Array.isArray(scopes)) {
+    return;
+  }
+  for (const [scope, rawState] of Object.entries(scopes)) {
+    const normalizedScope = String(scope || "").trim();
+    if (!normalizedScope) {
+      continue;
+    }
+    const localState = getCircuitBreakerState(normalizedScope, nowEpochMs);
+    mergeCircuitBreakerState(localState, rawState, nowEpochMs);
+  }
+  pruneCircuitBreakerStates(nowEpochMs);
+}
+
+function serializeCircuitBreakerSnapshot(nowEpochMs = Date.now()) {
+  const scopes = {};
+  for (const [scope, rawState] of circuitBreakerStates.entries()) {
+    const normalizedScope = String(scope || "").trim();
+    if (!normalizedScope) {
+      continue;
+    }
+    const normalizedState = normalizeCircuitBreakerSnapshotState(rawState, nowEpochMs);
+    if (!normalizedState) {
+      continue;
+    }
+    scopes[normalizedScope] = normalizedState;
+  }
+  return {
+    schemaVersion: "1.0.0",
+    generatedAtEpochMs: nowEpochMs,
+    scopes,
+  };
+}
+
+async function readSharedCircuitBreakerSnapshot() {
+  const stateFilePath = resolveAuthHttpSharedStateFilePath();
+  let rawSnapshot = "";
+  try {
+    rawSnapshot = await fsp.readFile(stateFilePath, "utf8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  const parsed = JSON.parse(rawSnapshot);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+async function withSharedCircuitBreakerStateLock(operation) {
+  const lockPath = resolveAuthHttpSharedStateLockPath();
+  await fsp.mkdir(path.dirname(lockPath), { recursive: true });
+  const start = Date.now();
+  let lockHandle = null;
+  while (!lockHandle) {
+    try {
+      lockHandle = await fsp.open(lockPath, "wx");
+      await lockHandle.writeFile(
+        JSON.stringify({ pid: process.pid, acquiredAtEpochMs: Date.now() }, null, 2),
+        "utf8"
+      );
+      await lockHandle.sync();
+      break;
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const lockStats = await fsp.stat(lockPath);
+        const lockAgeMs = Date.now() - Number(lockStats.mtimeMs || 0);
+        if (Number.isFinite(lockAgeMs) && lockAgeMs > AUTH_HTTP_SHARED_STATE_LOCK_STALE_MS) {
+          await fsp.rm(lockPath, { force: true });
+          continue;
+        }
+      } catch (lockError) {
+        if (!lockError || typeof lockError !== "object" || lockError.code !== "ENOENT") {
+          throw lockError;
+        }
+      }
+      if (Date.now() - start > AUTH_HTTP_SHARED_STATE_LOCK_WAIT_MS) {
+        throw new Error("Timed out acquiring auth HTTP shared circuit-breaker lock.");
+      }
+      const delayMs =
+        AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MIN_MS +
+        Math.floor(Math.random() * (AUTH_HTTP_SHARED_STATE_LOCK_RETRY_MAX_MS + 1));
+      await sleep(delayMs);
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    try {
+      await lockHandle?.close();
+    } catch {
+      // Best-effort close before lock cleanup.
+    }
+    await fsp.rm(lockPath, { force: true }).catch(() => {});
+  }
+}
+
+async function persistSharedCircuitBreakerSnapshot() {
+  if (sharedCircuitBreakerPersistPromise) {
+    return sharedCircuitBreakerPersistPromise;
+  }
+  sharedCircuitBreakerPersistPromise = (async () => {
+    const nowEpochMs = Date.now();
+    pruneCircuitBreakerStates(nowEpochMs);
+    const stateDirectory = resolveAuthHttpSharedStateDirectory();
+    const stateFilePath = resolveAuthHttpSharedStateFilePath();
+    await fsp.mkdir(stateDirectory, { recursive: true });
+    await withSharedCircuitBreakerStateLock(async () => {
+      const diskSnapshot = await readSharedCircuitBreakerSnapshot().catch(() => null);
+      if (diskSnapshot) {
+        mergeSharedCircuitBreakerSnapshot(diskSnapshot, nowEpochMs);
+      }
+      const serializedSnapshot = serializeCircuitBreakerSnapshot(nowEpochMs);
+      const tempPath = `${stateFilePath}.${process.pid}.${Date.now()}.tmp`;
+      await fsp.writeFile(tempPath, JSON.stringify(serializedSnapshot, null, 2), "utf8");
+      await fsp.rename(tempPath, stateFilePath);
+    });
+  })();
+  try {
+    await sharedCircuitBreakerPersistPromise;
+  } finally {
+    sharedCircuitBreakerPersistPromise = null;
+  }
+}
+
+async function ensureSharedCircuitBreakerSnapshotLoaded({ force = false } = {}) {
+  const nowEpochMs = Date.now();
+  if (
+    !force &&
+    Number.isFinite(sharedCircuitBreakerLastLoadedEpochMs) &&
+    nowEpochMs - sharedCircuitBreakerLastLoadedEpochMs < AUTH_HTTP_SHARED_STATE_RELOAD_INTERVAL_MS
+  ) {
+    return;
+  }
+  const snapshot = await readSharedCircuitBreakerSnapshot().catch(() => null);
+  if (snapshot) {
+    mergeSharedCircuitBreakerSnapshot(snapshot, nowEpochMs);
+  }
+  sharedCircuitBreakerLastLoadedEpochMs = nowEpochMs;
+}
+
 function createCircuitBreakerState(nowEpochMs = Date.now()) {
   return {
     consecutiveFailures: 0,
@@ -220,8 +463,23 @@ function resetCircuitBreaker(scope = null, nowEpochMs = Date.now()) {
   pruneCircuitBreakerStates(nowEpochMs);
 }
 
-export function __resetAuthHttpCircuitBreakerForTests() {
+export function __resetAuthHttpCircuitBreakerForTests({ clearSharedSnapshot = true } = {}) {
   resetCircuitBreaker();
+  sharedCircuitBreakerLastLoadedEpochMs = 0;
+  sharedCircuitBreakerPersistPromise = null;
+  if (!clearSharedSnapshot) {
+    return;
+  }
+  try {
+    fs.rmSync(resolveAuthHttpSharedStateFilePath(), { force: true });
+  } catch {
+    // Best-effort reset for test isolation.
+  }
+  try {
+    fs.rmSync(resolveAuthHttpSharedStateLockPath(), { force: true });
+  } catch {
+    // Best-effort reset for test isolation.
+  }
 }
 
 function registerCircuitFailure(scope, nowEpochMs = Date.now()) {
@@ -656,6 +914,7 @@ export async function requestJson(
 ) {
   const circuitScope = resolveCircuitBreakerScope(url);
   const requestJitterSeed = createRequestJitterSeed(url, method);
+  await ensureSharedCircuitBreakerSnapshotLoaded();
   if (isRateLimitCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Upstream rate limit circuit is open. Retry after cooldown.", {
       status: 429,
@@ -739,6 +998,7 @@ export async function requestJson(
       }
 
       resetCircuitBreaker(circuitScope);
+      await persistSharedCircuitBreakerSnapshot().catch(() => {});
       return json;
     } catch (error) {
       const normalizedError = normalizeUnknownError(error, {
@@ -749,12 +1009,16 @@ export async function requestJson(
         throw normalizedError;
       }
       const shouldRecordCircuitFailure = shouldRetry(normalizedError);
+      let stateMutated = false;
       if (shouldRecordCircuitFailure) {
         registerCircuitFailure(circuitScope);
+        stateMutated = true;
       }
       if (Number(normalizedError.status || 0) === 429) {
         registerRateLimitFailure(circuitScope, normalizedError.retryAfterMs);
+        stateMutated = true;
         if (isRateLimitCircuitOpen(circuitScope)) {
+          await persistSharedCircuitBreakerSnapshot().catch(() => {});
           throw new SentinelayerApiError(
             "Upstream rate limit circuit is open. Retry after cooldown.",
             {
@@ -764,6 +1028,9 @@ export async function requestJson(
             }
           );
         }
+      }
+      if (stateMutated) {
+        await persistSharedCircuitBreakerSnapshot().catch(() => {});
       }
       if (shouldRetry(normalizedError) && attemptIndex < attempts - 1) {
         await sleep(

@@ -46,6 +46,10 @@
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }
         },
+        "rollback-readiness": {
+          "required": { "contents": "read", "actions": "read", "id-token": "write" },
+          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+        },
         "deploy": {
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }
