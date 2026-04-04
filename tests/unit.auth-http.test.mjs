@@ -17,6 +17,14 @@ const authHttpSharedStatePolicyPath = fileURLToPath(
   new URL("../.github/security/auth-http-shared-state-policy.json", import.meta.url)
 );
 
+test.beforeEach(() => {
+  __resetAuthHttpCircuitBreakerForTests();
+});
+
+test.afterEach(() => {
+  __resetAuthHttpCircuitBreakerForTests();
+});
+
 async function startMockServer(handler) {
   const server = createServer(handler);
   server.listen(0, "127.0.0.1");

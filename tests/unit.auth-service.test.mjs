@@ -23,7 +23,7 @@ import {
   resolveApiUrl,
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
-import { SentinelayerApiError } from "../src/auth/http.js";
+import { __resetAuthHttpCircuitBreakerForTests, SentinelayerApiError } from "../src/auth/http.js";
 import {
   __buildFileStorageConsentTokenForTests,
   readStoredSession,
@@ -53,6 +53,14 @@ test.after(() => {
   }
 });
 
+test.beforeEach(() => {
+  __resetAuthHttpCircuitBreakerForTests();
+});
+
+test.afterEach(() => {
+  __resetAuthHttpCircuitBreakerForTests();
+});
+
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -72,6 +80,32 @@ async function readJsonBody(req) {
     return {};
   }
   return JSON.parse(raw);
+}
+
+const MIN_INSECURE_LOCAL_HTTP_RANDOM_PORT = 49_152;
+const MAX_ALLOWLIST_PORT_BIND_ATTEMPTS = 32;
+
+async function bindMockServerOnAllowlistedPort(server) {
+  for (let attempt = 0; attempt < MAX_ALLOWLIST_PORT_BIND_ATTEMPTS; attempt += 1) {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address && typeof address !== "string" && Number(address.port) >= MIN_INSECURE_LOCAL_HTTP_RANDOM_PORT) {
+      return address;
+    }
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  throw new Error(
+    `Unable to bind mock API server on allowlisted random port >=${MIN_INSECURE_LOCAL_HTTP_RANDOM_PORT}.`
+  );
 }
 
 async function withMockTty(isInteractive, callback) {
@@ -312,9 +346,7 @@ async function startAuthRuntimeMockApi({ pollResponses = null, rejectDeleteAuthT
     }
   });
 
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
+  const address = await bindMockServerOnAllowlistedPort(server);
   if (!address || typeof address === "string") {
     throw new Error("Unable to resolve mock API address.");
   }

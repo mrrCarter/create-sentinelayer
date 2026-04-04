@@ -1390,3 +1390,17 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run check` (pass)
 - [ ] Commit + push fifty-fifth-cycle hardening batch.
 - [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Sixth Cycle (2026-04-04, deterministic CI flake hardening)
+- [x] Capture quality regression root cause from run `23982493465`:
+  - `Syntax & Sanity` + `Unit Coverage` failures were non-deterministic auth-test flakes after localhost port hardening (`>=49152`), because mock servers still bound to random OS ports below policy threshold.
+- [x] Apply deterministic test reliability fixes:
+  - `tests/unit.auth-service.test.mjs`: bind mock API server on allowlisted high random ports only (`>=49152`) with bounded retries to remove random-port policy collisions.
+  - `tests/unit.auth-http.test.mjs`: add `beforeEach`/`afterEach` circuit-breaker resets to prevent cross-test `CIRCUIT_OPEN` state leakage.
+  - `tests/unit.auth-service.test.mjs`: add `beforeEach`/`afterEach` circuit-breaker resets to prevent auth-http state carryover into auth-service cases.
+- [x] Run fifty-sixth-cycle local evidence:
+  - `node --test tests/unit.auth-service.test.mjs` (pass)
+  - `npm run test:unit` (pass; unit `207/213` with 6 env-skipped tests)
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-sixth-cycle hardening batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

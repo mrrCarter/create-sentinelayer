@@ -336,3 +336,5 @@
 - Quality-check anchoring in cross-workflow gates should bind both commit SHA and expected branch/ref context to avoid selecting unrelated successful runs for the same commit.
 - Insecure localhost HTTP dev allowances should treat `49152+` as the random-port boundary; lower ephemeral ranges are too broad for auth-sensitive workflows.
 - OIDC governance is stronger when publish lanes verify actual token exchange/claims before mutation, not just static `id-token: write` permission presence.
+- When tightening localhost port policy, unit-test mock servers must also bind within that policy envelope; random OS port binding (`listen(0)`) can introduce CI-only flakes.
+- Shared auth HTTP circuit-breaker state must be reset per test (`beforeEach`/`afterEach`) across all auth-related suites to prevent cross-file state leakage (`CIRCUIT_OPEN`) from causing order-dependent failures.
