@@ -215,7 +215,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] PR 146 immutable release artifact promotion + gate-proof checks + exact dependency pinning.
 
 ### Batch X - Agent Tool Security Hardening (2026-04-04)
-- [ ] PR 147 symlink + UNC + device-path guardrails for Jules `FileRead`/`FileEdit` tools (realpath-aware root validation, Windows-safe path-prefix checks, deterministic failure codes).
+- [x] PR 147 symlink + UNC + device-path guardrails for Jules `FileRead`/`FileEdit` tools (realpath-aware root validation, Windows-safe path-prefix checks, deterministic failure codes).
 
 ### PR 147 Working Plan (roadmap/pr-147-auth-runtime-governance-hardening)
 - [x] Add shared path-guard utility for Jules file tools:
@@ -227,7 +227,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - UNC path rejection coverage for `fileRead` and `fileEdit`.
   - Symlink escape rejection when resolved target leaves allowed root.
   - Prefix-collision defense (`<root>` vs `<root>-evil`) for allowed-root checks.
-- [ ] Run Omar Gate PR loop (`gh run watch`) and merge only after `Omar Gate` + required checks pass.
+- [x] Run Omar Gate PR loop (`gh run watch`) and merge only after `Omar Gate` + required checks pass.
 
 ## Execution Board (2026-04-04)
 
@@ -244,7 +244,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-147-auth-runtime-governance-hardening`
+1. `roadmap/pr-148-shell-subprocess-guardrail-expansion`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -584,3 +584,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `gh pr view 127 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `f7643749382d90fb137d6fb397657555d9b13895`)
     - Refactored release workflow to promote a single immutable tarball artifact from a dedicated build job into publish job (no rebuild during publish).
     - Added commit-level gate proof checks (`Quality Summary` + `Omar Gate`) before release publish, and pinned dependency specs in `package.json` with lockfile alignment.
+
+  - PR 147 (Jules file-tool path guardrails) merged evidence (branch `roadmap/pr-147-auth-runtime-governance-hardening`):
+    - `npm run verify` (pass, e2e `86/86`; unit tests `188/188`; coverage statements `90.22%`, branches `70.98%`, functions `92.03%`, lines `90.22%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - `gh run watch 23989969491 --exit-status` (Omar Gate pass after `security-review` deployment approval)
+    - `gh pr view 129 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `d135ebfc8bdd8ed0d286cdaa0f8b444402c814d0`)
+    - Added shared path guard utility for Jules tools with deterministic `PATH_*` failure codes, UNC/device namespace blocking, blocked-system path checks, and realpath-aware allowed-root enforcement.
+    - Hardened both `FileRead` and `FileEdit` to use the same path-guard contract and added regression coverage for UNC rejection, symlink escape blocking, and sibling root-prefix collision attempts.

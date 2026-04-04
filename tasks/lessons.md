@@ -115,3 +115,6 @@
 - Promote one immutable tarball from build stage to publish stage in release workflows; avoid rebuilding artifacts in publish jobs to preserve provenance lineage.
 - When pinning dependency specs from ranges to exact versions, regenerate and commit `package-lock.json` in the same PR to keep `npm ci` deterministic.
 - Gate-proof API checks in workflows should use bounded network behavior (`curl` max-time/retry or equivalent); unbounded remote checks can reintroduce release nondeterminism.
+- File-tool sandboxing should use one shared path-guard implementation; duplicated read/write path checks drift quickly and reopen traversal holes.
+- Allowed-root enforcement must validate both the requested path and its `realpath`; checking only `path.resolve(...)` allows symlink escape into out-of-scope files.
+- Keep deterministic `PATH_*` error codes in guardrail failures so policy dashboards and tests can assert exact stop reasons instead of parsing free-form text.
