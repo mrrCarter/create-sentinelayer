@@ -10,6 +10,10 @@ on:
         description: "Semver tag to release (vX.Y.Z)"
         required: true
         type: string
+      incident_id:
+        description: "Required incident/change ticket id for manual release dispatch (INC-XXXX...)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -46,6 +50,7 @@ jobs:
       release_ref_type: ${{ steps.flags.outputs.release_ref_type }}
       target_sha: ${{ steps.flags.outputs.target_sha }}
       release_initiator: ${{ steps.flags.outputs.release_initiator }}
+      incident_id: ${{ steps.flags.outputs.incident_id }}
     steps:
       - name: Validate trusted release invoker
         shell: bash
@@ -57,6 +62,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           GITHUB_REF_VALUE: ${{ github.ref }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
@@ -65,6 +71,8 @@ jobs:
             exit 1
           fi
           input_release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
+          input_incident_id="$(echo "${INPUT_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
+          invoker_policy_path=".github/security/release-invokers.json"
           requires_invoker_validation="false"
           case "${EVENT_NAME}" in
             push)
@@ -92,6 +100,31 @@ jobs:
               echo "Trusted release invoker '${ACTOR}' with permission '${permission}'."
               ;;
           esac
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            test -f "${invoker_policy_path}" || (echo "::error::Missing trusted invoker policy file ${invoker_policy_path}." && exit 1)
+            allowlist_count="$(jq -r '.workflowDispatch.allowlist | length // 0' "${invoker_policy_path}")"
+            if [[ "${allowlist_count}" -lt 1 ]]; then
+              echo "::error::Trusted invoker policy must define at least one workflowDispatch allowlist entry."
+              exit 1
+            fi
+            allowlist_match="$(jq -r --arg actor "${ACTOR}" '.workflowDispatch.allowlist | map(select(type == "string")) | index($actor) != null' "${invoker_policy_path}")"
+            if [[ "${allowlist_match}" != "true" ]]; then
+              echo "::error::Actor '${ACTOR}' is not in trusted workflow_dispatch release allowlist."
+              exit 1
+            fi
+            require_incident_id="$(jq -r '.workflowDispatch.requireIncidentId // true' "${invoker_policy_path}")"
+            incident_pattern="$(jq -r '.workflowDispatch.incidentIdPattern // "^INC-[A-Za-z0-9._-]{4,64}$"' "${invoker_policy_path}")"
+            if [[ "${require_incident_id}" == "true" ]]; then
+              if [[ -z "${input_incident_id}" ]]; then
+                echo "::error::workflow_dispatch release requires incident_id input."
+                exit 1
+              fi
+              if [[ ! "${input_incident_id}" =~ ${incident_pattern} ]]; then
+                echo "::error::incident_id '${input_incident_id}' does not match required policy pattern."
+                exit 1
+              fi
+            fi
+          fi
           tag_name=""
           ref_type=""
           ref_sha=""
@@ -258,6 +291,7 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
           GITHUB_REF_TYPE_VALUE: ${{ github.ref_type }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
           ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -271,7 +305,14 @@ jobs:
           release_ref_value="${GITHUB_REF_VALUE}"
           release_ref_type="${GITHUB_REF_TYPE_VALUE}"
           target_sha="${FALLBACK_SHA}"
+          incident_id=""
+          incident_pattern='^INC-[A-Za-z0-9._-]{4,64}$'
+          invoker_policy_path=".github/security/release-invokers.json"
+          if [[ -f "${invoker_policy_path}" ]]; then
+            incident_pattern="$(jq -r '.workflowDispatch.incidentIdPattern // "^INC-[A-Za-z0-9._-]{4,64}$"' "${invoker_policy_path}")"
+          fi
           input_release_tag="$(echo "${INPUT_RELEASE_TAG:-}" | tr -d '\r' | xargs || true)"
+          input_incident_id="$(echo "${INPUT_INCIDENT_ID:-}" | tr -d '\r' | xargs || true)"
           case "${EVENT_NAME}" in
             push)
               if [[ "${GITHUB_REF_VALUE}" == refs/tags/v* ]]; then
@@ -283,8 +324,17 @@ jobs:
               ;;
             workflow_dispatch)
               release_tag="${input_release_tag}"
+              incident_id="${input_incident_id}"
               if [[ -z "${release_tag}" ]]; then
                 echo "::error::workflow_dispatch requires release_tag input."
+                exit 1
+              fi
+              if [[ -z "${incident_id}" ]]; then
+                echo "::error::workflow_dispatch requires incident_id input."
+                exit 1
+              fi
+              if [[ ! "${incident_id}" =~ ${incident_pattern} ]]; then
+                echo "::error::incident_id '${incident_id}' does not match required policy pattern."
                 exit 1
               fi
               release_path_execution="true"
@@ -335,6 +385,7 @@ jobs:
           echo "release_ref_type=${release_ref_type}" >> "$GITHUB_OUTPUT"
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
           echo "release_initiator=${ACTOR}" >> "$GITHUB_OUTPUT"
+          echo "incident_id=${incident_id}" >> "$GITHUB_OUTPUT"
 
   verify-required-checks:
     name: Verify Required Checks
@@ -1029,6 +1080,7 @@ jobs:
     environment: production
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Confirm protected publish approval
         shell: bash
@@ -1062,6 +1114,7 @@ jobs:
       PREFLIGHT_ARTIFACT_RUN_ID: ${{ needs.preflight.outputs.artifact_run_id || '' }}
       RELEASE_TAG: ${{ needs.resolve-release-flags.outputs.release_tag || '' }}
       RELEASE_INITIATOR: ${{ needs.resolve-release-flags.outputs.release_initiator || '' }}
+      INCIDENT_ID: ${{ needs.resolve-release-flags.outputs.incident_id || '' }}
       EVENT_NAME: ${{ github.event_name }}
     steps:
       - name: Setup Node
@@ -1239,6 +1292,14 @@ jobs:
             echo "::error::Publish tag '${RELEASE_TAG}' is not a valid semver tag (expected vX.Y.Z)."
             exit 1
           fi
+          if [[ -z "${INCIDENT_ID}" ]]; then
+            echo "::error::Publish requires incident_id bound in resolve-release-flags."
+            exit 1
+          fi
+          if [[ ! "${INCIDENT_ID}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
+            echo "::error::Publish incident_id '${INCIDENT_ID}' is invalid."
+            exit 1
+          fi
 
       - name: Validate production environment protection rules
         if: env.PUBLISH_REQUESTED == 'true'
@@ -1307,6 +1368,33 @@ jobs:
           echo "## Rollback" >> "$GITHUB_STEP_SUMMARY"
           echo "- Trigger rollback workflow: \`gh workflow run rollback.yml -f target_version=<previous-version> -f execute=true\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Runbook: \`docs/RELEASE_ROLLBACK.md\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emit release dispatch evidence
+        if: env.PUBLISH_REQUESTED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-bundle
+          cat > release-bundle/release-dispatch-evidence.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release",
+            "runId": "${GITHUB_RUN_ID}",
+            "releaseTag": "${RELEASE_TAG}",
+            "targetSha": "${TARGET_SHA}",
+            "releaseInitiator": "${RELEASE_INITIATOR}",
+            "incidentId": "${INCIDENT_ID}",
+            "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
+      - name: Upload release dispatch evidence
+        if: env.PUBLISH_REQUESTED == 'true'
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-dispatch-evidence
+          path: release-bundle/release-dispatch-evidence.json
+          if-no-files-found: error
 
   request-rollback-validation:
     name: Request Rollback Validation

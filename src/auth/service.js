@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -30,6 +33,8 @@ const MAX_AUTH_POLL_BACKEND_FAILURES = 4;
 const MAX_AUTH_POLL_BACKEND_BACKOFF_MS = 15_000;
 const AUTH_POLL_IDEMPOTENCY_WINDOW_SIZE = 2;
 const MAX_TRACKED_POLL_REQUEST_IDS = 64;
+const AUTH_POLL_RESUME_STATE_VERSION = 1;
+const AUTH_POLL_RESUME_STATE_TTL_MS = 2 * 60 * 60 * 1000;
 const RETRYABLE_AUTH_POLL_CODES = new Set([
   "TIMEOUT",
   "NETWORK_ERROR",
@@ -262,6 +267,148 @@ function buildPollCorrelationId({ sessionId, pollClientId, attempt }) {
     .digest("hex");
 }
 
+function resolveAuthHomeDir(homeDir) {
+  return path.resolve(String(homeDir || os.homedir()));
+}
+
+function buildAuthPollResumeStateKey(sessionId) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  return crypto.createHash("sha256").update(normalizedSessionId).digest("hex").slice(0, 24);
+}
+
+function resolveAuthPollResumeStateFilePath({ sessionId, homeDir } = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) {
+    throw new Error("sessionId is required to resolve auth poll resume state path.");
+  }
+  const resolvedHome = resolveAuthHomeDir(homeDir);
+  const stateKey = buildAuthPollResumeStateKey(normalizedSessionId);
+  return path.join(resolvedHome, ".sentinelayer", "auth", `poll-state-${stateKey}.json`);
+}
+
+function normalizeTrackedPollRequestIds(entries = []) {
+  const normalized = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const requestId = String(entry || "").trim();
+    if (!requestId || normalized.includes(requestId)) {
+      continue;
+    }
+    normalized.push(requestId);
+    if (normalized.length >= MAX_TRACKED_POLL_REQUEST_IDS) {
+      break;
+    }
+  }
+  return normalized;
+}
+
+function normalizeAuthPollResumeState(raw = {}, { expectedSessionId } = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const sessionId = String(raw.sessionId || "").trim();
+  if (!sessionId) {
+    return null;
+  }
+  if (String(expectedSessionId || "").trim() && sessionId !== String(expectedSessionId || "").trim()) {
+    return null;
+  }
+  const pollClientId = String(raw.pollClientId || "").trim() || null;
+  if (!pollClientId) {
+    return null;
+  }
+  const updatedAt = String(raw.updatedAt || "").trim();
+  if (!updatedAt) {
+    return null;
+  }
+  const updatedEpoch = Date.parse(updatedAt);
+  if (!Number.isFinite(updatedEpoch)) {
+    return null;
+  }
+  if (Date.now() - updatedEpoch > AUTH_POLL_RESUME_STATE_TTL_MS) {
+    return null;
+  }
+  const highestSeenPollSequenceRaw = Number(raw.highestSeenPollSequence);
+  const highestSeenPollSequence = Number.isFinite(highestSeenPollSequenceRaw)
+    ? Math.max(-1, Math.floor(highestSeenPollSequenceRaw))
+    : -1;
+  const nextAttemptRaw = Number(raw.nextAttempt);
+  const nextAttempt = Number.isFinite(nextAttemptRaw) ? Math.max(0, Math.floor(nextAttemptRaw)) : 0;
+  const seenRequestIds = normalizeTrackedPollRequestIds(raw.seenRequestIds);
+  const versionRaw = Number(raw.version);
+  const version = Number.isFinite(versionRaw) ? Math.max(1, Math.floor(versionRaw)) : AUTH_POLL_RESUME_STATE_VERSION;
+  return {
+    version,
+    sessionId,
+    pollClientId,
+    updatedAt,
+    highestSeenPollSequence,
+    nextAttempt,
+    seenRequestIds,
+  };
+}
+
+async function readAuthPollResumeState({ sessionId, homeDir } = {}) {
+  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+  try {
+    const raw = await fsp.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return normalizeAuthPollResumeState(parsed, { expectedSessionId: sessionId });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return null;
+    }
+    if (error instanceof SyntaxError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function writeAuthPollResumeState({
+  sessionId,
+  pollClientId,
+  highestSeenPollSequence,
+  nextAttempt,
+  seenRequestIds,
+  homeDir,
+} = {}) {
+  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+  const directoryPath = path.dirname(filePath);
+  await fsp.mkdir(directoryPath, { recursive: true });
+  const payload = {
+    version: AUTH_POLL_RESUME_STATE_VERSION,
+    sessionId: String(sessionId || "").trim(),
+    pollClientId: String(pollClientId || "").trim(),
+    highestSeenPollSequence: Math.max(-1, Math.floor(Number(highestSeenPollSequence) || -1)),
+    nextAttempt: Math.max(0, Math.floor(Number(nextAttempt) || 0)),
+    seenRequestIds: normalizeTrackedPollRequestIds(seenRequestIds),
+    updatedAt: new Date().toISOString(),
+  };
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+  await fsp.writeFile(tempPath, serialized, "utf-8");
+  let renamed = false;
+  try {
+    await fsp.rename(tempPath, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await fsp.rm(tempPath, { force: true });
+    }
+  }
+}
+
+async function clearAuthPollResumeState({ sessionId, homeDir } = {}) {
+  const filePath = resolveAuthPollResumeStateFilePath({ sessionId, homeDir });
+  try {
+    await fsp.rm(filePath);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 function normalizeOptionalInteger(value) {
   if (value === undefined || value === null || value === "") {
     return null;
@@ -480,12 +627,26 @@ async function pollCliAuthSession({
   timeoutMs,
   pollIntervalSeconds,
   signal = null,
+  homeDir,
 }) {
   const normalizedSessionId = String(sessionId || "").trim();
   if (!normalizedSessionId) {
     throw new Error("sessionId is required.");
   }
-  const normalizedPollClientId = String(pollClientId || "").trim() || generatePollClientId();
+  let persistedPollState = null;
+  try {
+    persistedPollState = await readAuthPollResumeState({
+      sessionId: normalizedSessionId,
+      homeDir,
+    });
+  } catch {
+    persistedPollState = null;
+  }
+  const explicitPollClientId = String(pollClientId || "").trim();
+  const normalizedPollClientId = explicitPollClientId || persistedPollState?.pollClientId || generatePollClientId();
+  const resumeStateMatchesClientId = Boolean(
+    persistedPollState && String(persistedPollState.pollClientId || "").trim() === normalizedPollClientId
+  );
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const deadlineMs = resolveMonotonicNowMs() + timeout;
   const maxAttempts = Math.max(
@@ -494,10 +655,37 @@ async function pollCliAuthSession({
   );
   let lastKnownPollIntervalMs = resolveAuthPollIntervalMs(pollIntervalSeconds, 2);
   let consecutiveBackendFailures = 0;
-  let attempt = 0;
-  const seenRequestIds = new Set();
-  let highestSeenPollSequence = -1;
+  let attempt = resumeStateMatchesClientId ? Math.max(0, Number(persistedPollState.nextAttempt || 0)) : 0;
+  const seenRequestIds = new Set(
+    resumeStateMatchesClientId ? normalizeTrackedPollRequestIds(persistedPollState.seenRequestIds) : []
+  );
+  let highestSeenPollSequence = resumeStateMatchesClientId
+    ? Math.max(-1, Number(persistedPollState.highestSeenPollSequence || -1))
+    : -1;
   const pollJitterSeed = generatePollJitterSeed();
+
+  async function persistResumeState() {
+    try {
+      await writeAuthPollResumeState({
+        sessionId: normalizedSessionId,
+        pollClientId: normalizedPollClientId,
+        highestSeenPollSequence,
+        nextAttempt: attempt,
+        seenRequestIds: Array.from(seenRequestIds),
+        homeDir,
+      });
+    } catch {
+      // Resume-state persistence is best-effort and must not block auth.
+    }
+  }
+
+  async function clearResumeState() {
+    try {
+      await clearAuthPollResumeState({ sessionId: normalizedSessionId, homeDir });
+    } catch {
+      // Resume-state cleanup is best-effort and must not block auth.
+    }
+  }
 
   while (resolveMonotonicNowMs() < deadlineMs && attempt < maxAttempts) {
     throwIfAbortRequested(signal);
@@ -542,6 +730,7 @@ async function pollCliAuthSession({
       consecutiveBackendFailures = 0;
     } catch (error) {
       if (!isRetryableAuthPollError(error)) {
+        await persistResumeState();
         throw error;
       }
       consecutiveBackendFailures += 1;
@@ -568,6 +757,7 @@ async function pollCliAuthSession({
       );
       await sleepWithAbortSignal(cooldownMs, signal);
       attempt += 1;
+      await persistResumeState();
       continue;
     }
 
@@ -584,6 +774,7 @@ async function pollCliAuthSession({
         await sleepWithAbortSignal(replayDelayMs, signal);
       }
       attempt += 1;
+      await persistResumeState();
       continue;
     }
     if (
@@ -599,6 +790,7 @@ async function pollCliAuthSession({
         await sleepWithAbortSignal(replayDelayMs, signal);
       }
       attempt += 1;
+      await persistResumeState();
       continue;
     }
     if (responseSessionId && responseSessionId !== normalizedSessionId) {
@@ -618,6 +810,7 @@ async function pollCliAuthSession({
           await sleepWithAbortSignal(replayDelayMs, signal);
         }
         attempt += 1;
+        await persistResumeState();
         continue;
       }
       highestSeenPollSequence = pollSequence;
@@ -626,6 +819,7 @@ async function pollCliAuthSession({
     const status = String(payload.status || "pending").trim().toLowerCase();
     if (status === "approved" && payload.auth_token) {
       trackSeenPollRequestId(seenRequestIds, requestId);
+      await clearResumeState();
       const normalizedRequestId = requestId || null;
       return {
         ...payload,
@@ -638,6 +832,7 @@ async function pollCliAuthSession({
       const terminalConfig = TERMINAL_CLI_AUTH_POLL_STATUSES.get(status);
       const reason = String(payload.message || payload.error || payload.reason || "").trim();
       const message = reason ? `${terminalConfig.message} ${reason}` : terminalConfig.message;
+      await clearResumeState();
       throw new SentinelayerApiError(message, {
         status: terminalConfig.httpStatus,
         code: terminalConfig.code,
@@ -645,6 +840,7 @@ async function pollCliAuthSession({
       });
     }
     if (status !== "pending") {
+      await clearResumeState();
       throw new SentinelayerApiError(
         `Unexpected CLI authentication session status '${describePollStatus(status)}'.`,
         {
@@ -671,12 +867,18 @@ async function pollCliAuthSession({
     );
     await sleepWithAbortSignal(nextDelayMs, signal);
     attempt += 1;
+    await persistResumeState();
   }
 
+  await persistResumeState();
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {
     status: 408,
     code: "CLI_AUTH_TIMEOUT",
   });
+}
+
+export async function __pollCliAuthSessionForTests(options = {}) {
+  return pollCliAuthSession(options);
 }
 
 async function fetchCurrentUser({ apiUrl, token }) {
@@ -985,6 +1187,7 @@ export async function loginAndPersistSession({
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
     signal,
+    homeDir,
   });
 
   const approvalToken = String(approval.auth_token || "").trim();

@@ -105,8 +105,8 @@
           "max": { "contents": "read" }
         },
         "authorize-production-publish": {
-          "required": { "contents": "read" },
-          "max": { "contents": "read" }
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         },
         "publish": {
           "required": { "contents": "read", "actions": "read", "id-token": "write" },
@@ -143,8 +143,8 @@
           "max": { "contents": "read" }
         },
         "authorize-production-publish": {
-          "required": { "contents": "read" },
-          "max": { "contents": "read" }
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         },
         "publish": {
           "required": { "contents": "read", "id-token": "write" },

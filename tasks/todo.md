@@ -838,4 +838,28 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass, e2e `84/84`; unit `184/184`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
 - [x] Commit/push twenty-sixth-cycle fixes (`9d805d4`) and rerun Omar loop on PR #114 (`gh run watch 23969662889 --exit-status`): failed early in `Lint` because `verify-quality-gate-graph` depended on `yaml` before `npm ci`.
 - [x] Apply corrective gate-order hotfix: in `.github/workflows/quality-gates.yml` run `Assert deploy gate-chain contract is present` after `Setup Node` + `Install dependencies (lockfile immutable)`; local `npm run check` passes.
-- [ ] Commit/push corrective hotfix and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.
+- [x] Commit/push corrective hotfix (`8e17701`) and rerun full gate loop:
+  - `gh run watch 23969707464 --exit-status` (Quality Gates: pass).
+  - Approve `security-review` pending deployment for Omar run `23969707461`.
+  - `gh run watch 23969707461 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=5`, `run_id=f395248e-318a-4684-a038-65e99fc2539a`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=f395248e-318a-4684-a038-65e99fc2539a`) and apply twenty-seventh-cycle hardening:
+  - `.github/workflows/release.yml`: enforce trusted `workflow_dispatch` invoker allowlist from policy, require/validate `incident_id`, persist incident binding through flag resolution, and emit immutable release-dispatch evidence artifact.
+  - `.github/security/release-invokers.json`: checked-in trusted invoker policy contract with explicit dispatch allowlist and incident id regex.
+  - `.github/workflows/release-publish.yml`: enforce dual-control approver separation from release initiator using run approvals API, and emit immutable publish-authorization evidence.
+  - `.github/security/workflow-permissions-policy.json`: update release/release-publish authorization job scope contract (`actions: read`) for policy alignment.
+  - `src/auth/service.js`: add TTL-bound persisted poll resume state (`.sentinelayer/auth/poll-state-*.json`) to preserve replay/idempotency windows across process restarts.
+  - `tests/unit.auth-service.test.mjs`: add regression coverage proving replayed request ids are skipped after restart and approval proceeds on next unique response.
+- [x] Twenty-seventh-cycle local evidence:
+  - `npm run check` (pass).
+  - `npm run verify` (pass, e2e `84/84`; unit `185/185`; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`).
+- [ ] Commit/push twenty-seventh-cycle hardening and rerun full gate loop (Quality Gates watch + Omar Gate watch/approval) until `P2<=2`.
+- [ ] Begin feedback-fixes execution chain after PR #114 gate target is reached (`P2<=2`), one PR at a time.
+- [ ] Feedback-fixes branch order (exact next PR branches):
+  1. `roadmap/pr-137-frictionless-gh-secret-setup`
+  2. `roadmap/pr-138-deterministic-agent-ide-dictionary`
+  3. `roadmap/pr-139-dynamic-spec-phase-generator`
+  4. `roadmap/pr-140-spec-bound-precommit-review`
+  5. `roadmap/pr-141-shared-memory-blackboard`
+  6. `roadmap/pr-142-hybrid-retrieval-index`
+  7. `roadmap/pr-143-stuck-agent-alert-channels`
+  8. `roadmap/pr-144-stale-ingest-auto-refresh`

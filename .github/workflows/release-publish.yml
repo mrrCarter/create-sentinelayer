@@ -65,6 +65,7 @@ jobs:
       dry_run: ${{ steps.resolve.outputs.dry_run }}
       incident_id: ${{ steps.resolve.outputs.incident_id }}
       execute_mode: ${{ steps.resolve.outputs.execute_mode }}
+      release_initiator: ${{ steps.resolve.outputs.release_initiator }}
     steps:
       - name: Verify release-management environment protections
         shell: bash
@@ -104,6 +105,7 @@ jobs:
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
           WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || '' }}
+          WORKFLOW_RUN_ACTOR: ${{ github.event.workflow_run.actor.login || '' }}
           WORKFLOW_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
@@ -129,6 +131,7 @@ jobs:
           dry_run="false"
           incident_id=""
           execute_mode="false"
+          release_initiator="$(echo "${ACTOR}" | tr -d '\r' | xargs || true)"
 
           case "${EVENT_NAME}" in
             workflow_dispatch)
@@ -262,6 +265,10 @@ jobs:
               dry_run="false"
               release_run_id="$(echo "${WORKFLOW_RUN_ID}" | tr -d '\r' | xargs || true)"
               execute_mode="true"
+              workflow_run_actor="$(echo "${WORKFLOW_RUN_ACTOR:-}" | tr -d '\r' | xargs || true)"
+              if [[ -n "${workflow_run_actor}" ]]; then
+                release_initiator="${workflow_run_actor}"
+              fi
               ;;
             *)
               echo "::error::Unsupported trigger '${EVENT_NAME}' for release-publish workflow."
@@ -308,6 +315,7 @@ jobs:
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
           echo "incident_id=${incident_id}" >> "$GITHUB_OUTPUT"
           echo "execute_mode=${execute_mode}" >> "$GITHUB_OUTPUT"
+          echo "release_initiator=${release_initiator}" >> "$GITHUB_OUTPUT"
           echo "Resolved release run ${release_run_id} for ${release_tag} (${target_sha}), dry_run=${dry_run}, execute_mode=${execute_mode}, trigger=${EVENT_NAME}."
 
       - name: Verify branch protection and required contexts for publish target
@@ -567,14 +575,41 @@ jobs:
     needs: [resolve-release-bundle, prepare-release-bundle]
     if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && needs.resolve-release-bundle.outputs.execute_mode == 'true')) }}
     environment: production
+    outputs:
+      approver_login: ${{ steps.approval.outputs.approver_login }}
+      approval_count: ${{ steps.approval.outputs.approval_count }}
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Confirm protected publish approval
+        id: approval
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
         run: |
           set -euo pipefail
-          echo "Production publish authorization approved."
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator identity for dual-control authorization."
+            exit 1
+          fi
+          approvals_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals" -H "Accept: application/vnd.github+json")"
+          approver_count="$(echo "${approvals_json}" | jq -r '[.[] | select((.state // "") == "approved") | (.user.login // empty)] | unique | length')"
+          selected_approver="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator)] | unique | first // empty')"
+          if [[ "${approver_count}" -lt 1 ]]; then
+            echo "::error::No production approval records found for this publish run."
+            exit 1
+          fi
+          if [[ -z "${selected_approver}" ]]; then
+            echo "::error::Dual-control violation: initiator '${initiator}' must differ from production approver."
+            exit 1
+          fi
+          echo "approver_login=${selected_approver}" >> "$GITHUB_OUTPUT"
+          echo "approval_count=${approver_count}" >> "$GITHUB_OUTPUT"
+          echo "Production publish authorization approved by '${selected_approver}' (initiator='${initiator}', approvals=${approver_count})."
 
   publish:
     name: Publish
@@ -586,6 +621,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
+      APPROVER_LOGIN: ${{ needs.authorize-production-publish.outputs.approver_login || '' }}
+      APPROVAL_COUNT: ${{ needs.authorize-production-publish.outputs.approval_count || '0' }}
+      INCIDENT_ID: ${{ needs.resolve-release-bundle.outputs.incident_id || '' }}
     steps:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -606,9 +646,70 @@ jobs:
           name: validated-release-bundle
           path: validated-release-bundle
 
+      - name: Enforce dual-control authorization metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          approver="$(echo "${APPROVER_LOGIN}" | tr -d '\r' | xargs || true)"
+          approval_count="$(echo "${APPROVAL_COUNT}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator metadata."
+            exit 1
+          fi
+          case "${approval_count}" in ''|*[!0-9]*)
+            echo "::error::Invalid approval_count '${approval_count}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${approval_count}" -lt 1 ]]; then
+            echo "::error::Production publish requires at least one recorded approval."
+            exit 1
+          fi
+          if [[ -z "${approver}" ]]; then
+            echo "::error::Missing non-initiator approver identity from authorization stage."
+            exit 1
+          fi
+          if [[ "${approver}" == "${initiator}" ]]; then
+            echo "::error::Dual-control violation: initiator '${initiator}' cannot self-approve production publish."
+            exit 1
+          fi
+          if [[ -n "${INCIDENT_ID}" ]] && [[ ! "${INCIDENT_ID}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
+            echo "::error::Invalid incident_id '${INCIDENT_ID}' in publish authorization metadata."
+            exit 1
+          fi
+
       - name: Publish to npm
         shell: bash
         run: |
           set -euo pipefail
           tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
           npm publish "validated-release-bundle/release-bundle/${tarball_name}" --access public --provenance
+
+      - name: Emit publish authorization evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball_name="$(tr -d '\r\n' < validated-release-bundle/release-bundle/create-sentinelayer.tarball)"
+          cat > publish-authorization.evidence.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "release-publish",
+            "runId": "${GITHUB_RUN_ID}",
+            "releaseTag": "${{ needs.resolve-release-bundle.outputs.release_tag }}",
+            "targetSha": "${{ needs.resolve-release-bundle.outputs.target_sha }}",
+            "tarballName": "${tarball_name}",
+            "releaseInitiator": "${RELEASE_INITIATOR}",
+            "productionApprover": "${APPROVER_LOGIN}",
+            "approvalCount": ${APPROVAL_COUNT},
+            "incidentId": "${INCIDENT_ID}",
+            "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
+      - name: Upload publish authorization evidence
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: publish-authorization-evidence
+          path: publish-authorization.evidence.json
+          if-no-files-found: error

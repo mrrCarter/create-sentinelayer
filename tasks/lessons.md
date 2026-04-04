@@ -233,3 +233,6 @@
 - Manual release publish dispatches should be anchored to a specific successful release run id and validated against tag commit SHA, not reconstructed heuristically from "latest successful run for SHA".
 - When migrating direct publish controls out of release validation workflows, remove user-facing publish toggles from dispatch inputs first to eliminate accidental production path confusion.
 - CI steps that execute Node scripts with third-party imports must run only after dependency installation; pre-install contract checks must use shell/native tooling or explicitly bootstrap deps first.
+- Release dispatch trust should be policy-file driven (`.github/security/release-invokers.json`) with explicit actor allowlist + incident-id regex enforcement, not ad-hoc per-workflow shell logic.
+- Production dual-control evidence is strongest when `authorize-production-publish` reads run approvals (`actions/runs/{run_id}/approvals`) and hard-fails if approver identity equals initiator.
+- Auth poll replay protection must survive process restarts; persist bounded resume state keyed by a session digest with TTL, and treat read/write/cleanup failures as best-effort so auth flow availability is not degraded.

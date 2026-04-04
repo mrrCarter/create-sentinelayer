@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
+  __pollCliAuthSessionForTests,
   __resolveAuthPollBackendCooldownForTests,
   getAuthStatus,
   getRuntimeRunStatus,
@@ -1025,6 +1026,86 @@ test("Unit auth service: login enforces deterministic polling attempt ceiling", 
       process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
     }
     await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth service: poll resume state persists seen request ids across restarts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
+  const sessionId = "sess_resume_state";
+  const pollClientId = "poll_client_resume_state";
+  const challenge = "resume-challenge";
+
+  const firstMock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        status: "pending",
+        request_id: "req-resume-1",
+        poll_sequence: 1,
+      },
+    ],
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        __pollCliAuthSessionForTests({
+          apiUrl: firstMock.apiUrl,
+          sessionId,
+          pollClientId,
+          challenge,
+          timeoutMs: 300,
+          pollIntervalSeconds: 0.1,
+          homeDir: tempRoot,
+        }),
+      (error) => {
+        assert.ok(error instanceof SentinelayerApiError);
+        assert.equal(error.code, "CLI_AUTH_TIMEOUT");
+        assert.equal(error.status, 408);
+        return true;
+      }
+    );
+    assert.ok(firstMock.state.pollCalls >= 1);
+  } finally {
+    await firstMock.close();
+  }
+
+  const secondMock = await startAuthRuntimeMockApi({
+    pollResponses: [
+      {
+        status: "denied",
+        request_id: "req-resume-1",
+        poll_sequence: 1,
+        message: "stale denial replay",
+      },
+      {
+        status: "approved",
+        auth_token: "auth_token_resume_1",
+        request_id: "req-resume-2",
+        poll_sequence: 2,
+        user: {
+          id: "user_1",
+          github_username: "demo-user",
+          email: "demo@example.com",
+        },
+      },
+    ],
+  });
+
+  try {
+    const approval = await __pollCliAuthSessionForTests({
+      apiUrl: secondMock.apiUrl,
+      sessionId,
+      pollClientId,
+      challenge,
+      timeoutMs: 5000,
+      pollIntervalSeconds: 0.1,
+      homeDir: tempRoot,
+    });
+    assert.equal(approval.auth_token, "auth_token_resume_1");
+    assert.equal(secondMock.state.pollCalls, 2);
+  } finally {
+    await secondMock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
