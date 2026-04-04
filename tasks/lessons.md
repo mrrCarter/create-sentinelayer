@@ -307,3 +307,4 @@
 - Rollback execute paths need strict provenance contract validation (`attestationVerified`, lineage mode, quality artifact digest parity) immediately before npm mutation commands.
 - Policy-map coverage must evolve with workflow DAG changes; every new governance job requires explicit `required`+`max` permission policy entries to keep local/CI drift checks authoritative.
 - Poll attempt ceilings should be derived from timeout-window math (deadline, interval, backoff cap) rather than static constants so auth loops cannot silently exceed configured duration budgets.
+- Parser/dataflow security-detector rewrites must ship with dedicated cross-platform unit tests that exercise the exact vulnerable pattern (for example variable-assignment -> `eval` sink), because bash-gated fixtures can be skipped on Windows and hide regressions until CI.

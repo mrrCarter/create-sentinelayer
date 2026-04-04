@@ -1225,3 +1225,18 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] Commit + push forty-fourth-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
 - [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.
+
+### PR #114 Forty-Fifth Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23980025357`:
+  - failing test: `Unit action SHA verifier: variable-indirected remote exec is blocked when not allowlisted` in both syntax matrix jobs and coverage lane.
+  - root cause: parser rewrite no longer tainted plain assignment values (`FETCH_CMD="curl ..."`), so downstream `eval "$FETCH_CMD | bash"` was not flagged.
+- [x] Apply deterministic regression fix:
+  - `scripts/ci/verify-workflow-remote-exec.js`: taint assignment variables when values contain network-fetch fragments, remote URLs, or references to already tainted variables.
+  - `tests/unit.verify-workflow-remote-exec.test.mjs`: add cross-platform parser tests for blocked variable-indirected remote exec and allowlist suppression path.
+- [x] Run forty-fifth-cycle local evidence:
+  - `node --test tests/unit.verify-workflow-remote-exec.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `203/209` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push forty-fifth-cycle fix batch.
+- [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+- [ ] Start `feedback-fixes-2026-04-03.md` implementation batch immediately after Omar re-anchor.

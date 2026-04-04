@@ -322,6 +322,10 @@ function containsNetworkFetchFragment(fragment) {
   return false;
 }
 
+function containsRemoteUrl(fragment) {
+  return /https?:\/\/|ftp:\/\//i.test(String(fragment || ""));
+}
+
 function extractReferencedVariables(fragment) {
   const references = new Set();
   const text = String(fragment || "");
@@ -380,7 +384,9 @@ function analyzeRunStep(step) {
         if (!varName) {
           continue;
         }
-        if (containsNetworkFetchFragment(value) && (value.includes("$(") || value.includes("`"))) {
+        const referencedVariables = extractReferencedVariables(value);
+        const referencesTaintedValue = Array.from(referencedVariables).some((entry) => taintedVariables.has(entry));
+        if (containsNetworkFetchFragment(value) || containsRemoteUrl(value) || referencesTaintedValue) {
           taintedVariables.add(varName);
         }
       }
