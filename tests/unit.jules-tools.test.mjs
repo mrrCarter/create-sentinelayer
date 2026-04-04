@@ -7,7 +7,12 @@ import os from "node:os";
 import { fileRead, FileReadError } from "../src/agents/jules/tools/file-read.js";
 import { grep, GrepError } from "../src/agents/jules/tools/grep.js";
 import { glob, GlobError } from "../src/agents/jules/tools/glob.js";
-import { shell, analyzeCommand, ShellBlockedError } from "../src/agents/jules/tools/shell.js";
+import {
+  shell,
+  analyzeCommand,
+  buildScrubbedEnv,
+  ShellBlockedError,
+} from "../src/agents/jules/tools/shell.js";
 import { fileEdit, FileEditError } from "../src/agents/jules/tools/file-edit.js";
 import {
   dispatchTool,
@@ -221,9 +226,47 @@ describe("shell", () => {
   });
 
   it("scrubs sensitive env vars from child process", () => {
-    // If ANTHROPIC_API_KEY were set, it should not appear in child env
-    const result = shell({ command: "echo ok" });
-    assert.equal(result.exitCode, 0);
+    const scrubbed = buildScrubbedEnv({
+      OPENAI_API_KEY: "openai-secret",
+      GH_TOKEN: "github-secret",
+      CUSTOM_SERVICE_TOKEN: "token-secret",
+      WORKER_PRIVATE_KEY: "private-secret",
+      INPUT_OPENAI_API_KEY: "input-secret",
+      SAFE_FLAG: "keep-me",
+    });
+
+    assert.equal(scrubbed.OPENAI_API_KEY, undefined);
+    assert.equal(scrubbed.GH_TOKEN, undefined);
+    assert.equal(scrubbed.CUSTOM_SERVICE_TOKEN, undefined);
+    assert.equal(scrubbed.WORKER_PRIVATE_KEY, undefined);
+    assert.equal(scrubbed.INPUT_OPENAI_API_KEY, undefined);
+    assert.equal(scrubbed.SAFE_FLAG, "keep-me");
+  });
+
+  it("shell command execution receives scrubbed environment", () => {
+    const prevOpenAi = process.env.OPENAI_API_KEY;
+    const prevSafe = process.env.SL_SAFE_TEST;
+    process.env.OPENAI_API_KEY = "sensitive";
+    process.env.SL_SAFE_TEST = "safe";
+    try {
+      const result = shell({
+        command:
+          "node -e \"const p=process.env; process.stdout.write((p.OPENAI_API_KEY||'missing') + ',' + (p.SL_SAFE_TEST||'missing'))\"",
+      });
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout.trim(), "missing,safe");
+    } finally {
+      if (prevOpenAi === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = prevOpenAi;
+      }
+      if (prevSafe === undefined) {
+        delete process.env.SL_SAFE_TEST;
+      } else {
+        process.env.SL_SAFE_TEST = prevSafe;
+      }
+    }
   });
 });
 

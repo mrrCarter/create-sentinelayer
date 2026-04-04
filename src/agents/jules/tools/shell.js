@@ -41,17 +41,78 @@ const WARN_PATTERNS = [
  * Environment variables to strip from child process env.
  * Prevents credential leakage to spawned commands.
  */
-const ENV_VARS_TO_STRIP = [
-  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+const EXACT_ENV_KEYS_TO_STRIP = new Set([
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
   "SENTINELAYER_TOKEN",
-  "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-  "AZURE_CLIENT_SECRET", "GOOGLE_APPLICATION_CREDENTIALS",
-  "GITHUB_TOKEN", "GH_TOKEN",
-  "NPM_TOKEN", "NODE_AUTH_TOKEN",
-  "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_RUNTIME_TOKEN",
-  "STRIPE_SECRET_KEY", "SLACK_BOT_TOKEN",
-  "DATABASE_URL", "REDIS_URL",
+  "AIDENID_API_KEY",
+  "AIDENID_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AZURE_CLIENT_SECRET",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "GITLAB_TOKEN",
+  "BITBUCKET_TOKEN",
+  "NPM_TOKEN",
+  "NODE_AUTH_TOKEN",
+  "PYPI_API_TOKEN",
+  "RUBYGEMS_API_KEY",
+  "CARGO_REGISTRY_TOKEN",
+  "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+  "ACTIONS_RUNTIME_TOKEN",
+  "CI_JOB_TOKEN",
+  "CI_JOB_JWT",
+  "STRIPE_SECRET_KEY",
+  "SLACK_BOT_TOKEN",
+  "TELEGRAM_BOT_TOKEN",
+  "DISCORD_BOT_TOKEN",
+  "TWILIO_AUTH_TOKEN",
+  "SENDGRID_API_KEY",
+  "RESEND_API_KEY",
+  "DATABASE_URL",
+  "REDIS_URL",
+  "MONGODB_URI",
   "SSH_SIGNING_KEY",
+  "SSH_PRIVATE_KEY",
+  "KUBECONFIG",
+  "KUBE_CONFIG_DATA",
+]);
+
+const ENV_KEY_PREFIX_PATTERNS = [
+  /^AIDENID_/i,
+  /^SENTINELAYER_/i,
+  /^OPENAI_/i,
+  /^ANTHROPIC_/i,
+  /^GOOGLE_/i,
+  /^GITHUB_/i,
+  /^GH_/i,
+  /^AWS_/i,
+  /^AZURE_/i,
+  /^SLACK_/i,
+  /^STRIPE_/i,
+  /^TELEGRAM_/i,
+  /^DISCORD_/i,
+  /^TWILIO_/i,
+  /^SENDGRID_/i,
+  /^RESEND_/i,
+];
+
+const ENV_KEY_SUFFIX_PATTERNS = [
+  /_TOKEN$/i,
+  /_API_KEY$/i,
+  /_SECRET$/i,
+  /_SECRET_KEY$/i,
+  /_PASSWORD$/i,
+  /_PRIVATE_KEY$/i,
+  /_ACCESS_KEY$/i,
+  /_AUTH_TOKEN$/i,
+  /_SESSION_TOKEN$/i,
 ];
 
 /**
@@ -145,14 +206,44 @@ export function analyzeCommand(command) {
   return { risk: "safe", patterns: [] };
 }
 
-function buildScrubbedEnv() {
-  const env = { ...process.env };
-  for (const key of ENV_VARS_TO_STRIP) {
-    delete env[key];
-    // GitHub Actions INPUT_ prefix convention
-    delete env[`INPUT_${key}`];
+export function buildScrubbedEnv(sourceEnv = process.env) {
+  const env = { ...sourceEnv };
+  for (const key of Object.keys(env)) {
+    if (shouldStripEnvKey(key)) {
+      delete env[key];
+    }
   }
   return env;
+}
+
+function shouldStripEnvKey(key) {
+  if (!key) {
+    return false;
+  }
+
+  const upperKey = String(key).toUpperCase();
+  if (EXACT_ENV_KEYS_TO_STRIP.has(upperKey)) {
+    return true;
+  }
+
+  if (upperKey.startsWith("INPUT_")) {
+    const baseKey = upperKey.slice("INPUT_".length);
+    if (EXACT_ENV_KEYS_TO_STRIP.has(baseKey)) {
+      return true;
+    }
+    if (ENV_KEY_PREFIX_PATTERNS.some((pattern) => pattern.test(baseKey))) {
+      return true;
+    }
+    if (ENV_KEY_SUFFIX_PATTERNS.some((pattern) => pattern.test(baseKey))) {
+      return true;
+    }
+  }
+
+  if (ENV_KEY_PREFIX_PATTERNS.some((pattern) => pattern.test(upperKey))) {
+    return true;
+  }
+
+  return ENV_KEY_SUFFIX_PATTERNS.some((pattern) => pattern.test(upperKey));
 }
 
 export class ShellError extends Error {

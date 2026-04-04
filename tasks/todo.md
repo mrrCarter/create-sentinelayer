@@ -216,6 +216,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 
 ### Batch X - Agent Tool Security Hardening (2026-04-04)
 - [x] PR 147 symlink + UNC + device-path guardrails for Jules `FileRead`/`FileEdit` tools (realpath-aware root validation, Windows-safe path-prefix checks, deterministic failure codes).
+- [ ] PR 148 subprocess env scrub expansion + shell guardrail coverage for Jules `Shell` tool.
 
 ### PR 147 Working Plan (roadmap/pr-147-auth-runtime-governance-hardening)
 - [x] Add shared path-guard utility for Jules file tools:
@@ -228,6 +229,15 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - Symlink escape rejection when resolved target leaves allowed root.
   - Prefix-collision defense (`<root>` vs `<root>-evil`) for allowed-root checks.
 - [x] Run Omar Gate PR loop (`gh run watch`) and merge only after `Omar Gate` + required checks pass.
+
+### PR 148 Working Plan (roadmap/pr-148-shell-subprocess-guardrail-expansion)
+- [x] Expand `Shell` env scrubbing to cover broader secret/token keyspace (exact sensitive keys + deterministic suffix/prefix patterns + `INPUT_` variants).
+- [x] Keep runtime-safe env keys intact while applying fail-closed stripping to sensitive keys only.
+- [x] Add unit coverage for shell scrubbing behavior:
+  - Explicit key removal (`OPENAI_API_KEY`, `GH_TOKEN`, etc.).
+  - Pattern-based removal (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, `*_PRIVATE_KEY`).
+  - Confirm non-sensitive keys remain available to subprocess execution.
+- [ ] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
 
 ## Execution Board (2026-04-04)
 
