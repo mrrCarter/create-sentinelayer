@@ -331,3 +331,4 @@
 - Secret-presence checks are not sufficient for trusted scans; tie secret-consuming steps to explicit environment-protection verification outputs and trusted job identity.
 - Tag-push release trust paths should avoid collaborator-permission API coupling for bot actors; keep collaborator checks scoped to manual-dispatch governance paths.
 - Action provenance fallback-by-availability weakens guarantees; prefer fail-closed commit-provenance checks over tarball HEAD existence probes unless immutable digest verification is implemented.
+- Some pinned GitHub Actions SHAs (for example `actions/attest-build-provenance`) can intermittently fail commits-API resolution; robust provenance gates should allow fallback only with explicit tarball SHA-256 allowlist verification.

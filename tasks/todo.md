@@ -1365,3 +1365,14 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `npm run verify` (pass; e2e `84/84`; unit `207/213` with 6 env-skipped tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
 - [ ] Commit + push fifty-third-cycle hardening batch.
 - [ ] Execute Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.
+
+### PR #114 Fifty-Fourth Cycle (2026-04-04, quality regression fix)
+- [x] Capture quality failure root cause from run `23982159451`:
+  - `Security Scan` failed because commit-provenance API could not resolve `actions/attest-build-provenance@96b4...`; strict fail-closed behavior without a deterministic fallback blocked CI.
+- [x] Apply deterministic fix:
+  - `scripts/ci/verify-action-shas.sh`: add tarball fallback path that is only allowed when a matching `tarballDigestAllowlist` entry exists; download tarball, compute SHA-256, and require exact digest match.
+  - `.github/security/action-provenance-policy.json`: add explicit digest allowlist entry for `actions/attest-build-provenance@96b4...`.
+- [x] Run fifty-fourth-cycle local evidence:
+  - `npm run check` (pass)
+- [ ] Commit + push fifty-fourth-cycle fix batch.
+- [ ] Re-run Omar loop (`gh run watch --exit-status`, approve `security-review`, re-anchor) and continue burn-down until `P2<=2`.

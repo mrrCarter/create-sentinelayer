@@ -279,9 +279,34 @@ for workflow_file in "${workflow_files[@]}"; do
           fi
         fi
       else
-        echo "::error file=${workflow_file}::Unable to resolve action provenance for '${action_key}@${workflow_sha}' via commits API."
-        failures=$((failures + 1))
-        continue
+        fallback_key="${action_key}@${workflow_sha}"
+        fallback_digest="$(
+          jq -r --arg key "${fallback_key}" '.tarballDigestAllowlist[$key] // ""' "${provenance_policy_file}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | xargs || true
+        )"
+        if [[ ! "${fallback_digest}" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error file=${workflow_file}::Unable to resolve action provenance for '${fallback_key}' via commits API and no tarball digest allowlist entry exists."
+          failures=$((failures + 1))
+          continue
+        fi
+        tarball_file="$(mktemp)"
+        tarball_status=0
+        timeout --preserve-status 45s gh api "repos/${action_owner}/${action_repo}/tarball/${workflow_sha}" > "${tarball_file}" || tarball_status=$?
+        if [[ "${tarball_status}" -ne 0 ]]; then
+          rm -f "${tarball_file}" || true
+          echo "::error file=${workflow_file}::Unable to download tarball fallback provenance for '${fallback_key}'."
+          failures=$((failures + 1))
+          continue
+        fi
+        resolved_tarball_digest="$(sha256sum "${tarball_file}" | awk '{print tolower($1)}' | xargs || true)"
+        rm -f "${tarball_file}" || true
+        if [[ "${resolved_tarball_digest}" != "${fallback_digest}" ]]; then
+          echo "::error file=${workflow_file}::Tarball provenance digest mismatch for '${fallback_key}' (expected='${fallback_digest}', actual='${resolved_tarball_digest}')."
+          failures=$((failures + 1))
+          continue
+        fi
+        echo "::warning file=${workflow_file}::Commit provenance API unavailable for '${fallback_key}'; tarball digest allowlist verification succeeded."
       fi
     fi
   done
