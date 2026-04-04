@@ -53,13 +53,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          lock_hash_before="$(sha256sum package-lock.json | awk '{print $1}')"
-          timeout --preserve-status 8m npm ci --ignore-scripts
-          lock_hash_after="$(sha256sum package-lock.json | awk '{print $1}')"
-          if [[ "${lock_hash_before}" != "${lock_hash_after}" ]]; then
-            echo "::error::package-lock.json mutated during dependency installation."
-            exit 1
-          fi
+          bash scripts/ci/install-immutable.sh .
 
       - name: Assert deploy gate-chain contract is present
         shell: bash
@@ -162,7 +156,8 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Validate CLI syntax
         run: npm run check
@@ -199,7 +194,8 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Enforce unit coverage thresholds
         run: npm run test:coverage
@@ -240,7 +236,8 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Run E2E tests
         run: npm run test:e2e
@@ -277,7 +274,8 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: timeout --preserve-status 8m npm ci --ignore-scripts
+        shell: bash
+        run: bash scripts/ci/install-immutable.sh .
 
       - name: Run npm audit (prod deps only)
         run: timeout --preserve-status 5m npm audit --omit=dev --audit-level=high
@@ -672,7 +670,7 @@ jobs:
           pushd "${baseline_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
           npm config set cache "${baseline_cache_dir}"
-          timeout --preserve-status 8m npm ci --ignore-scripts
+          bash "${GITHUB_WORKSPACE}/scripts/ci/install-immutable.sh" "."
           baseline_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
           if [[ "${baseline_lock_hash}" != "${lock_hash_expected}" ]]; then
             echo "::error::Lockfile drift detected during baseline clean-tree build (expected=${lock_hash_expected}, actual=${baseline_lock_hash})."
@@ -687,7 +685,7 @@ jobs:
           pushd "${rebuild_dir}" >/dev/null
           npm config set registry "https://registry.npmjs.org/"
           npm config set cache "${rebuild_cache_dir}"
-          timeout --preserve-status 8m npm ci --ignore-scripts
+          bash "${GITHUB_WORKSPACE}/scripts/ci/install-immutable.sh" "."
           rebuild_lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
           if [[ "${rebuild_lock_hash}" != "${lock_hash_expected}" ]]; then
             echo "::error::Lockfile drift detected during clean-room rebuild (expected=${lock_hash_expected}, actual=${rebuild_lock_hash})."
@@ -743,6 +741,20 @@ jobs:
             "releasePublishWorkflowPath": ".github/workflows/release-publish.yml"
           }
           EOF
+          cat > quality-promotion-invariant.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "qualitySummaryGate": "Quality Summary",
+            "sourceRunId": "${GITHUB_RUN_ID}",
+            "sourceCommitSha": "${GITHUB_SHA}",
+            "artifactName": "${baseline_tarball}",
+            "artifactSha256": "${baseline_hash}",
+            "artifactRebuildSha256": "${rebuild_hash}",
+            "artifactManifest": "quality-build.manifest.json",
+            "releaseInputLock": "quality-release-input.lock.json"
+          }
+          EOF
 
       - name: Upload build artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
@@ -755,6 +767,7 @@ jobs:
             quality-build.tarball
             quality-build.manifest.json
             quality-release-input.lock.json
+            quality-promotion-invariant.json
             quality-build.files.baseline.txt
             quality-build.files.rebuild.txt
           if-no-files-found: error
@@ -1205,6 +1218,63 @@ jobs:
           fi
 
           echo "All quality checks passed."
+
+      - name: Download quality build package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: quality-build-package
+          path: quality-summary-proof
+
+      - name: Assert immutable promotion invariant
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_path="quality-summary-proof/quality-build.manifest.json"
+          lock_path="quality-summary-proof/quality-release-input.lock.json"
+          invariant_path="quality-summary-proof/quality-promotion-invariant.json"
+          tarball_name="$(tr -d '\r\n' < quality-summary-proof/quality-build.tarball)"
+          test -n "${tarball_name}" || (echo "::error::Missing quality-build.tarball identity." && exit 1)
+          test -f "${manifest_path}" || (echo "::error::Missing ${manifest_path}." && exit 1)
+          test -f "${lock_path}" || (echo "::error::Missing ${lock_path}." && exit 1)
+          test -f "${invariant_path}" || (echo "::error::Missing ${invariant_path}." && exit 1)
+          test -f "quality-summary-proof/${tarball_name}" || (echo "::error::Missing promoted tarball quality-summary-proof/${tarball_name}." && exit 1)
+          actual_sha="$(sha256sum "quality-summary-proof/${tarball_name}" | awk '{print $1}')"
+          manifest_sha="$(jq -r '.sha256 // ""' "${manifest_path}")"
+          lock_sha="$(jq -r '.artifactSha256 // ""' "${lock_path}")"
+          lock_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${lock_path}")"
+          invariant_sha="$(jq -r '.artifactSha256 // ""' "${invariant_path}")"
+          manifest_name="$(jq -r '.artifactName // ""' "${manifest_path}")"
+          lock_name="$(jq -r '.artifactName // ""' "${lock_path}")"
+          invariant_name="$(jq -r '.artifactName // ""' "${invariant_path}")"
+          if [[ "${manifest_name}" != "${tarball_name}" ]] || [[ "${lock_name}" != "${tarball_name}" ]] || [[ "${invariant_name}" != "${tarball_name}" ]]; then
+            echo "::error::Promotion invariant artifact-name mismatch (manifest=${manifest_name}, lock=${lock_name}, invariant=${invariant_name}, tarball=${tarball_name})."
+            exit 1
+          fi
+          if [[ "${actual_sha}" != "${manifest_sha}" ]] || [[ "${actual_sha}" != "${lock_sha}" ]] || [[ "${actual_sha}" != "${lock_rebuild_sha}" ]] || [[ "${actual_sha}" != "${invariant_sha}" ]]; then
+            echo "::error::Promotion invariant digest mismatch (actual=${actual_sha}, manifest=${manifest_sha}, lock=${lock_sha}, lockRebuild=${lock_rebuild_sha}, invariant=${invariant_sha})."
+            exit 1
+          fi
+          cat > quality-summary-proof/quality-summary.promotion-proof.json <<EOF
+          {
+            "schemaVersion": "1.0.0",
+            "workflow": "quality-gates",
+            "gate": "Quality Summary",
+            "runId": "${GITHUB_RUN_ID}",
+            "commitSha": "${GITHUB_SHA}",
+            "artifactName": "${tarball_name}",
+            "artifactSha256": "${actual_sha}",
+            "artifactManifest": "quality-build.manifest.json",
+            "releaseInputLock": "quality-release-input.lock.json",
+            "promotionInvariant": "quality-promotion-invariant.json"
+          }
+          EOF
+
+      - name: Upload quality summary promotion proof
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-summary-promotion-proof
+          path: quality-summary-proof/quality-summary.promotion-proof.json
+          if-no-files-found: error
 
   verify-gate-graph:
     name: Verify Gate Graph

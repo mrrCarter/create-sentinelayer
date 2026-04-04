@@ -400,21 +400,26 @@ jobs:
 
           required_context_manifest=".github/security/required-check-contexts.json"
           test -f "${required_context_manifest}" || (echo "::error::Missing ${required_context_manifest}." && exit 1)
-          mapfile -t required_contexts < <(jq -r '.requiredContexts[]?.name // empty' "${required_context_manifest}")
-          if [[ "${#required_contexts[@]}" -eq 0 ]]; then
+          required_context_count="$(jq -r '.requiredContexts | length // 0' "${required_context_manifest}")"
+          if [[ "${required_context_count}" -lt 1 ]]; then
             echo "::error::No required contexts defined in ${required_context_manifest}."
             exit 1
           fi
           configured_contexts="$(echo "${protection_json}" | jq -c '(((.required_status_checks.checks // []) | map(.context)) + (.required_status_checks.contexts // [])) | unique')"
-          for required_context in "${required_contexts[@]}"; do
+          mapfile -t required_contexts < <(jq -c '.requiredContexts[]' "${required_context_manifest}")
+          check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${target_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
+          for required_context_json in "${required_contexts[@]}"; do
+            required_context="$(echo "${required_context_json}" | jq -r '.name // ""')"
+            workflow_path="$(echo "${required_context_json}" | jq -r '.workflowPath // ""')"
+            allowed_events_json="$(echo "${required_context_json}" | jq -c '.allowedEvents // []')"
+            if [[ -z "${required_context}" ]] || [[ -z "${workflow_path}" ]]; then
+              echo "::error::Invalid required context contract entry: ${required_context_json}"
+              exit 1
+            fi
             if ! echo "${configured_contexts}" | jq -e --arg context "${required_context}" 'index($context) != null' >/dev/null; then
               echo "::error::Branch protection for '${branch_name}' is missing required status context '${required_context}'."
               exit 1
             fi
-          done
-
-          check_runs_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/commits/${target_sha}/check-runs?per_page=100" -H "Accept: application/vnd.github+json")"
-          for required_context in "${required_contexts[@]}"; do
             matched_check="$(echo "${check_runs_json}" | jq -c --arg name "${required_context}" '
               [.check_runs[]
                 | select((.name // "") == $name)
@@ -426,6 +431,33 @@ jobs:
             ')"
             if [[ -z "${matched_check}" ]]; then
               echo "::error::Required context '${required_context}' is missing a successful check run on commit ${target_sha}."
+              exit 1
+            fi
+            details_url="$(echo "${matched_check}" | jq -r '.details_url // ""')"
+            run_id="$(echo "${details_url}" | sed -nE 's#^.*/actions/runs/([0-9]+)/?.*$#\1#p')"
+            if [[ -z "${run_id}" ]]; then
+              echo "::error::Unable to resolve workflow run id from check details_url '${details_url}' for context '${required_context}'."
+              exit 1
+            fi
+            run_json="$(timeout --preserve-status 30s gh api "repos/${REPO}/actions/runs/${run_id}" -H "Accept: application/vnd.github+json")"
+            run_path="$(echo "${run_json}" | jq -r '((.path // "") | split("@")[0])')"
+            run_head_sha="$(echo "${run_json}" | jq -r '.head_sha // ""')"
+            run_event="$(echo "${run_json}" | jq -r '.event // ""')"
+            run_head_repo="$(echo "${run_json}" | jq -r '.head_repository.full_name // .repository.full_name // ""')"
+            if [[ "${run_path}" != "${workflow_path}" ]]; then
+              echo "::error::Required context '${required_context}' run path mismatch (expected='${workflow_path}', actual='${run_path}')."
+              exit 1
+            fi
+            if [[ "${run_head_sha}" != "${target_sha}" ]]; then
+              echo "::error::Required context '${required_context}' run ${run_id} head_sha mismatch (expected='${target_sha}', actual='${run_head_sha}')."
+              exit 1
+            fi
+            if [[ "${run_head_repo}" != "${REPO}" ]]; then
+              echo "::error::Required context '${required_context}' run ${run_id} repository mismatch (expected='${REPO}', actual='${run_head_repo}')."
+              exit 1
+            fi
+            if ! echo "${allowed_events_json}" | jq -e --arg event "${run_event}" 'index($event) != null' >/dev/null; then
+              echo "::error::Required context '${required_context}' run ${run_id} event '${run_event}' is not allowlisted by policy."
               exit 1
             fi
           done
@@ -478,8 +510,10 @@ jobs:
           set -euo pipefail
           manifest_path="release-bundle/quality-proof/quality-build.manifest.json"
           lock_path="release-bundle/quality-proof/quality-release-input.lock.json"
+          invariant_path="release-bundle/quality-proof/quality-promotion-invariant.json"
           test -f "${manifest_path}" || (echo "::error::Missing quality manifest ${manifest_path} in release artifact bundle." && exit 1)
           test -f "${lock_path}" || (echo "::error::Missing quality release-input lock ${lock_path} in release artifact bundle." && exit 1)
+          test -f "${invariant_path}" || (echo "::error::Missing quality promotion invariant ${invariant_path} in release artifact bundle." && exit 1)
           tarball_name="$(tr -d '\r\n' < release-bundle/create-sentinelayer.tarball)"
           expected_sha="$(awk 'NF {print $1; exit}' release-bundle/create-sentinelayer.sha256)"
           test -n "${tarball_name}" || (echo "::error::Missing promoted release tarball name." && exit 1)
@@ -493,6 +527,11 @@ jobs:
           lock_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${lock_path}")"
           lock_commit="$(jq -r '.sourceCommitSha // ""' "${lock_path}")"
           lock_run_id="$(jq -r '.sourceRunId // ""' "${lock_path}")"
+          invariant_artifact="$(jq -r '.artifactName // ""' "${invariant_path}")"
+          invariant_sha="$(jq -r '.artifactSha256 // ""' "${invariant_path}")"
+          invariant_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' "${invariant_path}")"
+          invariant_commit="$(jq -r '.sourceCommitSha // ""' "${invariant_path}")"
+          invariant_run_id="$(jq -r '.sourceRunId // ""' "${invariant_path}")"
           if [[ "${manifest_artifact}" != "${tarball_name}" ]] || [[ "${manifest_sha}" != "${expected_sha}" ]]; then
             echo "::error::Release artifact lineage mismatch between promoted files and quality manifest."
             exit 1
@@ -507,6 +546,14 @@ jobs:
           fi
           if [[ "${lock_run_id}" != "${manifest_run_id}" ]] || [[ "${manifest_run_id}" != "${RELEASE_RUN_ID}" ]]; then
             echo "::error::Release run mismatch (lock=${lock_run_id}, manifest=${manifest_run_id}, release=${RELEASE_RUN_ID})."
+            exit 1
+          fi
+          if [[ "${invariant_artifact}" != "${manifest_artifact}" ]] || [[ "${invariant_sha}" != "${manifest_sha}" ]] || [[ "${invariant_rebuild_sha}" != "${manifest_sha}" ]]; then
+            echo "::error::Release promotion invariant mismatch with quality manifest."
+            exit 1
+          fi
+          if [[ "${invariant_commit}" != "${manifest_commit}" ]] || [[ "${invariant_run_id}" != "${manifest_run_id}" ]]; then
+            echo "::error::Release promotion invariant source mismatch (commit/run) with quality manifest."
             exit 1
           fi
 

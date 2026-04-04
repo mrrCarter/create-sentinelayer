@@ -321,7 +321,7 @@ function resolveMonotonicEpochMs() {
   return Date.now();
 }
 
-function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
+function parseRetryAfterDelayMs(rawValue, responseDateHeader = "", responseReceivedAtEpochMs = null) {
   const normalized = String(rawValue || "").trim();
   if (!normalized) {
     return null;
@@ -344,7 +344,8 @@ function parseRetryAfterDelayMs(rawValue, responseDateHeader = "") {
   if (Number.isFinite(responseDateEpoch)) {
     delayMs = retryEpoch - responseDateEpoch;
   } else {
-    delayMs = retryEpoch - Date.now();
+    const receivedEpoch = Number(responseReceivedAtEpochMs);
+    delayMs = retryEpoch - (Number.isFinite(receivedEpoch) ? receivedEpoch : Date.now());
   }
   delayMs = Math.max(0, Number(delayMs || 0));
   return Math.min(delayMs, MAX_RETRY_AFTER_DELAY_MS);
@@ -703,6 +704,7 @@ export async function requestJson(
         body: requestBody,
         signal: activeSignal,
       });
+      const responseReceivedAtEpochMs = resolveMonotonicEpochMs();
 
       const responseBodyLimit = response.ok ? MAX_RESPONSE_BODY_BYTES : MAX_ERROR_RESPONSE_BODY_BYTES;
       const rawBody = await readResponseBodyWithLimit(response, responseBodyLimit, {
@@ -725,7 +727,8 @@ export async function requestJson(
         const apiError = normalizeApiError(json && typeof json === "object" ? json.error : {});
         const retryAfterMs = parseRetryAfterDelayMs(
           response.headers.get("retry-after"),
-          response.headers.get("date")
+          response.headers.get("date"),
+          responseReceivedAtEpochMs
         );
         throw new SentinelayerApiError(apiError.message, {
           status: response.status,

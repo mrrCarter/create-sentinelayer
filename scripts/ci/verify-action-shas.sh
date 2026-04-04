@@ -7,6 +7,13 @@ if [[ ! -f "${allowlist_file}" ]]; then
   exit 1
 fi
 
+remote_exec_allowlist_file="${ACTION_REMOTE_EXEC_ALLOWLIST_FILE:-.github/security/workflow-remote-exec-allowlist.txt}"
+if [[ ! -f "${remote_exec_allowlist_file}" ]]; then
+  echo "::error::Missing workflow remote-exec allowlist file '${remote_exec_allowlist_file}'."
+  exit 1
+fi
+mapfile -t remote_exec_allowlist_patterns < <(grep -vE '^\s*($|#)' "${remote_exec_allowlist_file}" || true)
+
 declare -A allowlisted_shas=()
 while IFS='=' read -r action_name pinned_sha; do
   normalized_action="$(echo "${action_name}" | xargs || true)"
@@ -39,7 +46,7 @@ if [[ "${#workflow_files[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-extract_uses_entries() {
+extract_workflow_entries() {
   local workflow_file="${1:-}"
   if [[ -z "${workflow_file}" ]]; then
     return 1
@@ -84,7 +91,7 @@ try {
   process.exit(1);
 }
 
-const usesValues = [];
+const entries = [];
 const visited = new Set();
 function walk(value) {
   if (value === null || value === undefined) {
@@ -107,7 +114,14 @@ function walk(value) {
     if (key === "uses" && typeof child === "string") {
       const normalized = child.trim();
       if (normalized) {
-        usesValues.push(normalized);
+        entries.push(`USES\t${normalized}`);
+      }
+      continue;
+    }
+    if (key === "run" && typeof child === "string") {
+      const normalized = child.trim();
+      if (normalized) {
+        entries.push(`RUN\t${Buffer.from(normalized, "utf8").toString("base64")}`);
       }
       continue;
     }
@@ -116,8 +130,8 @@ function walk(value) {
 }
 
 walk(parsed);
-for (const usesValue of usesValues) {
-  process.stdout.write(`${usesValue}\n`);
+for (const entry of entries) {
+  process.stdout.write(`${entry}\n`);
 }
 NODE
 }
@@ -130,13 +144,34 @@ for workflow_file in "${workflow_files[@]}"; do
     continue
   fi
 
-  uses_entries_output=""
-  if ! uses_entries_output="$(extract_uses_entries "${workflow_file}")"; then
+  workflow_entries_output=""
+  if ! workflow_entries_output="$(extract_workflow_entries "${workflow_file}")"; then
     echo "::error file=${workflow_file}::Unable to parse workflow for pinned action verification."
     failures=$((failures + 1))
     continue
   fi
-  mapfile -t uses_entries <<< "${uses_entries_output}"
+  mapfile -t workflow_entries <<< "${workflow_entries_output}"
+  uses_entries=()
+  run_entries=()
+  for workflow_entry in "${workflow_entries[@]}"; do
+    if [[ -z "${workflow_entry}" ]]; then
+      continue
+    fi
+    if [[ "${workflow_entry}" == USES$'\t'* ]]; then
+      uses_entries+=("${workflow_entry#*$'\t'}")
+      continue
+    fi
+    if [[ "${workflow_entry}" == RUN$'\t'* ]]; then
+      encoded_run="${workflow_entry#*$'\t'}"
+      decoded_run="$(printf '%s' "${encoded_run}" | base64 --decode 2>/dev/null || true)"
+      if [[ -z "${decoded_run}" ]] && [[ -n "${encoded_run}" ]]; then
+        echo "::error file=${workflow_file}::Unable to decode base64 run command payload."
+        failures=$((failures + 1))
+        continue
+      fi
+      run_entries+=("${decoded_run}")
+    fi
+  done
 
   for uses_value in "${uses_entries[@]}"; do
     if [[ -z "${uses_value}" ]]; then
@@ -163,6 +198,35 @@ for workflow_file in "${workflow_files[@]}"; do
       failures=$((failures + 1))
     fi
   done
+
+  for run_value in "${run_entries[@]}"; do
+    if [[ -z "${run_value}" ]]; then
+      continue
+    fi
+    normalized_run="$(printf '%s' "${run_value}" | tr '[:upper:]' '[:lower:]')"
+    remote_exec_detected="false"
+    if [[ "${normalized_run}" =~ curl[^|]*\|[[:space:]]*(bash|sh) ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${normalized_run}" =~ wget[^|]*-o-[^|]*\|[[:space:]]*(bash|sh) ]]; then
+      remote_exec_detected="true"
+    fi
+    if [[ "${remote_exec_detected}" != "true" ]]; then
+      continue
+    fi
+    remote_exec_allowlisted="false"
+    for allow_pattern in "${remote_exec_allowlist_patterns[@]}"; do
+      if [[ -n "${allow_pattern}" ]] && [[ "${normalized_run}" =~ ${allow_pattern} ]]; then
+        remote_exec_allowlisted="true"
+        break
+      fi
+    done
+    if [[ "${remote_exec_allowlisted}" != "true" ]]; then
+      command_preview="$(printf '%s' "${run_value}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-180)"
+      echo "::error file=${workflow_file}::Potential remote shell execution in run step is not allowlisted: ${command_preview}"
+      failures=$((failures + 1))
+    fi
+  done
 done
 
 if [[ "${failures}" -gt 0 ]]; then
@@ -170,4 +234,4 @@ if [[ "${failures}" -gt 0 ]]; then
   exit 1
 fi
 
-echo "Verified pinned workflow action SHAs for ${#workflow_files[@]} workflow file(s)."
+echo "Verified pinned workflow action SHAs and remote-run policies for ${#workflow_files[@]} workflow file(s)."

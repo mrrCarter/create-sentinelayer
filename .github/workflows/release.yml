@@ -941,6 +941,7 @@ jobs:
           set -euo pipefail
           test -f quality-proof/quality-build.manifest.json || (echo "::error::Missing quality-build.manifest.json from quality workflow artifacts." && exit 1)
           test -f quality-proof/quality-release-input.lock.json || (echo "::error::Missing quality-release-input.lock.json from quality workflow artifacts." && exit 1)
+          test -f quality-proof/quality-promotion-invariant.json || (echo "::error::Missing quality-promotion-invariant.json from quality workflow artifacts." && exit 1)
           quality_sha="$(jq -r '.sha256 // ""' quality-proof/quality-build.manifest.json)"
           quality_rebuild_sha="$(jq -r '.rebuildSha256 // ""' quality-proof/quality-build.manifest.json)"
           quality_commit_sha="$(jq -r '.commitSha // ""' quality-proof/quality-build.manifest.json)"
@@ -951,6 +952,11 @@ jobs:
           lock_artifact_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' quality-proof/quality-release-input.lock.json)"
           lock_source_commit_sha="$(jq -r '.sourceCommitSha // ""' quality-proof/quality-release-input.lock.json)"
           lock_source_run_id="$(jq -r '.sourceRunId // ""' quality-proof/quality-release-input.lock.json)"
+          invariant_artifact_name="$(jq -r '.artifactName // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_artifact_sha="$(jq -r '.artifactSha256 // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_artifact_rebuild_sha="$(jq -r '.artifactRebuildSha256 // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_source_commit_sha="$(jq -r '.sourceCommitSha // ""' quality-proof/quality-promotion-invariant.json)"
+          invariant_source_run_id="$(jq -r '.sourceRunId // ""' quality-proof/quality-promotion-invariant.json)"
           deploy_summary_path="quality-proof/deploy-stage-proof/deploy.summary.json"
           deploy_artifact_name="$(jq -r '.artifactName // ""' "${deploy_summary_path}")"
           deploy_artifact_sha="$(jq -r '.artifactSha256 // ""' "${deploy_summary_path}")"
@@ -968,6 +974,11 @@ jobs:
           test -n "${lock_artifact_rebuild_sha}" || (echo "::error::Unable to parse lock artifact rebuild sha256." && exit 1)
           test -n "${lock_source_commit_sha}" || (echo "::error::Unable to parse lock source commit." && exit 1)
           test -n "${lock_source_run_id}" || (echo "::error::Unable to parse lock source run id." && exit 1)
+          test -n "${invariant_artifact_name}" || (echo "::error::Unable to parse invariant artifact name." && exit 1)
+          test -n "${invariant_artifact_sha}" || (echo "::error::Unable to parse invariant artifact sha256." && exit 1)
+          test -n "${invariant_artifact_rebuild_sha}" || (echo "::error::Unable to parse invariant artifact rebuild sha256." && exit 1)
+          test -n "${invariant_source_commit_sha}" || (echo "::error::Unable to parse invariant source commit." && exit 1)
+          test -n "${invariant_source_run_id}" || (echo "::error::Unable to parse invariant source run id." && exit 1)
           test -n "${package_version}" || (echo "::error::Unable to parse package version from package.json." && exit 1)
           if [[ "${quality_sha}" != "${quality_rebuild_sha}" ]]; then
             echo "::error::Quality workflow reproducibility proof mismatch (baseline=${quality_sha}, rebuild=${quality_rebuild_sha})."
@@ -983,6 +994,22 @@ jobs:
           fi
           if [[ "${lock_artifact_name}" != "${quality_artifact_name}" ]]; then
             echo "::error::Quality release-input lock artifact mismatch (lock=${lock_artifact_name}, quality=${quality_artifact_name})."
+            exit 1
+          fi
+          if [[ "${invariant_artifact_name}" != "${quality_artifact_name}" ]]; then
+            echo "::error::Quality promotion invariant artifact mismatch (invariant=${invariant_artifact_name}, quality=${quality_artifact_name})."
+            exit 1
+          fi
+          if [[ "${invariant_artifact_sha}" != "${quality_sha}" ]] || [[ "${invariant_artifact_rebuild_sha}" != "${quality_rebuild_sha}" ]]; then
+            echo "::error::Quality promotion invariant digest mismatch (invariant=${invariant_artifact_sha}/${invariant_artifact_rebuild_sha}, quality=${quality_sha}/${quality_rebuild_sha})."
+            exit 1
+          fi
+          if [[ "${invariant_source_commit_sha}" != "${quality_commit_sha}" ]]; then
+            echo "::error::Quality promotion invariant commit mismatch (invariant=${invariant_source_commit_sha}, quality=${quality_commit_sha})."
+            exit 1
+          fi
+          if [[ "${invariant_source_run_id}" != "${quality_run_id_manifest}" ]]; then
+            echo "::error::Quality promotion invariant run mismatch (invariant=${invariant_source_run_id}, quality=${quality_run_id_manifest})."
             exit 1
           fi
           if [[ "${deploy_artifact_name}" != "${quality_artifact_name}" ]]; then
@@ -1064,6 +1091,7 @@ jobs:
             npm-prod-tree.json
             quality-proof/quality-build.manifest.json
             quality-proof/quality-release-input.lock.json
+            quality-proof/quality-promotion-invariant.json
             quality-proof/quality-attestation.verify.json
             quality-proof/deploy-stage-proof/deploy.summary.json
 

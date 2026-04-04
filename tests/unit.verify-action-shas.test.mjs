@@ -10,13 +10,14 @@ const hasBash = (() => {
   return !probe.error && probe.status === 0;
 })();
 
-function runShaVerifier({ allowlistPath, workflowPath }) {
+function runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath }) {
   const scriptPath = path.resolve("scripts", "ci", "verify-action-shas.sh");
   return spawnSync("bash", [scriptPath, workflowPath], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       ACTION_SHA_ALLOWLIST_FILE: allowlistPath,
+      ACTION_REMOTE_EXEC_ALLOWLIST_FILE: remoteExecAllowlistPath,
     },
     encoding: "utf8",
   });
@@ -29,6 +30,7 @@ test(
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-sha-test-"));
     try {
       const allowlistPath = path.join(tempRoot, "allowlist.txt");
+      const remoteExecAllowlistPath = path.join(tempRoot, "remote-allowlist.txt");
       const workflowPath = path.join(tempRoot, "workflow.yml");
       await writeFile(
         allowlistPath,
@@ -36,6 +38,11 @@ test(
           "actions/checkout=11bd71901bbe5b1630ceea73d27597364c9af683",
           "actions/setup-node=49933ea5288caeca8642d1e84afbd3f7d6820020",
         ].join("\n"),
+        "utf8"
+      );
+      await writeFile(
+        remoteExecAllowlistPath,
+        "# no remote run entries are allowlisted in this fixture\n",
         "utf8"
       );
       await writeFile(
@@ -53,7 +60,7 @@ test(
         ].join("\n"),
         "utf8"
       );
-      const result = runShaVerifier({ allowlistPath, workflowPath });
+      const result = runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath });
       assert.notEqual(result.status, 0);
       const combinedOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
       assert.match(combinedOutput, /Failed to parse workflow YAML/i);
@@ -70,10 +77,16 @@ test(
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-sha-test-"));
     try {
       const allowlistPath = path.join(tempRoot, "allowlist.txt");
+      const remoteExecAllowlistPath = path.join(tempRoot, "remote-allowlist.txt");
       const workflowPath = path.join(tempRoot, "workflow.yml");
       await writeFile(
         allowlistPath,
         "actions/checkout=11bd71901bbe5b1630ceea73d27597364c9af683\n",
+        "utf8"
+      );
+      await writeFile(
+        remoteExecAllowlistPath,
+        "# no remote run entries are allowlisted in this fixture\n",
         "utf8"
       );
       await writeFile(
@@ -90,9 +103,9 @@ test(
         ].join("\n"),
         "utf8"
       );
-      const result = runShaVerifier({ allowlistPath, workflowPath });
+      const result = runShaVerifier({ allowlistPath, remoteExecAllowlistPath, workflowPath });
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.match(result.stdout || "", /Verified pinned workflow action SHAs/i);
+      assert.match(result.stdout || "", /Verified pinned workflow action SHAs and remote-run policies/i);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
