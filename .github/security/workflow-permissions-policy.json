@@ -69,13 +69,13 @@
         "omar_gate": {
           "required": {
             "contents": "read",
-            "checks": "write",
+            "checks": "read",
             "pull-requests": "write",
             "id-token": "write"
           },
           "max": {
             "contents": "read",
-            "checks": "write",
+            "checks": "read",
             "pull-requests": "write",
             "id-token": "write"
           }
@@ -116,9 +116,17 @@
             "attestations": "write"
           }
         },
-        "rollback-readiness": {
+        "resolve-rollback-target": {
           "required": { "contents": "read" },
           "max": { "contents": "read" }
+        },
+        "rollback-readiness": {
+          "required": { "contents": "read", "actions": "read", "id-token": "write" },
+          "max": { "contents": "read", "actions": "read", "id-token": "write" }
+        },
+        "verify-rollback-transaction-lineage": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
         },
         "authorize-production-publish": {
           "required": { "contents": "read", "actions": "read" },
@@ -149,6 +157,10 @@
           "max": { "contents": "read" }
         },
         "authorize-production-publish": {
+          "required": { "contents": "read", "actions": "read" },
+          "max": { "contents": "read", "actions": "read" }
+        },
+        "second-human-publish-gate": {
           "required": { "contents": "read", "actions": "read" },
           "max": { "contents": "read", "actions": "read" }
         },

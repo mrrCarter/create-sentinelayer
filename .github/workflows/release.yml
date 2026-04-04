@@ -306,17 +306,8 @@ jobs:
             console.error("::error::Missing rollback-readiness job in release workflow.");
             process.exit(1);
           }
-          const publishNeedsMatch = content.match(/publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
-          if (!publishNeedsMatch) {
-            console.error("::error::Unable to resolve publish.needs in release workflow.");
-            process.exit(1);
-          }
-          const publishNeeds = publishNeedsMatch[1]
-            .split(",")
-            .map((entry) => entry.trim())
-            .filter(Boolean);
-          if (!publishNeeds.includes("rollback-readiness")) {
-            console.error("::error::release publish path must depend on rollback-readiness.");
+          if (!/\n  verify-rollback-transaction-lineage:\s*\n/m.test(content)) {
+            console.error("::error::Missing verify-rollback-transaction-lineage job in release workflow.");
             process.exit(1);
           }
           const authorizeNeedsMatch = content.match(/authorize-production-publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
@@ -328,8 +319,38 @@ jobs:
             .split(",")
             .map((entry) => entry.trim())
             .filter(Boolean);
-          if (!authorizeNeeds.includes("rollback-readiness")) {
-            console.error("::error::authorize-production-publish must depend on rollback-readiness.");
+          if (!authorizeNeeds.includes("verify-rollback-transaction-lineage")) {
+            console.error("::error::authorize-production-publish must depend on verify-rollback-transaction-lineage.");
+            process.exit(1);
+          }
+          const verifyNeedsMatch = content.match(/verify-rollback-transaction-lineage:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!verifyNeedsMatch) {
+            console.error("::error::Unable to resolve verify-rollback-transaction-lineage.needs in release workflow.");
+            process.exit(1);
+          }
+          const verifyNeeds = verifyNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!verifyNeeds.includes("rollback-readiness")) {
+            console.error("::error::verify-rollback-transaction-lineage must depend on rollback-readiness.");
+            process.exit(1);
+          }
+          if (!verifyNeeds.includes("preflight")) {
+            console.error("::error::verify-rollback-transaction-lineage must depend on preflight.");
+            process.exit(1);
+          }
+          const publishNeedsMatch = content.match(/publish:\s*\n[\s\S]*?needs:\s*\[([^\]]+)\]/m);
+          if (!publishNeedsMatch) {
+            console.error("::error::Unable to resolve publish.needs in release workflow.");
+            process.exit(1);
+          }
+          const publishNeeds = publishNeedsMatch[1]
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          if (!publishNeeds.includes("verify-rollback-transaction-lineage")) {
+            console.error("::error::publish must depend on verify-rollback-transaction-lineage.");
             process.exit(1);
           }
           NODE
@@ -1294,12 +1315,15 @@ jobs:
         with:
           subject-path: create-sentinelayer-*.tgz
 
-  rollback-readiness:
-    name: Rollback Readiness
+  resolve-rollback-target:
+    name: Resolve Rollback Target
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 8
     needs: [resolve-release-flags, verify-required-checks, preflight]
     if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    outputs:
+      target_version: ${{ steps.resolve.outputs.target_version }}
+      bad_version: ${{ steps.resolve.outputs.bad_version }}
     permissions:
       contents: read
     steps:
@@ -1313,6 +1337,7 @@ jobs:
           cache: npm
 
       - name: Validate rollback runbook and prior published package
+        id: resolve
         shell: bash
         run: |
           set -euo pipefail
@@ -1336,13 +1361,101 @@ jobs:
           prefix_dir="$(mktemp -d)"
           npm install --prefix "${prefix_dir}" "${package_name}@${previous_version}" --ignore-scripts
           PATH="${prefix_dir}/node_modules/.bin:${PATH}" create-sentinelayer --version
-          echo "Rollback readiness validated against ${package_name}@${previous_version}."
+          current_version="${current_version#v}"
+          previous_version="${previous_version#v}"
+          if [[ ! "${current_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Current package version '${current_version}' is not valid semver."
+            exit 1
+          fi
+          if [[ ! "${previous_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Rollback target version '${previous_version}' is not valid semver."
+            exit 1
+          fi
+          echo "target_version=${previous_version}" >> "$GITHUB_OUTPUT"
+          echo "bad_version=${current_version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved rollback transaction pair: target=${previous_version} bad=${current_version}."
+
+  rollback-readiness:
+    name: Rollback Readiness
+    needs: [resolve-release-flags, verify-required-checks, preflight, resolve-rollback-target]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/rollback.yml
+    with:
+      execute: false
+      target_version: ${{ needs.resolve-rollback-target.outputs.target_version }}
+      bad_version: ${{ needs.resolve-rollback-target.outputs.bad_version }}
+      reason: release-transaction-rollback-validation
+      allow_local_validation_only: false
+
+  verify-rollback-transaction-lineage:
+    name: Verify Rollback Transaction Lineage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_SHA: ${{ needs.verify-required-checks.outputs.target_sha || github.sha }}
+      PREFLIGHT_ARTIFACT_SHA256: ${{ needs.preflight.outputs.artifact_sha256 || '' }}
+      PREFLIGHT_ARTIFACT_COMMIT_SHA: ${{ needs.preflight.outputs.artifact_commit_sha || '' }}
+    steps:
+      - name: Download rollback lineage summary
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: rollback-lineage-summary
+          path: rollback-lineage-proof
+
+      - name: Validate rollback lineage against release transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          lineage_path="rollback-lineage-proof/rollback-lineage.summary.json"
+          test -f "${lineage_path}" || (echo "::error::Missing rollback lineage summary artifact '${lineage_path}'." && exit 1)
+          lineage_target_sha="$(jq -r '.targetSha // ""' "${lineage_path}")"
+          lineage_execute_mode="$(jq -r '.executeMode // false' "${lineage_path}")"
+          lineage_attestation_verified="$(jq -r '.attestationVerified // false' "${lineage_path}")"
+          lineage_quality_sha="$(jq -r '.qualityArtifactSha256 // ""' "${lineage_path}")"
+          lineage_quality_rebuild_sha="$(jq -r '.qualityArtifactRebuildSha256 // ""' "${lineage_path}")"
+          test -n "${lineage_target_sha}" || (echo "::error::Rollback lineage summary missing targetSha." && exit 1)
+          if [[ "${lineage_execute_mode}" != "false" ]]; then
+            echo "::error::Rollback readiness validation must run with executeMode=false (received '${lineage_execute_mode}')."
+            exit 1
+          fi
+          if [[ "${lineage_attestation_verified}" != "true" ]]; then
+            echo "::error::Rollback lineage summary requires attestationVerified=true."
+            exit 1
+          fi
+          if [[ "${lineage_target_sha}" != "${TARGET_SHA}" ]]; then
+            echo "::error::Rollback lineage target SHA mismatch (lineage=${lineage_target_sha}, target=${TARGET_SHA})."
+            exit 1
+          fi
+          if [[ -n "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" ]] && [[ "${lineage_target_sha}" != "${PREFLIGHT_ARTIFACT_COMMIT_SHA}" ]]; then
+            echo "::error::Rollback lineage target SHA mismatch with preflight artifact commit (${PREFLIGHT_ARTIFACT_COMMIT_SHA})."
+            exit 1
+          fi
+          test -n "${lineage_quality_sha}" || (echo "::error::Rollback lineage summary missing qualityArtifactSha256." && exit 1)
+          test -n "${lineage_quality_rebuild_sha}" || (echo "::error::Rollback lineage summary missing qualityArtifactRebuildSha256." && exit 1)
+          if [[ "${lineage_quality_sha}" != "${lineage_quality_rebuild_sha}" ]]; then
+            echo "::error::Rollback lineage quality artifact digest mismatch (${lineage_quality_sha} vs ${lineage_quality_rebuild_sha})."
+            exit 1
+          fi
+          if [[ -n "${PREFLIGHT_ARTIFACT_SHA256}" ]] && [[ "${lineage_quality_sha}" != "${PREFLIGHT_ARTIFACT_SHA256}" ]]; then
+            echo "::error::Rollback lineage digest mismatch with preflight artifact digest (${PREFLIGHT_ARTIFACT_SHA256})."
+            exit 1
+          fi
+          echo "Rollback lineage transaction proof verified (target=${lineage_target_sha}, digest=${lineage_quality_sha})."
 
   authorize-production-publish:
     name: Authorize Production Publish
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness]
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, verify-rollback-transaction-lineage]
     if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' && needs.resolve-release-flags.outputs.dry_run != 'true' }}
     environment: production
     permissions:
@@ -1359,7 +1472,7 @@ jobs:
     name: Publish
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, authorize-production-publish]
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, verify-rollback-transaction-lineage, authorize-production-publish]
     if: ${{ github.event_name == 'workflow_dispatch' && needs.resolve-release-flags.outputs.publish_requested == 'true' }}
     environment: production
     permissions:
@@ -1666,8 +1779,8 @@ jobs:
   request-rollback-validation:
     name: Request Rollback Validation
     runs-on: ubuntu-22.04
-    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, authorize-production-publish, publish]
-    if: ${{ always() && needs.resolve-release-flags.outputs.publish_requested == 'true' && (needs.verify-required-checks.result == 'failure' || needs.preflight.result == 'failure' || needs.rollback-readiness.result == 'failure' || needs.authorize-production-publish.result == 'failure' || needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
+    needs: [resolve-release-flags, verify-required-checks, preflight, rollback-readiness, verify-rollback-transaction-lineage, authorize-production-publish, publish]
+    if: ${{ always() && needs.resolve-release-flags.outputs.publish_requested == 'true' && (needs.verify-required-checks.result == 'failure' || needs.preflight.result == 'failure' || needs.rollback-readiness.result == 'failure' || needs.verify-rollback-transaction-lineage.result == 'failure' || needs.authorize-production-publish.result == 'failure' || needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
     permissions:
       contents: write
       actions: write

@@ -175,6 +175,97 @@ jobs:
           }
           NODE
 
+      - name: Assert deploy promotion jobs are immutable-artifact only
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const YAML = require("yaml");
+          const workflowPath = ".github/workflows/quality-gates.yml";
+          const raw = fs.readFileSync(workflowPath, "utf8");
+          const doc = YAML.parseDocument(raw, {
+            uniqueKeys: true,
+            strict: true,
+            merge: false,
+            prettyErrors: true,
+          });
+          if (Array.isArray(doc.errors) && doc.errors.length > 0) {
+            throw new Error(
+              `Unable to parse ${workflowPath}: ${doc.errors.map((entry) => entry.message || String(entry)).join("; ")}`
+            );
+          }
+          const parsed = doc.toJS();
+          const jobs = parsed && typeof parsed === "object" ? parsed.jobs || {} : {};
+          const guardedJobs = ["release-readiness", "deploy-readiness", "deploy-stage", "deploy"];
+          const disallowedRunPatterns = [
+            /\bnpm\s+pack\b/i,
+            /\bnpm\s+publish\b/i,
+            /\bnpm\s+run\s+build\b/i,
+            /\bnpm\s+run\s+compile\b/i,
+          ];
+
+          const findJob = (jobId) => {
+            const job = jobs[jobId];
+            if (!job || typeof job !== "object") {
+              throw new Error(`Missing required quality job '${jobId}' for immutable-promotion checks.`);
+            }
+            return job;
+          };
+          const getSteps = (jobId) => {
+            const job = findJob(jobId);
+            const steps = Array.isArray(job.steps) ? job.steps : [];
+            if (steps.length < 1) {
+              throw new Error(`Job '${jobId}' must define explicit artifact-promotion steps.`);
+            }
+            return steps;
+          };
+          const assertDownloadArtifact = (jobId, artifactName) => {
+            const steps = getSteps(jobId);
+            const matched = steps.some((step) => {
+              if (!step || typeof step !== "object") {
+                return false;
+              }
+              const uses = String(step.uses || "");
+              if (!uses.startsWith("actions/download-artifact@")) {
+                return false;
+              }
+              const withBlock = step.with && typeof step.with === "object" ? step.with : {};
+              return String(withBlock.name || "").trim() === artifactName;
+            });
+            if (!matched) {
+              throw new Error(`Job '${jobId}' must download immutable artifact '${artifactName}'.`);
+            }
+          };
+
+          for (const jobId of guardedJobs) {
+            const steps = getSteps(jobId);
+            for (const [index, step] of steps.entries()) {
+              if (!step || typeof step !== "object") {
+                continue;
+              }
+              const run = typeof step.run === "string" ? step.run : "";
+              if (!run) {
+                continue;
+              }
+              for (const pattern of disallowedRunPatterns) {
+                if (pattern.test(run)) {
+                  throw new Error(
+                    `Job '${jobId}' step #${index + 1} contains forbidden rebuild/mutation command (${pattern}).`
+                  );
+                }
+              }
+            }
+          }
+
+          assertDownloadArtifact("release-readiness", "quality-build-package");
+          assertDownloadArtifact("deploy-readiness", "quality-build-package");
+          assertDownloadArtifact("deploy-stage", "quality-build-package");
+          assertDownloadArtifact("deploy-stage", "release-readiness-proof");
+          assertDownloadArtifact("deploy-stage", "deploy-readiness-proof");
+          assertDownloadArtifact("deploy", "deploy-stage-proof");
+          NODE
+
       - name: Enforce explicit workflow permissions policy
         shell: bash
         run: |

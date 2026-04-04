@@ -1106,5 +1106,19 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - `.github/workflows/omar-gate.yml`: restore OpenAI-keyed Omar invocation (`openai_api_key`, `sentinelayer_managed_llm: "false"`), restore strict OpenAI secret presence/masking checks, and include `OPENAI_API_KEY` in output leak assertions.
 - [x] Run thirty-eighth-cycle local evidence:
   - `npm run check` (pass)
-- [ ] Commit + push thirty-eighth-cycle hotfix batch.
+- [x] Commit + push thirty-eighth-cycle hotfix batch (`3a52137`).
+- [x] Execute full Omar loop and re-anchor findings:
+  - `gh run watch 23975535959 --exit-status` (Quality Gates: pass).
+  - Approved `security-review` pending deployment for Omar run `23975535973`.
+  - `gh run watch 23975535973 --exit-status` (Omar Gate: pass, `P0=0`, `P1=0`, `P2=4`, `run_id=30b4e8a1-eff4-4fbd-b6b5-f3dcd2336bcc`).
+- [x] Re-anchor remediation scope to latest Omar reviewer payload (`run_id=30b4e8a1-eff4-4fbd-b6b5-f3dcd2336bcc`) and apply thirty-ninth-cycle hardening:
+  - `.github/workflows/omar-gate.yml`: downgrade `checks` permission from write to read while retaining PR-comment capability and secret-scanner path.
+  - `.github/security/workflow-permissions-policy.json`: align Omar permission policy (`checks: read`) and extend release/release-publish job policy map for new control jobs.
+  - `.github/workflows/quality-gates.yml`: add deterministic immutable-promotion contract assertion for deploy-path jobs (required artifact downloads + no package rebuild/publish commands in release/deploy stages).
+  - `.github/workflows/release.yml`: enforce release-transaction rollback via reusable `rollback.yml` call (`execute=false`), add rollback-target resolver, add lineage verification job binding rollback artifact SHA/commit to preflight release artifact contract, and gate authorize/publish on that verification.
+  - `.github/workflows/release-publish.yml`: add explicit second-human publish gate job (distinct from initiator + primary approver) and enforce second-approver evidence before npm mutation.
+- [x] Run thirty-ninth-cycle local evidence:
+  - `npm run check` (pass)
+  - `npm run verify` (pass; e2e `84/84`; unit `193/197` with 4 env-skipped bash tests; coverage statements `90.21%`, branches `70.58%`, functions `91.63%`, lines `90.21%`)
+- [ ] Commit + push thirty-ninth-cycle hardening batch.
 - [ ] Execute full Omar loop (Quality Gates watch -> Omar Gate watch/approval) and re-anchor findings until `P2<=2`.

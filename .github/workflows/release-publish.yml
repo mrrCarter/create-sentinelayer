@@ -806,11 +806,64 @@ jobs:
           echo "approval_count=${approver_count}" >> "$GITHUB_OUTPUT"
           echo "Production publish authorization approved by '${selected_approver}' (initiator='${initiator}', approvals=${approver_count})."
 
+  second-human-publish-gate:
+    name: Second Human Publish Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish]
+    concurrency:
+      group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
+      cancel-in-progress: false
+    if: ${{ needs.resolve-release-bundle.outputs.dry_run != 'true' && github.event_name == 'workflow_run' }}
+    environment: release-management
+    outputs:
+      second_approver_login: ${{ steps.second.outputs.second_approver_login }}
+      second_approval_count: ${{ steps.second.outputs.second_approval_count }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Confirm second human approval gate
+        id: second
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
+          PRIMARY_APPROVER: ${{ needs.authorize-production-publish.outputs.approver_login || '' }}
+        run: |
+          set -euo pipefail
+          source scripts/ci/gh-api-retry.sh
+          initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
+          primary_approver="$(echo "${PRIMARY_APPROVER}" | tr -d '\r' | xargs || true)"
+          if [[ -z "${initiator}" ]]; then
+            echo "::error::Missing release initiator identity for second-human publish gate."
+            exit 1
+          fi
+          if [[ -z "${primary_approver}" ]]; then
+            echo "::error::Missing primary production approver identity for second-human publish gate."
+            exit 1
+          fi
+          approvals_json="$(gh_api_json "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/approvals")"
+          second_approver="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" --arg primary "${primary_approver}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator) | select(. != $primary)] | unique | first // empty')"
+          second_count="$(echo "${approvals_json}" | jq -r --arg initiator "${initiator}" --arg primary "${primary_approver}" '[.[] | select((.state // "") == "approved") | (.user.login // empty) | select(length > 0) | select(. != $initiator) | select(. != $primary)] | unique | length')"
+          if [[ -z "${second_approver}" ]]; then
+            echo "::error::Missing second human approval distinct from initiator '${initiator}' and primary approver '${primary_approver}'."
+            exit 1
+          fi
+          if [[ "${second_count}" -lt 1 ]]; then
+            echo "::error::No valid second-human approver recorded for publish execution path."
+            exit 1
+          fi
+          echo "second_approver_login=${second_approver}" >> "$GITHUB_OUTPUT"
+          echo "second_approval_count=${second_count}" >> "$GITHUB_OUTPUT"
+          echo "Second human publish approval captured from '${second_approver}' (initiator='${initiator}', primary='${primary_approver}')."
+
   publish:
     name: Publish
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish]
+    needs: [resolve-release-bundle, prepare-release-bundle, authorize-production-publish, second-human-publish-gate]
     concurrency:
       group: release-publish-lock-${{ needs.resolve-release-bundle.outputs.release_lock_key }}
       cancel-in-progress: false
@@ -824,6 +877,8 @@ jobs:
       RELEASE_INITIATOR: ${{ needs.resolve-release-bundle.outputs.release_initiator || github.actor }}
       APPROVER_LOGIN: ${{ needs.authorize-production-publish.outputs.approver_login || '' }}
       APPROVAL_COUNT: ${{ needs.authorize-production-publish.outputs.approval_count || '0' }}
+      SECOND_APPROVER_LOGIN: ${{ needs.second-human-publish-gate.outputs.second_approver_login || '' }}
+      SECOND_APPROVAL_COUNT: ${{ needs.second-human-publish-gate.outputs.second_approval_count || '0' }}
       INCIDENT_ID: ${{ needs.resolve-release-bundle.outputs.incident_id || '' }}
     steps:
       - name: Setup Node
@@ -852,6 +907,8 @@ jobs:
           initiator="$(echo "${RELEASE_INITIATOR}" | tr -d '\r' | xargs || true)"
           approver="$(echo "${APPROVER_LOGIN}" | tr -d '\r' | xargs || true)"
           approval_count="$(echo "${APPROVAL_COUNT}" | tr -d '\r' | xargs || true)"
+          second_approver="$(echo "${SECOND_APPROVER_LOGIN}" | tr -d '\r' | xargs || true)"
+          second_approval_count="$(echo "${SECOND_APPROVAL_COUNT}" | tr -d '\r' | xargs || true)"
           if [[ -z "${initiator}" ]]; then
             echo "::error::Missing release initiator metadata."
             exit 1
@@ -865,12 +922,33 @@ jobs:
             echo "::error::Production publish requires at least one recorded approval."
             exit 1
           fi
+          case "${second_approval_count}" in ''|*[!0-9]*)
+            echo "::error::Invalid second_approval_count '${second_approval_count}'."
+            exit 1
+            ;;
+          esac
+          if [[ "${second_approval_count}" -lt 1 ]]; then
+            echo "::error::Production publish requires a second human approval gate."
+            exit 1
+          fi
           if [[ -z "${approver}" ]]; then
             echo "::error::Missing non-initiator approver identity from authorization stage."
             exit 1
           fi
           if [[ "${approver}" == "${initiator}" ]]; then
             echo "::error::Dual-control violation: initiator '${initiator}' cannot self-approve production publish."
+            exit 1
+          fi
+          if [[ -z "${second_approver}" ]]; then
+            echo "::error::Missing second human approver identity."
+            exit 1
+          fi
+          if [[ "${second_approver}" == "${initiator}" ]]; then
+            echo "::error::Second human approver cannot match release initiator '${initiator}'."
+            exit 1
+          fi
+          if [[ "${second_approver}" == "${approver}" ]]; then
+            echo "::error::Second human approver must differ from primary production approver '${approver}'."
             exit 1
           fi
           if [[ -n "${INCIDENT_ID}" ]] && [[ ! "${INCIDENT_ID}" =~ ^INC-[A-Za-z0-9._-]{4,64}$ ]]; then
@@ -925,7 +1003,9 @@ jobs:
             "tarballName": "${tarball_name}",
             "releaseInitiator": "${RELEASE_INITIATOR}",
             "productionApprover": "${APPROVER_LOGIN}",
+            "secondHumanApprover": "${SECOND_APPROVER_LOGIN}",
             "approvalCount": ${APPROVAL_COUNT},
+            "secondApprovalCount": ${SECOND_APPROVAL_COUNT},
             "incidentId": "${INCIDENT_ID}",
             "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           }
