@@ -678,14 +678,14 @@ async function dispatchAlerts({
 }) {
   const channels = Array.isArray(config.channels) ? config.channels : [];
   const allowedEvents = new Set(Array.isArray(config.events) ? config.events : []);
-  const notifications = [];
+  const tasks = [];
   for (const alert of alerts) {
     if (allowedEvents.size > 0 && !allowedEvents.has(alert.eventType)) {
       continue;
     }
     for (const channel of channels) {
-      notifications.push(
-        await dispatchAlertToChannel({
+      tasks.push(
+        dispatchAlertToChannel({
           channel,
           alert,
           execute,
@@ -694,7 +694,7 @@ async function dispatchAlerts({
       );
     }
   }
-  return notifications;
+  return Promise.all(tasks);
 }
 
 export async function resolveWatchdogStorage({
