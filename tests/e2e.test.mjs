@@ -5675,6 +5675,64 @@ test("CLI review scan diff mode scopes findings to changed git files", async () 
   }
 });
 
+test("CLI review diff mode flags spec scope drift and spec endpoint coverage gaps", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-spec-"));
+  try {
+    runCommand({ cwd: tempRoot, command: "git", args: ["init"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["config", "user.name", "Sentinelayer E2E"] });
+    runCommand({
+      cwd: tempRoot,
+      command: "git",
+      args: ["config", "user.email", "e2e@sentinelayer.local"],
+    });
+
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      [
+        "# SPEC - Review Drift",
+        "",
+        "## Endpoints",
+        "| Path | Method |",
+        "| --- | --- |",
+        "| /health | GET |",
+        "",
+        "## Acceptance Criteria",
+        "1. Health route is present and tested.",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const filePath = path.join(tempRoot, "src", "routes.js");
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(filePath, "router.get('/health', handler);\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "."] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
+
+    await writeFile(filePath, "router.post('/admin/reset', handler);\n", "utf-8");
+    await writeFile(path.join(tempRoot, "src", "payments-worker.js"), "export const run = () => null;\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["review", "--diff", "--spec", "SPEC.md", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review");
+    assert.equal(payload.mode, "diff");
+    assert.equal(String(payload.specPath || "").includes("SPEC.md"), true);
+    assert.equal(String(payload.specHashSha256 || "").length, 64);
+
+    const deterministic = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
+    const ruleIds = deterministic.findings.map((finding) => finding.ruleId);
+    assert.equal(ruleIds.includes("SL-SPEC-001") || ruleIds.includes("SL-SPEC-002"), true);
+    assert.equal(ruleIds.includes("SL-SPEC-002"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI review deterministic command writes layered review artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-pipeline-"));
   try {
@@ -5701,6 +5759,7 @@ test("CLI review deterministic command writes layered review artifacts", async (
     assert.equal(reviewJson.schemaVersion, "1.0.0");
     assert.equal(Array.isArray(reviewJson.layers.ingest.frameworks), true);
     assert.equal(reviewJson.layers.structural.ruleCount >= 20, true);
+    assert.equal(typeof reviewJson.layers.specBinding.enabled, "boolean");
     assert.equal(Array.isArray(reviewJson.findings), true);
 
     const reviewMarkdown = await readFile(payload.reportPath, "utf-8");

@@ -84,6 +84,7 @@ async function executeReviewRun({
   targetPath,
   mode,
   outputDir = "",
+  specFile = "",
   aiConfig = {},
   replaySourceRunId = "",
 } = {}) {
@@ -91,6 +92,7 @@ async function executeReviewRun({
     targetPath,
     mode,
     outputDir,
+    specFile,
   });
 
   let aiLayer = null;
@@ -124,6 +126,7 @@ async function executeReviewRun({
     runId: deterministic.runId,
     deterministic,
     aiLayer,
+    specFile,
   });
   const unifiedArtifacts = await writeUnifiedReviewArtifacts({
     runDirectory: deterministic.artifacts.runDirectory,
@@ -150,6 +153,7 @@ async function executeReviewRun({
       maxNoProgress: aiConfig.maxNoProgress,
       warnAtPercent: aiConfig.warnAtPercent,
       outputDir,
+      specFile,
     },
     replay: {
       sourceRunId: replaySourceRunId,
@@ -173,6 +177,8 @@ async function executeReviewRun({
     runContextPath: contextWrite.contextPath,
     scannedFiles: deterministic.scope.scannedFiles,
     scopedFiles: deterministic.scope.scannedRelativeFiles,
+    specPath: deterministic.layers.specBinding?.specPath || "",
+    specHashSha256: deterministic.layers.specBinding?.specHashSha256 || "",
     findingCount: unified.report.findings.length,
     p0: summary.P0,
     p1: summary.P1,
@@ -281,6 +287,7 @@ export function registerReviewCommand(program) {
     .option("--max-tool-calls <n>", "Max AI tool-call budget (0 disables)", "0")
     .option("--max-no-progress <n>", "Max no-progress streak before stop", "3")
     .option("--warn-at-percent <n>", "Warning threshold percentage for enabled budgets", "80")
+    .option("--spec <path>", "Spec file path relative to target (defaults to SPEC.md or docs/spec.md)")
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
@@ -294,6 +301,7 @@ export function registerReviewCommand(program) {
         targetPath,
         mode,
         outputDir: options.outputDir,
+        specFile: options.spec,
         aiConfig: {
           enable: Boolean(options.ai),
           aiDryRun: Boolean(options.aiDryRun),
@@ -424,6 +432,7 @@ export function registerReviewCommand(program) {
     .command("replay <runId>")
     .description("Replay a previous unified review run with captured context and compare drift")
     .option("--path <path>", "Target workspace path override")
+    .option("--spec <path>", "Spec file path override for replay run")
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--no-ai", "Disable AI layer for replay run")
     .option("--ai-dry-run", "Force AI dry-run during replay")
@@ -455,6 +464,7 @@ export function registerReviewCommand(program) {
         targetPath: replayTargetPath,
         mode: sourceContext?.context?.mode || source.report.mode || "full",
         outputDir: options.outputDir || invocation.outputDir || "",
+        specFile: options.spec || invocation.specFile || "",
         aiConfig: {
           enable: aiEnabled,
           aiDryRun: Boolean(options.aiDryRun || invocation.aiDryRun),
@@ -580,6 +590,7 @@ export function registerReviewCommand(program) {
     .option("--diff", "Alias for --mode diff")
     .option("--staged", "Alias for --mode staged")
     .option("--path <path>", "Target workspace path", ".")
+    .option("--spec <path>", "Spec file path relative to target (defaults to SPEC.md or docs/spec.md)")
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -591,6 +602,7 @@ export function registerReviewCommand(program) {
       const scan = await runLocalReviewScan({
         targetPath,
         mode,
+        specFile: options.spec,
       });
 
       const report = `# Local Review Scan
@@ -625,6 +637,8 @@ ${formatFindingsMarkdown(scan.findings)}
         reportPath,
         scannedFiles: scan.scannedFiles,
         scopedFiles: scan.scannedRelativeFiles,
+        specPath: scan.specBinding?.specPath || "",
+        specHashSha256: scan.specBinding?.specHashSha256 || "",
         p1: scan.p1,
         p2: scan.p2,
         blocking: scan.p1 > 0,

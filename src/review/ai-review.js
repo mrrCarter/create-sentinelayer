@@ -218,6 +218,7 @@ export function buildAiReviewPrompt({
   deterministicSummary,
   deterministicFindings = [],
   scopedFiles = [],
+  specContext = null,
   maxFindings = DEFAULT_AI_MAX_FINDINGS,
 } = {}) {
   const normalizedSummary = deterministicSummary || { P0: 0, P1: 0, P2: 0, P3: 0 };
@@ -226,6 +227,11 @@ export function buildAiReviewPrompt({
     .map((finding) => formatDeterministicFindingLine(finding))
     .join("\n");
   const normalizedMaxFindings = Math.max(1, Math.floor(Number(maxFindings || DEFAULT_AI_MAX_FINDINGS)));
+  const specPath = normalizeString(specContext?.specPath) || "none";
+  const specHash = normalizeString(specContext?.specHashSha256) || "unknown";
+  const specEndpointCount = Number(specContext?.endpointCount || 0);
+  const specAcceptanceCriteriaCount = Number(specContext?.acceptanceCriteriaCount || 0);
+  const specPreview = Array.isArray(specContext?.endpointsPreview) ? specContext.endpointsPreview : [];
 
   return [
     "You are Sentinelayer Omar reviewer layer 9.3.",
@@ -254,6 +260,11 @@ export function buildAiReviewPrompt({
     `Target path: ${targetPath}`,
     `Review mode: ${mode}`,
     `Deterministic summary: P0=${normalizedSummary.P0} P1=${normalizedSummary.P1} P2=${normalizedSummary.P2} P3=${normalizedSummary.P3}`,
+    `Spec path: ${specPath}`,
+    `Spec sha256: ${specHash}`,
+    `Spec endpoints declared: ${specEndpointCount}`,
+    `Spec acceptance criteria count: ${specAcceptanceCriteriaCount}`,
+    `Spec endpoint preview: ${specPreview.length > 0 ? specPreview.join(", ") : "none"}`,
     "",
     "Scoped files:",
     buildScopedFileSummary(scopedFiles),
@@ -421,6 +432,7 @@ export async function runAiReviewLayer({
     deterministicSummary: deterministic?.summary,
     deterministicFindings: deterministic?.findings || [],
     scopedFiles: deterministic?.scope?.scannedRelativeFiles || [],
+    specContext: deterministic?.layers?.specBinding || null,
     maxFindings: normalizedMaxFindings,
   });
 

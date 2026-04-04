@@ -98,3 +98,5 @@
 - IDE detection order must be explicit and precedence-safe (`CURSOR_TRACE_ID` before `TERM_PROGRAM=vscode`) so telemetry does not misclassify Cursor sessions as VS Code.
 - Existing-repo scaffolds should not default to `greenfield` when `projectType` is omitted; derive `add_feature` automatically when repo-connect + clone/reuse context is present.
 - Keep `SPEC.md` phase plans parseable for downstream tooling: add phase metadata as non-numbered lines, but preserve numbered implementation tasks under each `### Phase` heading for guide parser compatibility.
+- Spec drift checks should be mode-aware: enforce scope-bound findings (`SL-SPEC-001`) in `diff|staged` paths to prevent pre-commit noise on full-repo sweeps.
+- When adding explicit `--spec` overrides, thread the same spec path through deterministic review, AI prompt context, replay context, and unified report hashing to avoid hash/source mismatches across layers.

@@ -201,7 +201,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch U - Scaffold and Spec Feedback Fixes (2026-04-03)
 - [x] PR 137 frictionless secret setup + workflow unification (`.env` gitignore guard, repo-aware `scan init` instructions, `gh secret` verify).
 - [x] PR 138 deterministic IDE/agent dictionary + per-agent scaffold config.
-- [ ] PR 139 project-type-aware spec generation + dynamic phase planning.
+- [x] PR 139 project-type-aware spec generation + dynamic phase planning.
 - [ ] PR 140 spec-bound pre-commit review drift checks.
 
 ### Batch V - Memory and Watchdog Feedback Fixes (2026-04-03)
@@ -225,12 +225,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-139-spec-dynamic-phases` (next)
-2. `roadmap/pr-140-spec-bound-review`
-3. `roadmap/pr-141-shared-memory-blackboard`
-4. `roadmap/pr-142-hybrid-retrieval-index`
-5. `roadmap/pr-143-daemon-watchdog-alerts`
-6. `roadmap/pr-144-ingest-refresh-staleness`
+1. `roadmap/pr-140-spec-bound-review` (next)
+2. `roadmap/pr-141-shared-memory-blackboard`
+3. `roadmap/pr-142-hybrid-retrieval-index`
+4. `roadmap/pr-143-daemon-watchdog-alerts`
+5. `roadmap/pr-144-ingest-refresh-staleness`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -506,3 +505,11 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - Replaced fixed 3-phase `SPEC.md` generation with dynamic phase derivation (3-8 phases) based on project type, ingest risk surfaces, and scope complexity.
     - Added deterministic project-type resolution (`greenfield|add_feature|bugfix`) across `spec generate|regenerate`, including `--project-type` override, ingest/description inference, and persisted project-type metadata in the spec snapshot.
     - Updated scaffold interview normalization so existing-repo runs default to `add_feature` when `projectType` is omitted, preventing accidental greenfield payloads in non-interactive clone workflows.
+
+  - PR 140 (spec-bound pre-commit review drift checks) local evidence (branch `roadmap/pr-140-spec-bound-review`):
+    - `npm run verify` (pass, e2e `85/85`; unit tests `172/172`; coverage statements `90.18%`, branches `70.50%`, functions `91.37%`, lines `90.18%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - Added a deterministic spec-binding review layer (`src/review/spec-binding.js`) that enforces `SL-SPEC-001` (scope drift) and `SL-SPEC-002` (spec coverage gaps) for diff/staged pre-commit paths.
+    - Wired `--spec <path>` through `review`, `review scan`, and `review replay`, and persisted spec-path/hash context into deterministic output payloads and run-context artifacts.
+    - Extended AI review prompts with spec context (path/hash/endpoints/acceptance counts), and aligned unified report spec hashing with explicit `--spec` overrides for reproducible reconciliation.

@@ -181,8 +181,13 @@ export function reconcileReviewFindings({
   };
 }
 
-async function resolveSpecMetadata(targetPath) {
-  const candidates = [path.join(targetPath, "SPEC.md"), path.join(targetPath, "docs", "spec.md")];
+async function resolveSpecMetadata(targetPath, specFile = "") {
+  const explicitSpecFile = normalizeString(specFile);
+  const candidates = [];
+  if (explicitSpecFile) {
+    candidates.push(path.resolve(targetPath, explicitSpecFile));
+  }
+  candidates.push(path.join(targetPath, "SPEC.md"), path.join(targetPath, "docs", "spec.md"));
   for (const candidate of candidates) {
     try {
       const text = await fsp.readFile(candidate, "utf-8");
@@ -274,6 +279,7 @@ export async function buildUnifiedReviewReport({
   runId,
   deterministic,
   aiLayer = null,
+  specFile = "",
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedMode = normalizeString(mode) || "full";
@@ -284,7 +290,7 @@ export async function buildUnifiedReviewReport({
     deterministicFindings: deterministic?.findings || [],
     aiFindings: aiLayer?.findings || [],
   });
-  const spec = await resolveSpecMetadata(normalizedTargetPath);
+  const spec = await resolveSpecMetadata(normalizedTargetPath, specFile);
   const commitSha = runGit(normalizedTargetPath, ["rev-parse", "HEAD"]);
   const branch = runGit(normalizedTargetPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const dirty = normalizeString(runGit(normalizedTargetPath, ["status", "--porcelain"])).length > 0;
