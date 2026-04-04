@@ -229,19 +229,9 @@ for workflow_file in "${workflow_files[@]}"; do
     fi
     if [[ "${workflow_entry}" == RUN$'\t'* ]]; then
       IFS=$'\t' read -r _entry_type encoded_run encoded_tokenized_run run_job_id run_step_id <<< "${workflow_entry}"
-      decoded_run="$(printf '%s' "${encoded_run}" | base64 --decode 2>/dev/null || true)"
-      decoded_tokenized_run="$(printf '%s' "${encoded_tokenized_run}" | base64 --decode 2>/dev/null || true)"
-      if [[ -z "${decoded_run}" ]] && [[ -n "${encoded_run}" ]]; then
-        echo "::error file=${workflow_file}::Unable to decode base64 run command payload."
-        failures=$((failures + 1))
-        continue
-      fi
-      if [[ -z "${decoded_tokenized_run}" ]] && [[ -n "${encoded_tokenized_run}" ]]; then
-        echo "::error file=${workflow_file}::Unable to decode tokenized run command payload."
-        failures=$((failures + 1))
-        continue
-      fi
-      run_entries+=("${decoded_run}"$'\x1f'"${decoded_tokenized_run}"$'\x1f'"${run_job_id}"$'\x1f'"${run_step_id}")
+      # Preserve base64 payloads in-memory so multiline run blocks are decoded
+      # only after entry splitting (avoids newline truncation on read).
+      run_entries+=("${encoded_run}"$'\x1f'"${encoded_tokenized_run}"$'\x1f'"${run_job_id}"$'\x1f'"${run_step_id}")
     fi
   done
 
@@ -275,7 +265,19 @@ for workflow_file in "${workflow_files[@]}"; do
     if [[ -z "${run_entry}" ]]; then
       continue
     fi
-    IFS=$'\x1f' read -r run_value tokenized_run run_job_id run_step_id <<< "${run_entry}"
+    IFS=$'\x1f' read -r encoded_run encoded_tokenized_run run_job_id run_step_id <<< "${run_entry}"
+    run_value="$(printf '%s' "${encoded_run}" | base64 --decode 2>/dev/null || true)"
+    tokenized_run="$(printf '%s' "${encoded_tokenized_run}" | base64 --decode 2>/dev/null || true)"
+    if [[ -z "${run_value}" ]] && [[ -n "${encoded_run}" ]]; then
+      echo "::error file=${workflow_file}::Unable to decode base64 run command payload."
+      failures=$((failures + 1))
+      continue
+    fi
+    if [[ -z "${tokenized_run}" ]] && [[ -n "${encoded_tokenized_run}" ]]; then
+      echo "::error file=${workflow_file}::Unable to decode tokenized run command payload."
+      failures=$((failures + 1))
+      continue
+    fi
     if [[ -z "${run_value}" ]]; then
       continue
     fi
