@@ -10,6 +10,7 @@ import { glob } from "./glob.js";
 import { shell } from "./shell.js";
 import { fileEdit } from "./file-edit.js";
 import { frontendAnalyze } from "./frontend-analyze.js";
+import { runtimeAudit } from "./runtime-audit.js";
 
 /**
  * Central tool dispatcher for Jules agents.
@@ -23,9 +24,10 @@ const TOOL_MAP = {
   Shell: shell,
   FileEdit: fileEdit,
   FrontendAnalyze: frontendAnalyze,
+  RuntimeAudit: runtimeAudit,
 };
 
-const READ_ONLY_TOOLS = new Set(["FileRead", "Grep", "Glob", "FrontendAnalyze"]);
+const READ_ONLY_TOOLS = new Set(["FileRead", "Grep", "Glob", "FrontendAnalyze", "RuntimeAudit"]);
 
 const RESULT_PERSIST_THRESHOLD = 5000;
 
