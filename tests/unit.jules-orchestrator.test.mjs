@@ -143,7 +143,8 @@ describe("runJulesSwarm", () => {
     });
 
     assert.ok(result.coverage);
-    assert.equal(result.coverage.seedFilesReviewed, 1);
+    assert.equal(result.coverage.seedFilesAssigned, 1);
+    assert.ok(result.coverage.coverageMethod);
     assert.ok(typeof result.coverage.totalFilesReviewed === "number");
   });
 });
