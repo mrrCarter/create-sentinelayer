@@ -15,6 +15,7 @@ export { glob, GlobError } from "./glob.js";
 export { shell, analyzeCommand, ShellError, ShellBlockedError } from "./shell.js";
 export { fileEdit, FileEditError } from "./file-edit.js";
 export { frontendAnalyze, FrontendAnalyzeError } from "./frontend-analyze.js";
+export { runtimeAudit, RuntimeAuditError } from "./runtime-audit.js";
 
 export {
   dispatchTool,
