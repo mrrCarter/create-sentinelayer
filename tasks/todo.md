@@ -64,6 +64,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Complete Batch F PR 9.2 foundation slice (`review [path] [--diff|--staged]` layered deterministic review pipeline + reproducible run artifacts).
 - [x] Complete Batch D PR 2.1 foundation slice (`chat ask` low-latency command surface + transcript persistence).
 
+## PR AppSec E2E 02 Working Plan (2026-04-05)
+- [x] Create Semgrep CI workflow with pinned action/runtime and deterministic local custom rules.
+- [x] Add custom Semgrep ruleset for high-risk JavaScript/Node anti-patterns (eval/new Function/weak crypto/destructive command interpolation).
+- [x] Add Semgrep summary job and enforce `Semgrep Summary` in release required-check verification.
+- [ ] Update docs/roadmap evidence with Semgrep gate scope and execution proof.
+- [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
 ## Cross-Repo Audit Snapshot
 - `create-sentinelayer`: monolith CLI (`bin/create-sentinelayer.js`) is 1948 lines; local `/omargate` and `/audit` are deterministic MVP only; no TypeScript project skeleton yet; no first-class run telemetry/budget enforcement stream yet; `npm run verify` passes (17 e2e tests).
 - `sentinelayer-api`: builder/persona/pack services and CLI auth bridge are production-grade; `ruff` + targeted builder guardrails pass.
