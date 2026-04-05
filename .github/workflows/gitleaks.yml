@@ -30,9 +30,21 @@ jobs:
       - name: Install gitleaks
         run: |
           set -euo pipefail
+          release_base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          release_asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          checksum_asset="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           curl -fsSL \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            "${release_base_url}/${release_asset}" \
             -o gitleaks.tar.gz
+          curl -fsSL \
+            "${release_base_url}/${checksum_asset}" \
+            -o checksums.txt
+          expected_sha="$(awk -v asset="${release_asset}" '$2 == asset { print $1; exit }' checksums.txt)"
+          if [ -z "${expected_sha}" ]; then
+            echo "::error::Failed to resolve expected checksum for ${release_asset}"
+            exit 1
+          fi
+          echo "${expected_sha}  gitleaks.tar.gz" | sha256sum --check --strict --status
           tar -xzf gitleaks.tar.gz gitleaks
           chmod +x gitleaks
           ./gitleaks version
