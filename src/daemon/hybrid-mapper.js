@@ -2,6 +2,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { parseAstModuleSpecifiers } from "./ast-parser-layer.js";
+import { buildCallgraphOverlay } from "./callgraph-overlay.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
 import { listErrorQueue, resolveErrorDaemonStorage } from "./error-worker.js";
 
@@ -453,6 +454,11 @@ export async function buildHybridScopeMap({
   const scopedEdges = importGraph.edges.filter(
     (edge) => scopedPathSet.has(edge.from) && scopedPathSet.has(edge.to)
   );
+  const callGraphOverlay = await buildCallgraphOverlay({
+    rootPath: targetPath,
+    indexedFilesByPath,
+    scopedPaths: [...scopedPathSet],
+  });
 
   const runId = createHybridMapRunId(normalizedNow, normalizedWorkItemId);
   const runPath = path.join(storage.mapRunsDir, `${runId}.json`);
@@ -476,6 +482,7 @@ export async function buildHybridScopeMap({
       graphDepth: normalizedGraphDepth,
       maxFiles: normalizedMaxFiles,
       astParser: importGraph.parserStats,
+      callGraphOverlay: callGraphOverlay.summary,
     },
     summary: {
       indexedFileCount: indexedFilesByPath.size,
@@ -486,11 +493,21 @@ export async function buildHybridScopeMap({
       astParsedFileCount: importGraph.parserStats.astParsedFileCount,
       fallbackParsedFileCount: importGraph.parserStats.fallbackParsedFileCount,
       astParseErrorCount: importGraph.parserStats.parseErrorCount,
+      callGraphNodeCount: callGraphOverlay.summary.nodeCount,
+      callGraphEdgeCount: callGraphOverlay.summary.edgeCount,
+      callGraphParsedFileCount: callGraphOverlay.summary.parsedFileCount,
+      callGraphFallbackParsedFileCount: callGraphOverlay.summary.fallbackParsedFileCount,
+      callGraphParseErrorCount: callGraphOverlay.summary.parseErrorCount,
     },
     scopedFiles,
     importGraph: {
       nodes: [...scopedPathSet].sort((left, right) => left.localeCompare(right)),
       edges: scopedEdges,
+    },
+    callGraph: {
+      nodes: callGraphOverlay.nodes,
+      edges: callGraphOverlay.edges,
+      parsedFiles: callGraphOverlay.parsedFiles,
     },
   };
 
@@ -530,6 +547,11 @@ export async function buildHybridScopeMap({
       astParsedFileCount: importGraph.parserStats.astParsedFileCount,
       fallbackParsedFileCount: importGraph.parserStats.fallbackParsedFileCount,
       astParseErrorCount: importGraph.parserStats.parseErrorCount,
+      callGraphNodeCount: callGraphOverlay.summary.nodeCount,
+      callGraphEdgeCount: callGraphOverlay.summary.edgeCount,
+      callGraphParsedFileCount: callGraphOverlay.summary.parsedFileCount,
+      callGraphFallbackParsedFileCount: callGraphOverlay.summary.fallbackParsedFileCount,
+      callGraphParseErrorCount: callGraphOverlay.summary.parseErrorCount,
     }),
   ]);
 
@@ -541,6 +563,7 @@ export async function buildHybridScopeMap({
     strategy: runPayload.strategy,
     scopedFiles: runPayload.scopedFiles,
     importGraph: runPayload.importGraph,
+    callGraph: runPayload.callGraph,
     workItem: runPayload.workItem,
   };
 }
