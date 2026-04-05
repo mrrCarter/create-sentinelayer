@@ -1,6 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { parseAstModuleSpecifiers } from "./ast-parser-layer.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
 import { listErrorQueue, resolveErrorDaemonStorage } from "./error-worker.js";
 
@@ -152,39 +153,6 @@ function scoreSemanticContent({ content = "", endpoint = "", tokens = [] } = {})
   return score;
 }
 
-function parseModuleSpecifiers(content = "", language = "") {
-  const raw = String(content || "");
-  const normalizedLanguage = normalizeString(language).toLowerCase();
-  const specifiers = new Set();
-  if (normalizedLanguage.includes("javascript") || normalizedLanguage.includes("typescript")) {
-    const pattern =
-      /(?:import\s+[^'"]*from\s*|export\s+[^'"]*from\s*|import\s*\(\s*|require\s*\()\s*['"]([^'"]+)['"]/g;
-    let match;
-    while ((match = pattern.exec(raw))) {
-      if (match[1]) {
-        specifiers.add(match[1]);
-      }
-    }
-  }
-  if (normalizedLanguage === "python") {
-    const fromPattern = /^\s*from\s+([a-zA-Z0-9_\.]+)\s+import\s+/gm;
-    let fromMatch;
-    while ((fromMatch = fromPattern.exec(raw))) {
-      if (fromMatch[1]) {
-        specifiers.add(fromMatch[1]);
-      }
-    }
-    const importPattern = /^\s*import\s+([a-zA-Z0-9_\.]+)/gm;
-    let importMatch;
-    while ((importMatch = importPattern.exec(raw))) {
-      if (importMatch[1]) {
-        specifiers.add(importMatch[1]);
-      }
-    }
-  }
-  return [...specifiers];
-}
-
 function resolveSpecifierToIndexedPath(fromPath, specifier, indexedPathsSet) {
   const normalizedSpecifier = normalizeString(specifier);
   if (!normalizedSpecifier) {
@@ -223,6 +191,11 @@ function resolveSpecifierToIndexedPath(fromPath, specifier, indexedPathsSet) {
 async function buildImportGraph({ rootPath, indexedFilesByPath, seedPaths = [], maxDepth = 2 }) {
   const indexedPathsSet = new Set(indexedFilesByPath.keys());
   const importCache = new Map();
+  const parserStats = {
+    astParsedFileCount: 0,
+    fallbackParsedFileCount: 0,
+    parseErrorCount: 0,
+  };
   const distances = new Map();
   const queue = [];
   for (const seed of seedPaths) {
@@ -252,7 +225,20 @@ async function buildImportGraph({ rootPath, indexedFilesByPath, seedPaths = [], 
       importCache.set(filePath, []);
       return [];
     }
-    const specifiers = parseModuleSpecifiers(content, metadata.language);
+    const parsed = await parseAstModuleSpecifiers({
+      absolutePath,
+      content,
+      language: metadata.language,
+    });
+    const specifiers = Array.isArray(parsed.specifiers) ? parsed.specifiers : [];
+    if (parsed.parserMode === "babel_ast" || parsed.parserMode === "python_ast") {
+      parserStats.astParsedFileCount += 1;
+    } else {
+      parserStats.fallbackParsedFileCount += 1;
+    }
+    if (normalizeString(parsed.parseError)) {
+      parserStats.parseErrorCount += 1;
+    }
     const resolved = specifiers
       .map((specifier) => resolveSpecifierToIndexedPath(filePath, specifier, indexedPathsSet))
       .filter(Boolean);
@@ -292,6 +278,7 @@ async function buildImportGraph({ rootPath, indexedFilesByPath, seedPaths = [], 
   return {
     distances,
     edges,
+    parserStats,
   };
 }
 
@@ -483,11 +470,12 @@ export async function buildHybridScopeMap({
       message: queueItem.message,
     },
     strategy: {
-      mode: "hybrid_deterministic_semantic_overlay",
+      mode: "hybrid_deterministic_ast_semantic_overlay",
       tokenizedSignals: tokens,
       deterministicSeeds: deterministicCandidates.slice(0, 20),
       graphDepth: normalizedGraphDepth,
       maxFiles: normalizedMaxFiles,
+      astParser: importGraph.parserStats,
     },
     summary: {
       indexedFileCount: indexedFilesByPath.size,
@@ -495,6 +483,9 @@ export async function buildHybridScopeMap({
       graphNodeCount: importGraph.distances.size,
       graphEdgeCount: importGraph.edges.length,
       scopedFileCount: scopedFiles.length,
+      astParsedFileCount: importGraph.parserStats.astParsedFileCount,
+      fallbackParsedFileCount: importGraph.parserStats.fallbackParsedFileCount,
+      astParseErrorCount: importGraph.parserStats.parseErrorCount,
     },
     scopedFiles,
     importGraph: {
@@ -536,6 +527,9 @@ export async function buildHybridScopeMap({
       graphNodeCount: importGraph.distances.size,
       graphEdgeCount: importGraph.edges.length,
       scopedFileCount: scopedFiles.length,
+      astParsedFileCount: importGraph.parserStats.astParsedFileCount,
+      fallbackParsedFileCount: importGraph.parserStats.fallbackParsedFileCount,
+      astParseErrorCount: importGraph.parserStats.parseErrorCount,
     }),
   ]);
 
