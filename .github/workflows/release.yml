@@ -88,6 +88,7 @@ jobs:
           require_check_success "SCA Summary"
           require_check_success "License Summary"
           require_check_success "SBOM Summary"
+          require_check_success "Attestation Summary"
 
       - name: Build release tarball
         run: npm pack

@@ -109,6 +109,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Emit SBOM hash-manifest artifact and enforce generation success in CI.
 - [x] Add `SBOM Summary` to release pre-publish required checks.
 - [x] Update docs and CTO execution evidence for SBOM governance coverage.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 09 Working Plan (2026-04-05)
+- [x] Add deterministic build attestation workflow for release tarball artifacts.
+- [x] Verify generated attestations in CI with explicit signer-workflow policy.
+- [x] Add `Attestation Summary` to release pre-publish required checks.
+- [x] Update docs and CTO execution evidence for attestation governance coverage.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot

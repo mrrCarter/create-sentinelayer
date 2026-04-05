@@ -1,0 +1,127 @@
+name: Build Attestation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  attest-build:
+    name: Attest Build Artifact
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build package tarball
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --json > pack.json
+          tarball="$(jq -r '.[0].filename' pack.json)"
+          test -n "${tarball}"
+          test -f "${tarball}"
+          sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          jq -n \
+            --arg tarball "${tarball}" \
+            --arg sha256 "${sha256}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              tarball: $tarball,
+              sha256: $sha256,
+              commit_sha: $commit_sha,
+              workflow_ref: $workflow_ref
+            }' > attestation-manifest.json
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload attestation build artifacts
+        if: always()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: attestation-build-artifacts
+          path: |
+            pack.json
+            attestation-manifest.json
+            ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+
+      - name: Verify attestation policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/attestations.yml
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh attestation verify "${TARBALL}" --repo "${REPO}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > attestation-verify.json; then
+              break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::Attestation verification failed after retries."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -e 'length > 0' attestation-verify.json > /dev/null
+
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: attestation-verification-artifacts
+          path: attestation-verify.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Emit attestation summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
+
+  attestation-summary:
+    name: Attestation Summary
+    runs-on: ubuntu-22.04
+    needs: [attest-build]
+    if: >-
+      ${{
+        always() &&
+        needs.attest-build.result == 'success'
+      }}
+    steps:
+      - name: Confirm attestation workflow passed
+        run: echo "Build attestation generated and verified successfully."

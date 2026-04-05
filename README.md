@@ -859,6 +859,7 @@ Dependency vulnerability policy is enforced by `.github/workflows/sca-audit.yml`
 Open-source license policy is enforced by `.github/workflows/license-gate.yml` (`License Summary` check) using `.github/policies/license-policy.json` (`allowed_licenses` with `fail_on_unknown` policy behavior).
 Dependabot auto-fix governance is enforced by `.github/workflows/dependabot-governance.yml` with policy controls in `.github/policies/dependabot-governance.json`.
 SBOM governance is enforced by `.github/workflows/sbom.yml` (`SBOM Summary`) with CycloneDX/SPDX JSON artifacts and hash-manifest output.
+Build provenance attestations are enforced by `.github/workflows/attestations.yml` (`Attestation Summary`) with verification against signer-workflow policy.
 
 Prerequisites:
 
@@ -884,6 +885,7 @@ Release guardrails now require successful upstream checks on the target commit:
 - `SCA Summary`
 - `License Summary`
 - `SBOM Summary`
+- `Attestation Summary`
 
 ## Local verification
 
