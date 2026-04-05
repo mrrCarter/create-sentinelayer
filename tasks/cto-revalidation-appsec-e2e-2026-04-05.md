@@ -295,6 +295,9 @@
   - Adds `.github/workflows/sbom.yml` to generate CycloneDX/SPDX JSON SBOMs.
   - Adds deterministic SBOM hash-manifest artifact output.
   - Adds release required check enforcement for `SBOM Summary`.
-- PR #153 (in progress on this branch):
+- PR #153 (merged):
   - Adds `.github/workflows/attestations.yml` for build-provenance attestation generation and verification.
   - Adds release required check enforcement for `Attestation Summary`.
+- PR #154 (in progress on this branch):
+  - Adds release-time checksum manifest enforcement before publish.
+  - Adds release-time attestation generation and verification bound to `.github/workflows/release.yml`.
