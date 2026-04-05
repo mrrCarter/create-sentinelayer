@@ -275,8 +275,8 @@ function checkAccessibility(rootPath) {
     { pattern: "<img\\s", desc: "img tag found — verify alt attribute present", severity: "P2" },
     { pattern: "<button", desc: "button element — verify has accessible label", severity: "P3" },
     { pattern: 'role="button"', desc: "div/span with role=button — verify keyboard reachability", severity: "P2" },
-    { pattern: "tabIndex\\s*=\\s*{?-1", desc: "tabIndex=-1 removes from tab order", severity: "P3" },
-    { pattern: "aria-hidden=\"true\"", desc: "aria-hidden — verify not hiding interactive content", severity: "P3" },
+    { pattern: "tabIndex.*-1", desc: "tabIndex=-1 removes from tab order", severity: "P3" },
+    { pattern: "aria-hidden", desc: "aria-hidden — verify not hiding interactive content", severity: "P3" },
   ];
   const findings = [];
   for (const { pattern, desc, severity } of checks) {
@@ -372,7 +372,10 @@ function auditNpmDeps(rootPath) {
 function checkImageOptimization(rootPath) {
   const rawImg = safeGrep("<img\\s", rootPath, "*.{tsx,jsx,vue,svelte,html}");
   const nextImage = safeGrep("from ['\"]next/image['\"]|<Image\\s", rootPath, "*.{tsx,jsx}");
-  const missingDimensions = safeGrep("<img[^>]*(?!(width|height))[^>]*\\/?>", rootPath, "*.{tsx,jsx,vue,html}");
+  // Count all img tags, then subtract those with width/height — avoids rg-incompatible lookahead
+  const allImgTags = safeGrep("<img\\s", rootPath, "*.{tsx,jsx,vue,html}");
+  const imgWithDimensions = safeGrep("<img[^>]*(width|height)", rootPath, "*.{tsx,jsx,vue,html}");
+  const missingDimensions = { numMatches: Math.max(0, allImgTags.numMatches - imgWithDimensions.numMatches) };
   return {
     rawImgTags: rawImg.numMatches,
     nextImageUsage: nextImage.numMatches,
