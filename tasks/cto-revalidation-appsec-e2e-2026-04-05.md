@@ -282,7 +282,8 @@
   - Fixed Semgrep workflow action pin so CI resolves setup action correctly.
 - PR #147 (merged): `Gitleaks Summary` is now active in CI and release pre-publish gate checks.
 - PR #148 (merged): `IaC Summary` is now active in CI and release pre-publish gate checks.
-- PR #149 (in progress on this branch):
-  - Updates `yaml` dependency to `2.8.3` to resolve moderate vulnerability advisory exposure.
-  - Adds `.github/workflows/sca-audit.yml` (`SCA Summary` via deterministic `npm audit` policy gate).
-  - Adds release required check enforcement for `SCA Summary`.
+- PR #149 (merged): `SCA Summary` is now active and `npm audit` baseline is zero vulnerabilities.
+- PR #150 (in progress on this branch):
+  - Adds `.github/workflows/license-gate.yml` (`License Summary`) with deterministic production license inventory.
+  - Adds explicit allowlist policy file `.github/policies/license-policy.json`.
+  - Adds release required check enforcement for `License Summary`.

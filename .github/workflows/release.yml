@@ -86,6 +86,7 @@ jobs:
           require_check_success "Gitleaks Summary"
           require_check_success "IaC Summary"
           require_check_success "SCA Summary"
+          require_check_success "License Summary"
 
       - name: Build release tarball
         run: npm pack

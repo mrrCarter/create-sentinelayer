@@ -1,0 +1,11 @@
+{
+  "allowed_licenses": [
+    "MIT",
+    "ISC",
+    "APACHE-2.0",
+    "BSD-2-CLAUSE",
+    "BSD-3-CLAUSE",
+    "PYTHON-2.0"
+  ],
+  "fail_on_unknown": true
+}
