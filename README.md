@@ -857,6 +857,7 @@ Secret scanning is enforced by `.github/workflows/gitleaks.yml` (`Gitleaks Summa
 IaC misconfiguration scanning is enforced by `.github/workflows/iac-scan.yml` (`IaC Summary` check).
 Dependency vulnerability policy is enforced by `.github/workflows/sca-audit.yml` (`SCA Summary` check).
 Open-source license policy is enforced by `.github/workflows/license-gate.yml` (`License Summary` check) using `.github/policies/license-policy.json` (`allowed_licenses` with `fail_on_unknown` policy behavior).
+Dependabot auto-fix governance is enforced by `.github/workflows/dependabot-governance.yml` with policy controls in `.github/policies/dependabot-governance.json`.
 
 Prerequisites:
 

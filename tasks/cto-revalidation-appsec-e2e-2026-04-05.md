@@ -283,7 +283,11 @@
 - PR #147 (merged): `Gitleaks Summary` is now active in CI and release pre-publish gate checks.
 - PR #148 (merged): `IaC Summary` is now active in CI and release pre-publish gate checks.
 - PR #149 (merged): `SCA Summary` is now active and `npm audit` baseline is zero vulnerabilities.
-- PR #150 (in progress on this branch):
+- PR #150 (merged):
   - Adds `.github/workflows/license-gate.yml` (`License Summary`) with deterministic production license inventory.
   - Adds explicit allowlist policy file `.github/policies/license-policy.json`.
   - Adds release required check enforcement for `License Summary`.
+- PR #151 (in progress on this branch):
+  - Adds `.github/workflows/dependabot-governance.yml` for policy-governed Dependabot auto-merge decisions.
+  - Adds deterministic governance policy file `.github/policies/dependabot-governance.json`.
+  - Adds deterministic decision artifact generation via `scripts/dependabot-governance.mjs`.

@@ -95,6 +95,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Enforce allowlisted OSS license policy from `.github/policies/license-policy.json`.
 - [x] Add `License Summary` to release pre-publish required checks.
 - [x] Update release docs and CTO execution evidence for license governance.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 07 Working Plan (2026-04-05)
+- [x] Add deterministic Dependabot governance policy file and CI workflow.
+- [x] Classify Dependabot updates by semver risk and enforce auto-merge eligibility rules.
+- [x] Apply governance labels/comments and enable auto-merge only for low-risk updates.
+- [x] Update docs and CTO execution evidence for dependency governance coverage.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot

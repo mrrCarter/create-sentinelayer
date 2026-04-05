@@ -1,0 +1,21 @@
+{
+  "automerge": {
+    "required_actor": "dependabot[bot]",
+    "allowed_update_types": [
+      "version-update:semver-patch",
+      "version-update:semver-minor"
+    ],
+    "allowed_dependency_types": [
+      "direct:development",
+      "indirect",
+      "unknown"
+    ],
+    "allowed_package_ecosystems": [
+      "npm",
+      "github-actions"
+    ],
+    "blocked_dependency_patterns": [
+      "^open$"
+    ]
+  }
+}

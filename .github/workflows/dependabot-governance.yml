@@ -1,0 +1,154 @@
+name: Dependabot Governance
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional PR number override for manual runs
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  dependabot-governance:
+    name: Dependabot Governance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        github.actor == 'dependabot[bot]'
+      }}
+    steps:
+      - name: Checkout trusted base ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.pull_request.base.sha }}
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        if: github.event_name != 'workflow_dispatch'
+        uses: dependabot/fetch-metadata@ffa630c65fa7e0ecfa0625b5ceda64399aea1b36 # v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Build metadata envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            pr_number="${{ inputs.pr_number }}"
+            actor="${{ github.actor }}"
+            update_type=""
+            dependency_type=""
+            package_ecosystem=""
+            dependency_names=""
+          else
+            pr_number="${{ github.event.pull_request.number }}"
+            actor="${{ github.actor }}"
+            update_type="${{ steps.metadata.outputs.update-type }}"
+            dependency_type="${{ steps.metadata.outputs.dependency-type }}"
+            package_ecosystem="${{ steps.metadata.outputs.package-ecosystem }}"
+            dependency_names="${{ steps.metadata.outputs.dependency-names }}"
+          fi
+          cat > dependabot-metadata.json <<EOF
+          {
+            "actor": "${actor}",
+            "pr_number": "${pr_number}",
+            "update_type": "${update_type}",
+            "dependency_type": "${dependency_type}",
+            "package_ecosystem": "${package_ecosystem}",
+            "dependency_names": "${dependency_names}"
+          }
+          EOF
+
+      - name: Evaluate governance policy
+        run: node scripts/dependabot-governance.mjs .github/policies/dependabot-governance.json dependabot-metadata.json dependabot-governance.json
+
+      - name: Capture decision outputs
+        id: decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "eligible=$(jq -r '.eligible' dependabot-governance.json)" >> "$GITHUB_OUTPUT"
+          echo "reasons=$(jq -r 'if (.reasons | length) == 0 then \"none\" else (.reasons | join(\",\")) end' dependabot-governance.json)" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r '.metadata.pr_number // \"\"' dependabot-governance.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload governance artifacts
+        if: always()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: dependabot-governance-artifacts
+          path: |
+            dependabot-metadata.json
+            dependabot-governance.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Ensure governance labels exist
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh label create "automerge:eligible" --repo "${{ github.repository }}" --color "1D76DB" --description "Dependabot update eligible for policy auto-merge" || true
+          gh label create "automerge:blocked" --repo "${{ github.repository }}" --color "D93F0B" --description "Dependabot update requires manual review" || true
+
+      - name: Apply labels and enable governed auto-merge
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          ELIGIBLE: ${{ steps.decision.outputs.eligible }}
+          REASONS: ${{ steps.decision.outputs.reasons }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${PR_NUMBER}" ] || [ "${PR_NUMBER}" = "null" ]; then
+            echo "::error::Missing PR number in governance decision output."
+            exit 1
+          fi
+          if [ "${ELIGIBLE}" = "true" ]; then
+            gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --add-label "automerge:eligible" || true
+            gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label "automerge:blocked" || true
+            gh pr merge "${PR_NUMBER}" --repo "${{ github.repository }}" --auto --squash
+          else
+            gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --add-label "automerge:blocked" || true
+            gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label "automerge:eligible" || true
+            echo "Governance blocked auto-merge due to: ${REASONS}"
+          fi
+
+      - name: Emit governance summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Dependabot Governance" >> "$GITHUB_STEP_SUMMARY"
+          echo "- eligible: \`${{ steps.decision.outputs.eligible }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- reasons: \`${{ steps.decision.outputs.reasons }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- pr_number: \`${{ steps.decision.outputs.pr_number }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  dependabot-governance-summary:
+    name: Dependabot Governance Summary
+    runs-on: ubuntu-22.04
+    needs: [dependabot-governance]
+    if: >-
+      ${{
+        always() &&
+        (
+          needs.dependabot-governance.result == 'success' ||
+          needs.dependabot-governance.result == 'skipped'
+        )
+      }}
+    steps:
+      - name: Confirm dependabot governance completed
+        run: echo "Dependabot governance completed successfully."
