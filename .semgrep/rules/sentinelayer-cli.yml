@@ -1,0 +1,58 @@
+rules:
+  - id: sl-no-dynamic-eval
+    message: "Avoid dynamic JavaScript execution (`eval`) in CLI/runtime code."
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    patterns:
+      - pattern: eval(...)
+    paths:
+      exclude:
+        - tests/**
+
+  - id: sl-no-function-constructor
+    message: "Avoid dynamic JavaScript execution via `Function` constructor."
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: new Function(...)
+          - pattern: Function(...)
+    paths:
+      exclude:
+        - tests/**
+
+  - id: sl-no-weak-hash
+    message: "Do not use weak hash algorithms (`md5`/`sha1`) for security-sensitive logic."
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash("md5")
+          - pattern: crypto.createHash('md5')
+          - pattern: crypto.createHash("sha1")
+          - pattern: crypto.createHash('sha1')
+    paths:
+      exclude:
+        - tests/**
+
+  - id: sl-no-shell-interpolation-exec
+    message: "Avoid template-string interpolation in `exec`/`execSync`; use argument-safe process APIs."
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: exec(`...${...}...`, ...)
+          - pattern: exec(`...${...}...`)
+          - pattern: execSync(`...${...}...`, ...)
+          - pattern: execSync(`...${...}...`)
+    paths:
+      exclude:
+        - tests/**

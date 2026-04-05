@@ -852,6 +852,7 @@ Ledger contract:
 This repo includes `.github/workflows/release.yml`.
 Automated version/tag PR flow is handled by `.github/workflows/release-please.yml`.
 AppSec SAST is enforced by `.github/workflows/codeql.yml` (`CodeQL Summary` check).
+Custom static policy checks are enforced by `.github/workflows/semgrep.yml` (`Semgrep Summary` check) using `.semgrep/rules/sentinelayer-cli.yml`.
 
 Prerequisites:
 
@@ -871,6 +872,7 @@ Release guardrails now require successful upstream checks on the target commit:
 - `Quality Summary`
 - `Omar Gate`
 - `CodeQL Summary`
+- `Semgrep Summary`
 
 ## Local verification
 

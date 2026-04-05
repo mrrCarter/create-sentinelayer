@@ -1,0 +1,65 @@
+name: Semgrep
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  semgrep-scan:
+    name: Semgrep Scan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524cb8535ef58dc44f6ddf329ed8cc51fce # v5.4.0
+        with:
+          python-version: "3.11"
+
+      - name: Install Semgrep
+        run: pip install --disable-pip-version-check semgrep==1.124.0
+
+      - name: Run Semgrep custom policy pack
+        run: |
+          set -euo pipefail
+          semgrep scan \
+            --config .semgrep/rules/sentinelayer-cli.yml \
+            --error \
+            --metrics=off \
+            --json \
+            --output semgrep-results.json
+
+      - name: Upload Semgrep artifact
+        if: always()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  semgrep-summary:
+    name: Semgrep Summary
+    runs-on: ubuntu-22.04
+    needs: [semgrep-scan]
+    if: >-
+      ${{
+        always() &&
+        needs.semgrep-scan.result == 'success'
+      }}
+    steps:
+      - name: Confirm Semgrep scan passed
+        run: echo "Semgrep scan completed successfully."
