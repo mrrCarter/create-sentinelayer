@@ -68,7 +68,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Create Semgrep CI workflow with pinned action/runtime and deterministic local custom rules.
 - [x] Add custom Semgrep ruleset for high-risk JavaScript/Node anti-patterns (eval/new Function/weak crypto/destructive command interpolation).
 - [x] Add Semgrep summary job and enforce `Semgrep Summary` in release required-check verification.
-- [ ] Update docs/roadmap evidence with Semgrep gate scope and execution proof.
+- [x] Update docs/roadmap evidence with Semgrep gate scope and execution proof.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 03 Working Plan (2026-04-05)
+- [x] Create gitleaks CI workflow with deterministic PR-range scan and artifact output.
+- [x] Add `Gitleaks Summary` job and enforce it in release required-check verification.
+- [x] Update release docs to include gitleaks gate coverage.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot
