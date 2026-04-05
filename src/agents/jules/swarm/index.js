@@ -8,3 +8,4 @@
 export { JulesSubAgent, runSubAgentBatch, SubAgentError } from "./sub-agent.js";
 export { createFileScanner } from "./file-scanner.js";
 export { createPatternHunter, HUNT_TYPES } from "./pattern-hunter.js";
+export { shouldSpawnSubAgents, runJulesSwarm } from "./orchestrator.js";
