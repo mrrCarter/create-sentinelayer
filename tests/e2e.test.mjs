@@ -3427,6 +3427,53 @@ test("CLI daemon map scope/list/show builds hybrid deterministic+semantic impact
     assert.equal(mapListPayload.command, "daemon map list");
     assert.equal(mapListPayload.visibleCount, 1);
     assert.equal(mapListPayload.maps[0].workItemId, workItemId);
+
+    const mapHandoff = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "daemon",
+        "map",
+        "handoff",
+        workItemId,
+        "--path",
+        tempRoot,
+        "--assignee",
+        "maya.markov@sentinelayer.local",
+        "--max-files",
+        "4",
+        "--json",
+      ],
+    });
+    assert.equal(mapHandoff.code, 0, mapHandoff.stderr || mapHandoff.stdout);
+    const mapHandoffPayload = JSON.parse(String(mapHandoff.stdout || "").trim());
+    assert.equal(mapHandoffPayload.command, "daemon map handoff");
+    assert.equal(mapHandoffPayload.payload.workItem.workItemId, workItemId);
+    assert.equal(mapHandoffPayload.payload.assignee.primary, "maya.markov@sentinelayer.local");
+    assert.equal(Array.isArray(mapHandoffPayload.payload.files), true);
+    assert.equal(mapHandoffPayload.payload.files.length > 0, true);
+
+    const handoffList = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "map", "handoff-list", "--path", tempRoot, "--work-item-id", workItemId, "--json"],
+    });
+    assert.equal(handoffList.code, 0, handoffList.stderr || handoffList.stdout);
+    const handoffListPayload = JSON.parse(String(handoffList.stdout || "").trim());
+    assert.equal(handoffListPayload.command, "daemon map handoff-list");
+    assert.equal(handoffListPayload.visibleCount, 1);
+    assert.equal(handoffListPayload.handoffs[0].workItemId, workItemId);
+
+    const handoffShow = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["daemon", "map", "handoff-show", workItemId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(handoffShow.code, 0, handoffShow.stderr || handoffShow.stdout);
+    const handoffShowPayload = JSON.parse(String(handoffShow.stdout || "").trim());
+    assert.equal(handoffShowPayload.command, "daemon map handoff-show");
+    assert.equal(handoffShowPayload.payload.workItem.workItemId, workItemId);
+    assert.equal(Array.isArray(handoffShowPayload.payload.context.callGraph.edges), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

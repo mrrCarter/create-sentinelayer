@@ -7,8 +7,10 @@ import { collectCodebaseIngest } from "../ingest/engine.js";
 import { listErrorQueue, resolveErrorDaemonStorage } from "./error-worker.js";
 
 const HYBRID_MAP_SCHEMA_VERSION = "1.0.0";
+const HYBRID_HANDOFF_SCHEMA_VERSION = "1.0.0";
 const DEFAULT_MAX_SCOPE_FILES = 40;
 const DEFAULT_GRAPH_DEPTH = 2;
+const DEFAULT_HANDOFF_MAX_FILES = 24;
 const LANGUAGE_IMPORT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 
 function normalizeString(value) {
@@ -65,6 +67,34 @@ function createInitialMapIndex(nowIso = new Date().toISOString()) {
     schemaVersion: HYBRID_MAP_SCHEMA_VERSION,
     generatedAt: normalizeIsoTimestamp(nowIso, nowIso),
     maps: [],
+  };
+}
+
+function normalizeHandoffIndex(index = {}, nowIso = new Date().toISOString()) {
+  return {
+    schemaVersion: HYBRID_HANDOFF_SCHEMA_VERSION,
+    generatedAt: normalizeIsoTimestamp(index.generatedAt, nowIso),
+    handoffs: Array.isArray(index.handoffs)
+      ? index.handoffs
+          .map((entry) => ({
+            ...entry,
+            workItemId: normalizeString(entry.workItemId),
+            handoffRunId: normalizeString(entry.handoffRunId),
+            mapRunId: normalizeString(entry.mapRunId),
+            generatedAt: normalizeIsoTimestamp(entry.generatedAt, nowIso),
+            handoffPath: normalizeString(entry.handoffPath),
+            assignee: normalizeString(entry.assignee),
+          }))
+          .filter((entry) => entry.workItemId && entry.handoffRunId && entry.handoffPath)
+      : [],
+  };
+}
+
+function createInitialHandoffIndex(nowIso = new Date().toISOString()) {
+  return {
+    schemaVersion: HYBRID_HANDOFF_SCHEMA_VERSION,
+    generatedAt: normalizeIsoTimestamp(nowIso, nowIso),
+    handoffs: [],
   };
 }
 
@@ -288,6 +318,39 @@ function createHybridMapRunId(nowIso, workItemId) {
   return `hybrid-map-${normalizedWorkItem}-${nowIso.replace(/[:.]/g, "-")}`;
 }
 
+function createHybridHandoffRunId(nowIso, workItemId) {
+  const normalizedWorkItem = normalizeString(workItemId).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48);
+  return `hybrid-handoff-${normalizedWorkItem}-${nowIso.replace(/[:.]/g, "-")}`;
+}
+
+function deriveHandoffBudgets(scopedFiles = []) {
+  const fileCount = scopedFiles.length;
+  const totalLoc = scopedFiles.reduce((sum, file) => sum + Math.max(0, Number(file.loc) || 0), 0);
+  const estimatedInputTokens = Math.max(2000, Math.min(64000, totalLoc * 6 + fileCount * 240));
+  const maxRuntimeMinutes = Math.max(10, Math.min(180, Math.ceil(totalLoc / 140 + fileCount)));
+  const maxToolCalls = Math.max(20, Math.min(400, fileCount * 8));
+  return {
+    estimatedInputTokens,
+    maxRuntimeMinutes,
+    maxToolCalls,
+    maxFiles: fileCount,
+  };
+}
+
+function buildHandoffFiles(scopedFiles = [], maxFiles = DEFAULT_HANDOFF_MAX_FILES) {
+  return scopedFiles.slice(0, maxFiles).map((file, index) => ({
+    path: file.path,
+    language: file.language,
+    loc: file.loc,
+    totalScore: file.totalScore,
+    priority: index + 1,
+    reasons: Array.isArray(file.reasons) ? file.reasons : [],
+    constraints: {
+      readOnly: true,
+    },
+  }));
+}
+
 export async function resolveHybridMappingStorage({
   targetPath = ".",
   outputDir = "",
@@ -307,6 +370,9 @@ export async function resolveHybridMappingStorage({
     mapIndexPath: path.join(mappingDir, "hybrid-map-index.json"),
     mapEventsPath: path.join(mappingDir, "hybrid-map-events.ndjson"),
     mapRunsDir: path.join(mappingDir, "runs"),
+    handoffIndexPath: path.join(mappingDir, "hybrid-handoff-index.json"),
+    handoffEventsPath: path.join(mappingDir, "hybrid-handoff-events.ndjson"),
+    handoffRunsDir: path.join(mappingDir, "handoffs"),
   };
 }
 
@@ -658,6 +724,206 @@ export async function showHybridScopeMap({
     ...storage,
     map: selected,
     mapPath: absoluteMapPath,
+    payload,
+  };
+}
+
+export async function buildHybridHandoffPackage({
+  targetPath = ".",
+  outputDir = "",
+  workItemId,
+  mapRunId = "",
+  assignee = "omar",
+  maxFiles = DEFAULT_HANDOFF_MAX_FILES,
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const normalizedWorkItemId = normalizeString(workItemId);
+  if (!normalizedWorkItemId) {
+    throw new Error("workItemId is required.");
+  }
+  const normalizedMaxFiles = normalizePositiveInteger(maxFiles, "maxFiles", DEFAULT_HANDOFF_MAX_FILES);
+  const normalizedAssignee = normalizeString(assignee) || "omar";
+  const storage = await resolveHybridMappingStorage({
+    targetPath,
+    outputDir,
+    env,
+    homeDir,
+  });
+  const shown = await showHybridScopeMap({
+    targetPath,
+    outputDir,
+    workItemId: normalizedWorkItemId,
+    runId: mapRunId,
+    env,
+    homeDir,
+    nowIso: normalizedNow,
+  });
+  const mapPayload = shown.payload;
+  const handoffRunId = createHybridHandoffRunId(normalizedNow, normalizedWorkItemId);
+  const handoffPath = path.join(storage.handoffRunsDir, `${handoffRunId}.json`);
+  const handoffFiles = buildHandoffFiles(
+    Array.isArray(mapPayload.scopedFiles) ? mapPayload.scopedFiles : [],
+    normalizedMaxFiles
+  );
+  const budgets = deriveHandoffBudgets(handoffFiles);
+  const payload = {
+    schemaVersion: HYBRID_HANDOFF_SCHEMA_VERSION,
+    generatedAt: normalizedNow,
+    handoffRunId,
+    sourceMapRunId: normalizeString(mapPayload.runId),
+    workItem: mapPayload.workItem,
+    assignee: {
+      primary: normalizedAssignee,
+    },
+    constraints: {
+      allowedPaths: handoffFiles.map((file) => file.path),
+      readOnly: true,
+    },
+    budgets,
+    context: {
+      strategy: mapPayload.strategy,
+      summary: mapPayload.summary,
+      importGraph: mapPayload.importGraph,
+      callGraph: mapPayload.callGraph,
+    },
+    files: handoffFiles,
+  };
+  await fsp.mkdir(storage.handoffRunsDir, { recursive: true });
+  await writeJsonFile(handoffPath, payload);
+
+  const rawIndex = await readJsonFile(storage.handoffIndexPath, () => createInitialHandoffIndex(normalizedNow));
+  const index = normalizeHandoffIndex(rawIndex, normalizedNow);
+  index.generatedAt = normalizedNow;
+  index.handoffs = [
+    {
+      workItemId: normalizedWorkItemId,
+      handoffRunId,
+      mapRunId: normalizeString(mapPayload.runId),
+      generatedAt: normalizedNow,
+      handoffPath: toPosixPath(path.relative(storage.outputRoot, handoffPath)),
+      assignee: normalizedAssignee,
+      scopedFileCount: handoffFiles.length,
+      estimatedInputTokens: budgets.estimatedInputTokens,
+    },
+    ...index.handoffs.filter((entry) => normalizeString(entry.handoffRunId) !== handoffRunId),
+  ].slice(0, 2000);
+
+  await Promise.all([
+    writeJsonFile(storage.handoffIndexPath, index),
+    appendJsonLine(storage.handoffEventsPath, {
+      timestamp: normalizedNow,
+      eventType: "hybrid_handoff_package",
+      handoffRunId,
+      mapRunId: normalizeString(mapPayload.runId),
+      workItemId: normalizedWorkItemId,
+      assignee: normalizedAssignee,
+      scopedFileCount: handoffFiles.length,
+      estimatedInputTokens: budgets.estimatedInputTokens,
+    }),
+  ]);
+
+  return {
+    ...storage,
+    handoffRunId,
+    handoffPath,
+    summary: {
+      scopedFileCount: handoffFiles.length,
+      estimatedInputTokens: budgets.estimatedInputTokens,
+      maxRuntimeMinutes: budgets.maxRuntimeMinutes,
+      maxToolCalls: budgets.maxToolCalls,
+    },
+    payload,
+  };
+}
+
+export async function listHybridHandoffs({
+  targetPath = ".",
+  outputDir = "",
+  workItemId = "",
+  limit = 50,
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const normalizedLimit = normalizePositiveInteger(limit, "limit", 50);
+  const normalizedWorkItemId = normalizeString(workItemId);
+  const storage = await resolveHybridMappingStorage({
+    targetPath,
+    outputDir,
+    env,
+    homeDir,
+  });
+  const rawIndex = await readJsonFile(storage.handoffIndexPath, () => createInitialHandoffIndex(normalizedNow));
+  const index = normalizeHandoffIndex(rawIndex, normalizedNow);
+  const filtered = index.handoffs
+    .filter((entry) => {
+      if (normalizedWorkItemId && normalizeString(entry.workItemId) !== normalizedWorkItemId) {
+        return false;
+      }
+      return true;
+    })
+    .sort((left, right) => {
+      const leftEpoch = Date.parse(String(left.generatedAt || "")) || 0;
+      const rightEpoch = Date.parse(String(right.generatedAt || "")) || 0;
+      return rightEpoch - leftEpoch;
+    });
+  return {
+    ...storage,
+    generatedAt: index.generatedAt,
+    totalCount: index.handoffs.length,
+    visibleCount: filtered.length,
+    handoffs: filtered.slice(0, normalizedLimit),
+  };
+}
+
+export async function showHybridHandoff({
+  targetPath = ".",
+  outputDir = "",
+  workItemId = "",
+  handoffRunId = "",
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const normalizedWorkItemId = normalizeString(workItemId);
+  if (!normalizedWorkItemId) {
+    throw new Error("workItemId is required.");
+  }
+  const listed = await listHybridHandoffs({
+    targetPath,
+    outputDir,
+    workItemId: normalizedWorkItemId,
+    limit: 500,
+    env,
+    homeDir,
+    nowIso: normalizedNow,
+  });
+  const normalizedRunId = normalizeString(handoffRunId);
+  const selected = listed.handoffs.find((entry) => {
+    if (normalizedRunId && normalizeString(entry.handoffRunId) !== normalizedRunId) {
+      return false;
+    }
+    return true;
+  });
+  if (!selected) {
+    throw new Error(
+      `No hybrid handoff package found for work item '${normalizedWorkItemId}' and run '${normalizedRunId || "latest"}'.`
+    );
+  }
+  const absoluteHandoffPath = path.join(listed.outputRoot, selected.handoffPath);
+  const payload = await readJsonFile(absoluteHandoffPath, () => null);
+  if (!payload || typeof payload !== "object") {
+    throw new Error(`Hybrid handoff artifact not found: ${absoluteHandoffPath}`);
+  }
+  return {
+    ...listed,
+    handoff: selected,
+    handoffPath: absoluteHandoffPath,
     payload,
   };
 }

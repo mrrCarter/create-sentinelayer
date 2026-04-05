@@ -5,8 +5,11 @@ import path from "node:path";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 
 import {
+  buildHybridHandoffPackage,
   buildHybridScopeMap,
+  listHybridHandoffs,
   listHybridScopeMaps,
+  showHybridHandoff,
   showHybridScopeMap,
 } from "../src/daemon/hybrid-mapper.js";
 import {
@@ -174,6 +177,54 @@ test("Unit daemon hybrid mapper: list/show surfaces latest map artifacts", async
     assert.equal(shown.payload.callGraph.nodes.length > 0, true);
     assert.equal(Array.isArray(shown.payload.callGraph.edges), true);
     assert.equal(shown.payload.callGraph.edges.length > 0, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon hybrid mapper: builds deterministic handoff package from scoped map", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-hybrid-handoff-"));
+  try {
+    await seedHybridWorkspace(tempRoot);
+    const workItemId = await seedWorkItem(tempRoot);
+    const mapped = await buildHybridScopeMap({
+      targetPath: tempRoot,
+      workItemId,
+      maxFiles: 8,
+      graphDepth: 2,
+      nowIso: "2026-04-02T00:22:00.000Z",
+    });
+    const handoff = await buildHybridHandoffPackage({
+      targetPath: tempRoot,
+      workItemId,
+      mapRunId: mapped.runId,
+      assignee: "maya.markov@sentinelayer.local",
+      maxFiles: 5,
+      nowIso: "2026-04-02T00:22:30.000Z",
+    });
+    assert.equal(handoff.payload.workItem.workItemId, workItemId);
+    assert.equal(handoff.payload.assignee.primary, "maya.markov@sentinelayer.local");
+    assert.equal(handoff.payload.files.length > 0, true);
+    assert.equal(handoff.summary.estimatedInputTokens > 0, true);
+
+    const listed = await listHybridHandoffs({
+      targetPath: tempRoot,
+      workItemId,
+      limit: 10,
+    });
+    assert.equal(listed.totalCount, 1);
+    assert.equal(listed.visibleCount, 1);
+    assert.equal(listed.handoffs[0].workItemId, workItemId);
+
+    const shown = await showHybridHandoff({
+      targetPath: tempRoot,
+      workItemId,
+      handoffRunId: handoff.handoffRunId,
+    });
+    assert.equal(shown.payload.workItem.workItemId, workItemId);
+    assert.equal(Array.isArray(shown.payload.files), true);
+    assert.equal(shown.payload.files.length > 0, true);
+    assert.equal(Array.isArray(shown.payload.context.callGraph.edges), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -305,7 +305,11 @@
   - Added `src/daemon/ast-parser-layer.js` for JS/TS + Python AST-backed import parsing with deterministic fallback modes.
   - Upgraded hybrid mapper strategy contract to `hybrid_deterministic_ast_semantic_overlay` and emitted AST parser stats in map artifacts/events.
   - Added unit coverage for AST parser behavior and hybrid mapper AST-path integration.
-- PR branch `roadmap/pr-appsec-e2e-12-callgraph-dataflow-overlay` (in progress):
-  - Adds `src/daemon/callgraph-overlay.js` to build scoped AST-backed symbol/call edges with deterministic fallback.
-  - Extends hybrid mapper artifacts/events with callgraph nodes/edges and parser summary statistics.
-  - Adds unit coverage for callgraph parser modes and cross-file overlay edge generation.
+- PR #156 (merged):
+  - Added `src/daemon/callgraph-overlay.js` to build scoped AST-backed symbol/call edges with deterministic fallback.
+  - Extended hybrid mapper artifacts/events with callgraph nodes/edges and parser summary statistics.
+  - Added unit coverage for callgraph parser modes and cross-file overlay edge generation.
+- PR branch `roadmap/pr-appsec-e2e-13-hybrid-deterministic-ast-handoff` (in progress):
+  - Adds deterministic hybrid handoff package artifacts sourced from scoped map runs.
+  - Adds `daemon map handoff|handoff-list|handoff-show` command surfaces for bounded assignment context delivery.
+  - Adds unit + e2e verification for handoff package generation and retrieval.

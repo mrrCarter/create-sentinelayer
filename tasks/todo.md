@@ -134,6 +134,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Add AST-backed callgraph overlay layer for scoped JS/TS/Python files with deterministic fallback.
 - [x] Integrate callgraph overlay nodes/edges + parser stats into hybrid mapper artifacts and event summaries.
 - [x] Add unit tests for callgraph parser module and hybrid mapper callgraph integration path.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 13 Working Plan (2026-04-05)
+- [x] Add deterministic hybrid handoff package builder from map artifacts with bounded path lists + budget hints.
+- [x] Expose handoff command surfaces (`daemon map handoff|handoff-list|handoff-show`) for reproducible downstream assignment context.
+- [x] Add unit + e2e coverage for handoff artifact generation and retrieval.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot

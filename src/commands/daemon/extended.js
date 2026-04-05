@@ -11,7 +11,10 @@ import {
 import { buildArtifactLineageIndex, listArtifactLineage } from "../../daemon/artifact-lineage.js";
 import {
   buildHybridScopeMap,
+  buildHybridHandoffPackage,
+  listHybridHandoffs,
   listHybridScopeMaps,
+  showHybridHandoff,
   showHybridScopeMap,
 } from "../../daemon/hybrid-mapper.js";
 import {
@@ -334,6 +337,127 @@ map
     console.log(pc.gray(`Artifact: ${shown.mapPath}`));
     console.log(
       `${shown.payload.workItem.workItemId} scoped_files=${shown.payload.summary?.scopedFileCount || 0} run=${shown.payload.runId}`
+    );
+  });
+
+map
+  .command("handoff")
+  .description("Build deterministic handoff package from hybrid map scope for one work item")
+  .argument("<workItemId>", "Queue work item id")
+  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+  .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+  .option("--run-id <id>", "Optional explicit source map run id")
+  .option("--assignee <identity>", "Primary target agent identity", "omar")
+  .option("--max-files <n>", "Maximum scoped files to include in handoff package", "24")
+  .option("--now-iso <timestamp>", "Optional deterministic timestamp override")
+  .option("--json", "Emit machine-readable output")
+  .action(async (workItemId, options, command) => {
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const handoff = await buildHybridHandoffPackage({
+      targetPath,
+      outputDir: options.outputDir,
+      workItemId,
+      mapRunId: options.runId,
+      assignee: options.assignee,
+      maxFiles: parsePositiveInteger(options.maxFiles, "max-files", 24),
+      nowIso: options.nowIso,
+    });
+    const payload = {
+      command: "daemon map handoff",
+      targetPath,
+      handoffRunId: handoff.handoffRunId,
+      handoffPath: handoff.handoffPath,
+      handoffIndexPath: handoff.handoffIndexPath,
+      handoffEventsPath: handoff.handoffEventsPath,
+      summary: handoff.summary,
+      payload: handoff.payload,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(pc.bold("Hybrid handoff package generated"));
+    console.log(pc.gray(`Run: ${handoff.handoffRunId}`));
+    console.log(pc.gray(`Artifact: ${handoff.handoffPath}`));
+    console.log(
+      `${handoff.payload.workItem.workItemId} assignee=${handoff.payload.assignee.primary} files=${handoff.summary.scopedFileCount} tokens=${handoff.summary.estimatedInputTokens}`
+    );
+  });
+
+map
+  .command("handoff-list")
+  .description("List hybrid handoff package records")
+  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+  .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+  .option("--work-item-id <id>", "Optional work item filter")
+  .option("--limit <n>", "Maximum handoff records to return", "50")
+  .option("--json", "Emit machine-readable output")
+  .action(async (options, command) => {
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const listed = await listHybridHandoffs({
+      targetPath,
+      outputDir: options.outputDir,
+      workItemId: options.workItemId,
+      limit: parsePositiveInteger(options.limit, "limit", 50),
+    });
+    const payload = {
+      command: "daemon map handoff-list",
+      targetPath,
+      handoffIndexPath: listed.handoffIndexPath,
+      handoffEventsPath: listed.handoffEventsPath,
+      generatedAt: listed.generatedAt,
+      totalCount: listed.totalCount,
+      visibleCount: listed.handoffs.length,
+      handoffs: listed.handoffs,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(pc.bold("Hybrid handoff packages"));
+    console.log(pc.gray(`Index: ${listed.handoffIndexPath}`));
+    console.log(pc.gray(`Events: ${listed.handoffEventsPath}`));
+    console.log(pc.gray(`visible=${listed.handoffs.length} total=${listed.totalCount}`));
+    for (const entry of listed.handoffs) {
+      console.log(
+        `- ${entry.handoffRunId} | work_item=${entry.workItemId} | assignee=${entry.assignee} | files=${entry.scopedFileCount}`
+      );
+    }
+  });
+
+map
+  .command("handoff-show")
+  .description("Show one hybrid handoff package artifact by work item (or explicit run)")
+  .argument("<workItemId>", "Queue work item id")
+  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+  .option("--output-dir <path>", "Optional output dir override for daemon artifacts")
+  .option("--handoff-run-id <id>", "Optional explicit handoff run id")
+  .option("--json", "Emit machine-readable output")
+  .action(async (workItemId, options, command) => {
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const shown = await showHybridHandoff({
+      targetPath,
+      outputDir: options.outputDir,
+      workItemId,
+      handoffRunId: options.handoffRunId,
+    });
+    const payload = {
+      command: "daemon map handoff-show",
+      targetPath,
+      handoffIndexPath: shown.handoffIndexPath,
+      handoffEventsPath: shown.handoffEventsPath,
+      handoffPath: shown.handoffPath,
+      handoff: shown.handoff,
+      payload: shown.payload,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(pc.bold("Hybrid handoff package"));
+    console.log(pc.gray(`Artifact: ${shown.handoffPath}`));
+    console.log(
+      `${shown.payload.workItem.workItemId} assignee=${shown.payload.assignee.primary} files=${shown.payload.files.length}`
     );
   });
 
