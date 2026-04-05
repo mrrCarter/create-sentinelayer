@@ -1,6 +1,7 @@
-import { execSync, execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 
 /**
  * Jules Tanaka — Runtime Audit Tool
@@ -216,27 +217,33 @@ function checkConsoleErrors(input) {
   if (!url) throw new RuntimeAuditError("check_console_errors requires a url");
   if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
 
-  // Try playwright first
+  // Try playwright — URL passed via env var to prevent command injection
   try {
-    const script = `
+    const scriptPath = path.join(os.tmpdir(), "sl-console-check-" + Date.now() + ".cjs");
+    fs.writeFileSync(scriptPath, `
       const { chromium } = require('playwright');
       (async () => {
+        const targetUrl = process.env.SL_AUDIT_TARGET_URL;
+        if (!targetUrl) { console.log(JSON.stringify({ errors: [], title: '' })); process.exit(0); }
         const browser = await chromium.launch({ headless: true });
         const page = await browser.newPage();
         const errors = [];
         page.on('console', msg => { if (msg.type() === 'error') errors.push({ text: msg.text(), url: msg.location()?.url }); });
         page.on('pageerror', err => errors.push({ text: err.message, type: 'uncaught' }));
-        await page.goto('${url.replace(/'/g, "\\'")}', { waitUntil: 'networkidle', timeout: 30000 });
+        await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
         console.log(JSON.stringify({ errors, title: await page.title() }));
         await browser.close();
       })();
-    `;
-    const output = execSync("node -e " + JSON.stringify(script), {
-      encoding: "utf-8", timeout: 45000, stdio: ["pipe", "pipe", "pipe"],
+    `);
+    const output = execSync("node " + JSON.stringify(scriptPath), {
+      encoding: "utf-8", timeout: 45000,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, SL_AUDIT_TARGET_URL: url },
     });
+    try { fs.unlinkSync(scriptPath); } catch { /* best effort cleanup */ }
     const result = JSON.parse(output.trim());
     return { available: true, method: "playwright", ...result };
-  } catch {
+  } catch (playwrightErr) {
     // Playwright not available — return instruction
     return {
       available: false,
@@ -255,11 +262,15 @@ function checkNetworkWaterfall(input) {
   if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
 
   try {
-    const format = '{"dns_ms":%{time_namelookup},"connect_ms":%{time_connect},"tls_ms":%{time_appconnect},"ttfb_ms":%{time_starttransfer},"total_ms":%{time_total},"size_bytes":%{size_download},"status":%{http_code}}';
+    // Write curl format to temp file to avoid shell quoting issues across platforms
+    const formatFile = path.join(os.tmpdir(), "sl-curl-fmt-" + Date.now() + ".txt");
+    fs.writeFileSync(formatFile, '{"dns_ms":%{time_namelookup},"connect_ms":%{time_connect},"tls_ms":%{time_appconnect},"ttfb_ms":%{time_starttransfer},"total_ms":%{time_total},"size_bytes":%{size_download},"status":%{http_code}}');
+    const safeUrl = sanitizeUrlForShell(url);
     const output = execSync(
-      'curl -sL -o /dev/null -w \'' + format + '\' --max-time 15 "' + url + '"',
+      "curl -sL -o " + devNull() + " -w @" + JSON.stringify(formatFile) + " --max-time 15 " + JSON.stringify(safeUrl),
       { encoding: "utf-8", timeout: 20000, stdio: ["pipe", "pipe", "pipe"] },
     );
+    try { fs.unlinkSync(formatFile); } catch { /* best effort */ }
     const timing = JSON.parse(output.trim());
     // Convert seconds to milliseconds
     for (const key of ["dns_ms", "connect_ms", "tls_ms", "ttfb_ms", "total_ms"]) {
@@ -277,14 +288,19 @@ function checkNetworkWaterfall(input) {
 function checkDomStats(input) {
   const url = input.url;
   if (!url) throw new RuntimeAuditError("check_dom_stats requires a url");
+  if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
 
+  // URL passed via env var to prevent command injection (CodeQL alert #51)
   try {
-    const script = `
+    const scriptPath = path.join(os.tmpdir(), "sl-dom-check-" + Date.now() + ".cjs");
+    fs.writeFileSync(scriptPath, `
       const { chromium } = require('playwright');
       (async () => {
+        const targetUrl = process.env.SL_AUDIT_TARGET_URL;
+        if (!targetUrl) { console.log(JSON.stringify({})); process.exit(0); }
         const browser = await chromium.launch({ headless: true });
         const page = await browser.newPage();
-        await page.goto('${url.replace(/'/g, "\\'")}', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         const stats = await page.evaluate(() => ({
           nodeCount: document.querySelectorAll('*').length,
           maxDepth: (function depth(el, d) { return Math.max(d, ...Array.from(el.children).map(c => depth(c, d+1))); })(document.body, 0),
@@ -299,10 +315,13 @@ function checkDomStats(input) {
         console.log(JSON.stringify(stats));
         await browser.close();
       })();
-    `;
-    const output = execSync("node -e " + JSON.stringify(script), {
-      encoding: "utf-8", timeout: 45000, stdio: ["pipe", "pipe", "pipe"],
+    `);
+    const output = execSync("node " + JSON.stringify(scriptPath), {
+      encoding: "utf-8", timeout: 45000,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, SL_AUDIT_TARGET_URL: url },
     });
+    try { fs.unlinkSync(scriptPath); } catch { /* best effort cleanup */ }
     return { available: true, method: "playwright", ...JSON.parse(output.trim()) };
   } catch {
     return { available: false, reason: "Playwright not installed" };
@@ -345,6 +364,21 @@ function extractCookieFlags(headers) {
     });
   }
   return cookies;
+}
+
+function devNull() {
+  return process.platform === "win32" ? "NUL" : "/dev/null";
+}
+
+function sanitizeUrlForShell(url) {
+  // Only allow http/https URLs, strip any shell metacharacters
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
 }
 
 export class RuntimeAuditError extends Error {

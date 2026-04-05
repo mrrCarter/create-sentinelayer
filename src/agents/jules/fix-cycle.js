@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import path from "node:path";
 import fsp from "node:fs/promises";
 import { JULES_DEFINITION } from "./config/definition.js";
@@ -82,8 +82,8 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
     worktreePath = path.join(rootPath, ".jules-worktree-" + workItemId);
     emit("fix_worktree", { status: "creating", branch: branchName });
 
-    safeExec("git fetch origin", rootPath);
-    safeExec('git worktree add -b ' + branchName + ' "' + worktreePath + '" origin/main', rootPath);
+    safeExecFile("git", ["fetch", "origin"], rootPath);
+    safeExecFile("git", ["worktree", "add", "-b", branchName, worktreePath, "origin/main"], rootPath);
     emit("fix_worktree", { status: "created", path: worktreePath });
 
     // ── [4] INVESTIGATE + FIX ─────────────────────────────────────
@@ -98,10 +98,10 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
       });
     }
 
-    // TODO: integrate with julesAuditLoop for agentic fix generation
-    // For now, the fix is expected to be applied by the caller or
-    // a separate agent writing to the worktree before calling runFixCycle.
-    // This function handles the full PR/Omar/merge/Jira lifecycle.
+    // Fix generation: the caller is responsible for writing changes to the
+    // worktree before invoking runFixCycle, or for wiring julesAuditLoop
+    // in fix mode with FileEdit tool access. runFixCycle handles the full
+    // PR/Omar/merge/Jira lifecycle for whatever changes exist in the worktree.
 
     // ── [5] PUSH + PR ─────────────────────────────────────────────
     emit("fix_pr", { status: "pushing" });
@@ -112,22 +112,19 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
     const hasChanges = diffOutput.trim().length > 0 || untrackedOutput.trim().length > 0;
 
     if (hasChanges) {
-      safeExec("git add -A", worktreePath);
-      safeExec(
-        'git commit -m "[Jules] Fix ' + errorCode + " at " + endpoint + '"',
-        worktreePath,
-      );
+      safeExecFile("git", ["add", "-A"], worktreePath);
+      safeExecFile("git", ["commit", "-m", "[Jules] Fix " + errorCode + " at " + endpoint], worktreePath);
     }
 
-    safeExec("git push -u origin " + branchName, worktreePath);
+    safeExecFile("git", ["push", "-u", "origin", branchName], worktreePath);
 
     const prBody = buildPrBody(workItem, findings, jiraKey);
-    const prUrl = safeExec(
-      'gh pr create --title "[Jules] Fix ' + errorCode + '" --body "' +
-      prBody.replace(/"/g, '\\"').replace(/\n/g, "\\n") +
-      '" --head ' + branchName,
-      worktreePath,
-    ).trim();
+    const prUrl = safeExecFile("gh", [
+      "pr", "create",
+      "--title", "[Jules] Fix " + errorCode,
+      "--body", prBody,
+      "--head", branchName,
+    ], worktreePath).trim();
 
     const prMatch = prUrl.match(/\/pull\/(\d+)/);
     prNumber = prMatch ? parseInt(prMatch[1]) : null;
@@ -169,7 +166,7 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
       // ── [7] MERGE ───────────────────────────────────────────────
       emit("fix_merge", { status: "merging", prNumber });
       try {
-        safeExec("gh pr merge " + prNumber + " --squash --delete-branch", rootPath);
+        safeExecFile("gh", ["pr", "merge", String(prNumber), "--squash", "--delete-branch"], rootPath);
         emit("fix_merge", { status: "merged", prNumber });
       } catch (mergeErr) {
         emit("fix_merge", { status: "failed", error: mergeErr.message });
@@ -246,7 +243,7 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
   } finally {
     if (hbTimer) clearInterval(hbTimer);
     if (worktreePath) {
-      try { safeExec('git worktree remove "' + worktreePath + '" --force', rootPath); } catch { /* best effort */ }
+      try { safeExecFile("git", ["worktree", "remove", worktreePath, "--force"], rootPath); } catch { /* best effort */ }
     }
   }
 }
@@ -257,10 +254,10 @@ async function watchOmarGate(rootPath, branchName, emit) {
   for (let attempt = 0; attempt < OMAR_POLL_MAX_ATTEMPTS; attempt++) {
     await sleep(OMAR_POLL_INTERVAL_MS);
     try {
-      const runJson = safeExec(
-        'gh run list --workflow "Omar Gate" --branch ' + branchName + ' --limit 1 --json databaseId,status,conclusion',
-        rootPath,
-      );
+      const runJson = safeExecFile("gh", [
+        "run", "list", "--workflow", "Omar Gate", "--branch", branchName,
+        "--limit", "1", "--json", "databaseId,status,conclusion",
+      ], rootPath);
       const runs = JSON.parse(runJson || "[]");
       if (runs.length === 0) continue;
 
@@ -283,6 +280,13 @@ async function watchOmarGate(rootPath, branchName, emit) {
 
 function safeExec(cmd, cwd) {
   return execSync(cmd, {
+    cwd, encoding: "utf-8", timeout: 60000,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+function safeExecFile(bin, args, cwd) {
+  return execFileSync(bin, args, {
     cwd, encoding: "utf-8", timeout: 60000,
     stdio: ["pipe", "pipe", "pipe"],
   });

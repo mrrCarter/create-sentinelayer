@@ -750,6 +750,8 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--stream", "Emit NDJSON events to stdout as Jules works")
     .option("--refresh", "Refresh CODEBASE_INGEST before auditing")
     .option("--skip-baseline", "Skip Omar deterministic baseline (not recommended)")
+    .option("--url <url>", "Deployed URL for runtime audit (Lighthouse, headers, DevTools)")
+    .option("--skip-runtime", "Skip runtime audit even if URL is detected")
     .option("--output-dir <path>", "Artifact output root override")
     .option("--json", "Emit machine-readable final output")
     .action(async (options, command) => {
@@ -875,6 +877,59 @@ export function registerAuditCommand(program, invokeLegacy) {
         }
       }
 
+      // ── [7.5] RUNTIME AUDIT (if --url provided or URL detected) ────
+      let runtimeResult = null;
+      const runtimeUrl = options.url || null;
+      if (runtimeUrl || !options.skipRuntime) {
+        emitProgress(onEvent, JULES_DEFINITION, "Checking for deployed URL...");
+        try {
+          const { runtimeAudit: runRT } = await import("../agents/jules/tools/runtime-audit.js");
+
+          // Detect URL if not provided
+          let targetUrl = runtimeUrl;
+          if (!targetUrl) {
+            const detected = runRT({ operation: "detect_deployed_url", path: targetPath });
+            if (detected.found) {
+              targetUrl = detected.primary;
+              emitProgress(onEvent, JULES_DEFINITION, "Detected deployed URL: " + targetUrl);
+            }
+          }
+
+          if (targetUrl) {
+            emitProgress(onEvent, JULES_DEFINITION, "Running runtime audit on " + targetUrl + "...");
+
+            // Response headers (security check)
+            const headers = runRT({ operation: "check_response_headers", url: targetUrl });
+            if (headers.available && headers.securityFindings) {
+              for (const hf of headers.securityFindings) {
+                julesFindings.push({
+                  severity: hf.severity, file: targetUrl, line: 0,
+                  title: "Missing security header: " + hf.header,
+                  evidence: "HTTP response from " + targetUrl + " lacks " + hf.header,
+                  source: "runtime_audit",
+                });
+              }
+            }
+
+            // Network waterfall
+            const waterfall = runRT({ operation: "check_network_waterfall", url: targetUrl });
+
+            // Lighthouse (if available)
+            const lighthouse = runRT({ operation: "lighthouse_scan", url: targetUrl, path: targetPath });
+
+            runtimeResult = { url: targetUrl, headers, waterfall, lighthouse };
+            emitProgress(onEvent, JULES_DEFINITION,
+              "Runtime audit complete" +
+              (lighthouse.available ? " (Lighthouse: perf=" + ((lighthouse.scores?.performance || 0) * 100).toFixed(0) + "%)" : "") +
+              (headers.available ? " (" + (headers.securityFindings?.length || 0) + " header findings)" : ""));
+          } else {
+            emitProgress(onEvent, JULES_DEFINITION, "No deployed URL found — skipping runtime audit");
+          }
+        } catch (rtErr) {
+          emitProgress(onEvent, JULES_DEFINITION, "Runtime audit failed (non-blocking): " + rtErr.message);
+        }
+      }
+
       // ── [8] RECONCILIATION (now Jules gets the baseline) ──────────
       emitProgress(onEvent, JULES_DEFINITION, "Reconciling against Omar baseline...");
       const reconciliation = reconcileWithBaseline(julesFindings, omarBaseline);
@@ -910,6 +965,11 @@ export function registerAuditCommand(program, invokeLegacy) {
         summary: { total: allFindings.length, ...severityCounts, blocking: severityCounts.P0 > 0 || severityCounts.P1 > 0 },
         reconciliation: reconciliation.summary,
         baseline: omarBaseline ? { ran: true, findingCount: omarBaseline.findings?.length || 0 } : { ran: false },
+        runtime: runtimeResult ? {
+          ran: true, url: runtimeResult.url,
+          lighthouse: runtimeResult.lighthouse?.available ? runtimeResult.lighthouse.scores : null,
+          headerFindings: runtimeResult.headers?.securityFindings?.length || 0,
+        } : { ran: false },
         julesUsage: report?.usage || {},
         signature: JULES_DEFINITION.signature,
       };
