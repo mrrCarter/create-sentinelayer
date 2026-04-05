@@ -726,6 +726,16 @@ export function registerAuditCommand(program, invokeLegacy) {
     });
 
   // ── Jules Tanaka: sl audit frontend ────────────────────────────────
+  //
+  // End-to-end flow:
+  //   1. Ingest codebase (auto-refresh if stale)
+  //   2. Run Omar baseline (7-layer deterministic) — Jules does NOT see results yet
+  //   3. Build scope map from ingest
+  //   4. Wire memory (blackboard for sub-agents + FAISS recall from previous runs)
+  //   5. Run Jules agentic loop BLIND-FIRST (no baseline anchoring)
+  //   6. After Jules completes: RECONCILIATION against Omar baseline
+  //   7. Write artifacts + report
+  //
   audit
     .command("frontend")
     .alias("jules")
@@ -739,6 +749,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--api-key <key>", "Explicit API key override")
     .option("--stream", "Emit NDJSON events to stdout as Jules works")
     .option("--refresh", "Refresh CODEBASE_INGEST before auditing")
+    .option("--skip-baseline", "Skip Omar deterministic baseline (not recommended)")
     .option("--output-dir <path>", "Artifact output root override")
     .option("--json", "Emit machine-readable final output")
     .action(async (options, command) => {
@@ -746,72 +757,104 @@ export function registerAuditCommand(program, invokeLegacy) {
       const emitStream = Boolean(options.stream);
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
 
-      // Lazy-load Jules modules (only when invoked)
+      // Lazy-load modules
       const { julesAuditLoop } = await import("../agents/jules/loop.js");
       const { JULES_DEFINITION } = await import("../agents/jules/config/definition.js");
-      const { collectCodebaseIngest } = await import("../ingest/engine.js");
+      const { collectCodebaseIngest, generateCodebaseIngest } = await import("../ingest/engine.js");
       const { resolveOutputRoot: resolveOut } = await import("../config/service.js");
       const { createBlackboard } = await import("../memory/blackboard.js");
+      const { runDeterministicReviewPipeline } = await import("../review/local-review.js");
+      const fsp = await import("node:fs/promises");
 
       const outputRoot = resolveOut({ targetPath, outputDir: options.outputDir });
+      const artifactDir = path.join(outputRoot, "reports", "jules-" + Date.now());
+      await fsp.mkdir(artifactDir, { recursive: true });
 
-      // Prerequisites: ingest
+      // Build event handler
+      const onEvent = buildEventHandler(emitStream, emitJson, JULES_DEFINITION);
+
+      emitProgress(onEvent, JULES_DEFINITION, "Starting Jules Tanaka frontend audit...");
+
+      // ── [1] INGEST ────────────────────────────────────────────────
+      emitProgress(onEvent, JULES_DEFINITION, "Ingesting codebase...");
       let ingest;
       try {
-        const { generateCodebaseIngest } = await import("../ingest/engine.js");
         ingest = await generateCodebaseIngest({
-          rootPath: targetPath,
-          outputDir: outputRoot,
+          rootPath: targetPath, outputDir: outputRoot,
           refresh: Boolean(options.refresh),
         });
       } catch {
         ingest = await collectCodebaseIngest({ rootPath: targetPath });
       }
+      emitProgress(onEvent, JULES_DEFINITION,
+        "Ingest complete: " + (ingest?.summary?.filesScanned || 0) + " files, " +
+        (ingest?.summary?.totalLoc || 0) + " LOC");
 
-      // Build scope map from ingest
+      // ── [2] OMAR BASELINE (blind — Jules won't see until reconciliation) ──
+      let omarBaseline = null;
+      if (!options.skipBaseline) {
+        emitProgress(onEvent, JULES_DEFINITION, "Running Omar 7-layer deterministic baseline...");
+        try {
+          omarBaseline = await runDeterministicReviewPipeline({
+            targetPath,
+            mode: "full",
+            outputDir: artifactDir,
+          });
+          emitProgress(onEvent, JULES_DEFINITION,
+            "Baseline complete: P0=" + (omarBaseline?.summary?.P0 || 0) +
+            " P1=" + (omarBaseline?.summary?.P1 || 0) +
+            " P2=" + (omarBaseline?.summary?.P2 || 0) +
+            " (held for reconciliation — Jules runs blind-first)");
+        } catch (err) {
+          emitProgress(onEvent, JULES_DEFINITION,
+            "Baseline failed (non-blocking): " + err.message);
+        }
+      }
+
+      // ── [3] SCOPE MAP ─────────────────────────────────────────────
       const scopeMap = buildScopeMapFromIngest(ingest, JULES_DEFINITION.defaultScope);
+      emitProgress(onEvent, JULES_DEFINITION,
+        "Scope: " + (scopeMap.primary?.length || 0) + " primary, " +
+        (scopeMap.secondary?.length || 0) + " secondary files");
 
-      // Blackboard for findings
+      // ── [4] MEMORY ────────────────────────────────────────────────
       const blackboard = createBlackboard();
+      let memoryIndex = null;
+      try {
+        const { createRetrievalIndex, queryRetrievalIndex } = await import("../memory/retrieval.js");
+        memoryIndex = {
+          query: (opts) => queryRetrievalIndex({ targetPath, ...opts }),
+          index: (docs) => {}, // indexing happens after completion
+        };
+      } catch { /* memory retrieval unavailable — non-blocking */ }
 
-      // Provider config
+      // ── [5] PROVIDER ──────────────────────────────────────────────
       const providerConfig = {};
       if (options.provider) providerConfig.provider = options.provider;
       if (options.model) providerConfig.model = options.model;
       if (options.apiKey) providerConfig.apiKey = options.apiKey;
 
-      // Event handler
-      const onEvent = emitStream
-        ? (evt) => console.log(JSON.stringify(evt))
-        : emitJson
-          ? undefined
-          : (evt) => {
-              if (evt.event === "progress") {
-                process.stderr.write(`${JULES_DEFINITION.avatar} ${JULES_DEFINITION.shortName}: ${evt.payload.message}\n`);
-              } else if (evt.event === "finding") {
-                const f = evt.payload;
-                process.stderr.write(`${JULES_DEFINITION.avatar} [${f.severity || "P3"}] ${f.file || ""}:${f.line || ""} ${f.title || ""}\n`);
-              } else if (evt.event === "heartbeat") {
-                const h = evt.payload;
-                process.stderr.write(`${JULES_DEFINITION.avatar} ${JULES_DEFINITION.shortName} [${h.turnsCompleted}/${h.turnsMax} turns, $${h.budgetRemaining?.costUsd?.toFixed(2) || "?"}]\n`);
-              } else if (evt.event === "agent_complete") {
-                process.stderr.write(`${JULES_DEFINITION.avatar} ${JULES_DEFINITION.persona} complete: ${evt.payload.total} findings (P0=${evt.payload.P0} P1=${evt.payload.P1} P2=${evt.payload.P2})\n`);
-              }
-            };
-
-      // Build system prompt (simplified — full prompt is in J-8 definition)
+      // ── [6] SYSTEM PROMPT ─────────────────────────────────────────
       const systemPrompt = buildJulesSystemPrompt(JULES_DEFINITION, {
         mode: options.mode,
         framework: ingest?.frameworks?.[0] || "unknown",
+        componentCount: ingest?.indexedFiles?.files?.filter(
+          f => /\.(tsx|jsx|vue|svelte)$/.test(f.path || ""),
+        ).length || 0,
+        scopeMap,
+        ingestSummary: ingest?.summary || {},
       });
 
-      // Run the loop
+      // ── [7] JULES AGENTIC LOOP (BLIND-FIRST — no baseline) ───────
+      emitProgress(onEvent, JULES_DEFINITION, "Starting blind-first deep analysis...");
       let report;
       const gen = julesAuditLoop({
         systemPrompt,
         scopeMap,
         rootPath: targetPath,
+        // omarBaseline intentionally NOT passed here — Jules runs blind
         blackboard,
+        memory: memoryIndex,
         budget: {
           maxCostUsd: parseFloat(options.maxCost) || 5.0,
           maxOutputTokens: JULES_DEFINITION.budget.maxOutputTokens,
@@ -824,25 +867,50 @@ export function registerAuditCommand(program, invokeLegacy) {
         onEvent,
       });
 
+      let julesFindings = [];
       for await (const evt of gen) {
         if (evt.event === "agent_complete") {
           report = evt;
+          julesFindings = evt.payload?.findings || [];
         }
       }
 
-      // Write artifacts
-      const fsp = await import("node:fs/promises");
-      const artifactDir = path.join(outputRoot, "reports", `jules-${Date.now()}`);
-      await fsp.mkdir(artifactDir, { recursive: true });
+      // ── [8] RECONCILIATION (now Jules gets the baseline) ──────────
+      emitProgress(onEvent, JULES_DEFINITION, "Reconciling against Omar baseline...");
+      const reconciliation = reconcileWithBaseline(julesFindings, omarBaseline);
 
-      const findings = report?.payload || {};
+      if (onEvent && reconciliation.summary) {
+        onEvent({
+          stream: "sl_event", event: "reconciliation_complete",
+          agent: { id: JULES_DEFINITION.id, persona: JULES_DEFINITION.persona,
+            color: JULES_DEFINITION.color, avatar: JULES_DEFINITION.avatar },
+          payload: reconciliation.summary,
+        });
+      }
+
+      // ── [9] FINAL REPORT ──────────────────────────────────────────
+      const allFindings = [
+        ...reconciliation.preserved,
+        ...reconciliation.newFromJules,
+      ];
+      const severityCounts = { P0: 0, P1: 0, P2: 0, P3: 0 };
+      for (const f of allFindings) {
+        const sev = (f.severity || "P3").toUpperCase();
+        if (severityCounts[sev] !== undefined) severityCounts[sev]++;
+        else severityCounts.P3++;
+      }
+
       const reportPayload = {
         command: "audit frontend",
         persona: JULES_DEFINITION.persona,
         targetPath,
         mode: options.mode,
         framework: ingest?.frameworks?.[0] || "unknown",
-        ...findings,
+        findings: allFindings,
+        summary: { total: allFindings.length, ...severityCounts, blocking: severityCounts.P0 > 0 || severityCounts.P1 > 0 },
+        reconciliation: reconciliation.summary,
+        baseline: omarBaseline ? { ran: true, findingCount: omarBaseline.findings?.length || 0 } : { ran: false },
+        julesUsage: report?.usage || {},
         signature: JULES_DEFINITION.signature,
       };
 
@@ -851,13 +919,33 @@ export function registerAuditCommand(program, invokeLegacy) {
         JSON.stringify(reportPayload, null, 2),
       );
 
+      // Write baseline artifact if it exists
+      if (omarBaseline) {
+        await fsp.writeFile(
+          path.join(artifactDir, "OMAR_BASELINE.json"),
+          JSON.stringify(omarBaseline, null, 2),
+        );
+      }
+
+      // Write reconciliation artifact
+      await fsp.writeFile(
+        path.join(artifactDir, "RECONCILIATION.json"),
+        JSON.stringify(reconciliation, null, 2),
+      );
+
       if (emitJson) {
         console.log(JSON.stringify(reportPayload, null, 2));
       } else if (!emitStream) {
-        process.stderr.write(`\n${JULES_DEFINITION.signature}\nReport: ${artifactDir}/JULES_AUDIT.json\n`);
+        process.stderr.write("\n" + JULES_DEFINITION.signature + "\n");
+        process.stderr.write("Report: " + artifactDir + "/JULES_AUDIT.json\n");
+        if (omarBaseline) {
+          process.stderr.write("Baseline: " + artifactDir + "/OMAR_BASELINE.json\n");
+        }
+        process.stderr.write("Reconciliation: " + artifactDir + "/RECONCILIATION.json\n");
+        process.stderr.write("Summary: " + allFindings.length + " findings (P0=" + severityCounts.P0 + " P1=" + severityCounts.P1 + " P2=" + severityCounts.P2 + ")\n");
       }
 
-      if (findings.P0 > 0 || findings.P1 > 0) {
+      if (severityCounts.P0 > 0 || severityCounts.P1 > 0) {
         process.exitCode = 2;
       }
     });
@@ -891,17 +979,39 @@ function buildScopeMapFromIngest(ingest, defaultScope) {
   };
 }
 
-function buildJulesSystemPrompt(definition, { mode, framework }) {
+function buildJulesSystemPrompt(definition, { mode, framework, componentCount, scopeMap, ingestSummary }) {
+  const scopeSize = (scopeMap?.primary?.length || 0) + (scopeMap?.secondary?.length || 0);
   return `You are ${definition.persona}, the ${definition.domain} persona for SentinelLayer.
+
+You are NOT a generic code reviewer.
 You are a ${framework} production specialist whose job is to determine:
 "Will users perceive this surface as fast, stable, and trustworthy?"
 
+You optimize for:
+- perceived performance over vanity optimization
+- hydration stability over cleverness
+- render correctness over hand-wavy "looks okay"
+- accessibility reality, not checklist theater
+- high recall first, then high-signal deduped output
+- evidence over intuition
+- minimal, elegant fixes over churn
+
 Mode: ${mode} — ${definition.modes[mode] || definition.modes.primary}
+
+Codebase: ${framework}, ~${componentCount || "unknown"} components, ${ingestSummary?.totalLoc || "unknown"} LOC, ${scopeSize} files in scope.
+
+WORKFLOW ORDER:
+1. Use FrontendAnalyze('detect_framework') to confirm stack
+2. Use FrontendAnalyze operations to scan deterministically first (find_security_sinks, count_state_hooks, check_accessibility, check_security_headers, find_env_exposure, find_missing_cleanup, find_stale_closures, check_error_boundaries)
+3. Use FileRead to inspect high-risk files identified by deterministic scans
+4. Use Grep to search for patterns the deterministic scans missed
+5. Build findings with evidence (file:line + reproduction steps)
+6. Return findings as JSON
 
 You have access to these tools: ${definition.auditTools.join(", ")}.
 To call a tool, output a tool_use code block:
 \`\`\`tool_use
-{"tool": "FileRead", "input": {"file_path": "src/app/page.tsx"}}
+{"tool": "FrontendAnalyze", "input": {"operation": "detect_framework", "path": "."}}
 \`\`\`
 
 When done, return findings as a JSON array:
@@ -909,8 +1019,124 @@ When done, return findings as a JSON array:
 [{"severity": "P1", "file": "path", "line": 42, "title": "...", "evidence": "...", "rootCause": "...", "recommendedFix": "...", "trafficLight": "red"}]
 \`\`\`
 
-Evidence standard: every claim must have file:line or command output proof.
+SEVERITY MODEL:
+P0 — stop-ship: white screen, hydration crash on critical route, XSS on untrusted content, core journey broken on mobile
+P1 — launch blocker: severe bundle bloat, stale-closure bugs in critical UI, major a11y failures, broken cache/refresh
+P2 — fix soon: localized perf regressions, god components, weak error/loading states, missing mobile fallback
+P3 — hygiene: future-proofing, minor style, non-critical optimizations
+
+EVIDENCE STANDARD:
+Every claim must have file:line or command output proof.
 Never write "probably" or "likely fine" without evidence.
+If uncertain, state what evidence is missing and how to obtain it.
+
+ANTI-ANCHORING:
+Do NOT start from assumptions. Read the code first.
+Do NOT assume tests imply UX quality.
+Do NOT assume desktop evidence implies mobile readiness.
 
 ${definition.signature}`;
+}
+
+// ── Reconciliation ──────────────────────────────────────────────────
+
+function reconcileWithBaseline(julesFindings, omarBaseline) {
+  if (!omarBaseline || !omarBaseline.findings || !Array.isArray(omarBaseline.findings)) {
+    return {
+      preserved: julesFindings || [],
+      newFromJules: [],
+      rejectedBaseline: [],
+      corroboratedBaseline: [],
+      summary: {
+        julesCount: (julesFindings || []).length,
+        baselineCount: 0,
+        preserved: (julesFindings || []).length,
+        corroborated: 0,
+        rejected: 0,
+        newFromJules: 0,
+      },
+    };
+  }
+
+  const baselineFindings = omarBaseline.findings;
+  const corroborated = [];
+  const rejected = [];
+  const newFromJules = [];
+
+  // Build a fingerprint set from baseline for matching
+  const baselineFingerprints = new Set();
+  for (const bf of baselineFindings) {
+    const fp = (bf.file || "") + ":" + (bf.line || "") + ":" + (bf.severity || "");
+    baselineFingerprints.add(fp);
+  }
+
+  // Classify Jules findings
+  const julesMatched = new Set();
+  for (const jf of (julesFindings || [])) {
+    const fp = (jf.file || "") + ":" + (jf.line || "") + ":" + (jf.severity || "");
+    if (baselineFingerprints.has(fp)) {
+      corroborated.push({ ...jf, source: "corroborated", baselineMatch: true });
+      julesMatched.add(fp);
+    } else {
+      newFromJules.push({ ...jf, source: "jules_new" });
+    }
+  }
+
+  // Baseline findings not corroborated by Jules — preserved (not silently dropped)
+  const preservedBaseline = [];
+  for (const bf of baselineFindings) {
+    const fp = (bf.file || "") + ":" + (bf.line || "") + ":" + (bf.severity || "");
+    if (!julesMatched.has(fp)) {
+      preservedBaseline.push({ ...bf, source: "baseline_preserved" });
+    }
+  }
+
+  return {
+    preserved: [...corroborated, ...preservedBaseline],
+    newFromJules,
+    rejectedBaseline: rejected,
+    corroboratedBaseline: corroborated,
+    summary: {
+      julesCount: (julesFindings || []).length,
+      baselineCount: baselineFindings.length,
+      preserved: corroborated.length + preservedBaseline.length,
+      corroborated: corroborated.length,
+      preservedFromBaseline: preservedBaseline.length,
+      rejected: rejected.length,
+      newFromJules: newFromJules.length,
+    },
+  };
+}
+
+// ── Event helpers ───────────────────────────────────────────────────
+
+function buildEventHandler(emitStream, emitJson, def) {
+  if (emitStream) return (evt) => console.log(JSON.stringify(evt));
+  if (emitJson) return undefined;
+  return (evt) => {
+    if (evt.event === "progress") {
+      process.stderr.write(def.avatar + " " + def.shortName + ": " + (evt.payload?.message || "") + "\n");
+    } else if (evt.event === "finding") {
+      const f = evt.payload;
+      process.stderr.write(def.avatar + " [" + (f.severity || "P3") + "] " + (f.file || "") + ":" + (f.line || "") + " " + (f.title || "") + "\n");
+    } else if (evt.event === "heartbeat") {
+      const h = evt.payload;
+      process.stderr.write(def.avatar + " " + def.shortName + " [" + (h.turnsCompleted || 0) + "/" + (h.turnsMax || "?") + " turns, $" + (h.budgetRemaining?.costUsd?.toFixed(2) || "?") + "]\n");
+    } else if (evt.event === "agent_complete") {
+      process.stderr.write(def.avatar + " " + def.persona + " complete: " + (evt.payload?.total || 0) + " findings (P0=" + (evt.payload?.P0 || 0) + " P1=" + (evt.payload?.P1 || 0) + " P2=" + (evt.payload?.P2 || 0) + ")\n");
+    } else if (evt.event === "reconciliation_complete") {
+      const r = evt.payload;
+      process.stderr.write(def.avatar + " Reconciliation: " + (r.corroborated || 0) + " corroborated, " + (r.newFromJules || 0) + " new, " + (r.preservedFromBaseline || 0) + " baseline preserved\n");
+    }
+  };
+}
+
+function emitProgress(onEvent, def, message) {
+  if (onEvent) {
+    onEvent({
+      stream: "sl_event", event: "progress",
+      agent: { id: def.id, persona: def.persona, color: def.color, avatar: def.avatar },
+      payload: { phase: "setup", message },
+    });
+  }
 }
