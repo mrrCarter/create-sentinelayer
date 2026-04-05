@@ -272,8 +272,8 @@ function findStaleClosures(rootPath) {
 
 function checkAccessibility(rootPath) {
   const checks = [
-    { pattern: "<img[^>]*(?!alt)[^>]*>", desc: "img without alt attribute", severity: "P2" },
-    { pattern: "<button[^>]*>[^<]*<\\/button>", desc: "button — verify has accessible label", severity: "P3" },
+    { pattern: "<img\\s", desc: "img tag found — verify alt attribute present", severity: "P2" },
+    { pattern: "<button", desc: "button element — verify has accessible label", severity: "P3" },
     { pattern: 'role="button"', desc: "div/span with role=button — verify keyboard reachability", severity: "P2" },
     { pattern: "tabIndex\\s*=\\s*{?-1", desc: "tabIndex=-1 removes from tab order", severity: "P3" },
     { pattern: "aria-hidden=\"true\"", desc: "aria-hidden — verify not hiding interactive content", severity: "P3" },

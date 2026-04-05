@@ -192,13 +192,32 @@ export async function runJulesSwarm(config) {
   });
 
   // ── Coverage Verification ───────────────────────────────────────
+  // Coverage is computed from CONFIRMED-READ files (via blackboard tool_call
+  // events), not from the seed set. This prevents overstating coverage when
+  // sub-agents hit budget limits before reading all assigned files.
 
   emit(onEvent, "phase_start", { phase: "coverage_verify" });
 
-  const allScannedFiles = new Set([
-    ...primaryFiles,
-    ...newFiles,
-  ]);
+  // Collect confirmed-read files from sub-agent results
+  const confirmedReadFiles = new Set();
+  for (const result of allResults) {
+    // Sub-agents track which files they actually read via tool calls
+    if (result.findings) {
+      for (const f of result.findings) {
+        if (f.file) confirmedReadFiles.add(f.file);
+        // FileScanner results include discovered files
+        if (f.path) confirmedReadFiles.add(f.path);
+      }
+    }
+    // Also count any file explicitly tracked by agent usage
+    if (result.usage?.filesRead) {
+      for (const f of result.usage.filesRead) confirmedReadFiles.add(f);
+    }
+  }
+  // Add primary files only if they were in the confirmed set or no agents ran
+  const allScannedFiles = confirmedReadFiles.size > 0
+    ? confirmedReadFiles
+    : new Set([...primaryFiles, ...newFiles]);
 
   // Use FrontendAnalyze to check what files should exist
   let frameworkInfo = {};
@@ -216,13 +235,21 @@ export async function runJulesSwarm(config) {
     ? ((allScannedFiles.size / expectedFrontendFiles) * 100).toFixed(1)
     : "N/A";
 
+  // Identify files that were assigned but not confirmed-read
+  const assignedButUnread = primaryFiles.filter(f => !confirmedReadFiles.has(f));
+  const missedFiles = assignedButUnread.length > 0 && confirmedReadFiles.size > 0
+    ? assignedButUnread
+    : [];
+
   const coverageLedger = {
-    seedFilesReviewed: primaryFiles.length,
-    expandedFilesReviewed: newFiles.length,
+    seedFilesAssigned: primaryFiles.length,
+    confirmedReadFiles: confirmedReadFiles.size,
+    expandedFilesDiscovered: newFiles.length,
     totalFilesReviewed: allScannedFiles.size,
     expectedFrontendFiles,
     coverageRatio,
-    missedFiles: [],
+    missedFiles,
+    coverageMethod: confirmedReadFiles.size > 0 ? "confirmed_read" : "seed_based_fallback",
   };
 
   emit(onEvent, "phase_complete", {
