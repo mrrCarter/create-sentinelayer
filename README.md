@@ -854,6 +854,7 @@ Automated version/tag PR flow is handled by `.github/workflows/release-please.ym
 AppSec SAST is enforced by `.github/workflows/codeql.yml` (`CodeQL Summary` check).
 Custom static policy checks are enforced by `.github/workflows/semgrep.yml` (`Semgrep Summary` check) using `.semgrep/rules/sentinelayer-cli.yml`.
 Secret scanning is enforced by `.github/workflows/gitleaks.yml` (`Gitleaks Summary` check).
+IaC misconfiguration scanning is enforced by `.github/workflows/iac-scan.yml` (`IaC Summary` check).
 
 Prerequisites:
 
@@ -875,6 +876,7 @@ Release guardrails now require successful upstream checks on the target commit:
 - `CodeQL Summary`
 - `Semgrep Summary`
 - `Gitleaks Summary`
+- `IaC Summary`
 
 ## Local verification
 
