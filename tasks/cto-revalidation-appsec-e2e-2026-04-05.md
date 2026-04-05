@@ -280,6 +280,7 @@
   - Added release required check enforcement for `Semgrep Summary`.
 - PR #144 (`fix(ci): pin setup-python to valid v5 SHA`) merged:
   - Fixed Semgrep workflow action pin so CI resolves setup action correctly.
-- PR #147 (in progress on this branch):
-  - Adds `.github/workflows/gitleaks.yml`.
-  - Adds release required check enforcement for `Gitleaks Summary`.
+- PR #147 (merged): `Gitleaks Summary` is now active in CI and release pre-publish gate checks.
+- PR #148 (in progress on this branch):
+  - Adds `.github/workflows/iac-scan.yml` (`IaC Summary` via Trivy config scan).
+  - Adds release required check enforcement for `IaC Summary`.

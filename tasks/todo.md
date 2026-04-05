@@ -75,6 +75,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Create gitleaks CI workflow with deterministic PR-range scan and artifact output.
 - [x] Add `Gitleaks Summary` job and enforce it in release required-check verification.
 - [x] Update release docs to include gitleaks gate coverage.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 04 Working Plan (2026-04-05)
+- [x] Create IaC scan workflow using deterministic Trivy config scan for workflow/infra targets.
+- [x] Add `IaC Summary` job and enforce it in release required-check verification.
+- [x] Update release docs and CTO revalidation execution notes for IaC gate coverage.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot

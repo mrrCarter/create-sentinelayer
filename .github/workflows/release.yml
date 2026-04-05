@@ -84,6 +84,7 @@ jobs:
           require_check_success "CodeQL Summary"
           require_check_success "Semgrep Summary"
           require_check_success "Gitleaks Summary"
+          require_check_success "IaC Summary"
 
       - name: Build release tarball
         run: npm pack
