@@ -36,7 +36,7 @@
     "cli-highlight": "2.1.11",
     "commander": "14.0.1",
     "ignore": "7.0.5",
-    "open": "10.1.2",
+    "open": "11.0.0",
     "picocolors": "1.1.1",
     "prompts": "2.4.2",
     "yaml": "2.8.3",
