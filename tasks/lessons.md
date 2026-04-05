@@ -122,3 +122,9 @@
 - Verify credential scrubbing at two layers: pure env-sanitizer unit checks and an end-to-end shell subprocess assertion that sensitive vars are actually absent at runtime.
 - Network-command guardrails should parse and validate explicit URL hosts before execution; if host extraction fails (`curl $VAR`), fail closed instead of guessing.
 - Wildcard allowlist matching must use dot-boundary suffix checks (`*.example.com`) so lookalike hosts (`evilexample.com`) cannot bypass policy.
+
+## 2026-04-05
+
+- When a reviewer reports concrete P1 workflow/code risks, treat the report as a verification input, not an opinion: reproduce each claim on current `main`, patch only confirmed gaps, and attach post-fix test evidence in `tasks/todo.md`.
+- Any CI workflow that downloads release binaries directly must verify artifact integrity (`sha256` from release checksum manifests) before extraction; version pinning alone is insufficient.
+- Avoid shell heredoc JSON construction for metadata envelopes in security-sensitive workflows; use `jq -n --arg` to guarantee escaping and valid JSON under adversarial input values.

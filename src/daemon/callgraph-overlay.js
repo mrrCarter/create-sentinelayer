@@ -8,6 +8,7 @@ import { parse } from "@babel/parser";
 const execFileAsync = promisify(execFile);
 const PYTHON_EXECUTABLE_CANDIDATES = ["python3", "python"];
 let pythonExecutablePromise = null;
+const MAX_FALLBACK_TARGETS = 12;
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -113,13 +114,38 @@ function resolveBabelMemberName(node) {
   }
   if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
     const objectName = resolveBabelMemberName(node.object);
-    const propertyName = node.computed ? resolveBabelMemberName(node.property) : resolveBabelMemberName(node.property);
+    const propertyName = resolveMemberPropertyName(node.property, Boolean(node.computed));
     if (objectName && propertyName) {
-      return `${objectName}.${propertyName}`;
+      return node.computed ? `${objectName}${propertyName}` : `${objectName}.${propertyName}`;
     }
     return propertyName || objectName;
   }
   return "";
+}
+
+function resolveMemberPropertyName(node, computed = false) {
+  if (!node || typeof node !== "object") {
+    return "";
+  }
+  if (!computed) {
+    if (node.type === "Identifier") {
+      return normalizeName(node.name);
+    }
+    return resolveBabelMemberName(node);
+  }
+
+  if (node.type === "StringLiteral") {
+    return `[${normalizeName(node.value)}]`;
+  }
+  if (node.type === "NumericLiteral") {
+    return `[${normalizeName(String(node.value))}]`;
+  }
+  if (node.type === "Identifier") {
+    return `[${normalizeName(node.name)}]`;
+  }
+
+  const nested = resolveBabelMemberName(node);
+  return nested ? `[${nested}]` : "[computed]";
 }
 
 function resolveClassName(node) {
@@ -571,7 +597,8 @@ export async function buildCallgraphOverlay({
     const fromId = createQualifiedSymbolId(call.path, call.caller || "<module>");
     const preferredTargets = (symbolIndex.get(call.callee) || []).filter((entry) => entry.path === call.path);
     const fallbackTargets = symbolIndex.get(call.callee) || [];
-    const targets = preferredTargets.length > 0 ? preferredTargets : fallbackTargets.slice(0, 3);
+    // When no same-file symbol exists, limit fallback fan-out to keep the graph bounded.
+    const targets = preferredTargets.length > 0 ? preferredTargets : fallbackTargets.slice(0, MAX_FALLBACK_TARGETS);
     for (const target of targets) {
       const key = `${fromId}->${target.id}`;
       if (edgeSet.has(key)) {

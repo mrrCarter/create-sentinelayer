@@ -712,3 +712,21 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `gh pr view 133 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `9a5bb1d8d33a62b9dec46feac5358d2f564869aa`)
     - Added deterministic URL-host extraction + hostname policy checks for `curl`/`wget`, with bounded wildcard matching and secure default allowlist entries.
     - Enforced runtime blocking for non-allowlisted network hosts or missing explicit URL hosts, and added unit coverage for blocked/allowed/wildcard-boundary scenarios.
+
+## 2026-04-05 - P1 Tightening Pass (Audit Revalidation)
+
+- [x] Revalidate reported P1 findings on current `main` before remediation.
+- [x] Harden `dependabot-governance.yml` metadata JSON generation against interpolation/injection by switching to `jq -n --arg`.
+- [x] Add SHA256 integrity verification for downloaded `gitleaks` and `trivy` release artifacts before extraction/execution.
+- [x] Fix `callgraph-overlay.js` member-expression handling for computed properties and remove dead ternary branch.
+- [x] Replace undocumented callgraph fallback target cap with named deterministic constant + rationale comment.
+- [x] Expand daemon parser/callgraph tests for Python AST success paths, class method resolution, computed member calls, and import edge-case deduplication.
+- [x] Run verification suites for regression safety.
+
+Review:
+- Confirmed all four reported P1 items were valid and patched in this pass.
+- Validation evidence:
+  - `node --test tests/unit.daemon-ast-parser-layer.test.mjs tests/unit.daemon-callgraph-overlay.test.mjs` (pass: `11/11`)
+  - `npm run test:unit` (pass: `306/306`)
+  - `npm test` (pass: unit `306/306`, e2e `86/86`)
+- Remaining known non-blocker from earlier audit still present and intentionally untouched in this pass: `FrontendAnalyze` ripgrep lookaround regex stderr noise (`check_accessibility` patterns).
