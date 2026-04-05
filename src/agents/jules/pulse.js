@@ -223,4 +223,98 @@ export function buildHealthSummary(agentStates) {
   };
 }
 
+// ── Webhook Delivery ─────────────────────────────────────────────────
+
+/**
+ * Send an alert to configured Slack/Telegram webhooks.
+ * Reads config from env or .sentinelayer.yml.
+ * Fails silently — alert delivery must never block agent work.
+ *
+ * @param {object} alert - { headline, body, severity } from buildAlertPayload
+ * @param {object} [channels] - Override channel config
+ * @returns {Promise<{ sent: object[], errors: object[] }>}
+ */
+export async function sendAlert(alert, channels) {
+  const resolved = channels || resolveAlertChannels();
+  const sent = [];
+  const errors = [];
+
+  for (const channel of resolved) {
+    try {
+      if (channel.type === "slack" && channel.webhook_url) {
+        await sendSlackWebhook(channel.webhook_url, alert);
+        sent.push({ type: "slack", status: "sent" });
+      } else if (channel.type === "telegram" && channel.bot_token && channel.chat_id) {
+        await sendTelegramMessage(channel.bot_token, channel.chat_id, alert);
+        sent.push({ type: "telegram", status: "sent" });
+      }
+    } catch (err) {
+      errors.push({ type: channel.type, error: err.message });
+    }
+  }
+
+  return { sent, errors };
+}
+
+async function sendSlackWebhook(webhookUrl, alert) {
+  const payload = JSON.stringify({
+    text: alert.headline,
+    blocks: [
+      { type: "header", text: { type: "plain_text", text: alert.headline } },
+      { type: "section", text: { type: "mrkdwn", text: alert.body } },
+    ],
+  });
+
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: payload,
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!response.ok) {
+    throw new Error("Slack webhook failed: " + response.status);
+  }
+}
+
+async function sendTelegramMessage(botToken, chatId, alert) {
+  const url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
+  const payload = JSON.stringify({
+    chat_id: chatId,
+    text: alert.body,
+    parse_mode: "Markdown",
+    disable_web_page_preview: true,
+  });
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: payload,
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!response.ok) {
+    throw new Error("Telegram send failed: " + response.status);
+  }
+}
+
+function resolveAlertChannels() {
+  const channels = [];
+
+  // Slack from env
+  const slackUrl = process.env.SENTINELAYER_SLACK_WEBHOOK_URL;
+  if (slackUrl) {
+    channels.push({ type: "slack", webhook_url: slackUrl });
+  }
+
+  // Telegram from env
+  const tgToken = process.env.SENTINELAYER_TELEGRAM_BOT_TOKEN;
+  const tgChat = process.env.SENTINELAYER_TELEGRAM_CHAT_ID;
+  if (tgToken && tgChat) {
+    channels.push({ type: "telegram", bot_token: tgToken, chat_id: tgChat });
+  }
+
+  return channels;
+}
+
 export { STUCK_THRESHOLDS };
