@@ -851,6 +851,7 @@ Ledger contract:
 
 This repo includes `.github/workflows/release.yml`.
 Automated version/tag PR flow is handled by `.github/workflows/release-please.yml`.
+AppSec SAST is enforced by `.github/workflows/codeql.yml` (`CodeQL Summary` check).
 
 Prerequisites:
 
@@ -864,6 +865,12 @@ Release options:
 3. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
 4. Run `Release` manually with `publish=true` to publish from Actions.
 5. If `NPM_TOKEN` is not configured, publish is skipped with an explicit workflow message (verification + tarball still succeed).
+
+Release guardrails now require successful upstream checks on the target commit:
+
+- `Quality Summary`
+- `Omar Gate`
+- `CodeQL Summary`
 
 ## Local verification
 
