@@ -6,8 +6,8 @@ Search the codebase for Cross-Site Scripting vulnerabilities:
 - dangerouslySetInnerHTML with user-controlled input
 - innerHTML assignments
 - v-html directives (Vue)
-- eval() with user input
-- document.write()
+- dynamic code execution (the eval function) with user input
+- document write injection
 - javascript: URLs in href
 - template literal injection in HTML contexts
 
