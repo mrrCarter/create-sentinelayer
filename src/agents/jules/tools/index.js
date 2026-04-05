@@ -14,6 +14,7 @@ export { grep, GrepError } from "./grep.js";
 export { glob, GlobError } from "./glob.js";
 export { shell, analyzeCommand, ShellError, ShellBlockedError } from "./shell.js";
 export { fileEdit, FileEditError } from "./file-edit.js";
+export { frontendAnalyze, FrontendAnalyzeError } from "./frontend-analyze.js";
 
 export {
   dispatchTool,

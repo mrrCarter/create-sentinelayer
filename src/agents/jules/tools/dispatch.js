@@ -9,6 +9,7 @@ import { grep } from "./grep.js";
 import { glob } from "./glob.js";
 import { shell } from "./shell.js";
 import { fileEdit } from "./file-edit.js";
+import { frontendAnalyze } from "./frontend-analyze.js";
 
 /**
  * Central tool dispatcher for Jules agents.
@@ -21,7 +22,7 @@ const TOOL_MAP = {
   Glob: glob,
   Shell: shell,
   FileEdit: fileEdit,
-  // FrontendAnalyze added in PR J-2
+  FrontendAnalyze: frontendAnalyze,
 };
 
 const READ_ONLY_TOOLS = new Set(["FileRead", "Grep", "Glob", "FrontendAnalyze"]);
