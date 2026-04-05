@@ -54,7 +54,6 @@ jobs:
           fi
 
           ./trivy config \
-            --scanners misconfig \
             --severity CRITICAL \
             --exit-code 1 \
             --format json \
