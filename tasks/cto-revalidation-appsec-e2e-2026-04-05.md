@@ -291,7 +291,10 @@
   - Adds `.github/workflows/dependabot-governance.yml` for policy-governed Dependabot auto-merge decisions.
   - Adds deterministic governance policy file `.github/policies/dependabot-governance.json`.
   - Adds deterministic decision artifact generation via `scripts/dependabot-governance.mjs`.
-- PR #152 (in progress on this branch):
+- PR #152 (merged):
   - Adds `.github/workflows/sbom.yml` to generate CycloneDX/SPDX JSON SBOMs.
   - Adds deterministic SBOM hash-manifest artifact output.
   - Adds release required check enforcement for `SBOM Summary`.
+- PR #153 (in progress on this branch):
+  - Adds `.github/workflows/attestations.yml` for build-provenance attestation generation and verification.
+  - Adds release required check enforcement for `Attestation Summary`.
