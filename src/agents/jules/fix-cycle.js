@@ -191,7 +191,7 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
       });
     }
 
-    // ── [9] ARTIFACT ──────────────────────────────────────────────
+    // ── [9] ARTIFACT + S3 UPLOAD ────────────────────────────────────
     const result = {
       workItemId, jiraIssueKey: jiraKey, prNumber,
       status: "completed",
@@ -202,6 +202,11 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
       path.join(artDir, "fix-result.json"),
       JSON.stringify(result, null, 2),
     );
+
+    // Upload to S3 for compliance archive + agent training data
+    emit("fix_s3", { status: "uploading" });
+    const s3Result = await uploadFixArtifactsToS3(artDir, workItemId, rootPath);
+    emit("fix_s3", { status: s3Result.uploaded ? "uploaded" : "skipped", reason: s3Result.reason });
 
     // ── [10] RELEASE ──────────────────────────────────────────────
     await releaseAssignment({
@@ -334,4 +339,44 @@ function buildPrBody(w, f, jiraKey) {
   parts.push("");
   parts.push(JULES_DEFINITION.signature);
   return parts.join("\n");
+}
+
+// ── S3 Upload ────────────────────────────────────────────────────────
+
+/**
+ * Upload fix artifacts to S3 for compliance archive and agent training.
+ * Uses AWS CLI (must be configured in environment).
+ * Fails silently — S3 upload must never block the fix cycle.
+ *
+ * Bucket: SENTINELAYER_AUDIT_S3_BUCKET env var (default: sentinelayer-audit-artifacts)
+ * Key pattern: {repo}/{date}/jules-tanaka/{workItemId}/
+ */
+async function uploadFixArtifactsToS3(artifactDir, workItemId, rootPath) {
+  const bucket = process.env.SENTINELAYER_AUDIT_S3_BUCKET;
+  if (!bucket) {
+    return { uploaded: false, reason: "SENTINELAYER_AUDIT_S3_BUCKET not set" };
+  }
+
+  try {
+    // Derive repo name from git remote or directory name
+    let repoName = "unknown-repo";
+    try {
+      const remote = safeExec("git remote get-url origin", rootPath).trim();
+      const match = remote.match(/\/([^/]+?)(?:\.git)?$/);
+      if (match) repoName = match[1];
+    } catch { /* use default */ }
+
+    const date = new Date().toISOString().split("T")[0];
+    const s3Key = repoName + "/" + date + "/jules-tanaka/" + workItemId + "/";
+    const s3Url = "s3://" + bucket + "/" + s3Key;
+
+    safeExec(
+      'aws s3 sync "' + artifactDir + '" "' + s3Url + '" --quiet --sse AES256',
+      rootPath,
+    );
+
+    return { uploaded: true, bucket, key: s3Key };
+  } catch (err) {
+    return { uploaded: false, reason: "S3 upload failed: " + err.message };
+  }
 }
