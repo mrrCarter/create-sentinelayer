@@ -287,7 +287,11 @@
   - Adds `.github/workflows/license-gate.yml` (`License Summary`) with deterministic production license inventory.
   - Adds explicit allowlist policy file `.github/policies/license-policy.json`.
   - Adds release required check enforcement for `License Summary`.
-- PR #151 (in progress on this branch):
+- PR #151 (merged):
   - Adds `.github/workflows/dependabot-governance.yml` for policy-governed Dependabot auto-merge decisions.
   - Adds deterministic governance policy file `.github/policies/dependabot-governance.json`.
   - Adds deterministic decision artifact generation via `scripts/dependabot-governance.mjs`.
+- PR #152 (in progress on this branch):
+  - Adds `.github/workflows/sbom.yml` to generate CycloneDX/SPDX JSON SBOMs.
+  - Adds deterministic SBOM hash-manifest artifact output.
+  - Adds release required check enforcement for `SBOM Summary`.

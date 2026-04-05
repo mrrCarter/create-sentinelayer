@@ -102,6 +102,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Classify Dependabot updates by semver risk and enforce auto-merge eligibility rules.
 - [x] Apply governance labels/comments and enable auto-merge only for low-risk updates.
 - [x] Update docs and CTO execution evidence for dependency governance coverage.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 08 Working Plan (2026-04-05)
+- [x] Add deterministic SBOM generation workflow for both CycloneDX and SPDX JSON outputs.
+- [x] Emit SBOM hash-manifest artifact and enforce generation success in CI.
+- [x] Add `SBOM Summary` to release pre-publish required checks.
+- [x] Update docs and CTO execution evidence for SBOM governance coverage.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot
