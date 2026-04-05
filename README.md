@@ -855,6 +855,7 @@ AppSec SAST is enforced by `.github/workflows/codeql.yml` (`CodeQL Summary` chec
 Custom static policy checks are enforced by `.github/workflows/semgrep.yml` (`Semgrep Summary` check) using `.semgrep/rules/sentinelayer-cli.yml`.
 Secret scanning is enforced by `.github/workflows/gitleaks.yml` (`Gitleaks Summary` check).
 IaC misconfiguration scanning is enforced by `.github/workflows/iac-scan.yml` (`IaC Summary` check).
+Dependency vulnerability policy is enforced by `.github/workflows/sca-audit.yml` (`SCA Summary` check).
 
 Prerequisites:
 
@@ -877,6 +878,7 @@ Release guardrails now require successful upstream checks on the target commit:
 - `Semgrep Summary`
 - `Gitleaks Summary`
 - `IaC Summary`
+- `SCA Summary`
 
 ## Local verification
 

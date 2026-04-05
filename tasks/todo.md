@@ -81,6 +81,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Create IaC scan workflow using deterministic Trivy config scan for workflow/infra targets.
 - [x] Add `IaC Summary` job and enforce it in release required-check verification.
 - [x] Update release docs and CTO revalidation execution notes for IaC gate coverage.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 05 Working Plan (2026-04-05)
+- [x] Resolve known dependency vulnerability exposure (`yaml` stack-overflow advisory) by updating to patched version.
+- [x] Add SCA policy workflow with deterministic `npm audit` artifact output and moderate+ gate.
+- [x] Add `SCA Summary` required check into release pre-publish gate enforcement.
+- [x] Update release docs and CTO execution evidence for SCA coverage.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot
