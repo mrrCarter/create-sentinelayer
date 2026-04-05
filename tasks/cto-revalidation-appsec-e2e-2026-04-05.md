@@ -298,6 +298,10 @@
 - PR #153 (merged):
   - Adds `.github/workflows/attestations.yml` for build-provenance attestation generation and verification.
   - Adds release required check enforcement for `Attestation Summary`.
-- PR #154 (in progress on this branch):
-  - Adds release-time checksum manifest enforcement before publish.
-  - Adds release-time attestation generation and verification bound to `.github/workflows/release.yml`.
+- PR #154 (merged):
+  - Added release-time checksum manifest enforcement before publish.
+  - Added release-time attestation generation and verification bound to `.github/workflows/release.yml`.
+- PR branch `roadmap/pr-appsec-e2e-11-ast-parser-layer-js-ts-py` (in progress):
+  - Adds `src/daemon/ast-parser-layer.js` for JS/TS + Python AST-backed import parsing with deterministic fallback modes.
+  - Upgrades hybrid mapper strategy contract to `hybrid_deterministic_ast_semantic_overlay` and emits AST parser stats in map artifacts/events.
+  - Adds unit coverage for AST parser behavior and hybrid mapper AST-path integration.

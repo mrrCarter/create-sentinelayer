@@ -125,10 +125,12 @@ test("Unit daemon hybrid mapper: builds deterministic + semantic overlay scope m
     assert.equal(mapped.workItem.workItemId, workItemId);
     assert.equal(mapped.summary.scopedFileCount > 0, true);
     assert.equal(mapped.summary.graphNodeCount > 0, true);
+    assert.equal(mapped.summary.astParsedFileCount > 0, true);
+    assert.equal(mapped.summary.astParseErrorCount, 0);
     const scopedPaths = mapped.scopedFiles.map((file) => file.path);
     assert.equal(scopedPaths.includes("src/routes/runtime-runs.js"), true);
     assert.equal(scopedPaths.includes("src/services/runtime-service.js"), true);
-    assert.equal(mapped.strategy.mode, "hybrid_deterministic_semantic_overlay");
+    assert.equal(mapped.strategy.mode, "hybrid_deterministic_ast_semantic_overlay");
     assert.equal(mapped.strategy.tokenizedSignals.includes("runtime"), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

@@ -122,6 +122,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Enforce release-artifact checksum manifest validation before publish.
 - [x] Generate and verify release-workflow attestation policy at publish time.
 - [x] Update docs and CTO execution evidence for release provenance enforcement.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 11 Working Plan (2026-04-05)
+- [x] Add AST parser layer for JS/TS and Python import extraction with deterministic regex fallback.
+- [x] Integrate AST parser stats into hybrid mapper strategy/summary/event artifacts.
+- [x] Add unit coverage for AST parser layer and hybrid mapper AST path.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot
