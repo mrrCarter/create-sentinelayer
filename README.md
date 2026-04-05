@@ -874,6 +874,8 @@ Release options:
 4. Run `Release` manually with `publish=true` to publish from Actions.
 5. If `NPM_TOKEN` is not configured, publish is skipped with an explicit workflow message (verification + tarball still succeed).
 
+Release publish now enforces tarball checksum-manifest validation and attestation verification bound to `.github/workflows/release.yml` before `npm publish`.
+
 Release guardrails now require successful upstream checks on the target commit:
 
 - `Quality Summary`

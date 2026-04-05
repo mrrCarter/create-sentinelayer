@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  attestations: write
   id-token: write
 
 env:
@@ -93,21 +94,68 @@ jobs:
       - name: Build release tarball
         run: npm pack
 
-      - name: Validate packaged CLI install
+      - name: Generate release artifact manifest
+        id: artifact_manifest
         run: |
           set -euo pipefail
           TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          jq -n \
+            --arg tarball "${TARBALL}" \
+            --arg sha256 "${SHA256}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              tarball: $tarball,
+              sha256: $sha256,
+              commit_sha: $commit_sha,
+              workflow_ref: $workflow_ref
+            }' > release-artifact-manifest.json
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate packaged CLI install
+        run: |
+          set -euo pipefail
+          TARBALL="${{ steps.artifact_manifest.outputs.tarball }}"
           PREFIX_DIR="$(mktemp -d)"
           npm install --prefix "${PREFIX_DIR}" --ignore-scripts "${TARBALL}"
           "${PREFIX_DIR}/node_modules/.bin/create-sentinelayer" --version
           "${PREFIX_DIR}/node_modules/.bin/sentinel" --version
           rm -rf "${PREFIX_DIR}"
 
+      - name: Generate release build attestation
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: ${{ steps.artifact_manifest.outputs.tarball }}
+
+      - name: Verify release build attestation policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARBALL: ${{ steps.artifact_manifest.outputs.tarball }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh attestation verify "${TARBALL}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > release-attestation-verify.json; then
+              break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::Release attestation verification failed after retries."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -e 'length > 0' release-attestation-verify.json > /dev/null
+
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: create-sentinelayer-tarball
-          path: create-sentinelayer-*.tgz
+          path: |
+            ${{ steps.artifact_manifest.outputs.tarball }}
+            release-artifact-manifest.json
+            release-attestation-verify.json
           if-no-files-found: error
           retention-days: 7
 
@@ -144,10 +192,46 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to npm
+      - name: Enforce release artifact checksum manifest
         run: |
           set -euo pipefail
           TARBALL="$(ls -1 release-artifact/create-sentinelayer-*.tgz | head -n 1)"
+          MANIFEST="release-artifact/release-artifact-manifest.json"
+          test -f "${MANIFEST}"
+          EXPECTED_SHA256="$(jq -r '.sha256' "${MANIFEST}")"
+          ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          if [ -z "${EXPECTED_SHA256}" ] || [ "${EXPECTED_SHA256}" = "null" ]; then
+            echo "::error::Manifest missing expected sha256."
+            exit 1
+          fi
+          if [ "${EXPECTED_SHA256}" != "${ACTUAL_SHA256}" ]; then
+            echo "::error::Release artifact checksum mismatch."
+            echo "::error::Expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}."
+            exit 1
+          fi
+          echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Enforce release attestation verification policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh attestation verify "${TARBALL}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > release-attestation-publish-verify.json; then
+              break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::Publish attestation verification failed after retries."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -e 'length > 0' release-attestation-publish-verify.json > /dev/null
+
+      - name: Publish to npm
+        run: |
+          set -euo pipefail
           npm publish "${TARBALL}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}

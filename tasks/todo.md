@@ -116,6 +116,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Verify generated attestations in CI with explicit signer-workflow policy.
 - [x] Add `Attestation Summary` to release pre-publish required checks.
 - [x] Update docs and CTO execution evidence for attestation governance coverage.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 10 Working Plan (2026-04-05)
+- [x] Enforce release-artifact checksum manifest validation before publish.
+- [x] Generate and verify release-workflow attestation policy at publish time.
+- [x] Update docs and CTO execution evidence for release provenance enforcement.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot
