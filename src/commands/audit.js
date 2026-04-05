@@ -724,4 +724,193 @@ export function registerAuditCommand(program, invokeLegacy) {
       });
       await invokeLegacy(legacyArgs);
     });
+
+  // ── Jules Tanaka: sl audit frontend ────────────────────────────────
+  audit
+    .command("frontend")
+    .alias("jules")
+    .description("Jules Tanaka — Frontend Runtime deep audit with agentic tool access")
+    .option("--path <path>", "Target repository path")
+    .option("--mode <mode>", "Agent mode: primary | secondary | tertiary", "primary")
+    .option("--max-cost <usd>", "Max cost budget in USD", "5.0")
+    .option("--max-turns <n>", "Max agentic loop turns", "25")
+    .option("--provider <name>", "LLM provider: openai | anthropic | google")
+    .option("--model <id>", "LLM model override")
+    .option("--api-key <key>", "Explicit API key override")
+    .option("--stream", "Emit NDJSON events to stdout as Jules works")
+    .option("--refresh", "Refresh CODEBASE_INGEST before auditing")
+    .option("--output-dir <path>", "Artifact output root override")
+    .option("--json", "Emit machine-readable final output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const emitStream = Boolean(options.stream);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+
+      // Lazy-load Jules modules (only when invoked)
+      const { julesAuditLoop } = await import("../agents/jules/loop.js");
+      const { JULES_DEFINITION } = await import("../agents/jules/config/definition.js");
+      const { collectCodebaseIngest } = await import("../ingest/engine.js");
+      const { resolveOutputRoot: resolveOut } = await import("../config/service.js");
+      const { createBlackboard } = await import("../memory/blackboard.js");
+
+      const outputRoot = resolveOut({ targetPath, outputDir: options.outputDir });
+
+      // Prerequisites: ingest
+      let ingest;
+      try {
+        const { generateCodebaseIngest } = await import("../ingest/engine.js");
+        ingest = await generateCodebaseIngest({
+          rootPath: targetPath,
+          outputDir: outputRoot,
+          refresh: Boolean(options.refresh),
+        });
+      } catch {
+        ingest = await collectCodebaseIngest({ rootPath: targetPath });
+      }
+
+      // Build scope map from ingest
+      const scopeMap = buildScopeMapFromIngest(ingest, JULES_DEFINITION.defaultScope);
+
+      // Blackboard for findings
+      const blackboard = createBlackboard();
+
+      // Provider config
+      const providerConfig = {};
+      if (options.provider) providerConfig.provider = options.provider;
+      if (options.model) providerConfig.model = options.model;
+      if (options.apiKey) providerConfig.apiKey = options.apiKey;
+
+      // Event handler
+      const onEvent = emitStream
+        ? (evt) => console.log(JSON.stringify(evt))
+        : emitJson
+          ? undefined
+          : (evt) => {
+              if (evt.event === "progress") {
+                process.stderr.write(`${JULES_DEFINITION.avatar} ${JULES_DEFINITION.shortName}: ${evt.payload.message}\n`);
+              } else if (evt.event === "finding") {
+                const f = evt.payload;
+                process.stderr.write(`${JULES_DEFINITION.avatar} [${f.severity || "P3"}] ${f.file || ""}:${f.line || ""} ${f.title || ""}\n`);
+              } else if (evt.event === "heartbeat") {
+                const h = evt.payload;
+                process.stderr.write(`${JULES_DEFINITION.avatar} ${JULES_DEFINITION.shortName} [${h.turnsCompleted}/${h.turnsMax} turns, $${h.budgetRemaining?.costUsd?.toFixed(2) || "?"}]\n`);
+              } else if (evt.event === "agent_complete") {
+                process.stderr.write(`${JULES_DEFINITION.avatar} ${JULES_DEFINITION.persona} complete: ${evt.payload.total} findings (P0=${evt.payload.P0} P1=${evt.payload.P1} P2=${evt.payload.P2})\n`);
+              }
+            };
+
+      // Build system prompt (simplified — full prompt is in J-8 definition)
+      const systemPrompt = buildJulesSystemPrompt(JULES_DEFINITION, {
+        mode: options.mode,
+        framework: ingest?.frameworks?.[0] || "unknown",
+      });
+
+      // Run the loop
+      let report;
+      const gen = julesAuditLoop({
+        systemPrompt,
+        scopeMap,
+        rootPath: targetPath,
+        blackboard,
+        budget: {
+          maxCostUsd: parseFloat(options.maxCost) || 5.0,
+          maxOutputTokens: JULES_DEFINITION.budget.maxOutputTokens,
+          maxRuntimeMs: JULES_DEFINITION.budget.maxRuntimeMs,
+          maxToolCalls: JULES_DEFINITION.budget.maxToolCalls,
+        },
+        provider: providerConfig,
+        mode: options.mode,
+        maxTurns: parseInt(options.maxTurns) || 25,
+        onEvent,
+      });
+
+      for await (const evt of gen) {
+        if (evt.event === "agent_complete") {
+          report = evt;
+        }
+      }
+
+      // Write artifacts
+      const fsp = await import("node:fs/promises");
+      const artifactDir = path.join(outputRoot, "reports", `jules-${Date.now()}`);
+      await fsp.mkdir(artifactDir, { recursive: true });
+
+      const findings = report?.payload || {};
+      const reportPayload = {
+        command: "audit frontend",
+        persona: JULES_DEFINITION.persona,
+        targetPath,
+        mode: options.mode,
+        framework: ingest?.frameworks?.[0] || "unknown",
+        ...findings,
+        signature: JULES_DEFINITION.signature,
+      };
+
+      await fsp.writeFile(
+        path.join(artifactDir, "JULES_AUDIT.json"),
+        JSON.stringify(reportPayload, null, 2),
+      );
+
+      if (emitJson) {
+        console.log(JSON.stringify(reportPayload, null, 2));
+      } else if (!emitStream) {
+        process.stderr.write(`\n${JULES_DEFINITION.signature}\nReport: ${artifactDir}/JULES_AUDIT.json\n`);
+      }
+
+      if (findings.P0 > 0 || findings.P1 > 0) {
+        process.exitCode = 2;
+      }
+    });
+}
+
+// ── Helpers for Jules invocation ──────────────────────────────────────
+
+function buildScopeMapFromIngest(ingest, defaultScope) {
+  if (!ingest || !ingest.indexedFiles) {
+    return { primary: [], secondary: [], tertiary: [] };
+  }
+
+  const files = (ingest.indexedFiles.files || []).map(f => ({
+    path: f.path,
+    loc: f.loc || 0,
+    language: f.language || "",
+  }));
+
+  const matchesAny = (filePath, patterns) =>
+    patterns.some(p => {
+      const regex = new RegExp(
+        "^" + p.replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*") + "$",
+      );
+      return regex.test(filePath);
+    });
+
+  return {
+    primary: files.filter(f => matchesAny(f.path, defaultScope.primaryPatterns)),
+    secondary: files.filter(f => matchesAny(f.path, defaultScope.secondaryPatterns)),
+    tertiary: files.filter(f => matchesAny(f.path, defaultScope.tertiaryPatterns)),
+  };
+}
+
+function buildJulesSystemPrompt(definition, { mode, framework }) {
+  return `You are ${definition.persona}, the ${definition.domain} persona for SentinelLayer.
+You are a ${framework} production specialist whose job is to determine:
+"Will users perceive this surface as fast, stable, and trustworthy?"
+
+Mode: ${mode} — ${definition.modes[mode] || definition.modes.primary}
+
+You have access to these tools: ${definition.auditTools.join(", ")}.
+To call a tool, output a tool_use code block:
+\`\`\`tool_use
+{"tool": "FileRead", "input": {"file_path": "src/app/page.tsx"}}
+\`\`\`
+
+When done, return findings as a JSON array:
+\`\`\`json
+[{"severity": "P1", "file": "path", "line": 42, "title": "...", "evidence": "...", "rootCause": "...", "recommendedFix": "...", "trafficLight": "red"}]
+\`\`\`
+
+Evidence standard: every claim must have file:line or command output proof.
+Never write "probably" or "likely fine" without evidence.
+
+${definition.signature}`;
 }
