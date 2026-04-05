@@ -217,7 +217,8 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 ### Batch X - Agent Tool Security Hardening (2026-04-04)
 - [x] PR 147 symlink + UNC + device-path guardrails for Jules `FileRead`/`FileEdit` tools (realpath-aware root validation, Windows-safe path-prefix checks, deterministic failure codes).
 - [x] PR 148 subprocess env scrub expansion + shell guardrail coverage for Jules `Shell` tool.
-- [ ] PR 149 network domain-allowlist guardrails for shell-based fetch commands.
+- [x] PR 149 network domain-allowlist guardrails for shell-based fetch commands.
+- [ ] PR 150 centralize shell network allowlist policy in config schema and command-level governance.
 
 ### PR 147 Working Plan (roadmap/pr-147-auth-runtime-governance-hardening)
 - [x] Add shared path-guard utility for Jules file tools:
@@ -249,7 +250,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
   - Block network commands targeting non-allowlisted hosts.
   - Keep non-network shell commands unaffected.
 - [x] Add unit tests for allowed and blocked domains, plus wildcard/suffix matching boundaries.
-- [ ] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
+- [x] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
 
 ## Execution Board (2026-04-04)
 
@@ -266,7 +267,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-149-shell-network-domain-allowlist`
+1. `roadmap/pr-150-shell-allowlist-policy-config`
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
@@ -624,3 +625,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
     - `gh pr view 131 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `5169881704a998a4da30c36a37a8f41a210c3a6f`)
     - Expanded subprocess secret scrubbing from fixed key deletes to deterministic exact-key + prefix/suffix pattern matching, including `INPUT_` action variants.
     - Added shell coverage asserting both scrubbing logic correctness and runtime subprocess behavior (sensitive keys removed, safe keys preserved).
+
+  - PR 149 (shell network domain allowlist) merged evidence (branch `roadmap/pr-149-shell-network-domain-allowlist`):
+    - `npm run verify` (pass, e2e `86/86`; unit tests `193/193`; coverage statements `90.22%`, branches `70.98%`, functions `92.03%`, lines `90.22%`)
+    - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p1=0`, `p2=10`, `blocking=false`)
+    - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1Total=0`, `p2Total=10`)
+    - `gh run watch 23990276072 --exit-status` (Omar Gate pass after `security-review` deployment approval)
+    - `gh pr view 133 --json state,mergedAt,mergeCommit` (`state=MERGED`, merge commit `9a5bb1d8d33a62b9dec46feac5358d2f564869aa`)
+    - Added deterministic URL-host extraction + hostname policy checks for `curl`/`wget`, with bounded wildcard matching and secure default allowlist entries.
+    - Enforced runtime blocking for non-allowlisted network hosts or missing explicit URL hosts, and added unit coverage for blocked/allowed/wildcard-boundary scenarios.

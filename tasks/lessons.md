@@ -120,3 +120,5 @@
 - Keep deterministic `PATH_*` error codes in guardrail failures so policy dashboards and tests can assert exact stop reasons instead of parsing free-form text.
 - Subprocess env scrubbing is safer when combining an explicit sensitive-key set with deterministic prefix/suffix rules and `INPUT_` aliases, rather than relying on a short static list.
 - Verify credential scrubbing at two layers: pure env-sanitizer unit checks and an end-to-end shell subprocess assertion that sensitive vars are actually absent at runtime.
+- Network-command guardrails should parse and validate explicit URL hosts before execution; if host extraction fails (`curl $VAR`), fail closed instead of guessing.
+- Wildcard allowlist matching must use dot-boundary suffix checks (`*.example.com`) so lookalike hosts (`evilexample.com`) cannot bypass policy.
