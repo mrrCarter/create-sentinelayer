@@ -88,6 +88,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Add SCA policy workflow with deterministic `npm audit` artifact output and moderate+ gate.
 - [x] Add `SCA Summary` required check into release pre-publish gate enforcement.
 - [x] Update release docs and CTO execution evidence for SCA coverage.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 06 Working Plan (2026-04-05)
+- [x] Add deterministic production dependency license inventory workflow.
+- [x] Enforce allowlisted OSS license policy from `.github/policies/license-policy.json`.
+- [x] Add `License Summary` to release pre-publish required checks.
+- [x] Update release docs and CTO execution evidence for license governance.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot
