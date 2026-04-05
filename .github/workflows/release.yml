@@ -83,6 +83,7 @@ jobs:
           require_check_success "Omar Gate"
           require_check_success "CodeQL Summary"
           require_check_success "Semgrep Summary"
+          require_check_success "Gitleaks Summary"
 
       - name: Build release tarball
         run: npm pack

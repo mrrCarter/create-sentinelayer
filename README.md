@@ -853,6 +853,7 @@ This repo includes `.github/workflows/release.yml`.
 Automated version/tag PR flow is handled by `.github/workflows/release-please.yml`.
 AppSec SAST is enforced by `.github/workflows/codeql.yml` (`CodeQL Summary` check).
 Custom static policy checks are enforced by `.github/workflows/semgrep.yml` (`Semgrep Summary` check) using `.semgrep/rules/sentinelayer-cli.yml`.
+Secret scanning is enforced by `.github/workflows/gitleaks.yml` (`Gitleaks Summary` check).
 
 Prerequisites:
 
@@ -873,6 +874,7 @@ Release guardrails now require successful upstream checks on the target commit:
 - `Omar Gate`
 - `CodeQL Summary`
 - `Semgrep Summary`
+- `Gitleaks Summary`
 
 ## Local verification
 

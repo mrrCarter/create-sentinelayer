@@ -272,3 +272,14 @@
 - Memo is directionally accurate and mostly confirmed.
 - The repo has improved operationally beyond a bare alpha scaffold.
 - To claim “mature AppSec suite E2E,” the missing stack listed above must be implemented and policy-enforced in CI/CD and runtime.
+
+## Execution Updates (2026-04-05, post-baseline)
+- PR #145 (`feat(appsec): add semgrep custom-rule gate and release enforcement`) merged:
+  - Added `.github/workflows/semgrep.yml`.
+  - Added `.semgrep/rules/sentinelayer-cli.yml`.
+  - Added release required check enforcement for `Semgrep Summary`.
+- PR #144 (`fix(ci): pin setup-python to valid v5 SHA`) merged:
+  - Fixed Semgrep workflow action pin so CI resolves setup action correctly.
+- PR #147 (in progress on this branch):
+  - Adds `.github/workflows/gitleaks.yml`.
+  - Adds release required check enforcement for `Gitleaks Summary`.
