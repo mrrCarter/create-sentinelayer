@@ -128,6 +128,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Add AST parser layer for JS/TS and Python import extraction with deterministic regex fallback.
 - [x] Integrate AST parser stats into hybrid mapper strategy/summary/event artifacts.
 - [x] Add unit coverage for AST parser layer and hybrid mapper AST path.
+- [x] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
+
+## PR AppSec E2E 12 Working Plan (2026-04-05)
+- [x] Add AST-backed callgraph overlay layer for scoped JS/TS/Python files with deterministic fallback.
+- [x] Integrate callgraph overlay nodes/edges + parser stats into hybrid mapper artifacts and event summaries.
+- [x] Add unit tests for callgraph parser module and hybrid mapper callgraph integration path.
 - [ ] Run `npm run verify`, open PR, run Omar Gate loop (`gh run watch`), and merge only after required checks pass.
 
 ## Cross-Repo Audit Snapshot

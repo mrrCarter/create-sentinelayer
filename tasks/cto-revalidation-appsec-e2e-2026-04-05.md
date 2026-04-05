@@ -301,7 +301,11 @@
 - PR #154 (merged):
   - Added release-time checksum manifest enforcement before publish.
   - Added release-time attestation generation and verification bound to `.github/workflows/release.yml`.
-- PR branch `roadmap/pr-appsec-e2e-11-ast-parser-layer-js-ts-py` (in progress):
-  - Adds `src/daemon/ast-parser-layer.js` for JS/TS + Python AST-backed import parsing with deterministic fallback modes.
-  - Upgrades hybrid mapper strategy contract to `hybrid_deterministic_ast_semantic_overlay` and emits AST parser stats in map artifacts/events.
-  - Adds unit coverage for AST parser behavior and hybrid mapper AST-path integration.
+- PR #155 (merged):
+  - Added `src/daemon/ast-parser-layer.js` for JS/TS + Python AST-backed import parsing with deterministic fallback modes.
+  - Upgraded hybrid mapper strategy contract to `hybrid_deterministic_ast_semantic_overlay` and emitted AST parser stats in map artifacts/events.
+  - Added unit coverage for AST parser behavior and hybrid mapper AST-path integration.
+- PR branch `roadmap/pr-appsec-e2e-12-callgraph-dataflow-overlay` (in progress):
+  - Adds `src/daemon/callgraph-overlay.js` to build scoped AST-backed symbol/call edges with deterministic fallback.
+  - Extends hybrid mapper artifacts/events with callgraph nodes/edges and parser summary statistics.
+  - Adds unit coverage for callgraph parser modes and cross-file overlay edge generation.

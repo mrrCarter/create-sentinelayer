@@ -127,11 +127,16 @@ test("Unit daemon hybrid mapper: builds deterministic + semantic overlay scope m
     assert.equal(mapped.summary.graphNodeCount > 0, true);
     assert.equal(mapped.summary.astParsedFileCount > 0, true);
     assert.equal(mapped.summary.astParseErrorCount, 0);
+    assert.equal(mapped.summary.callGraphNodeCount > 0, true);
+    assert.equal(mapped.summary.callGraphEdgeCount > 0, true);
     const scopedPaths = mapped.scopedFiles.map((file) => file.path);
     assert.equal(scopedPaths.includes("src/routes/runtime-runs.js"), true);
     assert.equal(scopedPaths.includes("src/services/runtime-service.js"), true);
     assert.equal(mapped.strategy.mode, "hybrid_deterministic_ast_semantic_overlay");
     assert.equal(mapped.strategy.tokenizedSignals.includes("runtime"), true);
+    assert.equal(mapped.strategy.callGraphOverlay.edgeCount > 0, true);
+    assert.equal(Array.isArray(mapped.callGraph.edges), true);
+    assert.equal(mapped.callGraph.edges.length > 0, true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -165,6 +170,10 @@ test("Unit daemon hybrid mapper: list/show surfaces latest map artifacts", async
     assert.equal(shown.payload.workItem.workItemId, workItemId);
     assert.equal(Array.isArray(shown.payload.scopedFiles), true);
     assert.equal(shown.payload.scopedFiles.length > 0, true);
+    assert.equal(Array.isArray(shown.payload.callGraph.nodes), true);
+    assert.equal(shown.payload.callGraph.nodes.length > 0, true);
+    assert.equal(Array.isArray(shown.payload.callGraph.edges), true);
+    assert.equal(shown.payload.callGraph.edges.length > 0, true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
