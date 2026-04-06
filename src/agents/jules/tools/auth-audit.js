@@ -103,8 +103,11 @@ function authenticatedPageCheck(input) {
   } catch (err) {
     return { available: false, reason: "Playwright auth audit failed: " + err.message };
   } finally {
-    // Always clean up temp script (P2 fix: cleanup in finally, not just success)
-    if (scriptPath) { try { fs.unlinkSync(scriptPath); } catch { /* best effort */ } }
+    // Clean up temp script AND its mkdtemp parent directory
+    if (scriptPath) {
+      try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
+      try { fs.rmdirSync(path.dirname(scriptPath)); } catch { /* best effort — dir may not be empty */ }
+    }
   }
 }
 
@@ -176,10 +179,10 @@ const { chromium } = require('playwright');
     }
   } catch (err) {
     results.errors.push({ text: 'Navigation error: ' + (err.message || '').slice(0, 100) });
+  } finally {
+    try { console.log(JSON.stringify(results)); } catch { /* output failure non-blocking */ }
+    await browser.close();
   }
-
-  console.log(JSON.stringify(results));
-  await browser.close();
 })();
 `;
 

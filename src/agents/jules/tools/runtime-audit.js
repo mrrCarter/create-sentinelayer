@@ -232,9 +232,12 @@ function checkConsoleErrors(input) {
         const errors = [];
         page.on('console', msg => { if (msg.type() === 'error') errors.push({ text: msg.text(), url: msg.location()?.url }); });
         page.on('pageerror', err => errors.push({ text: err.message, type: 'uncaught' }));
-        await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
-        console.log(JSON.stringify({ errors, title: await page.title() }));
-        await browser.close();
+        try {
+          await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+          console.log(JSON.stringify({ errors, title: await page.title() }));
+        } finally {
+          await browser.close();
+        }
       })();
     `);
     const output = execFileSync("node", [scriptPath], {
@@ -242,7 +245,8 @@ function checkConsoleErrors(input) {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, SL_AUDIT_TARGET_URL: url },
     });
-    try { fs.unlinkSync(scriptPath); } catch { /* best effort cleanup */ }
+    try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
+    try { fs.rmdirSync(path.dirname(scriptPath)); } catch { /* best effort */ }
     const result = JSON.parse(output.trim());
     return { available: true, method: "playwright", ...result };
   } catch (playwrightErr) {
@@ -273,6 +277,7 @@ function checkNetworkWaterfall(input) {
       "-sL", "-o", devNull(), "-w", "@" + formatFile, "--max-time", "15", safeUrl,
     ], { encoding: "utf-8", timeout: 20000, stdio: ["pipe", "pipe", "pipe"] });
     try { fs.unlinkSync(formatFile); } catch { /* best effort */ }
+    try { fs.rmdirSync(path.dirname(formatFile)); } catch { /* best effort */ }
     const timing = JSON.parse(output.trim());
     // Convert seconds to milliseconds
     for (const key of ["dns_ms", "connect_ms", "tls_ms", "ttfb_ms", "total_ms"]) {
@@ -301,21 +306,24 @@ function checkDomStats(input) {
         const targetUrl = process.env.SL_AUDIT_TARGET_URL;
         if (!targetUrl) { console.log(JSON.stringify({})); process.exit(0); }
         const browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage();
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        const stats = await page.evaluate(() => ({
-          nodeCount: document.querySelectorAll('*').length,
-          maxDepth: (function depth(el, d) { return Math.max(d, ...Array.from(el.children).map(c => depth(c, d+1))); })(document.body, 0),
-          imgCount: document.querySelectorAll('img').length,
-          imgWithoutAlt: document.querySelectorAll('img:not([alt])').length,
-          formCount: document.querySelectorAll('form').length,
-          inputWithoutLabel: document.querySelectorAll('input:not([aria-label]):not([id])').length,
-          title: document.title,
-          h1Count: document.querySelectorAll('h1').length,
-          linkCount: document.querySelectorAll('a').length,
-        }));
-        console.log(JSON.stringify(stats));
-        await browser.close();
+        try {
+          const page = await browser.newPage();
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          const stats = await page.evaluate(() => ({
+            nodeCount: document.querySelectorAll('*').length,
+            maxDepth: (function depth(el, d) { return Math.max(d, ...Array.from(el.children).map(c => depth(c, d+1))); })(document.body, 0),
+            imgCount: document.querySelectorAll('img').length,
+            imgWithoutAlt: document.querySelectorAll('img:not([alt])').length,
+            formCount: document.querySelectorAll('form').length,
+            inputWithoutLabel: document.querySelectorAll('input:not([aria-label]):not([id])').length,
+            title: document.title,
+            h1Count: document.querySelectorAll('h1').length,
+            linkCount: document.querySelectorAll('a').length,
+          }));
+          console.log(JSON.stringify(stats));
+        } finally {
+          await browser.close();
+        }
       })();
     `);
     const output = execFileSync("node", [scriptPath], {
@@ -323,7 +331,8 @@ function checkDomStats(input) {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, SL_AUDIT_TARGET_URL: url },
     });
-    try { fs.unlinkSync(scriptPath); } catch { /* best effort cleanup */ }
+    try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
+    try { fs.rmdirSync(path.dirname(scriptPath)); } catch { /* best effort */ }
     return { available: true, method: "playwright", ...JSON.parse(output.trim()) };
   } catch {
     return { available: false, reason: "Playwright not installed" };
