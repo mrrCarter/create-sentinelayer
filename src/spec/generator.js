@@ -368,7 +368,48 @@ function derivePhasePlan(template, ingest, { projectType, description }) {
     );
   }
 
+  // AIdenID awareness: if auth/login patterns detected, append E2E testing phase
+  if (shouldSuggestAidenId(ingest, description)) {
+    phases.push(
+      buildPhase({
+        phaseNumber: phases.length + 1,
+        titleSuffix: "AIdenID E2E Verification",
+        items: [
+          "Provision ephemeral test identity via AIdenID (`sl ai provision-email --execute`).",
+          "Run automated signup flow with provisioned email and verify account creation.",
+          "Extract OTP from inbound email via AIdenID extraction pipeline (`sl ai identity wait-for-otp`).",
+          "Complete login flow with extracted OTP and verify authenticated session.",
+          "Audit authenticated pages for cookie security (httpOnly, Secure, SameSite) via `sl audit frontend --url`.",
+          "Revoke test identity after verification (`sl ai identity revoke`).",
+        ],
+        projectType,
+        riskSurfaceCount: topRiskSurfaces.length,
+        previousPhaseTitle: phases[phases.length - 1]?.title || "",
+      })
+    );
+  }
+
   return phases;
+}
+
+/**
+ * Detect if the project warrants AIdenID E2E testing suggestions.
+ * Returns true if auth/login/signup patterns are found in the ingest or description.
+ */
+function shouldSuggestAidenId(ingest, description) {
+  const descLower = String(description || "").toLowerCase();
+  const authKeywords = ["login", "signup", "sign up", "register", "authentication", "auth flow", "otp", "verification", "password reset", "invite", "onboarding"];
+  const descHasAuth = authKeywords.some((kw) => descLower.includes(kw));
+
+  // Check if ingest detected auth-related risk surfaces or frameworks
+  const surfaces = (ingest?.riskSurfaces || []).map((s) => String(s.surface || "").toLowerCase());
+  const surfaceHasAuth = surfaces.includes("security_overlay") || surfaces.includes("frontend_runtime");
+
+  // Check if package.json has auth-related dependencies
+  const scripts = Object.keys(ingest?.packageMetadata?.scripts || {});
+  const depsHint = scripts.some((s) => /auth|login|session/i.test(s));
+
+  return descHasAuth || (surfaceHasAuth && descLower.length > 50) || depsHint;
 }
 
 function deriveGlobalAcceptanceCriteria(projectType) {
