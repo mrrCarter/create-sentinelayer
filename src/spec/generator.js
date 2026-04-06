@@ -279,11 +279,16 @@ function deriveDynamicPhaseCount({ template, ingest, description, riskSurfaces }
   const totalLoc = Number(ingest?.summary?.totalLoc || 0);
   const riskCount = Array.isArray(riskSurfaces) ? riskSurfaces.length : 0;
 
-  const riskBoost = riskCount >= 8 ? 2 : riskCount >= 4 ? 1 : 0;
-  const complexityBoost = wordCount >= 70 || filesScanned >= 250 || totalLoc >= 10_000 ? 1 : 0;
+  const riskBoost = riskCount >= 12 ? 4 : riskCount >= 8 ? 2 : riskCount >= 4 ? 1 : 0;
+  const complexityBoost =
+    (wordCount >= 200 ? 2 : wordCount >= 70 ? 1 : 0) +
+    (filesScanned >= 1000 ? 2 : filesScanned >= 250 ? 1 : 0) +
+    (totalLoc >= 50_000 ? 2 : totalLoc >= 10_000 ? 1 : 0);
   const templateBoost = ["saas-app", "mobile-app"].includes(String(template?.id || "")) ? 1 : 0;
 
-  return clamp(3 + riskBoost + complexityBoost + templateBoost, 3, 8);
+  // No upper cap — enterprise projects can have 10-20+ phases based on complexity.
+  // Floor at 3 (minimum viable: foundation + core + hardening).
+  return Math.max(3, 3 + riskBoost + complexityBoost + templateBoost);
 }
 
 function buildSupplementalPhaseItems({ projectType, surfaces }) {
