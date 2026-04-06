@@ -1,6 +1,6 @@
 {
   "name": "create-sentinelayer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
   "scripts": {
