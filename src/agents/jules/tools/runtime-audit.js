@@ -1,7 +1,8 @@
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 
 /**
  * Jules Tanaka — Runtime Audit Tool
@@ -68,15 +69,15 @@ function lighthouseScan(input) {
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    execSync(
-      'npx --yes lighthouse@12 "' + url + '" --output json --output-path "' +
-      outputPath + '" --chrome-flags="--headless --no-sandbox --disable-gpu" --quiet',
-      {
-        encoding: "utf-8",
-        timeout: LIGHTHOUSE_TIMEOUT_MS,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    execFileSync("npx", [
+      "--yes", "lighthouse@12", url,
+      "--output", "json", "--output-path", outputPath,
+      "--chrome-flags=--headless --no-sandbox --disable-gpu", "--quiet",
+    ], {
+      encoding: "utf-8",
+      timeout: LIGHTHOUSE_TIMEOUT_MS,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     if (!fs.existsSync(outputPath)) {
       return { available: false, reason: "Lighthouse produced no output" };
@@ -131,10 +132,11 @@ function checkResponseHeaders(input) {
   if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
 
   try {
-    const output = execSync(
-      'curl -sI -L --max-time 10 "' + url + '"',
-      { encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"] },
-    );
+    const safeUrl = sanitizeUrlForShell(url);
+    if (!safeUrl) throw new Error("URL sanitization failed");
+    const output = execFileSync("curl", ["-sI", "-L", "--max-time", "10", safeUrl], {
+      encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"],
+    });
 
     const headers = parseHeaders(output);
     const securityHeaders = [
@@ -219,7 +221,7 @@ function checkConsoleErrors(input) {
 
   // Try playwright — URL passed via env var to prevent command injection
   try {
-    const scriptPath = path.join(os.tmpdir(), "sl-console-check-" + Date.now() + ".cjs");
+    const scriptPath = secureTempFile("sl-console-" + randomUUID().slice(0, 8) + ".cjs");
     fs.writeFileSync(scriptPath, `
       const { chromium } = require('playwright');
       (async () => {
@@ -263,13 +265,13 @@ function checkNetworkWaterfall(input) {
 
   try {
     // Write curl format to temp file to avoid shell quoting issues across platforms
-    const formatFile = path.join(os.tmpdir(), "sl-curl-fmt-" + Date.now() + ".txt");
+    const formatFile = secureTempFile("sl-curl-fmt-" + randomUUID().slice(0, 8) + ".txt");
     fs.writeFileSync(formatFile, '{"dns_ms":%{time_namelookup},"connect_ms":%{time_connect},"tls_ms":%{time_appconnect},"ttfb_ms":%{time_starttransfer},"total_ms":%{time_total},"size_bytes":%{size_download},"status":%{http_code}}');
     const safeUrl = sanitizeUrlForShell(url);
-    const output = execSync(
-      "curl -sL -o " + devNull() + " -w @" + JSON.stringify(formatFile) + " --max-time 15 " + JSON.stringify(safeUrl),
-      { encoding: "utf-8", timeout: 20000, stdio: ["pipe", "pipe", "pipe"] },
-    );
+    if (!safeUrl) { try { fs.unlinkSync(formatFile); } catch {} throw new Error("URL sanitization failed"); }
+    const output = execFileSync("curl", [
+      "-sL", "-o", devNull(), "-w", "@" + formatFile, "--max-time", "15", safeUrl,
+    ], { encoding: "utf-8", timeout: 20000, stdio: ["pipe", "pipe", "pipe"] });
     try { fs.unlinkSync(formatFile); } catch { /* best effort */ }
     const timing = JSON.parse(output.trim());
     // Convert seconds to milliseconds
@@ -292,7 +294,7 @@ function checkDomStats(input) {
 
   // URL passed via env var to prevent command injection (CodeQL alert #51)
   try {
-    const scriptPath = path.join(os.tmpdir(), "sl-dom-check-" + Date.now() + ".cjs");
+    const scriptPath = secureTempFile("sl-dom-" + randomUUID().slice(0, 8) + ".cjs");
     fs.writeFileSync(scriptPath, `
       const { chromium } = require('playwright');
       (async () => {
@@ -368,6 +370,16 @@ function extractCookieFlags(headers) {
 
 function devNull() {
   return process.platform === "win32" ? "NUL" : "/dev/null";
+}
+
+/**
+ * Create a temp file path with secure random name.
+ * Sets file permissions to 0o600 (owner read/write only) after creation.
+ */
+function secureTempFile(name) {
+  const dir = path.join(os.tmpdir(), "sentinelayer-rt");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return path.join(dir, name);
 }
 
 function sanitizeUrlForShell(url) {

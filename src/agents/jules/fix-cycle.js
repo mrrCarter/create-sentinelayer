@@ -1,4 +1,4 @@
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import fsp from "node:fs/promises";
 import { JULES_DEFINITION } from "./config/definition.js";
@@ -19,7 +19,7 @@ import { claimAssignment, heartbeatAssignment, releaseAssignment } from "../../d
 
 const LEASE_TTL_SECONDS = 1800;
 const HEARTBEAT_INTERVAL_MS = 300000;
-const MAX_FIX_ATTEMPTS = 3;
+// MAX_FIX_ATTEMPTS reserved for future agentic retry loop
 const OMAR_POLL_INTERVAL_MS = 15000;
 const OMAR_POLL_MAX_ATTEMPTS = 40; // 10 minutes max wait
 
@@ -107,8 +107,8 @@ export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, fi
     emit("fix_pr", { status: "pushing" });
 
     // Check if there are changes to commit in the worktree
-    const diffOutput = safeExec("git diff --stat", worktreePath);
-    const untrackedOutput = safeExec("git ls-files --others --exclude-standard", worktreePath);
+    const diffOutput = safeExecFile("git", ["diff", "--stat"], worktreePath);
+    const untrackedOutput = safeExecFile("git", ["ls-files", "--others", "--exclude-standard"], worktreePath);
     const hasChanges = diffOutput.trim().length > 0 || untrackedOutput.trim().length > 0;
 
     if (hasChanges) {
@@ -278,13 +278,6 @@ async function watchOmarGate(rootPath, branchName, emit) {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function safeExec(cmd, cwd) {
-  return execSync(cmd, {
-    cwd, encoding: "utf-8", timeout: 60000,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-}
-
 function safeExecFile(bin, args, cwd) {
   return execFileSync(bin, args, {
     cwd, encoding: "utf-8", timeout: 60000,
@@ -365,7 +358,7 @@ async function uploadFixArtifactsToS3(artifactDir, workItemId, rootPath) {
     // Derive repo name from git remote or directory name
     let repoName = "unknown-repo";
     try {
-      const remote = safeExec("git remote get-url origin", rootPath).trim();
+      const remote = safeExecFile("git", ["remote", "get-url", "origin"], rootPath).trim();
       const match = remote.match(/\/([^/]+?)(?:\.git)?$/);
       if (match) repoName = match[1];
     } catch { /* use default */ }
@@ -374,10 +367,7 @@ async function uploadFixArtifactsToS3(artifactDir, workItemId, rootPath) {
     const s3Key = repoName + "/" + date + "/jules-tanaka/" + workItemId + "/";
     const s3Url = "s3://" + bucket + "/" + s3Key;
 
-    safeExec(
-      'aws s3 sync "' + artifactDir + '" "' + s3Url + '" --quiet --sse AES256',
-      rootPath,
-    );
+    safeExecFile("aws", ["s3", "sync", artifactDir, s3Url, "--quiet", "--sse", "AES256"], rootPath);
 
     return { uploaded: true, bucket, key: s3Key };
   } catch (err) {
