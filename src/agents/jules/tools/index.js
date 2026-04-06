@@ -16,6 +16,7 @@ export { shell, analyzeCommand, ShellError, ShellBlockedError } from "./shell.js
 export { fileEdit, FileEditError } from "./file-edit.js";
 export { frontendAnalyze, FrontendAnalyzeError } from "./frontend-analyze.js";
 export { runtimeAudit, RuntimeAuditError } from "./runtime-audit.js";
+export { authAudit, AuthAuditError } from "./auth-audit.js";
 
 export {
   dispatchTool,
