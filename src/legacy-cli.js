@@ -243,7 +243,7 @@ function normalizeInterviewInput(
   const projectType = VALID_PROJECT_TYPES.has(rawProjectType) ? rawProjectType : fallbackProjectType;
   const normalizedAuthMode = VALID_AUTH_MODES.has(authMode) ? authMode : "sentinelayer";
   const derivedProjectName = sanitizeProjectName(obj.projectName || argProjectName) || getRepoNameFromSlug(repoSlug);
-  let resolvedCodingAgent = DEFAULT_CODING_AGENT_ID;
+  let resolvedCodingAgent;
   try {
     resolvedCodingAgent = resolveCodingAgent(codingAgentCandidate).id;
   } catch {

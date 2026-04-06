@@ -435,8 +435,7 @@ export async function runSwarmRuntime({
           })
         );
       } else if (normalizedEngine === "playwright" && execute && page) {
-        if (!Array.isArray(playwrightActions) || playwrightActions.length === 0) {
-          playwrightActions = [
+        const resolvedActions = (Array.isArray(playwrightActions) && playwrightActions.length > 0) ? playwrightActions : [
             {
               type: "wait",
               ms: 250,
@@ -445,9 +444,8 @@ export async function runSwarmRuntime({
               type: "screenshot",
             },
           ];
-        }
 
-        for (const action of playwrightActions) {
+        for (const action of resolvedActions) {
           if (step >= normalizedMaxSteps) {
             stop = {
               stopClass: "MAX_STEPS_EXCEEDED",

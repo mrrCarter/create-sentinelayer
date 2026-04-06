@@ -210,8 +210,7 @@ function isValidUrl(url) {
 }
 
 function secureTempFile(name) {
-  const dir = path.join(os.tmpdir(), "sentinelayer-rt");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sl-auth-"));
   return path.join(dir, name);
 }
 

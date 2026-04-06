@@ -1,4 +1,4 @@
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
@@ -237,7 +237,7 @@ function checkConsoleErrors(input) {
         await browser.close();
       })();
     `);
-    const output = execSync("node " + JSON.stringify(scriptPath), {
+    const output = execFileSync("node", [scriptPath], {
       encoding: "utf-8", timeout: 45000,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, SL_AUDIT_TARGET_URL: url },
@@ -318,7 +318,7 @@ function checkDomStats(input) {
         await browser.close();
       })();
     `);
-    const output = execSync("node " + JSON.stringify(scriptPath), {
+    const output = execFileSync("node", [scriptPath], {
       encoding: "utf-8", timeout: 45000,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, SL_AUDIT_TARGET_URL: url },
@@ -377,8 +377,8 @@ function devNull() {
  * Sets file permissions to 0o600 (owner read/write only) after creation.
  */
 function secureTempFile(name) {
-  const dir = path.join(os.tmpdir(), "sentinelayer-rt");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // CodeQL requires mkdtempSync for secure temp file creation (unique random dir)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sl-rt-"));
   return path.join(dir, name);
 }
 

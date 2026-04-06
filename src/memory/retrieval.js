@@ -21,7 +21,7 @@ function normalizeSeverity(value) {
   return "P3";
 }
 
-function tokenize(value) {
+export function tokenize(value) {
   return Array.from(
     new Set(
       normalizeString(value)

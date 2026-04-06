@@ -69,7 +69,7 @@ export function fileEdit(input) {
 
   // Perform replacement
   const replaceCount = input.replace_all ? occurrences : 1;
-  let newContent = content;
+  let newContent;
   if (input.replace_all) {
     newContent = content.split(input.old_string).join(input.new_string);
   } else {
