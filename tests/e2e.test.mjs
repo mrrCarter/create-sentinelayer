@@ -1761,12 +1761,9 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
       ),
       true
     );
-    assert.equal(
-      initPayload.instructions.some((line) =>
-        String(line || "").includes("https://sentinelayer.com/docs/getting-started/install-workflow")
-      ),
-      true
-    );
+    const manualSetupInstruction =
+      "- For manual setup: https://sentinelayer.com/docs/getting-started/install-workflow";
+    assert.equal(initPayload.instructions.includes(manualSetupInstruction), true);
 
     const workflowText = await readFile(initPayload.workflowPath, "utf-8");
     assert.match(workflowText, /name: Omar Gate/);
