@@ -1009,6 +1009,25 @@ export function registerAuditCommand(program, invokeLegacy) {
         process.stderr.write("Summary: " + allFindings.length + " findings (P0=" + severityCounts.P0 + " P1=" + severityCounts.P1 + " P2=" + severityCounts.P2 + ")\n");
       }
 
+      // Sync run to dashboard (fire-and-forget)
+      try {
+        const { syncRunToDashboard } = await import("../telemetry/sync.js");
+        const syncResult = await syncRunToDashboard({
+          command: "audit frontend",
+          persona: JULES_DEFINITION.persona,
+          mode: options.mode,
+          framework: ingest?.frameworks?.[0] || "unknown",
+          summary: { total: allFindings.length, ...severityCounts, blocking: severityCounts.P0 > 0 || severityCounts.P1 > 0 },
+          usage: report?.usage || {},
+          stopReason: report?.usage?.stopReason || "completed",
+          reconciliation: reconciliation.summary,
+          runtime: runtimeResult ? { ran: true, url: runtimeResult.url } : { ran: false },
+        });
+        if (!emitJson && !emitStream && syncResult.synced) {
+          process.stderr.write(JULES_DEFINITION.avatar + " Run synced to dashboard" + (syncResult.runId ? " (run:" + syncResult.runId + ")" : "") + "\n");
+        }
+      } catch { /* sync failure never blocks CLI */ }
+
       if (severityCounts.P0 > 0 || severityCounts.P1 > 0) {
         process.exitCode = 2;
       }
