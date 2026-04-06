@@ -1,12 +1,13 @@
-# create-sentinelayer
+# sentinelayer-cli
 
-`npx create-sentinelayer@latest <project-name>`
+`npx sentinelayer-cli@latest <project-name>`
 
 Scaffolds Sentinelayer spec/prompt/guide artifacts and bootstraps `SENTINELAYER_TOKEN` without manual copy/paste, with optional `BYOK` mode.
 
 CLI binaries:
 
-- `create-sentinelayer` (primary)
+- `sentinelayer-cli` (primary)
+- `create-sentinelayer` (compatibility alias)
 - `sentinel` (legacy alias)
 - `sl` (short alias)
 
@@ -24,12 +25,31 @@ CLI binaries:
 - optionally injects token to GitHub Actions secret via `gh secret set` in managed auth mode
 - ensures target workspace is a git repo (`git init` + `origin` when needed)
 
+## Current Production Bundle
+
+Initial production scope is intentionally narrow and hardened:
+
+- Omar baseline gate workflows and deterministic local gate checks
+- Jules Tanaka deep frontend audits (`sl audit frontend --stream`)
+- Reproducible review/audit artifacts and runtime telemetry
+
+Primary commands in this shipping lane:
+
+```bash
+sl auth login --api-url https://api.sentinelayer.com
+sl scan init --path . --non-interactive
+sl omargate deep --path .
+sl audit frontend --path ./my-react-app --stream
+sl review --diff
+sl watch run-events --run-id <run-id>
+```
+
 ## 60-second flow
 
 1. Trigger:
 
 ```bash
-npx create-sentinelayer@latest my-agent-app
+npx sentinelayer-cli@latest my-agent-app
 ```
 
 2. Interview prompts (project goal, provider, coding agent, auth mode, depth, audience, project type, optional repo connect).
@@ -51,7 +71,7 @@ Use non-interactive mode to run full scaffolding in automation:
 
 ```bash
 SENTINELAYER_CLI_INTERVIEW_JSON='{"projectName":"demo-app","projectDescription":"Build an autonomous secure code review orchestrator.","aiProvider":"openai","codingAgent":"codex","authMode":"sentinelayer","generationMode":"detailed","audienceLevel":"developer","projectType":"greenfield","techStack":["TypeScript","Node.js"],"features":["auth","scan"],"connectRepo":false,"injectSecret":false}' \
-npx create-sentinelayer@latest demo-app --non-interactive --skip-browser-open
+npx sentinelayer-cli@latest demo-app --non-interactive --skip-browser-open
 ```
 
 Inputs for non-interactive mode:
@@ -666,7 +686,7 @@ gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 gh secret list --repo <owner/repo>
 ```
 
-3. For manual setup details: `https://docs.sentinelayer.com/cli/secret-setup`
+3. For manual setup details: `https://sentinelayer.com/docs/getting-started/install-workflow`
 
 4. BYOK mode (no Sentinelayer token):
    - keep generated `docs/spec.md`, `docs/build-guide.md`, `prompts/execution-prompt.md`, and `tasks/todo.md`
@@ -690,18 +710,18 @@ The CLI supports layered config resolution:
 
 Commands:
 
-- `create-sentinelayer config list --scope resolved --json`
-- `create-sentinelayer config get apiUrl --scope resolved`
-- `create-sentinelayer config set defaultModelProvider openai --scope project`
-- `create-sentinelayer config edit --scope project`
+- `sentinelayer-cli config list --scope resolved --json`
+- `sentinelayer-cli config get apiUrl --scope resolved`
+- `sentinelayer-cli config set defaultModelProvider openai --scope project`
+- `sentinelayer-cli config edit --scope project`
 
 ## Codebase ingest (PR 1.1 slice)
 
 Run deterministic mapping and emit `CODEBASE_INGEST.json`:
 
-- `create-sentinelayer ingest map --path .`
-- `create-sentinelayer ingest map --path . --json`
-- `create-sentinelayer ingest map --path . --output-file artifacts/CODEBASE_INGEST.json`
+- `sentinelayer-cli ingest map --path .`
+- `sentinelayer-cli ingest map --path . --json`
+- `sentinelayer-cli ingest map --path . --output-file artifacts/CODEBASE_INGEST.json`
 
 The ingest artifact includes language/LOC breakdown, framework hints, entry points, risk-surface hints, and a bounded file index to support deterministic handoff context.
 
@@ -709,14 +729,14 @@ The ingest artifact includes language/LOC breakdown, framework hints, entry poin
 
 Generate a local `SPEC.md` without calling the API:
 
-- `create-sentinelayer spec list-templates`
-- `create-sentinelayer spec show-template api-service`
-- `create-sentinelayer spec generate --path . --template api-service --description \"Build secure autonomous review orchestration\"`
-- `create-sentinelayer spec show --path .`
-- `create-sentinelayer spec show --path . --plain`
-- `create-sentinelayer spec regenerate --path . --dry-run --json`
-- `create-sentinelayer spec regenerate --path . --max-diff-lines 120`
-- `create-sentinelayer spec regenerate --path . --dry-run --quiet`
+- `sentinelayer-cli spec list-templates`
+- `sentinelayer-cli spec show-template api-service`
+- `sentinelayer-cli spec generate --path . --template api-service --description \"Build secure autonomous review orchestration\"`
+- `sentinelayer-cli spec show --path .`
+- `sentinelayer-cli spec show --path . --plain`
+- `sentinelayer-cli spec regenerate --path . --dry-run --json`
+- `sentinelayer-cli spec regenerate --path . --max-diff-lines 120`
+- `sentinelayer-cli spec regenerate --path . --dry-run --quiet`
 
 The generator uses deterministic ingest context plus template architecture/security checklists.
 
@@ -724,8 +744,8 @@ The generator uses deterministic ingest context plus template architecture/secur
 
 Generate a deterministic base spec, then optionally refine it with a provider model:
 
-- `create-sentinelayer spec generate --path . --template api-service --description "Harden auth and release workflows" --ai`
-- `create-sentinelayer spec generate --path . --ai --provider openai --model gpt-5.3-codex --max-cost 1 --warn-at-percent 80`
+- `sentinelayer-cli spec generate --path . --template api-service --description "Harden auth and release workflows" --ai`
+- `sentinelayer-cli spec generate --path . --ai --provider openai --model gpt-5.3-codex --max-cost 1 --warn-at-percent 80`
 
 `--ai` mode behavior:
 
@@ -739,10 +759,10 @@ Generate a deterministic base spec, then optionally refine it with a provider mo
 
 Generate execution prompts directly from `SPEC.md`:
 
-- `create-sentinelayer prompt generate --path . --agent codex`
-- `create-sentinelayer prompt preview --path . --agent claude --max-lines 40`
-- `create-sentinelayer prompt show --path . --agent codex`
-- `create-sentinelayer prompt show --path . --file docs/PROMPT_codex.md --plain`
+- `sentinelayer-cli prompt generate --path . --agent codex`
+- `sentinelayer-cli prompt preview --path . --agent claude --max-lines 40`
+- `sentinelayer-cli prompt show --path . --agent codex`
+- `sentinelayer-cli prompt show --path . --file docs/PROMPT_codex.md --plain`
 
 Supported targets: `claude`, `cursor`, `copilot`, `codex`, `generic`.
 
@@ -750,9 +770,9 @@ Supported targets: `claude`, `cursor`, `copilot`, `codex`, `generic`.
 
 Generate and validate a spec-aligned security workflow:
 
-- `create-sentinelayer scan init --path . --non-interactive`
-- `create-sentinelayer scan init --path . --has-e2e-tests yes --playwright-mode auto`
-- `create-sentinelayer scan validate --path . --json`
+- `sentinelayer-cli scan init --path . --non-interactive`
+- `sentinelayer-cli scan init --path . --has-e2e-tests yes --playwright-mode auto`
+- `sentinelayer-cli scan validate --path . --json`
 
 `scan init` writes `.github/workflows/omar-gate.yml` and derives:
 
@@ -764,8 +784,8 @@ Generate and validate a spec-aligned security workflow:
 
 AI-assisted pre-scan triage (budgeted + telemetry-instrumented):
 
-- `create-sentinelayer scan precheck --path . --provider openai --model gpt-5.3-codex`
-- `create-sentinelayer scan precheck --path . --max-cost 0.5 --warn-at-percent 80 --json`
+- `sentinelayer-cli scan precheck --path . --provider openai --model gpt-5.3-codex`
+- `sentinelayer-cli scan precheck --path . --max-cost 0.5 --warn-at-percent 80 --json`
 
 `scan precheck` writes an AI report to `.sentinelayer/reports/scan-precheck-*.md` (or configured output root), records usage in `.sentinelayer/cost-history.json`, and emits usage/stop events to `.sentinelayer/observability/run-events.jsonl`.
 
@@ -773,16 +793,16 @@ AI-assisted pre-scan triage (budgeted + telemetry-instrumented):
 
 Generate phase-by-phase implementation guides from `SPEC.md`:
 
-- `create-sentinelayer guide generate --path .`
-- `create-sentinelayer guide generate --path . --output-file docs/BUILD_GUIDE.md`
-- `create-sentinelayer guide show --path .`
-- `create-sentinelayer guide show --path . --plain`
+- `sentinelayer-cli guide generate --path .`
+- `sentinelayer-cli guide generate --path . --output-file docs/BUILD_GUIDE.md`
+- `sentinelayer-cli guide show --path .`
+- `sentinelayer-cli guide show --path . --plain`
 
 Export phases as issue-ready payloads:
 
-- `create-sentinelayer guide export --path . --format jira`
-- `create-sentinelayer guide export --path . --format linear`
-- `create-sentinelayer guide export --path . --format github-issues`
+- `sentinelayer-cli guide export --path . --format jira`
+- `sentinelayer-cli guide export --path . --format linear`
+- `sentinelayer-cli guide export --path . --format github-issues`
 
 `guide generate` writes `BUILD_GUIDE.md` with per-phase effort estimates, dependencies, implementation tasks, and acceptance criteria. `guide export` transforms phases into tracker-friendly artifacts.
 
@@ -800,8 +820,8 @@ Export phases as issue-ready payloads:
 
 The CLI now includes deterministic cost-ledger commands:
 
-- `create-sentinelayer cost show --path .`
-- `create-sentinelayer cost record --path . --provider openai --model gpt-5.3-codex --input-tokens 1000 --output-tokens 500`
+- `sentinelayer-cli cost show --path .`
+- `sentinelayer-cli cost record --path . --provider openai --model gpt-5.3-codex --input-tokens 1000 --output-tokens 500`
 
 Ledger path:
 
@@ -831,9 +851,9 @@ including normalized usage snapshots and blocking stop-class events when budgets
 
 The CLI now supports a deterministic run-event ledger and stop-class schema:
 
-- `create-sentinelayer telemetry show --path .`
-- `create-sentinelayer telemetry record --path . --event-type tool_call --tool-calls 1`
-- `create-sentinelayer telemetry record --path . --event-type run_stop --stop-class MAX_RUNTIME_MS_EXCEEDED --reason-codes MAX_RUNTIME_MS_EXCEEDED --blocking`
+- `sentinelayer-cli telemetry show --path .`
+- `sentinelayer-cli telemetry record --path . --event-type tool_call --tool-calls 1`
+- `sentinelayer-cli telemetry record --path . --event-type run_stop --stop-class MAX_RUNTIME_MS_EXCEEDED --reason-codes MAX_RUNTIME_MS_EXCEEDED --blocking`
 
 Ledger contract:
 
@@ -863,7 +883,7 @@ Build provenance attestations are enforced by `.github/workflows/attestations.ym
 
 Prerequisites:
 
-- npm package name is available (`create-sentinelayer`)
+- npm package name is available (`sentinelayer-cli`)
 - repository secret `NPM_TOKEN` is set with publish access
 
 Release options:
@@ -913,54 +933,54 @@ Additional test commands:
 
 The CLI now supports a command tree, while keeping slash-command compatibility:
 
-- `create-sentinelayer init <project-name>` runs scaffold/auth generation (legacy top-level invocation still works)
-- `create-sentinelayer omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
-- `create-sentinelayer audit [--agents <ids>] [--max-parallel <n>]` runs orchestrated audit agents and writes `.sentinelayer/audits/<run-id>/AUDIT_REPORT.{md,json}`
-- `create-sentinelayer audit registry` lists built-in/customized audit-agent registry records
-- `create-sentinelayer audit security` runs the security specialist agent and writes a dedicated `SECURITY_AGENT_REPORT.md`
-- `create-sentinelayer audit architecture` runs the architecture specialist agent and writes a dedicated `ARCHITECTURE_AGENT_REPORT.md`
-- `create-sentinelayer audit testing` runs the testing specialist agent and writes a dedicated `TESTING_AGENT_REPORT.md`
-- `create-sentinelayer audit performance` runs the performance specialist agent and writes a dedicated `PERFORMANCE_AGENT_REPORT.md`
-- `create-sentinelayer audit compliance` runs the compliance specialist agent and writes a dedicated `COMPLIANCE_AGENT_REPORT.md`
-- `create-sentinelayer audit documentation` runs the documentation specialist agent and writes a dedicated `DOCUMENTATION_AGENT_REPORT.md`
-- `create-sentinelayer audit package [--run-id <id>]` builds/rebuilds unified DD package artifacts from the requested (or latest) run
-- `create-sentinelayer audit replay <run-id>` reruns the same selected agent set and writes a replay comparison artifact
-- `create-sentinelayer audit diff <base-run-id> <candidate-run-id>` compares two runs and emits reproducibility drift deltas
-- `create-sentinelayer audit local --path <repo>` runs legacy readiness + scan audit and writes `.sentinelayer/reports/audit-*.md`
-- `create-sentinelayer persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
-- `create-sentinelayer apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
-- `create-sentinelayer auth login|status|logout` manages persistent CLI sessions for long-running automation
-- `create-sentinelayer auth sessions|revoke` supports session inventory and explicit token revocation controls
-- `create-sentinelayer watch run-events --run-id <id>` streams runtime events with local artifact persistence
-- `create-sentinelayer daemon error record|worker|queue` ingests admin errors and routes deterministic daemon queue work items
-- `create-sentinelayer daemon assign claim|heartbeat|release|reassign|list` manages shared daemon assignment leases and lifecycle states
-- `create-sentinelayer daemon jira open|start|comment|transition|list` manages Jira lifecycle evidence tied to daemon work items
-- `create-sentinelayer daemon budget check|status` enforces budget warning/quarantine/kill governance with reproducible artifacts
-- `create-sentinelayer daemon control|snapshot|stop` provides operator roster snapshots and explicit confirmed stop controls
-- `create-sentinelayer daemon lineage build|list|show` indexes reproducible work-item artifact lineage across queue/assignment/jira/budget/operator runs
-- `create-sentinelayer daemon map scope|list|show` builds hybrid deterministic+semantic impact scopes with import-graph overlay for daemon work items
-- `create-sentinelayer daemon reliability run|status` and `daemon maintenance status|on|off` operate the midnight synthetic lane and maintenance billboard lifecycle
-- `create-sentinelayer mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
-- `create-sentinelayer plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
-- `create-sentinelayer policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
-- `create-sentinelayer ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
-- `create-sentinelayer ai identity list|show|revoke|create-child|lineage|revoke-children` manages local identity lifecycle and lineage workflows
-- `create-sentinelayer ai identity domain create|verify|freeze` manages domain proof registration and containment controls
-- `create-sentinelayer ai identity target create|verify|show` manages target policy registration and verification controls
-- `create-sentinelayer ai identity site create|list` manages ephemeral callback site provisioning and local lifecycle tracking
-- `create-sentinelayer ai identity events|latest|wait-for-otp` manages extraction/event polling for OTP and verification-link retrieval
-- `create-sentinelayer chat ask` runs low-latency prompt/response chat with transcript persistence
-- `create-sentinelayer review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
-- `create-sentinelayer review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings
-- `create-sentinelayer review show|export|accept|reject|defer ...` manages reconciled unified reports and HITL adjudication
-- `create-sentinelayer review replay|diff ...` runs reproducibility replay and run-to-run drift comparisons
-- `create-sentinelayer review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
+- `sentinelayer-cli init <project-name>` runs scaffold/auth generation (legacy top-level invocation still works)
+- `sentinelayer-cli omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
+- `sentinelayer-cli audit [--agents <ids>] [--max-parallel <n>]` runs orchestrated audit agents and writes `.sentinelayer/audits/<run-id>/AUDIT_REPORT.{md,json}`
+- `sentinelayer-cli audit registry` lists built-in/customized audit-agent registry records
+- `sentinelayer-cli audit security` runs the security specialist agent and writes a dedicated `SECURITY_AGENT_REPORT.md`
+- `sentinelayer-cli audit architecture` runs the architecture specialist agent and writes a dedicated `ARCHITECTURE_AGENT_REPORT.md`
+- `sentinelayer-cli audit testing` runs the testing specialist agent and writes a dedicated `TESTING_AGENT_REPORT.md`
+- `sentinelayer-cli audit performance` runs the performance specialist agent and writes a dedicated `PERFORMANCE_AGENT_REPORT.md`
+- `sentinelayer-cli audit compliance` runs the compliance specialist agent and writes a dedicated `COMPLIANCE_AGENT_REPORT.md`
+- `sentinelayer-cli audit documentation` runs the documentation specialist agent and writes a dedicated `DOCUMENTATION_AGENT_REPORT.md`
+- `sentinelayer-cli audit package [--run-id <id>]` builds/rebuilds unified DD package artifacts from the requested (or latest) run
+- `sentinelayer-cli audit replay <run-id>` reruns the same selected agent set and writes a replay comparison artifact
+- `sentinelayer-cli audit diff <base-run-id> <candidate-run-id>` compares two runs and emits reproducibility drift deltas
+- `sentinelayer-cli audit local --path <repo>` runs legacy readiness + scan audit and writes `.sentinelayer/reports/audit-*.md`
+- `sentinelayer-cli persona orchestrator --mode <builder|reviewer|hardener> --path <repo>` generates mode-specific execution instructions with repo context
+- `sentinelayer-cli apply --plan tasks/todo.md --path <repo>` parses plan tasks into deterministic execution order preview
+- `sentinelayer-cli auth login|status|logout` manages persistent CLI sessions for long-running automation
+- `sentinelayer-cli auth sessions|revoke` supports session inventory and explicit token revocation controls
+- `sentinelayer-cli watch run-events --run-id <id>` streams runtime events with local artifact persistence
+- `sentinelayer-cli daemon error record|worker|queue` ingests admin errors and routes deterministic daemon queue work items
+- `sentinelayer-cli daemon assign claim|heartbeat|release|reassign|list` manages shared daemon assignment leases and lifecycle states
+- `sentinelayer-cli daemon jira open|start|comment|transition|list` manages Jira lifecycle evidence tied to daemon work items
+- `sentinelayer-cli daemon budget check|status` enforces budget warning/quarantine/kill governance with reproducible artifacts
+- `sentinelayer-cli daemon control|snapshot|stop` provides operator roster snapshots and explicit confirmed stop controls
+- `sentinelayer-cli daemon lineage build|list|show` indexes reproducible work-item artifact lineage across queue/assignment/jira/budget/operator runs
+- `sentinelayer-cli daemon map scope|list|show` builds hybrid deterministic+semantic impact scopes with import-graph overlay for daemon work items
+- `sentinelayer-cli daemon reliability run|status` and `daemon maintenance status|on|off` operate the midnight synthetic lane and maintenance billboard lifecycle
+- `sentinelayer-cli mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
+- `sentinelayer-cli plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
+- `sentinelayer-cli policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
+- `sentinelayer-cli ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
+- `sentinelayer-cli ai identity list|show|revoke|create-child|lineage|revoke-children` manages local identity lifecycle and lineage workflows
+- `sentinelayer-cli ai identity domain create|verify|freeze` manages domain proof registration and containment controls
+- `sentinelayer-cli ai identity target create|verify|show` manages target policy registration and verification controls
+- `sentinelayer-cli ai identity site create|list` manages ephemeral callback site provisioning and local lifecycle tracking
+- `sentinelayer-cli ai identity events|latest|wait-for-otp` manages extraction/event polling for OTP and verification-link retrieval
+- `sentinelayer-cli chat ask` runs low-latency prompt/response chat with transcript persistence
+- `sentinelayer-cli review [path] [--diff|--staged]` runs layered deterministic review and writes reproducible artifacts under `.sentinelayer/reviews/<run-id>/`
+- `sentinelayer-cli review [path] [--diff|--staged] [--ai]` adds budget-governed AI reasoning over deterministic findings
+- `sentinelayer-cli review show|export|accept|reject|defer ...` manages reconciled unified reports and HITL adjudication
+- `sentinelayer-cli review replay|diff ...` runs reproducibility replay and run-to-run drift comparisons
+- `sentinelayer-cli review scan --mode full|diff|staged` runs lightweight deterministic scan mode for compatibility
 - add `--json` to `omargate`, `audit`, `persona orchestrator`, or `apply` for machine-readable summaries in CI
 - add `--output-dir <dir>` to local commands to write reports outside the default `.sentinelayer/reports`
 
 Legacy slash commands are still supported:
 
-- `create-sentinelayer /omargate deep --path .`
+- `sentinelayer-cli /omargate deep --path .`
 - `sentinel /omargate deep --path .`
 
 Roadmap:
@@ -973,3 +993,4 @@ Roadmap:
 - `GitHub CLI not installed`: install `gh` or run manual fallback.
 - `Invalid repo format`: use exact `owner/repo`.
 - `Missing token in workflow`: ensure `.github/workflows/omar-gate.yml` maps `sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}`.
+

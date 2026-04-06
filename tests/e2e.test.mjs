@@ -1176,8 +1176,10 @@ test("CLI flags: --help and --version return successfully", async () => {
   }
 });
 
-test("Package metadata exposes sentinel and sl binary aliases", async () => {
+test("Package metadata exposes sentinelayer-cli, sentinel, and sl binary aliases", async () => {
   const pkg = JSON.parse(await readFile(path.resolve(__dirname, "..", "package.json"), "utf-8"));
+  assert.equal(pkg.name, "sentinelayer-cli");
+  assert.equal(pkg.bin["sentinelayer-cli"], "bin/sentinelayer-cli.js");
   assert.equal(pkg.bin["create-sentinelayer"], "bin/create-sentinelayer.js");
   assert.equal(pkg.bin.sentinel, "bin/create-sentinelayer.js");
   assert.equal(pkg.bin.sl, "bin/sl.js");
@@ -1761,7 +1763,9 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
     );
     assert.equal(
       initPayload.instructions.some((line) =>
-        /https:\/\/docs\.sentinelayer\.com\/cli\/secret-setup/.test(String(line || ""))
+        /https:\/\/sentinelayer\.com\/docs\/getting-started\/install-workflow/.test(
+          String(line || "")
+        )
       ),
       true
     );
@@ -6230,3 +6234,4 @@ test("CLI local command: /apply --json emits machine-readable summary", async ()
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+

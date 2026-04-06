@@ -178,7 +178,7 @@ export async function buildCliProgram({
   const program = new Command();
 
   program
-    .name("create-sentinelayer")
+    .name("sentinelayer-cli")
     .description("Sentinelayer CLI")
     .version(CLI_VERSION)
     .option("--verbose", "Verbose execution logs")
@@ -204,5 +204,6 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
     invokeLegacy: runLegacyCliWithErrorHandling,
     onlyCommand: rawArgs[0],
   });
-  await program.parseAsync(["node", "create-sentinelayer", ...rawArgs]);
+  await program.parseAsync(["node", "sentinelayer-cli", ...rawArgs]);
 }
+

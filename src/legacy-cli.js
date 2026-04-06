@@ -187,18 +187,18 @@ function parseCliArgs(argv) {
 }
 
 function printUsage() {
-  console.log(`create-sentinelayer v${CLI_VERSION}`);
+  console.log(`sentinelayer-cli v${CLI_VERSION}`);
   console.log("");
   console.log("Usage:");
-  console.log("  create-sentinelayer [project-name] [options]");
-  console.log("  create-sentinelayer /omargate deep [--path PATH]");
-  console.log("  create-sentinelayer /audit [--path PATH]");
-  console.log("  create-sentinelayer /persona orchestrator [--mode MODE] [--path PATH]");
-  console.log("  create-sentinelayer /apply --plan <todo.md> [--path PATH]");
-  console.log("  create-sentinelayer config <list|get|set|edit> [options]");
-  console.log("  create-sentinelayer ingest map [--path PATH] [--output-file PATH]");
-  console.log("  create-sentinelayer spec <list-templates|show-template|generate> [options]");
-  console.log("  create-sentinelayer prompt <generate|preview> [options]");
+  console.log("  sentinelayer-cli [project-name] [options]");
+  console.log("  sentinelayer-cli /omargate deep [--path PATH]");
+  console.log("  sentinelayer-cli /audit [--path PATH]");
+  console.log("  sentinelayer-cli /persona orchestrator [--mode MODE] [--path PATH]");
+  console.log("  sentinelayer-cli /apply --plan <todo.md> [--path PATH]");
+  console.log("  sentinelayer-cli config <list|get|set|edit> [options]");
+  console.log("  sentinelayer-cli ingest map [--path PATH] [--output-file PATH]");
+  console.log("  sentinelayer-cli spec <list-templates|show-template|generate> [options]");
+  console.log("  sentinelayer-cli prompt <generate|preview> [options]");
   console.log("");
   console.log("Options:");
   console.log("  -h, --help             Show help");
@@ -1359,17 +1359,17 @@ async function ensureSentinelStartScript(projectDir, projectName) {
     payload.scripts["sentinel:start"] ||
     "echo \"Sentinelayer artifacts are ready. Open AGENT_HANDOFF_PROMPT.md and start your coding agent.\"";
   const scriptDefaults = {
-    "sentinel:omargate": "npx create-sentinelayer@latest /omargate deep --path .",
-    "sentinel:omargate:json": "npx create-sentinelayer@latest /omargate deep --path . --json",
-    "sentinel:audit": "npx create-sentinelayer@latest /audit --path .",
-    "sentinel:audit:json": "npx create-sentinelayer@latest /audit --path . --json",
+    "sentinel:omargate": "npx sentinelayer-cli@latest /omargate deep --path .",
+    "sentinel:omargate:json": "npx sentinelayer-cli@latest /omargate deep --path . --json",
+    "sentinel:audit": "npx sentinelayer-cli@latest /audit --path .",
+    "sentinel:audit:json": "npx sentinelayer-cli@latest /audit --path . --json",
     "sentinel:persona:builder":
-      "npx create-sentinelayer@latest /persona orchestrator --mode builder --path .",
+      "npx sentinelayer-cli@latest /persona orchestrator --mode builder --path .",
     "sentinel:persona:reviewer":
-      "npx create-sentinelayer@latest /persona orchestrator --mode reviewer --path .",
+      "npx sentinelayer-cli@latest /persona orchestrator --mode reviewer --path .",
     "sentinel:persona:hardener":
-      "npx create-sentinelayer@latest /persona orchestrator --mode hardener --path .",
-    "sentinel:apply": "npx create-sentinelayer@latest /apply --plan tasks/todo.md --path .",
+      "npx sentinelayer-cli@latest /persona orchestrator --mode hardener --path .",
+    "sentinel:apply": "npx sentinelayer-cli@latest /apply --plan tasks/todo.md --path .",
   };
   for (const [name, command] of Object.entries(scriptDefaults)) {
     if (!payload.scripts[name]) {
@@ -1639,7 +1639,7 @@ jobs:
       - name: BYOK mode reminder
         run: |
           echo "Sentinelayer token is not configured in BYOK mode."
-          echo "Use local commands: npx create-sentinelayer@latest /audit --path ."
+          echo "Use local commands: npx sentinelayer-cli@latest /audit --path ."
           echo "Set SENTINELAYER_TOKEN and wire sentinelayer_token to enable Omar Gate action later."
 `;
   }
@@ -2432,3 +2432,4 @@ const invokedAsEntrypoint =
 if (invokedAsEntrypoint) {
   runLegacyCliWithErrorHandling();
 }
+

@@ -3,10 +3,11 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "create-sentinelayer"
+      "package-name": "sentinelayer-cli"
     }
   },
   "include-v-in-tag": true,
   "include-component-in-tag": false,
   "pull-request-title-pattern": "chore(release): ${version}"
 }
+
