@@ -725,16 +725,19 @@ export function registerAuditCommand(program, invokeLegacy) {
       await invokeLegacy(legacyArgs);
     });
 
-  // ── Jules Tanaka: sl audit frontend ────────────────────────────────
+  // ── Persona subcommands: sl audit <persona-name-or-domain> ─────────
   //
-  // End-to-end flow:
+  // Every persona follows the same architecture:
   //   1. Ingest codebase (auto-refresh if stale)
-  //   2. Run Omar baseline (7-layer deterministic) — Jules does NOT see results yet
+  //   2. Run Omar baseline (7-layer deterministic) — persona does NOT see results yet
   //   3. Build scope map from ingest
   //   4. Wire memory (blackboard for sub-agents + FAISS recall from previous runs)
-  //   5. Run Jules agentic loop BLIND-FIRST (no baseline anchoring)
-  //   6. After Jules completes: RECONCILIATION against Omar baseline
+  //   5. Run persona agentic loop BLIND-FIRST (no baseline anchoring)
+  //   6. After persona completes: RECONCILIATION against Omar baseline
   //   7. Write artifacts + report
+  //
+  // Jules Tanaka (frontend) was the first onboarded, but all 13 personas
+  // share the same tool-equipped, budget-governed, isolated-context runtime.
   //
   audit
     .command("frontend")
