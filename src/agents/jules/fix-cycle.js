@@ -318,11 +318,11 @@ function buildPlan(w, s, f) {
 
 function buildFindingsComment(f) {
   const parts = ["## Findings"];
-  for (const finding of (f || []).slice(0, 10)) {
+  const items = f || [];
+  for (const finding of items.slice(0, 10)) {
     parts.push("- **[" + (finding.severity || "P3") + "]** " + (finding.file || "") + ":" + (finding.line || "") + " " + (finding.title || finding.type || ""));
     if (finding.evidence) parts.push("  Evidence: " + String(finding.evidence).slice(0, 200));
   }
-  const items = f || [];
   if (items.length > 10) parts.push("... and " + (items.length - 10) + " more");
   parts.push("\n" + JULES_DEFINITION.signature);
   return parts.join("\n");

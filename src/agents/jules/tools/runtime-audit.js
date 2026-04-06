@@ -13,7 +13,6 @@ import { randomUUID } from "node:crypto";
  */
 
 const LIGHTHOUSE_TIMEOUT_MS = 120000;
-const CDP_TIMEOUT_MS = 30000;
 
 /**
  * @param {{ operation: string, url?: string, path?: string }} input
