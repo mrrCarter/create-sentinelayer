@@ -435,15 +435,12 @@ export async function runSwarmRuntime({
           })
         );
       } else if (normalizedEngine === "playwright" && execute && page) {
-        const resolvedActions = (Array.isArray(playwrightActions) && playwrightActions.length > 0) ? playwrightActions : [
-            {
-              type: "wait",
-              ms: 250,
-            },
-            {
-              type: "screenshot",
-            },
-          ];
+        let resolvedActions;
+        if (Array.isArray(playwrightActions) && playwrightActions.length > 0) {
+          resolvedActions = playwrightActions;
+        } else {
+          resolvedActions = [{ type: "wait", ms: 250 }, { type: "screenshot" }];
+        }
 
         for (const action of resolvedActions) {
           if (step >= normalizedMaxSteps) {
