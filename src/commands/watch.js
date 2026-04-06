@@ -377,8 +377,8 @@ export function registerWatchCommand(program) {
       let lastActivityEpoch = Date.now();
       let afterEventId = null;
       let eventCount = 0;
-      let latestStatus = "unknown";
-      let stopReason = "unknown";
+      let latestStatus;
+      let stopReason;
       let terminal = false;
 
       if (!emitJson) {
@@ -458,9 +458,9 @@ export function registerWatchCommand(program) {
         runId,
         apiUrl: session.apiUrl,
         tokenSource: session.source,
-        status: latestStatus,
+        status: latestStatus || "unknown",
         terminal,
-        stopReason,
+        stopReason: stopReason || "unknown",
         startedAt,
         endedAt,
         durationMs,

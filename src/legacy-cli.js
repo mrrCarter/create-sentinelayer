@@ -1981,7 +1981,7 @@ async function collectInterview({ initialProjectName, detectedRepo, detectedCodi
 
     advanced.connectRepo = Boolean(repoSetup.connectRepo);
     if (advanced.connectRepo) {
-      let repoSlug = detectedRepo || "";
+      let repoSlug;
       const repoSource = String(repoSetup.repoSource || "").trim().toLowerCase();
 
       if (repoSource === "manual") {
