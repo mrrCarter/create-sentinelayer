@@ -1763,9 +1763,7 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
     );
     assert.equal(
       initPayload.instructions.some((line) =>
-        /https:\/\/sentinelayer\.com\/docs\/getting-started\/install-workflow/.test(
-          String(line || "")
-        )
+        String(line || "").includes("https://sentinelayer.com/docs/getting-started/install-workflow")
       ),
       true
     );
