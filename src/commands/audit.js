@@ -836,8 +836,9 @@ export function registerAuditCommand(program, invokeLegacy) {
       if (options.model) providerConfig.model = options.model;
       if (options.apiKey) providerConfig.apiKey = options.apiKey;
 
-      // ── [6] SYSTEM PROMPT ─────────────────────────────────────────
-      const systemPrompt = buildJulesSystemPrompt(JULES_DEFINITION, {
+      // ── [6] SYSTEM PROMPT (full production prompt) ─────────────────
+      const { buildJulesProductionPrompt } = await import("../agents/jules/config/system-prompt.js");
+      const systemPrompt = buildJulesProductionPrompt({
         mode: options.mode,
         framework: ingest?.frameworks?.[0] || "unknown",
         componentCount: ingest?.indexedFiles?.files?.filter(
