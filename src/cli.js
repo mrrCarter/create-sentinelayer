@@ -230,6 +230,14 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
   // Normalize slash commands (/omargate → omargate, /audit → audit, etc.)
   const normalizedArgs = normalizeSlashArgs(rawArgs);
 
+  // Auth gate — require login for all commands except auth/help/version/config
+  const { checkAuthGate, printAuthRequired } = await import("./auth/gate.js");
+  const authResult = await checkAuthGate(normalizedArgs);
+  if (!authResult.authenticated) {
+    printAuthRequired();
+    return;
+  }
+
   if (shouldBypassCommander(normalizedArgs)) {
     await runLegacyCliWithErrorHandling(normalizedArgs);
     return;

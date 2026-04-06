@@ -18,7 +18,7 @@ const LIGHTHOUSE_TIMEOUT_MS = 120000;
  * @param {{ operation: string, url?: string, path?: string }} input
  * @returns {object} Structured result per operation
  */
-export function runtimeAudit(input) {
+export async function runtimeAudit(input) {
   if (!RUNTIME_OPS.has(input.operation)) {
     throw new RuntimeAuditError(
       "Unknown operation: " + input.operation + ". Valid: " + [...RUNTIME_OPS].join(", "),
@@ -49,7 +49,7 @@ const RUNTIME_DISPATCH = {
  * Run Lighthouse via npx (no install required).
  * Returns performance, accessibility, best-practices, SEO scores + key metrics.
  */
-function lighthouseScan(input) {
+async function lighthouseScan(input) {
   const url = input.url;
   if (!url) {
     throw new RuntimeAuditError("lighthouse_scan requires a url parameter");
@@ -57,6 +57,13 @@ function lighthouseScan(input) {
   if (!isValidUrl(url)) {
     throw new RuntimeAuditError("Invalid URL: " + url);
   }
+
+  // Prefer SentinelLayer API scanner (authenticated, server-side Lighthouse).
+  // Falls back to local npx lighthouse if API unavailable.
+  try {
+    const apiResult = await callScannerApi(url);
+    if (apiResult.available) return apiResult;
+  } catch { /* API unavailable — fall back to local */ }
 
   try {
     const outputPath = path.join(
@@ -76,6 +83,7 @@ function lighthouseScan(input) {
       encoding: "utf-8",
       timeout: LIGHTHOUSE_TIMEOUT_MS,
       stdio: ["pipe", "pipe", "pipe"],
+      shell: true, // Windows: npx is npx.cmd, needs shell resolution
     });
 
     if (!fs.existsSync(outputPath)) {
@@ -399,6 +407,82 @@ function sanitizeUrlForShell(url) {
   } catch {
     return "";
   }
+}
+
+/**
+ * Call the SentinelLayer API scanner endpoint for server-side Lighthouse.
+ * Requires authenticated session (token from sl auth login).
+ * Returns structured result or throws if unavailable.
+ */
+async function callScannerApi(url) {
+  let session;
+  try {
+    const { readStoredSession } = await import("../../../auth/session-store.js");
+    session = await readStoredSession();
+  } catch { /* session read failed */ }
+
+  if (!session || !session.token) {
+    return { available: false, reason: "Not authenticated — run sl auth login" };
+  }
+
+  const apiUrl = session.apiUrl || "https://api.sentinelayer.com";
+  const scanEndpoint = apiUrl + "/api/v1/scan/url";
+
+  // Submit scan
+  const submitResponse = await fetch(scanEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + session.token,
+    },
+    body: JSON.stringify({ url, scan_type: "lighthouse" }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!submitResponse.ok) {
+    return { available: false, reason: "Scanner API returned " + submitResponse.status };
+  }
+
+  const submitData = await submitResponse.json();
+  const scanId = submitData.scan_id || submitData.id;
+  if (!scanId) {
+    return { available: false, reason: "Scanner did not return scan_id" };
+  }
+
+  // Poll for completion (max 90s)
+  const pollUrl = apiUrl + "/api/v1/scan/url/" + scanId;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const pollResponse = await fetch(pollUrl, {
+        headers: { "Authorization": "Bearer " + session.token },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!pollResponse.ok) continue;
+      const pollData = await pollResponse.json();
+      if (pollData.status === "completed" || pollData.status === "complete") {
+        const scores = pollData.scores || pollData.lighthouse_scores || {};
+        return {
+          available: true,
+          source: "sentinelayer-api",
+          scanId,
+          reportPath: null,
+          scores: {
+            performance: scores.performance ?? null,
+            accessibility: scores.accessibility ?? null,
+            bestPractices: scores.best_practices ?? scores.bestPractices ?? null,
+            seo: scores.seo ?? null,
+          },
+          metrics: pollData.metrics || {},
+          opportunities: pollData.opportunities || [],
+        };
+      }
+      if (pollData.status === "failed" || pollData.status === "error") {
+        return { available: false, reason: "Scanner reported failure: " + (pollData.error || pollData.status) };
+      }
+    } catch { /* poll failed, retry */ }
+  }
+  return { available: false, reason: "Scanner timed out after 90s" };
 }
 
 export class RuntimeAuditError extends Error {
