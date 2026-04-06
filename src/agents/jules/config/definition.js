@@ -34,7 +34,7 @@ export const JULES_DEFINITION = Object.freeze({
   },
 
   // Tool access (audit mode)
-  auditTools: ["FileRead", "Grep", "Glob", "FrontendAnalyze", "RuntimeAudit"],
+  auditTools: ["FileRead", "Grep", "Glob", "FrontendAnalyze", "RuntimeAudit", "AuthAudit"],
 
   // Tool access (fix mode — adds write capabilities in worktree)
   fixTools: ["FileRead", "Grep", "Glob", "FrontendAnalyze", "FileEdit", "Shell"],
