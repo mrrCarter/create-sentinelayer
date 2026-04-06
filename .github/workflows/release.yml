@@ -98,7 +98,7 @@ jobs:
         id: artifact_manifest
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 create-sentinelayer-*.tgz | head -n 1)"
+          TARBALL="$(ls -1 sentinelayer-cli-*.tgz | head -n 1)"
           SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
           jq -n \
             --arg tarball "${TARBALL}" \
@@ -120,8 +120,10 @@ jobs:
           TARBALL="${{ steps.artifact_manifest.outputs.tarball }}"
           PREFIX_DIR="$(mktemp -d)"
           npm install --prefix "${PREFIX_DIR}" --ignore-scripts "${TARBALL}"
+          "${PREFIX_DIR}/node_modules/.bin/sentinelayer-cli" --version
           "${PREFIX_DIR}/node_modules/.bin/create-sentinelayer" --version
           "${PREFIX_DIR}/node_modules/.bin/sentinel" --version
+          "${PREFIX_DIR}/node_modules/.bin/sl" --version
           rm -rf "${PREFIX_DIR}"
 
       - name: Generate release build attestation
@@ -151,7 +153,7 @@ jobs:
       - name: Upload release tarball artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
-          name: create-sentinelayer-tarball
+          name: sentinelayer-cli-tarball
           path: |
             ${{ steps.artifact_manifest.outputs.tarball }}
             release-artifact-manifest.json
@@ -181,7 +183,7 @@ jobs:
       - name: Download release tarball artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: create-sentinelayer-tarball
+          name: sentinelayer-cli-tarball
           path: release-artifact
 
       - name: Validate publish credentials
@@ -195,7 +197,7 @@ jobs:
       - name: Enforce release artifact checksum manifest
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 release-artifact/create-sentinelayer-*.tgz | head -n 1)"
+          TARBALL="$(ls -1 release-artifact/sentinelayer-cli-*.tgz | head -n 1)"
           MANIFEST="release-artifact/release-artifact-manifest.json"
           test -f "${MANIFEST}"
           EXPECTED_SHA256="$(jq -r '.sha256' "${MANIFEST}")"
@@ -235,3 +237,4 @@ jobs:
           npm publish "${TARBALL}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
+

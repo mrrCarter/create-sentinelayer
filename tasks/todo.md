@@ -730,3 +730,18 @@ Review:
   - `npm run test:unit` (pass: `306/306`)
   - `npm test` (pass: unit `306/306`, e2e `86/86`)
 - Remaining known non-blocker from earlier audit still present and intentionally untouched in this pass: `FrontendAnalyze` ripgrep lookaround regex stderr noise (`check_accessibility` patterns).
+
+## 2026-04-06 - CLI Rename + Docs/SEO Publish Prep
+
+- [x] Rename publish-facing CLI identity from `create-sentinelayer` to `sentinelayer-cli` while preserving backwards-compatible aliases (`create-sentinelayer`, `sentinel`, `sl`).
+- [x] Update release workflow/package metadata/tests to validate new package name and tarball behavior.
+- [x] Update CLI README command/install docs to present `sentinelayer-cli` as primary distribution identity.
+- [x] Run mandatory verification loop (`npm run verify`, local `/omargate` JSON, local `/audit` JSON) and capture evidence.
+- [pending] Update Sentinelayer web docs/discovery surfaces (CLI pages, docs nav, llms.txt/sitemap generated assets) for SEO + indexability.
+- [pending] Build web docs, validate generated outputs, and capture evidence.
+- [pending] Commit and push `create-sentinelayer` + `sentinelayer-web` changes with clear rollout summary of shipping commands.
+
+Review:
+- `npm run verify` passed on branch `roadmap/pr168-cli-rename` (`e2e 86/86`, `unit 334/334`, coverage statements `90.56%`, functions `92.21%`, tarball `sentinelayer-cli-0.1.0.tgz`).
+- `node bin/create-sentinelayer.js /omargate deep --path . --json` passed (`p1=0`, `p2=11`, `blocking=false`).
+- `node bin/create-sentinelayer.js /audit --path . --json` passed (`overallStatus=PASS`, `p1Total=0`, `p2Total=11`, `blocking=false`).
