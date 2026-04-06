@@ -771,7 +771,7 @@ export function registerAuditCommand(program, invokeLegacy) {
       const { runDeterministicReviewPipeline } = await import("../review/local-review.js");
       const fsp = await import("node:fs/promises");
 
-      const outputRoot = resolveOut({ targetPath, outputDir: options.outputDir });
+      const outputRoot = await resolveOut({ targetPath, outputDir: options.outputDir });
       const artifactDir = path.join(outputRoot, "reports", "jules-" + Date.now());
       await fsp.mkdir(artifactDir, { recursive: true });
 

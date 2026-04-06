@@ -123,6 +123,36 @@ const COMMAND_REGISTRARS = {
 
 const COMMAND_SET = new Set(Object.keys(COMMAND_REGISTRARS));
 
+// Map slash-prefixed commands to their Commander equivalents.
+// /omargate → omargate, /audit → audit local, etc.
+// Only remap /omargate to Commander. The others (/audit, /persona, /apply)
+// stay on the legacy path for backward compatibility (different output format).
+const SLASH_TO_COMMANDER = {
+  "/omargate": "omargate",
+};
+
+function normalizeSlashArgs(rawArgs) {
+  if (!Array.isArray(rawArgs) || rawArgs.length === 0) return rawArgs;
+  const first = String(rawArgs[0] || "").trim();
+
+  // Direct slash match: /omargate → omargate
+  const mapped = SLASH_TO_COMMANDER[first];
+  if (mapped) {
+    return [mapped, ...rawArgs.slice(1)];
+  }
+
+  // Windows Git Bash path mangling fix: /omargate gets converted to
+  // "C:/Program Files/Git/omargate" by MSYS. Detect and recover.
+  for (const [slash, cmd] of Object.entries(SLASH_TO_COMMANDER)) {
+    const suffix = slash.slice(1); // "omargate" from "/omargate"
+    if (first.endsWith("/" + suffix) || first.endsWith("\\" + suffix)) {
+      return [cmd, ...rawArgs.slice(1)];
+    }
+  }
+
+  return rawArgs;
+}
+
 function shouldBypassCommander(rawArgs) {
   if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
     return true;
@@ -133,7 +163,8 @@ function shouldBypassCommander(rawArgs) {
     return true;
   }
 
-  if (first.startsWith("/")) {
+  // Slash commands are now handled by normalizeSlashArgs before this check
+  if (first.startsWith("/") && !SLASH_TO_COMMANDER[first]) {
     return true;
   }
 
@@ -145,7 +176,8 @@ function shouldBypassCommander(rawArgs) {
     return true;
   }
 
-  return !COMMAND_SET.has(first);
+  const resolved = SLASH_TO_COMMANDER[first] || first;
+  return !COMMAND_SET.has(resolved);
 }
 
 async function registerCommands(program, { invokeLegacy, onlyCommand } = {}) {
@@ -195,15 +227,18 @@ export async function buildCliProgram({
 }
 
 export async function runCli(rawArgs = process.argv.slice(2)) {
-  if (shouldBypassCommander(rawArgs)) {
-    await runLegacyCliWithErrorHandling(rawArgs);
+  // Normalize slash commands (/omargate → omargate, /audit → audit, etc.)
+  const normalizedArgs = normalizeSlashArgs(rawArgs);
+
+  if (shouldBypassCommander(normalizedArgs)) {
+    await runLegacyCliWithErrorHandling(normalizedArgs);
     return;
   }
 
   const program = await buildCliProgram({
     invokeLegacy: runLegacyCliWithErrorHandling,
-    onlyCommand: rawArgs[0],
+    onlyCommand: normalizedArgs[0],
   });
-  await program.parseAsync(["node", "sentinelayer-cli", ...rawArgs]);
+  await program.parseAsync(["node", "sentinelayer-cli", ...normalizedArgs]);
 }
 
