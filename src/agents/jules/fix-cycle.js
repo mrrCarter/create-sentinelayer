@@ -322,7 +322,8 @@ function buildFindingsComment(f) {
     parts.push("- **[" + (finding.severity || "P3") + "]** " + (finding.file || "") + ":" + (finding.line || "") + " " + (finding.title || finding.type || ""));
     if (finding.evidence) parts.push("  Evidence: " + String(finding.evidence).slice(0, 200));
   }
-  if (f && f.length > 10) parts.push("... and " + (f.length - 10) + " more");
+  const items = f || [];
+  if (items.length > 10) parts.push("... and " + (items.length - 10) + " more");
   parts.push("\n" + JULES_DEFINITION.signature);
   return parts.join("\n");
 }

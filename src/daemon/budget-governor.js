@@ -313,8 +313,8 @@ export function evaluateDaemonBudget({
     stopReasons,
   });
 
-  let lifecycleState = "WITHIN_BUDGET";
-  let action = "NONE";
+  let lifecycleState;
+  let action;
   let quarantineStartedAt = previousRecord?.quarantineStartedAt || null;
   let quarantineUntil = previousRecord?.quarantineUntil || null;
 
