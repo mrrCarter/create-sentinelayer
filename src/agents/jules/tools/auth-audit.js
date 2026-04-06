@@ -12,9 +12,6 @@ import { randomUUID } from "node:crypto";
  * Falls back gracefully when AIdenID or Playwright unavailable.
  */
 
-/**
- * @param {{ operation: string, url: string, loginUrl?: string, emailField?: string, passwordField?: string, submitSelector?: string }} input
- */
 export function authAudit(input) {
   if (!AUTH_OPS.has(input.operation)) {
     throw new AuthAuditError("Unknown operation: " + input.operation + ". Valid: " + [...AUTH_OPS].join(", "));
@@ -34,10 +31,6 @@ const AUTH_DISPATCH = {
   check_auth_flow_security: checkAuthFlowSecurity,
 };
 
-/**
- * Provision an ephemeral AIdenID identity for testing.
- * Uses the existing CLI aidenid module in dry-run mode by default.
- */
 async function provisionTestIdentity(input) {
   try {
     const { provisionEmailIdentity, resolveAidenIdCredentials } = await import("../../../ai/aidenid.js");
@@ -45,20 +38,12 @@ async function provisionTestIdentity(input) {
     if (!creds.apiKey) {
       return { available: false, reason: "AIdenID API key not configured (set AIDENID_API_KEY)" };
     }
-
     const result = await provisionEmailIdentity({
-      apiUrl: creds.apiUrl,
-      apiKey: creds.apiKey,
+      apiUrl: creds.apiUrl, apiKey: creds.apiKey,
       tags: ["jules-audit", "frontend-test"],
-      ttlSeconds: 3600, // 1 hour ephemeral
-      dryRun: input.execute !== true, // dry-run by default for safety
+      ttlSeconds: 3600, dryRun: input.execute !== true,
     });
-
-    return {
-      available: true,
-      dryRun: input.execute !== true,
-      identity: result.identity || result,
-    };
+    return { available: true, dryRun: input.execute !== true, identity: result.identity || result };
   } catch (err) {
     return { available: false, reason: "AIdenID provisioning failed: " + err.message };
   }
@@ -66,7 +51,11 @@ async function provisionTestIdentity(input) {
 
 /**
  * Run Playwright to authenticate and inspect the page.
- * Expects identity credentials (email/password) or session token.
+ * - URLs and credentials passed ONLY via env vars (no string interpolation)
+ * - Auth verification checks URL change + cookie presence (not just click success)
+ * - Console errors redacted to prevent sensitive data leakage
+ * - Cookie values never captured (names + flags only)
+ * - Temp script cleanup in finally block (not just success path)
  */
 function authenticatedPageCheck(input) {
   const url = input.url;
@@ -74,78 +63,11 @@ function authenticatedPageCheck(input) {
   if (!isValidUrl(url)) throw new AuthAuditError("Invalid URL: " + url);
 
   const loginUrl = input.loginUrl || url + "/login";
+  let scriptPath = null;
 
   try {
-    const scriptPath = secureTempFile("sl-auth-audit-" + randomUUID().slice(0, 8) + ".cjs");
-    fs.writeFileSync(scriptPath, `
-      const { chromium } = require('playwright');
-      (async () => {
-        const targetUrl = process.env.SL_AUDIT_TARGET_URL;
-        const loginUrl = process.env.SL_AUDIT_LOGIN_URL;
-        const email = process.env.SL_AUDIT_TEST_EMAIL;
-        const password = process.env.SL_AUDIT_TEST_PASSWORD;
-        const emailSelector = process.env.SL_AUDIT_EMAIL_FIELD || 'input[type="email"]';
-        const passwordSelector = process.env.SL_AUDIT_PASSWORD_FIELD || 'input[type="password"]';
-        const submitSelector = process.env.SL_AUDIT_SUBMIT_SELECTOR || 'button[type="submit"]';
-
-        const browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage();
-        const results = { authenticated: false, errors: [], cookies: [], headers: {}, domStats: {} };
-
-        try {
-          // Navigate to login page
-          if (email && password && loginUrl) {
-            await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
-            await page.fill(emailSelector, email);
-            await page.fill(passwordSelector, password);
-            await page.click(submitSelector);
-            await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
-            results.authenticated = true;
-          }
-
-          // Navigate to target authenticated page
-          await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
-
-          // Capture console errors
-          page.on('console', msg => { if (msg.type() === 'error') results.errors.push(msg.text()); });
-
-          // Capture cookies
-          const cookies = await page.context().cookies();
-          results.cookies = cookies.map(c => ({
-            name: c.name, domain: c.domain,
-            httpOnly: c.httpOnly, secure: c.secure,
-            sameSite: c.sameSite, expires: c.expires,
-            sensitive: /session|token|auth|jwt/i.test(c.name),
-          }));
-
-          // DOM stats
-          results.domStats = await page.evaluate(() => ({
-            title: document.title,
-            nodeCount: document.querySelectorAll('*').length,
-            formCount: document.querySelectorAll('form').length,
-            inputCount: document.querySelectorAll('input').length,
-            hasLogout: !!document.querySelector('[href*="logout"], [href*="signout"], button:has-text("Log out"), button:has-text("Sign out")'),
-          }));
-
-          // Response headers from navigation
-          const response = await page.goto(targetUrl, { waitUntil: 'commit', timeout: 10000 }).catch(() => null);
-          if (response) {
-            const h = response.headers();
-            results.headers = {
-              'content-security-policy': h['content-security-policy'] || null,
-              'x-frame-options': h['x-frame-options'] || null,
-              'strict-transport-security': h['strict-transport-security'] || null,
-              'cache-control': h['cache-control'] || null,
-            };
-          }
-        } catch (err) {
-          results.errors.push('Navigation error: ' + err.message);
-        }
-
-        console.log(JSON.stringify(results));
-        await browser.close();
-      })();
-    `);
+    scriptPath = secureTempFile("sl-auth-audit-" + randomUUID().slice(0, 8) + ".cjs");
+    fs.writeFileSync(scriptPath, PLAYWRIGHT_AUTH_SCRIPT);
 
     const env = {
       ...process.env,
@@ -163,10 +85,8 @@ function authenticatedPageCheck(input) {
       stdio: ["pipe", "pipe", "pipe"],
       env,
     });
-    try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
 
     const result = JSON.parse(output.trim());
-    // Analyze cookie security
     const findings = [];
     for (const cookie of (result.cookies || [])) {
       if (cookie.sensitive && !cookie.httpOnly) {
@@ -179,25 +99,96 @@ function authenticatedPageCheck(input) {
         findings.push({ severity: "P2", title: "Sensitive cookie '" + cookie.name + "' has SameSite=None", file: url });
       }
     }
-
     return { available: true, method: "playwright", findings, ...result };
   } catch (err) {
     return { available: false, reason: "Playwright auth audit failed: " + err.message };
+  } finally {
+    // Always clean up temp script (P2 fix: cleanup in finally, not just success)
+    if (scriptPath) { try { fs.unlinkSync(scriptPath); } catch { /* best effort */ } }
   }
 }
 
-/**
- * Check the auth flow itself for security issues (without actually logging in).
- * Inspects login page structure, form attributes, and security headers.
- */
+// Playwright script as a constant — no string interpolation of URLs/credentials.
+// All dynamic values come from environment variables at runtime.
+const PLAYWRIGHT_AUTH_SCRIPT = `
+const { chromium } = require('playwright');
+(async () => {
+  const targetUrl = process.env.SL_AUDIT_TARGET_URL;
+  const loginUrl = process.env.SL_AUDIT_LOGIN_URL;
+  const email = process.env.SL_AUDIT_TEST_EMAIL;
+  const password = process.env.SL_AUDIT_TEST_PASSWORD;
+  const emailSelector = process.env.SL_AUDIT_EMAIL_FIELD || 'input[type="email"]';
+  const passwordSelector = process.env.SL_AUDIT_PASSWORD_FIELD || 'input[type="password"]';
+  const submitSelector = process.env.SL_AUDIT_SUBMIT_SELECTOR || 'button[type="submit"]';
+
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const results = { authenticated: false, errors: [], cookies: [], headers: {}, domStats: {} };
+
+  try {
+    if (email && password && loginUrl) {
+      await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
+      await page.fill(emailSelector, email);
+      await page.fill(passwordSelector, password);
+      await page.click(submitSelector);
+      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+      // P2 fix: verify auth by checking URL change + session cookie presence
+      const currentUrl = page.url();
+      const postCookies = await page.context().cookies();
+      results.authenticated = currentUrl !== loginUrl || postCookies.some(c => /session|token|auth/i.test(c.name));
+    }
+
+    await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // P2 fix: redact sensitive content from console errors
+    page.on('console', msg => {
+      if (msg.type() === 'error') {
+        const text = (msg.text() || '').slice(0, 200).replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]').replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
+        results.errors.push({ text });
+      }
+    });
+
+    // P2 fix: capture cookie names + flags only, never values
+    const cookies = await page.context().cookies();
+    results.cookies = cookies.map(c => ({
+      name: c.name, domain: c.domain,
+      httpOnly: c.httpOnly, secure: c.secure,
+      sameSite: c.sameSite,
+      sensitive: /session|token|auth|jwt/i.test(c.name),
+    }));
+
+    results.domStats = await page.evaluate(() => ({
+      title: document.title,
+      nodeCount: document.querySelectorAll('*').length,
+      formCount: document.querySelectorAll('form').length,
+      inputCount: document.querySelectorAll('input').length,
+    }));
+
+    const response = await page.goto(targetUrl, { waitUntil: 'commit', timeout: 10000 }).catch(() => null);
+    if (response) {
+      const h = response.headers();
+      results.headers = {
+        'content-security-policy': h['content-security-policy'] || null,
+        'x-frame-options': h['x-frame-options'] || null,
+        'strict-transport-security': h['strict-transport-security'] || null,
+        'cache-control': h['cache-control'] || null,
+      };
+    }
+  } catch (err) {
+    results.errors.push({ text: 'Navigation error: ' + (err.message || '').slice(0, 100) });
+  }
+
+  console.log(JSON.stringify(results));
+  await browser.close();
+})();
+`;
+
 function checkAuthFlowSecurity(input) {
   const loginUrl = input.loginUrl || input.url;
   if (!loginUrl) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
   if (!isValidUrl(loginUrl)) throw new AuthAuditError("Invalid URL: " + loginUrl);
 
   const findings = [];
-
-  // Check login page headers via curl
   try {
     const output = execFileSync("curl", ["-sI", "-L", "--max-time", "10", loginUrl], {
       encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"],
@@ -207,28 +198,15 @@ function checkAuthFlowSecurity(input) {
       const idx = line.indexOf(":");
       if (idx > 0) headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
     }
-
-    if (!headers["strict-transport-security"]) {
-      findings.push({ severity: "P1", title: "Login page missing HSTS header", file: loginUrl });
-    }
-    if (!headers["content-security-policy"]) {
-      findings.push({ severity: "P2", title: "Login page missing CSP header", file: loginUrl });
-    }
-    if (headers["x-powered-by"]) {
-      findings.push({ severity: "P2", title: "Login page exposes X-Powered-By: " + headers["x-powered-by"], file: loginUrl });
-    }
+    if (!headers["strict-transport-security"]) findings.push({ severity: "P1", title: "Login page missing HSTS header", file: loginUrl });
+    if (!headers["content-security-policy"]) findings.push({ severity: "P2", title: "Login page missing CSP header", file: loginUrl });
+    if (headers["x-powered-by"]) findings.push({ severity: "P2", title: "Login page exposes X-Powered-By: " + headers["x-powered-by"], file: loginUrl });
   } catch { /* curl failed, non-blocking */ }
-
   return { available: true, loginUrl, findings };
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
-
 function isValidUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch { return false; }
+  try { const p = new URL(url); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
 }
 
 function secureTempFile(name) {
