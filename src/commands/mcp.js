@@ -4,6 +4,8 @@ import process from "node:process";
 import pc from "picocolors";
 import { ZodError } from "zod";
 
+import fs from "node:fs/promises";
+
 import {
   buildAidenIdProvisioningAdapterTemplate,
   buildAidenIdRegistryTemplate,
@@ -21,6 +23,7 @@ import {
   validateMcpToolRegistry,
   writeJsonFile,
 } from "../mcp/registry.js";
+import { resolveOutputRoot } from "../config/service.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -49,6 +52,60 @@ function zodIssueSummary(error) {
 
 export function registerMcpCommand(program) {
   const mcp = program.command("mcp").description("Manage Sentinelayer MCP registry schemas and adapters");
+
+  mcp
+    .command("list")
+    .description("List all known MCP registries, adapters, and server configs in this workspace")
+    .option("--path <path>", "Workspace path", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: undefined,
+        env: process.env,
+      });
+      const mcpDir = path.join(outputRoot, "mcp");
+
+      const entries = [];
+      try {
+        const files = await fs.readdir(mcpDir);
+        for (const file of files) {
+          if (!file.endsWith(".json")) continue;
+          try {
+            const content = JSON.parse(await fs.readFile(path.join(mcpDir, file), "utf-8"));
+            entries.push({
+              file,
+              path: path.join(mcpDir, file),
+              type: content.schemaVersion ? "registry" : content.transport ? "adapter" : content.command ? "server" : "unknown",
+              toolCount: Array.isArray(content.tools) ? content.tools.length : 0,
+              name: content.name || content.registryName || file,
+            });
+          } catch {
+            entries.push({ file, path: path.join(mcpDir, file), type: "invalid", toolCount: 0, name: file });
+          }
+        }
+      } catch {
+        /* mcp directory does not exist — empty listing */
+      }
+
+      const result = { command: "mcp list", mcpDir, entries };
+      if (emitJson) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(pc.bold("MCP Registries & Adapters"));
+      console.log(pc.gray(`Directory: ${mcpDir}`));
+      if (entries.length === 0) {
+        console.log(pc.gray("No MCP artifacts found. Run 'sl mcp schema write' or 'sl mcp registry init-aidenid' to create one."));
+        return;
+      }
+      for (const entry of entries) {
+        console.log(`- ${entry.name} [${entry.type}] (${entry.toolCount} tools) — ${entry.path}`);
+      }
+    });
 
   const schema = mcp.command("schema").description("Inspect or materialize MCP tool-registry schema");
   schema
