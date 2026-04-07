@@ -36,29 +36,28 @@ import {
   writeArtifact,
 } from "./shared.js";
 
-export function registerAiProvisionAndGovernanceCommands(ai) {
-ai
-  .command("provision-email")
-  .alias("provision")
-  .description("Provision an AIdenID identity payload (dry-run by default, optional live execute)")
-  .option("--path <path>", "Workspace path for artifact/config resolution", ".")
-  .option("--output-dir <path>", "Optional artifact output root override")
-  .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
-  .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
-  .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
-  .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
-  .option("--alias-template <value>", "Optional alias template")
-  .option("--ttl-hours <hours>", "Identity TTL in hours", "24")
-  .option("--tags <csv>", "Comma-separated tags")
-  .option("--domain-pool-id <id>", "Optional domain pool id")
-  .option("--receive-mode <mode>", "Identity receive mode", "EDGE_ACCEPT")
-  .option("--extraction-types <csv>", "Comma-separated extraction types", "otp,link")
-  .option("--allow-webhooks", "Allow webhook delivery", true)
-  .option("--no-allow-webhooks", "Disable webhook delivery")
-  .option("--idempotency-key <key>", "Explicit idempotency key override")
-  .option("--execute", "Execute live API call (default is dry-run artifact generation)")
-  .option("--json", "Emit machine-readable output")
-  .action(async (options, command) => {
+function addProvisionEmailOptions(cmd) {
+  return cmd
+    .option("--path <path>", "Workspace path for artifact/config resolution", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--alias-template <value>", "Optional alias template")
+    .option("--ttl-hours <hours>", "Identity TTL in hours", "24")
+    .option("--tags <csv>", "Comma-separated tags")
+    .option("--domain-pool-id <id>", "Optional domain pool id")
+    .option("--receive-mode <mode>", "Identity receive mode", "EDGE_ACCEPT")
+    .option("--extraction-types <csv>", "Comma-separated extraction types", "otp,link")
+    .option("--allow-webhooks", "Allow webhook delivery", true)
+    .option("--no-allow-webhooks", "Disable webhook delivery")
+    .option("--idempotency-key <key>", "Explicit idempotency key override")
+    .option("--execute", "Execute live API call (default is dry-run artifact generation)")
+    .option("--json", "Emit machine-readable output");
+}
+
+async function provisionEmailAction(options, command) {
     const emitJson = shouldEmitJson(options, command);
     const targetPath = path.resolve(process.cwd(), String(options.path || "."));
     const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
@@ -205,9 +204,21 @@ ai
         )
       );
     }
-  });
+}
+
+export function registerAiProvisionAndGovernanceCommands(ai) {
+addProvisionEmailOptions(
+  ai.command("provision-email")
+    .alias("provision")
+    .description("Provision an AIdenID identity payload (dry-run by default, optional live execute)")
+).action(provisionEmailAction);
 
 const identity = ai.command("identity").description("AIdenID identity lifecycle commands");
+
+addProvisionEmailOptions(
+  identity.command("provision")
+    .description("Provision an AIdenID identity (alias for 'sl ai provision-email')")
+).action(provisionEmailAction);
 const domain = identity.command("domain").description("AIdenID domain governance commands");
 const target = identity.command("target").description("AIdenID target governance commands");
 const site = identity.command("site").description("AIdenID temporary callback domain commands");

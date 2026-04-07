@@ -4727,6 +4727,35 @@ test("CLI ai provision-email dry-run writes deterministic request artifact", asy
   }
 });
 
+test("CLI ai identity provision alias resolves to provision-email handler", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-alias-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "ai",
+        "identity",
+        "provision",
+        "--tags",
+        "demo,e2e",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "ai provision-email");
+    assert.equal(payload.execute, false);
+    assert.ok(String(payload.requestPath || "").includes("aidenid"));
+
+    const requestArtifact = JSON.parse(await readFile(payload.requestPath, "utf-8"));
+    assert.deepEqual(requestArtifact.payload.tags, ["demo", "e2e"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI ai provision-email execute mode posts to AIdenID API with scoped headers", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-ai-cmd-"));
   const mock = await startAidenIdMockApi();
