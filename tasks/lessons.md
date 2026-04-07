@@ -128,3 +128,8 @@
 - When a reviewer reports concrete P1 workflow/code risks, treat the report as a verification input, not an opinion: reproduce each claim on current `main`, patch only confirmed gaps, and attach post-fix test evidence in `tasks/todo.md`.
 - Any CI workflow that downloads release binaries directly must verify artifact integrity (`sha256` from release checksum manifests) before extraction; version pinning alone is insufficient.
 - Avoid shell heredoc JSON construction for metadata envelopes in security-sensitive workflows; use `jq -n --arg` to guarantee escaping and valid JSON under adversarial input values.
+
+## 2026-04-07
+
+- When a P2 burn-down PR falls 100+ commits behind main, close it and verify that subsequent PRs already absorbed its fixes rather than rebasing a stale branch — rebase conflicts on a large branch waste more time than incremental fix PRs.
+- Before claiming a command or endpoint is missing, always verify by reading the actual source registration code (e.g., `commander` `.command()` calls, FastAPI `@router.get` decorators) — agent summaries and memory can be stale.
