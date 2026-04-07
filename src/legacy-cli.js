@@ -1624,50 +1624,112 @@ Start now and continue autonomously.
 }
 
 function fallbackWorkflow({ secretName = "SENTINELAYER_TOKEN", authMode = "sentinelayer" } = {}) {
-  if (authMode === "byok") {
-    return `name: Omar Gate (BYOK Mode)
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-permissions:
-  contents: read
-
-jobs:
-  byok-note:
-    runs-on: ubuntu-latest
-    steps:
-      - name: BYOK mode reminder
-        run: |
-          echo "Sentinelayer token is not configured in BYOK mode."
-          echo "Use local commands: npx sentinelayer-cli@latest /audit --path ."
-          echo "Set SENTINELAYER_TOKEN and wire sentinelayer_token to enable Omar Gate action later."
-`;
-  }
   const normalizedSecret = isValidSecretName(secretName) ? secretName : "SENTINELAYER_TOKEN";
   return `name: Omar Gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      scan_mode:
+        description: Sentinelayer scan profile
+        required: false
+        default: deep
+        type: choice
+        options:
+          - deep
+          - nightly
+      severity_gate:
+        description: Severity threshold that blocks merge
+        required: false
+        default: P1
+        type: choice
+        options:
+          - P0
+          - P1
+          - P2
+          - none
+      p2_max_allowed:
+        description: Maximum allowed P2 findings before Omar Gate blocks merge
+        required: false
+        default: "5"
+        type: string
 
 permissions:
   contents: read
-  pull-requests: write
   checks: write
+  pull-requests: write
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  quality-gates:
+  omar_gate:
+    name: Omar Gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Omar Gate
+      - name: Validate Sentinelayer token secret
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: \${{ secrets.${normalizedSecret} }}
+        run: |
+          set -euo pipefail
+          if [ -z "\${SENTINELAYER_TOKEN}" ]; then
+            echo "::warning::SENTINELAYER_TOKEN not set. Set it with: gh secret set ${normalizedSecret} --body <your-token>"
+            echo "Skipping Omar Gate scan — run locally with: npx sentinelayer-cli@latest /omargate deep --path ."
+            exit 0
+          fi
+      - name: Run Omar Gate
+        id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}
-          scan_mode: deep
-          severity_gate: P1
+          scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+      - name: Enforce Omar reviewer merge thresholds
+        shell: bash
+        env:
+          P0_COUNT: \${{ steps.omar.outputs.p0_count || '0' }}
+          P1_COUNT: \${{ steps.omar.outputs.p1_count || '0' }}
+          P2_COUNT: \${{ steps.omar.outputs.p2_count || '0' }}
+          P2_MAX_ALLOWED: \${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
+        run: |
+          set -euo pipefail
+          p0="\$(echo "\${P0_COUNT}" | tr -d '\\r' | xargs || true)"
+          p1="\$(echo "\${P1_COUNT}" | tr -d '\\r' | xargs || true)"
+          p2="\$(echo "\${P2_COUNT}" | tr -d '\\r' | xargs || true)"
+          p2_max="\$(echo "\${P2_MAX_ALLOWED}" | tr -d '\\r' | xargs || true)"
+          case "\${p0}" in ''|*[!0-9]*) echo "::error::Invalid P0 count" ; exit 1 ;; esac
+          case "\${p1}" in ''|*[!0-9]*) echo "::error::Invalid P1 count" ; exit 1 ;; esac
+          case "\${p2}" in ''|*[!0-9]*) echo "::error::Invalid P2 count" ; exit 1 ;; esac
+          case "\${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max" ; exit 1 ;; esac
+          if [ "\${p0}" -gt 0 ] || [ "\${p1}" -gt 0 ]; then
+            echo "::error::Omar Gate blocked: P0=\${p0}, P1=\${p1}. Requires P0=0 and P1=0."
+            exit 1
+          fi
+          if [ "\${p2}" -gt "\${p2_max}" ]; then
+            echo "::error::Omar Gate blocked: P2=\${p2} exceeds max \${p2_max}."
+            exit 1
+          fi
+      - name: Emit Omar run summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Omar Gate" >> "\$GITHUB_STEP_SUMMARY"
+          echo "- run_id: \\\`\${{ steps.omar.outputs.run_id }}\\\`" >> "\$GITHUB_STEP_SUMMARY"
+          echo "- gate_status: \\\`\${{ steps.omar.outputs.gate_status }}\\\`" >> "\$GITHUB_STEP_SUMMARY"
+          echo "- findings: P0=\${{ steps.omar.outputs.p0_count }} P1=\${{ steps.omar.outputs.p1_count }} P2=\${{ steps.omar.outputs.p2_count }} P3=\${{ steps.omar.outputs.p3_count }}" >> "\$GITHUB_STEP_SUMMARY"
 `;
 }
 

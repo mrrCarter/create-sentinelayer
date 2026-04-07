@@ -154,50 +154,117 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
       pull_request: {
         types: ["opened", "synchronize", "reopened"],
       },
-      workflow_dispatch: {},
+      workflow_dispatch: {
+        inputs: {
+          scan_mode: {
+            description: "Sentinelayer scan profile",
+            required: false,
+            default: profile.scanMode || "deep",
+            type: "choice",
+            options: ["deep", "nightly"],
+          },
+          severity_gate: {
+            description: "Severity threshold that blocks merge",
+            required: false,
+            default: profile.severityGate || "P1",
+            type: "choice",
+            options: ["P0", "P1", "P2", "none"],
+          },
+          p2_max_allowed: {
+            description: "Maximum allowed P2 findings",
+            required: false,
+            default: "5",
+            type: "string",
+          },
+        },
+      },
     },
     permissions: {
       contents: "read",
       "pull-requests": "write",
       checks: "write",
+      "id-token": "write",
+    },
+    env: {
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true",
     },
     jobs: {
       omar_gate: {
         name: "Omar Gate",
-        "runs-on": "ubuntu-22.04",
+        "runs-on": "ubuntu-latest",
         "timeout-minutes": 20,
+        permissions: {
+          contents: "read",
+          checks: "write",
+          "pull-requests": "write",
+          "id-token": "write",
+        },
         steps: [
           {
             name: "Checkout",
             uses: CHECKOUT_ACTION_REF,
           },
           {
-            name: "Setup Node",
-            uses: SETUP_NODE_ACTION_REF,
-            with: {
-              "node-version": "20",
-              cache: "npm",
+            name: "Validate Sentinelayer token",
+            shell: "bash",
+            env: {
+              SENTINELAYER_TOKEN: `\${{ secrets.${normalizedSecret} }}`,
             },
-          },
-          {
-            name: "Install dependencies",
-            run: "npm ci",
-          },
-          {
-            name: "Run repository verification",
-            run: "npm run verify",
+            run: [
+              'set -euo pipefail',
+              'if [ -z "${SENTINELAYER_TOKEN}" ]; then',
+              `  echo "::warning::${normalizedSecret} not set. Run: gh secret set ${normalizedSecret} --body <token>"`,
+              '  echo "Skipping — run locally: npx sentinelayer-cli@latest /omargate deep --path ."',
+              '  exit 0',
+              'fi',
+            ].join("\n"),
           },
           {
             name: "Run Omar Gate",
+            id: "omar",
             uses: SENTINELAYER_ACTION_REF,
             with: {
               sentinelayer_token: `\${{ secrets.${normalizedSecret} }}`,
-              scan_mode: profile.scanMode,
-              severity_gate: profile.severityGate,
-              playwright_mode: profile.playwrightMode,
-              sbom_mode: profile.sbomMode,
+              scan_mode: "${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || '" + (profile.scanMode || "deep") + "' }}",
+              severity_gate: "${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || '" + (profile.severityGate || "P1") + "' }}",
+              playwright_mode: profile.playwrightMode || "off",
+              sbom_mode: profile.sbomMode || "off",
               wait_for_completion: "true",
             },
+          },
+          {
+            name: "Enforce merge thresholds",
+            shell: "bash",
+            env: {
+              P0_COUNT: "${{ steps.omar.outputs.p0_count || '0' }}",
+              P1_COUNT: "${{ steps.omar.outputs.p1_count || '0' }}",
+              P2_COUNT: "${{ steps.omar.outputs.p2_count || '0' }}",
+              P2_MAX: "${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}",
+            },
+            run: [
+              'set -euo pipefail',
+              'p0="$(echo "${P0_COUNT}" | tr -d \'\\r\' | xargs)"',
+              'p1="$(echo "${P1_COUNT}" | tr -d \'\\r\' | xargs)"',
+              'p2="$(echo "${P2_COUNT}" | tr -d \'\\r\' | xargs)"',
+              'p2_max="$(echo "${P2_MAX}" | tr -d \'\\r\' | xargs)"',
+              'if [ "${p0:-0}" -gt 0 ] || [ "${p1:-0}" -gt 0 ]; then',
+              '  echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}"',
+              '  exit 1',
+              'fi',
+              'if [ "${p2:-0}" -gt "${p2_max:-5}" ]; then',
+              '  echo "::error::Omar Gate blocked: P2=${p2} exceeds max ${p2_max}"',
+              '  exit 1',
+              'fi',
+            ].join("\n"),
+          },
+          {
+            name: "Omar summary",
+            shell: "bash",
+            run: [
+              'echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"',
+              'echo "- gate: \\`${{ steps.omar.outputs.gate_status }}\\`" >> "$GITHUB_STEP_SUMMARY"',
+              'echo "- findings: P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}" >> "$GITHUB_STEP_SUMMARY"',
+            ].join("\n"),
           },
         ],
       },
