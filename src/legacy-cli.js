@@ -22,6 +22,8 @@ import {
 } from "./config/agent-dictionary.js";
 import { resolveOutputRoot } from "./config/service.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
+import { getExpressTemplate, getPackageJsonTemplate, buildReadmeContent } from "./scaffold/templates.js";
+import { generateScaffold } from "./scaffold/generator.js";
 
 let DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
 let DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
@@ -2358,6 +2360,40 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   });
 
   await ensureSentinelStartScript(projectDir, effectiveProjectName);
+
+  // Code scaffold: write starter source files, skip existing
+  const templateFiles = getExpressTemplate({
+    projectName: effectiveProjectName,
+    description: interview.description,
+  });
+  const packageJsonTemplate = getPackageJsonTemplate({
+    projectName: effectiveProjectName,
+    description: interview.description,
+  });
+  const readmeContent = buildReadmeContent({
+    projectName: effectiveProjectName,
+    description: interview.description,
+    techStack: interview.projectType || "Node.js + Express",
+  });
+  const scaffoldResult = await generateScaffold({
+    projectDir,
+    templateFiles,
+    packageJsonTemplate,
+    readmeContent,
+    force: false,
+  });
+  if (scaffoldResult.written.length > 0) {
+    console.log(pc.green(`Scaffold: wrote ${scaffoldResult.written.length} starter files`));
+    for (const f of scaffoldResult.written) {
+      console.log(pc.gray(`  + ${f}`));
+    }
+  }
+  if (scaffoldResult.skipped.length > 0) {
+    for (const s of scaffoldResult.skipped) {
+      console.log(pc.gray(`  ~ ${s.path} (${s.reason})`));
+    }
+  }
+
   if (sentinelayerToken) {
     await ensureEnvFileIgnored(projectDir);
     await upsertEnvVariable(path.join(projectDir, ".env"), secretName, sentinelayerToken);
