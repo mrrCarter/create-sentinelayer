@@ -57,7 +57,7 @@ async function provisionTestIdentity(input) {
  * - Cookie values never captured (names + flags only)
  * - Temp script cleanup in finally block (not just success path)
  */
-function authenticatedPageCheck(input) {
+async function authenticatedPageCheck(input) {
   const url = input.url;
   if (!url) throw new AuthAuditError("authenticated_page_check requires url");
   if (!isValidUrl(url)) throw new AuthAuditError("Invalid URL: " + url);
@@ -69,8 +69,10 @@ function authenticatedPageCheck(input) {
     scriptPath = secureTempFile("sl-auth-audit-" + randomUUID().slice(0, 8) + ".cjs");
     fs.writeFileSync(scriptPath, PLAYWRIGHT_AUTH_SCRIPT);
 
+    // Use scrubbed env — strip API keys/tokens from child process
+    const { buildScrubbedEnv } = await import("./shell.js");
     const env = {
-      ...process.env,
+      ...buildScrubbedEnv(),
       SL_AUDIT_TARGET_URL: url,
       SL_AUDIT_LOGIN_URL: loginUrl,
       SL_AUDIT_TEST_EMAIL: input.email || "",
@@ -204,7 +206,9 @@ function checkAuthFlowSecurity(input) {
     if (!headers["strict-transport-security"]) findings.push({ severity: "P1", title: "Login page missing HSTS header", file: loginUrl });
     if (!headers["content-security-policy"]) findings.push({ severity: "P2", title: "Login page missing CSP header", file: loginUrl });
     if (headers["x-powered-by"]) findings.push({ severity: "P2", title: "Login page exposes X-Powered-By: " + headers["x-powered-by"], file: loginUrl });
-  } catch { /* curl failed, non-blocking */ }
+  } catch (err) {
+    return { available: false, loginUrl, findings, reason: "curl failed: " + err.message };
+  }
   return { available: true, loginUrl, findings };
 }
 
