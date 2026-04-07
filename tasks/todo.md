@@ -330,7 +330,13 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [x] Add unit tests for allowed and blocked domains, plus wildcard/suffix matching boundaries.
 - [x] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
 
-## Execution Board (2026-04-04)
+### PR 150 Working Plan (roadmap/pr-150-close-pr96-supersede)
+- [x] Close PR #96 as superseded — P2 fixes already landed in PRs #182-185.
+- [x] Verify main has zero P0/P1 findings (11 P2 work-item markers remain, non-blocking).
+- [x] Update todo.md with demo-focused PR queue (PRs 150-155).
+- [ ] Run Omar Gate loop (`gh run watch`) and merge only after required checks pass.
+
+## Execution Board (2026-04-07)
 
 ### Omar Gate Loop (required on every PR)
 1. `git checkout main && git pull --ff-only`
@@ -345,7 +351,12 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 8. Merge only after Omar Gate is green: `gh pr merge <pr-number> --squash --delete-branch`.
 
 ### Exact Next PR Branch Order
-1. `roadmap/pr-150-shell-allowlist-policy-config`
+1. `roadmap/pr-150-close-pr96-supersede` — Close stale PR #96 (superseded by #182-185)
+2. `roadmap/pr-151-ai-identity-provision-alias` — Add `sl ai identity provision` alias
+3. `roadmap/pr-152-mcp-list-command` — Add `sl mcp list` convenience command
+4. `roadmap/pr-153-scan-setup-secrets` — Add `sl scan setup-secrets` command
+5. `roadmap/pr-154-code-scaffold-templates` — Express.js starter template + scaffold generator
+6. `roadmap/pr-155-readme-generation` — Add README.md generation to scaffold
 
 ### Workflow hardening (current)
 - Enforce repo-level `.github/workflows/omar-gate.yml` as the single Omar review path for PRs.
