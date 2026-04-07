@@ -16,15 +16,15 @@ describe("authAudit", () => {
     }
   });
 
-  it("authenticated_page_check requires url", () => {
-    assert.throws(
+  it("authenticated_page_check requires url", async () => {
+    await assert.rejects(
       () => authAudit({ operation: "authenticated_page_check" }),
       AuthAuditError,
     );
   });
 
-  it("authenticated_page_check rejects invalid url", () => {
-    assert.throws(
+  it("authenticated_page_check rejects invalid url", async () => {
+    await assert.rejects(
       () => authAudit({ operation: "authenticated_page_check", url: "not-a-url" }),
       AuthAuditError,
     );

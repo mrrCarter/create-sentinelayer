@@ -1,5 +1,9 @@
 import { readStoredSession } from "../auth/session-store.js";
 
+// Simple circuit breaker: skip sync after 3 consecutive failures
+let consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 3;
+
 /**
  * Telemetry Sync — uploads CLI run results to sentinelayer-api.
  *
@@ -38,6 +42,11 @@ const SYNC_TIMEOUT_MS = 10000;
  */
 export async function syncRunToDashboard(runData) {
   let session;
+  // Circuit breaker: skip if too many consecutive failures
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    return { synced: false, reason: "circuit_breaker_open" };
+  }
+
   try {
     session = await readStoredSession();
   } catch {
@@ -58,6 +67,7 @@ export async function syncRunToDashboard(runData) {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + session.token,
       },
+      signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
       body: JSON.stringify({
         mode: mapCommandToMode(runData.command),
         runtime_profile: "cli_local",
@@ -112,8 +122,10 @@ export async function syncRunToDashboard(runData) {
       }).catch(() => {}); // completion event is best-effort
     }
 
+    consecutiveFailures = 0; // reset on success
     return { synced: true, runId };
   } catch (err) {
+    consecutiveFailures++;
     return { synced: false, reason: err.message };
   }
 }
