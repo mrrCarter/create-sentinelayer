@@ -158,38 +158,64 @@ export function buildChildIdentityPayload({
   };
 }
 
-export function resolveAidenIdCredentials(
+/**
+ * Resolve AIdenID credentials with precedence:
+ * 1. Explicit flags (--api-key, --org-id, --project-id)
+ * 2. Environment vars (AIDENID_API_KEY, AIDENID_ORG_ID, AIDENID_PROJECT_ID)
+ * 3. Session metadata (org_id, project_id from local store) + lazy-fetch secret from SL API
+ * 4. Error with guidance
+ *
+ * @param {object} options
+ * @param {object} [options.session] - Stored session from readStoredSession(), may contain aidenid metadata
+ * @param {Function} [options.fetchCredentials] - Async function to lazy-fetch secret from SL API
+ */
+export async function resolveAidenIdCredentials(
   {
     apiKey = "",
     orgId = "",
     projectId = "",
     env = process.env,
     requireAll = true,
+    session = null,
+    fetchCredentials = null,
   } = {}
 ) {
-  const resolved = {
-    apiKey: String(apiKey || env.AIDENID_API_KEY || "").trim(),
-    orgId: String(orgId || env.AIDENID_ORG_ID || "").trim(),
-    projectId: String(projectId || env.AIDENID_PROJECT_ID || "").trim(),
-  };
+  const sessionAidenId = session && session.aidenid ? session.aidenid : null;
+
+  let resolvedApiKey = String(apiKey || env.AIDENID_API_KEY || "").trim();
+  let resolvedOrgId = String(orgId || env.AIDENID_ORG_ID || (sessionAidenId && sessionAidenId.orgId) || "").trim();
+  let resolvedProjectId = String(projectId || env.AIDENID_PROJECT_ID || (sessionAidenId && sessionAidenId.projectId) || "").trim();
+
+  // Lazy-fetch secret from SentinelLayer API if we have session metadata but no API key
+  if (!resolvedApiKey && sessionAidenId && fetchCredentials) {
+    try {
+      const fetched = await fetchCredentials();
+      if (fetched && fetched.apiKey) {
+        resolvedApiKey = String(fetched.apiKey).trim();
+        if (!resolvedOrgId && fetched.orgId) resolvedOrgId = String(fetched.orgId).trim();
+        if (!resolvedProjectId && fetched.projectId) resolvedProjectId = String(fetched.projectId).trim();
+      }
+    } catch {
+      // Lazy-fetch failed — continue with what we have
+    }
+  }
 
   const missing = [];
-  if (!resolved.apiKey) {
-    missing.push("AIDENID_API_KEY");
-  }
-  if (!resolved.orgId) {
-    missing.push("AIDENID_ORG_ID");
-  }
-  if (!resolved.projectId) {
-    missing.push("AIDENID_PROJECT_ID");
-  }
+  if (!resolvedApiKey) missing.push("AIDENID_API_KEY");
+  if (!resolvedOrgId) missing.push("AIDENID_ORG_ID");
+  if (!resolvedProjectId) missing.push("AIDENID_PROJECT_ID");
 
   if (requireAll && missing.length > 0) {
-    throw new Error(`Missing AIdenID credentials: ${missing.join(", ")}.`);
+    const hint = sessionAidenId
+      ? " (session has metadata but API key fetch failed — check network or run 'sl auth login' again)"
+      : " (run 'sl auth login' to auto-provision, or set env vars manually)";
+    throw new Error(`Missing AIdenID credentials: ${missing.join(", ")}.${hint}`);
   }
 
   return {
-    ...resolved,
+    apiKey: resolvedApiKey,
+    orgId: resolvedOrgId,
+    projectId: resolvedProjectId,
     missing,
   };
 }

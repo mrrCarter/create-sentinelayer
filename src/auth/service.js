@@ -847,6 +847,30 @@ export async function listRuntimeRunEvents({
  * @param {{ apiUrl: string, authToken: string, runId: string }} [options]
  * @returns {Promise<any>}
  */
+/**
+ * Fetch AIdenID credentials from the SentinelLayer API (lazy-provisioning).
+ * The secret is returned in-memory only, never persisted to disk.
+ */
+export async function fetchAidenIdCredentials({
+  apiUrl = DEFAULT_API_URL,
+  token = "",
+} = {}) {
+  const response = await requestJson(
+    buildApiPath(apiUrl, "/api/v1/aidenid/credentials"),
+    {
+      method: "GET",
+      headers: toAuthHeader(token),
+    }
+  );
+  return {
+    orgId: String(response.orgId || response.org_id || "").trim(),
+    projectId: String(response.projectId || response.project_id || "").trim(),
+    apiKeyPrefix: String(response.apiKeyPrefix || response.api_key_prefix || "").trim(),
+    apiKey: String(response.apiKey || response.api_key || "").trim(),
+    provisioned: Boolean(response.provisioned),
+  };
+}
+
 export async function getRuntimeRunStatus({
   apiUrl,
   authToken,

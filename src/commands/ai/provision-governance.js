@@ -25,6 +25,8 @@ import {
 import { listSites, recordTemporarySite } from "../../ai/site-store.js";
 import { getIdentityById, recordProvisionedIdentity } from "../../ai/identity-store.js";
 import { resolveOutputRoot } from "../../config/service.js";
+import { readStoredSession } from "../../auth/session-store.js";
+import { fetchAidenIdCredentials } from "../../auth/service.js";
 import {
   buildCurlPreview,
   normalizeIdempotencyKey,
@@ -90,12 +92,22 @@ async function provisionEmailAction(options, command) {
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    let session = null;
+    try { session = await readStoredSession(); } catch { /* no session */ }
+
+    const makeFetcher = () => {
+      if (!session || !session.token) return null;
+      return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, token: session.token });
+    };
+
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
       env: process.env,
       requireAll: false,
+      session,
+      fetchCredentials: makeFetcher(),
     });
 
     if (!options.execute) {
@@ -132,12 +144,14 @@ async function provisionEmailAction(options, command) {
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
       env: process.env,
       requireAll: true,
+      session,
+      fetchCredentials: makeFetcher(),
     });
 
     const execution = await provisionEmailIdentity({
