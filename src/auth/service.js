@@ -377,6 +377,18 @@ export async function loginAndPersistSession({
     tokenTtlDays,
   });
 
+  // Extract AIdenID metadata from approval (no secret stored locally)
+  const rawAidenId = approval.aidenidCredentials || approval.aidenid_credentials || null;
+  const aidenid =
+    rawAidenId && rawAidenId.provisioned
+      ? {
+          orgId: String(rawAidenId.orgId || rawAidenId.org_id || "").trim() || null,
+          projectId: String(rawAidenId.projectId || rawAidenId.project_id || "").trim() || null,
+          apiKeyPrefix: String(rawAidenId.apiKeyPrefix || rawAidenId.api_key_prefix || "").trim() || null,
+          provisionedAt: new Date().toISOString(),
+        }
+      : null;
+
   const stored = await writeStoredSession(
     {
       apiUrl,
@@ -385,6 +397,7 @@ export async function loginAndPersistSession({
       tokenPrefix: issuedApiToken.token_prefix || null,
       tokenExpiresAt: issuedApiToken.expires_at || null,
       user,
+      aidenid,
     },
     { homeDir }
   );
@@ -399,6 +412,7 @@ export async function loginAndPersistSession({
     tokenExpiresAt: stored.tokenExpiresAt,
     storage: stored.storage,
     filePath: stored.filePath,
+    aidenid: stored.aidenid || null,
   };
 }
 

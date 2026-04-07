@@ -45,6 +45,19 @@ function normalizeUser(user = {}) {
   };
 }
 
+function normalizeAidenId(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const orgId = String(raw.orgId || "").trim();
+  const projectId = String(raw.projectId || "").trim();
+  if (!orgId && !projectId) return null;
+  return {
+    orgId: orgId || null,
+    projectId: projectId || null,
+    apiKeyPrefix: String(raw.apiKeyPrefix || "").trim() || null,
+    provisionedAt: String(raw.provisionedAt || "").trim() || null,
+  };
+}
+
 function normalizeMetadata(raw = {}) {
   return {
     version: Number(raw.version || CREDENTIALS_VERSION),
@@ -59,6 +72,7 @@ function normalizeMetadata(raw = {}) {
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
     token: String(raw.token || "").trim() || null,
+    aidenid: normalizeAidenId(raw.aidenid),
   };
 }
 

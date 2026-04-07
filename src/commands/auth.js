@@ -191,6 +191,15 @@ export function registerAuthCommand(program) {
       if (status.authenticated) {
         const displayUser = status.remoteUser || status.user || {};
         console.log(pc.green(`Authenticated as ${renderUserSummary(displayUser)}`));
+
+        if (status.aidenid && status.aidenid.orgId) {
+          console.log(pc.green(`AIdenID: provisioned (org: ${status.aidenid.orgId}, project: ${status.aidenid.projectId || "unknown"})`));
+          if (status.aidenid.apiKeyPrefix) {
+            console.log(pc.gray(`  API key prefix: ${status.aidenid.apiKeyPrefix}`));
+          }
+        } else {
+          console.log(pc.gray("AIdenID: not provisioned (will provision on next login)"));
+        }
         return;
       }
 
