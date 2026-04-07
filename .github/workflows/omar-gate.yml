@@ -44,7 +44,6 @@ jobs:
   omar_gate:
     name: Omar Gate
     runs-on: ubuntu-latest
-    environment: security-review
     permissions:
       contents: read
       checks: write
