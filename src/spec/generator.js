@@ -375,7 +375,7 @@ function derivePhasePlan(template, ingest, { projectType, description }) {
         phaseNumber: phases.length + 1,
         titleSuffix: "AIdenID E2E Verification",
         items: [
-          "Provision ephemeral test identity via AIdenID (`sl ai provision-email --execute`).",
+          "Confirm AIdenID credentials via `sl auth status` (auto-provisioned at login), then provision ephemeral test identity via `sl ai provision-email --execute`.",
           "Run automated signup flow with provisioned email and verify account creation.",
           "Extract OTP from inbound email via AIdenID extraction pipeline (`sl ai identity wait-for-otp`).",
           "Complete login flow with extracted OTP and verify authenticated session.",

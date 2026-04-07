@@ -1734,6 +1734,11 @@ jobs:
 `;
 }
 
+function hasAuthKeywords(text) {
+  const lower = String(text || "").toLowerCase();
+  return ["login", "signup", "sign up", "register", "authentication", "auth flow", "otp", "verification", "password reset"].some((kw) => lower.includes(kw));
+}
+
 function buildByokArtifacts({ interview, description }) {
   const featureList =
     interview.features.length > 0
@@ -1766,7 +1771,16 @@ ${techStack}
 
 ## Key features
 ${featureList}
-`,
+${hasAuthKeywords(description) ? `
+## AIdenID E2E Verification
+When authentication flows are implemented, use AIdenID to test them at scale:
+1. Confirm AIdenID credentials via \`sl auth status\` (auto-provisioned at login).
+2. Provision ephemeral test identity: \`sl ai provision-email --execute --json\`.
+3. Run automated signup flow with provisioned email.
+4. Extract OTP from inbound email: \`sl ai identity wait-for-otp <identityId> --timeout 30\`.
+5. Complete login flow with extracted OTP and verify authenticated session.
+6. Revoke test identity after verification: \`sl ai identity revoke <identityId>\`.
+` : ""}`,
     playbook: `# Build Guide
 
 ## Scope
