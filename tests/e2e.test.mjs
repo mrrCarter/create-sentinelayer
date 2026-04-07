@@ -3690,6 +3690,24 @@ test("CLI watch history lists persisted runtime watch summaries deterministicall
   }
 });
 
+test("CLI mcp list returns machine-readable registry listing", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-list-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["mcp", "list", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "mcp list");
+    assert.ok(Array.isArray(payload.entries));
+    assert.ok(typeof payload.mcpDir === "string");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI mcp schema and registry commands scaffold and validate AIdenID template", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-cmd-"));
   try {
