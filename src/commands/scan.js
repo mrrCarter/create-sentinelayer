@@ -28,7 +28,9 @@ import {
   SUPPORTED_PLAYWRIGHT_MODES,
   validateSecurityReviewWorkflow,
 } from "../scan/generator.js";
+import { detectRepoSlug, setupSecrets } from "../scan/gh-secrets.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
+import { readStoredSession } from "../auth/session-store.js";
 
 const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
 
@@ -782,6 +784,82 @@ export function registerScanCommand(program) {
 
       if (budget.blocking) {
         process.exitCode = 2;
+      }
+    });
+
+  scan
+    .command("setup-secrets")
+    .description("Set up required GitHub secrets for Omar Gate workflow")
+    .option("--path <path>", "Target workspace path", ".")
+    .option("--secret-name <name>", "GitHub secret name", "SENTINELAYER_TOKEN")
+    .option("--repo <slug>", "Repo slug override (owner/repo)")
+    .option("--dry-run", "Print instructions without executing")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const secretName = String(options.secretName || "SENTINELAYER_TOKEN").trim();
+      let repoSlug = String(options.repo || "").trim();
+
+      if (!repoSlug) {
+        repoSlug = detectRepoSlug(targetPath) || "";
+      }
+      if (!repoSlug) {
+        const msg = "Could not detect repo slug. Use --repo owner/name or run from a GitHub-connected repo.";
+        if (emitJson) {
+          console.log(JSON.stringify({ command: "scan setup-secrets", ok: false, reason: msg }, null, 2));
+        } else {
+          console.error(pc.red(msg));
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      if (options.dryRun) {
+        const result = setupSecrets({ repoSlug, secretName, secretValue: "<token>", dryRun: true });
+        const payload = { command: "scan setup-secrets", ...result };
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+        } else {
+          console.log(pc.bold(`Setup secrets for ${repoSlug}`));
+          console.log(pc.gray("Run these commands:"));
+          for (const line of result.instructions || []) {
+            console.log(`  ${line}`);
+          }
+        }
+        return;
+      }
+
+      let tokenValue = "";
+      try {
+        const session = await readStoredSession();
+        if (session && session.token) {
+          tokenValue = session.token;
+        }
+      } catch {
+        /* no stored session */
+      }
+
+      if (!tokenValue) {
+        const msg = "No SentinelLayer token found. Run 'sl auth login' first, or use --dry-run for instructions.";
+        if (emitJson) {
+          console.log(JSON.stringify({ command: "scan setup-secrets", ok: false, reason: msg }, null, 2));
+        } else {
+          console.error(pc.red(msg));
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      const result = setupSecrets({ repoSlug, secretName, secretValue: tokenValue, dryRun: false });
+      const payload = { command: "scan setup-secrets", ...result };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (result.ok) {
+        console.log(pc.green(`Secret '${secretName}' set on ${repoSlug}`));
+      } else {
+        console.error(pc.red(`Failed: ${result.reason}`));
+        process.exitCode = 1;
       }
     });
 }

@@ -1801,6 +1801,28 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
   }
 });
 
+test("CLI scan setup-secrets dry-run emits machine-readable instructions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-secrets-"));
+  try {
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["scan", "setup-secrets", "--dry-run", "--repo", "test-owner/test-repo", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "scan setup-secrets");
+    assert.equal(payload.ok, true);
+    assert.equal(payload.dryRun, true);
+    assert.equal(payload.repo, "test-owner/test-repo");
+    assert.equal(payload.secretName, "SENTINELAYER_TOKEN");
+    assert.ok(Array.isArray(payload.instructions));
+    assert.ok(payload.instructions.length > 0);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI scan validate detects workflow drift against current spec profile", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-"));
   try {
