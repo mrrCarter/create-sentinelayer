@@ -159,25 +159,30 @@ const fs = require('node:fs');
 
   let browser = null;
   const results = { authenticated: false, errors: [], cookies: [], headers: {}, domStats: {} };
+  function sanitizeErrorText(value) {
+    return String(value || '')
+      .replace(/\\s+/g, ' ')
+      .replace(/Bearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
+      .replace(/\\b(?:authorization|x-api-key|api-key|token|access_token|refresh_token|id_token|session|cookie|set-cookie|secret|password|passwd)\\b\\s*[:=]\\s*["']?[^"'\\s,;]+/gi, '$1=[REDACTED]')
+      .replace(/\\b[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{8,}\\b/g, '[REDACTED_JWT]')
+      .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AIza[0-9A-Za-z-_]{20,}|xox[baprs]-[0-9A-Za-z-]{10,})\\b/g, '[REDACTED_TOKEN]')
+      .replace(/\\b[A-Fa-f0-9]{32,}\\b/g, '[REDACTED_HEX]')
+      .replace(/\\b[A-Za-z0-9_-]{40,}\\b/g, '[REDACTED_TOKEN]')
+      .slice(0, 200);
+  }
 
   try {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     page.on('console', msg => {
       if (msg.type() === 'error') {
-        const text = (msg.text() || '')
-          .slice(0, 200)
-          .replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]')
-          .replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
-        results.errors.push({ text });
+        const text = sanitizeErrorText(msg.text());
+        results.errors.push({ type: 'console', text });
       }
     });
     page.on('pageerror', err => {
-      const text = (err && err.message ? err.message : String(err || ''))
-        .slice(0, 200)
-        .replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]')
-        .replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
-      results.errors.push({ text });
+      const text = sanitizeErrorText(err && err.message ? err.message : String(err || ''));
+      results.errors.push({ type: 'pageerror', text });
     });
 
     if (email && password && loginUrl) {
@@ -219,7 +224,8 @@ const fs = require('node:fs');
       };
     }
   } catch (err) {
-    results.errors.push({ text: 'Playwright error: ' + (err.message || '').slice(0, 100) });
+    const text = sanitizeErrorText('Playwright error: ' + (err && err.message ? err.message : ''));
+    results.errors.push({ type: 'playwright', text });
   } finally {
     try { console.log(JSON.stringify(results)); } catch {}
     if (browser) {

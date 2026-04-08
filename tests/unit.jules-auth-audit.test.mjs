@@ -205,6 +205,17 @@ describe("authAudit", () => {
     );
   });
 
+  it("sanitizes secret-like patterns in Playwright error capture", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("function sanitizeErrorText(value)"));
+    assert.ok(source.includes("Bearer [REDACTED]"));
+    assert.ok(source.includes("[REDACTED_JWT]"));
+    assert.ok(source.includes("[REDACTED_TOKEN]"));
+    assert.ok(source.includes("type: 'console'"));
+    assert.ok(source.includes("type: 'pageerror'"));
+    assert.ok(source.includes("type: 'playwright'"));
+  });
+
   it("AuthAudit registered in dispatch as read-only", async () => {
     const { listTools, isReadOnlyTool } = await import("../src/agents/jules/tools/dispatch.js");
     assert.ok(listTools().includes("AuthAudit"));
