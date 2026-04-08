@@ -4,9 +4,32 @@ set -euo pipefail
 PACKAGE_NAME="${PACKAGE_NAME:-sentinelayer-cli}"
 ROLLBACK_MODE="${ROLLBACK_MODE:-release}"
 RELEASE_VERSION="${RELEASE_VERSION:-}"
+NON_BLOCKING_DIAGNOSTICS="${NON_BLOCKING_DIAGNOSTICS:-0}"
 
-dist_tags_json="$(npm view "${PACKAGE_NAME}" dist-tags --json 2>/dev/null || echo '{}')"
-versions_json="$(npm view "${PACKAGE_NAME}" versions --json 2>/dev/null || echo '[]')"
+npm_view_json() {
+  local package_spec="$1"
+  local field="$2"
+  local label="$3"
+  local fallback="$4"
+  local output=""
+
+  if output="$(npm view "${package_spec}" "${field}" --json 2>/dev/null)"; then
+    printf '%s' "${output}"
+    return 0
+  fi
+
+  if [ "${NON_BLOCKING_DIAGNOSTICS}" = "1" ]; then
+    echo "::warning::Non-blocking diagnostics enabled; npm query failed for ${label} (${package_spec} ${field})."
+    printf '%s' "${fallback}"
+    return 0
+  fi
+
+  echo "::error::npm query failed for ${label} (${package_spec} ${field})."
+  exit 1
+}
+
+dist_tags_json="$(npm_view_json "${PACKAGE_NAME}" "dist-tags" "dist-tags" '{}')"
+versions_json="$(npm_view_json "${PACKAGE_NAME}" "versions" "versions" '[]')"
 
 if ! echo "${dist_tags_json}" | jq -e 'type == "object"' >/dev/null; then
   echo "::error::Unable to parse npm dist-tags for ${PACKAGE_NAME}."
@@ -37,7 +60,7 @@ previous_version="$(
 rollback_target="${previous_version:-${latest_tag}}"
 release_already_published="false"
 if [ -n "${RELEASE_VERSION}" ]; then
-  if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+  if echo "${versions_array}" | jq -e --arg version "${RELEASE_VERSION}" 'index($version) != null' >/dev/null; then
     release_already_published="true"
   fi
 fi
@@ -48,12 +71,28 @@ rollback_target_tarball=""
 rollback_target_integrity=""
 
 if [ -n "${rollback_target}" ]; then
-  resolved_version="$(npm view "${PACKAGE_NAME}@${rollback_target}" version 2>/dev/null || true)"
-  if [ "${resolved_version}" = "${rollback_target}" ]; then
+  if echo "${versions_array}" | jq -e --arg version "${rollback_target}" 'index($version) != null' >/dev/null; then
     rollback_target_resolved="true"
   fi
-  rollback_target_tarball="$(npm view "${PACKAGE_NAME}@${rollback_target}" dist.tarball 2>/dev/null || true)"
-  rollback_target_integrity="$(npm view "${PACKAGE_NAME}@${rollback_target}" dist.integrity 2>/dev/null || true)"
+  if [ "${rollback_target_resolved}" = "true" ]; then
+    rollback_dist_json="$(npm_view_json "${PACKAGE_NAME}@${rollback_target}" "dist" "rollback target dist metadata" '{}')"
+    rollback_target_tarball="$(
+      echo "${rollback_dist_json}" \
+        | jq -r '
+          if type == "object" then (.tarball // empty)
+          else empty
+          end
+        '
+    )"
+    rollback_target_integrity="$(
+      echo "${rollback_dist_json}" \
+        | jq -r '
+          if type == "object" then (.integrity // empty)
+          else empty
+          end
+        '
+    )"
+  fi
   if [ -n "${rollback_target_tarball}" ] && [ -n "${rollback_target_integrity}" ] \
     && [ "${rollback_target_tarball}" != "null" ] && [ "${rollback_target_integrity}" != "null" ]; then
     rollback_target_installable="true"
@@ -82,6 +121,7 @@ echo "- release_already_published: \`${release_already_published}\`" >> "${GITHU
 echo "- rollback_target_resolved: \`${rollback_target_resolved}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- rollback_target_installable: \`${rollback_target_installable}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- rollback_target_tarball: \`${rollback_target_tarball:-<none>}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- non_blocking_diagnostics: \`${NON_BLOCKING_DIAGNOSTICS}\`" >> "${GITHUB_STEP_SUMMARY}"
 
 echo "" >> "${GITHUB_STEP_SUMMARY}"
 echo "### Dry-Run Rollback Plan" >> "${GITHUB_STEP_SUMMARY}"
@@ -104,6 +144,7 @@ jq -n \
   --arg rollback_target_installable "${rollback_target_installable}" \
   --arg rollback_target_tarball "${rollback_target_tarball}" \
   --arg rollback_target_integrity "${rollback_target_integrity}" \
+  --arg non_blocking_diagnostics "${NON_BLOCKING_DIAGNOSTICS}" \
   '{
     package: $package,
     mode: $mode,
@@ -117,7 +158,8 @@ jq -n \
       rollback_target_installable: ($rollback_target_installable == "true"),
       rollback_target_tarball: ($rollback_target_tarball | if length > 0 then . else null end),
       rollback_target_integrity: ($rollback_target_integrity | if length > 0 then . else null end)
-    }
+    },
+    non_blocking_diagnostics: ($non_blocking_diagnostics == "1")
   }' > release-rollback-readiness.json
 
 if [ -n "${RELEASE_VERSION}" ] && [ "${release_already_published}" = "true" ]; then

@@ -1115,5 +1115,22 @@ Review:
 - [x] Add unit coverage for retry success and retry exhaustion behavior without invoking real Playwright.
 - [x] Run local verification (`npm run verify`) for changed auth-audit surface.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#229` merged (squash commit `9b8d30add31290e926eda90161390864308491da`) with all required checks green.
+- Omar Gate on PR `#229`: run `24162372551` passed (`P0=0`, `P1=0`, `P2=14`).
+- Quality Gates on PR `#229`: run `24162372572` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`), both under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Rollback Readiness NPM Query Fail-Closed Guard (Batch P2-A21)
+
+- [x] Validate Omar finding that rollback-readiness npm queries mask transport/auth failures through silent JSON fallbacks.
+- [x] Harden `.github/scripts/release-rollback-readiness.sh` to fail closed on npm query failures by default.
+- [x] Add explicit non-blocking diagnostics mode (`NON_BLOCKING_DIAGNOSTICS=1`) with warning telemetry instead of silent fallback.
+- [x] Ensure rollback metadata extraction paths (`dist-tags`, `versions`, `dist`) use guarded query helpers with parse-safe behavior.
+- [x] Run local verification for rollback-readiness script changes.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
