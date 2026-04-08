@@ -811,3 +811,13 @@ Review:
 - PR `#205` merged (squash commit `996aa01ef600a1b10854a6f7ac73beb4204d6273`) with full required-check pass.
 - Omar Gate on PR `#205`: run `24113961862` passed (`P0=0`, `P1=0`).
 - Post-merge state: no open PRs in `create-sentinelayer`; release + quality lanes remain green on latest `main`.
+
+## 2026-04-08 - Auth Transport + Gate Hardening (Batch P2-A1)
+
+- [x] Add bounded retry/backoff policy for auth HTTP client (`requestJson`) on transient 408/425/429/5xx failures.
+- [x] Add lightweight circuit breaker state for repeated transport/retryable failures with cooldown fail-fast.
+- [x] Remove implicit `CI=true` auth bypass; keep explicit `SENTINELAYER_CLI_SKIP_AUTH=1` bypass only.
+- [x] Add dedicated unit coverage for auth HTTP retry/circuit behavior and auth gate bypass semantics.
+- [x] Run full local verification and deterministic local gate scans.
+- [ ] Open PR and run Omar Gate + required checks.
+- [ ] Merge after green and capture run evidence.

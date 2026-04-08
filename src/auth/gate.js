@@ -46,8 +46,8 @@ export async function checkAuthGate(args) {
     return { authenticated: true, session: null, bypassReason: "no_auth_required" };
   }
 
-  // CI/test bypass — allows automated testing without auth
-  if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" || process.env.CI === "true") {
+  // Explicit test bypass only — CI=true alone must not disable auth.
+  if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1") {
     return { authenticated: true, session: null, bypassReason: "env_bypass" };
   }
 
