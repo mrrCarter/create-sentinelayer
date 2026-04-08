@@ -970,5 +970,21 @@ Review:
 - [x] Add/extend `tests/unit.auth-http.test.mjs` coverage for 401/403 breaker-open behavior and 400 non-tracking behavior.
 - [x] Run local verification for changed auth HTTP paths.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#220` merged (squash commit `b334022ebc79710d4b961008c18ec32fceaaaa98`) with all required checks green.
+- Omar Gate on PR `#220`: run `24159926839` passed (`P0=0`, `P1=0`, `P2=14`).
+- Quality Gates on PR `#220`: run `24159926807` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under guarded bypass (`SENTINELAYER_CLI_SKIP_AUTH=1` + `SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS=1`).
+
+## 2026-04-08 - Auth Gate Fail-Closed Test-Only Bypass (Batch P2-A12)
+
+- [x] Validate Omar finding that non-test env auth bypass remains possible via `SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS`.
+- [x] Refactor `src/auth/gate.js` so env bypass is accepted only for explicit test contexts (`NODE_ENV=test` or `SENTINELAYER_CLI_TEST_MODE=1`).
+- [x] Update `tests/unit.auth-gate.test.mjs` to remove unsafe override success path and enforce fail-closed behavior in production env.
+- [x] Run local verification for changed auth-gate paths.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
