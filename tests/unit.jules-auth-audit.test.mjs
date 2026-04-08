@@ -3,6 +3,23 @@ import assert from "node:assert/strict";
 
 import { authAudit, AuthAuditError } from "../src/agents/jules/tools/auth-audit.js";
 
+function createResponse(status, headers = {}) {
+  const normalized = Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [String(key).toLowerCase(), String(value)])
+  );
+  return {
+    status: Number(status || 0),
+    headers: {
+      entries() {
+        return Object.entries(normalized);
+      },
+      get(name) {
+        return normalized[String(name || "").toLowerCase()] ?? null;
+      },
+    },
+  };
+}
+
 describe("authAudit", () => {
   it("rejects unknown operation", () => {
     assert.throws(() => authAudit({ operation: "nonexistent" }), AuthAuditError);
@@ -41,6 +58,47 @@ describe("authAudit", () => {
     assert.ok(typeof result.available === "boolean");
     if (result.available) {
       assert.ok(Array.isArray(result.findings));
+    }
+  });
+
+  it("check_auth_flow_security retries transient retryable statuses and succeeds", async () => {
+    const previousFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return createResponse(503);
+      }
+      return createResponse(200, {
+        "strict-transport-security": "max-age=31536000",
+        "content-security-policy": "default-src 'self'",
+      });
+    };
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      assert.equal(result.available, true);
+      assert.equal(callCount, 2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("check_auth_flow_security fails closed after transient retry budget is exhausted", async () => {
+    const previousFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount += 1;
+      const error = new Error("timed out");
+      error.name = "AbortError";
+      throw error;
+    };
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      assert.equal(result.available, false);
+      assert.match(result.reason, /failed after 3 attempt\(s\)/);
+      assert.equal(callCount, 3);
+    } finally {
+      globalThis.fetch = previousFetch;
     }
   });
 
