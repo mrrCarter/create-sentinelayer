@@ -16,6 +16,12 @@ describe("authAudit", () => {
     }
   });
 
+  it("provision_test_identity blocks live execute without explicit approval flag", async () => {
+    const result = await authAudit({ operation: "provision_test_identity", execute: true });
+    assert.equal(result.available, false);
+    assert.match(result.reason, /allowProvisioning=true|SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION/);
+  });
+
   it("authenticated_page_check requires url", async () => {
     await assert.rejects(
       () => authAudit({ operation: "authenticated_page_check" }),
