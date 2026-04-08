@@ -1002,5 +1002,21 @@ Review:
 - [x] Ensure checkout/fetch strategy in `release.yml` provides sufficient git history for ancestry checks (`merge-base --is-ancestor`).
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#222` merged (squash commit `23b4d7bdaa9656d21eda528610d5b98fcc09e41e`) with all required checks green.
+- Omar Gate on PR `#222`: run `24160427570` passed (`P0=0`, `P1=0`, `P2=12`).
+- Quality Gates on PR `#222`: run `24160427807` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under test-only bypass (`NODE_ENV=test` + `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Auth Audit Header Fetch Retry Hardening (Batch P2-A14)
+
+- [x] Validate Omar finding that auth-flow header fetch is single-shot and can false-negative on transient failures.
+- [x] Add bounded retry/backoff for auth-flow header fetch in `src/agents/jules/tools/auth-audit.js` (retry timeout/5xx/429, preserve redirect-hop cap).
+- [x] Extend `tests/unit.jules-auth-audit.test.mjs` with retry success and retry exhaustion behavior.
+- [x] Run local verification for changed auth-audit paths.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 
 /**
  * Jules Tanaka — Authenticated Page Audit
@@ -216,6 +217,53 @@ const fs = require('node:fs');
 `;
 
 const MAX_AUTH_REDIRECT_HOPS = 5;
+const AUTH_FLOW_FETCH_TIMEOUT_MS = 10_000;
+const AUTH_FLOW_FETCH_MAX_RETRIES = 2;
+const AUTH_FLOW_FETCH_BASE_BACKOFF_MS = 200;
+const RETRYABLE_AUTH_FLOW_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function computeAuthFlowBackoffMs(attempt) {
+  const computed = AUTH_FLOW_FETCH_BASE_BACKOFF_MS * Math.pow(2, Math.max(0, attempt));
+  return Math.min(1000, computed);
+}
+
+function isRetryableAuthFlowError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  // Fetch in Node commonly throws AbortError (timeout) or TypeError (network transport failure).
+  return error.name === "AbortError" || error.name === "TimeoutError" || error.name === "TypeError";
+}
+
+async function fetchLoginResponseWithRetry(currentUrl) {
+  for (let attempt = 0; attempt <= AUTH_FLOW_FETCH_MAX_RETRIES; attempt += 1) {
+    try {
+      const response = await fetch(currentUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(AUTH_FLOW_FETCH_TIMEOUT_MS),
+      });
+      if (!RETRYABLE_AUTH_FLOW_STATUS_CODES.has(response.status)) {
+        return response;
+      }
+      if (attempt >= AUTH_FLOW_FETCH_MAX_RETRIES) {
+        throw new AuthAuditError(
+          `Auth flow header fetch failed after ${attempt + 1} attempt(s): HTTP ${response.status}`
+        );
+      }
+    } catch (error) {
+      if (error instanceof AuthAuditError) {
+        throw error;
+      }
+      if (!isRetryableAuthFlowError(error) || attempt >= AUTH_FLOW_FETCH_MAX_RETRIES) {
+        const message = error instanceof Error ? error.message : String(error || "request failed");
+        throw new AuthAuditError(`Auth flow header fetch failed after ${attempt + 1} attempt(s): ${message}`);
+      }
+    }
+    await sleep(computeAuthFlowBackoffMs(attempt));
+  }
+  throw new AuthAuditError("Auth flow header fetch failed after retry budget was exhausted");
+}
 
 async function checkAuthFlowSecurity(input) {
   const loginUrl = input.loginUrl || input.url;
@@ -263,11 +311,7 @@ async function fetchLoginHeaders(loginUrl) {
     }
     visited.add(currentUrl);
 
-    const response = await fetch(currentUrl, {
-      method: "GET",
-      redirect: "manual",
-      signal: AbortSignal.timeout(10000),
-    });
+    const response = await fetchLoginResponseWithRetry(currentUrl);
     const headers = Object.fromEntries(response.headers.entries());
 
     if (response.status >= 300 && response.status < 400) {
