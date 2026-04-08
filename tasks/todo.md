@@ -1271,5 +1271,20 @@ Review:
 - [x] Add `release-approval` job in `.github/workflows/release.yml` bound to `environment: package-release`, and make `publish` depend on `release-approval`.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#239` merged (squash commit `27e982d`) with all required checks green.
+- Omar Gate on PR `#239`: run `24164391496` passed (`P0=0`, `P1=0`, `P2=12`).
+- Quality Gates on PR `#239`: run `24164391478` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - SCA Audit JSON Validation Hardening (Batch P2-A31)
+
+- [x] Validate Omar finding that `npm audit` JSON parsing path tolerates malformed/truncated payloads without strict schema validation.
+- [x] Harden `.github/workflows/sca-audit.yml` to fail closed on empty/invalid `npm-audit.json` and require `metadata.vulnerabilities` integer keys (`info|low|moderate|high|critical|total`).
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
