@@ -1256,5 +1256,20 @@ Review:
 - [x] Update `.github/workflows/release.yml` tarball build step to use `npm pack --ignore-scripts` so packaging follows install-time script suppression policy.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#238` merged (squash commit `7a722fb`) with all required checks green.
+- Omar Gate on PR `#238`: run `24164204806` passed (`P0=0`, `P1=0`, `P2=10`).
+- Quality Gates on PR `#238`: run `24164204769` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Publish Explicit Approval Gate (Batch P2-A30)
+
+- [x] Validate Omar finding that tag-triggered publish path should include an explicit approval gate dependency before `publish`.
+- [x] Add `release-approval` job in `.github/workflows/release.yml` bound to `environment: package-release`, and make `publish` depend on `release-approval`.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

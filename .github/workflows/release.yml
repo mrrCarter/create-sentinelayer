@@ -260,12 +260,23 @@ jobs:
           release_version="${RELEASE_VERSION#v}"
           RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
 
-  publish:
+  release-approval:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-release-artifact, rollback-readiness-tag]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    environment: package-release
+    steps:
+      - name: Record protected approval gate
+        run: |
+          set -euo pipefail
+          echo "Release approval gate satisfied for ${GITHUB_REF}."
+
+  publish:
+    needs: [build-release-artifact, rollback-readiness-tag, release-approval]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    environment: package-release
     concurrency:
       group: release-publish-prod
       cancel-in-progress: false
