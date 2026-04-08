@@ -1102,7 +1102,18 @@ Review:
 - [x] Merge after green and record run IDs/findings delta.
 
 Review:
-- PR `#228` merged (squash commit pending) with all required checks green.
-- Omar Gate on PR `#228`: run `24162036913` passed (`P0=0`, `P1=0`, `P2=13`).
-- Quality Gates on PR `#228`: run `24162036891` passed.
+- PR `#228` merged (squash commit `b9626c15dfcb8b6e9050c97fcf985b5153233e38`) with all required checks green.
+- Omar Gate on PR `#228`: run `24162124775` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#228`: run `24162124792` passed.
 - Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`), both under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Auth Audit Playwright Retry Hardening (Batch P2-A20)
+
+- [x] Validate Omar finding that `authenticatedPageCheck` Playwright subprocess execution has no bounded retry/backoff path.
+- [x] Add deterministic retry/backoff helper for Playwright subprocess execution in `src/agents/jules/tools/auth-audit.js`.
+- [x] Include attempt-count detail in failure reason when retry budget is exhausted.
+- [x] Add unit coverage for retry success and retry exhaustion behavior without invoking real Playwright.
+- [x] Run local verification (`npm run verify`) for changed auth-audit surface.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [ ] Open PR and complete Omar Gate + required checks watch loop.
+- [ ] Merge after green and record run IDs/findings delta.
