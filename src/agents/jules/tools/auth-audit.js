@@ -153,11 +153,12 @@ const fs = require('node:fs');
   const passwordSelector = context.passwordField || 'input[type="password"]';
   const submitSelector = context.submitSelector || 'button[type="submit"]';
 
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  let browser = null;
   const results = { authenticated: false, errors: [], cookies: [], headers: {}, domStats: {} };
 
   try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
     if (email && password && loginUrl) {
       await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
       await page.fill(emailSelector, email);
@@ -204,10 +205,12 @@ const fs = require('node:fs');
       };
     }
   } catch (err) {
-    results.errors.push({ text: 'Navigation error: ' + (err.message || '').slice(0, 100) });
+    results.errors.push({ text: 'Playwright error: ' + (err.message || '').slice(0, 100) });
   } finally {
     try { console.log(JSON.stringify(results)); } catch {}
-    await browser.close();
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
   }
 })();
 `;

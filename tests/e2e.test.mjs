@@ -567,6 +567,7 @@ async function runCli({ cwd, env, args = [] }) {
       cwd,
       env: {
         ...process.env,
+        NODE_ENV: "test",
         SENTINELAYER_CLI_SKIP_AUTH: "1",
         ...(env || {}),
       },
