@@ -133,3 +133,5 @@
 
 - When a P2 burn-down PR falls 100+ commits behind main, close it and verify that subsequent PRs already absorbed its fixes rather than rebasing a stale branch — rebase conflicts on a large branch waste more time than incremental fix PRs.
 - Before claiming a command or endpoint is missing, always verify by reading the actual source registration code (e.g., `commander` `.command()` calls, FastAPI `@router.get` decorators) — agent summaries and memory can be stale.
+- When a core helper switches from sync to async, patch all call sites in the same PR (commands + tools + tests) and add one regression test that would fail on Promise misuse (`missing.length` on unresolved Promise).
+- In this repo, full `npm run verify` can fail from environment-level auth-gate requirements unrelated to scoped code changes; always capture passing targeted suites for changed modules and record why e2e auth gating failed.

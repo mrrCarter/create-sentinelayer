@@ -181,13 +181,14 @@ export async function resolveAidenIdCredentials(
   } = {}
 ) {
   const sessionAidenId = session && session.aidenid ? session.aidenid : null;
+  const hasSessionToken = Boolean(String(session && session.token ? session.token : "").trim());
 
   let resolvedApiKey = String(apiKey || env.AIDENID_API_KEY || "").trim();
   let resolvedOrgId = String(orgId || env.AIDENID_ORG_ID || (sessionAidenId && sessionAidenId.orgId) || "").trim();
   let resolvedProjectId = String(projectId || env.AIDENID_PROJECT_ID || (sessionAidenId && sessionAidenId.projectId) || "").trim();
 
-  // Lazy-fetch secret from SentinelLayer API if we have session metadata but no API key
-  if (!resolvedApiKey && sessionAidenId && fetchCredentials) {
+  // Lazy-fetch secret from SentinelLayer API when a CLI session token is available.
+  if (!resolvedApiKey && hasSessionToken && typeof fetchCredentials === "function") {
     try {
       const fetched = await fetchCredentials();
       if (fetched && fetched.apiKey) {
@@ -206,8 +207,8 @@ export async function resolveAidenIdCredentials(
   if (!resolvedProjectId) missing.push("AIDENID_PROJECT_ID");
 
   if (requireAll && missing.length > 0) {
-    const hint = sessionAidenId
-      ? " (session has metadata but API key fetch failed — check network or run 'sl auth login' again)"
+    const hint = hasSessionToken
+      ? " (session token exists but AIdenID credential fetch failed — check network or run 'sl auth login' again)"
       : " (run 'sl auth login' to auto-provision, or set env vars manually)";
     throw new Error(`Missing AIdenID credentials: ${missing.join(", ")}.${hint}`);
   }

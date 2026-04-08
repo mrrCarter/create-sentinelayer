@@ -308,7 +308,7 @@ identity
       return;
     }
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
@@ -441,7 +441,7 @@ identity
       throw new Error(`Identity '${identityId}' is under legal hold and cannot be revoked.`);
     }
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || trackedIdentity.projectId,
@@ -482,7 +482,7 @@ identity
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity.orgId,
       projectId: options.projectId || trackedIdentity.projectId,
@@ -606,7 +606,7 @@ identity
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || parentIdentity?.orgId,
       projectId: options.projectId || parentIdentity?.projectId,
@@ -654,7 +654,7 @@ identity
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || parentIdentity?.orgId,
       projectId: options.projectId || parentIdentity?.projectId,
@@ -758,7 +758,7 @@ identity
     if (trackedIdentity && identityIsUnderLegalHold(trackedIdentity)) {
       throw new Error(`Identity '${identityId}' is under legal hold and cannot run revoke-children.`);
     }
-    const credentials = resolveAidenIdCredentials({
+    const credentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity?.orgId,
       projectId: options.projectId || trackedIdentity?.projectId,
@@ -854,7 +854,7 @@ identity
       identityId,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity?.orgId,
       projectId: options.projectId || trackedIdentity?.projectId,
@@ -898,7 +898,7 @@ identity
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity?.orgId,
       projectId: options.projectId || trackedIdentity?.projectId,
@@ -1005,7 +1005,7 @@ identity
       throw new Error(`Identity '${identityId}' is not present in local registry.`);
     }
 
-    const credentials = resolveAidenIdCredentials({
+    const credentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity.orgId,
       projectId: options.projectId || trackedIdentity.projectId,
@@ -1097,7 +1097,7 @@ identity
       throw new Error(`Identity '${identityId}' is not present in local registry.`);
     }
 
-    const credentials = resolveAidenIdCredentials({
+    const credentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity.orgId,
       projectId: options.projectId || trackedIdentity.projectId,
@@ -1215,7 +1215,7 @@ identity
       throw new Error(`Identity '${identityId}' is not present in local registry.`);
     }
 
-    const credentials = resolveAidenIdCredentials({
+    const credentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity.orgId,
       projectId: options.projectId || trackedIdentity.projectId,
@@ -1335,3 +1335,4 @@ identity
     }
   });
 }
+
