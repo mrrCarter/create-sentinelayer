@@ -150,7 +150,7 @@ jobs:
 
           require_check_success "Quality Summary"
           require_check_success "Omar Gate"
-          require_check_if_present "CodeQL Summary"
+          require_check_success "CodeQL Summary"
           require_check_success "Semgrep Summary"
           require_check_success "Gitleaks Summary"
           require_check_success "IaC Summary"

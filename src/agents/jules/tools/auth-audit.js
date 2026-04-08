@@ -33,6 +33,15 @@ const AUTH_DISPATCH = {
 
 async function provisionTestIdentity(input) {
   try {
+    const executeRequested = input.execute === true;
+    const allowLiveProvision = input.allowProvisioning === true || process.env.SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION === "1";
+    if (executeRequested && !allowLiveProvision) {
+      return {
+        available: false,
+        reason: "Live AIdenID provisioning requires explicit allowProvisioning=true (or SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION=1).",
+      };
+    }
+
     const { provisionEmailIdentity, resolveAidenIdCredentials } = await import("../../../ai/aidenid.js");
     const creds = await resolveAidenIdCredentials();
     if (!creds.apiKey) {
@@ -41,9 +50,9 @@ async function provisionTestIdentity(input) {
     const result = await provisionEmailIdentity({
       apiUrl: creds.apiUrl, apiKey: creds.apiKey,
       tags: ["jules-audit", "frontend-test"],
-      ttlSeconds: 3600, dryRun: input.execute !== true,
+      ttlSeconds: 3600, dryRun: !executeRequested,
     });
-    return { available: true, dryRun: input.execute !== true, identity: result.identity || result };
+    return { available: true, dryRun: !executeRequested, identity: result.identity || result };
   } catch (err) {
     return { available: false, reason: "AIdenID provisioning failed: " + err.message };
   }
@@ -91,7 +100,7 @@ async function authenticatedPageCheck(input) {
       SL_AUDIT_CONTEXT_FILE: contextPath,
     };
 
-    const output = execFileSync("node", [scriptPath], {
+    const output = execFileSync(process.execPath, [scriptPath], {
       encoding: "utf-8", timeout: 60000,
       stdio: ["pipe", "pipe", "pipe"],
       env,

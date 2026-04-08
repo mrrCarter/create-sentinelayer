@@ -851,5 +851,20 @@ Review:
 - [x] Add explicit governance for manual release dispatch build path (approval or isolated non-attesting path).
 - [ ] Evaluate Semgrep install determinism options and implement the safest low-risk improvement in this batch.
 - [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#210` merged (squash commit `73735457e58ea30149a4d4ea1d20181925c1dd2c`) with all required checks green.
+- Omar Gate on PR `#210`: run `24116410242` passed (`P0=0`, `P1=0`, `P2=14`).
+- Local deterministic scans before merge: `/omargate deep` and `/audit` remained `P1=0`, `P2=10`, `blocking=false`.
+- Semgrep integrity hash-pinning remains open; deferred to next batch to avoid destabilizing scanner runtime resolution.
+
+## 2026-04-08 - Omar P2 Auth + Release Gate Follow-up (Batch P2-A4)
+
+- [x] Replace `execFileSync(\"node\", ...)` with `execFileSync(process.execPath, ...)` in `auth-audit` to remove PATH hijack exposure.
+- [x] Add explicit execute-path authorization guard for `provision_test_identity` in `auth-audit` (deny live provisioning unless explicitly approved).
+- [x] Tighten release upstream gate policy by requiring `CodeQL Summary` success when release checks run.
+- [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
