@@ -2,17 +2,12 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Reserved for tagged releases; manual dispatch runs build validation only."
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "v*"
 
 permissions:
+  checks: read
   contents: read
   attestations: write
   id-token: write
@@ -37,6 +32,27 @@ jobs:
             exit 1
           fi
 
+      - name: Ensure target commit passed required upstream gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+          REQUIRED_CHECKS_JSON: >-
+            [
+              {"name":"Quality Summary","app":"github-actions","optional":false},
+              {"name":"Omar Gate","app":"github-actions","optional":false},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
+              {"name":"IaC Summary","app":"github-actions","optional":false},
+              {"name":"SCA Summary","app":"github-actions","optional":false},
+              {"name":"License Summary","app":"github-actions","optional":false},
+              {"name":"SBOM Summary","app":"github-actions","optional":false},
+              {"name":"Attestation Summary","app":"github-actions","optional":false},
+              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+            ]
+          MAX_WAIT_SECONDS: "120"
+          POLL_INTERVAL_SECONDS: "10"
+        run: .github/scripts/require-check-runs.sh
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -55,7 +71,7 @@ jobs:
           set -euo pipefail
           echo "## Manual Release Validation" >> "$GITHUB_STEP_SUMMARY"
           echo "- ref: \`${GITHUB_REF}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- note: workflow_dispatch validates only; publish remains tag-only." >> "$GITHUB_STEP_SUMMARY"
+          echo "- note: workflow_dispatch validates only; publish remains tag-only and upstream checks must already be green." >> "$GITHUB_STEP_SUMMARY"
 
   build-release-artifact:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -86,78 +102,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          all_check_runs='[]'
-          page=1
-          while true; do
-            page_json="$(curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/check-runs?per_page=100&page=${page}")"
-            page_runs="$(echo "${page_json}" | jq '.check_runs // []')"
-            all_check_runs="$(jq -s '.[0] + .[1]' \
-              <(printf '%s' "${all_check_runs}") \
-              <(printf '%s' "${page_runs}"))"
-            page_size="$(echo "${page_runs}" | jq 'length')"
-            if [ "${page_size}" -lt 100 ]; then
-              break
-            fi
-            page="$((page + 1))"
-            if [ "${page}" -gt 50 ]; then
-              echo "::error::Aborting check-run pagination after 50 pages for commit ${TARGET_SHA}."
-              exit 1
-            fi
-          done
-          checks_json="$(jq -n --argjson check_runs "${all_check_runs}" '{ check_runs: $check_runs }')"
-
-          require_check_success() {
-            local check_name="$1"
-            local latest_conclusion
-            latest_conclusion="$(echo "${checks_json}" | jq -r --arg check_name "${check_name}" '
-              [.check_runs[]
-                | select(.name == $check_name and .status == "completed")
-                | { completed_at, conclusion }
-              ]
-              | sort_by(.completed_at)
-              | last
-              | .conclusion // ""
-            ')"
-
-            if [ -z "${latest_conclusion}" ] || [ "${latest_conclusion}" = "null" ]; then
-              echo "::error::Required check '${check_name}' has no completed run for commit ${TARGET_SHA}."
-              exit 1
-            fi
-
-            if [ "${latest_conclusion}" != "success" ]; then
-              echo "::error::Required check '${check_name}' concluded '${latest_conclusion}' for commit ${TARGET_SHA}."
-              exit 1
-            fi
-          }
-
-          require_check_if_present() {
-            local check_name="$1"
-            local has_check
-            has_check="$(echo "${checks_json}" | jq -r --arg check_name "${check_name}" '
-              any(.check_runs[]?; .name == $check_name)
-            ')"
-            if [ "${has_check}" != "true" ]; then
-              echo "::notice::Optional check '${check_name}' not present for commit ${TARGET_SHA}; skipping."
-              return 0
-            fi
-            require_check_success "${check_name}"
-          }
-
-          require_check_success "Quality Summary"
-          require_check_success "Omar Gate"
-          require_check_success "CodeQL Summary"
-          require_check_success "Semgrep Summary"
-          require_check_success "Gitleaks Summary"
-          require_check_success "IaC Summary"
-          require_check_success "SCA Summary"
-          require_check_success "License Summary"
-          require_check_success "SBOM Summary"
-          require_check_success "Attestation Summary"
+          REQUIRED_CHECKS_JSON: >-
+            [
+              {"name":"Quality Summary","app":"github-actions","optional":false},
+              {"name":"Omar Gate","app":"github-actions","optional":false},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
+              {"name":"IaC Summary","app":"github-actions","optional":false},
+              {"name":"SCA Summary","app":"github-actions","optional":false},
+              {"name":"License Summary","app":"github-actions","optional":false},
+              {"name":"SBOM Summary","app":"github-actions","optional":false},
+              {"name":"Attestation Summary","app":"github-actions","optional":false},
+              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+            ]
+          MAX_WAIT_SECONDS: "900"
+          POLL_INTERVAL_SECONDS: "10"
+        run: .github/scripts/require-check-runs.sh
 
       - name: Build release tarball
         run: npm pack

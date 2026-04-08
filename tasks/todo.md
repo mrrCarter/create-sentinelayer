@@ -895,5 +895,21 @@ Review:
 - [x] Add path-scoped exclusions for noisy generic P2 rules (hardcoded credential/work-item markers) in both scan engines (`legacy /omargate` + deterministic local review).
 - [x] Keep high-signal P1 rules unchanged while suppressing test/fixture and self-rule-file false positives.
 - [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#214` merged (squash commit `4847d533087750dcb473a88a35b050b424a93554`) with all required checks green.
+- Omar Gate on PR `#214`: run `24117475972` passed (`P0=0`, `P1=0`, `P2=14`).
+- Local deterministic scans before merge: `/omargate deep` and `/audit` improved to `P1=0`, `P2=0`, `blocking=false`.
+
+## 2026-04-08 - Release Check-Identity Hardening (Batch P2-A7)
+
+- [x] Validate latest Omar findings and scope the next deterministic P2 burn-down batch to release governance gaps.
+- [x] Add reusable check-run verifier script that enforces required checks by both check name and check app identity.
+- [x] Wire release tag/manual validation flows to the shared verifier script with bounded polling.
+- [x] Remove unused `workflow_dispatch` release input to eliminate operator confusion and drift.
+- [x] Gate `release-please` execution on upstream security/quality check completion.
+- [x] Run local verification for workflow/script changes.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
