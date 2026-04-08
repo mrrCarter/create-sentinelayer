@@ -1241,5 +1241,20 @@ Review:
 - [x] Update `.github/workflows/quality-gates.yml` syntax matrix to remove Node `18` and keep supported runtime matrix only.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#237` merged (squash commit `735dfa3`) with all required checks green.
+- Omar Gate on PR `#237`: run `24164038983` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#237`: run `24164038984` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Tarball Script Execution Guard (Batch P2-A29)
+
+- [x] Validate Omar finding that release artifact tarball build can execute package lifecycle scripts via `npm pack` default behavior.
+- [x] Update `.github/workflows/release.yml` tarball build step to use `npm pack --ignore-scripts` so packaging follows install-time script suppression policy.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

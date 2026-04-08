@@ -158,7 +158,7 @@ jobs:
         run: .github/scripts/require-check-runs.sh
 
       - name: Build release tarball
-        run: npm pack
+        run: npm pack --ignore-scripts
 
       - name: Generate release artifact manifest
         id: artifact_manifest
