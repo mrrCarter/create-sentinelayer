@@ -939,5 +939,20 @@ Review:
 - [x] Validate Omar feedback that `manual-validate` gate wait window can false-fail under normal CI queue/runtime.
 - [x] Increase `release.yml` manual validation required-check wait window (`MAX_WAIT_SECONDS`) from `120` to `1800`.
 - [x] Run local verification for workflow updates.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#217` merged (squash commit `2a680ce763dce3a39acf632d5920c8e61a25f8ed`) with all required checks green.
+- Omar Gate on PR `#217`: run `24118101317` passed (`P0=0`, `P1=0`, `P2=14`).
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under guarded bypass (`SENTINELAYER_CLI_SKIP_AUTH=1` + `SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS=1`).
+
+## 2026-04-08 - Quality Stage-Order Hardening (Batch P2-A10)
+
+- [x] Validate Omar feedback that quality workflow stages were parallel and not encoded as explicit ordered gates.
+- [x] Refactor `quality-gates.yml` so `unit-coverage` waits on `eval-impact + syntax-matrix`.
+- [x] Refactor `quality-gates.yml` so `e2e-packaging` waits on `unit-coverage`.
+- [x] Remove duplicated unit-test execution from `syntax-matrix` to keep deterministic stage semantics clear.
+- [x] Run local verification for workflow updates.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
