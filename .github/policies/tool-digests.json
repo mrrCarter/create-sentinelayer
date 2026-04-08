@@ -1,0 +1,14 @@
+{
+  "gitleaks": {
+    "8.24.2": {
+      "asset": "gitleaks_8.24.2_linux_x64.tar.gz",
+      "sha256": "fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e"
+    }
+  },
+  "trivy": {
+    "0.69.3": {
+      "asset": "trivy_0.69.3_Linux-64bit.tar.gz",
+      "sha256": "1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75"
+    }
+  }
+}
