@@ -250,7 +250,8 @@ jobs:
       - name: Publish to npm
         run: |
           set -euo pipefail
-          npm publish "${TARBALL}" --provenance --access public
+          test -f "${TARBALL}"
+          npm publish "./${TARBALL}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN_VALUE }}
 
