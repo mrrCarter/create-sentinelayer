@@ -1181,5 +1181,20 @@ Review:
 - [x] Update `.github/workflows/release.yml` publish `concurrency.group` to a global lock (`release-publish-prod`) to serialize npm publish across all tags.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#233` merged (squash commit `0afa911`) with all required checks green.
+- Omar Gate on PR `#233`: run `24163248070` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#233`: run `24163248057` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Dispatch Approval Symmetry (Batch P2-A25)
+
+- [x] Validate Omar finding that `workflow_dispatch` release validation path lacks explicit environment approval parity with tag publish path.
+- [x] Add `environment: package-release` to `manual-validate` in `.github/workflows/release.yml` so manual validation and publish use the same protected approval boundary.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
