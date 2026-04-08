@@ -1286,5 +1286,21 @@ Review:
 - [x] Harden `.github/workflows/sca-audit.yml` to fail closed on empty/invalid `npm-audit.json` and require `metadata.vulnerabilities` integer keys (`info|low|moderate|high|critical|total`).
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#240` merged (squash commit `44176ac`) with all required checks green.
+- Omar Gate on PR `#240`: run `24164565086` passed (`P0=0`, `P1=0`, `P2=14`).
+- Quality Gates on PR `#240`: run `24164565098` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Auth Audit Secret Redaction Hardening (Batch P2-A32)
+
+- [x] Validate Omar finding that auth-audit Playwright error capture redaction is too narrow for token/JWT/cookie-like payloads.
+- [x] Harden Playwright-script-side sanitizer in `src/agents/jules/tools/auth-audit.js` to redact bearer credentials, key-value secrets, JWT-like tokens, known API-token families, long hex strings, and long token-like blobs before logging.
+- [x] Add unit regression assertions in `tests/unit.jules-auth-audit.test.mjs` to lock sanitizer + typed error-capture contract (`console|pageerror|playwright`).
+- [x] Run local verification for changed auth-audit surfaces.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
