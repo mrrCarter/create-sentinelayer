@@ -796,5 +796,13 @@ Review:
 - npm registry verification after publish:
   - `npm view sentinelayer-cli version` -> `0.3.0`
   - `npm view sentinelayer-cli dist-tags --json` -> `{ "latest": "0.3.0" }`
-  - `npx -y sentinelayer-cli@latest --version` -> `0.3.0`
+- `npx -y sentinelayer-cli@latest --version` -> `0.3.0`
 - Follow-up release-please PR `#203` (`chore(release): 0.3.1`) was Omar-reviewed (`24113740735`) and merged (squash commit `7b1f0b72fda3c0dcb1abef167f7b89f8523ec48d`), tagging `v0.3.1`.
+
+## 2026-04-08 - Workflow Determinism Hardening (Batch R2)
+
+- [x] Replace non-deterministic tarball selection (`ls | head`) with strict single-artifact assertions in release workflow.
+- [x] Apply `npm ci --ignore-scripts` in all Quality Gates install jobs to tighten supply-chain execution.
+- [x] Run local verification for changed workflow files.
+- [ ] Open PR and run Omar Gate + full required checks.
+- [ ] Merge after green and capture run evidence.

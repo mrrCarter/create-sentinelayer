@@ -111,7 +111,14 @@ jobs:
         id: artifact_manifest
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 sentinelayer-cli-*.tgz | head -n 1)"
+          shopt -s nullglob
+          tarballs=(sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          TARBALL="${tarballs[0]}"
           SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
           jq -n \
             --arg tarball "${TARBALL}" \
@@ -213,7 +220,14 @@ jobs:
       - name: Enforce release artifact checksum manifest
         run: |
           set -euo pipefail
-          TARBALL="$(ls -1 release-artifact/sentinelayer-cli-*.tgz | head -n 1)"
+          shopt -s nullglob
+          tarballs=(release-artifact/sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one downloaded tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          TARBALL="${tarballs[0]}"
           MANIFEST="release-artifact/release-artifact-manifest.json"
           test -f "${MANIFEST}"
           EXPECTED_SHA256="$(jq -r '.sha256' "${MANIFEST}")"
