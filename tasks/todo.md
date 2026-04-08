@@ -986,5 +986,21 @@ Review:
 - [x] Update `tests/unit.auth-gate.test.mjs` to remove unsafe override success path and enforce fail-closed behavior in production env.
 - [x] Run local verification for changed auth-gate paths.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#221` merged (squash commit `f202a9f9fa8c1577605a52977b5778f585d1c4be`) with all required checks green.
+- Omar Gate on PR `#221`: run `24160181753` passed (`P0=0`, `P1=0`, `P2=14`).
+- Quality Gates on PR `#221`: run `24160181757` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under test-only bypass (`NODE_ENV=test` + `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Tag Main-Ancestry Guard (Batch P2-A13)
+
+- [x] Validate Omar finding that tag-triggered release can run from non-main lineage commits.
+- [x] Add a deterministic main-ancestry guard in `build-release-artifact` so tagged commit must be reachable from `origin/main`.
+- [x] Ensure checkout/fetch strategy in `release.yml` provides sufficient git history for ancestry checks (`merge-base --is-ancestor`).
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
