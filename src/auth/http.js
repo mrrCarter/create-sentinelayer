@@ -12,6 +12,7 @@ export const CIRCUIT_BREAKER_THRESHOLD = 5;
 export const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const CIRCUIT_TRACK_STATUS_CODES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 const circuitState = {
   consecutiveFailures: 0,
   openedAtMs: 0,
@@ -119,6 +120,10 @@ function shouldRetryStatus(statusCode) {
   return RETRYABLE_STATUS_CODES.has(Number(statusCode || 0));
 }
 
+function shouldRecordFailureForStatus(statusCode) {
+  return CIRCUIT_TRACK_STATUS_CODES.has(Number(statusCode || 0));
+}
+
 export function __resetRequestCircuitForTests() {
   circuitState.consecutiveFailures = 0;
   circuitState.openedAtMs = 0;
@@ -200,6 +205,7 @@ export async function requestJson(
       const apiError = normalizeApiError(json && typeof json === "object" ? json.error : {});
       const statusCode = Number(response.status || 500);
       const retryable = shouldRetryStatus(statusCode);
+      const shouldRecordCircuitFailure = shouldRecordFailureForStatus(statusCode);
       const error = new SentinelayerApiError(apiError.message, {
         status: statusCode,
         code: apiError.code,
@@ -207,7 +213,7 @@ export async function requestJson(
       });
 
       if (!retryable || attempt >= normalizedMaxRetries) {
-        if (retryable) {
+        if (shouldRecordCircuitFailure) {
           recordFailureForCircuit();
         }
         throw error;

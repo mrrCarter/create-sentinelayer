@@ -954,5 +954,21 @@ Review:
 - [x] Refactor `quality-gates.yml` so `e2e-packaging` waits on `unit-coverage`.
 - [x] Remove duplicated unit-test execution from `syntax-matrix` to keep deterministic stage semantics clear.
 - [x] Run local verification for workflow updates.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#219` merged (squash commit `95854458f03a2b20782c0053d9922836333e02e0`) with all required checks green.
+- Omar Gate on PR `#219`: run `24159571948` passed (`P0=0`, `P1=0`, `P2=15`).
+- Quality Gates on PR `#219`: run `24159571938` passed (ordered dependency chain: `eval-impact/syntax -> unit-coverage -> e2e-packaging -> summary`).
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under guarded bypass (`SENTINELAYER_CLI_SKIP_AUTH=1` + `SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS=1`).
+
+## 2026-04-08 - Auth HTTP Circuit Status Hardening (Batch P2-A11)
+
+- [x] Validate Omar finding that repeated non-retryable auth failures (401/403) do not feed the request circuit breaker.
+- [x] Update `src/auth/http.js` to track circuit failures for auth/rate-limit/unavailable status classes even when not retried.
+- [x] Add/extend `tests/unit.auth-http.test.mjs` coverage for 401/403 breaker-open behavior and 400 non-tracking behavior.
+- [x] Run local verification for changed auth HTTP paths.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

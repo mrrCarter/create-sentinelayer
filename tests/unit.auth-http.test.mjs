@@ -87,6 +87,90 @@ test("Unit auth http: does not retry non-retryable API status codes", async () =
   }
 });
 
+test("Unit auth http: opens circuit breaker after consecutive 401 auth failures", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    return createResponse(401, {
+      error: { code: "UNAUTHORIZED", message: "Unauthorized" },
+    });
+  };
+
+  try {
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i += 1) {
+      await assert.rejects(
+        () =>
+          requestJson("https://api.example.com/test", {
+            maxRetries: 0,
+            retryDelayMs: 1,
+          }),
+        (error) => {
+          assert.equal(error instanceof SentinelayerApiError, true);
+          assert.equal(error.code, "UNAUTHORIZED");
+          assert.equal(error.status, 401);
+          return true;
+        }
+      );
+    }
+
+    const beforeCircuitCalls = callCount;
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          maxRetries: 0,
+          retryDelayMs: 1,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "CIRCUIT_OPEN");
+        assert.equal(error.status, 503);
+        return true;
+      }
+    );
+    assert.equal(callCount, beforeCircuitCalls);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: repeated 400 client errors do not open circuit breaker", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    return createResponse(400, {
+      error: { code: "BAD_REQUEST", message: "Invalid input" },
+    });
+  };
+
+  try {
+    const attempts = CIRCUIT_BREAKER_THRESHOLD + 1;
+    for (let i = 0; i < attempts; i += 1) {
+      await assert.rejects(
+        () =>
+          requestJson("https://api.example.com/test", {
+            maxRetries: 0,
+            retryDelayMs: 1,
+          }),
+        (error) => {
+          assert.equal(error instanceof SentinelayerApiError, true);
+          assert.equal(error.code, "BAD_REQUEST");
+          assert.equal(error.status, 400);
+          return true;
+        }
+      );
+    }
+    assert.equal(callCount, attempts);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
 test("Unit auth http: retries timeout/network failures and returns normalized timeout error", async () => {
   __resetRequestCircuitForTests();
   const previousFetch = globalThis.fetch;
