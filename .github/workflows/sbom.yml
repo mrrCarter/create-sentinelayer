@@ -64,15 +64,15 @@ jobs:
           cyclonedx_sha="$(sha256sum sbom-cyclonedx.json | awk '{print $1}')"
           spdx_sha="$(sha256sum sbom-spdx.json | awk '{print $1}')"
           jq -n \
-            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
             --arg syft_version "${SYFT_VERSION}" \
+            --arg source_commit "${GITHUB_SHA}" \
             --arg cyclonedx_sha256 "${cyclonedx_sha}" \
             --arg spdx_sha256 "${spdx_sha}" \
             --argjson cyclonedx_components "${cyclonedx_components}" \
             --argjson spdx_packages "${spdx_packages}" \
             '{
-              generated_at: $generated_at,
               syft_version: $syft_version,
+              source_commit: $source_commit,
               files: [
                 {
                   path: "sbom-cyclonedx.json",

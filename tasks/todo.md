@@ -1211,5 +1211,20 @@ Review:
 - [x] Add workflow-level `concurrency` to `.github/workflows/release.yml` (`group: release-workflow-global`, `cancel-in-progress: false`) to serialize release pipeline runs.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#235` merged (squash commit `00e319d`) with all required checks green.
+- Omar Gate on PR `#235`: run `24163617005` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#235`: run `24163616942` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - SBOM Manifest Deterministic Metadata (Batch P2-A27)
+
+- [x] Validate Omar finding that `sbom-manifest.json` includes non-deterministic wall-clock `generated_at` metadata.
+- [x] Replace wall-clock manifest metadata in `.github/workflows/sbom.yml` with deterministic commit-bound metadata (`source_commit: $GITHUB_SHA`).
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
