@@ -1018,5 +1018,20 @@ Review:
 - [x] Extend `tests/unit.jules-auth-audit.test.mjs` with retry success and retry exhaustion behavior.
 - [x] Run local verification for changed auth-audit paths.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#223` merged (squash commit `8015977b7717ca062dda56b995c3cf2dfd4b0918`) with all required checks green.
+- Omar Gate on PR `#223`: run `24160785047` passed (`P0=0`, `P1=0`, `P2=12`).
+- Quality Gates on PR `#223`: run `24160785029` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under test-only bypass (`NODE_ENV=test` + `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Quality Workflow Concurrency Guard (Batch P2-A15)
+
+- [x] Validate Omar finding that quality workflow lacks explicit concurrency and can run overlapping matrices per PR ref.
+- [x] Add workflow-level concurrency group keyed by branch ref with `cancel-in-progress: true` in `.github/workflows/quality-gates.yml`.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
