@@ -83,6 +83,18 @@ export function generateExecutionPrompt({
 
   const guidanceMarkdown = guidance.map((item, index) => `${index + 1}. ${item}`).join("\n");
 
+  const hasAidenId = specText.toLowerCase().includes("aidenid");
+  const aidenidGuidance = hasAidenId
+    ? `
+## AIdenID E2E Testing
+- AIdenID credentials are auto-provisioned via \`sl auth login\`. No manual env vars needed.
+- Run \`sl auth status\` to confirm AIdenID is provisioned before using identity commands.
+- Use \`sl ai provision-email --execute --json\` to create ephemeral test emails.
+- Use \`sl ai identity wait-for-otp <identityId> --timeout 30\` to poll for OTP extraction.
+- Revoke test identities after verification: \`sl ai identity revoke <identityId>\`.
+`
+    : "";
+
   return `# ${buildAgentHeader(resolvedTarget)}
 
 Generated: ${generatedAt}
@@ -97,7 +109,7 @@ ${guidanceMarkdown}
 2. Implement only the current scope with deterministic checkpoints.
 3. Run verification commands and capture outcomes.
 4. Report findings first (bugs/regressions), then summarize changes.
-
+${aidenidGuidance}
 ## Source Spec (Authoritative)
 \n\`\`\`markdown
 ${specText}
