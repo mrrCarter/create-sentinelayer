@@ -776,3 +776,14 @@ Review:
 CI follow-up review:
 - `SENTINELAYER_CLI_SKIP_AUTH=1 npm run test:e2e` (pass: `89/89`)
 - `npm run check` (pass)
+
+## 2026-04-08 - Release Publish Provenance Fix (Batch R1)
+
+- [x] Watch active `Release` run and capture the exact failing step/logs.
+- [x] Confirm root cause from workflow logs (not assumptions).
+- [x] Patch publish metadata mismatch causing npm provenance rejection.
+- [x] Run local verification for changed files and workflow syntax.
+- [ ] Open PR and run full Omar Gate loop (`gh run watch` to completion).
+- [ ] Merge only after Omar + required checks pass.
+- [ ] Re-run `Release` workflow (`publish=true`) and confirm npm publish success.
+- [ ] Record post-merge evidence (workflow run IDs, npm version check, release status).
