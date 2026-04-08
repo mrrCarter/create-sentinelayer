@@ -783,7 +783,18 @@ CI follow-up review:
 - [x] Confirm root cause from workflow logs (not assumptions).
 - [x] Patch publish metadata mismatch causing npm provenance rejection.
 - [x] Run local verification for changed files and workflow syntax.
-- [ ] Open PR and run full Omar Gate loop (`gh run watch` to completion).
-- [ ] Merge only after Omar + required checks pass.
-- [ ] Re-run `Release` workflow (`publish=true`) and confirm npm publish success.
-- [ ] Record post-merge evidence (workflow run IDs, npm version check, release status).
+- [x] Open PR and run full Omar Gate loop (`gh run watch` to completion).
+- [x] Merge only after Omar + required checks pass.
+- [x] Re-run `Release` workflow (`publish=true`) and confirm npm publish success.
+- [x] Record post-merge evidence (workflow run IDs, npm version check, release status).
+
+Review:
+- PR `#202` merged (squash commit `bb3983f4828b262f751bca18ae9a70c15844bc4f`) after full gate pass.
+- Omar Gate on PR `#202`: run `24113529206` passed (`P0=0`, `P1=0`).
+- Required checks on merge commit were refreshed, including manual Omar Gate dispatch on `main`: run `24113605520` passed.
+- Release publish retry run `24113648894` passed end-to-end (`build-release-artifact` + `publish`).
+- npm registry verification after publish:
+  - `npm view sentinelayer-cli version` -> `0.3.0`
+  - `npm view sentinelayer-cli dist-tags --json` -> `{ "latest": "0.3.0" }`
+  - `npx -y sentinelayer-cli@latest --version` -> `0.3.0`
+- Follow-up release-please PR `#203` (`chore(release): 0.3.1`) was Omar-reviewed (`24113740735`) and merged (squash commit `7b1f0b72fda3c0dcb1abef167f7b89f8523ec48d`), tagging `v0.3.1`.
