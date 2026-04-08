@@ -1082,5 +1082,21 @@ Review:
 - [x] Add deterministic dry-run rollback command plan output and include enforcement check state in `release-rollback-readiness.json`.
 - [x] Run local verification for rollback-readiness script updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#227` merged (squash commit `6d60ac193f22aa22267ca193249f66f9ea6a06e3`) with all required checks green.
+- Omar Gate on PR `#227`: run `24161733358` passed (`P0=0`, `P1=0`, `P2=15`).
+- Quality Gates on PR `#227`: run `24161733341` passed.
+- Local deterministic scans before merge remained non-blocking under test-only auth bypass.
+
+## 2026-04-08 - Auth Flow HTTPS Downgrade Guard (Batch P2-A19)
+
+- [x] Validate Omar finding that auth-flow header checks can follow insecure HTTP redirect targets.
+- [x] Harden `src/agents/jules/tools/auth-audit.js` to fail closed on HTTPS downgrade targets, with localhost test-mode exception only.
+- [x] Add deterministic unit regression tests for downgrade rejection and localhost exception behavior.
+- [x] Run local verification (`npm run verify`) for the changed surface.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

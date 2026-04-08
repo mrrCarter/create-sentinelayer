@@ -103,6 +103,45 @@ describe("authAudit", () => {
     }
   });
 
+  it("check_auth_flow_security fails closed on HTTPS downgrade redirects", async () => {
+    const previousFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount += 1;
+      return createResponse(302, {
+        location: "http://example.com/login",
+      });
+    };
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      assert.equal(result.available, false);
+      assert.match(result.reason, /HTTPS downgrade detected/);
+      assert.ok(Array.isArray(result.findings));
+      assert.ok(result.findings.some((finding) => finding.severity === "P1"));
+      assert.equal(callCount, 1);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("check_auth_flow_security allows localhost HTTP targets in test mode only", async () => {
+    const previousFetch = globalThis.fetch;
+    const previousNodeEnv = process.env.NODE_ENV;
+    globalThis.fetch = async () => createResponse(200, {
+      "strict-transport-security": "max-age=31536000",
+      "content-security-policy": "default-src 'self'",
+    });
+    process.env.NODE_ENV = "test";
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "http://localhost:3000/login" });
+      assert.equal(result.available, true);
+      assert.equal(result.findings.length, 0);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("registers console listener before target navigation in Playwright script", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     const listenerIndex = source.indexOf("page.on('console', msg =>");
