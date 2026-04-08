@@ -926,5 +926,18 @@ Review:
 - [x] Ensure CLI e2e harness uses a trusted bypass context (`NODE_ENV=test`) when setting skip-auth.
 - [x] Fix Playwright auth-audit script lifecycle to safely close browser only when launch succeeds and keep structured error output.
 - [x] Run local verification for updated auth + audit paths.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#216` merged (squash commit `0f8f4b7be46715219c4860a1c609e343cea267e9`) with all required checks green.
+- Omar Gate on PR `#216`: run `24117975510` passed (`P0=0`, `P1=0`, `P2=12`).
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under guarded bypass (`SENTINELAYER_CLI_SKIP_AUTH=1` + `SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS=1`).
+
+## 2026-04-08 - Manual Release Gate Wait-Window Hardening (Batch P2-A9)
+
+- [x] Validate Omar feedback that `manual-validate` gate wait window can false-fail under normal CI queue/runtime.
+- [x] Increase `release.yml` manual validation required-check wait window (`MAX_WAIT_SECONDS`) from `120` to `1800`.
+- [x] Run local verification for workflow updates.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
