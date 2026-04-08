@@ -42,6 +42,34 @@ if [ -n "${RELEASE_VERSION}" ]; then
   fi
 fi
 
+rollback_target_resolved="false"
+rollback_target_installable="false"
+rollback_target_tarball=""
+rollback_target_integrity=""
+
+if [ -n "${rollback_target}" ]; then
+  resolved_version="$(npm view "${PACKAGE_NAME}@${rollback_target}" version 2>/dev/null || true)"
+  if [ "${resolved_version}" = "${rollback_target}" ]; then
+    rollback_target_resolved="true"
+  fi
+  rollback_target_tarball="$(npm view "${PACKAGE_NAME}@${rollback_target}" dist.tarball 2>/dev/null || true)"
+  rollback_target_integrity="$(npm view "${PACKAGE_NAME}@${rollback_target}" dist.integrity 2>/dev/null || true)"
+  if [ -n "${rollback_target_tarball}" ] && [ -n "${rollback_target_integrity}" ] \
+    && [ "${rollback_target_tarball}" != "null" ] && [ "${rollback_target_integrity}" != "null" ]; then
+    rollback_target_installable="true"
+  fi
+fi
+
+if [ "${rollback_target_resolved}" != "true" ]; then
+  echo "::error::Rollback target version could not be resolved: ${PACKAGE_NAME}@${rollback_target:-<none>}."
+  exit 1
+fi
+
+if [ "${rollback_target_installable}" != "true" ]; then
+  echo "::error::Rollback target is missing dist metadata (tarball/integrity): ${PACKAGE_NAME}@${rollback_target}."
+  exit 1
+fi
+
 echo "## Rollback Readiness (${ROLLBACK_MODE})" >> "${GITHUB_STEP_SUMMARY}"
 echo "- package: \`${PACKAGE_NAME}\`" >> "${GITHUB_STEP_SUMMARY}"
 if [ -n "${RELEASE_VERSION}" ]; then
@@ -51,6 +79,18 @@ echo "- latest_dist_tag: \`${latest_tag:-<none>}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- previous_version: \`${previous_version:-<none>}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- rollback_target: \`${rollback_target:-<none>}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- release_already_published: \`${release_already_published}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- rollback_target_resolved: \`${rollback_target_resolved}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- rollback_target_installable: \`${rollback_target_installable}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- rollback_target_tarball: \`${rollback_target_tarball:-<none>}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+echo "" >> "${GITHUB_STEP_SUMMARY}"
+echo "### Dry-Run Rollback Plan" >> "${GITHUB_STEP_SUMMARY}"
+echo "1. \`npm dist-tag add ${PACKAGE_NAME}@${rollback_target} latest\`" >> "${GITHUB_STEP_SUMMARY}"
+if [ -n "${RELEASE_VERSION}" ] && [ "${release_already_published}" = "true" ]; then
+  echo "2. \`npm deprecate ${PACKAGE_NAME}@${RELEASE_VERSION} \\\"Superseded by rollback to ${rollback_target}\\\" \`" >> "${GITHUB_STEP_SUMMARY}"
+else
+  echo "2. No published target release version to deprecate in this run." >> "${GITHUB_STEP_SUMMARY}"
+fi
 
 jq -n \
   --arg package "${PACKAGE_NAME}" \
@@ -60,6 +100,10 @@ jq -n \
   --arg previous_version "${previous_version}" \
   --arg rollback_target "${rollback_target}" \
   --arg release_already_published "${release_already_published}" \
+  --arg rollback_target_resolved "${rollback_target_resolved}" \
+  --arg rollback_target_installable "${rollback_target_installable}" \
+  --arg rollback_target_tarball "${rollback_target_tarball}" \
+  --arg rollback_target_integrity "${rollback_target_integrity}" \
   '{
     package: $package,
     mode: $mode,
@@ -67,14 +111,16 @@ jq -n \
     latest_dist_tag: ($latest_dist_tag | if length > 0 then . else null end),
     previous_version: ($previous_version | if length > 0 then . else null end),
     rollback_target: ($rollback_target | if length > 0 then . else null end),
-    release_already_published: ($release_already_published == "true")
+    release_already_published: ($release_already_published == "true"),
+    checks: {
+      rollback_target_resolved: ($rollback_target_resolved == "true"),
+      rollback_target_installable: ($rollback_target_installable == "true"),
+      rollback_target_tarball: ($rollback_target_tarball | if length > 0 then . else null end),
+      rollback_target_integrity: ($rollback_target_integrity | if length > 0 then . else null end)
+    }
   }' > release-rollback-readiness.json
 
 if [ -n "${RELEASE_VERSION}" ] && [ "${release_already_published}" = "true" ]; then
   echo "::warning::Release version ${PACKAGE_NAME}@${RELEASE_VERSION} is already published."
-fi
-
-if [ -z "${rollback_target}" ]; then
-  echo "::warning::No prior published version discovered for rollback target."
 fi
 

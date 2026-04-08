@@ -1066,5 +1066,21 @@ Review:
 - [x] Add a regression guard in `tests/unit.jules-auth-audit.test.mjs` that enforces listener registration order before target navigation.
 - [x] Run local verification for changed auth-audit paths.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#226` merged (squash commit `74ebc2363bbc9f6a4bdf275f5198d6cb562f2510`) with all required checks green.
+- Omar Gate on PR `#226`: run `24161512187` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#226`: run `24161512239` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under test-only bypass (`NODE_ENV=test` + `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Rollback Readiness Enforcement Guard (Batch P2-A18)
+
+- [x] Validate Omar finding that rollback-readiness checks are informational and do not enforce recoverability criteria.
+- [x] Harden `.github/scripts/release-rollback-readiness.sh` to fail closed when rollback target resolution/metadata integrity checks fail.
+- [x] Add deterministic dry-run rollback command plan output and include enforcement check state in `release-rollback-readiness.json`.
+- [x] Run local verification for rollback-readiness script updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
