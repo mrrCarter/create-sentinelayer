@@ -835,5 +835,21 @@ Review:
 - [x] Harden `auth-audit` credential handling to avoid passing sensitive login credentials via child-process environment.
 - [x] Tighten auth-flow header check redirect handling to avoid `curl -L` cross-origin header confusion.
 - [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#209` merged (squash commit `4ec112b2d8a4d47423554850882622e5df276e26`) with all required checks green.
+- Omar Gate on PR `#209`: run `24116194551` passed (`P0=0`, `P1=0`, `P2=13`).
+- Local deterministic scans before merge: `/omargate deep` and `/audit` both `P1=0`, `P2=10`, `blocking=false`.
+
+## 2026-04-08 - Omar P2 Burn-down Follow-up (Batch P2-A3)
+
+- [x] Remove non-deterministic `npx` execution from `license-gate.yml` by pinning and invoking local lockfile toolchain.
+- [x] Eliminate duplicate authenticated page navigation in `auth-audit` and reuse first response headers.
+- [x] Strengthen release attestation binding by asserting attested subject digest matches manifest checksum.
+- [x] Add explicit governance for manual release dispatch build path (approval or isolated non-attesting path).
+- [ ] Evaluate Semgrep install determinism options and implement the safest low-risk improvement in this batch.
+- [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

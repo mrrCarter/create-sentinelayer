@@ -160,7 +160,7 @@ const fs = require('node:fs');
       results.authenticated = currentUrl !== loginUrl || postCookies.some(c => /session|token|auth/i.test(c.name));
     }
 
-    await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    const targetResponse = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
 
     page.on('console', msg => {
       if (msg.type() === 'error') {
@@ -184,7 +184,7 @@ const fs = require('node:fs');
       inputCount: document.querySelectorAll('input').length,
     }));
 
-    const response = await page.goto(targetUrl, { waitUntil: 'commit', timeout: 10000 }).catch(() => null);
+    const response = targetResponse || null;
     if (response) {
       const h = response.headers();
       results.headers = {
