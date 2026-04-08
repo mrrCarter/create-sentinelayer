@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
@@ -100,6 +101,19 @@ describe("authAudit", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("registers console listener before target navigation in Playwright script", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    const listenerIndex = source.indexOf("page.on('console', msg =>");
+    const targetNavigationIndex = source.indexOf("const targetResponse = await page.goto(targetUrl");
+
+    assert.ok(listenerIndex !== -1, "expected console listener in Playwright script");
+    assert.ok(targetNavigationIndex !== -1, "expected target navigation in Playwright script");
+    assert.ok(
+      listenerIndex < targetNavigationIndex,
+      "console listener must be registered before target navigation to capture early runtime errors",
+    );
   });
 
   it("AuthAudit registered in dispatch as read-only", async () => {

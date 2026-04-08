@@ -1050,5 +1050,21 @@ Review:
 - [x] Wire tag release path to execute rollback-readiness checks before `publish`, and gate publish on that check.
 - [x] Run local verification for workflow/script updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#225` merged (squash commit `ff8a620bdc03a691590013154de68fb9da38fcb0`) with all required checks green.
+- Omar Gate on PR `#225`: run `24161280389` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#225`: run `24161280432` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under test-only bypass (`NODE_ENV=test` + `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Auth Audit Early Console Capture (Batch P2-A17)
+
+- [x] Validate Omar finding that Playwright console listener registration can miss early runtime errors by being attached after target navigation.
+- [x] Move Playwright `console`/`pageerror` listener registration to execute immediately after page creation in `src/agents/jules/tools/auth-audit.js`.
+- [x] Add a regression guard in `tests/unit.jules-auth-audit.test.mjs` that enforces listener registration order before target navigation.
+- [x] Run local verification for changed auth-audit paths.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
