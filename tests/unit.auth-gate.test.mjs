@@ -106,7 +106,7 @@ test("Unit auth gate: SENTINELAYER_CLI_SKIP_AUTH alone is ignored outside truste
   }
 });
 
-test("Unit auth gate: unsafe override requires explicit second flag", async () => {
+test("Unit auth gate: unsafe override flag does not bypass outside test contexts", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
   const previousHome = process.env.HOME;
   const previousUserProfile = process.env.USERPROFILE;
@@ -123,8 +123,8 @@ test("Unit auth gate: unsafe override requires explicit second flag", async () =
     process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = "1";
 
     const result = await checkAuthGate(["audit"]);
-    assert.equal(result.authenticated, true);
-    assert.equal(result.bypassReason, "env_bypass_guarded");
+    assert.equal(result.authenticated, false);
+    assert.equal(result.bypassReason, null);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

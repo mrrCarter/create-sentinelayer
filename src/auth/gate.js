@@ -31,8 +31,7 @@ const NO_AUTH_REQUIRED = new Set([
 function hasTrustedBypassContext() {
   return (
     process.env.NODE_ENV === "test" ||
-    process.env.SENTINELAYER_CLI_TEST_MODE === "1" ||
-    process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS === "1"
+    process.env.SENTINELAYER_CLI_TEST_MODE === "1"
   );
 }
 
@@ -55,7 +54,7 @@ export async function checkAuthGate(args) {
     return { authenticated: true, session: null, bypassReason: "no_auth_required" };
   }
 
-  // Explicit bypass is gated to test contexts or a second explicit unsafe override.
+  // Explicit bypass is gated to trusted test contexts only.
   if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" && hasTrustedBypassContext()) {
     return { authenticated: true, session: null, bypassReason: "env_bypass_guarded" };
   }
