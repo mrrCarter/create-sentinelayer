@@ -51,11 +51,11 @@ async function provisionTestIdentity(input) {
 
 /**
  * Run Playwright to authenticate and inspect the page.
- * - URLs and credentials passed ONLY via env vars (no string interpolation)
+ * - Runtime values loaded from a secure temp context file (credentials not exposed in process env)
  * - Auth verification checks URL change + cookie presence (not just click success)
  * - Console errors redacted to prevent sensitive data leakage
  * - Cookie values never captured (names + flags only)
- * - Temp script cleanup in finally block (not just success path)
+ * - Temp script/context cleanup in finally block (not just success path)
  */
 async function authenticatedPageCheck(input) {
   const url = input.url;
@@ -64,10 +64,23 @@ async function authenticatedPageCheck(input) {
 
   const loginUrl = input.loginUrl || url + "/login";
   let scriptPath = null;
+  let contextPath = null;
 
   try {
     scriptPath = secureTempFile("sl-auth-audit-" + randomUUID().slice(0, 8) + ".cjs");
     fs.writeFileSync(scriptPath, PLAYWRIGHT_AUTH_SCRIPT);
+    contextPath = secureTempFile("sl-auth-context-" + randomUUID().slice(0, 8) + ".json");
+    fs.writeFileSync(
+      contextPath,
+      JSON.stringify({
+        email: input.email || "",
+        password: input.password || "",
+        emailField: input.emailField || "",
+        passwordField: input.passwordField || "",
+        submitSelector: input.submitSelector || "",
+      }),
+      { encoding: "utf-8", mode: 0o600 },
+    );
 
     // Use scrubbed env — strip API keys/tokens from child process
     const { buildScrubbedEnv } = await import("./shell.js");
@@ -75,11 +88,7 @@ async function authenticatedPageCheck(input) {
       ...buildScrubbedEnv(),
       SL_AUDIT_TARGET_URL: url,
       SL_AUDIT_LOGIN_URL: loginUrl,
-      SL_AUDIT_TEST_EMAIL: input.email || "",
-      SL_AUDIT_TEST_PASSWORD: input.password || "",
-      SL_AUDIT_EMAIL_FIELD: input.emailField || "",
-      SL_AUDIT_PASSWORD_FIELD: input.passwordField || "",
-      SL_AUDIT_SUBMIT_SELECTOR: input.submitSelector || "",
+      SL_AUDIT_CONTEXT_FILE: contextPath,
     };
 
     const output = execFileSync("node", [scriptPath], {
@@ -105,26 +114,35 @@ async function authenticatedPageCheck(input) {
   } catch (err) {
     return { available: false, reason: "Playwright auth audit failed: " + err.message };
   } finally {
-    // Clean up temp script AND its mkdtemp parent directory
-    if (scriptPath) {
-      try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
-      try { fs.rmdirSync(path.dirname(scriptPath)); } catch { /* best effort — dir may not be empty */ }
-    }
+    cleanupTempFile(scriptPath);
+    cleanupTempFile(contextPath);
   }
 }
 
 // Playwright script as a constant — no string interpolation of URLs/credentials.
-// All dynamic values come from environment variables at runtime.
+// Dynamic auth context is read from a secure temp JSON file at runtime.
 const PLAYWRIGHT_AUTH_SCRIPT = `
 const { chromium } = require('playwright');
+const fs = require('node:fs');
+
 (async () => {
   const targetUrl = process.env.SL_AUDIT_TARGET_URL;
   const loginUrl = process.env.SL_AUDIT_LOGIN_URL;
-  const email = process.env.SL_AUDIT_TEST_EMAIL;
-  const password = process.env.SL_AUDIT_TEST_PASSWORD;
-  const emailSelector = process.env.SL_AUDIT_EMAIL_FIELD || 'input[type="email"]';
-  const passwordSelector = process.env.SL_AUDIT_PASSWORD_FIELD || 'input[type="password"]';
-  const submitSelector = process.env.SL_AUDIT_SUBMIT_SELECTOR || 'button[type="submit"]';
+  const contextPath = process.env.SL_AUDIT_CONTEXT_FILE;
+  let context = {};
+  if (contextPath) {
+    try {
+      context = JSON.parse(fs.readFileSync(contextPath, 'utf-8')) || {};
+    } catch {
+      context = {};
+    }
+  }
+
+  const email = context.email || '';
+  const password = context.password || '';
+  const emailSelector = context.emailField || 'input[type="email"]';
+  const passwordSelector = context.passwordField || 'input[type="password"]';
+  const submitSelector = context.submitSelector || 'button[type="submit"]';
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -137,7 +155,6 @@ const { chromium } = require('playwright');
       await page.fill(passwordSelector, password);
       await page.click(submitSelector);
       await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
-      // P2 fix: verify auth by checking URL change + session cookie presence
       const currentUrl = page.url();
       const postCookies = await page.context().cookies();
       results.authenticated = currentUrl !== loginUrl || postCookies.some(c => /session|token|auth/i.test(c.name));
@@ -145,7 +162,6 @@ const { chromium } = require('playwright');
 
     await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
 
-    // P2 fix: redact sensitive content from console errors
     page.on('console', msg => {
       if (msg.type() === 'error') {
         const text = (msg.text() || '').slice(0, 200).replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]').replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
@@ -153,7 +169,6 @@ const { chromium } = require('playwright');
       }
     });
 
-    // P2 fix: capture cookie names + flags only, never values
     const cookies = await page.context().cookies();
     results.cookies = cookies.map(c => ({
       name: c.name, domain: c.domain,
@@ -182,38 +197,96 @@ const { chromium } = require('playwright');
   } catch (err) {
     results.errors.push({ text: 'Navigation error: ' + (err.message || '').slice(0, 100) });
   } finally {
-    try { console.log(JSON.stringify(results)); } catch { /* output failure non-blocking */ }
+    try { console.log(JSON.stringify(results)); } catch {}
     await browser.close();
   }
 })();
 `;
 
-function checkAuthFlowSecurity(input) {
+const MAX_AUTH_REDIRECT_HOPS = 5;
+
+async function checkAuthFlowSecurity(input) {
   const loginUrl = input.loginUrl || input.url;
   if (!loginUrl) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
   if (!isValidUrl(loginUrl)) throw new AuthAuditError("Invalid URL: " + loginUrl);
 
   const findings = [];
   try {
-    const output = execFileSync("curl", ["-sI", "-L", "--max-time", "10", loginUrl], {
-      encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"],
-    });
-    const headers = {};
-    for (const line of output.split("\n")) {
-      const idx = line.indexOf(":");
-      if (idx > 0) headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+    const { headers, finalUrl, crossOriginRedirect } = await fetchLoginHeaders(loginUrl);
+
+    if (crossOriginRedirect) {
+      findings.push({
+        severity: "P1",
+        title: "Login flow redirects cross-origin before header checks",
+        file: loginUrl,
+      });
     }
-    if (!headers["strict-transport-security"]) findings.push({ severity: "P1", title: "Login page missing HSTS header", file: loginUrl });
-    if (!headers["content-security-policy"]) findings.push({ severity: "P2", title: "Login page missing CSP header", file: loginUrl });
-    if (headers["x-powered-by"]) findings.push({ severity: "P2", title: "Login page exposes X-Powered-By: " + headers["x-powered-by"], file: loginUrl });
+
+    if (!headers["strict-transport-security"]) {
+      findings.push({ severity: "P1", title: "Login page missing HSTS header", file: finalUrl || loginUrl });
+    }
+    if (!headers["content-security-policy"]) {
+      findings.push({ severity: "P2", title: "Login page missing CSP header", file: finalUrl || loginUrl });
+    }
+    if (headers["x-powered-by"]) {
+      findings.push({
+        severity: "P2",
+        title: "Login page exposes X-Powered-By: " + headers["x-powered-by"],
+        file: finalUrl || loginUrl,
+      });
+    }
   } catch (err) {
-    return { available: false, loginUrl, findings, reason: "curl failed: " + err.message };
+    return { available: false, loginUrl, findings, reason: "auth flow check failed: " + err.message };
   }
   return { available: true, loginUrl, findings };
 }
 
+async function fetchLoginHeaders(loginUrl) {
+  let currentUrl = loginUrl;
+  const visited = new Set();
+
+  for (let hop = 0; hop < MAX_AUTH_REDIRECT_HOPS; hop++) {
+    if (visited.has(currentUrl)) {
+      throw new AuthAuditError("Redirect loop detected while checking auth headers");
+    }
+    visited.add(currentUrl);
+
+    const response = await fetch(currentUrl, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(10000),
+    });
+    const headers = Object.fromEntries(response.headers.entries());
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) {
+        return { headers, finalUrl: currentUrl, crossOriginRedirect: false };
+      }
+      const nextUrl = new URL(location, currentUrl).toString();
+      if (new URL(nextUrl).origin !== new URL(currentUrl).origin) {
+        return { headers, finalUrl: currentUrl, crossOriginRedirect: true };
+      }
+      currentUrl = nextUrl;
+      continue;
+    }
+
+    return { headers, finalUrl: currentUrl, crossOriginRedirect: false };
+  }
+
+  throw new AuthAuditError(`Exceeded ${MAX_AUTH_REDIRECT_HOPS} redirects while checking auth flow`);
+}
+
 function isValidUrl(url) {
   try { const p = new URL(url); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
+}
+
+function cleanupTempFile(filePath) {
+  if (!filePath) {
+    return;
+  }
+  try { fs.unlinkSync(filePath); } catch {}
+  try { fs.rmdirSync(path.dirname(filePath)); } catch {}
 }
 
 function secureTempFile(name) {

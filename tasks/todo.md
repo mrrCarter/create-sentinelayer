@@ -819,5 +819,21 @@ Review:
 - [x] Remove implicit `CI=true` auth bypass; keep explicit `SENTINELAYER_CLI_SKIP_AUTH=1` bypass only.
 - [x] Add dedicated unit coverage for auth HTTP retry/circuit behavior and auth gate bypass semantics.
 - [x] Run full local verification and deterministic local gate scans.
-- [ ] Open PR and run Omar Gate + required checks.
-- [ ] Merge after green and capture run evidence.
+- [x] Open PR and run Omar Gate + required checks.
+- [x] Merge after green and capture run evidence.
+
+Review:
+- PR `#207` merged (squash commit `a37e55facb10e6223d7f0816750493b293632ff6`) after full required-check pass.
+- Omar Gate on PR `#207`: run `24115733566` passed (`P0=0`, `P1=0`).
+- Required checks green on PR `#207` after e2e harness auth bypass fix (`tests/e2e.test.mjs`).
+- Local verification before merge: `npm run verify` passed (`e2e 89/89`, `unit 359/359`, `coverage statements 90.07%`, `functions 91.64%`).
+
+## 2026-04-08 - Omar P2 Hardening Sweep (Batch P2-A2)
+
+- [x] Harden `release.yml` manual dispatch path to enforce deterministic main-only execution and tag-only publish.
+- [x] Fix upstream gate check-run query logic to paginate and deterministically resolve latest completed required checks.
+- [x] Harden `auth-audit` credential handling to avoid passing sensitive login credentials via child-process environment.
+- [x] Tighten auth-flow header check redirect handling to avoid `curl -L` cross-origin header confusion.
+- [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
+- [ ] Open PR and complete Omar Gate + required checks watch loop.
+- [ ] Merge after green and record run IDs/findings delta.
