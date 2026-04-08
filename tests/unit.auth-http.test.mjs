@@ -1,0 +1,167 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  __resetRequestCircuitForTests,
+  CIRCUIT_BREAKER_THRESHOLD,
+  SentinelayerApiError,
+  requestJson,
+} from "../src/auth/http.js";
+
+function createResponse(status, payload, headers = {}) {
+  const normalizedHeaders = Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [String(key).toLowerCase(), String(value)])
+  );
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text() {
+      return payload === undefined ? "" : JSON.stringify(payload);
+    },
+    headers: {
+      get(key) {
+        return normalizedHeaders[String(key || "").toLowerCase()] ?? null;
+      },
+    },
+  };
+}
+
+test("Unit auth http: retries retryable API statuses with bounded backoff", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return createResponse(503, {
+        error: { code: "TEMP_UNAVAILABLE", message: "Retry" },
+      });
+    }
+    return createResponse(200, { ok: true, attempt: callCount });
+  };
+
+  try {
+    const response = await requestJson("https://api.example.com/test", {
+      maxRetries: 2,
+      retryDelayMs: 1,
+      timeoutMs: 1000,
+    });
+    assert.equal(callCount, 2);
+    assert.equal(response.ok, true);
+    assert.equal(response.attempt, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: does not retry non-retryable API status codes", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    return createResponse(400, {
+      error: { code: "BAD_REQUEST", message: "Invalid input" },
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          maxRetries: 3,
+          retryDelayMs: 1,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "BAD_REQUEST");
+        assert.equal(error.status, 400);
+        return true;
+      }
+    );
+    assert.equal(callCount, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: retries timeout/network failures and returns normalized timeout error", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    const abortError = new Error("timed out");
+    abortError.name = "AbortError";
+    throw abortError;
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          maxRetries: 1,
+          retryDelayMs: 1,
+          timeoutMs: 50,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "TIMEOUT");
+        assert.equal(error.status, 408);
+        return true;
+      }
+    );
+    assert.equal(callCount, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: opens circuit breaker after consecutive retryable failures", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    throw new Error("network down");
+  };
+
+  try {
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i += 1) {
+      await assert.rejects(
+        () =>
+          requestJson("https://api.example.com/test", {
+            maxRetries: 0,
+            retryDelayMs: 1,
+          }),
+        (error) => {
+          assert.equal(error instanceof SentinelayerApiError, true);
+          assert.equal(error.code, "NETWORK_ERROR");
+          return true;
+        }
+      );
+    }
+
+    const beforeCircuitCalls = callCount;
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          maxRetries: 0,
+          retryDelayMs: 1,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "CIRCUIT_OPEN");
+        assert.equal(error.status, 503);
+        return true;
+      }
+    );
+    assert.equal(callCount, beforeCircuitCalls);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
