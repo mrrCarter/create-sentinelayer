@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.3.1...v0.4.0) (2026-04-08)
+
+
+### Features
+
+* **auth:** harden transport retries and explicit auth gating ([#207](https://github.com/mrrCarter/create-sentinelayer/issues/207)) ([a37e55f](https://github.com/mrrCarter/create-sentinelayer/commit/a37e55facb10e6223d7f0816750493b293632ff6))
+
 ## [0.3.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.3.0...v0.3.1) (2026-04-08)
 
 
