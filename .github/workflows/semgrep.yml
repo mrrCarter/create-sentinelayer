@@ -30,7 +30,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install Semgrep
-        run: pip install --disable-pip-version-check semgrep==1.124.0
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes -r .github/policies/semgrep-requirements.txt
+          semgrep --version
 
       - name: Run Semgrep custom policy pack
         run: |

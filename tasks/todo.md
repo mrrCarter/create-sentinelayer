@@ -866,5 +866,18 @@ Review:
 - [x] Add explicit execute-path authorization guard for `provision_test_identity` in `auth-audit` (deny live provisioning unless explicitly approved).
 - [x] Tighten release upstream gate policy by requiring `CodeQL Summary` success when release checks run.
 - [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#211` merged (squash commit `2edb6ad60ec47fa1f42020661b54f5e10eef876d`) with all required checks green.
+- Omar Gate on PR `#211`: run `24116591873` passed (`P0=0`, `P1=0`).
+- Local deterministic scans before merge: `/omargate deep` and `/audit` remained `P1=0`, `P2=10`, `blocking=false`.
+
+## 2026-04-08 - Omar P2 Semgrep Determinism Hardening (Batch P2-A5)
+
+- [x] Add hash-locked Semgrep dependency manifest (`.github/policies/semgrep.in` + compiled `semgrep-requirements.txt`).
+- [x] Update `.github/workflows/semgrep.yml` to install Semgrep via `pip --require-hashes` from the locked manifest.
+- [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
