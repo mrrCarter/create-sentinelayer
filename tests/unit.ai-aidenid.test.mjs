@@ -64,8 +64,8 @@ test("Unit AIdenID helper: payload normalization is deterministic", () => {
   assert.deepEqual(childPayload.policy.extractionTypes, ["otp"]);
 });
 
-test("Unit AIdenID helper: credential resolution validates required env", () => {
-  const resolved = resolveAidenIdCredentials({
+test("Unit AIdenID helper: credential resolution validates required env", async () => {
+  const resolved = await resolveAidenIdCredentials({
     env: {
       AIDENID_API_KEY: "k_test",
       AIDENID_ORG_ID: "org_1",
@@ -75,7 +75,7 @@ test("Unit AIdenID helper: credential resolution validates required env", () => 
   assert.equal(resolved.missing.length, 0);
   assert.equal(resolved.apiKey, "k_test");
 
-  const partial = resolveAidenIdCredentials({
+  const partial = await resolveAidenIdCredentials({
     env: {
       AIDENID_API_KEY: "",
       AIDENID_ORG_ID: "org_1",
@@ -85,7 +85,7 @@ test("Unit AIdenID helper: credential resolution validates required env", () => 
   });
   assert.deepEqual(partial.missing.sort(), ["AIDENID_API_KEY", "AIDENID_PROJECT_ID"]);
 
-  assert.throws(
+  await assert.rejects(
     () =>
       resolveAidenIdCredentials({
         env: {},
@@ -93,6 +93,20 @@ test("Unit AIdenID helper: credential resolution validates required env", () => 
       }),
     /Missing AIdenID credentials/
   );
+
+  const lazyFetched = await resolveAidenIdCredentials({
+    env: {},
+    session: { token: "sl_token_only" },
+    requireAll: true,
+    fetchCredentials: async () => ({
+      apiKey: "k_from_api",
+      orgId: "org_from_api",
+      projectId: "proj_from_api",
+    }),
+  });
+  assert.equal(lazyFetched.apiKey, "k_from_api");
+  assert.equal(lazyFetched.orgId, "org_from_api");
+  assert.equal(lazyFetched.projectId, "proj_from_api");
 
   assert.equal(normalizeAidenIdApiUrl("https://api.aidenid.com/"), "https://api.aidenid.com");
 });

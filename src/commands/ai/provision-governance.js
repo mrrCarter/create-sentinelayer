@@ -288,7 +288,7 @@ domain
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
@@ -330,7 +330,7 @@ domain
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
@@ -452,7 +452,7 @@ domain
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.domain?.projectId,
@@ -484,7 +484,7 @@ domain
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.domain?.projectId,
@@ -594,7 +594,7 @@ domain
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.domain?.projectId,
@@ -626,7 +626,7 @@ domain
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.domain?.projectId,
@@ -746,7 +746,7 @@ target
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
@@ -777,7 +777,7 @@ target
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId,
@@ -898,7 +898,7 @@ target
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.target?.projectId,
@@ -930,7 +930,7 @@ target
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.target?.projectId,
@@ -1018,7 +1018,7 @@ target
     });
     const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
     const tracked = await getTrackedTargetById({ outputRoot, targetId });
-    const credentials = resolveAidenIdCredentials({
+    const credentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId,
       projectId: options.projectId || tracked.target?.projectId,
@@ -1133,7 +1133,7 @@ site
       payload,
     });
 
-    const resolvedCredentials = resolveAidenIdCredentials({
+    const resolvedCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity.identity?.orgId,
       projectId: options.projectId || trackedIdentity.identity?.projectId,
@@ -1165,7 +1165,7 @@ site
       return;
     }
 
-    const requiredCredentials = resolveAidenIdCredentials({
+    const requiredCredentials = await resolveAidenIdCredentials({
       apiKey: options.apiKey,
       orgId: options.orgId || trackedIdentity.identity?.orgId,
       projectId: options.projectId || trackedIdentity.identity?.projectId,
@@ -1269,3 +1269,4 @@ site
 
   return { identity, legalHold };
 }
+

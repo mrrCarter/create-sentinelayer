@@ -98,6 +98,13 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
         return jsonResponse(res, 200, {
           status: "approved",
           auth_token: "auth_token_web_1",
+          aidenid_credentials: {
+            provisioned: true,
+            org_id: "org_1",
+            project_id: "proj_1",
+            api_key_prefix: "aid_",
+            provisioned_at: "2026-04-01T00:00:00.000Z",
+          },
           user: {
             id: "user_1",
             github_username: "demo-user",
@@ -237,6 +244,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     });
     assert.equal(activeSession?.source, "session");
     assert.equal(activeSession?.token, "api_token_1");
+    assert.equal(Object.prototype.hasOwnProperty.call(activeSession || {}, "aidenid"), true);
 
     const authStatus = await getAuthStatus({
       cwd: tempRoot,
@@ -248,6 +256,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     });
     assert.equal(authStatus.authenticated, true);
     assert.equal(authStatus.remoteUser?.email, "demo@example.com");
+    assert.equal(Object.prototype.hasOwnProperty.call(authStatus, "aidenid"), true);
 
     const eventsResponse = await listRuntimeRunEvents({
       apiUrl: mock.apiUrl,

@@ -756,3 +756,23 @@ Review:
 - `npm run verify` passed on branch `roadmap/pr168-cli-rename` (`e2e 86/86`, `unit 334/334`, coverage statements `90.56%`, functions `92.21%`, tarball `sentinelayer-cli-0.1.0.tgz`).
 - `node bin/create-sentinelayer.js /omargate deep --path . --json` passed (`p1=0`, `p2=11`, `blocking=false`).
 - `node bin/create-sentinelayer.js /audit --path . --json` passed (`overallStatus=PASS`, `p1Total=0`, `p2Total=11`, `blocking=false`).
+
+## 2026-04-08 - AIdenID Async + Status Pass (Batch 1)
+
+- [x] Fix async call-site regressions after `resolveAidenIdCredentials` became async (`provision-governance`, `identity-lifecycle`, `jules auth-audit`).
+- [x] Harden lazy-fetch precedence: allow token-backed session fetch even when `session.aidenid` metadata is absent.
+- [x] Restore auth status metadata surface: include `aidenid` on `resolveActiveAuthSession` and `getAuthStatus` responses.
+- [x] Update unit tests for async credential resolution and add token-only lazy-fetch coverage.
+- [x] Re-run targeted regression suites for changed surfaces.
+
+Review:
+- `node --test tests/unit.ai-aidenid.test.mjs` (pass: `10/10`)
+- `node --test tests/unit.jules-auth-audit.test.mjs` (pass: `7/7`)
+- `node --test tests/unit.auth-service.test.mjs` (pass: `5/5`)
+- `npm run verify` currently fails in e2e baseline due auth-gate enforcement in this environment (many tests now require pre-seeded auth test context); `npm run check` stage passed.
+- [x] CI unblock follow-up: restore workflow text contracts expected by e2e (`Omar Gate (BYOK Mode)` for BYOK scaffold, literal `scan_mode`/`severity_gate` in scan-init workflow output).
+- [x] Add eval evidence artifact for AI-impacting file changes (`tasks/evals/pr-198-aidenid-async.md`).
+
+CI follow-up review:
+- `SENTINELAYER_CLI_SKIP_AUTH=1 npm run test:e2e` (pass: `89/89`)
+- `npm run check` (pass)

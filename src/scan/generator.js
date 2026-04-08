@@ -225,8 +225,8 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
             uses: SENTINELAYER_ACTION_REF,
             with: {
               sentinelayer_token: `\${{ secrets.${normalizedSecret} }}`,
-              scan_mode: "${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || '" + (profile.scanMode || "deep") + "' }}",
-              severity_gate: "${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || '" + (profile.severityGate || "P1") + "' }}",
+              scan_mode: profile.scanMode || "deep",
+              severity_gate: profile.severityGate || "P1",
               playwright_mode: profile.playwrightMode || "off",
               sbom_mode: profile.sbomMode || "off",
               wait_for_completion: "true",

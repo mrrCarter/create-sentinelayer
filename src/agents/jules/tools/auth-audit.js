@@ -34,7 +34,7 @@ const AUTH_DISPATCH = {
 async function provisionTestIdentity(input) {
   try {
     const { provisionEmailIdentity, resolveAidenIdCredentials } = await import("../../../ai/aidenid.js");
-    const creds = resolveAidenIdCredentials();
+    const creds = await resolveAidenIdCredentials();
     if (!creds.apiKey) {
       return { available: false, reason: "AIdenID API key not configured (set AIDENID_API_KEY)" };
     }

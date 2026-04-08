@@ -1625,7 +1625,8 @@ Start now and continue autonomously.
 
 function fallbackWorkflow({ secretName = "SENTINELAYER_TOKEN", authMode = "sentinelayer" } = {}) {
   const normalizedSecret = isValidSecretName(secretName) ? secretName : "SENTINELAYER_TOKEN";
-  return `name: Omar Gate
+  const workflowName = authMode === "byok" ? "Omar Gate (BYOK Mode)" : "Omar Gate";
+  return `name: ${workflowName}
 
 on:
   pull_request:
