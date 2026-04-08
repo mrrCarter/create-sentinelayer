@@ -565,7 +565,11 @@ async function runCli({ cwd, env, args = [] }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env,
+      env: {
+        ...process.env,
+        SENTINELAYER_CLI_SKIP_AUTH: "1",
+        ...(env || {}),
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
