@@ -45,7 +45,12 @@ jobs:
             head_sha="HEAD"
           fi
           if [ -z "${base_sha}" ] || [ "${base_sha}" = "0000000000000000000000000000000000000000" ]; then
-            base_sha="HEAD~1"
+            if git rev-parse "${head_sha}^" >/dev/null 2>&1; then
+              base_sha="$(git rev-parse "${head_sha}^")"
+            else
+              echo "::notice::No parent commit available for ${head_sha}; skipping eval impact gate."
+              exit 0
+            fi
           fi
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
 
@@ -97,6 +102,7 @@ jobs:
         run: npm run test:coverage
 
       - name: Upload coverage report
+        if: always()
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: coverage-lcov

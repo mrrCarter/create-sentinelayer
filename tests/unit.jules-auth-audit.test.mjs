@@ -30,8 +30,8 @@ describe("authAudit", () => {
     );
   });
 
-  it("check_auth_flow_security works for reachable url", () => {
-    const result = authAudit({ operation: "check_auth_flow_security", url: "https://example.com" });
+  it("check_auth_flow_security works for reachable url", async () => {
+    const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com" });
     assert.ok(typeof result.available === "boolean");
     if (result.available) {
       assert.ok(Array.isArray(result.findings));
