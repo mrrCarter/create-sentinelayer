@@ -1166,5 +1166,20 @@ Review:
 - [x] Make required-check policy event-aware (`pull_request` includes Omar Gate, `push` excludes PR-only Omar gate).
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#232` merged (squash commit `de7bff9`) with all required checks green.
+- Omar Gate on PR `#232`: run `24163057783` passed (`P0=0`, `P1=0`, `P2=10`).
+- Quality Gates on PR `#232`: run `24163057793` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Publish Global Serialization (Batch P2-A24)
+
+- [x] Validate Omar finding that release publish concurrency is scoped per tag and can run multiple publishes in parallel.
+- [x] Update `.github/workflows/release.yml` publish `concurrency.group` to a global lock (`release-publish-prod`) to serialize npm publish across all tags.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

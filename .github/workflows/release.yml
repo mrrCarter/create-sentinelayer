@@ -262,7 +262,7 @@ jobs:
     timeout-minutes: 10
     environment: package-release
     concurrency:
-      group: release-publish-${{ github.ref }}
+      group: release-publish-prod
       cancel-in-progress: false
     env:
       NPM_TOKEN_VALUE: ${{ secrets.NPM_TOKEN }}
