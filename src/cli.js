@@ -168,7 +168,7 @@ function shouldBypassCommander(rawArgs) {
     return true;
   }
 
-  if (first === "--help" || first === "-h" || first === "--version" || first === "-v") {
+  if (first === "--help" || first === "-h" || first === "help" || first === "--version" || first === "-v") {
     return true;
   }
 

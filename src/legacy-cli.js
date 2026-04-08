@@ -143,7 +143,7 @@ function parseCliArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = String(argv[i] || "").trim();
     if (!arg) continue;
-    if (arg === "--help" || arg === "-h") {
+    if (arg === "--help" || arg === "-h" || arg === "help") {
       showHelp = true;
       continue;
     }
@@ -191,32 +191,66 @@ function parseCliArgs(argv) {
 function printUsage() {
   console.log(`sentinelayer-cli v${CLI_VERSION}`);
   console.log("");
-  console.log("Usage:");
-  console.log("  sentinelayer-cli [project-name] [options]");
-  console.log("  sentinelayer-cli /omargate deep [--path PATH]");
-  console.log("  sentinelayer-cli /audit [--path PATH]");
-  console.log("  sentinelayer-cli /persona orchestrator [--mode MODE] [--path PATH]");
-  console.log("  sentinelayer-cli /apply --plan <todo.md> [--path PATH]");
-  console.log("  sentinelayer-cli config <list|get|set|edit> [options]");
-  console.log("  sentinelayer-cli ingest map [--path PATH] [--output-file PATH]");
-  console.log("  sentinelayer-cli spec <list-templates|show-template|generate> [options]");
-  console.log("  sentinelayer-cli prompt <generate|preview> [options]");
+  console.log("Usage: sl <command> [options]");
+  console.log("");
+  console.log("Scaffold:");
+  console.log("  sl [project-name]                  Create a new project with SentinelLayer scaffolding");
+  console.log("  sl init [project-name]             Same as above (interactive or --non-interactive)");
+  console.log("");
+  console.log("Authentication:");
+  console.log("  sl auth login                      Log in via browser (provisions SentinelLayer + AIdenID)");
+  console.log("  sl auth status                     Show authentication and AIdenID provisioning status");
+  console.log("  sl auth sessions                   List stored session metadata");
+  console.log("  sl auth logout                     Clear local session");
+  console.log("");
+  console.log("Security & Review:");
+  console.log("  sl review scan --path . --json     Deterministic code review (full or --mode diff)");
+  console.log("  sl /omargate deep --path . --json  Local Omar Gate security scan (P0/P1/P2 findings)");
+  console.log("  sl scan init                       Generate .github/workflows/omar-gate.yml from spec");
+  console.log("  sl scan setup-secrets --repo <slug> Inject SENTINELAYER_TOKEN into GitHub repo secrets");
+  console.log("");
+  console.log("Specification & Planning:");
+  console.log("  sl spec list-templates             List available project templates");
+  console.log("  sl spec generate                   Generate SPEC.md from template or AI");
+  console.log("  sl prompt generate                 Generate agent execution prompt from spec");
+  console.log("  sl guide generate                  Generate BUILD_GUIDE.md from spec");
+  console.log("  sl ingest map --json               Codebase AST ingest with framework detection");
+  console.log("");
+  console.log("Audit & Quality:");
+  console.log("  sl audit --path . --json           Full 15-agent audit swarm");
+  console.log("  sl audit frontend --path . --json  Jules frontend audit (--stream for NDJSON, --url for runtime)");
+  console.log("  sl audit security --path . --json  Security-focused audit");
+  console.log("");
+  console.log("AIdenID (Identity Testing):");
+  console.log("  sl ai identity provision --execute  Provision ephemeral test email (auto-credentials after login)");
+  console.log("  sl ai identity wait-for-otp <id>   Poll for OTP extraction from provisioned email");
+  console.log("  sl ai identity list                List tracked identities");
+  console.log("  sl ai identity lineage <id>        Show identity parent/child tree");
+  console.log("  sl ai identity revoke <id>         Revoke a provisioned identity");
+  console.log("");
+  console.log("Cost & Policy:");
+  console.log("  sl cost show --json                Show accumulated cost tracking");
+  console.log("  sl policy list                     List available policy packs");
+  console.log("  sl policy use <pack>               Switch active policy pack");
+  console.log("");
+  console.log("Advanced:");
+  console.log("  sl swarm plan --path . --json      Multi-agent swarm planning");
+  console.log("  sl mcp list --json                 List MCP registries and adapters");
+  console.log("  sl telemetry show --json            Show run event ledger");
+  console.log("  sl config list                     Show current configuration");
   console.log("");
   console.log("Options:");
-  console.log("  -h, --help             Show help");
+  console.log("  -h, --help             Show this help");
   console.log("  -v, --version          Show CLI version");
-  console.log("  --non-interactive      Disable prompts and require interview payload");
-  console.log("  --interview-file PATH  Load interview JSON from file");
-  console.log("  --skip-browser-open    Do not auto-open browser during auth");
-  console.log("  --path PATH            Target path for local command mode");
-  console.log("  --output-dir PATH      Artifact root for local command reports (default .sentinelayer)");
-  console.log("  --json                 Emit machine-readable JSON for local command mode");
+  console.log("  --json                 Machine-readable JSON output");
+  console.log("  --path PATH            Target workspace path");
+  console.log("  --non-interactive      Disable prompts (require --interview-file)");
   console.log("");
-  console.log("Environment:");
-  console.log("  SENTINELAYER_CLI_NON_INTERACTIVE=1");
-  console.log("  SENTINELAYER_CLI_SKIP_BROWSER_OPEN=1");
-  console.log("  SENTINELAYER_CLI_INTERVIEW_JSON='{\"projectName\":\"my-app\",...}'");
-  console.log("  SENTINELAYER_GITHUB_CLONE_BASE_URL=https://github.com");
+  console.log("Quickstart:");
+  console.log("  sl auth login && npx create-sentinelayer my-app && cd my-app");
+  console.log("  # Then hand docs/spec.md to your coding agent");
+  console.log("");
+  console.log("Docs: https://sentinelayer.com/docs");
 }
 
 function normalizeInterviewInput(

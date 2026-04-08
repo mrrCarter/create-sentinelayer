@@ -16,6 +16,7 @@ import { readStoredSession } from "./session-store.js";
 
 const AUTH_BYPASS_COMMANDS = new Set([
   "auth",      // auth subcommands handle their own auth
+  "help",      // help must work without login so agents can discover commands
   "--help",
   "-h",
   "--version",
