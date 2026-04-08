@@ -1132,5 +1132,22 @@ Review:
 - [x] Ensure rollback metadata extraction paths (`dist-tags`, `versions`, `dist`) use guarded query helpers with parse-safe behavior.
 - [x] Run local verification for rollback-readiness script changes.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#230` merged (squash commit `209f90c96541cfe795b9428eafe85066871a7def`) with all required checks green.
+- Omar Gate on PR `#230`: run `24162586803` passed (`P0=0`, `P1=0`, `P2=14`).
+- Quality Gates on PR `#230`: run `24162586780` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`), both under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Tool Installer Pinned Digest Policy (Batch P2-A22)
+
+- [x] Validate Omar finding that installer workflows rely on release checksum files without repo-pinned digest policy.
+- [x] Add `.github/policies/tool-digests.json` with approved SHA256 digests for current pinned Gitleaks and Trivy versions.
+- [x] Update `.github/workflows/gitleaks.yml` installer to verify downloaded archive against policy digest and fail closed on mismatch/missing policy.
+- [x] Update `.github/workflows/iac-scan.yml` installer to verify downloaded archive against policy digest and fail closed on mismatch/missing policy.
+- [x] Run local verification for workflow/policy updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

@@ -31,20 +31,26 @@ jobs:
         run: |
           set -euo pipefail
           release_base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          release_asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          checksum_asset="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          policy_file=".github/policies/tool-digests.json"
+          release_asset="$(jq -r --arg version "${GITLEAKS_VERSION}" '.gitleaks[$version].asset // empty' "${policy_file}")"
+          expected_sha="$(jq -r --arg version "${GITLEAKS_VERSION}" '.gitleaks[$version].sha256 // empty' "${policy_file}")"
+          if [ -z "${release_asset}" ] || [ -z "${expected_sha}" ]; then
+            echo "::error::Missing pinned digest policy entry for gitleaks ${GITLEAKS_VERSION}"
+            exit 1
+          fi
+          if ! echo "${expected_sha}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Invalid pinned SHA256 for gitleaks ${GITLEAKS_VERSION}"
+            exit 1
+          fi
           curl -fsSL \
             "${release_base_url}/${release_asset}" \
             -o gitleaks.tar.gz
-          curl -fsSL \
-            "${release_base_url}/${checksum_asset}" \
-            -o checksums.txt
-          expected_sha="$(awk -v asset="${release_asset}" '$2 == asset { print $1; exit }' checksums.txt)"
-          if [ -z "${expected_sha}" ]; then
-            echo "::error::Failed to resolve expected checksum for ${release_asset}"
+          actual_sha="$(sha256sum gitleaks.tar.gz | awk '{print $1}')"
+          if [ "${actual_sha}" != "${expected_sha}" ]; then
+            echo "::error::Pinned digest mismatch for ${release_asset}"
+            echo "::error::expected=${expected_sha} actual=${actual_sha}"
             exit 1
           fi
-          echo "${expected_sha}  gitleaks.tar.gz" | sha256sum --check --strict --status
           tar -xzf gitleaks.tar.gz gitleaks
           chmod +x gitleaks
           ./gitleaks version
