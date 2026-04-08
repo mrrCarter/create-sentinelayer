@@ -804,5 +804,10 @@ Review:
 - [x] Replace non-deterministic tarball selection (`ls | head`) with strict single-artifact assertions in release workflow.
 - [x] Apply `npm ci --ignore-scripts` in all Quality Gates install jobs to tighten supply-chain execution.
 - [x] Run local verification for changed workflow files.
-- [ ] Open PR and run Omar Gate + full required checks.
-- [ ] Merge after green and capture run evidence.
+- [x] Open PR and run Omar Gate + full required checks.
+- [x] Merge after green and capture run evidence.
+
+Review:
+- PR `#205` merged (squash commit `996aa01ef600a1b10854a6f7ac73beb4204d6273`) with full required-check pass.
+- Omar Gate on PR `#205`: run `24113961862` passed (`P0=0`, `P1=0`).
+- Post-merge state: no open PRs in `create-sentinelayer`; release + quality lanes remain green on latest `main`.
