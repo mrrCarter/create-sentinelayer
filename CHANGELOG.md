@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.3.0...v0.3.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* **release:** align package repository metadata for npm provenance ([#202](https://github.com/mrrCarter/create-sentinelayer/issues/202)) ([bb3983f](https://github.com/mrrCarter/create-sentinelayer/commit/bb3983f4828b262f751bca18ae9a70c15844bc4f))
+
 ## [0.3.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.2.0...v0.3.0) (2026-04-08)
 
 
