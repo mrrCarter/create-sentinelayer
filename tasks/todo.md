@@ -1196,5 +1196,20 @@ Review:
 - [x] Add `environment: package-release` to `manual-validate` in `.github/workflows/release.yml` so manual validation and publish use the same protected approval boundary.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#234` merged (squash commit `32ddfa9`) with all required checks green.
+- Omar Gate on PR `#234`: run `24163429461` passed (`P0=0`, `P1=0`, `P2=12`).
+- Quality Gates on PR `#234`: run `24163429382` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Workflow Global Concurrency Lock (Batch P2-A26)
+
+- [x] Validate Omar finding that release workflow lacks a top-level concurrency lock and can overlap workflow-dispatch and tag runs.
+- [x] Add workflow-level `concurrency` to `.github/workflows/release.yml` (`group: release-workflow-global`, `cancel-in-progress: false`) to serialize release pipeline runs.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
