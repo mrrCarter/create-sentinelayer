@@ -879,5 +879,21 @@ Review:
 - [x] Add hash-locked Semgrep dependency manifest (`.github/policies/semgrep.in` + compiled `semgrep-requirements.txt`).
 - [x] Update `.github/workflows/semgrep.yml` to install Semgrep via `pip --require-hashes` from the locked manifest.
 - [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#212` merged (squash commit `fee18af8d0a7ad098b6cda94c1659a9bb056f03a`) with all required checks green.
+- Omar Gate on PR `#212`: run `24116942389` passed (`P0=0`, `P1=0`).
+- Semgrep workflow rerun details:
+  - Initial run failed due `pkg_resources` import error after lock resolved `setuptools==82.0.1` (run `24116810653`).
+  - Follow-up fix pinned `setuptools<81` in `.github/policies/semgrep.in`, regenerated hash lock, and reran successfully (`Semgrep` run `24116942397`).
+- Local deterministic scans before merge: `/omargate deep` and `/audit` remained `P1=0`, `P2=10`, `blocking=false`.
+
+## 2026-04-08 - Omar P2 Signal Cleanup (Batch P2-A6)
+
+- [x] Add path-scoped exclusions for noisy generic P2 rules (hardcoded credential/work-item markers) in both scan engines (`legacy /omargate` + deterministic local review).
+- [x] Keep high-signal P1 rules unchanged while suppressing test/fixture and self-rule-file false positives.
+- [x] Run `npm run verify` plus local deterministic gate commands (`/omargate deep`, `/audit`) and capture evidence.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

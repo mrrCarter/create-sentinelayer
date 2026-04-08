@@ -136,3 +136,7 @@
 - When a core helper switches from sync to async, patch all call sites in the same PR (commands + tools + tests) and add one regression test that would fail on Promise misuse (`missing.length` on unresolved Promise).
 - In this repo, full `npm run verify` can fail from environment-level auth-gate requirements unrelated to scoped code changes; always capture passing targeted suites for changed modules and record why e2e auth gating failed.
 - npm provenance publish with `--provenance` validates `package.json` repository metadata against the workflow source repo; if `repository.url` is blank or mismatched, npm returns `E422` even when tarball/attestation generation succeeds.
+
+## 2026-04-08
+
+- Hash-locked Python workflows can still break at runtime if lock resolution drifts across major behavior changes (`setuptools` 82 removed `pkg_resources`); pin known-compatible upper bounds in the `.in` source and regenerate hashes, then confirm by executing the tool binary (`semgrep --version`) in CI.
