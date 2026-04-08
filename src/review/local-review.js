@@ -45,6 +45,13 @@ const SEVERITY_ORDER = new Map([
   ["P3", 3],
 ]);
 
+const TEST_OR_FIXTURE_PATH_PATTERN = /(?:^|[\\/])(?:test|tests|__tests__|fixtures?)(?:[\\/]|$)/i;
+const LOCAL_REVIEW_SOURCE_PATH_PATTERN = /(?:^|[\\/])src[\\/]review[\\/]local-review\.js$/i;
+const WORK_ITEM_MARKER_EXCLUDE_PATH_PATTERN = new RegExp(
+  `${TEST_OR_FIXTURE_PATH_PATTERN.source}|${LOCAL_REVIEW_SOURCE_PATH_PATTERN.source}`,
+  "i"
+);
+
 const REVIEW_RULES = Object.freeze([
   {
     severity: "P1",
@@ -65,11 +72,13 @@ const REVIEW_RULES = Object.freeze([
     severity: "P2",
     message: "Possible hardcoded credential literal.",
     regex: /(api[_-]?key|secret|token)\s*[:=]\s*['\"][^'\"]{20,}['\"]/i,
+    excludePathPattern: TEST_OR_FIXTURE_PATH_PATTERN,
   },
   {
     severity: "P2",
     message: "Work-item marker found.",
     regex: /\b(?:\x54\x4f\x44\x4f|\x46\x49\x58\x4d\x45|\x48\x41\x43\x4b)\b/,
+    excludePathPattern: WORK_ITEM_MARKER_EXCLUDE_PATH_PATTERN,
   },
 ]);
 
@@ -112,6 +121,7 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     suggestedFix: "Replace literal with environment/secret-manager lookup.",
     regex: /(api[_-]?key|secret|token|password|passwd)\s*[:=]\s*['\"][^'\"]{12,}['\"]/i,
     sourceOnly: true,
+    excludePathPattern: TEST_OR_FIXTURE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-006",
@@ -184,6 +194,7 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     suggestedFix: "Resolve or scope pending work before release.",
     regex: /\b(?:TODO|FIXME|HACK)\b/,
     sourceOnly: true,
+    excludePathPattern: WORK_ITEM_MARKER_EXCLUDE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-015",

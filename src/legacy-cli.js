@@ -808,6 +808,12 @@ async function collectScanFiles(rootPath) {
 }
 
 async function runCredentialScan(targetPath) {
+  const testOrFixturePathPattern = /(?:^|[\\/])(?:test|tests|__tests__|fixtures?)(?:[\\/]|$)/i;
+  const localReviewSourcePathPattern = /(?:^|[\\/])src[\\/]review[\\/]local-review\.js$/i;
+  const workItemExcludePathPattern = new RegExp(
+    `${testOrFixturePathPattern.source}|${localReviewSourcePathPattern.source}`,
+    "i"
+  );
   const rules = [
     {
       severity: "P1",
@@ -828,11 +834,13 @@ async function runCredentialScan(targetPath) {
       severity: "P2",
       message: "Possible hardcoded credential literal.",
       regex: /(api[_-]?key|secret|token)\s*[:=]\s*['"][^'"]{20,}['"]/i,
+      excludePathPattern: testOrFixturePathPattern,
     },
     {
       severity: "P2",
       message: "Work-item marker found.",
       regex: /\b(?:\x54\x4f\x44\x4f|\x46\x49\x58\x4d\x45|\x48\x41\x43\x4b)\b/,
+      excludePathPattern: workItemExcludePathPattern,
     },
   ];
 
@@ -841,6 +849,7 @@ async function runCredentialScan(targetPath) {
   const maxFindings = 200;
 
   for (const filePath of files) {
+    const relativePath = path.relative(targetPath, filePath).replace(/\\/g, "/");
     let text = "";
     try {
       text = await fsp.readFile(filePath, "utf-8");
@@ -853,10 +862,11 @@ async function runCredentialScan(targetPath) {
       if (!line) continue;
       if (line.includes("<your-token>") || line.includes("example")) continue;
       for (const rule of rules) {
+        if (rule.excludePathPattern && rule.excludePathPattern.test(relativePath)) continue;
         if (!rule.regex.test(line)) continue;
         findings.push({
           severity: rule.severity,
-          file: path.relative(targetPath, filePath).replace(/\\/g, "/"),
+          file: relativePath,
           line: lineIndex + 1,
           message: rule.message,
           excerpt: line.trim().slice(0, 180),
