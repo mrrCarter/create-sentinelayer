@@ -770,3 +770,9 @@ Review:
 - `node --test tests/unit.jules-auth-audit.test.mjs` (pass: `7/7`)
 - `node --test tests/unit.auth-service.test.mjs` (pass: `5/5`)
 - `npm run verify` currently fails in e2e baseline due auth-gate enforcement in this environment (many tests now require pre-seeded auth test context); `npm run check` stage passed.
+- [x] CI unblock follow-up: restore workflow text contracts expected by e2e (`Omar Gate (BYOK Mode)` for BYOK scaffold, literal `scan_mode`/`severity_gate` in scan-init workflow output).
+- [x] Add eval evidence artifact for AI-impacting file changes (`tasks/evals/pr-198-aidenid-async.md`).
+
+CI follow-up review:
+- `SENTINELAYER_CLI_SKIP_AUTH=1 npm run test:e2e` (pass: `89/89`)
+- `npm run check` (pass)
