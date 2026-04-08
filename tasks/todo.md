@@ -1098,5 +1098,11 @@ Review:
 - [x] Add deterministic unit regression tests for downgrade rejection and localhost exception behavior.
 - [x] Run local verification (`npm run verify`) for the changed surface.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
-- [ ] Open PR and complete Omar Gate + required checks watch loop.
-- [ ] Merge after green and record run IDs/findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#228` merged (squash commit pending) with all required checks green.
+- Omar Gate on PR `#228`: run `24162036913` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#228`: run `24162036891` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`), both under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
