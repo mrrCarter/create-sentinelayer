@@ -231,6 +231,7 @@ const AUTH_FLOW_FETCH_TIMEOUT_MS = 10_000;
 const AUTH_FLOW_FETCH_MAX_RETRIES = 2;
 const AUTH_FLOW_FETCH_BASE_BACKOFF_MS = 200;
 const RETRYABLE_AUTH_FLOW_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const AUTH_FLOW_LOCAL_TEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function computeAuthFlowBackoffMs(attempt) {
   const computed = AUTH_FLOW_FETCH_BASE_BACKOFF_MS * Math.pow(2, Math.max(0, attempt));
@@ -243,6 +244,26 @@ function isRetryableAuthFlowError(error) {
   }
   // Fetch in Node commonly throws AbortError (timeout) or TypeError (network transport failure).
   return error.name === "AbortError" || error.name === "TimeoutError" || error.name === "TypeError";
+}
+
+function isAllowedHttpAuthFlowTarget(urlObject) {
+  if (urlObject.protocol !== "http:") {
+    return true;
+  }
+  if (process.env.NODE_ENV !== "test") {
+    return false;
+  }
+  return AUTH_FLOW_LOCAL_TEST_HOSTS.has(urlObject.hostname);
+}
+
+function assertSecureAuthFlowTarget(urlValue) {
+  const parsed = new URL(urlValue);
+  if (!isAllowedHttpAuthFlowTarget(parsed)) {
+    throw new AuthAuditError(
+      `HTTPS downgrade detected in auth flow target: ${parsed.toString()}`
+    );
+  }
+  return parsed;
 }
 
 async function fetchLoginResponseWithRetry(currentUrl) {
@@ -306,6 +327,13 @@ async function checkAuthFlowSecurity(input) {
       });
     }
   } catch (err) {
+    if (err instanceof AuthAuditError && /HTTPS downgrade detected/.test(err.message)) {
+      findings.push({
+        severity: "P1",
+        title: err.message,
+        file: loginUrl,
+      });
+    }
     return { available: false, loginUrl, findings, reason: "auth flow check failed: " + err.message };
   }
   return { available: true, loginUrl, findings };
@@ -316,6 +344,7 @@ async function fetchLoginHeaders(loginUrl) {
   const visited = new Set();
 
   for (let hop = 0; hop < MAX_AUTH_REDIRECT_HOPS; hop++) {
+    const currentParsedUrl = assertSecureAuthFlowTarget(currentUrl);
     if (visited.has(currentUrl)) {
       throw new AuthAuditError("Redirect loop detected while checking auth headers");
     }
@@ -329,11 +358,11 @@ async function fetchLoginHeaders(loginUrl) {
       if (!location) {
         return { headers, finalUrl: currentUrl, crossOriginRedirect: false };
       }
-      const nextUrl = new URL(location, currentUrl).toString();
-      if (new URL(nextUrl).origin !== new URL(currentUrl).origin) {
+      const nextParsedUrl = assertSecureAuthFlowTarget(new URL(location, currentParsedUrl).toString());
+      if (nextParsedUrl.origin !== currentParsedUrl.origin) {
         return { headers, finalUrl: currentUrl, crossOriginRedirect: true };
       }
-      currentUrl = nextUrl;
+      currentUrl = nextParsedUrl.toString();
       continue;
     }
 
