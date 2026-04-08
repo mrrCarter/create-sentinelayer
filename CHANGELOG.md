@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.2.0...v0.3.0) (2026-04-08)
+
+
+### Features
+
+* **ai:** auto-resolve AIdenID credentials from session + lazy-fetch secret ([#196](https://github.com/mrrCarter/create-sentinelayer/issues/196)) ([6e433d8](https://github.com/mrrCarter/create-sentinelayer/commit/6e433d877333959877134b1838bf9d377e5c1ace))
+* **auth:** store AIdenID metadata from login (no secret persisted) ([#195](https://github.com/mrrCarter/create-sentinelayer/issues/195)) ([39b9934](https://github.com/mrrCarter/create-sentinelayer/commit/39b99344765b82e454e4796a314a14bfba970bdd))
+* **spec:** embed AIdenID guidance in prompts and BYOK specs (CLI-3, PR 161) ([#197](https://github.com/mrrCarter/create-sentinelayer/issues/197)) ([ea58a30](https://github.com/mrrCarter/create-sentinelayer/commit/ea58a3060716727a24ba2fe103e9e04d168211ec))
+
+
+### Bug Fixes
+
+* **aidenid:** restore async credential flow and status metadata ([#198](https://github.com/mrrCarter/create-sentinelayer/issues/198)) ([16cebd0](https://github.com/mrrCarter/create-sentinelayer/commit/16cebd0930b3eabcd5bb348f533983700eada406))
+* **scaffold:** replace BYOK stub with full Omar Gate workflow ([#193](https://github.com/mrrCarter/create-sentinelayer/issues/193)) ([ff93e79](https://github.com/mrrCarter/create-sentinelayer/commit/ff93e79d02e36e757b271b3a6027d1873c800bc6))
+
 ## [0.2.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.1.0...v0.2.0) (2026-04-07)
 
 
