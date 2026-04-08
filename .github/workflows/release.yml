@@ -21,22 +21,19 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-release-artifact:
+  manual-validate:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
-    concurrency:
-      group: release-build-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Enforce workflow_dispatch branch policy
-        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "::error::Manual release dispatch is restricted to refs/heads/main. Current ref: ${GITHUB_REF}."
+            echo "::error::Manual release dispatch validation is restricted to refs/heads/main. Current ref: ${GITHUB_REF}."
             exit 1
           fi
 
@@ -53,8 +50,39 @@ jobs:
       - name: Validate package
         run: npm run verify
 
+      - name: Emit manual validation summary
+        run: |
+          set -euo pipefail
+          echo "## Manual Release Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ref: \`${GITHUB_REF}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- note: workflow_dispatch validates only; publish remains tag-only." >> "$GITHUB_STEP_SUMMARY"
+
+  build-release-artifact:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    concurrency:
+      group: release-build-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate package
+        run: npm run verify
+
       - name: Ensure release commit passed required upstream gates
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.sha }}
@@ -269,6 +297,7 @@ jobs:
             exit 1
           fi
           echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+          echo "EXPECTED_SHA256=${EXPECTED_SHA256}" >> "$GITHUB_ENV"
 
       - name: Enforce release attestation verification policy
         env:
@@ -287,6 +316,25 @@ jobs:
             sleep 10
           done
           jq -e 'length > 0' release-attestation-publish-verify.json > /dev/null
+          ATTESTED_SHA256="$(jq -r '
+            [
+              .. | objects
+              | select(has("digest"))
+              | .digest
+              | if type == "object" then .sha256 // empty else empty end
+            ]
+            | map(select(type == "string" and length > 0))
+            | first // empty
+          ' release-attestation-publish-verify.json)"
+          if [ -z "${ATTESTED_SHA256}" ]; then
+            echo "::error::Could not resolve attested subject digest from release-attestation-publish-verify.json."
+            exit 1
+          fi
+          if [ "${ATTESTED_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Attested digest mismatch."
+            echo "::error::Expected ${EXPECTED_SHA256}, attested ${ATTESTED_SHA256}."
+            exit 1
+          fi
 
       - name: Publish to npm
         run: |
