@@ -1226,5 +1226,20 @@ Review:
 - [x] Replace wall-clock manifest metadata in `.github/workflows/sbom.yml` with deterministic commit-bound metadata (`source_commit: $GITHUB_SHA`).
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#236` merged (squash commit `8b8286f`) with all required checks green.
+- Omar Gate on PR `#236`: run `24163781743` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#236`: run `24163781735` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Quality Matrix EOL Runtime Removal (Batch P2-A28)
+
+- [x] Validate Omar finding that quality workflow matrix includes EOL Node runtime (`18`).
+- [x] Update `.github/workflows/quality-gates.yml` syntax matrix to remove Node `18` and keep supported runtime matrix only.
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
