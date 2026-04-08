@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  checks: read
   contents: read
   id-token: write
   attestations: write
@@ -23,6 +24,42 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Ensure target commit passed required upstream gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+          MAX_WAIT_SECONDS: "1800"
+          POLL_INTERVAL_SECONDS: "10"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            REQUIRED_CHECKS_JSON='[
+              {"name":"Quality Summary","app":"github-actions","optional":false},
+              {"name":"Omar Gate","app":"github-actions","optional":false},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
+              {"name":"IaC Summary","app":"github-actions","optional":false},
+              {"name":"SCA Summary","app":"github-actions","optional":false},
+              {"name":"License Summary","app":"github-actions","optional":false},
+              {"name":"SBOM Summary","app":"github-actions","optional":false},
+              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+            ]'
+          else
+            REQUIRED_CHECKS_JSON='[
+              {"name":"Quality Summary","app":"github-actions","optional":false},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
+              {"name":"IaC Summary","app":"github-actions","optional":false},
+              {"name":"SCA Summary","app":"github-actions","optional":false},
+              {"name":"License Summary","app":"github-actions","optional":false},
+              {"name":"SBOM Summary","app":"github-actions","optional":false},
+              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+            ]'
+          fi
+          export REQUIRED_CHECKS_JSON
+          .github/scripts/require-check-runs.sh
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

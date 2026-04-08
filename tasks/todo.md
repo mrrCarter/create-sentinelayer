@@ -1149,5 +1149,22 @@ Review:
 - [x] Update `.github/workflows/iac-scan.yml` installer to verify downloaded archive against policy digest and fail closed on mismatch/missing policy.
 - [x] Run local verification for workflow/policy updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#231` merged (squash commit `1ccc75c`) with all required checks green.
+- Omar Gate on PR `#231`: run `24162811005` passed (`P0=0`, `P1=0`, `P2=13`).
+- Quality Gates on PR `#231`: run `24162811003` passed.
+- Local deterministic scans before merge: `/omargate deep` (`p1=0`, `p2=0`, `blocking=false`), `/audit` (`overallStatus=PASS`, `p1=0`, `p2=0`) under trusted test bypass (`NODE_ENV=test`, `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Attestation Upstream Gate Enforcement (Batch P2-A23)
+
+- [x] Validate Omar finding that attestation workflow can run before quality/security check completion on the same commit.
+- [x] Add fail-closed upstream check gating in `.github/workflows/attestations.yml` using `.github/scripts/require-check-runs.sh`.
+- [x] Add `checks: read` permission to attestation workflow for check-run polling.
+- [x] Make required-check policy event-aware (`pull_request` includes Omar Gate, `push` excludes PR-only Omar gate).
+- [x] Run local verification for workflow updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
