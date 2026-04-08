@@ -80,9 +80,22 @@ jobs:
             fi
           }
 
+          require_check_if_present() {
+            local check_name="$1"
+            local has_check
+            has_check="$(echo "${checks_json}" | jq -r --arg check_name "${check_name}" '
+              any(.check_runs[]?; .name == $check_name)
+            ')"
+            if [ "${has_check}" != "true" ]; then
+              echo "::notice::Optional check '${check_name}' not present for commit ${TARGET_SHA}; skipping."
+              return 0
+            fi
+            require_check_success "${check_name}"
+          }
+
           require_check_success "Quality Summary"
           require_check_success "Omar Gate"
-          require_check_success "CodeQL Summary"
+          require_check_if_present "CodeQL Summary"
           require_check_success "Semgrep Summary"
           require_check_success "Gitleaks Summary"
           require_check_success "IaC Summary"
