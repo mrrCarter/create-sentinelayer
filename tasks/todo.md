@@ -1033,5 +1033,22 @@ Review:
 - [x] Add workflow-level concurrency group keyed by branch ref with `cancel-in-progress: true` in `.github/workflows/quality-gates.yml`.
 - [x] Run local verification for workflow updates.
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#224` merged (squash commit `f7d5ae1cac5bd28e20da07527e5db20b651d8894`) with all required checks green.
+- Omar Gate on PR `#224`: run `24161022764` passed (`P0=0`, `P1=0`, `P2=14`).
+- Quality Gates on PR `#224`: run `24161022748` passed.
+- Local deterministic scans before merge remained `P1=0`, `P2=0`, `blocking=false` under test-only bypass (`NODE_ENV=test` + `SENTINELAYER_CLI_SKIP_AUTH=1`).
+
+## 2026-04-08 - Release Rollback-Readiness Drill Guard (Batch P2-A16)
+
+- [x] Validate Omar finding that release workflow lacks rollback-readiness coverage in the effective tag/manual release paths.
+- [x] Add deterministic rollback-readiness script at `.github/scripts/release-rollback-readiness.sh` to emit dry-run rollback plan artifacts/summary from npm metadata.
+- [x] Wire manual dispatch validation path to execute rollback-readiness checks after `manual-validate`.
+- [x] Wire tag release path to execute rollback-readiness checks before `publish`, and gate publish on that check.
+- [x] Run local verification for workflow/script updates.
+- [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
