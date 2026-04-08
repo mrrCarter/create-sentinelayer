@@ -911,5 +911,20 @@ Review:
 - [x] Remove unused `workflow_dispatch` release input to eliminate operator confusion and drift.
 - [x] Gate `release-please` execution on upstream security/quality check completion.
 - [x] Run local verification for workflow/script changes.
+- [x] Open PR and complete Omar Gate + required checks watch loop.
+- [x] Merge after green and record run IDs/findings delta.
+
+Review:
+- PR `#215` merged (squash commit `53616a2037c8cb355552a1ec1c5857690ef79106`) with all required checks green.
+- Omar Gate on PR `#215`: run `24117783076` passed (`P0=0`, `P1=0`, `P2=13`).
+- Local deterministic scans before merge: `/omargate deep` and `/audit` remained `P1=0`, `P2=0`, `blocking=false`.
+
+## 2026-04-08 - Auth Bypass + Playwright Lifecycle Hardening (Batch P2-A8)
+
+- [x] Harden auth gate so `SENTINELAYER_CLI_SKIP_AUTH=1` only works in trusted bypass contexts (test mode or explicit unsafe override).
+- [x] Update auth-gate unit tests to cover guarded bypass, rejected unguarded bypass, and explicit unsafe override behavior.
+- [x] Ensure CLI e2e harness uses a trusted bypass context (`NODE_ENV=test`) when setting skip-auth.
+- [x] Fix Playwright auth-audit script lifecycle to safely close browser only when launch succeeds and keep structured error output.
+- [x] Run local verification for updated auth + audit paths.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.

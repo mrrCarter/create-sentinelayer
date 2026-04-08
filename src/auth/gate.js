@@ -27,6 +27,14 @@ const NO_AUTH_REQUIRED = new Set([
   "config",    // local config inspection
 ]);
 
+function hasTrustedBypassContext() {
+  return (
+    process.env.NODE_ENV === "test" ||
+    process.env.SENTINELAYER_CLI_TEST_MODE === "1" ||
+    process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS === "1"
+  );
+}
+
 /**
  * Check if the current command requires authentication.
  * Returns true if auth is required but user is not logged in.
@@ -46,9 +54,9 @@ export async function checkAuthGate(args) {
     return { authenticated: true, session: null, bypassReason: "no_auth_required" };
   }
 
-  // Explicit test bypass only — CI=true alone must not disable auth.
-  if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1") {
-    return { authenticated: true, session: null, bypassReason: "env_bypass" };
+  // Explicit bypass is gated to test contexts or a second explicit unsafe override.
+  if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" && hasTrustedBypassContext()) {
+    return { authenticated: true, session: null, bypassReason: "env_bypass_guarded" };
   }
 
   // Check for stored session
