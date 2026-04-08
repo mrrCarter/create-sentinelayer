@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { authAudit, AuthAuditError } from "../src/agents/jules/tools/auth-audit.js";
+import { authAudit, AuthAuditError, runPlaywrightAuditScriptWithRetry } from "../src/agents/jules/tools/auth-audit.js";
 
 function createResponse(status, headers = {}) {
   const normalized = Object.fromEntries(
@@ -140,6 +140,56 @@ describe("authAudit", () => {
       process.env.NODE_ENV = previousNodeEnv;
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("runPlaywrightAuditScriptWithRetry retries transient execution failures and succeeds", async () => {
+    let attemptCount = 0;
+    const stubExec = () => {
+      attemptCount += 1;
+      if (attemptCount < 3) {
+        const error = new Error("timed out waiting for playwright");
+        error.code = "ETIMEDOUT";
+        error.signal = "SIGTERM";
+        error.killed = true;
+        throw error;
+      }
+      return "{\"authenticated\":true}";
+    };
+
+    const output = await runPlaywrightAuditScriptWithRetry("fake-script.cjs", {}, {
+      exec: stubExec,
+      maxRetries: 2,
+      baseBackoffMs: 1,
+      timeoutMs: 1000,
+    });
+
+    assert.equal(output, "{\"authenticated\":true}");
+    assert.equal(attemptCount, 3);
+  });
+
+  it("runPlaywrightAuditScriptWithRetry fails after retry budget exhaustion", async () => {
+    let attemptCount = 0;
+    const stubExec = () => {
+      attemptCount += 1;
+      const error = new Error("timed out waiting for playwright");
+      error.code = "ETIMEDOUT";
+      throw error;
+    };
+
+    await assert.rejects(
+      () => runPlaywrightAuditScriptWithRetry("fake-script.cjs", {}, {
+        exec: stubExec,
+        maxRetries: 2,
+        baseBackoffMs: 1,
+        timeoutMs: 1000,
+      }),
+      (error) => {
+        assert.ok(error instanceof AuthAuditError);
+        assert.match(error.message, /failed after 3 attempt\(s\)/);
+        return true;
+      },
+    );
+    assert.equal(attemptCount, 3);
   });
 
   it("registers console listener before target navigation in Playwright script", () => {

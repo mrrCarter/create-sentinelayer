@@ -32,6 +32,10 @@ const AUTH_DISPATCH = {
   check_auth_flow_security: checkAuthFlowSecurity,
 };
 
+const AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS = 60_000;
+const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 2;
+const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
+
 async function provisionTestIdentity(input) {
   try {
     const executeRequested = input.execute === true;
@@ -101,11 +105,7 @@ async function authenticatedPageCheck(input) {
       SL_AUDIT_CONTEXT_FILE: contextPath,
     };
 
-    const output = execFileSync(process.execPath, [scriptPath], {
-      encoding: "utf-8", timeout: 60000,
-      stdio: ["pipe", "pipe", "pipe"],
-      env,
-    });
+    const output = await runPlaywrightAuditScriptWithRetry(scriptPath, env);
 
     const result = JSON.parse(output.trim());
     const findings = [];
@@ -122,6 +122,9 @@ async function authenticatedPageCheck(input) {
     }
     return { available: true, method: "playwright", findings, ...result };
   } catch (err) {
+    if (err instanceof AuthAuditError) {
+      return { available: false, reason: err.message };
+    }
     return { available: false, reason: "Playwright auth audit failed: " + err.message };
   } finally {
     cleanupTempFile(scriptPath);
@@ -232,6 +235,69 @@ const AUTH_FLOW_FETCH_MAX_RETRIES = 2;
 const AUTH_FLOW_FETCH_BASE_BACKOFF_MS = 200;
 const RETRYABLE_AUTH_FLOW_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const AUTH_FLOW_LOCAL_TEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function computePlaywrightBackoffMs(attempt, baseBackoffMs = AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS) {
+  const computed = Math.max(1, baseBackoffMs) * Math.pow(2, Math.max(0, attempt));
+  return Math.min(1000, computed);
+}
+
+function isRetryablePlaywrightExecutionError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = String(error.code || "").toUpperCase();
+  if (code === "ETIMEDOUT" || code === "ECONNRESET" || code === "EPIPE" || code === "EAI_AGAIN") {
+    return true;
+  }
+  if (error.killed === true || error.signal === "SIGTERM") {
+    return true;
+  }
+  const message = (error.name + " " + (error.message || "")).toLowerCase();
+  return message.includes("timeout") || message.includes("timed out") || message.includes("socket hang up");
+}
+
+function normalizeAuthAuditErrorMessage(error, fallbackMessage) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  const normalized = String(error || "").trim();
+  return normalized || fallbackMessage;
+}
+
+export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options = {}) {
+  if (!scriptPath) {
+    throw new AuthAuditError("Playwright auth audit failed: missing script path");
+  }
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.trunc(options.timeoutMs)
+    : AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS;
+  const maxRetries = Number.isInteger(options.maxRetries) && options.maxRetries >= 0
+    ? options.maxRetries
+    : AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES;
+  const baseBackoffMs = Number.isFinite(options.baseBackoffMs) && options.baseBackoffMs > 0
+    ? Math.trunc(options.baseBackoffMs)
+    : AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS;
+  const execute = typeof options.exec === "function" ? options.exec : execFileSync;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return execute(process.execPath, [scriptPath], {
+        encoding: "utf-8",
+        timeout: timeoutMs,
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+      });
+    } catch (error) {
+      if (!isRetryablePlaywrightExecutionError(error) || attempt >= maxRetries) {
+        const reason = normalizeAuthAuditErrorMessage(error, "Playwright execution failed");
+        throw new AuthAuditError(`Playwright auth audit failed after ${attempt + 1} attempt(s): ${reason}`);
+      }
+    }
+    await sleep(computePlaywrightBackoffMs(attempt, baseBackoffMs));
+  }
+
+  throw new AuthAuditError("Playwright auth audit failed after retry budget was exhausted");
+}
 
 function computeAuthFlowBackoffMs(attempt) {
   const computed = AUTH_FLOW_FETCH_BASE_BACKOFF_MS * Math.pow(2, Math.max(0, attempt));
