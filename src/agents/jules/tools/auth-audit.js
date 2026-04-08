@@ -160,6 +160,23 @@ const fs = require('node:fs');
   try {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    page.on('console', msg => {
+      if (msg.type() === 'error') {
+        const text = (msg.text() || '')
+          .slice(0, 200)
+          .replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]')
+          .replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
+        results.errors.push({ text });
+      }
+    });
+    page.on('pageerror', err => {
+      const text = (err && err.message ? err.message : String(err || ''))
+        .slice(0, 200)
+        .replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]')
+        .replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
+      results.errors.push({ text });
+    });
+
     if (email && password && loginUrl) {
       await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
       await page.fill(emailSelector, email);
@@ -172,13 +189,6 @@ const fs = require('node:fs');
     }
 
     const targetResponse = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
-
-    page.on('console', msg => {
-      if (msg.type() === 'error') {
-        const text = (msg.text() || '').slice(0, 200).replace(/Bearer\\s+\\S+/gi, 'Bearer [REDACTED]').replace(/token[=:]\\S+/gi, 'token=[REDACTED]');
-        results.errors.push({ text });
-      }
-    });
 
     const cookies = await page.context().cookies();
     results.cookies = cookies.map(c => ({
