@@ -22,6 +22,12 @@ function createResponse(status, headers = {}) {
 }
 
 describe("authAudit", () => {
+  const LIVE_AUTH_APPROVAL = {
+    allowProvisioning: true,
+    approvedTargetId: "sl-approved-example",
+    approvedHosts: ["example.com"],
+  };
+
   it("rejects unknown operation", () => {
     assert.throws(() => authAudit({ operation: "nonexistent" }), AuthAuditError);
   });
@@ -62,11 +68,38 @@ describe("authAudit", () => {
   });
 
   it("check_auth_flow_security works for reachable url", async () => {
-    const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com" });
+    const result = await authAudit({
+      operation: "check_auth_flow_security",
+      url: "https://example.com",
+      ...LIVE_AUTH_APPROVAL,
+    });
     assert.ok(typeof result.available === "boolean");
     if (result.available) {
       assert.ok(Array.isArray(result.findings));
     }
+  });
+
+  it("check_auth_flow_security requires approved target context for live mode", async () => {
+    await assert.rejects(
+      () => authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+      }),
+      /allowProvisioning=true and approvedTargetId/,
+    );
+  });
+
+  it("check_auth_flow_security blocks unapproved hosts even with approval id", async () => {
+    await assert.rejects(
+      () => authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://api.unknown-host.example/login",
+        allowProvisioning: true,
+        approvedTargetId: "sl-approved-example",
+        approvedHosts: ["example.com"],
+      }),
+      /Blocked unapproved auth audit host/,
+    );
   });
 
   it("check_auth_flow_security retries transient retryable statuses and succeeds", async () => {
@@ -83,7 +116,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, true);
       assert.equal(callCount, 2);
     } finally {
@@ -105,7 +142,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, true);
       assert.equal(callCount, 2);
     } finally {
@@ -121,7 +162,11 @@ describe("authAudit", () => {
       throw new TypeError("Failed to parse URL from config");
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /failed after 1 attempt\(s\)/);
       assert.equal(callCount, 1);
@@ -140,7 +185,11 @@ describe("authAudit", () => {
       throw error;
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /failed after 3 attempt\(s\)/);
       assert.equal(callCount, 3);
@@ -159,7 +208,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /HTTPS downgrade detected/);
       assert.ok(Array.isArray(result.findings));
@@ -180,7 +233,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /Exceeded 5 redirects/);
       assert.ok(callCount >= 6);

@@ -1325,3 +1325,15 @@ Review:
 - [x] Restrict attestation workflow to reusable/PR/manual modes and enforce `npm pack --ignore-scripts` parity.
 - [x] Run local verification (`npm run verify`) on the hardening branch.
 - [ ] Open PR, run Omar loop (`gh run watch`), merge on green, and record finding deltas.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A35)
+
+- [x] Reproduce Omar P2 set on PR `#274` after the first hardening patch.
+- [x] Branch release actor policy by trigger context (manual dispatch vs tag release) with explicit policy summary output.
+- [x] Make `release-please` dispatch fail closed by resolving/watching the downstream `Release` workflow run and propagating failure.
+- [x] Add explicit rollback execution workflow (`.github/workflows/rollback.yml`) with protected approval, dist-tag execution, and post-action verification artifacts.
+- [x] Extend rollback readiness script to support explicit target override (`ROLLBACK_TARGET_OVERRIDE`) for controlled rollback execution.
+- [x] Harden auth-audit outbound target governance with required `allowProvisioning` + `approvedTargetId` + approved host allowlist for live checks.
+- [x] Add/adjust unit coverage for auth-audit approval guard behavior and stronger fail-closed semantics.
+- [x] Run local full verification (`npm run verify`) on branch `hardening/nonblocking-p2-batch2`.
+- [ ] Push updates, run Omar Gate loop (`gh run watch`), and merge PR `#274` once required checks are green.

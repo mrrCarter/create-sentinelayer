@@ -1,0 +1,191 @@
+name: Release Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: Version to restore as latest (v prefix optional)
+        required: false
+        type: string
+      release_version:
+        description: Version being rolled back/deprecated (v prefix optional)
+        required: false
+        type: string
+      confirm:
+        description: Type ROLLBACK to execute dist-tag change
+        required: true
+        default: ""
+        type: string
+      deprecate_release:
+        description: Deprecate release_version after rollback
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: release-publish-prod
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    environment: package-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Require explicit rollback confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.confirm }}" != "ROLLBACK" ]; then
+            echo "::error::Rollback confirmation missing. Re-run with confirm=ROLLBACK."
+            exit 1
+          fi
+
+      - name: Resolve rollback target and release context
+        shell: bash
+        env:
+          INPUT_TARGET_VERSION: ${{ inputs.target_version }}
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          normalize_version() {
+            local value
+            value="$(echo "${1:-}" | xargs || true)"
+            value="${value#v}"
+            echo "${value}"
+          }
+
+          target_version="$(normalize_version "${INPUT_TARGET_VERSION}")"
+          release_version="$(normalize_version "${INPUT_RELEASE_VERSION}")"
+          if [ -z "${target_version}" ]; then
+            versions_json="$(npm view sentinelayer-cli versions --json)"
+            target_version="$(echo "${versions_json}" | jq -r '
+              if type == "array" then
+                if length >= 2 then .[-2]
+                elif length == 1 then .[-1]
+                else empty
+                end
+              elif type == "string" then .
+              else empty
+              end
+            ')"
+          fi
+          if [ -z "${target_version}" ]; then
+            echo "::error::Unable to resolve rollback target version."
+            exit 1
+          fi
+          if ! echo "${target_version}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Rollback target must be semver-like. Received ${target_version}."
+            exit 1
+          fi
+
+          resolved_version="$(npm view "sentinelayer-cli@${target_version}" version --json | jq -r 'if type=="string" then . else empty end')"
+          if [ "${resolved_version}" != "${target_version}" ]; then
+            echo "::error::Rollback target sentinelayer-cli@${target_version} is not resolvable."
+            exit 1
+          fi
+
+          echo "ROLLBACK_TARGET_VERSION=${target_version}" >> "$GITHUB_ENV"
+          echo "ROLLBACK_RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+
+      - name: Validate rollback readiness (execution mode)
+        shell: bash
+        env:
+          PACKAGE_NAME: sentinelayer-cli
+          ROLLBACK_MODE: execute
+          RELEASE_VERSION: ${{ env.ROLLBACK_RELEASE_VERSION }}
+          ROLLBACK_TARGET_OVERRIDE: ${{ env.ROLLBACK_TARGET_VERSION }}
+          NON_BLOCKING_DIAGNOSTICS: "0"
+        run: bash .github/scripts/release-rollback-readiness.sh
+
+      - name: Require npm rollback token
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::error::Missing NPM_TOKEN in package-release environment secrets."
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "${HOME}/.npmrc"
+
+      - name: Execute rollback dist-tag update
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm dist-tag add "sentinelayer-cli@${ROLLBACK_TARGET_VERSION}" latest
+
+      - name: Verify rollback result and emit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist_tags_json="$(npm view sentinelayer-cli dist-tags --json)"
+          latest_tag="$(echo "${dist_tags_json}" | jq -r '.latest // empty')"
+          if [ "${latest_tag}" != "${ROLLBACK_TARGET_VERSION}" ]; then
+            echo "::error::Rollback verification failed. latest=${latest_tag} expected=${ROLLBACK_TARGET_VERSION}."
+            exit 1
+          fi
+          jq -n \
+            --arg package "sentinelayer-cli" \
+            --arg rollback_target "${ROLLBACK_TARGET_VERSION}" \
+            --arg release_version "${ROLLBACK_RELEASE_VERSION}" \
+            --arg latest_tag "${latest_tag}" \
+            --arg triggered_by "${GITHUB_ACTOR}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{
+              package: $package,
+              rollback_target: $rollback_target,
+              release_version: ($release_version | if length > 0 then . else null end),
+              latest_dist_tag: $latest_tag,
+              triggered_by: $triggered_by,
+              run_id: $run_id,
+              run_url: $run_url
+            }' > release-rollback-execution.json
+          {
+            echo "## Rollback Execution"
+            echo "- package: \`sentinelayer-cli\`"
+            echo "- rollback_target: \`${ROLLBACK_TARGET_VERSION}\`"
+            echo "- latest_dist_tag: \`${latest_tag}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deprecate rolled-back release version
+        if: ${{ inputs.deprecate_release && inputs.release_version != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ROLLBACK_RELEASE_VERSION}" ]; then
+            echo "::error::Cannot deprecate release: release_version input is empty after normalization."
+            exit 1
+          fi
+          npm deprecate \
+            "sentinelayer-cli@${ROLLBACK_RELEASE_VERSION}" \
+            "Superseded by rollback to ${ROLLBACK_TARGET_VERSION}"
+
+      - name: Upload rollback execution artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-rollback-execution
+          path: |
+            release-rollback-readiness.json
+            release-rollback-execution.json
+          if-no-files-found: error
+          retention-days: 14

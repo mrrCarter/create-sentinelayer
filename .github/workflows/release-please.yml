@@ -108,4 +108,50 @@ jobs:
             exit 1
           fi
 
+          dispatch_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           gh workflow run "Release" --ref "${tag_name}"
+
+          release_run_id=""
+          for attempt in $(seq 1 30); do
+            run_list_json="$(gh run list --workflow "Release" --limit 50 --json databaseId,event,headBranch,headSha,createdAt)"
+            release_run_id="$(echo "${run_list_json}" | jq -r \
+              --arg tag "${tag_name}" \
+              --arg sha "${resolved_release_sha}" \
+              --arg started "${dispatch_started_at}" '
+                [
+                  .[]
+                  | select(
+                      .event == "workflow_dispatch"
+                      and .headBranch == $tag
+                      and .headSha == $sha
+                      and .createdAt >= $started
+                    )
+                ]
+                | sort_by(.createdAt)
+                | last
+                | .databaseId // empty
+              ')"
+            if [ -n "${release_run_id}" ] && [ "${release_run_id}" != "null" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "${release_run_id}" ] || [ "${release_run_id}" = "null" ]; then
+            echo "::error::Unable to resolve dispatched Release workflow run id for tag ${tag_name}."
+            exit 1
+          fi
+
+          gh run watch "${release_run_id}" --exit-status
+          release_conclusion="$(gh run view "${release_run_id}" --json conclusion --jq '.conclusion')"
+          if [ "${release_conclusion}" != "success" ]; then
+            echo "::error::Release workflow failed for ${tag_name} (run_id=${release_run_id}, conclusion=${release_conclusion})."
+            exit 1
+          fi
+
+          {
+            echo "## Release Dispatch"
+            echo "- tag: \`${tag_name}\`"
+            echo "- run_id: \`${release_run_id}\`"
+            echo "- conclusion: \`${release_conclusion}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

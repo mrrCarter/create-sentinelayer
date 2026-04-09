@@ -290,6 +290,8 @@ const RETRYABLE_AUTH_FLOW_MESSAGE_PATTERNS = [
   /\bconnection\b.*\b(?:reset|terminated|closed)\b/i,
 ];
 const AUTH_FLOW_LOCAL_TEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const DEFAULT_APPROVED_AUTH_AUDIT_HOSTS = new Set(["example.com", "www.example.com"]);
+const AUTH_AUDIT_ALLOWED_HOSTS_ENV = "SENTINELAYER_AUTH_AUDIT_ALLOWED_HOSTS";
 
 function computePlaywrightBackoffMs(attempt, baseBackoffMs = AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS) {
   const cappedBase = Math.max(1, Number.isFinite(baseBackoffMs) ? Math.trunc(baseBackoffMs) : AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS);
@@ -412,6 +414,67 @@ function isAllowedHttpAuthFlowTarget(urlObject) {
   return AUTH_FLOW_LOCAL_TEST_HOSTS.has(urlObject.hostname);
 }
 
+function isUnapprovedAuthAuditBypassEnabled() {
+  if (process.env.NODE_ENV === "test") {
+    return true;
+  }
+  if (process.env.SENTINELAYER_ALLOW_UNAPPROVED_AUTH_AUDIT_TARGETS === "1") {
+    return true;
+  }
+  return false;
+}
+
+function normalizeHostEntry(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function resolveApprovedAuthAuditHosts(input) {
+  const approvedHosts = new Set(DEFAULT_APPROVED_AUTH_AUDIT_HOSTS);
+  const hostLists = [];
+  if (Array.isArray(input?.approvedHosts)) {
+    hostLists.push(input.approvedHosts);
+  }
+  if (Array.isArray(input?.approvedHostnames)) {
+    hostLists.push(input.approvedHostnames);
+  }
+  const envHosts = String(process.env[AUTH_AUDIT_ALLOWED_HOSTS_ENV] || "")
+    .split(",")
+    .map((entry) => normalizeHostEntry(entry))
+    .filter(Boolean);
+  hostLists.push(envHosts);
+  for (const list of hostLists) {
+    for (const host of list) {
+      const normalized = normalizeHostEntry(host);
+      if (normalized) {
+        approvedHosts.add(normalized);
+      }
+    }
+  }
+  return approvedHosts;
+}
+
+function assertApprovedAuthAuditTarget(parsed, input, operation) {
+  if (isUnapprovedAuthAuditBypassEnabled()) {
+    return parsed;
+  }
+  const allowLiveProvision = input?.allowProvisioning === true || process.env.SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION === "1";
+  const approvedTargetId = String(input?.approvedTargetId || "").trim();
+  if (!allowLiveProvision || !approvedTargetId) {
+    throw new AuthAuditError(
+      `Live ${operation} requires allowProvisioning=true and approvedTargetId to prevent unapproved outbound probing.`
+    );
+  }
+  const approvedHosts = resolveApprovedAuthAuditHosts(input);
+  const normalizedHost = normalizeHostEntry(parsed.hostname);
+  if (!approvedHosts.has(normalizedHost)) {
+    throw new AuthAuditError(
+      `Blocked unapproved auth audit host for ${operation}: ${normalizedHost}. ` +
+      `Add host to approvedHosts or ${AUTH_AUDIT_ALLOWED_HOSTS_ENV}.`
+    );
+  }
+  return parsed;
+}
+
 function assertSecureAuthFlowTarget(urlValue, options = {}) {
   let parsed;
   try {
@@ -422,6 +485,7 @@ function assertSecureAuthFlowTarget(urlValue, options = {}) {
   } catch (error) {
     throw new AuthAuditError(error.message);
   }
+  assertApprovedAuthAuditTarget(parsed, options.auditInput || {}, "check_auth_flow_security");
   if (!isAllowedHttpAuthFlowTarget(parsed)) {
     throw new AuthAuditError(
       `HTTPS downgrade detected in auth flow target: ${parsed.toString()}`
@@ -473,11 +537,11 @@ async function checkAuthFlowSecurity(input) {
   const loginUrlCandidate = input.loginUrl || input.url;
   if (!loginUrlCandidate) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
   const allowPrivateTargets = input.allowPrivateTargets === true;
-  const loginUrl = assertSecureAuthFlowTarget(loginUrlCandidate, { allowPrivateTargets }).toString();
+  const loginUrl = assertSecureAuthFlowTarget(loginUrlCandidate, { allowPrivateTargets, auditInput: input }).toString();
 
   const findings = [];
   try {
-    const { headers, finalUrl, crossOriginRedirect } = await fetchLoginHeaders(loginUrl, { allowPrivateTargets });
+    const { headers, finalUrl, crossOriginRedirect } = await fetchLoginHeaders(loginUrl, { allowPrivateTargets, auditInput: input });
 
     if (crossOriginRedirect) {
       findings.push({
@@ -557,6 +621,7 @@ function resolveAuthAuditTarget(urlValue, input, operation) {
       operation,
       allowPrivateTargets: input.allowPrivateTargets === true,
     });
+    assertApprovedAuthAuditTarget(parsed, input, operation);
     return parsed.toString();
   } catch (error) {
     throw new AuthAuditError(error.message);

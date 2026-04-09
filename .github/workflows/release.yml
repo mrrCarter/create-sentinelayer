@@ -48,20 +48,28 @@ jobs:
             exit 1
           fi
 
-      - name: Enforce manual release actor allowlist
+      - name: Enforce release actor allowlist policy
         shell: bash
         env:
-          RELEASE_ALLOWED_ACTORS: ${{ vars.RELEASE_ALLOWED_ACTORS || 'mrrCarter' }}
-          RELEASE_ALLOW_BOT_ACTOR: ${{ vars.RELEASE_ALLOW_BOT_ACTOR || 'false' }}
+          RELEASE_ALLOWED_MANUAL_ACTORS: ${{ vars.RELEASE_ALLOWED_MANUAL_ACTORS || 'mrrCarter' }}
+          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot],mrrCarter' }}
         run: |
           set -euo pipefail
-          allowed_csv="${RELEASE_ALLOWED_ACTORS}"
-          allow_bot="$(echo "${RELEASE_ALLOW_BOT_ACTOR}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          actor="${GITHUB_ACTOR}"
-          if [ "${actor}" = "github-actions[bot]" ] && [ "${allow_bot}" != "true" ]; then
-            echo "::error::Bot actor release is disabled. Set RELEASE_ALLOW_BOT_ACTOR=true and include github-actions[bot] in RELEASE_ALLOWED_ACTORS to allow."
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            policy_branch="manual-dispatch"
+            allowed_csv="${RELEASE_ALLOWED_MANUAL_ACTORS}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            policy_branch="tag-release"
+            allowed_csv="${RELEASE_ALLOWED_TAG_ACTORS}"
+          else
+            echo "::error::Unsupported actor policy context: ${GITHUB_EVENT_NAME} ${GITHUB_REF}"
             exit 1
           fi
+          if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
+            echo "::error::Actor allowlist is empty for policy branch ${policy_branch}."
+            exit 1
+          fi
+          actor="${GITHUB_ACTOR}"
           actor_allowed="false"
           IFS=',' read -r -a allowed_items <<< "${allowed_csv}"
           for item in "${allowed_items[@]}"; do
@@ -72,9 +80,15 @@ jobs:
             fi
           done
           if [ "${actor_allowed}" != "true" ]; then
-            echo "::error::Actor ${actor} is not in RELEASE_ALLOWED_ACTORS (${allowed_csv})."
+            echo "::error::Actor ${actor} is not allowed for ${policy_branch}. Allowed actors: ${allowed_csv}."
             exit 1
           fi
+          {
+            echo "### Release actor policy"
+            echo "- branch: \`${policy_branch}\`"
+            echo "- actor: \`${actor}\`"
+            echo "- allowlist: \`${allowed_csv}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure target commit passed required upstream gates
         env:

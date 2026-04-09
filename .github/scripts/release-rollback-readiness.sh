@@ -4,6 +4,7 @@ set -euo pipefail
 PACKAGE_NAME="${PACKAGE_NAME:-sentinelayer-cli}"
 ROLLBACK_MODE="${ROLLBACK_MODE:-release}"
 RELEASE_VERSION="${RELEASE_VERSION:-}"
+ROLLBACK_TARGET_OVERRIDE="${ROLLBACK_TARGET_OVERRIDE:-}"
 NON_BLOCKING_DIAGNOSTICS="${NON_BLOCKING_DIAGNOSTICS:-0}"
 
 npm_view_json() {
@@ -58,6 +59,9 @@ previous_version="$(
 )"
 
 rollback_target="${previous_version:-${latest_tag}}"
+if [ -n "${ROLLBACK_TARGET_OVERRIDE}" ]; then
+  rollback_target="${ROLLBACK_TARGET_OVERRIDE}"
+fi
 release_already_published="false"
 if [ -n "${RELEASE_VERSION}" ]; then
   if echo "${versions_array}" | jq -e --arg version "${RELEASE_VERSION}" 'index($version) != null' >/dev/null; then
