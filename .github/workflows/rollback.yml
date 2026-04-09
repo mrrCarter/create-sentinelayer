@@ -117,7 +117,11 @@ jobs:
         env:
           NPM_TOKEN_EXCHANGE_URL: ${{ vars.NPM_TOKEN_EXCHANGE_URL || '' }}
           NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
+          NPM_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.NPM_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/npm' }}
           NPM_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.NPM_TOKEN_EXCHANGE_AUDIENCE || 'npmjs.org' }}
+          NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE: ${{ vars.NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE || 'npmjs.org' }}
+          NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER: ${{ vars.NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER || '' }}
+          NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '1800' }}
           NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
           NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
         run: |
@@ -135,8 +139,13 @@ jobs:
             exit 1
           fi
           exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
+          exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
           if [ -z "${exchange_host}" ]; then
             echo "::error::NPM_TOKEN_EXCHANGE_URL is not a valid absolute URL."
+            exit 1
+          fi
+          if [ -z "${exchange_path}" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL path could not be resolved."
             exit 1
           fi
           host_allowed="false"
@@ -150,6 +159,19 @@ jobs:
           done
           if [ "${host_allowed}" != "true" ]; then
             echo "::error::NPM_TOKEN_EXCHANGE_URL host '${exchange_host}' is not allowlisted. Allowed hosts: ${NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS}."
+            exit 1
+          fi
+          path_allowed="false"
+          IFS=',' read -r -a allowed_paths <<< "${NPM_TOKEN_EXCHANGE_ALLOWED_PATHS}"
+          for allowed_path in "${allowed_paths[@]}"; do
+            candidate_path="$(echo "${allowed_path}" | xargs)"
+            if [ -n "${candidate_path}" ] && [ "${candidate_path}" = "${exchange_path}" ]; then
+              path_allowed="true"
+              break
+            fi
+          done
+          if [ "${path_allowed}" != "true" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL path '${exchange_path}' is not allowlisted. Allowed paths: ${NPM_TOKEN_EXCHANGE_ALLOWED_PATHS}."
             exit 1
           fi
           oidc_payload=""
@@ -218,9 +240,43 @@ jobs:
             echo "::error::OIDC token exchange did not return an npm token."
             exit 1
           fi
+          exchange_issuer="$(echo "${exchange_response}" | jq -r '.issuer // .iss // empty')"
+          if [ -n "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ] && [ "${exchange_issuer}" != "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ]; then
+            echo "::error::OIDC token exchange issuer mismatch. expected=${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER} actual=${exchange_issuer:-<none>}."
+            exit 1
+          fi
+          audience_ok="$(echo "${exchange_response}" | jq -r --arg expected "${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}" '
+            (.audience // .aud // empty) as $aud
+            | if ($expected | length) == 0 then "true"
+              elif ($aud | type) == "string" then (if $aud == $expected then "true" else "false" end)
+              elif ($aud | type) == "array" then (if ($aud | index($expected)) != null then "true" else "false" end)
+              else "false"
+              end
+          ')"
+          if [ "${audience_ok}" != "true" ]; then
+            echo "::error::OIDC token exchange audience mismatch for expected audience ${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}."
+            exit 1
+          fi
           npm_token_expires_at="$(echo "${exchange_response}" | jq -r '.expires_at // .expiresAt // empty')"
           if [ -z "${npm_token_expires_at}" ]; then
-            npm_token_expires_at="unknown"
+            echo "::error::OIDC token exchange response missing token expiry (expires_at)."
+            exit 1
+          fi
+          case "${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS value: ${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" ; exit 1 ;; esac
+          expires_epoch="$(date -u -d "${npm_token_expires_at}" +%s 2>/dev/null || true)"
+          if [ -z "${expires_epoch}" ] || ! [[ "${expires_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to parse npm token expiry timestamp: ${npm_token_expires_at}."
+            exit 1
+          fi
+          now_epoch="$(date +%s)"
+          ttl_seconds="$((expires_epoch - now_epoch))"
+          if [ "${ttl_seconds}" -le 0 ]; then
+            echo "::error::OIDC token exchange returned expired npm token (ttl=${ttl_seconds}s)."
+            exit 1
+          fi
+          if [ "${ttl_seconds}" -gt "${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" ]; then
+            echo "::error::OIDC token exchange token ttl ${ttl_seconds}s exceeds policy max ${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}s."
+            exit 1
           fi
           echo "::add-mask::${npm_ephemeral_token}"
           echo "npm_token=${npm_ephemeral_token}" >> "$GITHUB_OUTPUT"

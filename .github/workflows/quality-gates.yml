@@ -313,13 +313,44 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          CODEQL_ANALYSIS_TIMEOUT_SECONDS: "600"
+          CODEQL_ANALYSIS_POLL_SECONDS: "15"
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            endpoint="repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&pr=${{ github.event.pull_request.number }}&tool_name=CodeQL&per_page=100"
-          else
-            endpoint="repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${TARGET_SHA}&tool_name=CodeQL&per_page=100"
+          case "${CODEQL_ANALYSIS_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ANALYSIS_TIMEOUT_SECONDS value: ${CODEQL_ANALYSIS_TIMEOUT_SECONDS}" ; exit 1 ;; esac
+          case "${CODEQL_ANALYSIS_POLL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ANALYSIS_POLL_SECONDS value: ${CODEQL_ANALYSIS_POLL_SECONDS}" ; exit 1 ;; esac
+          target_ref_sha="${TARGET_SHA}"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_SHA}" ]; then
+            target_ref_sha="${PR_HEAD_SHA}"
           fi
+          analysis_id=""
+          analysis_deadline="$(( $(date +%s) + CODEQL_ANALYSIS_TIMEOUT_SECONDS ))"
+          while [ "$(date +%s)" -lt "${analysis_deadline}" ]; do
+            analyses_json="$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/analyses?tool_name=CodeQL&ref=${target_ref_sha}&per_page=100" 2>/tmp/codeql-analyses.err || true)"
+            if [ -n "${analyses_json}" ]; then
+              analysis_id="$(echo "${analyses_json}" | jq -r --arg sha "${target_ref_sha}" '
+                [
+                  .[]?
+                  | select((.commit_sha // .commit_oid // "") == $sha)
+                  | .id
+                ]
+                | map(select(type == "number"))
+                | last // empty
+              ')"
+              case "${analysis_id}" in ''|*[!0-9]*) analysis_id="" ;; esac
+              if [ -n "${analysis_id}" ]; then
+                break
+              fi
+            fi
+            sleep "${CODEQL_ANALYSIS_POLL_SECONDS}"
+          done
+          if [ -z "${analysis_id}" ]; then
+            echo "::error::analysis_not_ready: no completed CodeQL analysis found for target SHA ${target_ref_sha} within ${CODEQL_ANALYSIS_TIMEOUT_SECONDS}s."
+            cat /tmp/codeql-analyses.err || true
+            exit 1
+          fi
+          endpoint="repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${target_ref_sha}&tool_name=CodeQL&per_page=100"
           alerts_json="$(gh api "${endpoint}" 2>/tmp/codeql-policy.err || true)"
           if [ -z "${alerts_json}" ]; then
             echo "::error::Unable to resolve CodeQL alerts via GitHub code-scanning API."
@@ -345,6 +376,8 @@ jobs:
             {
               echo "## Security CodeQL"
               echo "- mode: \`in-workflow-policy\`"
+              echo "- analysis_id: \`${analysis_id}\`"
+              echo "- analysis_target_sha: \`${target_ref_sha}\`"
               echo "- total_open_alerts: \`${total_alerts}\`"
               echo "- high_critical_open_alerts: \`${high_critical_alerts}\`"
             } >> "${GITHUB_STEP_SUMMARY}"

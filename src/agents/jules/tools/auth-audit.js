@@ -53,6 +53,7 @@ const AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS = 300;
 const AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS =
   (AUTH_AIDENID_PROVISION_TIMEOUT_MS * (AUTH_AIDENID_PROVISION_MAX_RETRIES + 1))
   + (AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS * AUTH_AIDENID_PROVISION_MAX_RETRIES * 2);
+const AUTH_AIDENID_PROVISION_MIN_ATTEMPT_TIMEOUT_MS = 1_500;
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
 const AUTH_AUDIT_ENVELOPE_ENV = "SENTINELAYER_AUTH_AUDIT_ENVELOPE";
 const AUTH_AUDIT_ENVELOPE_VERSION = "v2";
@@ -105,16 +106,20 @@ function normalizeErrorMessage(error, fallback) {
 }
 
 function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
+  const errorPayload = {
+    code,
+    message,
+    requestId,
+    retryable: options.retryable === true,
+  };
+  if (options.retryTelemetry && typeof options.retryTelemetry === "object") {
+    errorPayload.retryTelemetry = options.retryTelemetry;
+  }
   return {
     available: false,
     requestId,
     reason: message,
-    error: {
-      code,
-      message,
-      requestId,
-      retryable: options.retryable === true,
-    },
+    error: errorPayload,
   };
 }
 
@@ -272,14 +277,54 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
     : {};
   const requestId = String(options.requestId || createAuditRequestId());
   const totalBudgetMs = normalizeAidenidTotalBudgetMs(options.totalBudgetMs);
+  const minAttemptTimeoutMs = Number.isFinite(options.minAttemptTimeoutMs) && options.minAttemptTimeoutMs > 0
+    ? Math.trunc(options.minAttemptTimeoutMs)
+    : AUTH_AIDENID_PROVISION_MIN_ATTEMPT_TIMEOUT_MS;
+  const effectiveMinAttemptTimeoutMs = Math.max(1, Math.min(timeoutMs, minAttemptTimeoutMs));
+  const attemptMetrics = [];
   const retryWindowStartedAt = Date.now();
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const elapsedMs = Date.now() - retryWindowStartedAt;
     const remainingBudgetMs = totalBudgetMs - elapsedMs;
     if (remainingBudgetMs <= 0) {
-      throw new AuthAuditError(`AIdenID provisioning retry budget exhausted after ${attempt} attempt(s) (requestId=${requestId})`);
+      const exhausted = new AuthAuditError(
+        `AIdenID provisioning retry budget exhausted after ${attempt} attempt(s) (requestId=${requestId})`
+      );
+      exhausted.errorCode = "AIDENID_RETRY_BUDGET_EXHAUSTED";
+      exhausted.retryable = false;
+      exhausted.retryTelemetry = {
+        requestId,
+        attempts: attempt,
+        totalBudgetMs,
+        minAttemptTimeoutMs: effectiveMinAttemptTimeoutMs,
+        totalElapsedMs: elapsedMs,
+        attemptMetrics,
+      };
+      throw exhausted;
     }
-    const attemptTimeoutMs = Math.max(1, Math.min(timeoutMs, remainingBudgetMs));
+    if (remainingBudgetMs < effectiveMinAttemptTimeoutMs) {
+      const exhausted = new AuthAuditError(
+        `AIdenID provisioning remaining retry budget (${remainingBudgetMs}ms) fell below minimum attempt window (${effectiveMinAttemptTimeoutMs}ms) (requestId=${requestId})`
+      );
+      exhausted.errorCode = "AIDENID_RETRY_BUDGET_EXHAUSTED";
+      exhausted.retryable = false;
+      exhausted.retryTelemetry = {
+        requestId,
+        attempts: attempt,
+        totalBudgetMs,
+        minAttemptTimeoutMs: effectiveMinAttemptTimeoutMs,
+        totalElapsedMs: elapsedMs,
+        attemptMetrics,
+      };
+      throw exhausted;
+    }
+    const attemptTimeoutMs = Math.max(effectiveMinAttemptTimeoutMs, Math.min(timeoutMs, remainingBudgetMs));
+    const attemptStartedAt = Date.now();
+    const attemptMetric = {
+      attempt: attempt + 1,
+      timeoutMs: attemptTimeoutMs,
+      budgetBeforeAttemptMs: remainingBudgetMs,
+    };
     try {
       const attemptPromise = provisionEmailIdentity({
         ...requestOptions,
@@ -329,12 +374,50 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
           attemptPromise.finally(() => clearTimeout(timer));
         }),
       ]);
-      return result;
+      attemptMetric.durationMs = Date.now() - attemptStartedAt;
+      attemptMetric.outcome = "success";
+      attemptMetrics.push(attemptMetric);
+      const retryTelemetry = {
+        requestId,
+        attempts: attempt + 1,
+        totalBudgetMs,
+        minAttemptTimeoutMs: effectiveMinAttemptTimeoutMs,
+        totalElapsedMs: Date.now() - retryWindowStartedAt,
+        attemptMetrics,
+      };
+      if (result && typeof result === "object" && !Array.isArray(result)) {
+        return {
+          ...result,
+          retryTelemetry,
+        };
+      }
+      return {
+        value: result,
+        retryTelemetry,
+      };
     } catch (error) {
       const failure = classifyAidenidProvisionFailure(error);
+      attemptMetric.durationMs = Date.now() - attemptStartedAt;
+      attemptMetric.outcome = failure.retryable ? "retryable_error" : "terminal_error";
+      attemptMetric.errorCode = failure.errorCode || "AIDENID_PROVISION_FAILED";
+      attemptMetric.statusCode = failure.statusCode || 0;
+      attemptMetrics.push(attemptMetric);
       if (!failure.retryable || attempt >= maxRetries) {
         const reason = normalizeErrorMessage(error, "AIdenID provisioning failed");
-        throw new AuthAuditError(`AIdenID provisioning failed after ${attempt + 1} attempt(s) (requestId=${requestId}): ${reason}`);
+        const terminal = new AuthAuditError(
+          `AIdenID provisioning failed after ${attempt + 1} attempt(s) (requestId=${requestId}): ${reason}`
+        );
+        terminal.errorCode = failure.errorCode || "AIDENID_PROVISION_FAILED";
+        terminal.retryable = false;
+        terminal.retryTelemetry = {
+          requestId,
+          attempts: attempt + 1,
+          totalBudgetMs,
+          minAttemptTimeoutMs: effectiveMinAttemptTimeoutMs,
+          totalElapsedMs: Date.now() - retryWindowStartedAt,
+          attemptMetrics,
+        };
+        throw terminal;
       }
     }
     const backoffMs = computeAidenidProvisionBackoffMs(attempt, baseBackoffMs);
@@ -344,7 +427,18 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
     }
     await sleep(Math.min(backoffMs, remainingAfterAttemptMs));
   }
-  throw new AuthAuditError(`AIdenID provisioning failed after retry budget was exhausted (requestId=${requestId})`);
+  const exhausted = new AuthAuditError(`AIdenID provisioning failed after retry budget was exhausted (requestId=${requestId})`);
+  exhausted.errorCode = "AIDENID_RETRY_BUDGET_EXHAUSTED";
+  exhausted.retryable = false;
+  exhausted.retryTelemetry = {
+    requestId,
+    attempts: maxRetries + 1,
+    totalBudgetMs,
+    minAttemptTimeoutMs: effectiveMinAttemptTimeoutMs,
+    totalElapsedMs: Date.now() - retryWindowStartedAt,
+    attemptMetrics,
+  };
+  throw exhausted;
 }
 
 function normalizeHeaderValue(value) {
@@ -427,6 +521,7 @@ async function provisionTestIdentity(input) {
       maxRetries: AUTH_AIDENID_PROVISION_MAX_RETRIES,
       baseBackoffMs: AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS,
       totalBudgetMs: AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS,
+      minAttemptTimeoutMs: AUTH_AIDENID_PROVISION_MIN_ATTEMPT_TIMEOUT_MS,
       requestId,
       requestOptions: {
         apiUrl: creds.apiUrl,
@@ -436,11 +531,18 @@ async function provisionTestIdentity(input) {
         dryRun: !executeRequested,
       },
     });
-    return { available: true, requestId, dryRun: !executeRequested, identity: result.identity || result };
+    const identity = result && typeof result === "object"
+      ? (Object.prototype.hasOwnProperty.call(result, "identity") ? result.identity : (Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result))
+      : result;
+    const retryTelemetry = result && typeof result === "object" && result.retryTelemetry
+      ? result.retryTelemetry
+      : null;
+    return { available: true, requestId, dryRun: !executeRequested, identity, retryTelemetry };
   } catch (err) {
     const message = "AIdenID provisioning failed: " + normalizeErrorMessage(err, "unknown error");
     return buildUnavailableAuditResponse(requestId, "AIDENID_PROVISION_FAILED", message, {
       retryable: isRetryableAidenidProvisionError(err),
+      retryTelemetry: err && typeof err === "object" && err.retryTelemetry ? err.retryTelemetry : null,
     });
   }
 }

@@ -161,18 +161,78 @@ jobs:
           P2_COUNT: ${{ needs.omar_scan.outputs.p2_count || '0' }}
           P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
           SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          OMAR_POLICY_MIN_SEVERITY_GATE: ${{ vars.OMAR_POLICY_MIN_SEVERITY_GATE || 'P1' }}
+          OMAR_POLICY_P2_MAX_ALLOWED: ${{ vars.OMAR_POLICY_P2_MAX_ALLOWED || '5' }}
+          OMAR_ALLOW_RELAXATION_ON_DISPATCH: ${{ vars.OMAR_ALLOW_RELAXATION_ON_DISPATCH || 'false' }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          severity_rank() {
+            case "$1" in
+              P0) echo 0 ;;
+              P1) echo 1 ;;
+              P2) echo 2 ;;
+              *) echo -1 ;;
+            esac
+          }
+          rank_to_severity() {
+            case "$1" in
+              0) echo "P0" ;;
+              1) echo "P1" ;;
+              2) echo "P2" ;;
+              *) echo "" ;;
+            esac
+          }
           p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
           p1="$(echo "${P1_COUNT}" | tr -d '\r' | xargs || true)"
           p2="$(echo "${P2_COUNT}" | tr -d '\r' | xargs || true)"
           p2_max="$(echo "${P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
           severity_gate="$(echo "${SEVERITY_GATE_SELECTED}" | tr -d '\r' | xargs || true)"
+          policy_gate="$(echo "${OMAR_POLICY_MIN_SEVERITY_GATE}" | tr -d '\r' | xargs || true)"
+          policy_p2_max="$(echo "${OMAR_POLICY_P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
+          relaxation_allowed="$(echo "${OMAR_ALLOW_RELAXATION_ON_DISPATCH}" | tr -d '\r' | xargs || true)"
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           case "${p0}" in ''|*[!0-9]*) echo "::error::Invalid Omar P0 count: ${p0}" ; exit 1 ;; esac
           case "${p1}" in ''|*[!0-9]*) echo "::error::Invalid Omar P1 count: ${p1}" ; exit 1 ;; esac
           case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
           case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
-          case "${severity_gate}" in
+          case "${policy_p2_max}" in ''|*[!0-9]*) echo "::error::Invalid OMAR_POLICY_P2_MAX_ALLOWED value: ${policy_p2_max}" ; exit 1 ;; esac
+          selected_rank="$(severity_rank "${severity_gate}")"
+          policy_rank="$(severity_rank "${policy_gate}")"
+          if [ "${selected_rank}" -lt 0 ]; then
+            echo "::error::Invalid severity_gate value: ${severity_gate}"
+            exit 1
+          fi
+          if [ "${policy_rank}" -lt 0 ]; then
+            echo "::error::Invalid OMAR_POLICY_MIN_SEVERITY_GATE value: ${policy_gate}"
+            exit 1
+          fi
+          if [ "${selected_rank}" -lt "${policy_rank}" ] && [ "${ref_protected}" = "true" ] && [ "${relaxation_allowed}" != "true" ]; then
+            echo "::error::workflow_dispatch severity_gate ${severity_gate} is weaker than policy minimum ${policy_gate} on protected ref."
+            exit 1
+          fi
+          effective_rank="${selected_rank}"
+          if [ "${policy_rank}" -gt "${effective_rank}" ]; then
+            effective_rank="${policy_rank}"
+          fi
+          effective_gate="$(rank_to_severity "${effective_rank}")"
+          if [ -z "${effective_gate}" ]; then
+            echo "::error::Failed to resolve effective Omar severity gate."
+            exit 1
+          fi
+          effective_p2_max="${p2_max}"
+          if [ "${effective_gate}" = "P2" ]; then
+            if [ "${effective_p2_max}" -gt "${policy_p2_max}" ] && [ "${ref_protected}" = "true" ] && [ "${relaxation_allowed}" != "true" ]; then
+              echo "::error::p2_max_allowed ${effective_p2_max} exceeds policy maximum ${policy_p2_max} on protected ref."
+              exit 1
+            fi
+            if [ "${policy_p2_max}" -lt "${effective_p2_max}" ]; then
+              effective_p2_max="${policy_p2_max}"
+            fi
+          fi
+          echo "OMAR_EFFECTIVE_SEVERITY_GATE=${effective_gate}" >> "$GITHUB_ENV"
+          echo "OMAR_EFFECTIVE_P2_MAX_ALLOWED=${effective_p2_max}" >> "$GITHUB_ENV"
+          case "${effective_gate}" in
             P0)
               if [ "${p0}" -gt 0 ]; then
                 echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
@@ -190,22 +250,28 @@ jobs:
                 echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
                 exit 1
               fi
-              if [ "${p2}" -gt "${p2_max}" ]; then
-                echo "::error::Omar Gate blocked: P2=${p2} exceeds max allowed ${p2_max}."
+              if [ "${p2}" -gt "${effective_p2_max}" ]; then
+                echo "::error::Omar Gate blocked: P2=${p2} exceeds max allowed ${effective_p2_max}."
                 exit 1
               fi
               ;;
             *)
-              echo "::error::Invalid severity_gate value: ${severity_gate}"
+              echo "::error::Invalid effective severity_gate value: ${effective_gate}"
               exit 1
               ;;
           esac
+          if [ "${effective_gate}" != "${severity_gate}" ]; then
+            echo "::notice::Omar severity gate hardened by policy from ${severity_gate} to ${effective_gate}."
+          fi
       - name: Emit Omar run summary
         shell: bash
+        env:
+          EFFECTIVE_SEVERITY_GATE: ${{ env.OMAR_EFFECTIVE_SEVERITY_GATE || (github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1') }}
+          EFFECTIVE_P2_MAX_ALLOWED: ${{ env.OMAR_EFFECTIVE_P2_MAX_ALLOWED || (github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5') }}
         run: |
           set -euo pipefail
-          severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
-          p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
+          severity_gate="${EFFECTIVE_SEVERITY_GATE}"
+          p2_max="${EFFECTIVE_P2_MAX_ALLOWED}"
           threshold_line="P0=0, P1=0"
           if [ "${severity_gate}" = "P0" ]; then
             threshold_line="P0=0"

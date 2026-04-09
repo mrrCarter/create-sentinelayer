@@ -259,19 +259,19 @@ jobs:
                   html_url: (.html_url // "")
                 }
             ]
-            | sort_by(.created_at, .run_number, .run_attempt)
+            | sort_by(.run_number, .run_attempt, .updated_at, .created_at)
           ')"
           candidate_count="$(echo "${attestation_candidates}" | jq 'length')"
           if [ "${candidate_count}" -lt 1 ]; then
             echo "::error::No successful attestation workflow run found for commit ${GITHUB_SHA}."
             exit 1
           fi
+          candidate_ids="$(echo "${attestation_candidates}" | jq -r '[.[].id] | join(",")')"
           if [ "${candidate_count}" -gt 1 ]; then
-            echo "::error::Ambiguous attestation provenance: expected exactly one successful producer run for ${GITHUB_SHA}, found ${candidate_count}."
-            echo "${attestation_candidates}" | jq '.'
-            exit 1
+            echo "::notice::Multiple successful attestation producers found for ${GITHUB_SHA}; selecting deterministic winner by run_number/run_attempt/updated_at ordering."
+            echo "::notice::candidate_ids=${candidate_ids}"
           fi
-          attestation_run_id="$(echo "${attestation_candidates}" | jq -r '.[0].id // empty')"
+          attestation_run_id="$(echo "${attestation_candidates}" | jq -r 'last.id // empty')"
           if ! [[ "${attestation_run_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Unable to resolve canonical attestation workflow run id."
             exit 1
@@ -304,6 +304,8 @@ jobs:
           {
             echo "## Canonical Attestation Source"
             echo "- run_id: \`${attestation_run_id}\`"
+            echo "- candidate_count: \`${candidate_count}\`"
+            echo "- candidate_run_ids: \`${candidate_ids}\`"
             echo "- workflow: \`${run_name}\`"
             echo "- path: \`${run_path}\`"
             echo "- discovery: \`workflow-runs-api(head_sha=${GITHUB_SHA})\`"
