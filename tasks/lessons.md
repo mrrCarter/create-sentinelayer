@@ -140,3 +140,7 @@
 ## 2026-04-08
 
 - Hash-locked Python workflows can still break at runtime if lock resolution drifts across major behavior changes (`setuptools` 82 removed `pkg_resources`); pin known-compatible upper bounds in the `.in` source and regenerate hashes, then confirm by executing the tool binary (`semgrep --version`) in CI.
+
+## 2026-04-09
+
+- When Omar reports multiple workflow-level P2 findings, address them in one cohesive hardening batch (auth/tooling + CI provenance + rollback auth), then run targeted checks plus full `npm run verify` before pushing to avoid spending Omar iterations on local regressions.

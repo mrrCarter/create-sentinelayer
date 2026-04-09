@@ -209,28 +209,79 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          run_list_json="$(gh run list --workflow "Build Attestation" --commit "${GITHUB_SHA}" --limit 50 --json databaseId,conclusion,event,headSha,headBranch,createdAt)"
-          attestation_run_id="$(echo "${run_list_json}" | jq -r --arg sha "${GITHUB_SHA}" '
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100")"
+          attestation_candidates="$(echo "${check_runs_json}" | jq -c '
             [
-              .[]
+              (.check_runs // [])[]
               | select(
-                  .conclusion == "success"
-                  and (.event == "pull_request" or .event == "push" or .event == "workflow_dispatch")
-                  and .headSha == $sha
+                  .name == "Attestation Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
                 )
+              | {
+                  id: .id,
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url
+                }
             ]
-            | sort_by(.createdAt)
-            | last
-            | .databaseId // empty
+            | sort_by(.completed_at)
           ')"
-          if [ -z "${attestation_run_id}" ]; then
-            echo "::error::No successful Build Attestation run found for commit ${GITHUB_SHA}."
+          candidate_count="$(echo "${attestation_candidates}" | jq 'length')"
+          if [ "${candidate_count}" -lt 1 ]; then
+            echo "::error::No successful 'Attestation Summary' check-run found for commit ${GITHUB_SHA}."
+            exit 1
+          fi
+          if [ "${candidate_count}" -gt 1 ]; then
+            unique_run_count="$(echo "${attestation_candidates}" | jq '
+              [ .[] | .details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id ]
+              | unique
+              | length
+            ')"
+            if [ "${unique_run_count}" -gt 1 ]; then
+              echo "::error::Ambiguous attestation provenance: multiple successful Attestation Summary runs found for ${GITHUB_SHA}."
+              echo "${attestation_candidates}" | jq '.'
+              exit 1
+            fi
+          fi
+          attestation_run_id="$(echo "${attestation_candidates}" | jq -r 'last.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id')"
+          if ! [[ "${attestation_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve attestation workflow run id from Attestation Summary check-run."
+            exit 1
+          fi
+          run_meta_json="$(gh run view "${attestation_run_id}" --json databaseId,name,path,conclusion,event,headSha,url)"
+          run_name="$(echo "${run_meta_json}" | jq -r '.name // empty')"
+          run_path="$(echo "${run_meta_json}" | jq -r '.path // empty')"
+          run_conclusion="$(echo "${run_meta_json}" | jq -r '.conclusion // empty')"
+          run_head_sha="$(echo "${run_meta_json}" | jq -r '.headSha // empty')"
+          if [ "${run_conclusion}" != "success" ]; then
+            echo "::error::Resolved attestation run ${attestation_run_id} is not successful (conclusion=${run_conclusion})."
+            exit 1
+          fi
+          if [ "${run_name}" != "Build Attestation" ]; then
+            echo "::error::Resolved run ${attestation_run_id} has unexpected workflow name '${run_name}'."
+            exit 1
+          fi
+          if [ "${run_path}" != ".github/workflows/attestations.yml" ]; then
+            echo "::error::Resolved run ${attestation_run_id} has unexpected workflow path '${run_path}'."
+            exit 1
+          fi
+          if [ "${run_head_sha}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Resolved run ${attestation_run_id} head SHA mismatch. expected=${GITHUB_SHA} actual=${run_head_sha}."
             exit 1
           fi
           rm -rf attestation-source
           mkdir -p attestation-source
           gh run download "${attestation_run_id}" --name "attestation-build-artifacts" --dir attestation-source
           echo "run_id=${attestation_run_id}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Canonical Attestation Source"
+            echo "- run_id: \`${attestation_run_id}\`"
+            echo "- workflow: \`${run_name}\`"
+            echo "- path: \`${run_path}\`"
+            echo "- source_url: \`$(echo "${run_meta_json}" | jq -r '.url // empty')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate release artifact manifest
         id: artifact_manifest
@@ -245,6 +296,21 @@ jobs:
           SOURCE_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${SOURCE_MANIFEST}")"
           if [ -z "${SOURCE_COMMIT_SHA}" ] || [ "${SOURCE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
             echo "::error::Canonical artifact commit mismatch. expected=${GITHUB_SHA} source=${SOURCE_COMMIT_SHA:-<none>}."
+            exit 1
+          fi
+          SOURCE_WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_WORKFLOW_NAME="$(jq -r '.workflow_name // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_RUN_ID="$(jq -r '.run_id // empty' "${SOURCE_MANIFEST}")"
+          if [ -z "${SOURCE_WORKFLOW_REF}" ] || ! echo "${SOURCE_WORKFLOW_REF}" | grep -Eq "^${GITHUB_REPOSITORY}/\\.github/workflows/attestations\\.yml@"; then
+            echo "::error::Canonical artifact workflow_ref is missing or invalid: ${SOURCE_WORKFLOW_REF:-<none>}."
+            exit 1
+          fi
+          if [ "${SOURCE_WORKFLOW_NAME}" != "Build Attestation" ]; then
+            echo "::error::Canonical artifact workflow_name mismatch: ${SOURCE_WORKFLOW_NAME:-<none>}."
+            exit 1
+          fi
+          if [ -z "${SOURCE_RUN_ID}" ] || [ "${SOURCE_RUN_ID}" != "${{ steps.attested_source.outputs.run_id }}" ]; then
+            echo "::error::Canonical artifact run_id mismatch. expected=${{ steps.attested_source.outputs.run_id }} source=${SOURCE_RUN_ID:-<none>}."
             exit 1
           fi
           SOURCE_SHA256="$(jq -r '.sha256 // empty' "${SOURCE_MANIFEST}")"

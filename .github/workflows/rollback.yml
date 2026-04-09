@@ -115,47 +115,94 @@ jobs:
           NON_BLOCKING_DIAGNOSTICS: "0"
         run: bash .github/scripts/release-rollback-readiness.sh
 
-      - name: Validate rollback npm token governance
+      - name: Enforce trusted rollback auth context
         shell: bash
-        env:
-          NPM_DIST_TAG_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
-          NPM_DIST_TAG_TOKEN_ROTATED_AT: ${{ vars.NPM_DIST_TAG_TOKEN_ROTATED_AT || '' }}
-          NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS: ${{ vars.NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS || '90' }}
         run: |
           set -euo pipefail
-          if [ -z "${NPM_DIST_TAG_TOKEN}" ]; then
-            echo "::error::Missing NPM_DIST_TAG_TOKEN in package-release environment secrets."
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::OIDC token exchange requires id-token runtime permissions."
             exit 1
           fi
-          if [ -z "${NPM_DIST_TAG_TOKEN_ROTATED_AT}" ]; then
-            echo "::error::Missing NPM_DIST_TAG_TOKEN_ROTATED_AT repository variable (ISO-8601 date required)."
+
+      - name: Exchange OIDC token for ephemeral npm credential
+        id: npm_exchange
+        shell: bash
+        env:
+          NPM_TOKEN_EXCHANGE_URL: ${{ vars.NPM_TOKEN_EXCHANGE_URL || '' }}
+          NPM_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.NPM_TOKEN_EXCHANGE_AUDIENCE || 'npmjs.org' }}
+          NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
+          NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
+          NPM_TOKEN_EXCHANGE_CLIENT_SECRET: ${{ secrets.NPM_TOKEN_EXCHANGE_CLIENT_SECRET || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN_EXCHANGE_URL}" ]; then
+            echo "::error::Missing NPM_TOKEN_EXCHANGE_URL repository variable for OIDC npm token exchange."
             exit 1
           fi
-          if ! [[ "${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]] || [ "${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}" -lt 1 ]; then
-            echo "::error::Invalid NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS value: ${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}"
+          if ! [[ "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || [ "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" -lt 5 ]; then
+            echo "::error::Invalid NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS value: ${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}"
             exit 1
           fi
-          rotated_epoch="$(date -u -d "${NPM_DIST_TAG_TOKEN_ROTATED_AT}" +%s 2>/dev/null || true)"
-          if [ -z "${rotated_epoch}" ]; then
-            echo "::error::Invalid NPM_DIST_TAG_TOKEN_ROTATED_AT value: ${NPM_DIST_TAG_TOKEN_ROTATED_AT}"
+          oidc_payload="$(curl -fsSL \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${NPM_TOKEN_EXCHANGE_AUDIENCE}")"
+          oidc_jwt="$(echo "${oidc_payload}" | jq -r '.value // empty')"
+          if [ -z "${oidc_jwt}" ]; then
+            echo "::error::Failed to acquire GitHub OIDC identity token for rollback exchange."
             exit 1
           fi
-          now_epoch="$(date -u +%s)"
-          token_age_days="$(( (now_epoch - rotated_epoch) / 86400 ))"
-          if [ "${token_age_days}" -gt "${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}" ]; then
-            echo "::error::NPM_DIST_TAG_TOKEN exceeds max age policy (${token_age_days}d > ${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}d). Rotate token before rollback."
+          exchange_request="$(jq -n \
+            --arg token "${oidc_jwt}" \
+            --arg audience "${NPM_TOKEN_EXCHANGE_AUDIENCE}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg actor "${GITHUB_ACTOR}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg workflow "${GITHUB_WORKFLOW}" \
+            --arg client_id "${NPM_TOKEN_EXCHANGE_CLIENT_ID}" \
+            --arg client_secret "${NPM_TOKEN_EXCHANGE_CLIENT_SECRET}" \
+            '{
+              oidc_token: $token,
+              audience: $audience,
+              repository: $repository,
+              actor: $actor,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              ref: $ref,
+              sha: $sha,
+              workflow: $workflow,
+              client_id: (if ($client_id | length) > 0 then $client_id else null end),
+              client_secret: (if ($client_secret | length) > 0 then $client_secret else null end)
+            }')"
+          exchange_response="$(curl -fsSL \
+            --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+            -H "Content-Type: application/json" \
+            -d "${exchange_request}" \
+            "${NPM_TOKEN_EXCHANGE_URL}")"
+          npm_ephemeral_token="$(echo "${exchange_response}" | jq -r '.npm_token // .token // .access_token // empty')"
+          if [ -z "${npm_ephemeral_token}" ]; then
+            echo "::error::OIDC token exchange did not return an npm token."
+            echo "${exchange_response}" | jq -c '.'
             exit 1
           fi
-          echo "NPM_DIST_TAG_TOKEN_AGE_DAYS=${token_age_days}" >> "$GITHUB_ENV"
+          npm_token_expires_at="$(echo "${exchange_response}" | jq -r '.expires_at // .expiresAt // empty')"
+          if [ -z "${npm_token_expires_at}" ]; then
+            npm_token_expires_at="unknown"
+          fi
+          echo "::add-mask::${npm_ephemeral_token}"
+          echo "npm_token=${npm_ephemeral_token}" >> "$GITHUB_OUTPUT"
+          echo "npm_token_expires_at=${npm_token_expires_at}" >> "$GITHUB_OUTPUT"
 
       - name: Execute rollback dist-tag update
         shell: bash
         env:
-          NPM_DIST_TAG_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
+          NPM_EPHEMERAL_TOKEN: ${{ steps.npm_exchange.outputs.npm_token }}
         run: |
           set -euo pipefail
-          if [ -z "${NPM_DIST_TAG_TOKEN}" ]; then
-            echo "::error::Missing NPM_DIST_TAG_TOKEN in package-release environment secrets."
+          if [ -z "${NPM_EPHEMERAL_TOKEN}" ]; then
+            echo "::error::Missing exchanged ephemeral npm token."
             exit 1
           fi
           npm_userconfig="$(mktemp)"
@@ -164,7 +211,7 @@ jobs:
           }
           trap cleanup_npmrc EXIT
           chmod 600 "${npm_userconfig}"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_DIST_TAG_TOKEN}" > "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_EPHEMERAL_TOKEN}" > "${npm_userconfig}"
           export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
           npm dist-tag add "sentinelayer-cli@${ROLLBACK_TARGET_VERSION}" latest
 
@@ -200,22 +247,23 @@ jobs:
             echo "- package: \`sentinelayer-cli\`"
             echo "- rollback_target: \`${ROLLBACK_TARGET_VERSION}\`"
             echo "- latest_dist_tag: \`${latest_tag}\`"
-            echo "- token_age_days: \`${NPM_DIST_TAG_TOKEN_AGE_DAYS:-unknown}\`"
+            echo "- auth_mode: \`oidc-exchange\`"
+            echo "- token_expires_at: \`${{ steps.npm_exchange.outputs.npm_token_expires_at }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deprecate rolled-back release version
         if: ${{ inputs.deprecate_release && inputs.release_version != '' }}
         shell: bash
         env:
-          NPM_DIST_TAG_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
+          NPM_EPHEMERAL_TOKEN: ${{ steps.npm_exchange.outputs.npm_token }}
         run: |
           set -euo pipefail
           if [ -z "${ROLLBACK_RELEASE_VERSION}" ]; then
             echo "::error::Cannot deprecate release: release_version input is empty after normalization."
             exit 1
           fi
-          if [ -z "${NPM_DIST_TAG_TOKEN}" ]; then
-            echo "::error::Missing NPM_DIST_TAG_TOKEN in package-release environment secrets."
+          if [ -z "${NPM_EPHEMERAL_TOKEN}" ]; then
+            echo "::error::Missing exchanged ephemeral npm token."
             exit 1
           fi
           npm_userconfig="$(mktemp)"
@@ -224,7 +272,7 @@ jobs:
           }
           trap cleanup_npmrc EXIT
           chmod 600 "${npm_userconfig}"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_DIST_TAG_TOKEN}" > "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_EPHEMERAL_TOKEN}" > "${npm_userconfig}"
           export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
           npm deprecate \
             "sentinelayer-cli@${ROLLBACK_RELEASE_VERSION}" \

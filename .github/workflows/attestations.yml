@@ -43,10 +43,39 @@ jobs:
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
+      - name: Resolve canonical required-check target SHA
+        id: checks_target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          canonical_sha="${GITHUB_SHA}"
+          check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
+          case "${check_count}" in ''|*[!0-9]*) echo "::error::Invalid check-run count for canonical SHA ${canonical_sha}: ${check_count}" ; exit 1 ;; esac
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${check_count}" -eq 0 ] && [ -n "${PR_HEAD_SHA}" ] && [ "${PR_HEAD_SHA}" != "${canonical_sha}" ]; then
+            echo "::notice::No check-runs found on merge SHA ${canonical_sha}; falling back to PR head SHA ${PR_HEAD_SHA}."
+            canonical_sha="${PR_HEAD_SHA}"
+            check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
+            case "${check_count}" in ''|*[!0-9]*) echo "::error::Invalid check-run count for fallback SHA ${canonical_sha}: ${check_count}" ; exit 1 ;; esac
+          fi
+          if [ "${check_count}" -eq 0 ]; then
+            echo "::error::No check-runs are available for attestation gating on SHA ${canonical_sha}."
+            exit 1
+          fi
+          echo "target_sha=${canonical_sha}" >> "${GITHUB_OUTPUT}"
+          echo "check_count=${check_count}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Attestation Gate Target"
+            echo "- target_sha: \`${canonical_sha}\`"
+            echo "- discovered_check_runs: \`${check_count}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Ensure target commit passed required upstream gates
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         shell: bash
@@ -106,11 +135,17 @@ jobs:
             --arg sha256 "${sha256}" \
             --arg commit_sha "${GITHUB_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg workflow_name "${GITHUB_WORKFLOW}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
               commit_sha: $commit_sha,
-              workflow_ref: $workflow_ref
+              workflow_ref: $workflow_ref,
+              workflow_name: $workflow_name,
+              run_id: $run_id,
+              run_attempt: $run_attempt
             }' > attestation-manifest.json
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"

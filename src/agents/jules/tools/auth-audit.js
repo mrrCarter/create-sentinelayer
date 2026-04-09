@@ -11,11 +11,25 @@ import { assertPermittedAuditTarget } from "./url-policy.js";
  * Falls back gracefully when AIdenID or Playwright unavailable.
  */
 
-export function authAudit(input) {
-  if (!AUTH_OPS.has(input.operation)) {
-    throw new AuthAuditError("Unknown operation: " + input.operation + ". Valid: " + [...AUTH_OPS].join(", "));
+export async function authAudit(input = {}) {
+  const operation = String(input.operation || "").trim();
+  const requestId = createAuditRequestId();
+  if (!AUTH_OPS.has(operation)) {
+    const message = "Unknown operation: " + (operation || "<empty>") + ". Valid: " + [...AUTH_OPS].join(", ");
+    return finalizeAuditEnvelope(operation || "unknown", requestId, buildUnavailableAuditResponse(
+      requestId,
+      "AUTH_AUDIT_UNKNOWN_OPERATION",
+      message
+    ));
   }
-  return AUTH_DISPATCH[input.operation](input);
+  try {
+    const result = await AUTH_DISPATCH[operation]({ ...input, requestId, operation });
+    return finalizeAuditEnvelope(operation, requestId, result);
+  } catch (error) {
+    const code = error instanceof AuthAuditError ? "AUTH_AUDIT_VALIDATION_FAILED" : "AUTH_AUDIT_EXECUTION_FAILED";
+    const message = normalizeErrorMessage(error, "Auth audit failed");
+    return finalizeAuditEnvelope(operation, requestId, buildUnavailableAuditResponse(requestId, code, message));
+  }
 }
 
 const AUTH_OPS = new Set([
@@ -33,7 +47,12 @@ const AUTH_DISPATCH = {
 const AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS = 60_000;
 const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 2;
 const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
+const AUTH_AIDENID_PROVISION_TIMEOUT_MS = 12_000;
+const AUTH_AIDENID_PROVISION_MAX_RETRIES = 2;
+const AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS = 300;
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
+const AUTH_AUDIT_ENVELOPE_ENV = "SENTINELAYER_AUTH_AUDIT_ENVELOPE";
+const AUTH_AUDIT_ENVELOPE_VERSION = "v2";
 const RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES = new Set([
   "ETIMEDOUT",
   "ECONNRESET",
@@ -43,6 +62,25 @@ const RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES = new Set([
   "UND_ERR_CONNECT_TIMEOUT",
   "UND_ERR_HEADERS_TIMEOUT",
 ]);
+const RETRYABLE_AIDENID_PROVISION_ERROR_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ECONNABORTED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+const RETRYABLE_AIDENID_PROVISION_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_AIDENID_PROVISION_MESSAGE_PATTERNS = [
+  /\bfetch failed\b/i,
+  /\bnetwork(?:\s+|-)error\b/i,
+  /\btimed?\s*out\b/i,
+  /\b(?:econnreset|econnrefused|eai_again|enotfound|etimedout)\b/i,
+  /\bconnection\b.*\b(?:reset|closed|terminated)\b/i,
+];
 
 function createAuditRequestId() {
   try {
@@ -74,6 +112,155 @@ function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
       retryable: options.retryable === true,
     },
   };
+}
+
+function isAuditEnvelopeV2Enabled() {
+  const normalized = String(process.env[AUTH_AUDIT_ENVELOPE_ENV] || "").trim().toLowerCase();
+  return normalized === "" || normalized === "true" || normalized === "1" || normalized === AUTH_AUDIT_ENVELOPE_VERSION;
+}
+
+function buildAuditDataEnvelope(payload) {
+  const data = { ...(payload && typeof payload === "object" ? payload : {}) };
+  delete data.ok;
+  delete data.operation;
+  delete data.envelope;
+  delete data.data;
+  return data;
+}
+
+function finalizeAuditEnvelope(operation, requestId, payload) {
+  const normalizedPayload = payload && typeof payload === "object" ? { ...payload } : { result: payload };
+  const normalizedRequestId = String(normalizedPayload.requestId || requestId || createAuditRequestId());
+  normalizedPayload.requestId = normalizedRequestId;
+  if (!Object.prototype.hasOwnProperty.call(normalizedPayload, "available")) {
+    normalizedPayload.available = !normalizedPayload.error;
+  }
+  if (!isAuditEnvelopeV2Enabled()) {
+    return normalizedPayload;
+  }
+  normalizedPayload.ok = normalizedPayload.available === true;
+  normalizedPayload.operation = String(operation || normalizedPayload.operation || "unknown");
+  normalizedPayload.envelope = AUTH_AUDIT_ENVELOPE_VERSION;
+  if (normalizedPayload.ok) {
+    normalizedPayload.data = buildAuditDataEnvelope(normalizedPayload);
+  } else {
+    if (!normalizedPayload.error || typeof normalizedPayload.error !== "object") {
+      normalizedPayload.error = {
+        code: "AUTH_AUDIT_FAILED",
+        message: String(normalizedPayload.reason || "Auth audit failed"),
+        requestId: normalizedRequestId,
+        retryable: false,
+      };
+    } else if (!normalizedPayload.error.requestId) {
+      normalizedPayload.error = {
+        ...normalizedPayload.error,
+        requestId: normalizedRequestId,
+      };
+    }
+    normalizedPayload.reason = String(
+      normalizedPayload.reason
+      || normalizedPayload.error.message
+      || "Auth audit failed"
+    );
+    normalizedPayload.data = null;
+  }
+  return normalizedPayload;
+}
+
+function resolveAidenidProvisionStatusCode(error) {
+  if (!(error instanceof Error)) {
+    return 0;
+  }
+  const statusMatch = String(error.message || "").match(/\bstatus\s+(\d{3})\b/i);
+  if (!statusMatch) {
+    return 0;
+  }
+  const parsed = Number.parseInt(statusMatch[1], 10);
+  return Number.isInteger(parsed) ? parsed : 0;
+}
+
+function resolveAidenidProvisionErrorCode(error) {
+  if (!(error instanceof Error)) {
+    return "";
+  }
+  const directCode = String(error.code || "").toUpperCase();
+  if (directCode) {
+    return directCode;
+  }
+  const cause = error.cause;
+  if (!cause || typeof cause !== "object") {
+    return "";
+  }
+  return String(cause.code || cause.errno || "").toUpperCase();
+}
+
+function isRetryableAidenidProvisionError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return true;
+  }
+  const code = resolveAidenidProvisionErrorCode(error);
+  if (RETRYABLE_AIDENID_PROVISION_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const statusCode = resolveAidenidProvisionStatusCode(error);
+  if (RETRYABLE_AIDENID_PROVISION_STATUS_CODES.has(statusCode)) {
+    return true;
+  }
+  const normalized = `${error.name} ${error.message || ""}`.toLowerCase();
+  return RETRYABLE_AIDENID_PROVISION_MESSAGE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function computeAidenidProvisionBackoffMs(attempt, baseBackoffMs = AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS) {
+  const cappedBase = Math.max(1, Number.isFinite(baseBackoffMs) ? Math.trunc(baseBackoffMs) : AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS);
+  const exponential = Math.min(2500, cappedBase * Math.pow(2, Math.max(0, attempt)));
+  const deterministicJitter = ((Math.max(0, attempt) * 1664525 + 1013904223) % 1000) / 1000;
+  const jitterFactor = 0.5 + (deterministicJitter * 0.5);
+  return Math.max(1, Math.trunc(exponential * jitterFactor));
+}
+
+async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.trunc(options.timeoutMs)
+    : AUTH_AIDENID_PROVISION_TIMEOUT_MS;
+  const maxRetries = Number.isInteger(options.maxRetries) && options.maxRetries >= 0
+    ? options.maxRetries
+    : AUTH_AIDENID_PROVISION_MAX_RETRIES;
+  const baseBackoffMs = Number.isFinite(options.baseBackoffMs) && options.baseBackoffMs > 0
+    ? Math.trunc(options.baseBackoffMs)
+    : AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS;
+  const requestOptions = options.requestOptions && typeof options.requestOptions === "object"
+    ? { ...options.requestOptions }
+    : {};
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await provisionEmailIdentity({
+        ...requestOptions,
+        fetchImpl: async (resource, init = {}) => {
+          const controller = new AbortController();
+          const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+          const nextInit = {
+            ...init,
+            signal: controller.signal,
+          };
+          try {
+            return await fetch(resource, nextInit);
+          } finally {
+            clearTimeout(timeoutHandle);
+          }
+        },
+      });
+    } catch (error) {
+      if (!isRetryableAidenidProvisionError(error) || attempt >= maxRetries) {
+        const reason = normalizeErrorMessage(error, "AIdenID provisioning failed");
+        throw new AuthAuditError(`AIdenID provisioning failed after ${attempt + 1} attempt(s): ${reason}`);
+      }
+    }
+    await sleep(computeAidenidProvisionBackoffMs(attempt, baseBackoffMs));
+  }
+  throw new AuthAuditError("AIdenID provisioning failed after retry budget was exhausted");
 }
 
 function normalizeHeaderValue(value) {
@@ -130,7 +317,7 @@ function evaluateAuthenticatedHeaderFindings(targetUrl, headers = {}, authSignal
 }
 
 async function provisionTestIdentity(input) {
-  const requestId = createAuditRequestId();
+  const requestId = String(input.requestId || createAuditRequestId());
   try {
     const executeRequested = input.execute === true;
     const allowLiveProvision = input.allowProvisioning === true || process.env.SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION === "1";
@@ -151,15 +338,24 @@ async function provisionTestIdentity(input) {
         "AIdenID API key not configured (set AIDENID_API_KEY)"
       );
     }
-    const result = await provisionEmailIdentity({
-      apiUrl: creds.apiUrl, apiKey: creds.apiKey,
-      tags: ["jules-audit", "frontend-test"],
-      ttlSeconds: 3600, dryRun: !executeRequested,
+    const result = await provisionEmailIdentityWithRetry(provisionEmailIdentity, {
+      timeoutMs: AUTH_AIDENID_PROVISION_TIMEOUT_MS,
+      maxRetries: AUTH_AIDENID_PROVISION_MAX_RETRIES,
+      baseBackoffMs: AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS,
+      requestOptions: {
+        apiUrl: creds.apiUrl,
+        apiKey: creds.apiKey,
+        tags: ["jules-audit", "frontend-test"],
+        ttlSeconds: 3600,
+        dryRun: !executeRequested,
+      },
     });
     return { available: true, requestId, dryRun: !executeRequested, identity: result.identity || result };
   } catch (err) {
     const message = "AIdenID provisioning failed: " + normalizeErrorMessage(err, "unknown error");
-    return buildUnavailableAuditResponse(requestId, "AIDENID_PROVISION_FAILED", message);
+    return buildUnavailableAuditResponse(requestId, "AIDENID_PROVISION_FAILED", message, {
+      retryable: isRetryableAidenidProvisionError(err),
+    });
   }
 }
 
@@ -172,7 +368,7 @@ async function provisionTestIdentity(input) {
  * - Temp script/context cleanup in finally block (not just success path)
  */
 async function authenticatedPageCheck(input) {
-  const requestId = createAuditRequestId();
+  const requestId = String(input.requestId || createAuditRequestId());
   const url = input.url;
   if (!url) throw new AuthAuditError("authenticated_page_check requires url");
   const targetUrl = resolveAuthAuditTarget(url, input, "authenticated_page_check.target");
@@ -701,7 +897,7 @@ async function fetchLoginResponseWithRetry(currentUrl) {
 }
 
 async function checkAuthFlowSecurity(input) {
-  const requestId = createAuditRequestId();
+  const requestId = String(input.requestId || createAuditRequestId());
   const loginUrlCandidate = input.loginUrl || input.url;
   if (!loginUrlCandidate) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
   const allowPrivateTargets = input.allowPrivateTargets === true;

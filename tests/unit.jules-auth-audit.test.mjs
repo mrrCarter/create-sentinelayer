@@ -28,8 +28,13 @@ describe("authAudit", () => {
     approvedHosts: ["example.com"],
   };
 
-  it("rejects unknown operation", () => {
-    assert.throws(() => authAudit({ operation: "nonexistent" }), AuthAuditError);
+  it("rejects unknown operation with structured envelope", async () => {
+    const result = await authAudit({ operation: "nonexistent" });
+    assert.equal(result.available, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.operation, "nonexistent");
+    assert.equal(result.envelope, "v2");
+    assert.equal(result.error.code, "AUTH_AUDIT_UNKNOWN_OPERATION");
   });
 
   it("provision_test_identity returns unavailable without API key", async () => {
@@ -49,33 +54,36 @@ describe("authAudit", () => {
   it("provision_test_identity unavailable responses include structured error metadata", async () => {
     const result = await authAudit({ operation: "provision_test_identity", execute: true });
     assert.equal(result.available, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.envelope, "v2");
     assert.equal(typeof result.requestId, "string");
     assert.ok(result.error && typeof result.error === "object");
     assert.equal(result.error.requestId, result.requestId);
     assert.equal(typeof result.error.code, "string");
     assert.equal(typeof result.error.message, "string");
     assert.equal(typeof result.error.retryable, "boolean");
+    assert.equal(result.data, null);
   });
 
   it("authenticated_page_check requires url", async () => {
-    await assert.rejects(
-      () => authAudit({ operation: "authenticated_page_check" }),
-      AuthAuditError,
-    );
+    const result = await authAudit({ operation: "authenticated_page_check" });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /requires url/);
   });
 
   it("authenticated_page_check rejects invalid url", async () => {
-    await assert.rejects(
-      () => authAudit({ operation: "authenticated_page_check", url: "not-a-url" }),
-      AuthAuditError,
-    );
+    const result = await authAudit({ operation: "authenticated_page_check", url: "not-a-url" });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /Invalid URL|must be a valid URL/i);
   });
 
   it("authenticated_page_check blocks private localhost targets by default", async () => {
-    await assert.rejects(
-      () => authAudit({ operation: "authenticated_page_check", url: "http://localhost:3000/app" }),
-      AuthAuditError,
-    );
+    const result = await authAudit({ operation: "authenticated_page_check", url: "http://localhost:3000/app" });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /private|localhost/i);
   });
 
   it("check_auth_flow_security works for reachable url", async () => {
@@ -88,33 +96,59 @@ describe("authAudit", () => {
     assert.equal(typeof result.requestId, "string");
     if (result.available) {
       assert.ok(Array.isArray(result.findings));
+      assert.equal(result.ok, true);
+      assert.equal(result.envelope, "v2");
+      assert.ok(result.data && typeof result.data === "object");
     } else {
       assert.ok(result.error && typeof result.error === "object");
       assert.equal(result.error.requestId, result.requestId);
     }
   });
 
-  it("check_auth_flow_security requires approved target context for live mode", async () => {
-    await assert.rejects(
-      () => authAudit({
+  it("authAudit success envelope includes stable metadata fields", async () => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () => createResponse(200, {
+      "strict-transport-security": "max-age=31536000",
+      "content-security-policy": "default-src 'self'",
+    });
+    try {
+      const result = await authAudit({
         operation: "check_auth_flow_security",
         url: "https://example.com/login",
-      }),
-      /allowProvisioning=true and approvedTargetId/,
-    );
+        ...LIVE_AUTH_APPROVAL,
+      });
+      assert.equal(result.available, true);
+      assert.equal(result.ok, true);
+      assert.equal(result.envelope, "v2");
+      assert.equal(result.operation, "check_auth_flow_security");
+      assert.ok(result.data && typeof result.data === "object");
+      assert.equal(result.data.requestId, result.requestId);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("check_auth_flow_security requires approved target context for live mode", async () => {
+    const result = await authAudit({
+      operation: "check_auth_flow_security",
+      url: "https://example.com/login",
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /allowProvisioning=true and approvedTargetId/);
   });
 
   it("check_auth_flow_security blocks unapproved hosts even with approval id", async () => {
-    await assert.rejects(
-      () => authAudit({
-        operation: "check_auth_flow_security",
-        url: "https://api.unknown-host.example/login",
-        allowProvisioning: true,
-        approvedTargetId: "sl-approved-example",
-        approvedHosts: ["example.com"],
-      }),
-      /Blocked unapproved auth audit host/,
-    );
+    const result = await authAudit({
+      operation: "check_auth_flow_security",
+      url: "https://api.unknown-host.example/login",
+      allowProvisioning: true,
+      approvedTargetId: "sl-approved-example",
+      approvedHosts: ["example.com"],
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /Blocked unapproved auth audit host/);
   });
 
   it("check_auth_flow_security retries transient retryable statuses and succeeds", async () => {
@@ -283,10 +317,10 @@ describe("authAudit", () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "production";
     try {
-      await assert.rejects(
-        () => authAudit({ operation: "check_auth_flow_security", url: "http://localhost:3000/login" }),
-        AuthAuditError,
-      );
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "http://localhost:3000/login" });
+      assert.equal(result.available, false);
+      assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+      assert.match(result.reason, /private|localhost/i);
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
     }
@@ -453,6 +487,15 @@ describe("authAudit", () => {
     assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
     assert.ok(source.includes("fetchWithTimeout(currentUrl, {"));
     assert.ok(source.includes("AUTH_FLOW_FETCH_TIMEOUT_MS"));
+  });
+
+  it("AIdenID provisioning path includes bounded retry and timeout controls", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("AUTH_AIDENID_PROVISION_TIMEOUT_MS"));
+    assert.ok(source.includes("AUTH_AIDENID_PROVISION_MAX_RETRIES"));
+    assert.ok(source.includes("provisionEmailIdentityWithRetry"));
+    assert.ok(source.includes("new AbortController()"));
+    assert.ok(source.includes("AIdenID provisioning failed after"));
   });
 
   it("AuthAudit registered in dispatch as read-only", async () => {

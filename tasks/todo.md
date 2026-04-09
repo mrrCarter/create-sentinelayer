@@ -1337,3 +1337,14 @@ Review:
 - [x] Add/adjust unit coverage for auth-audit approval guard behavior and stronger fail-closed semantics.
 - [x] Run local full verification (`npm run verify`) on branch `hardening/nonblocking-p2-batch2`.
 - [ ] Push updates, run Omar Gate loop (`gh run watch`), and merge PR `#274` once required checks are green.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A36)
+
+- [x] Reproduce current Omar P2 set on PR `#274` (`P2=6`) and map each finding to concrete file-level fixes.
+- [x] Complete `auth-audit` reliability hardening (bounded AIdenID retry/timeout wrapper + stable envelope contract for success/error/validation paths).
+- [x] Add branch-protection preflight job split in `release-please` before privileged write actions.
+- [x] Strengthen attestation gating SHA resolution + check-run availability precheck in `attestations.yml`.
+- [x] Bind release provenance to check-run-derived attestation workflow run identity in `release.yml`.
+- [x] Remove static npm rollback token flow and require OIDC token exchange for ephemeral npm credentials in `rollback.yml`.
+- [x] Run local validation (`node --check`, workflow YAML parse, targeted auth-audit tests, `npm run verify`).
+- [ ] Push branch updates, watch Omar Gate to completion, and iterate until P0-P2 are cleared or materially reduced with evidence.
