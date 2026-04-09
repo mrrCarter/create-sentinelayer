@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   manual-validate:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     environment: package-release
@@ -511,7 +511,17 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare npm trusted publishing context
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config set registry "https://registry.npmjs.org/"
+          npm config delete //registry.npmjs.org/:_authToken || true
+          echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
+
       - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           set -euo pipefail
           test -f "${TARBALL}"
