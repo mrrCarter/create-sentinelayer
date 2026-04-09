@@ -37,7 +37,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --no-install license-checker-rseidelsohn --version
+          set +e
+          version_output="$(npx --no-install license-checker-rseidelsohn --version 2>&1)"
+          version_exit="$?"
+          set -e
+          if [ "${version_exit}" -ne 0 ]; then
+            echo "::notice::license-checker version probe exited ${version_exit}; continuing with inventory collection."
+          fi
+          echo "${version_output}"
           set +e
           npx --no-install license-checker-rseidelsohn --production --json > license-report.json
           tool_exit="$?"
