@@ -29,9 +29,11 @@ const NO_AUTH_REQUIRED = new Set([
 ]);
 
 function hasTrustedBypassContext() {
+  const nonce = String(process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE || "").trim();
   return (
-    process.env.NODE_ENV === "test" ||
-    process.env.SENTINELAYER_CLI_TEST_MODE === "1"
+    process.env.NODE_ENV === "test" &&
+    process.env.SENTINELAYER_CLI_TEST_MODE === "1" &&
+    nonce.length >= 12
   );
 }
 

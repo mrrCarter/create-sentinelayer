@@ -32,6 +32,15 @@ const AUTH_DISPATCH = {
 const AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS = 60_000;
 const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 2;
 const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
+const RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "EPIPE",
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+]);
 
 async function provisionTestIdentity(input) {
   try {
@@ -283,15 +292,18 @@ function isRetryablePlaywrightExecutionError(error) {
   if (!(error instanceof Error)) {
     return false;
   }
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return true;
+  }
   const code = String(error.code || "").toUpperCase();
-  if (code === "ETIMEDOUT" || code === "ECONNRESET" || code === "EPIPE" || code === "EAI_AGAIN") {
+  if (RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES.has(code)) {
     return true;
   }
-  if (error.killed === true || error.signal === "SIGTERM") {
+  if (error.killed === true && (error.signal === "SIGTERM" || error.signal === "SIGKILL")) {
     return true;
   }
-  const message = (error.name + " " + (error.message || "")).toLowerCase();
-  return message.includes("timeout") || message.includes("timed out") || message.includes("socket hang up");
+  const causeCode = String(error.cause?.code || error.cause?.errno || "").toUpperCase();
+  return RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES.has(causeCode);
 }
 
 function normalizeAuthAuditErrorMessage(error, fallbackMessage) {
