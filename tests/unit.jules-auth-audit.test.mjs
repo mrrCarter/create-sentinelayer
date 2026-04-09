@@ -275,6 +275,15 @@ describe("authAudit", () => {
     assert.ok(source.includes("type: 'playwright'"));
   });
 
+  it("auth success heuristic requires stronger post-login signals", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("authSignals"));
+    assert.ok(source.includes("didLeaveLoginSurface"));
+    assert.ok(source.includes("loginFormVisible"));
+    assert.ok(source.includes("authCookiePresent"));
+    assert.ok(source.includes("results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);"));
+  });
+
   it("auth flow header fetch uses explicit timeout wrapper", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
