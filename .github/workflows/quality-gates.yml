@@ -108,11 +108,52 @@ jobs:
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
           append_output "eval_resolution=resolved"
 
+  eval-enforce:
+    name: Eval Impact Enforcement
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-impact]
+    if: always()
+    outputs:
+      eval_resolution: ${{ needs.eval-impact.outputs.eval_resolution }}
+      eval_required: ${{ needs.eval-impact.outputs.eval_required }}
+      eval_evidence_found: ${{ needs.eval-impact.outputs.eval_evidence_found }}
+    steps:
+      - name: Enforce eval-impact policy for protected events
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVAL_JOB_RESULT: ${{ needs.eval-impact.result }}
+          EVAL_RESOLUTION: ${{ needs.eval-impact.outputs.eval_resolution }}
+          EVAL_REQUIRED: ${{ needs.eval-impact.outputs.eval_required }}
+          EVAL_EVIDENCE_FOUND: ${{ needs.eval-impact.outputs.eval_evidence_found }}
+        run: |
+          set -euo pipefail
+          if [ "${EVAL_JOB_RESULT}" != "success" ]; then
+            echo "::error::eval-impact job did not succeed (result=${EVAL_JOB_RESULT})."
+            exit 1
+          fi
+          case "${EVAL_RESOLUTION}" in
+            resolved|approved_skip) ;;
+            *)
+              echo "::error::Unsupported eval_resolution '${EVAL_RESOLUTION}'."
+              exit 1
+              ;;
+          esac
+          if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "::error::approved_skip is only allowed for workflow_dispatch events."
+            exit 1
+          fi
+          if [ "${EVAL_REQUIRED}" = "true" ] && [ "${EVAL_EVIDENCE_FOUND}" != "true" ]; then
+            echo "::error::Eval evidence required but not found."
+            exit 1
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-impact]
+    needs: [eval-enforce]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -133,7 +174,7 @@ jobs:
     name: Syntax & Sanity (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-impact]
+    needs: [eval-enforce]
     strategy:
       fail-fast: false
       matrix:
@@ -164,7 +205,7 @@ jobs:
     name: Unit Coverage (>=80%, Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-impact, lint, syntax-matrix]
+    needs: [eval-enforce, lint, syntax-matrix]
     strategy:
       fail-fast: false
       matrix:
@@ -447,12 +488,12 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-impact, lint, syntax-matrix, unit-coverage, security-stage, e2e-packaging, build-package]
+    needs: [eval-enforce, lint, syntax-matrix, unit-coverage, security-stage, e2e-packaging, build-package]
     if: >-
       ${{
         always() &&
-        needs.eval-impact.result == 'success' &&
-        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-impact.outputs.eval_resolution) &&
+        needs.eval-enforce.result == 'success' &&
+        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-enforce.outputs.eval_resolution) &&
         needs.lint.result == 'success' &&
         needs.syntax-matrix.result == 'success' &&
         needs.unit-coverage.result == 'success' &&

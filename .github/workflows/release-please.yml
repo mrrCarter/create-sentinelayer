@@ -6,10 +6,10 @@ on:
 
 concurrency:
   group: release-please-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
-  actions: write
+  actions: read
   checks: read
   contents: read
   pull-requests: read
@@ -22,12 +22,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
+      actions: read
       checks: read
       contents: read
       pull-requests: read
     concurrency:
-      group: release-please-main
-      cancel-in-progress: true
+      group: release-please-preflight-main
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -136,13 +137,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     permissions:
-      actions: write
+      actions: read
       checks: read
       contents: write
       pull-requests: write
     concurrency:
-      group: release-please-main
-      cancel-in-progress: true
+      group: release-please-mutate-main
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
