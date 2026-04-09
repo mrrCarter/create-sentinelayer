@@ -950,6 +950,14 @@ async function runLocalOmarGateCommand(args) {
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
+  const aiEnabled = !hasCommandOption(args, "--no-ai");
+  const aiDryRun = hasCommandOption(args, "--ai-dry-run");
+  const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
+  const modelOverride = getCommandOptionValue(args, "--model") || "";
+  const providerOverride = getCommandOptionValue(args, "--provider") || "";
+  const scanMode = getCommandOptionValue(args, "--scan-mode") || "";
+  const maxParallel = parseInt(getCommandOptionValue(args, "--max-parallel") || "4", 10) || 4;
+  const streamEnabled = hasCommandOption(args, "--stream");
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -960,19 +968,109 @@ async function runLocalOmarGateCommand(args) {
     printInfo(`Target: ${targetPath}`);
   }
 
-  const scan = await runCredentialScan(targetPath);
+  // Phase 1: Full 22-rule deterministic pipeline (replaces legacy 5-rule credential scan)
+  const { runDeterministicReviewPipeline } = await import("./review/local-review.js");
+  const deterministic = await runDeterministicReviewPipeline({
+    targetPath,
+    mode: "full",
+    outputDir: outputDirArg,
+  });
+
+  const detFindings = deterministic.findings || [];
+  const detSummary = deterministic.summary || { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false };
+  const scannedFiles = deterministic.metadata?.ingest?.filesScanned || deterministic.metadata?.scannedFiles || detFindings.length;
+
+  // Phase 2: AI review layer (optional, default enabled)
+  let aiResult = null;
+  let orchestratorResult = null;
+  if (aiEnabled && scanMode) {
+    // Multi-persona orchestrator mode
+    try {
+      const { runOmarGateOrchestrator } = await import("./review/omargate-orchestrator.js");
+      const streamHandler = streamEnabled
+        ? (evt) => console.log(JSON.stringify(evt))
+        : null;
+
+      orchestratorResult = await runOmarGateOrchestrator({
+        targetPath,
+        scanMode,
+        maxParallel,
+        provider: providerOverride || undefined,
+        model: modelOverride || undefined,
+        maxCostUsd,
+        dryRun: aiDryRun,
+        outputDir: outputDirArg,
+        deterministic: {
+          summary: detSummary,
+          findings: detFindings,
+          metadata: deterministic.metadata || {},
+        },
+        onEvent: streamHandler,
+      });
+
+      // Use orchestrator results as the AI layer
+      aiResult = {
+        findings: orchestratorResult.findings || [],
+        summary: orchestratorResult.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
+        costUsd: orchestratorResult.totalCostUsd || 0,
+        model: modelOverride || "multi-persona",
+        provider: providerOverride || "sentinelayer",
+        dryRun: aiDryRun,
+      };
+    } catch (aiError) {
+      if (!asJson) {
+        console.log(pc.yellow(`Orchestrator skipped: ${aiError.message}`));
+      }
+    }
+  } else if (aiEnabled) {
+    // Single AI review layer (legacy, no --scan-mode)
+    try {
+      const { runAiReviewLayer } = await import("./review/ai-review.js");
+      aiResult = await runAiReviewLayer({
+        targetPath,
+        mode: "full",
+        runId: deterministic.metadata?.runId || `omargate-${nowIso()}`,
+        runDirectory: deterministic.artifacts?.runDirectory || targetPath,
+        deterministic: {
+          summary: detSummary,
+          findings: detFindings,
+          metadata: deterministic.metadata || {},
+        },
+        outputDir: outputDirArg,
+        provider: providerOverride || undefined,
+        model: modelOverride || undefined,
+        maxCostUsd,
+        dryRun: aiDryRun,
+        env: process.env,
+      });
+    } catch (aiError) {
+      if (!asJson) {
+        console.log(pc.yellow(`AI review layer skipped: ${aiError.message}`));
+      }
+    }
+  }
+
+  // Merge findings
+  const aiFindings = aiResult?.findings || [];
+  const allFindings = [...detFindings, ...aiFindings];
+  const combinedP0 = detSummary.P0 + (aiResult?.summary?.P0 || 0);
+  const combinedP1 = detSummary.P1 + (aiResult?.summary?.P1 || 0);
+  const combinedP2 = detSummary.P2 + (aiResult?.summary?.P2 || 0);
+  const combinedP3 = (detSummary.P3 || 0) + (aiResult?.summary?.P3 || 0);
+
   const report = `# Local Omar Gate Deep Scan
 
 Generated: ${nowIso()}
 Target: ${targetPath}
 
 Summary:
-- Files scanned: ${scan.scannedFiles}
-- P1 findings: ${scan.p1}
-- P2 findings: ${scan.p2}
+- Files scanned: ${scannedFiles}
+- Deterministic findings: P0=${detSummary.P0} P1=${detSummary.P1} P2=${detSummary.P2} P3=${detSummary.P3 || 0}
+- AI findings: ${aiResult ? `P0=${aiResult.summary?.P0 || 0} P1=${aiResult.summary?.P1 || 0} P2=${aiResult.summary?.P2 || 0} P3=${aiResult.summary?.P3 || 0}` : "skipped"}
+- Combined: P0=${combinedP0} P1=${combinedP1} P2=${combinedP2} P3=${combinedP3}
 
 Findings:
-${formatFindingsMarkdown(scan.findings)}
+${formatFindingsMarkdown(allFindings)}
 `;
 
   const reportPath = await writeLocalCommandReport(targetPath, "omargate-deep", report, {
@@ -985,10 +1083,26 @@ ${formatFindingsMarkdown(scan.findings)}
           command: "/omargate deep",
           targetPath,
           reportPath,
-          scannedFiles: scan.scannedFiles,
-          p1: scan.p1,
-          p2: scan.p2,
-          blocking: scan.p1 > 0,
+          scannedFiles,
+          p0: combinedP0,
+          p1: combinedP1,
+          p2: combinedP2,
+          p3: combinedP3,
+          blocking: combinedP0 > 0 || combinedP1 > 0,
+          deterministic: {
+            findings: detFindings.length,
+            summary: detSummary,
+          },
+          ai: aiResult
+            ? {
+                findings: aiFindings.length,
+                summary: aiResult.summary || {},
+                model: aiResult.model || null,
+                provider: aiResult.provider || null,
+                costUsd: aiResult.costUsd || 0,
+                dryRun: aiDryRun,
+              }
+            : null,
         },
         null,
         2
@@ -996,13 +1110,18 @@ ${formatFindingsMarkdown(scan.findings)}
     );
   } else {
     console.log(pc.cyan(`Report: ${reportPath}`));
-    console.log(`P1 findings: ${scan.p1}`);
-    console.log(`P2 findings: ${scan.p2}`);
+    console.log(`Deterministic: P1=${detSummary.P1} P2=${detSummary.P2}`);
+    if (aiResult) {
+      console.log(`AI layer: P1=${aiResult.summary?.P1 || 0} P2=${aiResult.summary?.P2 || 0} (model: ${aiResult.model || "default"}, cost: $${(aiResult.costUsd || 0).toFixed(4)})`);
+    } else if (aiEnabled) {
+      console.log(pc.gray("AI layer: skipped (no credentials or --no-ai)"));
+    }
+    console.log(pc.bold(`Combined: P0=${combinedP0} P1=${combinedP1} P2=${combinedP2}`));
   }
 
-  if (scan.p1 > 0) {
+  if (combinedP0 > 0 || combinedP1 > 0) {
     if (!asJson) {
-      console.log(pc.red("Blocking findings detected (P1 > 0)."));
+      console.log(pc.red(`Blocking findings detected (P0=${combinedP0}, P1=${combinedP1}).`));
     }
     return 2;
   }
