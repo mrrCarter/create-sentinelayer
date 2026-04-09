@@ -58,16 +58,8 @@ jobs:
             "setuptools==${expected_setuptools_version}" \
             "wheel==${expected_wheel_version}"
           pip_version="$(python -m pip --version | awk '{print $2}' | tr -d '\r' | xargs || true)"
-          setuptools_version="$(python - <<'PY'
-import setuptools
-print(setuptools.__version__)
-PY
-)"
-          wheel_version="$(python - <<'PY'
-import wheel
-print(wheel.__version__)
-PY
-)"
+          setuptools_version="$(python -c 'import setuptools; print(setuptools.__version__)')"
+          wheel_version="$(python -c 'import wheel; print(wheel.__version__)')"
           setuptools_version="$(echo "${setuptools_version}" | tr -d '\r' | xargs || true)"
           wheel_version="$(echo "${wheel_version}" | tr -d '\r' | xargs || true)"
           if [ "${pip_version}" != "${expected_pip_version}" ]; then

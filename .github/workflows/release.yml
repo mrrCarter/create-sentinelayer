@@ -158,7 +158,7 @@ jobs:
               {"name":"SCA Summary","app":"github-actions","optional":false},
               {"name":"License Summary","app":"github-actions","optional":false},
               {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
+              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false},
               {"name":"CodeQL Summary","app":"github-actions","optional":true}
             ]
           MAX_WAIT_SECONDS: "1800"
@@ -238,45 +238,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100")"
-          attestation_candidates="$(echo "${check_runs_json}" | jq -c '
+          workflow_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/attestations.yml/runs?head_sha=${GITHUB_SHA}&status=completed&per_page=100")"
+          attestation_candidates="$(echo "${workflow_runs_json}" | jq -c '
             [
-              (.check_runs // [])[]
+              (.workflow_runs // [])[]
               | select(
-                  .name == "Attestation Summary"
-                  and .app.slug == "github-actions"
-                  and .status == "completed"
-                  and .conclusion == "success"
-                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                  .conclusion == "success"
+                  and .path == ".github/workflows/attestations.yml"
+                  and (.head_sha // "") == env.GITHUB_SHA
                 )
               | {
-                  id: .id,
-                  completed_at: (.completed_at // ""),
-                  details_url: .details_url
+                  id: (.id | tostring),
+                  run_number: (.run_number // 0),
+                  run_attempt: (.run_attempt // 0),
+                  created_at: (.created_at // ""),
+                  updated_at: (.updated_at // ""),
+                  event: (.event // ""),
+                  name: (.name // ""),
+                  path: (.path // ""),
+                  html_url: (.html_url // "")
                 }
             ]
-            | sort_by(.completed_at)
+            | sort_by(.created_at, .run_number, .run_attempt)
           ')"
           candidate_count="$(echo "${attestation_candidates}" | jq 'length')"
           if [ "${candidate_count}" -lt 1 ]; then
-            echo "::error::No successful 'Attestation Summary' check-run found for commit ${GITHUB_SHA}."
+            echo "::error::No successful attestation workflow run found for commit ${GITHUB_SHA}."
             exit 1
           fi
           if [ "${candidate_count}" -gt 1 ]; then
-            unique_run_count="$(echo "${attestation_candidates}" | jq '
-              [ .[] | .details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id ]
-              | unique
-              | length
-            ')"
-            if [ "${unique_run_count}" -gt 1 ]; then
-              echo "::error::Ambiguous attestation provenance: multiple successful Attestation Summary runs found for ${GITHUB_SHA}."
-              echo "${attestation_candidates}" | jq '.'
-              exit 1
-            fi
+            echo "::error::Ambiguous attestation provenance: expected exactly one successful producer run for ${GITHUB_SHA}, found ${candidate_count}."
+            echo "${attestation_candidates}" | jq '.'
+            exit 1
           fi
-          attestation_run_id="$(echo "${attestation_candidates}" | jq -r 'last.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id')"
+          attestation_run_id="$(echo "${attestation_candidates}" | jq -r '.[0].id // empty')"
           if ! [[ "${attestation_run_id}" =~ ^[0-9]+$ ]]; then
-            echo "::error::Unable to resolve attestation workflow run id from Attestation Summary check-run."
+            echo "::error::Unable to resolve canonical attestation workflow run id."
             exit 1
           fi
           run_meta_json="$(gh run view "${attestation_run_id}" --json databaseId,name,path,conclusion,event,headSha,url)"
@@ -309,6 +306,7 @@ jobs:
             echo "- run_id: \`${attestation_run_id}\`"
             echo "- workflow: \`${run_name}\`"
             echo "- path: \`${run_path}\`"
+            echo "- discovery: \`workflow-runs-api(head_sha=${GITHUB_SHA})\`"
             echo "- source_url: \`$(echo "${run_meta_json}" | jq -r '.url // empty')\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -491,7 +489,7 @@ jobs:
               {"name":"SCA Summary","app":"github-actions","optional":false},
               {"name":"License Summary","app":"github-actions","optional":false},
               {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
+              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false},
               {"name":"CodeQL Summary","app":"github-actions","optional":true}
             ]
           MAX_WAIT_SECONDS: "900"
@@ -529,14 +527,43 @@ jobs:
 
       - name: Enforce trusted npm publishing context
         shell: bash
+        env:
+          NPM_OIDC_MAX_TTL_SECONDS: ${{ vars.NPM_OIDC_MAX_TTL_SECONDS || '900' }}
         run: |
           set -euo pipefail
           if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
             echo "::error::Trusted publishing requires GitHub OIDC runtime context, but id-token environment is unavailable."
             exit 1
           fi
+          case "${NPM_OIDC_MAX_TTL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid NPM_OIDC_MAX_TTL_SECONDS value: ${NPM_OIDC_MAX_TTL_SECONDS}" ; exit 1 ;; esac
+          oidc_payload="$(curl -fsSL \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npmjs.org")"
+          oidc_token="$(echo "${oidc_payload}" | jq -r '.value // empty')"
+          if [ -z "${oidc_token}" ] || [ "${oidc_token}" = "null" ]; then
+            echo "::error::Failed to mint GitHub OIDC token for npm trusted publishing."
+            exit 1
+          fi
+          claims_json="$(node -e "const token=process.argv[1]||''; const p=token.split('.')[1]||''; const b=p.replace(/-/g,'+').replace(/_/g,'/'); const pad=b + '='.repeat((4 - (b.length % 4)) % 4); try { process.stdout.write(Buffer.from(pad,'base64').toString('utf8')); } catch { process.exit(1); }" "${oidc_token}" || true)"
+          oidc_iat="$(echo "${claims_json}" | jq -r '.iat // empty')"
+          oidc_exp="$(echo "${claims_json}" | jq -r '.exp // empty')"
+          case "${oidc_iat}" in ''|*[!0-9]*) echo "::error::Invalid OIDC iat claim: ${oidc_iat}" ; exit 1 ;; esac
+          case "${oidc_exp}" in ''|*[!0-9]*) echo "::error::Invalid OIDC exp claim: ${oidc_exp}" ; exit 1 ;; esac
+          oidc_ttl="$((oidc_exp - oidc_iat))"
+          if [ "${oidc_ttl}" -le 0 ]; then
+            echo "::error::Invalid OIDC token TTL computed from claims: ${oidc_ttl}."
+            exit 1
+          fi
+          if [ "${oidc_ttl}" -gt "${NPM_OIDC_MAX_TTL_SECONDS}" ]; then
+            echo "::error::OIDC token TTL ${oidc_ttl}s exceeds policy maximum ${NPM_OIDC_MAX_TTL_SECONDS}s."
+            exit 1
+          fi
           echo "PUBLISH_AUTH_MODE=trusted" >> "$GITHUB_ENV"
-          echo "### npm publish auth mode: trusted (OIDC)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### npm publish auth mode: trusted (OIDC)"
+            echo "- oidc_ttl_seconds: \`${oidc_ttl}\`"
+            echo "- oidc_ttl_policy_max_seconds: \`${NPM_OIDC_MAX_TTL_SECONDS}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce release artifact checksum manifest and bind publish tarball
         run: |
@@ -653,4 +680,17 @@ jobs:
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
           npm publish "./${VERIFIED_TARBALL}" --provenance --access public
+
+      - name: Finalize npm auth session
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config delete //registry.npmjs.org/:_authToken || true
+          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
+          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
+            echo "::error::Residual npm auth token detected after publish finalization."
+            exit 1
+          fi
+          echo "No residual npm auth token remains after publish."
 

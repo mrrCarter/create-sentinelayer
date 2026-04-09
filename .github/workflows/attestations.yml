@@ -23,6 +23,8 @@ jobs:
     name: Attest Build Artifact
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    outputs:
+      trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -347,3 +349,17 @@ jobs:
     steps:
       - name: Confirm attestation workflow passed
         run: echo "Build attestation generated and verified successfully."
+
+  attestation-trusted-summary:
+    name: Attestation Trusted Summary
+    runs-on: ubuntu-22.04
+    needs: [attest-build]
+    if: >-
+      ${{
+        always() &&
+        needs.attest-build.result == 'success' &&
+        needs.attest-build.outputs.trusted_context == 'true'
+      }}
+    steps:
+      - name: Confirm trusted attestation lineage is available
+        run: echo "Trusted attestation lineage is available for release/publish gates."
