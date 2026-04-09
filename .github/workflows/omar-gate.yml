@@ -48,7 +48,6 @@ jobs:
     name: Omar Gate
     if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
-    environment: security-review
     permissions:
       contents: read
       checks: write
