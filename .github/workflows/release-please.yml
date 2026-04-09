@@ -4,10 +4,14 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: release-please-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   checks: read
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -16,6 +20,10 @@ jobs:
   release-please:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    permissions:
+      checks: read
+      contents: write
+      pull-requests: write
     concurrency:
       group: release-please-main
       cancel-in-progress: false
