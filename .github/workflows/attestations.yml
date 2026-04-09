@@ -2,14 +2,14 @@ name: Build Attestation
 
 on:
   workflow_call:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
 
 concurrency:
-  group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 permissions:
   checks: read
@@ -30,6 +30,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve trusted attestation boundary
         id: trust_boundary
@@ -37,28 +41,11 @@ jobs:
         run: |
           set -euo pipefail
           trusted_context="true"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
             pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
-            if [ "${pr_head_repo}" != "${GITHUB_REPOSITORY}" ]; then
-              trusted_context="false"
-              echo "::notice::Fork PR context detected (${pr_head_repo}); provenance generation is skipped to avoid untrusted OIDC issuance."
-            fi
+            echo "::notice::pull_request_target attestation running in trusted base-repository context for ${pr_head_repo}."
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
-
-      - name: Record untrusted fork PR provenance deferment
-        if: github.event_name == 'pull_request' && steps.trust_boundary.outputs.trusted_context != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo "## Build Attestation"
-            echo "- mode: \`fork-pr-deferred\`"
-            echo "- status: \`deferred\`"
-            echo "- reason: \`untrusted fork pull request cannot mint repository OIDC for provenance\`"
-            echo "- remediation: \`maintainer reruns attestation from trusted base-repository context\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Fork PR attestation deferred. Maintainer rerun required in trusted context."
 
       - name: Resolve canonical required-check target SHA
         if: steps.trust_boundary.outputs.trusted_context == 'true'
@@ -66,13 +53,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
         run: |
           set -euo pipefail
           canonical_sha="${GITHUB_SHA}"
           check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
           case "${check_count}" in ''|*[!0-9]*) echo "::error::Invalid check-run count for canonical SHA ${canonical_sha}: ${check_count}" ; exit 1 ;; esac
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${check_count}" -eq 0 ] && [ -n "${PR_HEAD_SHA}" ] && [ "${PR_HEAD_SHA}" != "${canonical_sha}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ] && [ "${check_count}" -eq 0 ] && [ -n "${PR_HEAD_SHA}" ] && [ "${PR_HEAD_SHA}" != "${canonical_sha}" ]; then
             echo "::notice::No check-runs found on merge SHA ${canonical_sha}; falling back to PR head SHA ${PR_HEAD_SHA}."
             canonical_sha="${PR_HEAD_SHA}"
             check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
@@ -100,7 +87,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
             REQUIRED_CHECKS_JSON='[
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
@@ -362,10 +349,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.trust_boundary.outputs.trusted_context }}" != "true" ]; then
-            echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
-            echo "- mode: \`fork-pr-deferred\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- status: \`deferred\`" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error::Attestation trusted-context invariant failed."
+            exit 1
           fi
           if [ "${{ steps.pack.outcome }}" != "success" ] || [ -z "${{ steps.pack.outputs.tarball }}" ]; then
             echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
@@ -379,7 +364,7 @@ jobs:
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- source_quality_run_id: \`${{ steps.quality_source.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- source_quality_run_url: \`${{ steps.quality_source.outputs.run_url }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
             echo "- mode: \`pr-trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
@@ -397,19 +382,14 @@ jobs:
         env:
           ATTEST_BUILD_RESULT: ${{ needs.attest-build.result }}
           TRUSTED_CONTEXT: ${{ needs.attest-build.outputs.trusted_context || '' }}
-          PR_HEAD_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || '' }}
         run: |
           set -euo pipefail
           if [ "${ATTEST_BUILD_RESULT}" = "success" ]; then
             if [ "${TRUSTED_CONTEXT}" = "true" ]; then
               echo "Build attestation generated and verified successfully."
             else
-              echo "Build attestation deferred for untrusted context; summary check remains green for merge continuity."
+              echo "Build attestation completed with non-trusted context classification."
             fi
-            exit 0
-          fi
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_REPO}" ] && [ "${PR_HEAD_REPO}" != "${GITHUB_REPOSITORY}" ]; then
-            echo "Build attestation skipped for untrusted fork context; summary check remains green."
             exit 0
           fi
           echo "::error::Attestation build job did not succeed in trusted context (result=${ATTEST_BUILD_RESULT})."

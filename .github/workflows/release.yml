@@ -31,8 +31,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot],mrrCarter' }}
-          RELEASE_ALLOWED_TAG_SIGNER_EMAILS: ${{ vars.RELEASE_ALLOWED_TAG_SIGNER_EMAILS || '41898282+github-actions[bot]@users.noreply.github.com,32074640+mrrCarter@users.noreply.github.com' }}
+          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot]' }}
+          RELEASE_ALLOWED_TAG_SIGNER_EMAILS: ${{ vars.RELEASE_ALLOWED_TAG_SIGNER_EMAILS || '41898282+github-actions[bot]@users.noreply.github.com' }}
           EVENT_CREATED: ${{ github.event.created }}
           EVENT_DELETED: ${{ github.event.deleted }}
         run: |
@@ -82,6 +82,7 @@ jobs:
             echo "::error::Release tag signature verification failed for ${GITHUB_REF_NAME} (reason=${tag_signature_reason})."
             exit 1
           fi
+          tagger_date="$(echo "${tag_object_json}" | jq -r '.tagger.date // empty' | xargs || true)"
           signer_email="$(echo "${tag_object_json}" | jq -r '.tagger.email // empty' | tr '[:upper:]' '[:lower:]' | xargs || true)"
           signer_allowlist="${RELEASE_ALLOWED_TAG_SIGNER_EMAILS}"
           if [ -z "$(echo "${signer_allowlist}" | xargs || true)" ]; then
@@ -101,6 +102,48 @@ jobs:
             echo "::error::Tag signer email '${signer_email:-<none>}' is not allowlisted. Allowed signer emails: ${signer_allowlist}."
             exit 1
           fi
+          release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100")"
+          release_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
+            [
+              (.workflow_runs // [])[]
+              | select(
+                  .conclusion == "success"
+                  and (.event // "") == "push"
+                  and (.head_branch // "") == "main"
+                  and (.head_sha // "") == $sha
+                  and (.path // "") == ".github/workflows/release-please.yml"
+                  and (.name // "") == "Release Please"
+                  and (.actor.login // "") == "github-actions[bot]"
+                )
+              | {
+                  id: (.id | tostring),
+                  run_number: (.run_number // 0),
+                  run_attempt: (.run_attempt // 0),
+                  created_at: (.created_at // ""),
+                  updated_at: (.updated_at // "")
+                }
+            ]
+            | sort_by(.run_number, .run_attempt, .updated_at, .created_at)
+          ')"
+          release_candidate_count="$(echo "${release_candidates}" | jq 'length')"
+          if [ "${release_candidate_count}" -lt 1 ]; then
+            echo "::error::No successful release-please workflow run found on main for tagged commit ${GITHUB_SHA}."
+            exit 1
+          fi
+          release_please_run_id="$(echo "${release_candidates}" | jq -r 'last.id // empty')"
+          release_please_created_at="$(echo "${release_candidates}" | jq -r 'last.created_at // empty')"
+          if ! [[ "${release_please_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve canonical release-please workflow run id."
+            exit 1
+          fi
+          if [ -n "${tagger_date}" ] && [ -n "${release_please_created_at}" ]; then
+            tag_epoch="$(date -u -d "${tagger_date}" +%s)"
+            release_please_epoch="$(date -u -d "${release_please_created_at}" +%s)"
+            if [ "${release_please_epoch}" -gt "${tag_epoch}" ]; then
+              echo "::error::Release tag predates release-please run creation. tagger_date=${tagger_date} release_please_created_at=${release_please_created_at}."
+              exit 1
+            fi
+          fi
           {
             echo "## Release Trigger Policy"
             echo "- tag: \`${GITHUB_REF_NAME}\`"
@@ -110,6 +153,9 @@ jobs:
             echo "- tag_signature_verified: \`${tag_signature_verified}\`"
             echo "- tag_signature_reason: \`${tag_signature_reason}\`"
             echo "- signer_email: \`${signer_email:-<none>}\`"
+            echo "- tagger_date: \`${tagger_date:-<none>}\`"
+            echo "- release_please_run_id: \`${release_please_run_id}\`"
+            echo "- release_please_match_count: \`${release_candidate_count}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   tag-preflight:
@@ -140,7 +186,7 @@ jobs:
       - name: Enforce release actor allowlist policy (tag release)
         shell: bash
         env:
-          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot],mrrCarter' }}
+          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot]' }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
@@ -204,19 +250,6 @@ jobs:
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Validate package
-        run: npm run verify
 
       - name: Emit preflight summary
         run: |

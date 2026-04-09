@@ -344,7 +344,7 @@ jobs:
 
   security-semgrep:
     name: Security Semgrep
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     uses: ./.github/workflows/semgrep.yml
     secrets: inherit
     permissions:
@@ -352,7 +352,7 @@ jobs:
 
   security-gitleaks:
     name: Security Gitleaks
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     uses: ./.github/workflows/gitleaks.yml
     secrets: inherit
     permissions:
@@ -360,7 +360,7 @@ jobs:
 
   security-iac:
     name: Security IaC
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     uses: ./.github/workflows/iac-scan.yml
     secrets: inherit
     permissions:
@@ -368,7 +368,7 @@ jobs:
 
   security-sca:
     name: Security SCA
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     uses: ./.github/workflows/sca-audit.yml
     secrets: inherit
     permissions:
@@ -376,7 +376,7 @@ jobs:
 
   security-license:
     name: Security License
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     uses: ./.github/workflows/license-gate.yml
     secrets: inherit
     permissions:
@@ -384,7 +384,7 @@ jobs:
 
   security-sbom:
     name: Security SBOM
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     uses: ./.github/workflows/sbom.yml
     secrets: inherit
     permissions:
@@ -394,7 +394,7 @@ jobs:
     name: Security CodeQL
     runs-on: ubuntu-22.04
     timeout-minutes: 25
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
     permissions:
       contents: read
       pull-requests: read
