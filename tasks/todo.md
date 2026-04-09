@@ -1314,3 +1314,14 @@ Review:
 - [ ] Implement low-risk non-blocking fixes in one batch PR (entropy false positives + static quality debt with no runtime behavior change).
 - [ ] Run API checks (`ruff check`, targeted pytest), open PR, run Omar Gate loop (`gh run watch`), merge on green.
 - [ ] Re-run post-merge Omar run inventory across CLI/API/Web and capture remaining non-blocking backlog (if any) for next batch.
+
+## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)
+
+- [x] Align `omar-gate.yml` severity gate defaults (`workflow_dispatch` + runtime fallback) to eliminate policy ambiguity.
+- [x] Convert security workflows (`semgrep`, `gitleaks`, `iac-scan`, `sca-audit`, `license-gate`, `sbom`) into reusable workflows (`workflow_call`) for in-graph quality gating.
+- [x] Replace `quality-gates` external check polling with in-workflow security suite dependencies and deterministic pass confirmation.
+- [x] Tighten release policy with explicit `package-release` environment enforcement on publish path and reviewer-rule validation.
+- [x] Remove release dependency on detached attestation summary check and tighten manifest integrity checks (`tarball`, `sha256`, `commit_sha`) before publish.
+- [x] Restrict attestation workflow to reusable/PR/manual modes and enforce `npm pack --ignore-scripts` parity.
+- [x] Run local verification (`npm run verify`) on the hardening branch.
+- [ ] Open PR, run Omar loop (`gh run watch`), merge on green, and record finding deltas.

@@ -1,10 +1,9 @@
 name: Build Attestation
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -82,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm pack --json > pack.json
+          npm pack --ignore-scripts --json > pack.json
           tarball="$(jq -r '.[0].filename' pack.json)"
           test -n "${tarball}"
           test -f "${tarball}"
