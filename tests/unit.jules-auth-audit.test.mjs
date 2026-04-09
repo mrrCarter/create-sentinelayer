@@ -46,6 +46,17 @@ describe("authAudit", () => {
     assert.match(result.reason, /allowProvisioning=true|SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION/);
   });
 
+  it("provision_test_identity unavailable responses include structured error metadata", async () => {
+    const result = await authAudit({ operation: "provision_test_identity", execute: true });
+    assert.equal(result.available, false);
+    assert.equal(typeof result.requestId, "string");
+    assert.ok(result.error && typeof result.error === "object");
+    assert.equal(result.error.requestId, result.requestId);
+    assert.equal(typeof result.error.code, "string");
+    assert.equal(typeof result.error.message, "string");
+    assert.equal(typeof result.error.retryable, "boolean");
+  });
+
   it("authenticated_page_check requires url", async () => {
     await assert.rejects(
       () => authAudit({ operation: "authenticated_page_check" }),
@@ -74,8 +85,12 @@ describe("authAudit", () => {
       ...LIVE_AUTH_APPROVAL,
     });
     assert.ok(typeof result.available === "boolean");
+    assert.equal(typeof result.requestId, "string");
     if (result.available) {
       assert.ok(Array.isArray(result.findings));
+    } else {
+      assert.ok(result.error && typeof result.error === "object");
+      assert.equal(result.error.requestId, result.requestId);
     }
   });
 
@@ -382,6 +397,14 @@ describe("authAudit", () => {
     assert.ok(source.includes("targetLoginFormVisible"));
     assert.ok(source.includes("targetStatusOk"));
     assert.ok(source.includes("results.authenticated = !targetLoginFormVisible && targetStatusOk;"));
+  });
+
+  it("auth mutation is gated by explicit allowAuthMutation policy", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("SL_AUDIT_ALLOW_AUTH_MUTATION"));
+    assert.ok(source.includes("mutationAllowed"));
+    assert.ok(source.includes("mutationPerformed"));
+    assert.ok(source.includes("if (allowAuthMutation)"));
   });
 
   it("playwright retry backoff jitter is deterministic", () => {

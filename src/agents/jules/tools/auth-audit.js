@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 
@@ -32,6 +33,7 @@ const AUTH_DISPATCH = {
 const AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS = 60_000;
 const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 2;
 const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
+const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
 const RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES = new Set([
   "ETIMEDOUT",
   "ECONNRESET",
@@ -42,30 +44,69 @@ const RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES = new Set([
   "UND_ERR_HEADERS_TIMEOUT",
 ]);
 
+function createAuditRequestId() {
+  try {
+    return randomUUID();
+  } catch {
+    const ts = Date.now().toString(36);
+    const rand = Math.random().toString(36).slice(2, 10);
+    return `authaudit-${ts}-${rand}`;
+  }
+}
+
+function normalizeErrorMessage(error, fallback) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  const normalized = String(error || "").trim();
+  return normalized || fallback;
+}
+
+function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
+  return {
+    available: false,
+    requestId,
+    reason: message,
+    error: {
+      code,
+      message,
+      requestId,
+      retryable: options.retryable === true,
+    },
+  };
+}
+
 async function provisionTestIdentity(input) {
+  const requestId = createAuditRequestId();
   try {
     const executeRequested = input.execute === true;
     const allowLiveProvision = input.allowProvisioning === true || process.env.SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION === "1";
     if (executeRequested && !allowLiveProvision) {
-      return {
-        available: false,
-        reason: "Live AIdenID provisioning requires explicit allowProvisioning=true (or SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION=1).",
-      };
+      return buildUnavailableAuditResponse(
+        requestId,
+        "AIDENID_PROVISION_APPROVAL_REQUIRED",
+        "Live AIdenID provisioning requires explicit allowProvisioning=true (or SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION=1)."
+      );
     }
 
     const { provisionEmailIdentity, resolveAidenIdCredentials } = await import("../../../ai/aidenid.js");
     const creds = await resolveAidenIdCredentials();
     if (!creds.apiKey) {
-      return { available: false, reason: "AIdenID API key not configured (set AIDENID_API_KEY)" };
+      return buildUnavailableAuditResponse(
+        requestId,
+        "AIDENID_API_KEY_MISSING",
+        "AIdenID API key not configured (set AIDENID_API_KEY)"
+      );
     }
     const result = await provisionEmailIdentity({
       apiUrl: creds.apiUrl, apiKey: creds.apiKey,
       tags: ["jules-audit", "frontend-test"],
       ttlSeconds: 3600, dryRun: !executeRequested,
     });
-    return { available: true, dryRun: !executeRequested, identity: result.identity || result };
+    return { available: true, requestId, dryRun: !executeRequested, identity: result.identity || result };
   } catch (err) {
-    return { available: false, reason: "AIdenID provisioning failed: " + err.message };
+    const message = "AIdenID provisioning failed: " + normalizeErrorMessage(err, "unknown error");
+    return buildUnavailableAuditResponse(requestId, "AIDENID_PROVISION_FAILED", message);
   }
 }
 
@@ -78,12 +119,14 @@ async function provisionTestIdentity(input) {
  * - Temp script/context cleanup in finally block (not just success path)
  */
 async function authenticatedPageCheck(input) {
+  const requestId = createAuditRequestId();
   const url = input.url;
   if (!url) throw new AuthAuditError("authenticated_page_check requires url");
   const targetUrl = resolveAuthAuditTarget(url, input, "authenticated_page_check.target");
 
   const loginUrlCandidate = input.loginUrl || targetUrl + "/login";
   const loginUrl = resolveAuthAuditTarget(loginUrlCandidate, input, "authenticated_page_check.login");
+  const allowAuthMutation = input.allowAuthMutation === true || process.env[AUTH_MUTATION_ALLOWED_ENV] === "1";
 
   try {
     const authContextJson = JSON.stringify({
@@ -99,6 +142,7 @@ async function authenticatedPageCheck(input) {
       ...buildScrubbedEnv(),
       SL_AUDIT_TARGET_URL: targetUrl,
       SL_AUDIT_LOGIN_URL: loginUrl,
+      SL_AUDIT_ALLOW_AUTH_MUTATION: allowAuthMutation ? "1" : "0",
     };
 
     const output = await runPlaywrightAuditScriptWithRetry(null, env, {
@@ -119,12 +163,13 @@ async function authenticatedPageCheck(input) {
         findings.push({ severity: "P2", title: "Sensitive cookie '" + cookie.name + "' has SameSite=None", file: targetUrl });
       }
     }
-    return { available: true, method: "playwright", findings, ...result };
+    return { available: true, requestId, method: "playwright", mutationAllowed: allowAuthMutation, findings, ...result };
   } catch (err) {
-    if (err instanceof AuthAuditError) {
-      return { available: false, reason: err.message };
-    }
-    return { available: false, reason: "Playwright auth audit failed: " + err.message };
+    const code = err instanceof AuthAuditError ? "AUTH_AUDIT_VALIDATION_FAILED" : "AUTH_AUDIT_PLAYWRIGHT_FAILED";
+    const baseMessage = err instanceof AuthAuditError ? err.message : "Playwright auth audit failed: " + normalizeErrorMessage(err, "unknown error");
+    return buildUnavailableAuditResponse(requestId, code, baseMessage, {
+      retryable: isRetryablePlaywrightExecutionError(err),
+    });
   }
 }
 
@@ -137,24 +182,30 @@ const fs = require('node:fs');
 (async () => {
   const targetUrl = process.env.SL_AUDIT_TARGET_URL;
   const loginUrl = process.env.SL_AUDIT_LOGIN_URL;
+  const allowAuthMutation = process.env.SL_AUDIT_ALLOW_AUTH_MUTATION === '1';
   let context = {};
   try {
-    const stdinPayload = fs.readFileSync(0, 'utf-8');
+    let stdinPayload = fs.readFileSync(0, 'utf-8');
     if (stdinPayload) {
       context = JSON.parse(stdinPayload) || {};
     }
+    stdinPayload = '';
   } catch {
     context = {};
   }
 
-  const email = context.email || '';
-  const password = context.password || '';
+  let email = context.email || '';
+  let password = context.password || '';
   const emailSelector = context.emailField || 'input[type="email"]';
   const passwordSelector = context.passwordField || 'input[type="password"]';
   const submitSelector = context.submitSelector || 'button[type="submit"]';
+  if (Object.prototype.hasOwnProperty.call(context, 'password')) delete context.password;
+  if (Object.prototype.hasOwnProperty.call(context, 'token')) delete context.token;
+  if (Object.prototype.hasOwnProperty.call(context, 'secret')) delete context.secret;
 
   let browser = null;
   const results = { authenticated: false, authSignals: {}, errors: [], cookies: [], headers: {}, domStats: {} };
+  results.authSignals.mutationAllowed = allowAuthMutation;
   function normalizePath(value) {
     const normalized = String(value || '/').replace(/\\/+$/, '');
     return normalized || '/';
@@ -199,10 +250,15 @@ const fs = require('node:fs');
 
     if (email && password && loginUrl) {
       await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
-      await page.fill(emailSelector, email);
-      await page.fill(passwordSelector, password);
-      await page.click(submitSelector);
-      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+      if (allowAuthMutation) {
+        await page.fill(emailSelector, email);
+        await page.fill(passwordSelector, password);
+        await page.click(submitSelector);
+        await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+        results.authSignals.mutationPerformed = true;
+      } else {
+        results.authSignals.mutationPerformed = false;
+      }
       const currentUrl = page.url();
       const postCookies = await page.context().cookies();
       const urlChanged = didLeaveLoginSurface(currentUrl, loginUrl);
@@ -211,7 +267,11 @@ const fs = require('node:fs');
         Boolean(document.querySelector(emailSel) && document.querySelector(passwordSel))
       ), emailSelector, passwordSelector).catch(() => false);
       results.authSignals = { urlChanged, authCookiePresent, loginFormVisible };
+      results.authSignals.mutationAllowed = allowAuthMutation;
+      results.authSignals.mutationPerformed = allowAuthMutation ? true : false;
       results.authenticated = !loginFormVisible && urlChanged && authCookiePresent;
+      email = '';
+      password = '';
     }
 
     const targetResponse = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
@@ -534,6 +594,7 @@ async function fetchLoginResponseWithRetry(currentUrl) {
 }
 
 async function checkAuthFlowSecurity(input) {
+  const requestId = createAuditRequestId();
   const loginUrlCandidate = input.loginUrl || input.url;
   if (!loginUrlCandidate) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
   const allowPrivateTargets = input.allowPrivateTargets === true;
@@ -572,9 +633,17 @@ async function checkAuthFlowSecurity(input) {
         file: loginUrl,
       });
     }
-    return { available: false, loginUrl, findings, reason: "auth flow check failed: " + err.message };
+    return {
+      ...buildUnavailableAuditResponse(
+        requestId,
+        "AUTH_FLOW_CHECK_FAILED",
+        "auth flow check failed: " + normalizeErrorMessage(err, "unknown error")
+      ),
+      loginUrl,
+      findings,
+    };
   }
-  return { available: true, loginUrl, findings };
+  return { available: true, requestId, loginUrl, findings };
 }
 
 async function fetchLoginHeaders(loginUrl, options = {}) {

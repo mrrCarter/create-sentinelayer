@@ -36,7 +36,10 @@ jobs:
           policy_file=".github/policies/tool-digests.json"
           expected_requirements_sha="$(jq -r '.semgrep.requirements_sha256 // empty' "${policy_file}")"
           expected_semgrep_version="$(jq -r '.semgrep.version // empty' "${policy_file}")"
-          if [ -z "${expected_requirements_sha}" ] || [ -z "${expected_semgrep_version}" ]; then
+          expected_pip_version="$(jq -r '.semgrep.python_toolchain.pip // empty' "${policy_file}")"
+          expected_setuptools_version="$(jq -r '.semgrep.python_toolchain.setuptools // empty' "${policy_file}")"
+          expected_wheel_version="$(jq -r '.semgrep.python_toolchain.wheel // empty' "${policy_file}")"
+          if [ -z "${expected_requirements_sha}" ] || [ -z "${expected_semgrep_version}" ] || [ -z "${expected_pip_version}" ] || [ -z "${expected_setuptools_version}" ] || [ -z "${expected_wheel_version}" ]; then
             echo "::error::Missing semgrep digest policy in ${policy_file}."
             exit 1
           fi
@@ -50,6 +53,35 @@ jobs:
             echo "::error::expected=${expected_requirements_sha} actual=${actual_requirements_sha}"
             exit 1
           fi
+          python -m pip install --disable-pip-version-check \
+            "pip==${expected_pip_version}" \
+            "setuptools==${expected_setuptools_version}" \
+            "wheel==${expected_wheel_version}"
+          pip_version="$(python -m pip --version | awk '{print $2}' | tr -d '\r' | xargs || true)"
+          setuptools_version="$(python - <<'PY'
+import setuptools
+print(setuptools.__version__)
+PY
+)"
+          wheel_version="$(python - <<'PY'
+import wheel
+print(wheel.__version__)
+PY
+)"
+          setuptools_version="$(echo "${setuptools_version}" | tr -d '\r' | xargs || true)"
+          wheel_version="$(echo "${wheel_version}" | tr -d '\r' | xargs || true)"
+          if [ "${pip_version}" != "${expected_pip_version}" ]; then
+            echo "::error::pip version mismatch. expected=${expected_pip_version} actual=${pip_version}"
+            exit 1
+          fi
+          if [ "${setuptools_version}" != "${expected_setuptools_version}" ]; then
+            echo "::error::setuptools version mismatch. expected=${expected_setuptools_version} actual=${setuptools_version}"
+            exit 1
+          fi
+          if [ "${wheel_version}" != "${expected_wheel_version}" ]; then
+            echo "::error::wheel version mismatch. expected=${expected_wheel_version} actual=${wheel_version}"
+            exit 1
+          fi
           python -m pip install --disable-pip-version-check --require-hashes -r .github/policies/semgrep-requirements.txt
           semgrep_version="$(semgrep --version | tr -d '\r' | xargs || true)"
           if [ "${semgrep_version}" != "${expected_semgrep_version}" ]; then
@@ -57,7 +89,23 @@ jobs:
             echo "::error::expected=${expected_semgrep_version} actual=${semgrep_version}"
             exit 1
           fi
+          python_version="$(python --version | awk '{print $2}' | tr -d '\r' | xargs || true)"
           semgrep --version
+          jq -n \
+            --arg python_version "${python_version}" \
+            --arg pip_version "${pip_version}" \
+            --arg setuptools_version "${setuptools_version}" \
+            --arg wheel_version "${wheel_version}" \
+            --arg semgrep_version "${semgrep_version}" \
+            --arg requirements_sha256 "${actual_requirements_sha}" \
+            '{
+              python_version: $python_version,
+              pip_version: $pip_version,
+              setuptools_version: $setuptools_version,
+              wheel_version: $wheel_version,
+              semgrep_version: $semgrep_version,
+              requirements_sha256: $requirements_sha256
+            }' > semgrep-toolchain-manifest.json
 
       - name: Run Semgrep custom policy pack
         run: |
@@ -74,7 +122,9 @@ jobs:
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: semgrep-results
-          path: semgrep-results.json
+          path: |
+            semgrep-results.json
+            semgrep-toolchain-manifest.json
           if-no-files-found: warn
           retention-days: 7
 

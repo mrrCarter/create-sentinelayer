@@ -13,6 +13,11 @@
   },
   "semgrep": {
     "version": "1.124.0",
-    "requirements_sha256": "6c02b2792834e8feb49a12725906cb75d3c3f16639edd10ad198d8c1685887b8"
+    "requirements_sha256": "6c02b2792834e8feb49a12725906cb75d3c3f16639edd10ad198d8c1685887b8",
+    "python_toolchain": {
+      "pip": "24.3.1",
+      "setuptools": "75.6.0",
+      "wheel": "0.45.1"
+    }
   }
 }
