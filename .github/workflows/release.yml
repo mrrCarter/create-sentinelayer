@@ -20,8 +20,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  policy-precheck:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce trusted tag trigger policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot],mrrCarter' }}
+          EVENT_CREATED: ${{ github.event.created }}
+          EVENT_DELETED: ${{ github.event.deleted }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_DELETED}" = "true" ]; then
+            echo "::error::Release workflow does not run on deleted tags."
+            exit 1
+          fi
+          if [ "${EVENT_CREATED}" != "true" ]; then
+            echo "::error::Release workflow requires newly created semver tags (event.created=true)."
+            exit 1
+          fi
+          actor="${GITHUB_ACTOR}"
+          allowed_csv="${RELEASE_ALLOWED_TAG_ACTORS}"
+          if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
+            echo "::error::RELEASE_ALLOWED_TAG_ACTORS is empty."
+            exit 1
+          fi
+          actor_allowed="false"
+          IFS=',' read -r -a allowed_items <<< "${allowed_csv}"
+          for item in "${allowed_items[@]}"; do
+            candidate="$(echo "${item}" | xargs)"
+            if [ -n "${candidate}" ] && [ "${candidate}" = "${actor}" ]; then
+              actor_allowed="true"
+              break
+            fi
+          done
+          if [ "${actor_allowed}" != "true" ]; then
+            echo "::error::Actor ${actor} is not allowed to trigger release tags. Allowed actors: ${allowed_csv}."
+            exit 1
+          fi
+          tag_object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.type')"
+          if [ "${tag_object_type}" != "commit" ] && [ "${tag_object_type}" != "tag" ]; then
+            echo "::error::Unexpected tag object type for ${GITHUB_REF_NAME}: ${tag_object_type}"
+            exit 1
+          fi
+          {
+            echo "## Release Trigger Policy"
+            echo "- tag: \`${GITHUB_REF_NAME}\`"
+            echo "- actor: \`${actor}\`"
+            echo "- created_event: \`${EVENT_CREATED}\`"
+            echo "- tag_object_type: \`${tag_object_type}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   tag-preflight:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [policy-precheck]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     environment: package-release

@@ -312,11 +312,45 @@ jobs:
       - security-license
       - security-sbom
       - security-codeql
+    if: >-
+      ${{
+        always() &&
+        needs.security-semgrep.result == 'success' &&
+        needs.security-gitleaks.result == 'success' &&
+        needs.security-iac.result == 'success' &&
+        needs.security-sca.result == 'success' &&
+        needs.security-license.result == 'success' &&
+        needs.security-sbom.result == 'success' &&
+        needs.security-codeql.result == 'success'
+      }}
     steps:
       - name: Confirm in-workflow security suites passed
         shell: bash
+        env:
+          SEMGREP_RESULT: ${{ needs.security-semgrep.result }}
+          GITLEAKS_RESULT: ${{ needs.security-gitleaks.result }}
+          IAC_RESULT: ${{ needs.security-iac.result }}
+          SCA_RESULT: ${{ needs.security-sca.result }}
+          LICENSE_RESULT: ${{ needs.security-license.result }}
+          SBOM_RESULT: ${{ needs.security-sbom.result }}
+          CODEQL_RESULT: ${{ needs.security-codeql.result }}
         run: |
           set -euo pipefail
+          for suite in \
+            "semgrep:${SEMGREP_RESULT}" \
+            "gitleaks:${GITLEAKS_RESULT}" \
+            "iac:${IAC_RESULT}" \
+            "sca:${SCA_RESULT}" \
+            "license:${LICENSE_RESULT}" \
+            "sbom:${SBOM_RESULT}" \
+            "codeql:${CODEQL_RESULT}"; do
+            suite_name="${suite%%:*}"
+            suite_result="${suite##*:}"
+            if [ "${suite_result}" != "success" ]; then
+              echo "::error::Security suite ${suite_name} did not succeed (result=${suite_result})."
+              exit 1
+            fi
+          done
           echo "Semgrep, gitleaks, IaC, SCA, license, and SBOM suites passed in this quality workflow run."
 
   e2e-packaging:

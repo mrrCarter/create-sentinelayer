@@ -84,14 +84,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
-      - name: Validate OpenAI key secret for Omar LLM scan
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
       - name: Validate Omar configuration invariants
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -119,8 +111,7 @@ jobs:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: "false"
+          sentinelayer_managed_llm: "true"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
