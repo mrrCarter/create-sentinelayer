@@ -160,7 +160,23 @@ const fs = require('node:fs');
   const submitSelector = context.submitSelector || 'button[type="submit"]';
 
   let browser = null;
-  const results = { authenticated: false, errors: [], cookies: [], headers: {}, domStats: {} };
+  const results = { authenticated: false, authSignals: {}, errors: [], cookies: [], headers: {}, domStats: {} };
+  function normalizePath(value) {
+    const normalized = String(value || '/').replace(/\\/+$/, '');
+    return normalized || '/';
+  }
+  function didLeaveLoginSurface(currentValue, loginValue) {
+    try {
+      const currentUrl = new URL(currentValue);
+      const loginParsed = new URL(loginValue);
+      return (
+        currentUrl.origin !== loginParsed.origin ||
+        normalizePath(currentUrl.pathname) !== normalizePath(loginParsed.pathname)
+      );
+    } catch {
+      return String(currentValue || '') !== String(loginValue || '');
+    }
+  }
   function sanitizeErrorText(value) {
     return String(value || '')
       .replace(/\\s+/g, ' ')
@@ -195,7 +211,13 @@ const fs = require('node:fs');
       await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
       const currentUrl = page.url();
       const postCookies = await page.context().cookies();
-      results.authenticated = currentUrl !== loginUrl || postCookies.some(c => /session|token|auth/i.test(c.name));
+      const urlChanged = didLeaveLoginSurface(currentUrl, loginUrl);
+      const authCookiePresent = postCookies.some(c => /(?:^|[-_])(session|token|auth|jwt)(?:$|[-_])/i.test(c.name) && (c.httpOnly || c.secure));
+      const loginFormVisible = await page.evaluate((emailSel, passwordSel) => (
+        Boolean(document.querySelector(emailSel) && document.querySelector(passwordSel))
+      ), emailSelector, passwordSelector).catch(() => false);
+      results.authSignals = { urlChanged, authCookiePresent, loginFormVisible };
+      results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);
     }
 
     const targetResponse = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
