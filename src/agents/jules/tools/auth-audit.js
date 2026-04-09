@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { assertPermittedAuditTarget } from "./url-policy.js";
 
 /**
  * Jules Tanaka — Authenticated Page Audit
@@ -74,9 +75,10 @@ async function provisionTestIdentity(input) {
 async function authenticatedPageCheck(input) {
   const url = input.url;
   if (!url) throw new AuthAuditError("authenticated_page_check requires url");
-  if (!isValidUrl(url)) throw new AuthAuditError("Invalid URL: " + url);
+  const targetUrl = resolveAuthAuditTarget(url, input, "authenticated_page_check.target");
 
-  const loginUrl = input.loginUrl || url + "/login";
+  const loginUrlCandidate = input.loginUrl || targetUrl + "/login";
+  const loginUrl = resolveAuthAuditTarget(loginUrlCandidate, input, "authenticated_page_check.login");
   let scriptPath = null;
   let contextPath = null;
 
@@ -100,7 +102,7 @@ async function authenticatedPageCheck(input) {
     const { buildScrubbedEnv } = await import("./shell.js");
     const env = {
       ...buildScrubbedEnv(),
-      SL_AUDIT_TARGET_URL: url,
+      SL_AUDIT_TARGET_URL: targetUrl,
       SL_AUDIT_LOGIN_URL: loginUrl,
       SL_AUDIT_CONTEXT_FILE: contextPath,
     };
@@ -111,13 +113,13 @@ async function authenticatedPageCheck(input) {
     const findings = [];
     for (const cookie of (result.cookies || [])) {
       if (cookie.sensitive && !cookie.httpOnly) {
-        findings.push({ severity: "P1", title: "Sensitive cookie '" + cookie.name + "' missing httpOnly flag", file: url });
+        findings.push({ severity: "P1", title: "Sensitive cookie '" + cookie.name + "' missing httpOnly flag", file: targetUrl });
       }
       if (cookie.sensitive && !cookie.secure) {
-        findings.push({ severity: "P1", title: "Sensitive cookie '" + cookie.name + "' missing Secure flag", file: url });
+        findings.push({ severity: "P1", title: "Sensitive cookie '" + cookie.name + "' missing Secure flag", file: targetUrl });
       }
       if (cookie.sensitive && cookie.sameSite === "None") {
-        findings.push({ severity: "P2", title: "Sensitive cookie '" + cookie.name + "' has SameSite=None", file: url });
+        findings.push({ severity: "P2", title: "Sensitive cookie '" + cookie.name + "' has SameSite=None", file: targetUrl });
       }
     }
     return { available: true, method: "playwright", findings, ...result };
@@ -373,8 +375,16 @@ function isAllowedHttpAuthFlowTarget(urlObject) {
   return AUTH_FLOW_LOCAL_TEST_HOSTS.has(urlObject.hostname);
 }
 
-function assertSecureAuthFlowTarget(urlValue) {
-  const parsed = new URL(urlValue);
+function assertSecureAuthFlowTarget(urlValue, options = {}) {
+  let parsed;
+  try {
+    parsed = assertPermittedAuditTarget(urlValue, {
+      operation: "check_auth_flow_security",
+      allowPrivateTargets: options.allowPrivateTargets === true,
+    });
+  } catch (error) {
+    throw new AuthAuditError(error.message);
+  }
   if (!isAllowedHttpAuthFlowTarget(parsed)) {
     throw new AuthAuditError(
       `HTTPS downgrade detected in auth flow target: ${parsed.toString()}`
@@ -423,13 +433,14 @@ async function fetchLoginResponseWithRetry(currentUrl) {
 }
 
 async function checkAuthFlowSecurity(input) {
-  const loginUrl = input.loginUrl || input.url;
-  if (!loginUrl) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
-  if (!isValidUrl(loginUrl)) throw new AuthAuditError("Invalid URL: " + loginUrl);
+  const loginUrlCandidate = input.loginUrl || input.url;
+  if (!loginUrlCandidate) throw new AuthAuditError("check_auth_flow_security requires loginUrl or url");
+  const allowPrivateTargets = input.allowPrivateTargets === true;
+  const loginUrl = assertSecureAuthFlowTarget(loginUrlCandidate, { allowPrivateTargets }).toString();
 
   const findings = [];
   try {
-    const { headers, finalUrl, crossOriginRedirect } = await fetchLoginHeaders(loginUrl);
+    const { headers, finalUrl, crossOriginRedirect } = await fetchLoginHeaders(loginUrl, { allowPrivateTargets });
 
     if (crossOriginRedirect) {
       findings.push({
@@ -465,12 +476,12 @@ async function checkAuthFlowSecurity(input) {
   return { available: true, loginUrl, findings };
 }
 
-async function fetchLoginHeaders(loginUrl) {
+async function fetchLoginHeaders(loginUrl, options = {}) {
   let currentUrl = loginUrl;
   const visited = new Set();
 
   for (let hop = 0; hop < MAX_AUTH_REDIRECT_HOPS; hop++) {
-    const currentParsedUrl = assertSecureAuthFlowTarget(currentUrl);
+    const currentParsedUrl = assertSecureAuthFlowTarget(currentUrl, options);
     if (visited.has(currentUrl)) {
       throw new AuthAuditError("Redirect loop detected while checking auth headers");
     }
@@ -484,7 +495,7 @@ async function fetchLoginHeaders(loginUrl) {
       if (!location) {
         return { headers, finalUrl: currentUrl, crossOriginRedirect: false };
       }
-      const nextParsedUrl = assertSecureAuthFlowTarget(new URL(location, currentParsedUrl).toString());
+      const nextParsedUrl = assertSecureAuthFlowTarget(new URL(location, currentParsedUrl).toString(), options);
       if (nextParsedUrl.origin !== currentParsedUrl.origin) {
         return { headers, finalUrl: currentUrl, crossOriginRedirect: true };
       }
@@ -498,8 +509,16 @@ async function fetchLoginHeaders(loginUrl) {
   throw new AuthAuditError(`Exceeded ${MAX_AUTH_REDIRECT_HOPS} redirects while checking auth flow`);
 }
 
-function isValidUrl(url) {
-  try { const p = new URL(url); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
+function resolveAuthAuditTarget(urlValue, input, operation) {
+  try {
+    const parsed = assertPermittedAuditTarget(urlValue, {
+      operation,
+      allowPrivateTargets: input.allowPrivateTargets === true,
+    });
+    return parsed.toString();
+  } catch (error) {
+    throw new AuthAuditError(error.message);
+  }
 }
 
 function cleanupTempFile(filePath) {

@@ -43,6 +43,22 @@ describe("runtimeAudit", () => {
     }
   });
 
+  it("check_response_headers blocks private localhost targets by default", async () => {
+    await assert.rejects(
+      () => runtimeAudit({ operation: "check_response_headers", url: "http://localhost:3000" }),
+      RuntimeAuditError,
+    );
+  });
+
+  it("check_response_headers allows private localhost targets with explicit opt-in", async () => {
+    const result = await runtimeAudit({
+      operation: "check_response_headers",
+      url: "http://localhost:3000",
+      allowPrivateTargets: true,
+    });
+    assert.ok(typeof result.available === "boolean");
+  });
+
   it("detect_deployed_url searches common locations", async () => {
     setup();
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ homepage: "https://app.example.com" }));

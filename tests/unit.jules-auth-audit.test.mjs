@@ -54,6 +54,13 @@ describe("authAudit", () => {
     );
   });
 
+  it("authenticated_page_check blocks private localhost targets by default", async () => {
+    await assert.rejects(
+      () => authAudit({ operation: "authenticated_page_check", url: "http://localhost:3000/app" }),
+      AuthAuditError,
+    );
+  });
+
   it("check_auth_flow_security works for reachable url", async () => {
     const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com" });
     assert.ok(typeof result.available === "boolean");
@@ -178,6 +185,19 @@ describe("authAudit", () => {
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
       globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("check_auth_flow_security blocks private localhost targets outside trusted contexts", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      await assert.rejects(
+        () => authAudit({ operation: "check_auth_flow_security", url: "http://localhost:3000/login" }),
+        AuthAuditError,
+      );
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
     }
   });
 
