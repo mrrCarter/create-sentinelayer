@@ -8,8 +8,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: quality-gates-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ${{
+      github.event_name == 'pull_request' && format('quality-gates-pr-{0}', github.event.pull_request.number) ||
+      (github.ref == 'refs/heads/main' && 'quality-gates-main') ||
+      format('quality-gates-ref-{0}', github.ref)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 permissions:
   checks: read

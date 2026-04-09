@@ -393,10 +393,24 @@ describe("authAudit", () => {
     assert.ok(source.includes("didLeaveLoginSurface"));
     assert.ok(source.includes("loginFormVisible"));
     assert.ok(source.includes("authCookiePresent"));
+    assert.ok(source.includes("authVerificationMaxAttempts"));
+    assert.ok(source.includes("authVerificationAttemptsUsed"));
+    assert.ok(source.includes("authVerificationRetried"));
     assert.ok(source.includes("results.authenticated = navigationSucceeded && !loginFormVisible && urlChanged && authCookiePresent;"));
     assert.ok(source.includes("targetLoginFormVisible"));
     assert.ok(source.includes("targetStatusOk"));
     assert.ok(source.includes("results.authenticated = !targetLoginFormVisible && targetStatusOk;"));
+  });
+
+  it("authenticated header policy is enforced as deterministic findings", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("evaluateAuthenticatedHeaderFindings"));
+    assert.ok(source.includes("Authenticated page missing Content-Security-Policy header"));
+    assert.ok(source.includes("Authenticated page missing Strict-Transport-Security header"));
+    assert.ok(source.includes("Authenticated page missing X-Frame-Options header"));
+    assert.ok(source.includes("headerPolicyBreaches"));
+    assert.ok(source.includes("headerPolicyPassed"));
+    assert.ok(source.includes("headerPolicyFailed"));
   });
 
   it("auth mutation is gated by explicit allowAuthMutation policy", () => {

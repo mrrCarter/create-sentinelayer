@@ -76,6 +76,59 @@ function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
   };
 }
 
+function normalizeHeaderValue(value) {
+  const normalized = String(value || "").trim();
+  return normalized || "";
+}
+
+function evaluateAuthenticatedHeaderFindings(targetUrl, headers = {}, authSignals = {}) {
+  const findings = [];
+  const normalizedHeaders = headers && typeof headers === "object" ? headers : {};
+  const csp = normalizeHeaderValue(normalizedHeaders["content-security-policy"]);
+  const hsts = normalizeHeaderValue(normalizedHeaders["strict-transport-security"]);
+  const xFrameOptions = normalizeHeaderValue(normalizedHeaders["x-frame-options"]);
+  let requiresHsts = false;
+  try {
+    requiresHsts = new URL(targetUrl).protocol === "https:";
+  } catch {
+    requiresHsts = String(targetUrl || "").startsWith("https://");
+  }
+
+  if (!csp) {
+    findings.push({
+      severity: "P2",
+      title: "Authenticated page missing Content-Security-Policy header",
+      file: targetUrl,
+    });
+  }
+  if (requiresHsts && !hsts) {
+    findings.push({
+      severity: "P1",
+      title: "Authenticated page missing Strict-Transport-Security header",
+      file: targetUrl,
+    });
+  }
+  if (!xFrameOptions) {
+    findings.push({
+      severity: "P2",
+      title: "Authenticated page missing X-Frame-Options header",
+      file: targetUrl,
+    });
+  } else if (!/^(deny|sameorigin)$/i.test(xFrameOptions)) {
+    findings.push({
+      severity: "P2",
+      title: "Authenticated page has weak X-Frame-Options policy: " + xFrameOptions,
+      file: targetUrl,
+    });
+  }
+
+  if (authSignals && typeof authSignals === "object") {
+    authSignals.headerPolicyPassed = findings.length === 0;
+    authSignals.headerPolicyFindingCount = findings.length;
+  }
+  return findings;
+}
+
 async function provisionTestIdentity(input) {
   const requestId = createAuditRequestId();
   try {
@@ -163,6 +216,7 @@ async function authenticatedPageCheck(input) {
         findings.push({ severity: "P2", title: "Sensitive cookie '" + cookie.name + "' has SameSite=None", file: targetUrl });
       }
     }
+    findings.push(...evaluateAuthenticatedHeaderFindings(targetUrl, result.headers || {}, result.authSignals || {}));
     return { available: true, requestId, method: "playwright", mutationAllowed: allowAuthMutation, findings, ...result };
   } catch (err) {
     const code = err instanceof AuthAuditError ? "AUTH_AUDIT_VALIDATION_FAILED" : "AUTH_AUDIT_PLAYWRIGHT_FAILED";
@@ -266,18 +320,39 @@ const fs = require('node:fs');
       } else {
         results.authSignals.mutationPerformed = false;
       }
-      const currentUrl = page.url();
-      const postCookies = await page.context().cookies();
-      const urlChanged = didLeaveLoginSurface(currentUrl, loginUrl);
-      const authCookiePresent = postCookies.some(c => /(?:^|[-_])(session|token|auth|jwt)(?:$|[-_])/i.test(c.name) && (c.httpOnly || c.secure));
-      const loginFormVisible = await page.evaluate((emailSel, passwordSel) => (
-        Boolean(document.querySelector(emailSel) && document.querySelector(passwordSel))
-      ), emailSelector, passwordSelector).catch(() => false);
-      results.authSignals = { urlChanged, authCookiePresent, loginFormVisible };
+      const authVerificationMaxAttempts = allowAuthMutation ? 3 : 1;
+      let verificationAttemptsUsed = 0;
+      let urlChanged = false;
+      let authCookiePresent = false;
+      let loginFormVisible = true;
+      for (let verificationAttempt = 1; verificationAttempt <= authVerificationMaxAttempts; verificationAttempt += 1) {
+        verificationAttemptsUsed = verificationAttempt;
+        const currentUrl = page.url();
+        const postCookies = await page.context().cookies();
+        urlChanged = didLeaveLoginSurface(currentUrl, loginUrl);
+        authCookiePresent = postCookies.some(c => /(?:^|[-_])(session|token|auth|jwt)(?:$|[-_])/i.test(c.name) && (c.httpOnly || c.secure));
+        loginFormVisible = await page.evaluate((emailSel, passwordSel) => (
+          Boolean(document.querySelector(emailSel) && document.querySelector(passwordSel))
+        ), emailSelector, passwordSelector).catch(() => false);
+        const navigationSucceeded = results.authSignals.navigationTimeout !== true;
+        results.authenticated = navigationSucceeded && !loginFormVisible && urlChanged && authCookiePresent;
+        if (results.authenticated) {
+          break;
+        }
+        if (verificationAttempt < authVerificationMaxAttempts) {
+          await page.waitForTimeout(400 * verificationAttempt);
+        }
+      }
+      results.authSignals = {
+        urlChanged,
+        authCookiePresent,
+        loginFormVisible,
+        authVerificationAttemptsUsed: verificationAttemptsUsed,
+        authVerificationMaxAttempts,
+      };
+      results.authSignals.authVerificationRetried = verificationAttemptsUsed > 1;
       results.authSignals.mutationAllowed = allowAuthMutation;
       results.authSignals.mutationPerformed = allowAuthMutation ? true : false;
-      const navigationSucceeded = results.authSignals.navigationTimeout !== true;
-      results.authenticated = navigationSucceeded && !loginFormVisible && urlChanged && authCookiePresent;
       email = '';
       password = '';
     }
@@ -319,6 +394,26 @@ const fs = require('node:fs');
         'strict-transport-security': h['strict-transport-security'] || null,
         'cache-control': h['cache-control'] || null,
       };
+      const normalizedFramePolicy = String(results.headers['x-frame-options'] || '').trim().toLowerCase();
+      const headerPolicyBreaches = [];
+      if (!results.headers['content-security-policy']) {
+        headerPolicyBreaches.push('missing_content_security_policy');
+      }
+      if (String(targetUrl || '').startsWith('https://') && !results.headers['strict-transport-security']) {
+        headerPolicyBreaches.push('missing_strict_transport_security');
+      }
+      if (!normalizedFramePolicy) {
+        headerPolicyBreaches.push('missing_x_frame_options');
+      } else if (!(normalizedFramePolicy === 'deny' || normalizedFramePolicy === 'sameorigin')) {
+        headerPolicyBreaches.push('weak_x_frame_options');
+      }
+      results.authSignals.headerPolicyBreaches = headerPolicyBreaches;
+      results.authSignals.headerPolicyPassed = headerPolicyBreaches.length === 0;
+      results.authSignals.headerPolicyFailed = headerPolicyBreaches.length > 0;
+    } else {
+      results.authSignals.headerPolicyBreaches = ['target_response_unavailable'];
+      results.authSignals.headerPolicyPassed = false;
+      results.authSignals.headerPolicyFailed = true;
     }
   } catch (err) {
     results.executionFailed = true;
