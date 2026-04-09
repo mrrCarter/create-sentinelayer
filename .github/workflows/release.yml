@@ -6,6 +6,7 @@ on:
       - "v*"
 
 permissions:
+  actions: read
   checks: read
   contents: read
   attestations: write
@@ -112,7 +113,7 @@ jobs:
       - name: Validate package
         run: npm run verify
 
-      - name: Emit manual validation summary
+      - name: Emit preflight summary
         run: |
           set -euo pipefail
           echo "## Release Tag Preflight" >> "$GITHUB_STEP_SUMMARY"
@@ -179,19 +180,6 @@ jobs:
             exit 1
           fi
 
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Validate package
-        run: npm run verify
-
       - name: Ensure release commit passed required upstream gates
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -214,35 +202,88 @@ jobs:
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-      - name: Build release tarball
-        run: npm pack --ignore-scripts
+      - name: Resolve canonical attested artifact for release commit
+        id: attested_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_list_json="$(gh run list --workflow "Build Attestation" --commit "${GITHUB_SHA}" --limit 50 --json databaseId,conclusion,event,headSha,headBranch,createdAt)"
+          attestation_run_id="$(echo "${run_list_json}" | jq -r --arg sha "${GITHUB_SHA}" '
+            [
+              .[]
+              | select(
+                  .conclusion == "success"
+                  and (.event == "pull_request" or .event == "push" or .event == "workflow_dispatch")
+                  and .headSha == $sha
+                )
+            ]
+            | sort_by(.createdAt)
+            | last
+            | .databaseId // empty
+          ')"
+          if [ -z "${attestation_run_id}" ]; then
+            echo "::error::No successful Build Attestation run found for commit ${GITHUB_SHA}."
+            exit 1
+          fi
+          rm -rf attestation-source
+          mkdir -p attestation-source
+          gh run download "${attestation_run_id}" --name "attestation-build-artifacts" --dir attestation-source
+          echo "run_id=${attestation_run_id}" >> "${GITHUB_OUTPUT}"
 
       - name: Generate release artifact manifest
         id: artifact_manifest
         run: |
           set -euo pipefail
           shopt -s nullglob
-          tarballs=(sentinelayer-cli-*.tgz)
+          SOURCE_MANIFEST="attestation-source/attestation-manifest.json"
+          if [ ! -f "${SOURCE_MANIFEST}" ]; then
+            echo "::error::Missing attestation manifest from canonical artifact source."
+            exit 1
+          fi
+          SOURCE_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${SOURCE_MANIFEST}")"
+          if [ -z "${SOURCE_COMMIT_SHA}" ] || [ "${SOURCE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Canonical artifact commit mismatch. expected=${GITHUB_SHA} source=${SOURCE_COMMIT_SHA:-<none>}."
+            exit 1
+          fi
+          SOURCE_SHA256="$(jq -r '.sha256 // empty' "${SOURCE_MANIFEST}")"
+          tarballs=(attestation-source/sentinelayer-cli-*.tgz)
           if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one release tarball, found ${#tarballs[@]}."
+            echo "::error::Expected exactly one canonical release tarball, found ${#tarballs[@]}."
             printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
             exit 1
           fi
-          TARBALL="${tarballs[0]}"
+          SOURCE_TARBALL_PATH="${tarballs[0]}"
+          TARBALL="$(basename "${SOURCE_TARBALL_PATH}")"
+          cp "${SOURCE_TARBALL_PATH}" "${TARBALL}"
           SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          if [ -n "${SOURCE_SHA256}" ] && [ "${SOURCE_SHA256}" != "${SHA256}" ]; then
+            echo "::error::Canonical artifact digest mismatch. source=${SOURCE_SHA256} actual=${SHA256}."
+            exit 1
+          fi
           jq -n \
             --arg tarball "${TARBALL}" \
             --arg sha256 "${SHA256}" \
             --arg commit_sha "${GITHUB_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg attestation_run_id "${{ steps.attested_source.outputs.run_id }}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
               commit_sha: $commit_sha,
-              workflow_ref: $workflow_ref
+              workflow_ref: $workflow_ref,
+              source_attestation_run_id: ($attestation_run_id | if length > 0 then . else null end)
             }' > release-artifact-manifest.json
           echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
           echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
 
       - name: Validate packaged CLI install
         run: |

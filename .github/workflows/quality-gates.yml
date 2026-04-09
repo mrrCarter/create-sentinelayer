@@ -196,6 +196,7 @@ jobs:
     name: Security Semgrep
     needs: [unit-coverage]
     uses: ./.github/workflows/semgrep.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -203,6 +204,7 @@ jobs:
     name: Security Gitleaks
     needs: [unit-coverage]
     uses: ./.github/workflows/gitleaks.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -210,6 +212,7 @@ jobs:
     name: Security IaC
     needs: [unit-coverage]
     uses: ./.github/workflows/iac-scan.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -217,6 +220,7 @@ jobs:
     name: Security SCA
     needs: [unit-coverage]
     uses: ./.github/workflows/sca-audit.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -224,6 +228,7 @@ jobs:
     name: Security License
     needs: [unit-coverage]
     uses: ./.github/workflows/license-gate.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -231,6 +236,7 @@ jobs:
     name: Security SBOM
     needs: [unit-coverage]
     uses: ./.github/workflows/sbom.yml
+    secrets: inherit
     permissions:
       contents: read
 

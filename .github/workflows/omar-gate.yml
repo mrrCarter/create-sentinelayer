@@ -36,23 +36,27 @@ on:
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
   id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  omar_gate:
-    name: Omar Gate
+  omar_scan:
+    name: Omar Gate Scan
     if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
+    outputs:
+      trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
+      run_id: ${{ steps.omar.outputs.run_id }}
+      gate_status: ${{ steps.omar.outputs.gate_status }}
+      p0_count: ${{ steps.omar.outputs.p0_count }}
+      p1_count: ${{ steps.omar.outputs.p1_count }}
+      p2_count: ${{ steps.omar.outputs.p2_count }}
+      p3_count: ${{ steps.omar.outputs.p3_count }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - name: Resolve trusted execution boundary
@@ -113,13 +117,22 @@ jobs:
           use_codex: "true"
           codex_only: "false"
           llm_failure_policy: block
+  omar_enforce:
+    name: Omar Gate
+    needs: [omar_scan]
+    if: needs.omar_scan.outputs.trusted_context == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
       - name: Enforce Omar reviewer merge thresholds
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
-          P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
-          P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
-          P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
+          P0_COUNT: ${{ needs.omar_scan.outputs.p0_count || '0' }}
+          P1_COUNT: ${{ needs.omar_scan.outputs.p1_count || '0' }}
+          P2_COUNT: ${{ needs.omar_scan.outputs.p2_count || '0' }}
           P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
           SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
         run: |
@@ -162,7 +175,6 @@ jobs:
               ;;
           esac
       - name: Emit Omar run summary
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -175,8 +187,8 @@ jobs:
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- run_id: \`${{ needs.omar_scan.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- gate_status: \`${{ needs.omar_scan.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- findings: \`P0=${{ needs.omar_scan.outputs.p0_count }} P1=${{ needs.omar_scan.outputs.p1_count }} P2=${{ needs.omar_scan.outputs.p2_count }} P3=${{ needs.omar_scan.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"

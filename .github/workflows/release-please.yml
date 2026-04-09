@@ -62,7 +62,7 @@ jobs:
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Dispatch Release workflow for generated release tag
+      - name: Track Release workflow triggered by generated release tag
         if: steps.release_please.outputs.release_created == 'true' || steps.release_please.outputs.releases_created == 'true'
         shell: bash
         env:
@@ -108,23 +108,19 @@ jobs:
             exit 1
           fi
 
-          dispatch_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          gh workflow run "Release" --ref "${tag_name}"
-
           release_run_id=""
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 40); do
             run_list_json="$(gh run list --workflow "Release" --limit 50 --json databaseId,event,headBranch,headSha,createdAt)"
             release_run_id="$(echo "${run_list_json}" | jq -r \
               --arg tag "${tag_name}" \
               --arg sha "${resolved_release_sha}" \
-              --arg started "${dispatch_started_at}" '
+              '
                 [
                   .[]
                   | select(
-                      .event == "workflow_dispatch"
+                      .event == "push"
                       and .headBranch == $tag
                       and .headSha == $sha
-                      and .createdAt >= $started
                     )
                 ]
                 | sort_by(.createdAt)
@@ -138,7 +134,7 @@ jobs:
           done
 
           if [ -z "${release_run_id}" ] || [ "${release_run_id}" = "null" ]; then
-            echo "::error::Unable to resolve dispatched Release workflow run id for tag ${tag_name}."
+            echo "::error::Unable to resolve Release workflow run id for tag ${tag_name} (push event, sha=${resolved_release_sha})."
             exit 1
           fi
 
@@ -150,7 +146,7 @@ jobs:
           fi
 
           {
-            echo "## Release Dispatch"
+            echo "## Release Workflow Tracking"
             echo "- tag: \`${tag_name}\`"
             echo "- run_id: \`${release_run_id}\`"
             echo "- conclusion: \`${release_conclusion}\`"

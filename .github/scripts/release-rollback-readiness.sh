@@ -6,6 +6,25 @@ ROLLBACK_MODE="${ROLLBACK_MODE:-release}"
 RELEASE_VERSION="${RELEASE_VERSION:-}"
 ROLLBACK_TARGET_OVERRIDE="${ROLLBACK_TARGET_OVERRIDE:-}"
 NON_BLOCKING_DIAGNOSTICS="${NON_BLOCKING_DIAGNOSTICS:-0}"
+NPM_QUERY_TIMEOUT_SECONDS="${NPM_QUERY_TIMEOUT_SECONDS:-45}"
+NPM_QUERY_MAX_ATTEMPTS="${NPM_QUERY_MAX_ATTEMPTS:-3}"
+NPM_SMOKE_TIMEOUT_SECONDS="${NPM_SMOKE_TIMEOUT_SECONDS:-90}"
+NPM_SMOKE_MAX_ATTEMPTS="${NPM_SMOKE_MAX_ATTEMPTS:-3}"
+NPM_RETRY_BACKOFF_BASE_SECONDS="${NPM_RETRY_BACKOFF_BASE_SECONDS:-2}"
+
+resolve_timeout_bin() {
+  if command -v timeout >/dev/null 2>&1; then
+    echo "timeout"
+    return 0
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    echo "gtimeout"
+    return 0
+  fi
+  echo ""
+}
+
+TIMEOUT_BIN="$(resolve_timeout_bin)"
 
 npm_view_json() {
   local package_spec="$1"
@@ -13,19 +32,50 @@ npm_view_json() {
   local label="$3"
   local fallback="$4"
   local output=""
+  local attempt=0
+  local exit_code=1
+  local max_attempts="${NPM_QUERY_MAX_ATTEMPTS}"
+  local timeout_seconds="${NPM_QUERY_TIMEOUT_SECONDS}"
+  local backoff_base="${NPM_RETRY_BACKOFF_BASE_SECONDS}"
 
-  if output="$(npm view "${package_spec}" "${field}" --json 2>/dev/null)"; then
-    printf '%s' "${output}"
-    return 0
+  if ! [[ "${max_attempts}" =~ ^[0-9]+$ ]] || [ "${max_attempts}" -lt 1 ]; then
+    max_attempts=1
+  fi
+  if ! [[ "${timeout_seconds}" =~ ^[0-9]+$ ]] || [ "${timeout_seconds}" -lt 1 ]; then
+    timeout_seconds=45
+  fi
+  if ! [[ "${backoff_base}" =~ ^[0-9]+$ ]] || [ "${backoff_base}" -lt 1 ]; then
+    backoff_base=2
   fi
 
+  for attempt in $(seq 1 "${max_attempts}"); do
+    if [ -n "${TIMEOUT_BIN}" ]; then
+      output="$("${TIMEOUT_BIN}" "${timeout_seconds}s" npm view "${package_spec}" "${field}" --json 2>/dev/null)" && {
+        printf '%s' "${output}"
+        return 0
+      }
+      exit_code=$?
+    else
+      output="$(npm view "${package_spec}" "${field}" --json 2>/dev/null)" && {
+        printf '%s' "${output}"
+        return 0
+      }
+      exit_code=$?
+    fi
+    if [ "${attempt}" -lt "${max_attempts}" ]; then
+      sleep_seconds=$(( attempt * backoff_base ))
+      echo "::warning::npm query failed for ${label} (attempt ${attempt}/${max_attempts}, exit=${exit_code}); retrying in ${sleep_seconds}s."
+      sleep "${sleep_seconds}"
+    fi
+  done
+
   if [ "${NON_BLOCKING_DIAGNOSTICS}" = "1" ]; then
-    echo "::warning::Non-blocking diagnostics enabled; npm query failed for ${label} (${package_spec} ${field})."
+    echo "::warning::Non-blocking diagnostics enabled; npm query failed for ${label} (${package_spec} ${field}) after ${max_attempts} attempt(s)."
     printf '%s' "${fallback}"
     return 0
   fi
 
-  echo "::error::npm query failed for ${label} (${package_spec} ${field})."
+  echo "::error::npm query failed for ${label} (${package_spec} ${field}) after ${max_attempts} attempt(s)."
   exit 1
 }
 
@@ -88,8 +138,46 @@ trap cleanup_rollback_smoke_dir EXIT
 
 run_rollback_smoke_check() {
   rollback_smoke_tmp_dir="$(mktemp -d)"
-  if ! npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${PACKAGE_NAME}@${rollback_target}" >/dev/null 2>&1; then
-    rollback_target_smoke_failure_reason="npm install failed for ${PACKAGE_NAME}@${rollback_target}"
+  local install_attempt=0
+  local install_exit_code=1
+  local install_max_attempts="${NPM_SMOKE_MAX_ATTEMPTS}"
+  local install_timeout_seconds="${NPM_SMOKE_TIMEOUT_SECONDS}"
+  local backoff_base="${NPM_RETRY_BACKOFF_BASE_SECONDS}"
+  if ! [[ "${install_max_attempts}" =~ ^[0-9]+$ ]] || [ "${install_max_attempts}" -lt 1 ]; then
+    install_max_attempts=1
+  fi
+  if ! [[ "${install_timeout_seconds}" =~ ^[0-9]+$ ]] || [ "${install_timeout_seconds}" -lt 1 ]; then
+    install_timeout_seconds=90
+  fi
+  if ! [[ "${backoff_base}" =~ ^[0-9]+$ ]] || [ "${backoff_base}" -lt 1 ]; then
+    backoff_base=2
+  fi
+
+  for install_attempt in $(seq 1 "${install_max_attempts}"); do
+    if [ -n "${TIMEOUT_BIN}" ]; then
+      if "${TIMEOUT_BIN}" "${install_timeout_seconds}s" npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${PACKAGE_NAME}@${rollback_target}" >/dev/null 2>&1; then
+        install_exit_code=0
+      else
+        install_exit_code=$?
+      fi
+    else
+      if npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${PACKAGE_NAME}@${rollback_target}" >/dev/null 2>&1; then
+        install_exit_code=0
+      else
+        install_exit_code=$?
+      fi
+    fi
+    if [ "${install_exit_code}" -eq 0 ]; then
+      break
+    fi
+    if [ "${install_attempt}" -lt "${install_max_attempts}" ]; then
+      sleep_seconds=$(( install_attempt * backoff_base ))
+      echo "::warning::Rollback smoke npm install failed for ${PACKAGE_NAME}@${rollback_target} (attempt ${install_attempt}/${install_max_attempts}, exit=${install_exit_code}); retrying in ${sleep_seconds}s."
+      sleep "${sleep_seconds}"
+    fi
+  done
+  if [ "${install_exit_code}" -ne 0 ]; then
+    rollback_target_smoke_failure_reason="npm install failed for ${PACKAGE_NAME}@${rollback_target} after ${install_max_attempts} attempt(s)"
     return 1
   fi
 
