@@ -485,6 +485,8 @@ jobs:
       - name: Build canonical package tarball
         id: pack
         shell: bash
+        env:
+          TARGET_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           npm pack --ignore-scripts --json > pack.json
@@ -495,7 +497,7 @@ jobs:
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
-            --arg commit_sha "${GITHUB_SHA}" \
+            --arg commit_sha "${TARGET_COMMIT_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg workflow_name "${GITHUB_WORKFLOW}" \
             --arg run_id "${GITHUB_RUN_ID}" \
