@@ -240,6 +240,26 @@ const AUTH_FLOW_FETCH_TIMEOUT_MS = 10_000;
 const AUTH_FLOW_FETCH_MAX_RETRIES = 2;
 const AUTH_FLOW_FETCH_BASE_BACKOFF_MS = 200;
 const RETRYABLE_AUTH_FLOW_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_AUTH_FLOW_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ECONNABORTED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+const RETRYABLE_AUTH_FLOW_MESSAGE_PATTERNS = [
+  /\bfetch failed\b/i,
+  /\bnetwork(?:\s+|-)error\b/i,
+  /\bsocket hang up\b/i,
+  /\btimed?\s*out\b/i,
+  /\b(?:econnreset|eai_again|enotfound|econnrefused|etimedout)\b/i,
+  /\btemporary(?:\s+|-)failure\b/i,
+  /\bconnection\b.*\b(?:reset|terminated|closed)\b/i,
+];
 const AUTH_FLOW_LOCAL_TEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function computePlaywrightBackoffMs(attempt, baseBackoffMs = AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS) {
@@ -310,12 +330,37 @@ function computeAuthFlowBackoffMs(attempt) {
   return Math.min(1000, computed);
 }
 
+function resolveAuthFlowErrorCode(error) {
+  if (!(error instanceof Error)) {
+    return "";
+  }
+  const directCode = String(error.code || "").toUpperCase();
+  if (directCode) {
+    return directCode;
+  }
+  const cause = error.cause;
+  if (!cause || typeof cause !== "object") {
+    return "";
+  }
+  return String(cause.code || cause.errno || "").toUpperCase();
+}
+
 function isRetryableAuthFlowError(error) {
   if (!(error instanceof Error)) {
     return false;
   }
-  // Fetch in Node commonly throws AbortError (timeout) or TypeError (network transport failure).
-  return error.name === "AbortError" || error.name === "TimeoutError" || error.name === "TypeError";
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return true;
+  }
+  const code = resolveAuthFlowErrorCode(error);
+  if (RETRYABLE_AUTH_FLOW_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const normalized = `${error.name} ${error.message || ""}`.toLowerCase();
+  if (error.name === "TypeError") {
+    return RETRYABLE_AUTH_FLOW_MESSAGE_PATTERNS.some((pattern) => pattern.test(normalized));
+  }
+  return RETRYABLE_AUTH_FLOW_MESSAGE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function isAllowedHttpAuthFlowTarget(urlObject) {
