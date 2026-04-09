@@ -22,6 +22,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CANONICAL_NODE_VERSION: "22"
 
 jobs:
   eval-impact:
@@ -119,7 +120,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
@@ -254,52 +255,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          QUALITY_REQUIRE_CODEQL: ${{ vars.QUALITY_REQUIRE_CODEQL || 'false' }}
-          QUALITY_CODEQL_WAIVER: ${{ vars.QUALITY_CODEQL_WAIVER || 'CodeQL workflow is currently not enabled; temporary risk acceptance recorded.' }}
           MAX_WAIT_SECONDS: "900"
           POLL_INTERVAL_SECONDS: "10"
         run: |
           set -euo pipefail
-          require_codeql="$(echo "${QUALITY_REQUIRE_CODEQL}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          waiver="$(echo "${QUALITY_CODEQL_WAIVER}" | xargs || true)"
-          merge_bound_event="false"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            merge_bound_event="true"
-          fi
-          if [ "${merge_bound_event}" = "true" ]; then
-            REQUIRED_CHECKS_JSON='[{"name":"CodeQL Summary","app":"github-actions","optional":false}]'
-            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-              {
-                echo "## Security CodeQL"
-                echo "- mode: \`required\`"
-                echo "- reason: merge-bound event (${GITHUB_EVENT_NAME} ${GITHUB_REF})"
-              } >> "${GITHUB_STEP_SUMMARY}"
-            fi
-          else
-            case "${require_codeql}" in
-              true|1|yes)
-                REQUIRED_CHECKS_JSON='[{"name":"CodeQL Summary","app":"github-actions","optional":false}]'
-                ;;
-              false|0|no|'')
-                if [ -z "${waiver}" ]; then
-                  echo "::error::QUALITY_REQUIRE_CODEQL is disabled but QUALITY_CODEQL_WAIVER is empty."
-                  exit 1
-                fi
-                echo "::warning::CodeQL check-run enforcement waived: ${waiver}"
-                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-                  {
-                    echo "## Security CodeQL"
-                    echo "- mode: \`waived\`"
-                    echo "- waiver: ${waiver}"
-                  } >> "${GITHUB_STEP_SUMMARY}"
-                fi
-                REQUIRED_CHECKS_JSON='[{"name":"CodeQL Summary","app":"github-actions","optional":true}]'
-                ;;
-              *)
-                echo "::error::Invalid QUALITY_REQUIRE_CODEQL value: ${QUALITY_REQUIRE_CODEQL}"
-                exit 1
-                ;;
-            esac
+          REQUIRED_CHECKS_JSON='[{"name":"CodeQL Summary","app":"github-actions","optional":false}]'
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Security CodeQL"
+              echo "- mode: \`required\`"
+              echo "- reason: codeql-summary is mandatory before security stage and e2e packaging"
+            } >> "${GITHUB_STEP_SUMMARY}"
           fi
           export REQUIRED_CHECKS_JSON
           .github/scripts/require-check-runs.sh
@@ -331,7 +297,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        node: ["22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

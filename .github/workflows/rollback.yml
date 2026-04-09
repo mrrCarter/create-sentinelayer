@@ -115,14 +115,47 @@ jobs:
           NON_BLOCKING_DIAGNOSTICS: "0"
         run: bash .github/scripts/release-rollback-readiness.sh
 
+      - name: Validate rollback npm token governance
+        shell: bash
+        env:
+          NPM_DIST_TAG_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
+          NPM_DIST_TAG_TOKEN_ROTATED_AT: ${{ vars.NPM_DIST_TAG_TOKEN_ROTATED_AT || '' }}
+          NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS: ${{ vars.NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS || '90' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_DIST_TAG_TOKEN}" ]; then
+            echo "::error::Missing NPM_DIST_TAG_TOKEN in package-release environment secrets."
+            exit 1
+          fi
+          if [ -z "${NPM_DIST_TAG_TOKEN_ROTATED_AT}" ]; then
+            echo "::error::Missing NPM_DIST_TAG_TOKEN_ROTATED_AT repository variable (ISO-8601 date required)."
+            exit 1
+          fi
+          if ! [[ "${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]] || [ "${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}" -lt 1 ]; then
+            echo "::error::Invalid NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS value: ${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}"
+            exit 1
+          fi
+          rotated_epoch="$(date -u -d "${NPM_DIST_TAG_TOKEN_ROTATED_AT}" +%s 2>/dev/null || true)"
+          if [ -z "${rotated_epoch}" ]; then
+            echo "::error::Invalid NPM_DIST_TAG_TOKEN_ROTATED_AT value: ${NPM_DIST_TAG_TOKEN_ROTATED_AT}"
+            exit 1
+          fi
+          now_epoch="$(date -u +%s)"
+          token_age_days="$(( (now_epoch - rotated_epoch) / 86400 ))"
+          if [ "${token_age_days}" -gt "${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}" ]; then
+            echo "::error::NPM_DIST_TAG_TOKEN exceeds max age policy (${token_age_days}d > ${NPM_DIST_TAG_TOKEN_MAX_AGE_DAYS}d). Rotate token before rollback."
+            exit 1
+          fi
+          echo "NPM_DIST_TAG_TOKEN_AGE_DAYS=${token_age_days}" >> "$GITHUB_ENV"
+
       - name: Execute rollback dist-tag update
         shell: bash
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "::error::Missing NPM_TOKEN in package-release environment secrets."
+          if [ -z "${NPM_DIST_TAG_TOKEN}" ]; then
+            echo "::error::Missing NPM_DIST_TAG_TOKEN in package-release environment secrets."
             exit 1
           fi
           npm_userconfig="$(mktemp)"
@@ -131,7 +164,7 @@ jobs:
           }
           trap cleanup_npmrc EXIT
           chmod 600 "${npm_userconfig}"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" > "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_DIST_TAG_TOKEN}" > "${npm_userconfig}"
           export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
           npm dist-tag add "sentinelayer-cli@${ROLLBACK_TARGET_VERSION}" latest
 
@@ -167,21 +200,22 @@ jobs:
             echo "- package: \`sentinelayer-cli\`"
             echo "- rollback_target: \`${ROLLBACK_TARGET_VERSION}\`"
             echo "- latest_dist_tag: \`${latest_tag}\`"
+            echo "- token_age_days: \`${NPM_DIST_TAG_TOKEN_AGE_DAYS:-unknown}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deprecate rolled-back release version
         if: ${{ inputs.deprecate_release && inputs.release_version != '' }}
         shell: bash
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${ROLLBACK_RELEASE_VERSION}" ]; then
             echo "::error::Cannot deprecate release: release_version input is empty after normalization."
             exit 1
           fi
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "::error::Missing NPM_TOKEN in package-release environment secrets."
+          if [ -z "${NPM_DIST_TAG_TOKEN}" ]; then
+            echo "::error::Missing NPM_DIST_TAG_TOKEN in package-release environment secrets."
             exit 1
           fi
           npm_userconfig="$(mktemp)"
@@ -190,7 +224,7 @@ jobs:
           }
           trap cleanup_npmrc EXIT
           chmod 600 "${npm_userconfig}"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" > "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_DIST_TAG_TOKEN}" > "${npm_userconfig}"
           export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
           npm deprecate \
             "sentinelayer-cli@${ROLLBACK_RELEASE_VERSION}" \
