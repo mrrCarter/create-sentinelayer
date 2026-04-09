@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.3...v0.4.4) (2026-04-09)
+
+
+### Bug Fixes
+
+* **ci:** align release-please timeout with gate wait window ([#268](https://github.com/mrrCarter/create-sentinelayer/issues/268)) ([8928f39](https://github.com/mrrCarter/create-sentinelayer/commit/8928f39d051acc66b38ed217d565415d012d97b8))
+* **release:** support token fallback for npm publish auth ([#267](https://github.com/mrrCarter/create-sentinelayer/issues/267)) ([8501c71](https://github.com/mrrCarter/create-sentinelayer/commit/8501c71e0bbe53908b8f27811d5871755a06448a))
+
 ## [0.4.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.2...v0.4.3) (2026-04-09)
 
 
