@@ -126,6 +126,7 @@ jobs:
     name: Syntax & Sanity (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    needs: [eval-impact]
     strategy:
       fail-fast: false
       matrix:
