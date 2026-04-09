@@ -884,15 +884,17 @@ Build provenance attestations are enforced by `.github/workflows/attestations.ym
 Prerequisites:
 
 - npm package name is available (`sentinelayer-cli`)
-- repository secret `NPM_TOKEN` is set with publish access
+- one publish auth path is configured:
+  - repository secret `NPM_TOKEN` with publish access, or
+  - npm trusted publishing for this repository/tag workflow
 
 Release options:
 
 1. Merge to `main` and let `Release Please` open/update the release PR and tag.
 2. Push a tag like `v0.1.1` to publish automatically (or via release-please tag creation).
-3. Run `Release` manually in verify-only mode (`publish=false`, default) to validate and upload tarball artifact.
-4. Run `Release` manually with `publish=true` to publish from Actions.
-5. If `NPM_TOKEN` is not configured, publish is skipped with an explicit workflow message (verification + tarball still succeed).
+3. Run `Release` manually (`workflow_dispatch`) to validate gates and rollback readiness without publishing.
+4. Tag-triggered publish resolves auth mode at runtime (`NPM_TOKEN` first, otherwise trusted publishing OIDC).
+5. If neither auth mode is available, publish fails closed with an explicit workflow error.
 
 Release publish now enforces tarball checksum-manifest validation and attestation verification bound to `.github/workflows/release.yml` before `npm publish`.
 
