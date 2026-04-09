@@ -321,7 +321,10 @@ describe("authAudit", () => {
     assert.ok(source.includes("didLeaveLoginSurface"));
     assert.ok(source.includes("loginFormVisible"));
     assert.ok(source.includes("authCookiePresent"));
-    assert.ok(source.includes("results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);"));
+    assert.ok(source.includes("results.authenticated = !loginFormVisible && urlChanged && authCookiePresent;"));
+    assert.ok(source.includes("targetLoginFormVisible"));
+    assert.ok(source.includes("targetStatusOk"));
+    assert.ok(source.includes("results.authenticated = !targetLoginFormVisible && targetStatusOk;"));
   });
 
   it("playwright retry backoff jitter is deterministic", () => {

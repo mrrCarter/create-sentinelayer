@@ -211,7 +211,7 @@ const fs = require('node:fs');
         Boolean(document.querySelector(emailSel) && document.querySelector(passwordSel))
       ), emailSelector, passwordSelector).catch(() => false);
       results.authSignals = { urlChanged, authCookiePresent, loginFormVisible };
-      results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);
+      results.authenticated = !loginFormVisible && urlChanged && authCookiePresent;
     }
 
     const targetResponse = await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
@@ -232,6 +232,17 @@ const fs = require('node:fs');
     }));
 
     const response = targetResponse || null;
+    const targetLoginFormVisible = await page.evaluate((emailSel, passwordSel) => (
+      Boolean(document.querySelector(emailSel) && document.querySelector(passwordSel))
+    ), emailSelector, passwordSelector).catch(() => true);
+    const targetStatus = response ? response.status() : null;
+    const targetStatusOk = typeof targetStatus === 'number' ? targetStatus < 400 : false;
+    results.authSignals.targetLoginFormVisible = targetLoginFormVisible;
+    results.authSignals.targetStatus = targetStatus;
+    results.authSignals.targetStatusOk = targetStatusOk;
+    if (results.authenticated) {
+      results.authenticated = !targetLoginFormVisible && targetStatusOk;
+    }
     if (response) {
       const h = response.headers();
       results.headers = {

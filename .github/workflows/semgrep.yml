@@ -33,7 +33,30 @@ jobs:
       - name: Install Semgrep
         run: |
           set -euo pipefail
+          policy_file=".github/policies/tool-digests.json"
+          expected_requirements_sha="$(jq -r '.semgrep.requirements_sha256 // empty' "${policy_file}")"
+          expected_semgrep_version="$(jq -r '.semgrep.version // empty' "${policy_file}")"
+          if [ -z "${expected_requirements_sha}" ] || [ -z "${expected_semgrep_version}" ]; then
+            echo "::error::Missing semgrep digest policy in ${policy_file}."
+            exit 1
+          fi
+          if ! echo "${expected_requirements_sha}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Invalid semgrep requirements SHA256 in ${policy_file}."
+            exit 1
+          fi
+          actual_requirements_sha="$(sha256sum .github/policies/semgrep-requirements.txt | awk '{print $1}')"
+          if [ "${actual_requirements_sha}" != "${expected_requirements_sha}" ]; then
+            echo "::error::Semgrep requirements digest mismatch."
+            echo "::error::expected=${expected_requirements_sha} actual=${actual_requirements_sha}"
+            exit 1
+          fi
           python -m pip install --disable-pip-version-check --require-hashes -r .github/policies/semgrep-requirements.txt
+          semgrep_version="$(semgrep --version | tr -d '\r' | xargs || true)"
+          if [ "${semgrep_version}" != "${expected_semgrep_version}" ]; then
+            echo "::error::Semgrep version mismatch."
+            echo "::error::expected=${expected_semgrep_version} actual=${semgrep_version}"
+            exit 1
+          fi
           semgrep --version
 
       - name: Run Semgrep custom policy pack
