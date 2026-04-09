@@ -219,18 +219,31 @@ jobs:
               client_id: (if ($client_id | length) > 0 then $client_id else null end)
             }')"
           exchange_response=""
+          exchange_headers_file="$(mktemp)"
+          exchange_body_file="$(mktemp)"
+          cleanup_exchange_contract_files() {
+            rm -f "${exchange_headers_file}" "${exchange_body_file}"
+          }
+          trap cleanup_exchange_contract_files EXIT
           for attempt in 1 2 3; do
-            if exchange_response="$(curl -fsSL \
+            exchange_http_code="$(curl -sS \
               --retry 0 \
               --connect-timeout 5 \
               --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
               -H "Content-Type: application/json" \
+              -D "${exchange_headers_file}" \
+              -o "${exchange_body_file}" \
+              -w "%{http_code}" \
               -d "${exchange_request}" \
-              "${NPM_TOKEN_EXCHANGE_URL}")"; then
+              "${NPM_TOKEN_EXCHANGE_URL}" || true)"
+            exchange_content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/ { sub(/\r$/, "", $0); sub(/^content-type:[[:space:]]*/, "", $0); print $0; exit }' "${exchange_headers_file}" || true)"
+            if [ "${exchange_http_code}" = "200" ] && echo "${exchange_content_type}" | grep -Eqi '(^|[;[:space:]])application/json($|[;[:space:]])'; then
+              exchange_response="$(cat "${exchange_body_file}")"
               break
             fi
             if [ "${attempt}" -eq 3 ]; then
-              echo "::error::OIDC token exchange failed after ${attempt} attempts."
+              echo "::error::OIDC token exchange failed strict HTTP contract after ${attempt} attempts."
+              echo "::error::http_status=${exchange_http_code:-<none>} content_type=${exchange_content_type:-<none>}"
               exit 1
             fi
             sleep $((attempt * 2))

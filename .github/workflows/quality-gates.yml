@@ -162,6 +162,52 @@ jobs:
         shell: bash
         run: bash .github/scripts/verify-workflow-action-pins.sh
 
+  security-workflow-digest-policy:
+    name: Security Workflow Digest Policy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-enforce, action-pin-policy]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Enforce reusable security workflow digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          policy_file=".github/policies/reusable-workflow-digests.json"
+          if [ ! -f "${policy_file}" ]; then
+            echo "::error::Missing reusable workflow digest policy file: ${policy_file}"
+            exit 1
+          fi
+          if ! jq -e 'type == "object" and length > 0' "${policy_file}" >/dev/null 2>&1; then
+            echo "::error::Invalid reusable workflow digest policy format in ${policy_file}"
+            exit 1
+          fi
+          verified_count=0
+          while IFS=$'\t' read -r workflow_path expected_digest; do
+            if [ ! -f "${workflow_path}" ]; then
+              echo "::error::Reusable workflow missing: ${workflow_path}"
+              exit 1
+            fi
+            if ! echo "${expected_digest}" | grep -Eq '^[a-f0-9]{64}$'; then
+              echo "::error::Invalid expected digest for ${workflow_path}: ${expected_digest}"
+              exit 1
+            fi
+            actual_digest="$(sha256sum "${workflow_path}" | awk '{print $1}')"
+            if [ "${actual_digest}" != "${expected_digest}" ]; then
+              echo "::error::Reusable workflow digest mismatch for ${workflow_path}."
+              echo "::error::expected=${expected_digest} actual=${actual_digest}"
+              exit 1
+            fi
+            verified_count="$((verified_count + 1))"
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "${policy_file}")
+          {
+            echo "## Security Workflow Digest Policy"
+            echo "- policy_file: \`${policy_file}\`"
+            echo "- verified_workflows: \`${verified_count}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Lint
     runs-on: ubuntu-22.04
@@ -298,42 +344,42 @@ jobs:
 
   security-semgrep:
     name: Security Semgrep
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/semgrep.yml
     permissions:
       contents: read
 
   security-gitleaks:
     name: Security Gitleaks
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/gitleaks.yml
     permissions:
       contents: read
 
   security-iac:
     name: Security IaC
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/iac-scan.yml
     permissions:
       contents: read
 
   security-sca:
     name: Security SCA
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/sca-audit.yml
     permissions:
       contents: read
 
   security-license:
     name: Security License
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/license-gate.yml
     permissions:
       contents: read
 
   security-sbom:
     name: Security SBOM
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/sbom.yml
     permissions:
       contents: read
@@ -342,7 +388,7 @@ jobs:
     name: Security CodeQL
     runs-on: ubuntu-22.04
     timeout-minutes: 25
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     permissions:
       contents: read
       pull-requests: read

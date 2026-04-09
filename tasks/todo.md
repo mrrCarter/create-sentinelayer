@@ -1390,3 +1390,12 @@ Review:
 - [x] Upgrade `quality-gates` CodeQL stage to execute pinned CodeQL init+analyze in-workflow before policy evaluation.
 - [x] Run local full validation (`npm run verify`).
 - [ ] Push updates, run Omar loop (`gh run watch`), and iterate until remaining P2 findings are burned down.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A41)
+
+- [x] Add reusable security-workflow digest policy gate to `quality-gates` and wire all security jobs through it.
+- [x] Tighten rollback OIDC exchange contract with explicit HTTP status and content-type validation.
+- [x] Add post-publish rollback-readiness drill in `release.yml` publish path.
+- [x] Remove semgrep bootstrap package installs from live index and enforce toolchain version match from pinned runtime.
+- [x] Run local full validation (`npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch`), and continue non-blocking P2 burn-down.

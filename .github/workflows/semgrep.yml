@@ -56,12 +56,6 @@ jobs:
             echo "::error::expected=${expected_requirements_sha} actual=${actual_requirements_sha}"
             exit 1
           fi
-          python -m pip install --disable-pip-version-check \
-            --timeout "${PIP_DEFAULT_TIMEOUT}" \
-            --retries "${PIP_RETRIES}" \
-            "pip==${expected_pip_version}" \
-            "setuptools==${expected_setuptools_version}" \
-            "wheel==${expected_wheel_version}"
           pip_version="$(python -m pip --version | awk '{print $2}' | tr -d '\r' | xargs || true)"
           setuptools_version="$(python -c 'import setuptools; print(setuptools.__version__)')"
           wheel_version="$(python -c 'import wheel; print(wheel.__version__)')"
@@ -69,14 +63,17 @@ jobs:
           wheel_version="$(echo "${wheel_version}" | tr -d '\r' | xargs || true)"
           if [ "${pip_version}" != "${expected_pip_version}" ]; then
             echo "::error::pip version mismatch. expected=${expected_pip_version} actual=${pip_version}"
+            echo "::error::Update .github/policies/tool-digests.json and setup-python runtime pin together."
             exit 1
           fi
           if [ "${setuptools_version}" != "${expected_setuptools_version}" ]; then
             echo "::error::setuptools version mismatch. expected=${expected_setuptools_version} actual=${setuptools_version}"
+            echo "::error::Update .github/policies/tool-digests.json and setup-python runtime pin together."
             exit 1
           fi
           if [ "${wheel_version}" != "${expected_wheel_version}" ]; then
             echo "::error::wheel version mismatch. expected=${expected_wheel_version} actual=${wheel_version}"
+            echo "::error::Update .github/policies/tool-digests.json and setup-python runtime pin together."
             exit 1
           fi
           python -m pip install --disable-pip-version-check \

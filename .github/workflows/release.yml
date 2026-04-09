@@ -809,3 +809,15 @@ jobs:
           fi
           echo "No residual npm auth token remains after publish."
 
+      - name: Run post-publish rollback readiness drill
+        shell: bash
+        env:
+          PACKAGE_NAME: sentinelayer-cli
+          ROLLBACK_MODE: post-publish
+          RELEASE_VERSION: ${{ github.ref_name }}
+          NON_BLOCKING_DIAGNOSTICS: "0"
+        run: |
+          set -euo pipefail
+          release_version="${RELEASE_VERSION#v}"
+          RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
+
