@@ -206,3 +206,35 @@ test("Unit auth gate: rejects stored session when token expiry timestamp is inva
     await rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test("Unit auth gate: rejects stored session when token expiry is missing", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  try {
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+    await writeStoredSession({
+      apiUrl: "https://api.sentinelayer.com",
+      token: "api_token_validish",
+      tokenPrefix: "api_token_",
+      tokenExpiresAt: null,
+      user: { id: "user_1", github_username: "demo-user" },
+    }, { homeDir: tempHome });
+
+    const result = await checkAuthGate(["audit"]);
+    assert.equal(result.authenticated, false);
+    assert.equal(result.bypassReason, null);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousDisableKeyring === undefined) delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    else process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});

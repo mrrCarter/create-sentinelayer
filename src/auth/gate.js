@@ -55,10 +55,11 @@ function isValidSessionToken(session) {
 }
 
 function isSessionUnexpired(tokenExpiresAt) {
-  if (!tokenExpiresAt) {
-    return true;
+  const normalized = String(tokenExpiresAt || "").trim();
+  if (!normalized) {
+    return false;
   }
-  const expiresAt = new Date(tokenExpiresAt).getTime();
+  const expiresAt = new Date(normalized).getTime();
   if (!Number.isFinite(expiresAt)) {
     return false;
   }

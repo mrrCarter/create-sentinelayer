@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { assertPermittedAuditTarget } from "./url-policy.js";
 
 /**
  * Jules Tanaka — Runtime Audit Tool
@@ -54,14 +55,12 @@ async function lighthouseScan(input) {
   if (!url) {
     throw new RuntimeAuditError("lighthouse_scan requires a url parameter");
   }
-  if (!isValidUrl(url)) {
-    throw new RuntimeAuditError("Invalid URL: " + url);
-  }
+  const targetUrl = resolveRuntimeTargetUrl(url, input, "lighthouse_scan");
 
   // Prefer SentinelLayer API scanner (authenticated, server-side Lighthouse).
   // Falls back to local npx lighthouse if API unavailable.
   try {
-    const apiResult = await callScannerApi(url);
+    const apiResult = await callScannerApi(targetUrl);
     if (apiResult.available) return apiResult;
   } catch { /* API unavailable — fall back to local */ }
 
@@ -76,7 +75,7 @@ async function lighthouseScan(input) {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     execFileSync("npx", [
-      "--yes", "lighthouse@12", url,
+      "--yes", "lighthouse@12", targetUrl,
       "--output", "json", "--output-path", outputPath,
       "--chrome-flags=--headless --no-sandbox --disable-gpu", "--quiet",
     ], {
@@ -136,10 +135,10 @@ async function lighthouseScan(input) {
 function checkResponseHeaders(input) {
   const url = input.url;
   if (!url) throw new RuntimeAuditError("check_response_headers requires a url");
-  if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
+  const targetUrl = resolveRuntimeTargetUrl(url, input, "check_response_headers");
 
   try {
-    const safeUrl = sanitizeUrlForShell(url);
+    const safeUrl = sanitizeUrlForShell(targetUrl);
     if (!safeUrl) throw new Error("URL sanitization failed");
     const output = execFileSync("curl", ["-sI", "-L", "--max-time", "10", safeUrl], {
       encoding: "utf-8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"],
@@ -165,7 +164,7 @@ function checkResponseHeaders(input) {
 
     return {
       available: true,
-      url,
+      url: targetUrl,
       statusCode: parseInt(output.match(/HTTP\/[\d.]+ (\d+)/)?.[1] || "0"),
       headers,
       securityFindings: findings,
@@ -224,7 +223,7 @@ function detectDeployedUrl(input) {
 function checkConsoleErrors(input) {
   const url = input.url;
   if (!url) throw new RuntimeAuditError("check_console_errors requires a url");
-  if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
+  const targetUrl = resolveRuntimeTargetUrl(url, input, "check_console_errors");
 
   // Try playwright — URL passed via env var to prevent command injection
   try {
@@ -250,7 +249,7 @@ function checkConsoleErrors(input) {
     const output = execFileSync("node", [scriptPath], {
       encoding: "utf-8", timeout: 45000,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, SL_AUDIT_TARGET_URL: url },
+      env: { ...process.env, SL_AUDIT_TARGET_URL: targetUrl },
     });
     try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
     try { fs.rmdirSync(path.dirname(scriptPath)); } catch { /* best effort */ }
@@ -272,13 +271,13 @@ function checkConsoleErrors(input) {
 function checkNetworkWaterfall(input) {
   const url = input.url;
   if (!url) throw new RuntimeAuditError("check_network_waterfall requires a url");
-  if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
+  const targetUrl = resolveRuntimeTargetUrl(url, input, "check_network_waterfall");
 
   try {
     // Write curl format to temp file to avoid shell quoting issues across platforms
     const formatFile = secureTempFile("sl-curl-fmt-" + randomUUID().slice(0, 8) + ".txt");
     fs.writeFileSync(formatFile, '{"dns_ms":%{time_namelookup},"connect_ms":%{time_connect},"tls_ms":%{time_appconnect},"ttfb_ms":%{time_starttransfer},"total_ms":%{time_total},"size_bytes":%{size_download},"status":%{http_code}}');
-    const safeUrl = sanitizeUrlForShell(url);
+    const safeUrl = sanitizeUrlForShell(targetUrl);
     if (!safeUrl) { try { fs.unlinkSync(formatFile); } catch {} throw new Error("URL sanitization failed"); }
     const output = execFileSync("curl", [
       "-sL", "-o", devNull(), "-w", "@" + formatFile, "--max-time", "15", safeUrl,
@@ -290,7 +289,7 @@ function checkNetworkWaterfall(input) {
     for (const key of ["dns_ms", "connect_ms", "tls_ms", "ttfb_ms", "total_ms"]) {
       timing[key] = Math.round(timing[key] * 1000);
     }
-    return { available: true, url, timing };
+    return { available: true, url: targetUrl, timing };
   } catch (err) {
     return { available: false, reason: "curl timing failed: " + err.message };
   }
@@ -302,7 +301,7 @@ function checkNetworkWaterfall(input) {
 function checkDomStats(input) {
   const url = input.url;
   if (!url) throw new RuntimeAuditError("check_dom_stats requires a url");
-  if (!isValidUrl(url)) throw new RuntimeAuditError("Invalid URL: " + url);
+  const targetUrl = resolveRuntimeTargetUrl(url, input, "check_dom_stats");
 
   // URL passed via env var to prevent command injection (CodeQL alert #51)
   try {
@@ -336,7 +335,7 @@ function checkDomStats(input) {
     const output = execFileSync("node", [scriptPath], {
       encoding: "utf-8", timeout: 45000,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, SL_AUDIT_TARGET_URL: url },
+      env: { ...process.env, SL_AUDIT_TARGET_URL: targetUrl },
     });
     try { fs.unlinkSync(scriptPath); } catch { /* best effort */ }
     try { fs.rmdirSync(path.dirname(scriptPath)); } catch { /* best effort */ }
@@ -348,12 +347,15 @@ function checkDomStats(input) {
 
 // ── Helpers ──────────────────────────────────────────────��───────────
 
-function isValidUrl(url) {
+function resolveRuntimeTargetUrl(url, input, operation) {
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
+    const parsed = assertPermittedAuditTarget(url, {
+      operation,
+      allowPrivateTargets: input.allowPrivateTargets === true,
+    });
+    return parsed.toString();
+  } catch (error) {
+    throw new RuntimeAuditError(error.message);
   }
 }
 
