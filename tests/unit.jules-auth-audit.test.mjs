@@ -170,6 +170,25 @@ describe("authAudit", () => {
     }
   });
 
+  it("check_auth_flow_security fails closed when redirect hop budget is exceeded", async () => {
+    const previousFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount += 1;
+      return createResponse(302, {
+        location: `/hop-${callCount}`,
+      });
+    };
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      assert.equal(result.available, false);
+      assert.match(result.reason, /Exceeded 5 redirects/);
+      assert.ok(callCount >= 6);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("check_auth_flow_security allows localhost HTTP targets in test mode only", async () => {
     const previousFetch = globalThis.fetch;
     const previousNodeEnv = process.env.NODE_ENV;
@@ -303,6 +322,13 @@ describe("authAudit", () => {
     assert.ok(source.includes("loginFormVisible"));
     assert.ok(source.includes("authCookiePresent"));
     assert.ok(source.includes("results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);"));
+  });
+
+  it("playwright retry backoff jitter is deterministic", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("deterministicJitter"));
+    assert.ok(source.includes("1103515245"));
+    assert.ok(source.includes("12345"));
   });
 
   it("playwright context is sourced from stdin instead of temporary credential files", () => {

@@ -274,8 +274,9 @@ const AUTH_FLOW_LOCAL_TEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 function computePlaywrightBackoffMs(attempt, baseBackoffMs = AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS) {
   const cappedBase = Math.max(1, Number.isFinite(baseBackoffMs) ? Math.trunc(baseBackoffMs) : AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS);
   const exponential = Math.min(4000, cappedBase * Math.pow(2, Math.max(0, attempt)));
-  const jitter = Math.random();
-  return Math.max(1, Math.trunc(exponential * jitter));
+  const deterministicJitter = ((Math.max(0, attempt) * 1103515245 + 12345) % 1000) / 1000;
+  const jitterFactor = 0.5 + (deterministicJitter * 0.5);
+  return Math.max(1, Math.trunc(exponential * jitterFactor));
 }
 
 function isRetryablePlaywrightExecutionError(error) {
@@ -491,14 +492,20 @@ async function checkAuthFlowSecurity(input) {
 
 async function fetchLoginHeaders(loginUrl, options = {}) {
   let currentUrl = loginUrl;
-  const visited = new Set();
+  const visitedUrls = new Set();
+  let redirectCount = 0;
 
-  for (let hop = 0; hop < MAX_AUTH_REDIRECT_HOPS; hop++) {
+  while (true) {
+    if (redirectCount > MAX_AUTH_REDIRECT_HOPS) {
+      throw new AuthAuditError(
+        `Exceeded ${MAX_AUTH_REDIRECT_HOPS} redirects while checking auth flow (last=${currentUrl})`
+      );
+    }
     const currentParsedUrl = assertSecureAuthFlowTarget(currentUrl, options);
-    if (visited.has(currentUrl)) {
+    if (visitedUrls.has(currentUrl)) {
       throw new AuthAuditError("Redirect loop detected while checking auth headers");
     }
-    visited.add(currentUrl);
+    visitedUrls.add(currentUrl);
 
     const response = await fetchLoginResponseWithRetry(currentUrl);
     const headers = Object.fromEntries(response.headers.entries());
@@ -513,13 +520,12 @@ async function fetchLoginHeaders(loginUrl, options = {}) {
         return { headers, finalUrl: currentUrl, crossOriginRedirect: true };
       }
       currentUrl = nextParsedUrl.toString();
+      redirectCount += 1;
       continue;
     }
 
     return { headers, finalUrl: currentUrl, crossOriginRedirect: false };
   }
-
-  throw new AuthAuditError(`Exceeded ${MAX_AUTH_REDIRECT_HOPS} redirects while checking auth flow`);
 }
 
 function resolveAuthAuditTarget(urlValue, input, operation) {
