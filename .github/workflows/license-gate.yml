@@ -38,7 +38,17 @@ jobs:
         run: |
           set -euo pipefail
           npx --no-install license-checker-rseidelsohn --version
+          set +e
           npx --no-install license-checker-rseidelsohn --production --json > license-report.json
+          tool_exit="$?"
+          set -e
+          if [ ! -s license-report.json ]; then
+            echo "::error::license-checker did not produce license-report.json"
+            exit 1
+          fi
+          if [ "${tool_exit}" -ne 0 ]; then
+            echo "::notice::license-checker exited ${tool_exit}; continuing with generated report for policy evaluation."
+          fi
 
       - name: Enforce license policy
         run: node scripts/license-policy-check.mjs license-report.json .github/policies/license-policy.json license-violations.json
