@@ -1,0 +1,11 @@
+{
+  "allowed_tag_actors": [
+    "github-actions[bot]"
+  ],
+  "allowed_tag_signer_emails": [
+    "41898282+github-actions[bot]@users.noreply.github.com"
+  ],
+  "required_release_workflow_path": ".github/workflows/release-please.yml",
+  "required_release_workflow_name": "Release Please",
+  "required_release_workflow_actor": "github-actions[bot]"
+}

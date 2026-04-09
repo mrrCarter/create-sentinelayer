@@ -36,7 +36,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -50,7 +49,6 @@ jobs:
     environment: security-review
     permissions:
       contents: read
-      id-token: write
       checks: write
       pull-requests: write
     outputs:
@@ -82,22 +80,13 @@ jobs:
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: resolve_omar_credentials
         shell: bash
-        env:
-          OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
         run: |
           set -euo pipefail
           mode="static-secrets"
-          if [ -n "${OMAR_TOKEN_EXCHANGE_URL}" ]; then
-            echo "::warning::OMAR_TOKEN_EXCHANGE_URL is configured but Omar Gate is currently locked to static secret mode to avoid secret output-channel exposure."
-          fi
           echo "credential_mode=${mode}" >> "${GITHUB_OUTPUT}"
           {
             echo "## Omar Credential Mode"
             echo "- mode: \`${mode}\`"
-            if [ -n "${OMAR_TOKEN_EXCHANGE_URL}" ]; then
-              echo "- exchange_url: \`${OMAR_TOKEN_EXCHANGE_URL}\`"
-              echo "- exchange_status: \`disabled-in-workflow\`"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Sentinelayer token secret
         if: steps.trust_boundary.outputs.trusted_context == 'true'

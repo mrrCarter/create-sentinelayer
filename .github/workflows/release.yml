@@ -31,12 +31,34 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot]' }}
-          RELEASE_ALLOWED_TAG_SIGNER_EMAILS: ${{ vars.RELEASE_ALLOWED_TAG_SIGNER_EMAILS || '41898282+github-actions[bot]@users.noreply.github.com' }}
           EVENT_CREATED: ${{ github.event.created }}
           EVENT_DELETED: ${{ github.event.deleted }}
         run: |
           set -euo pipefail
+          policy_file=".github/policies/release-tag-policy.json"
+          if [ ! -f "${policy_file}" ]; then
+            echo "::error::Missing release tag policy file: ${policy_file}."
+            exit 1
+          fi
+          if ! jq -e '
+            type == "object"
+            and (.allowed_tag_actors | type == "array" and length > 0)
+            and (.allowed_tag_signer_emails | type == "array" and length > 0)
+            and (.required_release_workflow_path | type == "string" and length > 0)
+            and (.required_release_workflow_name | type == "string" and length > 0)
+            and (.required_release_workflow_actor | type == "string" and length > 0)
+          ' "${policy_file}" >/dev/null 2>&1; then
+            echo "::error::Invalid release tag policy schema in ${policy_file}."
+            exit 1
+          fi
+          allowed_csv="$(jq -r '[.allowed_tag_actors[] | strings | select(length > 0)] | join(",")' "${policy_file}")"
+          signer_allowlist="$(jq -r '[.allowed_tag_signer_emails[] | strings | ascii_downcase | select(length > 0)] | join(",")' "${policy_file}")"
+          required_release_workflow_path="$(jq -r '.required_release_workflow_path' "${policy_file}")"
+          required_release_workflow_name="$(jq -r '.required_release_workflow_name' "${policy_file}")"
+          required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
+          export required_release_workflow_path
+          export required_release_workflow_name
+          export required_release_workflow_actor
           if [ "${EVENT_DELETED}" = "true" ]; then
             echo "::error::Release workflow does not run on deleted tags."
             exit 1
@@ -46,9 +68,8 @@ jobs:
             exit 1
           fi
           actor="${GITHUB_ACTOR}"
-          allowed_csv="${RELEASE_ALLOWED_TAG_ACTORS}"
           if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
-            echo "::error::RELEASE_ALLOWED_TAG_ACTORS is empty."
+            echo "::error::allowed_tag_actors is empty in ${policy_file}."
             exit 1
           fi
           actor_allowed="false"
@@ -84,9 +105,8 @@ jobs:
           fi
           tagger_date="$(echo "${tag_object_json}" | jq -r '.tagger.date // empty' | xargs || true)"
           signer_email="$(echo "${tag_object_json}" | jq -r '.tagger.email // empty' | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          signer_allowlist="${RELEASE_ALLOWED_TAG_SIGNER_EMAILS}"
           if [ -z "$(echo "${signer_allowlist}" | xargs || true)" ]; then
-            echo "::error::RELEASE_ALLOWED_TAG_SIGNER_EMAILS is empty."
+            echo "::error::allowed_tag_signer_emails is empty in ${policy_file}."
             exit 1
           fi
           signer_allowed="false"
@@ -111,9 +131,9 @@ jobs:
                   and (.event // "") == "push"
                   and (.head_branch // "") == "main"
                   and (.head_sha // "") == $sha
-                  and (.path // "") == ".github/workflows/release-please.yml"
-                  and (.name // "") == "Release Please"
-                  and (.actor.login // "") == "github-actions[bot]"
+                  and (.path // "") == env.required_release_workflow_path
+                  and (.name // "") == env.required_release_workflow_name
+                  and (.actor.login // "") == env.required_release_workflow_actor
                 )
               | {
                   id: (.id | tostring),
@@ -156,6 +176,7 @@ jobs:
             echo "- tagger_date: \`${tagger_date:-<none>}\`"
             echo "- release_please_run_id: \`${release_please_run_id}\`"
             echo "- release_please_match_count: \`${release_candidate_count}\`"
+            echo "- policy_file: \`${policy_file}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   tag-preflight:
@@ -163,7 +184,6 @@ jobs:
     needs: [policy-precheck]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
-    environment: package-release
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -182,43 +202,6 @@ jobs:
             echo "::error::Release tag must match semantic version pattern (vMAJOR.MINOR.PATCH[-suffix]). Received ${GITHUB_REF_NAME}."
             exit 1
           fi
-
-      - name: Enforce release actor allowlist policy (tag release)
-        shell: bash
-        env:
-          RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot]' }}
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
-            echo "::error::Unsupported actor policy context: ${GITHUB_EVENT_NAME} ${GITHUB_REF}"
-            exit 1
-          fi
-          policy_branch="tag-release"
-          allowed_csv="${RELEASE_ALLOWED_TAG_ACTORS}"
-          if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
-            echo "::error::Actor allowlist is empty for policy branch ${policy_branch}."
-            exit 1
-          fi
-          actor="${GITHUB_ACTOR}"
-          actor_allowed="false"
-          IFS=',' read -r -a allowed_items <<< "${allowed_csv}"
-          for item in "${allowed_items[@]}"; do
-            candidate="$(echo "${item}" | xargs)"
-            if [ -n "${candidate}" ] && [ "${candidate}" = "${actor}" ]; then
-              actor_allowed="true"
-              break
-            fi
-          done
-          if [ "${actor_allowed}" != "true" ]; then
-            echo "::error::Actor ${actor} is not allowed for ${policy_branch}. Allowed actors: ${allowed_csv}."
-            exit 1
-          fi
-          {
-            echo "### Release actor policy"
-            echo "- branch: \`${policy_branch}\`"
-            echo "- actor: \`${actor}\`"
-            echo "- allowlist: \`${allowed_csv}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce release tag ancestry on main
         shell: bash

@@ -47,8 +47,10 @@ const AUTH_DISPATCH = {
 };
 
 const AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS = 60_000;
-const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 2;
-const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
+const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 3;
+const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 300;
+const AUTH_PLAYWRIGHT_EXEC_TOTAL_BUDGET_MS = 180_000;
+const AUTH_PLAYWRIGHT_EXEC_MIN_ATTEMPT_TIMEOUT_MS = 2_000;
 const AUTH_AIDENID_PROVISION_TIMEOUT_MS = 12_000;
 const AUTH_AIDENID_PROVISION_MAX_RETRIES = 2;
 const AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS = 300;
@@ -126,7 +128,8 @@ function sanitizeAuditErrorMessage(message, fallback = "Auth audit failed") {
   const candidate = normalized || fallbackMessage;
   const sanitized = candidate
     .replace(/\bbearer\s+[a-z0-9._~+/=-]+\b/gi, "bearer [REDACTED]")
-    .replace(/\b(token|secret|password|api[_-]?key)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi, "$1=[REDACTED]")
+    .replace(/\b(token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi, "$1=[REDACTED]")
+    .replace(/\b[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, "[REDACTED_JWT]")
     .replace(/\bhttps?:\/\/[^\s"'`]+/gi, "<redacted-url>")
     .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, "<redacted-email>")
     .replace(/\b[a-z0-9_=-]{32,}\b/gi, "[REDACTED]");
@@ -1290,13 +1293,33 @@ export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options
   const baseBackoffMs = Number.isFinite(options.baseBackoffMs) && options.baseBackoffMs > 0
     ? Math.trunc(options.baseBackoffMs)
     : AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS;
+  const totalBudgetMs = Number.isFinite(options.totalBudgetMs) && options.totalBudgetMs > 0
+    ? Math.trunc(options.totalBudgetMs)
+    : AUTH_PLAYWRIGHT_EXEC_TOTAL_BUDGET_MS;
+  const minAttemptTimeoutMs = Number.isFinite(options.minAttemptTimeoutMs) && options.minAttemptTimeoutMs > 0
+    ? Math.trunc(options.minAttemptTimeoutMs)
+    : AUTH_PLAYWRIGHT_EXEC_MIN_ATTEMPT_TIMEOUT_MS;
   const execute = typeof options.exec === "function" ? options.exec : execFileSync;
+  const retryWindowStartedAt = Date.now();
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const elapsedMs = Date.now() - retryWindowStartedAt;
+    const remainingBudgetMs = totalBudgetMs - elapsedMs;
+    if (remainingBudgetMs <= 0) {
+      throw new AuthAuditError(
+        `Playwright auth audit failed: retry budget exhausted after ${attempt} attempt(s) over ${totalBudgetMs}ms`
+      );
+    }
+    if (remainingBudgetMs < minAttemptTimeoutMs) {
+      throw new AuthAuditError(
+        `Playwright auth audit failed: remaining retry budget (${remainingBudgetMs}ms) below minimum attempt timeout (${minAttemptTimeoutMs}ms)`
+      );
+    }
+    const attemptTimeoutMs = Math.max(minAttemptTimeoutMs, Math.min(timeoutMs, remainingBudgetMs));
     try {
       return execute(process.execPath, runArgs, {
         encoding: "utf-8",
-        timeout: timeoutMs,
+        timeout: attemptTimeoutMs,
         stdio: ["pipe", "pipe", "pipe"],
         env,
         input: stdinPayload,
@@ -1307,7 +1330,14 @@ export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options
         throw new AuthAuditError(`Playwright auth audit failed after ${attempt + 1} attempt(s): ${reason}`);
       }
     }
-    await sleep(computePlaywrightBackoffMs(attempt, baseBackoffMs));
+    const backoffMs = computePlaywrightBackoffMs(attempt, baseBackoffMs);
+    const remainingAfterAttemptMs = totalBudgetMs - (Date.now() - retryWindowStartedAt);
+    if (remainingAfterAttemptMs <= 0) {
+      throw new AuthAuditError(
+        `Playwright auth audit failed: retry budget exhausted after ${attempt + 1} attempt(s) over ${totalBudgetMs}ms`
+      );
+    }
+    await sleep(Math.min(backoffMs, remainingAfterAttemptMs));
   }
 
   throw new AuthAuditError("Playwright auth audit failed after retry budget was exhausted");

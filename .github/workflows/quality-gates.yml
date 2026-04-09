@@ -344,42 +344,42 @@ jobs:
 
   security-semgrep:
     name: Security Semgrep
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/semgrep.yml
     permissions:
       contents: read
 
   security-gitleaks:
     name: Security Gitleaks
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/gitleaks.yml
     permissions:
       contents: read
 
   security-iac:
     name: Security IaC
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/iac-scan.yml
     permissions:
       contents: read
 
   security-sca:
     name: Security SCA
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/sca-audit.yml
     permissions:
       contents: read
 
   security-license:
     name: Security License
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/license-gate.yml
     permissions:
       contents: read
 
   security-sbom:
     name: Security SBOM
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/sbom.yml
     permissions:
       contents: read
@@ -388,7 +388,7 @@ jobs:
     name: Security CodeQL
     runs-on: ubuntu-22.04
     timeout-minutes: 25
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test, build-package]
+    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     permissions:
       contents: read
       pull-requests: read
@@ -490,7 +490,6 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     needs:
-      - build-package
       - security-semgrep
       - security-gitleaks
       - security-iac
@@ -501,7 +500,6 @@ jobs:
     if: >-
       ${{
         always() &&
-        needs.build-package.result == 'success' &&
         needs.security-semgrep.result == 'success' &&
         needs.security-gitleaks.result == 'success' &&
         needs.security-iac.result == 'success' &&
@@ -580,7 +578,7 @@ jobs:
     name: Build Package Artifact
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [unit-coverage, e2e-packaging]
+    needs: [unit-coverage, e2e-packaging, security-stage]
     permissions:
       contents: read
       id-token: write

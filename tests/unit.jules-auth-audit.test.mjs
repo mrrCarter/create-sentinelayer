@@ -397,6 +397,33 @@ describe("authAudit", () => {
     assert.equal(attemptCount, 3);
   });
 
+  it("runPlaywrightAuditScriptWithRetry enforces cumulative retry deadline", async () => {
+    let attemptCount = 0;
+    const stubExec = () => {
+      attemptCount += 1;
+      const error = new Error("timed out waiting for playwright");
+      error.code = "ETIMEDOUT";
+      throw error;
+    };
+
+    await assert.rejects(
+      () => runPlaywrightAuditScriptWithRetry("fake-script.cjs", {}, {
+        exec: stubExec,
+        maxRetries: 5,
+        baseBackoffMs: 1,
+        timeoutMs: 1000,
+        totalBudgetMs: 5,
+        minAttemptTimeoutMs: 4,
+      }),
+      (error) => {
+        assert.ok(error instanceof AuthAuditError);
+        assert.match(error.message, /retry budget|remaining retry budget/i);
+        return true;
+      },
+    );
+    assert.ok(attemptCount <= 2);
+  });
+
   it("registers console listener before target navigation in Playwright script", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     const listenerIndex = source.indexOf("page.on('console', msg =>");
@@ -539,8 +566,18 @@ describe("authAudit", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     assert.ok(source.includes("sanitizeAuditErrorMessage"));
     assert.ok(source.includes("replace(/\\bbearer\\s+[a-z0-9._~+/=-]+\\b/gi, \"bearer [REDACTED]\")"));
+    assert.ok(source.includes("replace(/\\b[a-z0-9_-]+\\.[a-z0-9_-]+\\.[a-z0-9_-]+\\b/gi, \"[REDACTED_JWT]\")"));
+    assert.ok(source.includes("access[_-]?token|refresh[_-]?token|id[_-]?token"));
     assert.ok(source.includes("replace(/\\bhttps?:\\/\\/[^\\s\"'`]+/gi, \"<redacted-url>\")"));
     assert.ok(source.includes("const safeMessage = sanitizeAuditErrorMessage(message"));
+  });
+
+  it("playwright retry path enforces cumulative execution budget controls", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("AUTH_PLAYWRIGHT_EXEC_TOTAL_BUDGET_MS"));
+    assert.ok(source.includes("AUTH_PLAYWRIGHT_EXEC_MIN_ATTEMPT_TIMEOUT_MS"));
+    assert.ok(source.includes("remaining retry budget"));
+    assert.ok(source.includes("totalBudgetMs"));
   });
 
   it("AuthAudit registered in dispatch as read-only", async () => {
