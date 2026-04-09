@@ -43,6 +43,14 @@ jobs:
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
+      - name: Block untrusted fork PR contexts for provenance
+        if: github.event_name == 'pull_request' && steps.trust_boundary.outputs.trusted_context != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::error::Fork pull requests cannot run attestation with repository OIDC in this workflow. Maintainer must run trusted attestation in base-repository context."
+          exit 1
+
       - name: Resolve canonical required-check target SHA
         id: checks_target
         shell: bash
@@ -217,9 +225,7 @@ jobs:
           echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
           echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${{ steps.trust_boundary.outputs.trusted_context }}" != "true" ]; then
-            echo "- mode: \`pr-artifact-only\` (fork PR, provenance generation skipped)" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             echo "- mode: \`pr-trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"

@@ -40,6 +40,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OMAR_SPEC_ID: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
 
 jobs:
   omar_scan:
@@ -91,6 +92,15 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+      - name: Validate Omar configuration invariants
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! echo "${OMAR_SPEC_ID}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::OMAR_SPEC_ID must be a 64-character lowercase hex digest."
+            exit 1
+          fi
       - name: Block untrusted fork PR contexts
         if: steps.trust_boundary.outputs.trusted_context != 'true'
         shell: bash
@@ -108,7 +118,7 @@ jobs:
         with:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-          sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+          sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
@@ -119,6 +129,26 @@ jobs:
           use_codex: "true"
           codex_only: "false"
           llm_failure_policy: block
+      - name: Validate Omar output contract
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+          OMAR_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
+          OMAR_P0: ${{ steps.omar.outputs.p0_count || '0' }}
+          OMAR_P1: ${{ steps.omar.outputs.p1_count || '0' }}
+          OMAR_P2: ${{ steps.omar.outputs.p2_count || '0' }}
+          OMAR_P3: ${{ steps.omar.outputs.p3_count || '0' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9-]{8,64}$'; then
+            echo "::error::Invalid Omar run_id output: ${OMAR_RUN_ID}"
+            exit 1
+          fi
+          case "${OMAR_GATE_STATUS}" in ''|pass|passed|blocked|fail|failed) ;; *) echo "::error::Invalid Omar gate_status output: ${OMAR_GATE_STATUS}" ; exit 1 ;; esac
+          for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
+            case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
+          done
   omar_enforce:
     name: Omar Gate
     needs: [omar_scan]

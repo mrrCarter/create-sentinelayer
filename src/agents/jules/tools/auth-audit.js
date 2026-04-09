@@ -171,6 +171,10 @@ function resolveAidenidProvisionStatusCode(error) {
   if (!(error instanceof Error)) {
     return 0;
   }
+  const directStatus = Number.parseInt(String(error.statusCode || error.status || ""), 10);
+  if (Number.isInteger(directStatus) && directStatus > 0) {
+    return directStatus;
+  }
   const statusMatch = String(error.message || "").match(/\bstatus\s+(\d{3})\b/i);
   if (!statusMatch) {
     return 0;
@@ -183,6 +187,10 @@ function resolveAidenidProvisionErrorCode(error) {
   if (!(error instanceof Error)) {
     return "";
   }
+  const explicitCode = String(error.errorCode || "").toUpperCase();
+  if (explicitCode) {
+    return explicitCode;
+  }
   const directCode = String(error.code || "").toUpperCase();
   if (directCode) {
     return directCode;
@@ -194,23 +202,40 @@ function resolveAidenidProvisionErrorCode(error) {
   return String(cause.code || cause.errno || "").toUpperCase();
 }
 
-function isRetryableAidenidProvisionError(error) {
+function classifyAidenidProvisionFailure(error) {
+  const classification = {
+    retryable: false,
+    statusCode: 0,
+    errorCode: "",
+  };
   if (!(error instanceof Error)) {
-    return false;
+    return classification;
+  }
+  classification.errorCode = resolveAidenidProvisionErrorCode(error);
+  classification.statusCode = resolveAidenidProvisionStatusCode(error);
+  if (typeof error.retryable === "boolean") {
+    classification.retryable = error.retryable;
+    return classification;
   }
   if (error.name === "AbortError" || error.name === "TimeoutError") {
-    return true;
+    classification.retryable = true;
+    return classification;
   }
-  const code = resolveAidenidProvisionErrorCode(error);
-  if (RETRYABLE_AIDENID_PROVISION_ERROR_CODES.has(code)) {
-    return true;
+  if (RETRYABLE_AIDENID_PROVISION_ERROR_CODES.has(classification.errorCode)) {
+    classification.retryable = true;
+    return classification;
   }
-  const statusCode = resolveAidenidProvisionStatusCode(error);
-  if (RETRYABLE_AIDENID_PROVISION_STATUS_CODES.has(statusCode)) {
-    return true;
+  if (RETRYABLE_AIDENID_PROVISION_STATUS_CODES.has(classification.statusCode)) {
+    classification.retryable = true;
+    return classification;
   }
   const normalized = `${error.name} ${error.message || ""}`.toLowerCase();
-  return RETRYABLE_AIDENID_PROVISION_MESSAGE_PATTERNS.some((pattern) => pattern.test(normalized));
+  classification.retryable = RETRYABLE_AIDENID_PROVISION_MESSAGE_PATTERNS.some((pattern) => pattern.test(normalized));
+  return classification;
+}
+
+function isRetryableAidenidProvisionError(error) {
+  return classifyAidenidProvisionFailure(error).retryable;
 }
 
 function computeAidenidProvisionBackoffMs(attempt, baseBackoffMs = AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS) {
@@ -246,14 +271,33 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
             signal: controller.signal,
           };
           try {
-            return await fetch(resource, nextInit);
+            const response = await fetch(resource, nextInit);
+            if (response && RETRYABLE_AIDENID_PROVISION_STATUS_CODES.has(Number(response.status || 0))) {
+              const transientHttpError = new AuthAuditError(`AIdenID transient HTTP ${response.status}`);
+              transientHttpError.errorCode = "AIDENID_HTTP_RETRYABLE";
+              transientHttpError.statusCode = Number(response.status || 0);
+              transientHttpError.retryable = true;
+              throw transientHttpError;
+            }
+            return response;
+          } catch (error) {
+            const failure = classifyAidenidProvisionFailure(error);
+            if (failure.retryable) {
+              const wrapped = new AuthAuditError(normalizeErrorMessage(error, "AIdenID provisioning transport failed"));
+              wrapped.errorCode = failure.errorCode || "AIDENID_TRANSPORT_RETRYABLE";
+              wrapped.statusCode = failure.statusCode || 0;
+              wrapped.retryable = true;
+              throw wrapped;
+            }
+            throw error;
           } finally {
             clearTimeout(timeoutHandle);
           }
         },
       });
     } catch (error) {
-      if (!isRetryableAidenidProvisionError(error) || attempt >= maxRetries) {
+      const failure = classifyAidenidProvisionFailure(error);
+      if (!failure.retryable || attempt >= maxRetries) {
         const reason = normalizeErrorMessage(error, "AIdenID provisioning failed");
         throw new AuthAuditError(`AIdenID provisioning failed after ${attempt + 1} attempt(s): ${reason}`);
       }

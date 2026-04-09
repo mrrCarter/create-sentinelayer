@@ -56,6 +56,26 @@ jobs:
             echo "::error::main branch protection is missing required status checks."
             exit 1
           fi
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [ "${strict_checks}" != "true" ]; then
+            echo "::error::main branch protection must require up-to-date branches (required_status_checks.strict=true)."
+            exit 1
+          fi
+          reviews_required="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews != null')"
+          if [ "${reviews_required}" != "true" ]; then
+            echo "::error::main branch protection must require pull request reviews."
+            exit 1
+          fi
+          force_push_allowed="$(echo "${protection_json}" | jq -r '.allow_force_pushes.enabled // false')"
+          if [ "${force_push_allowed}" = "true" ]; then
+            echo "::error::main branch protection must block force pushes."
+            exit 1
+          fi
+          deletion_allowed="$(echo "${protection_json}" | jq -r '.allow_deletions.enabled // false')"
+          if [ "${deletion_allowed}" = "true" ]; then
+            echo "::error::main branch protection must block branch deletions."
+            exit 1
+          fi
           REQUIRED_RELEASE_CONTEXTS='[
             "Quality Summary",
             "Omar Gate",
@@ -84,6 +104,10 @@ jobs:
             echo "## Branch Protection Preflight"
             echo "- branch: \`main\`"
             echo "- required_checks_verified: \`$(echo "${required_contexts_json}" | jq 'length')\`"
+            echo "- strict_required_checks: \`${strict_checks}\`"
+            echo "- requires_pull_request_reviews: \`${reviews_required}\`"
+            echo "- allow_force_pushes: \`${force_push_allowed}\`"
+            echo "- allow_deletions: \`${deletion_allowed}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure main commit passed required upstream gates
