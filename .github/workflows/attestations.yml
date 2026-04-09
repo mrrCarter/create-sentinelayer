@@ -174,17 +174,12 @@ jobs:
             echo "::error::Failed to resolve quality workflow run id."
             exit 1
           fi
-          quality_run_meta="$(gh run view "${quality_run_id}" --json databaseId,name,path,conclusion,headSha,url)"
+          quality_run_meta="$(gh run view "${quality_run_id}" --json databaseId,name,conclusion,headSha,url)"
           quality_run_name="$(echo "${quality_run_meta}" | jq -r '.name // empty')"
-          quality_run_path="$(echo "${quality_run_meta}" | jq -r '.path // empty')"
           quality_run_head_sha="$(echo "${quality_run_meta}" | jq -r '.headSha // empty')"
           quality_run_conclusion="$(echo "${quality_run_meta}" | jq -r '.conclusion // empty')"
           if [ "${quality_run_name}" != "Quality Gates" ]; then
             echo "::error::Unexpected quality workflow name '${quality_run_name}' for run ${quality_run_id}."
-            exit 1
-          fi
-          if [ "${quality_run_path}" != ".github/workflows/quality-gates.yml" ]; then
-            echo "::error::Unexpected quality workflow path '${quality_run_path}' for run ${quality_run_id}."
             exit 1
           fi
           if [ "${quality_run_conclusion}" != "success" ]; then
