@@ -37,13 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tool_path="./node_modules/.bin/license-checker-rseidelsohn"
-          if [ ! -x "${tool_path}" ]; then
-            echo "::error::Expected ${tool_path} from npm ci lockfile install."
-            exit 1
-          fi
-          "${tool_path}" --version
-          "${tool_path}" --production --json > license-report.json
+          npx --no-install license-checker-rseidelsohn --version
+          npx --no-install license-checker-rseidelsohn --production --json > license-report.json
 
       - name: Enforce license policy
         run: node scripts/license-policy-check.mjs license-report.json .github/policies/license-policy.json license-violations.json

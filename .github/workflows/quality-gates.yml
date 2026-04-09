@@ -199,7 +199,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          REQUIRED_CHECKS_JSON='[
+          cat <<'JSON' > /tmp/security-required-checks.json
+          [
             {"name":"Semgrep Summary","app":"github-actions","optional":false},
             {"name":"Gitleaks Summary","app":"github-actions","optional":false},
             {"name":"IaC Summary","app":"github-actions","optional":false},
@@ -207,8 +208,11 @@ jobs:
             {"name":"License Summary","app":"github-actions","optional":false},
             {"name":"SBOM Summary","app":"github-actions","optional":false},
             {"name":"CodeQL Summary","app":"github-actions","optional":true}
-          ]'
-          echo "REQUIRED_CHECKS_JSON=${REQUIRED_CHECKS_JSON}" >> "$GITHUB_ENV"
+          ]
+          JSON
+          echo "REQUIRED_CHECKS_JSON<<EOF" >> "$GITHUB_ENV"
+          cat /tmp/security-required-checks.json >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
 
       - name: Verify security summary checks passed
         shell: bash
