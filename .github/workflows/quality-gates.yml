@@ -346,6 +346,7 @@ jobs:
     name: Security Semgrep
     needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/semgrep.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -353,6 +354,7 @@ jobs:
     name: Security Gitleaks
     needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/gitleaks.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -360,6 +362,7 @@ jobs:
     name: Security IaC
     needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/iac-scan.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -367,6 +370,7 @@ jobs:
     name: Security SCA
     needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/sca-audit.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -374,6 +378,7 @@ jobs:
     name: Security License
     needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/license-gate.yml
+    secrets: inherit
     permissions:
       contents: read
 
@@ -381,6 +386,7 @@ jobs:
     name: Security SBOM
     needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
     uses: ./.github/workflows/sbom.yml
+    secrets: inherit
     permissions:
       contents: read
 

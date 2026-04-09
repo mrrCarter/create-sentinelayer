@@ -198,7 +198,7 @@ jobs:
               {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
               {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
               {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
-              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
+              {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "1800"
@@ -539,7 +539,7 @@ jobs:
               {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
               {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
               {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
-              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
+              {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "900"

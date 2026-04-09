@@ -55,6 +55,7 @@ jobs:
       pull-requests: write
     outputs:
       trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
+      credential_mode: ${{ steps.resolve_omar_credentials.outputs.credential_mode }}
       run_id: ${{ steps.omar.outputs.run_id }}
       gate_status: ${{ steps.omar.outputs.gate_status }}
       p0_count: ${{ steps.omar.outputs.p0_count }}
@@ -77,22 +78,97 @@ jobs:
             fi
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
+      - name: Resolve Omar credential mode
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        id: resolve_omar_credentials
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
+          OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || 'sentinelayer.com' }}
+          OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
+        run: |
+          set -euo pipefail
+          mode="static-secrets"
+          if [ -n "${OMAR_TOKEN_EXCHANGE_URL}" ]; then
+            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL is configured but id-token runtime context is unavailable."
+              exit 1
+            fi
+            case "${OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS value: ${OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" ; exit 1 ;; esac
+            if ! echo "${OMAR_TOKEN_EXCHANGE_URL}" | grep -Eq '^https://'; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL must use https://."
+              exit 1
+            fi
+            oidc_payload="$(curl -fsSL \
+              --retry 0 \
+              --connect-timeout 5 \
+              --max-time "${OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OMAR_TOKEN_EXCHANGE_AUDIENCE}")"
+            oidc_token="$(echo "${oidc_payload}" | jq -r '.value // empty')"
+            if [ -z "${oidc_token}" ]; then
+              echo "::error::Failed to mint OIDC token for Omar credential exchange."
+              exit 1
+            fi
+            exchange_payload="$(jq -n \
+              --arg oidc_token "${oidc_token}" \
+              --arg audience "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --arg actor "${GITHUB_ACTOR}" \
+              --arg run_id "${GITHUB_RUN_ID}" \
+              --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+              --arg ref "${GITHUB_REF}" \
+              --arg sha "${GITHUB_SHA}" \
+              --arg workflow "${GITHUB_WORKFLOW}" \
+              '{oidc_token:$oidc_token,audience:$audience,repository:$repository,actor:$actor,run_id:$run_id,run_attempt:$run_attempt,ref:$ref,sha:$sha,workflow:$workflow}')"
+            exchange_response="$(curl -fsSL \
+              --retry 0 \
+              --connect-timeout 5 \
+              --max-time "${OMAR_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+              -H "Content-Type: application/json" \
+              -d "${exchange_payload}" \
+              "${OMAR_TOKEN_EXCHANGE_URL}")"
+            exchanged_sentinelayer_token="$(echo "${exchange_response}" | jq -r '.sentinelayer_token // empty')"
+            exchanged_openai_api_key="$(echo "${exchange_response}" | jq -r '.openai_api_key // empty')"
+            if [ -z "${exchanged_sentinelayer_token}" ] || [ -z "${exchanged_openai_api_key}" ]; then
+              echo "::error::Omar token exchange response missing required credentials."
+              exit 1
+            fi
+            echo "::add-mask::${exchanged_sentinelayer_token}"
+            echo "::add-mask::${exchanged_openai_api_key}"
+            echo "sentinelayer_token=${exchanged_sentinelayer_token}" >> "${GITHUB_OUTPUT}"
+            echo "openai_api_key=${exchanged_openai_api_key}" >> "${GITHUB_OUTPUT}"
+            mode="oidc-exchange"
+          fi
+          echo "credential_mode=${mode}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Omar Credential Mode"
+            echo "- mode: \`${mode}\`"
+            if [ "${mode}" = "oidc-exchange" ]; then
+              echo "- exchange_url: \`${OMAR_TOKEN_EXCHANGE_URL}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Sentinelayer token secret
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
+          RESOLVED_SENTINELAYER_TOKEN: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token || '' }}
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
         run: |
           set -euo pipefail
-          bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${SENTINELAYER_TOKEN}"
+          token_to_use="${RESOLVED_SENTINELAYER_TOKEN:-${SENTINELAYER_TOKEN:-}}"
+          bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${token_to_use}"
       - name: Validate OpenAI key secret for Omar LLM scan
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
+          RESOLVED_OPENAI_API_KEY: ${{ steps.resolve_omar_credentials.outputs.openai_api_key || '' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          bash .github/scripts/require-secret.sh "OPENAI_API_KEY" "${OPENAI_API_KEY}"
+          key_to_use="${RESOLVED_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}"
+          bash .github/scripts/require-secret.sh "OPENAI_API_KEY" "${key_to_use}"
       - name: Validate Omar configuration invariants
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -118,9 +194,9 @@ jobs:
         uses: ./.github/actions/omar-gate
         with:
           github_token: ${{ github.token }}
-          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token || secrets.SENTINELAYER_TOKEN }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          openai_api_key: ${{ steps.resolve_omar_credentials.outputs.openai_api_key || secrets.OPENAI_API_KEY }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
       - name: Validate Omar output contract
