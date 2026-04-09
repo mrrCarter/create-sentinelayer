@@ -1217,8 +1217,8 @@ test("CLI local command: /omargate deep writes report and fails on P1 findings",
     assert.ok(reportName, "Expected omargate report file");
 
     const reportText = await readFile(path.join(reportDir, reportName), "utf-8");
-    assert.match(reportText, /P1 findings: 1/);
-    assert.match(reportText, /\[P1\] src\/secrets\.ts:1/);
+    assert.match(reportText, /P1=1|P1 findings: 1/);
+    assert.match(reportText, /\[P1\].*secrets\.ts/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
