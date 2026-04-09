@@ -264,12 +264,11 @@ async function sendSlackWebhook(webhookUrl, alert) {
     ],
   });
 
-  const response = await fetch(webhookUrl, {
+  const response = await fetchWithTimeout(webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: payload,
-    signal: AbortSignal.timeout(10000),
-  });
+  }, 10000);
 
   if (!response.ok) {
     throw new Error("Slack webhook failed: " + response.status);
@@ -285,12 +284,11 @@ async function sendTelegramMessage(botToken, chatId, alert) {
     disable_web_page_preview: true,
   });
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: payload,
-    signal: AbortSignal.timeout(10000),
-  });
+  }, 10000);
 
   if (!response.ok) {
     throw new Error("Telegram send failed: " + response.status);
@@ -314,6 +312,16 @@ function resolveAlertChannels() {
   }
 
   return channels;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 }
 
 export { STUCK_THRESHOLDS };

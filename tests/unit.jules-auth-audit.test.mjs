@@ -255,6 +255,13 @@ describe("authAudit", () => {
     assert.ok(source.includes("type: 'playwright'"));
   });
 
+  it("auth flow header fetch uses explicit timeout wrapper", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
+    assert.ok(source.includes("fetchWithTimeout(currentUrl, {"));
+    assert.ok(source.includes("AUTH_FLOW_FETCH_TIMEOUT_MS"));
+  });
+
   it("AuthAudit registered in dispatch as read-only", async () => {
     const { listTools, isReadOnlyTool } = await import("../src/agents/jules/tools/dispatch.js");
     assert.ok(listTools().includes("AuthAudit"));

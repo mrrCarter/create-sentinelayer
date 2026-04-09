@@ -117,15 +117,14 @@ export async function syncRunToDashboard(runData) {
       },
     };
 
-    const response = await fetch(apiUrl + "/api/v1/telemetry", {
+    const response = await fetchWithTimeout(apiUrl + "/api/v1/telemetry", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: "Bearer " + session.token,
       },
-      signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
       body: JSON.stringify(payload),
-    });
+    }, SYNC_TIMEOUT_MS);
 
     if (!response.ok) {
       consecutiveFailures++;
@@ -186,5 +185,15 @@ function detectGitRef() {
     }).trim() || "main";
   } catch {
     return "main";
+  }
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
