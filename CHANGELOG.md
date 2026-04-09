@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.4...v0.4.5) (2026-04-09)
+
+
+### Bug Fixes
+
+* **ci:** harden remaining workflow failure vectors ([#270](https://github.com/mrrCarter/create-sentinelayer/issues/270)) ([819801a](https://github.com/mrrCarter/create-sentinelayer/commit/819801a6bb9904963e11b4c1750a1f4295743659))
+* **ci:** remove Omar environment gate to unblock release-please required-check wait ([#271](https://github.com/mrrCarter/create-sentinelayer/issues/271)) ([6eaf06e](https://github.com/mrrCarter/create-sentinelayer/commit/6eaf06e274f987a97acac19b38f7385c9dcec7c8))
+
 ## [0.4.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.3...v0.4.4) (2026-04-09)
 
 
