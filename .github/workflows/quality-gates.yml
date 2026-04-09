@@ -22,6 +22,10 @@ jobs:
     name: Eval Impact Gate
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    outputs:
+      eval_resolution: ${{ steps.eval.outputs.eval_resolution }}
+      eval_required: ${{ steps.eval.outputs.eval_required }}
+      eval_evidence_found: ${{ steps.eval.outputs.eval_evidence_found }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -29,6 +33,7 @@ jobs:
           fetch-depth: 0
 
       - name: Evaluate AI-impacting changes
+        id: eval
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -36,8 +41,28 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
+          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || 'workflow_dispatch' }}
         run: |
           set -euo pipefail
+          append_output() {
+            local line="$1"
+            if [ -n "${GITHUB_OUTPUT:-}" ]; then
+              echo "${line}" >> "${GITHUB_OUTPUT}"
+            fi
+          }
+          csv_contains_event() {
+            local csv="$1"
+            local event_name="$2"
+            local item=""
+            IFS=',' read -r -a items <<< "${csv}"
+            for item in "${items[@]}"; do
+              item="$(echo "${item}" | xargs)"
+              if [ "${item}" = "${event_name}" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             base_sha="${PR_BASE_SHA}"
             head_sha="${PR_HEAD_SHA}"
@@ -51,12 +76,30 @@ jobs:
           if [ -z "${base_sha}" ] || [ "${base_sha}" = "0000000000000000000000000000000000000000" ]; then
             if git rev-parse "${head_sha}^" >/dev/null 2>&1; then
               base_sha="$(git rev-parse "${head_sha}^")"
+              echo "::notice::Eval impact gate resolved base from ${head_sha} parent commit ${base_sha}."
             else
-              echo "::notice::No parent commit available for ${head_sha}; skipping eval impact gate."
-              exit 0
+              if csv_contains_event "${ALLOW_SKIP_EVENTS}" "${EVENT_NAME}"; then
+                echo "::notice::No parent commit available for ${head_sha}; approved skip for event ${EVENT_NAME} (ALLOW_SKIP_EVENTS=${ALLOW_SKIP_EVENTS})."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  {
+                    echo "## Eval Impact Gate"
+                    echo "- status: \`approved_skip\`"
+                    echo "- event: \`${EVENT_NAME}\`"
+                    echo "- reason: no parent commit available and event is allowlisted."
+                    echo "- allow_skip_events: \`${ALLOW_SKIP_EVENTS}\`"
+                  } >> "${GITHUB_STEP_SUMMARY}"
+                fi
+                append_output "eval_resolution=approved_skip"
+                append_output "eval_required=false"
+                append_output "eval_evidence_found=false"
+                exit 0
+              fi
+              echo "::error::Eval impact gate could not resolve base commit for ${EVENT_NAME} (head=${head_sha}) and this event is not allowlisted to skip."
+              exit 1
             fi
           fi
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
+          append_output "eval_resolution=resolved"
 
   syntax-matrix:
     name: Syntax & Sanity (Node ${{ matrix.node }})
@@ -143,6 +186,7 @@ jobs:
       ${{
         always() &&
         needs.eval-impact.result == 'success' &&
+        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-impact.outputs.eval_resolution) &&
         needs.syntax-matrix.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
         needs.e2e-packaging.result == 'success'
