@@ -114,11 +114,13 @@ jobs:
           retention-days: 7
 
       - name: Generate build provenance attestation
+        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
 
       - name: Verify attestation policy
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -140,7 +142,7 @@ jobs:
           jq -e 'length > 0' attestation-verify.json > /dev/null
 
       - name: Upload verification artifacts
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-verification-artifacts
@@ -155,7 +157,12 @@ jobs:
           echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
           echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            echo "- mode: \`pr-verification-only\` (provenance generation skipped for unmerged refs)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   attestation-summary:
     name: Attestation Summary
