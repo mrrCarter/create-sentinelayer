@@ -83,7 +83,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -113,7 +113,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -173,7 +173,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -230,7 +230,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -351,7 +351,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -428,7 +428,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -438,26 +438,16 @@ jobs:
           name: sentinelayer-cli-tarball
           path: release-artifact
 
-      - name: Resolve npm publish auth mode
+      - name: Enforce trusted npm publishing context
         shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            echo "PUBLISH_AUTH_MODE=token" >> "$GITHUB_ENV"
-            echo "NODE_AUTH_TOKEN=${NPM_TOKEN}" >> "$GITHUB_ENV"
-            echo "### npm publish auth mode: token" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::Trusted publishing requires GitHub OIDC runtime context, but id-token environment is unavailable."
+            exit 1
           fi
-          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-            echo "PUBLISH_AUTH_MODE=trusted" >> "$GITHUB_ENV"
-            echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
-            echo "### npm publish auth mode: trusted" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          echo "::error::No npm publish auth mode available. Configure trusted publishing on npm or set NPM_TOKEN."
-          exit 1
+          echo "PUBLISH_AUTH_MODE=trusted" >> "$GITHUB_ENV"
+          echo "### npm publish auth mode: trusted (OIDC)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce release artifact checksum manifest
         run: |
@@ -533,8 +523,6 @@ jobs:
           fi
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NODE_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           test -f "${TARBALL}"
