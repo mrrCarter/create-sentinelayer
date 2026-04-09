@@ -863,7 +863,7 @@ Ledger contract:
 
 ## Requirements
 
-- Node `>=18.17`
+- Node `>=20.0`
 - network access to Sentinelayer API/web
 - optional: GitHub CLI (`gh`) authenticated for secret injection
 

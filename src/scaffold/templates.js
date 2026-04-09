@@ -86,7 +86,7 @@ export function getPackageJsonTemplate({ projectName, description }) {
     },
     devDependencies: {},
     engines: {
-      node: ">=18.17.0",
+      node: ">=20.0.0",
     },
   };
 }
