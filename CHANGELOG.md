@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.1...v0.4.2) (2026-04-09)
+
+
+### Bug Fixes
+
+* **ci:** auto-dispatch release and enforce trusted npm publish path ([#263](https://github.com/mrrCarter/create-sentinelayer/issues/263)) ([19e06b0](https://github.com/mrrCarter/create-sentinelayer/commit/19e06b0838a5c58173a80c0e5a2060771a58c86c))
+
 ## [0.4.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.0...v0.4.1) (2026-04-09)
 
 
