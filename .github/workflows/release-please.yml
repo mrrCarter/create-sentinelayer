@@ -20,7 +20,7 @@ env:
 jobs:
   release-please:
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       actions: write
       checks: read
