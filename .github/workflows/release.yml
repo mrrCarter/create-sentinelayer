@@ -15,10 +15,6 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-concurrency:
-  group: release-workflow-global
-  cancel-in-progress: false
-
 jobs:
   policy-precheck:
     if: startsWith(github.ref, 'refs/tags/v')

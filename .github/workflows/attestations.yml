@@ -42,15 +42,22 @@ jobs:
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
-      - name: Block untrusted fork PR contexts for provenance
+      - name: Record untrusted fork PR provenance deferment
         if: github.event_name == 'pull_request' && steps.trust_boundary.outputs.trusted_context != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          echo "::error::Fork pull requests cannot run attestation with repository OIDC in this workflow. Maintainer must run trusted attestation in base-repository context."
-          exit 1
+          {
+            echo "## Build Attestation"
+            echo "- mode: \`fork-pr-deferred\`"
+            echo "- status: \`deferred\`"
+            echo "- reason: \`untrusted fork pull request cannot mint repository OIDC for provenance\`"
+            echo "- remediation: \`maintainer reruns attestation from trusted base-repository context\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Fork PR attestation deferred. Maintainer rerun required in trusted context."
 
       - name: Resolve canonical required-check target SHA
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: checks_target
         shell: bash
         env:
@@ -80,6 +87,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure target commit passed required upstream gates
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
@@ -116,6 +124,7 @@ jobs:
           .github/scripts/require-check-runs.sh
 
       - name: Resolve canonical quality artifact source
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: quality_source
         shell: bash
         env:
@@ -189,6 +198,7 @@ jobs:
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare attestation subject from canonical quality artifact
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: pack
         shell: bash
         env:
@@ -244,7 +254,7 @@ jobs:
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload attestation build artifacts
-        if: success()
+        if: success() && steps.trust_boundary.outputs.trusted_context == 'true'
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-build-artifacts
@@ -256,7 +266,7 @@ jobs:
           retention-days: 7
 
       - name: Upload attestation diagnostics artifacts
-        if: failure() || cancelled()
+        if: (failure() || cancelled()) && steps.trust_boundary.outputs.trusted_context == 'true'
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-build-diagnostics
@@ -307,6 +317,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${{ steps.trust_boundary.outputs.trusted_context }}" != "true" ]; then
+            echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: \`fork-pr-deferred\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- status: \`deferred\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
           echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"

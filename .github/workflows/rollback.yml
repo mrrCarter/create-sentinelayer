@@ -5,7 +5,7 @@ on:
     inputs:
       target_version:
         description: Version to restore as latest (v prefix optional)
-        required: false
+        required: true
         type: string
       release_version:
         description: Version being rolled back/deprecated (v prefix optional)
@@ -75,20 +75,7 @@ jobs:
           target_version="$(normalize_version "${INPUT_TARGET_VERSION}")"
           release_version="$(normalize_version "${INPUT_RELEASE_VERSION}")"
           if [ -z "${target_version}" ]; then
-            versions_json="$(npm view sentinelayer-cli versions --json)"
-            target_version="$(echo "${versions_json}" | jq -r '
-              if type == "array" then
-                if length >= 2 then .[-2]
-                elif length == 1 then .[-1]
-                else empty
-                end
-              elif type == "string" then .
-              else empty
-              end
-            ')"
-          fi
-          if [ -z "${target_version}" ]; then
-            echo "::error::Unable to resolve rollback target version."
+            echo "::error::Explicit target_version is required for rollback execution."
             exit 1
           fi
           if ! echo "${target_version}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
@@ -129,6 +116,7 @@ jobs:
         shell: bash
         env:
           NPM_TOKEN_EXCHANGE_URL: ${{ vars.NPM_TOKEN_EXCHANGE_URL || '' }}
+          NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
           NPM_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.NPM_TOKEN_EXCHANGE_AUDIENCE || 'npmjs.org' }}
           NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
           NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
@@ -140,6 +128,28 @@ jobs:
           fi
           if ! [[ "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || [ "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" -lt 5 ]; then
             echo "::error::Invalid NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS value: ${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}"
+            exit 1
+          fi
+          if ! echo "${NPM_TOKEN_EXCHANGE_URL}" | grep -Eq '^https://'; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL must use https://."
+            exit 1
+          fi
+          exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
+          if [ -z "${exchange_host}" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL is not a valid absolute URL."
+            exit 1
+          fi
+          host_allowed="false"
+          IFS=',' read -r -a allowed_hosts <<< "${NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS}"
+          for host in "${allowed_hosts[@]}"; do
+            candidate="$(echo "${host}" | tr '[:upper:]' '[:lower:]' | xargs)"
+            if [ -n "${candidate}" ] && [ "${candidate}" = "${exchange_host}" ]; then
+              host_allowed="true"
+              break
+            fi
+          done
+          if [ "${host_allowed}" != "true" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL host '${exchange_host}' is not allowlisted. Allowed hosts: ${NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS}."
             exit 1
           fi
           oidc_payload=""

@@ -236,7 +236,7 @@ jobs:
 
   security-semgrep:
     name: Security Semgrep
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/semgrep.yml
     secrets: inherit
     permissions:
@@ -244,7 +244,7 @@ jobs:
 
   security-gitleaks:
     name: Security Gitleaks
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/gitleaks.yml
     secrets: inherit
     permissions:
@@ -252,7 +252,7 @@ jobs:
 
   security-iac:
     name: Security IaC
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/iac-scan.yml
     secrets: inherit
     permissions:
@@ -260,7 +260,7 @@ jobs:
 
   security-sca:
     name: Security SCA
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/sca-audit.yml
     secrets: inherit
     permissions:
@@ -268,7 +268,7 @@ jobs:
 
   security-license:
     name: Security License
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/license-gate.yml
     secrets: inherit
     permissions:
@@ -276,7 +276,7 @@ jobs:
 
   security-sbom:
     name: Security SBOM
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/sbom.yml
     secrets: inherit
     permissions:
@@ -286,7 +286,7 @@ jobs:
     name: Security CodeQL
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [unit-coverage]
+    needs: [eval-enforce, lint, syntax-matrix]
     permissions:
       contents: read
       pull-requests: read
