@@ -49,6 +49,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      checks: write
       pull-requests: write
     outputs:
       trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
