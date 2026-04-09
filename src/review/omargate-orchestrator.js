@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { runAiReviewLayer } from "./ai-review.js";
 import { buildPersonaReviewPrompt, PERSONA_IDS } from "./persona-prompts.js";
 import { resolveScanMode } from "./scan-modes.js";
+import { syncRunToDashboard } from "../telemetry/sync.js";
 
 /**
  * Run bounded-concurrency parallel execution.
@@ -99,8 +100,29 @@ export async function runOmarGateOrchestrator({
 
   // Per-persona cost budget = global / persona count (with minimum floor)
   const perPersonaCost = Math.max(0.25, maxCostUsd / personas.length);
+  let runningCostUsd = 0;
 
   const personaResults = await runWithConcurrency(personas, maxParallel, async (personaId) => {
+    // Global budget check — skip remaining personas if exhausted
+    if (runningCostUsd >= maxCostUsd) {
+      if (onEvent) {
+        onEvent({
+          stream: "sl_event",
+          event: "persona_skipped",
+          payload: { personaId, reason: "global_budget_exhausted", runningCostUsd, maxCostUsd },
+        });
+      }
+      return {
+        personaId,
+        status: "skipped",
+        findings: [],
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+        costUsd: 0,
+        durationMs: 0,
+        reason: "global_budget_exhausted",
+      };
+    }
+
     const personaStart = Date.now();
 
     if (onEvent) {
@@ -163,12 +185,15 @@ export async function runOmarGateOrchestrator({
         });
       }
 
+      const personaCost = result?.costUsd || 0;
+      runningCostUsd += personaCost;
+
       return {
         personaId,
         status: "ok",
         findings,
         summary: result?.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
-        costUsd: result?.costUsd || 0,
+        costUsd: personaCost,
         model: result?.model || model || null,
         durationMs: Date.now() - personaStart,
       };
@@ -248,6 +273,28 @@ export async function runOmarGateOrchestrator({
       },
     });
   }
+
+  // Fire-and-forget telemetry sync to dashboard
+  syncRunToDashboard({
+    command: `omargate deep --scan-mode ${mode}`,
+    persona: "omar-orchestrator",
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: totalCost,
+      durationMs: totalDuration,
+      toolCalls: personas.length,
+    },
+    summary: result.summary,
+    stopReason: result.summary.blocking ? "blocked" : "passed",
+    personaBreakdown: settled.map((r) => ({
+      personaId: r.personaId,
+      findings: r.findings?.length || 0,
+      costUsd: r.costUsd || 0,
+      durationMs: r.durationMs || 0,
+      status: r.status,
+    })),
+  }).catch(() => {});
 
   return result;
 }
