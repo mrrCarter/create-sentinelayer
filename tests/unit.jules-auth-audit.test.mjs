@@ -84,6 +84,45 @@ describe("authAudit", () => {
     }
   });
 
+  it("check_auth_flow_security retries transient TypeError transport failures and succeeds", async () => {
+    const previousFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+      }
+      return createResponse(200, {
+        "strict-transport-security": "max-age=31536000",
+        "content-security-policy": "default-src 'self'",
+      });
+    };
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      assert.equal(result.available, true);
+      assert.equal(callCount, 2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("check_auth_flow_security fails fast on non-retryable TypeError", async () => {
+    const previousFetch = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount += 1;
+      throw new TypeError("Failed to parse URL from config");
+    };
+    try {
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      assert.equal(result.available, false);
+      assert.match(result.reason, /failed after 1 attempt\(s\)/);
+      assert.equal(callCount, 1);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("check_auth_flow_security fails closed after transient retry budget is exhausted", async () => {
     const previousFetch = globalThis.fetch;
     let callCount = 0;
