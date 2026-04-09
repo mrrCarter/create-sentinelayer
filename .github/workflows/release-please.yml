@@ -9,6 +9,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   checks: read
   contents: read
   pull-requests: read
@@ -21,6 +22,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
+      actions: write
       checks: read
       contents: write
       pull-requests: write
@@ -53,8 +55,32 @@ jobs:
         run: .github/scripts/require-check-runs.sh
 
       - name: Run release-please
+        id: release_please
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         with:
           token: ${{ github.token }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Dispatch Release workflow for generated release tag
+        if: steps.release_please.outputs.release_created == 'true' || steps.release_please.outputs.releases_created == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PLEASE_OUTPUTS_JSON: ${{ toJson(steps.release_please.outputs) }}
+        run: |
+          set -euo pipefail
+          tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
+          if [ -z "${tag_name}" ]; then
+            tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '
+              to_entries
+              | map(select(.key | endswith("--tag_name")))
+              | .[0].value // empty
+            ')"
+          fi
+          if [ -z "${tag_name}" ]; then
+            echo "::error::release-please reported release creation but no tag output was found."
+            echo "${RELEASE_PLEASE_OUTPUTS_JSON}"
+            exit 1
+          fi
+          gh workflow run "Release" --ref "${tag_name}"
