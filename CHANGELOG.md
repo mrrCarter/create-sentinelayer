@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.0...v0.4.1) (2026-04-09)
+
+
+### Bug Fixes
+
+* **auth-audit:** add bounded playwright retry and backoff ([#229](https://github.com/mrrCarter/create-sentinelayer/issues/229)) ([9b8d30a](https://github.com/mrrCarter/create-sentinelayer/commit/9b8d30add31290e926eda90161390864308491da))
+* **auth-audit:** fail closed on https downgrade redirects ([#228](https://github.com/mrrCarter/create-sentinelayer/issues/228)) ([b9626c1](https://github.com/mrrCarter/create-sentinelayer/commit/b9626c15dfcb8b6e9050c97fcf985b5153233e38))
+* **auth-audit:** retry only transient TypeError transport failures ([#250](https://github.com/mrrCarter/create-sentinelayer/issues/250)) ([d151c8a](https://github.com/mrrCarter/create-sentinelayer/commit/d151c8af7e3cae2ecd48af4b14f1dbb30358df48))
+* **auth-audit:** strengthen Playwright error redaction ([#241](https://github.com/mrrCarter/create-sentinelayer/issues/241)) ([8f5a5c9](https://github.com/mrrCarter/create-sentinelayer/commit/8f5a5c9ea117b1b98e6275a6a4fe12801690bdd8))
+* **auth:** fail closed on malformed or inconsistent stored session tokens ([#251](https://github.com/mrrCarter/create-sentinelayer/issues/251)) ([8bb92ce](https://github.com/mrrCarter/create-sentinelayer/commit/8bb92ceb15229e359bebb1dc2e91f8fe1c9d1cb9))
+* **jules:** capture console errors before auth navigation ([#226](https://github.com/mrrCarter/create-sentinelayer/issues/226)) ([74ebc23](https://github.com/mrrCarter/create-sentinelayer/commit/74ebc2363bbc9f6a4bdf275f5198d6cb562f2510))
+* **jules:** harden auth-flow header fetch with bounded retry ([#223](https://github.com/mrrCarter/create-sentinelayer/issues/223)) ([8015977](https://github.com/mrrCarter/create-sentinelayer/commit/8015977b7717ca062dda56b995c3cf2dfd4b0918))
+* **net:** enforce explicit fetch timeout wrappers ([#255](https://github.com/mrrCarter/create-sentinelayer/issues/255)) ([d6daac4](https://github.com/mrrCarter/create-sentinelayer/commit/d6daac4ed818c5a72a07456c10a57674c5a138c8))
+* **release:** fail closed on rollback readiness npm query errors ([#230](https://github.com/mrrCarter/create-sentinelayer/issues/230)) ([209f90c](https://github.com/mrrCarter/create-sentinelayer/commit/209f90c96541cfe795b9428eafe85066871a7def))
+* **security:** harden audit target policy and auth expiry gate ([#259](https://github.com/mrrCarter/create-sentinelayer/issues/259)) ([2f4c155](https://github.com/mrrCarter/create-sentinelayer/commit/2f4c1553d67332e5e73e984e8ccab2760beeb712))
+* **security:** harden auth signals and dispatch-safe security gate ([#261](https://github.com/mrrCarter/create-sentinelayer/issues/261)) ([bcc4adb](https://github.com/mrrCarter/create-sentinelayer/commit/bcc4adbf62660646966cd8f777cffd4e05b9ee0c))
+
 ## [0.4.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.3.1...v0.4.0) (2026-04-08)
 
 
