@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
 import { checkAuthGate } from "../src/auth/gate.js";
+import { writeStoredSession } from "../src/auth/session-store.js";
 
 test("Unit auth gate: CI=true alone does not bypass auth", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
@@ -138,6 +139,70 @@ test("Unit auth gate: unsafe override flag does not bypass outside test contexts
     else process.env.SENTINELAYER_CLI_SKIP_AUTH = previousSkipAuth;
     if (previousUnsafeBypass === undefined) delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
     else process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = previousUnsafeBypass;
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth gate: rejects stored session when token prefix does not match token", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  try {
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+    await writeStoredSession({
+      apiUrl: "https://api.sentinelayer.com",
+      token: "token_without_expected_prefix",
+      tokenPrefix: "api_token_",
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      user: { id: "user_1", github_username: "demo-user" },
+    }, { homeDir: tempHome });
+
+    const result = await checkAuthGate(["audit"]);
+    assert.equal(result.authenticated, false);
+    assert.equal(result.bypassReason, null);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousDisableKeyring === undefined) delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    else process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth gate: rejects stored session when token expiry timestamp is invalid", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  try {
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+    await writeStoredSession({
+      apiUrl: "https://api.sentinelayer.com",
+      token: "api_token_validish",
+      tokenPrefix: "api_token_",
+      tokenExpiresAt: "not-a-date",
+      user: { id: "user_1", github_username: "demo-user" },
+    }, { homeDir: tempHome });
+
+    const result = await checkAuthGate(["audit"]);
+    assert.equal(result.authenticated, false);
+    assert.equal(result.bypassReason, null);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousDisableKeyring === undefined) delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    else process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
     await rm(tempHome, { recursive: true, force: true });
   }
 });

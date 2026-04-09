@@ -35,6 +35,36 @@ function hasTrustedBypassContext() {
   );
 }
 
+function isValidSessionToken(session) {
+  const token = String(session?.token || "");
+  if (!token || token !== token.trim()) {
+    return false;
+  }
+  if (/\s/.test(token)) {
+    return false;
+  }
+  // Require printable ASCII only for bearer token material in local metadata.
+  if (/[^\x21-\x7E]/.test(token)) {
+    return false;
+  }
+  const tokenPrefix = String(session?.tokenPrefix || "").trim();
+  if (tokenPrefix && !token.startsWith(tokenPrefix)) {
+    return false;
+  }
+  return true;
+}
+
+function isSessionUnexpired(tokenExpiresAt) {
+  if (!tokenExpiresAt) {
+    return true;
+  }
+  const expiresAt = new Date(tokenExpiresAt).getTime();
+  if (!Number.isFinite(expiresAt)) {
+    return false;
+  }
+  return expiresAt >= Date.now();
+}
+
 /**
  * Check if the current command requires authentication.
  * Returns true if auth is required but user is not logged in.
@@ -62,14 +92,7 @@ export async function checkAuthGate(args) {
   // Check for stored session
   try {
     const session = await readStoredSession();
-    if (session && session.token) {
-      // Check if token is expired
-      if (session.tokenExpiresAt) {
-        const expiresAt = new Date(session.tokenExpiresAt).getTime();
-        if (expiresAt < Date.now()) {
-          return { authenticated: false, session: null, bypassReason: null };
-        }
-      }
+    if (session && isValidSessionToken(session) && isSessionUnexpired(session.tokenExpiresAt)) {
       return { authenticated: true, session, bypassReason: null };
     }
   } catch {
