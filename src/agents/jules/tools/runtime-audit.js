@@ -409,6 +409,16 @@ function sanitizeUrlForShell(url) {
   }
 }
 
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 /**
  * Call the SentinelLayer API scanner endpoint for server-side Lighthouse.
  * Requires authenticated session (token from sl auth login).
@@ -429,15 +439,14 @@ async function callScannerApi(url) {
   const scanEndpoint = apiUrl + "/api/v1/scan/url";
 
   // Submit scan
-  const submitResponse = await fetch(scanEndpoint, {
+  const submitResponse = await fetchWithTimeout(scanEndpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": "Bearer " + session.token,
     },
     body: JSON.stringify({ url, scan_type: "lighthouse" }),
-    signal: AbortSignal.timeout(15000),
-  });
+  }, 15000);
 
   if (!submitResponse.ok) {
     return { available: false, reason: "Scanner API returned " + submitResponse.status };
@@ -454,10 +463,9 @@ async function callScannerApi(url) {
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise(r => setTimeout(r, 3000));
     try {
-      const pollResponse = await fetch(pollUrl, {
+      const pollResponse = await fetchWithTimeout(pollUrl, {
         headers: { "Authorization": "Bearer " + session.token },
-        signal: AbortSignal.timeout(10000),
-      });
+      }, 10000);
       if (!pollResponse.ok) continue;
       const pollData = await pollResponse.json();
       if (pollData.status === "completed" || pollData.status === "complete") {

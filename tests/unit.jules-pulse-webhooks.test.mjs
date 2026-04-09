@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 import { sendAlert, buildAlertPayload } from "../src/agents/jules/pulse.js";
 
@@ -56,5 +57,12 @@ describe("sendAlert", () => {
     ]);
     // Both should fail but independently
     assert.equal(result.errors.length, 2);
+  });
+
+  it("webhook delivery uses explicit timeout wrapper", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/pulse.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
+    assert.ok(source.includes("fetchWithTimeout(webhookUrl, {"));
+    assert.ok(source.includes("fetchWithTimeout(url, {"));
   });
 });

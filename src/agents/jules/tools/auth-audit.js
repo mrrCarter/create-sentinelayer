@@ -383,14 +383,23 @@ function assertSecureAuthFlowTarget(urlValue) {
   return parsed;
 }
 
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 async function fetchLoginResponseWithRetry(currentUrl) {
   for (let attempt = 0; attempt <= AUTH_FLOW_FETCH_MAX_RETRIES; attempt += 1) {
     try {
-      const response = await fetch(currentUrl, {
+      const response = await fetchWithTimeout(currentUrl, {
         method: "GET",
         redirect: "manual",
-        signal: AbortSignal.timeout(AUTH_FLOW_FETCH_TIMEOUT_MS),
-      });
+      }, AUTH_FLOW_FETCH_TIMEOUT_MS);
       if (!RETRYABLE_AUTH_FLOW_STATUS_CODES.has(response.status)) {
         return response;
       }
