@@ -1380,3 +1380,13 @@ Review:
 - [x] Extend required-check runner validation with workflow-run provenance binding (`workflow_path` + `head_sha`) and wire policy entries in release/attestation callers.
 - [x] Run local full validation (`npm run verify`).
 - [ ] Push updates, run Omar loop (`gh run watch`), and merge PR `#274` when required checks are green.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A40)
+
+- [x] Reproduce post-push Omar findings on PR `#274` and isolate the new P2 set.
+- [x] Remove attestation deadlock by selecting canonical latest successful Quality Gates run when multiple successful candidates exist.
+- [x] Add rollback target provenance verification (`gh attestation verify` against release workflow signer) before any dist-tag mutation.
+- [x] Enforce trusted attestation source context in release flow (`event=push`, `head_branch=main`) before selecting canonical source run.
+- [x] Upgrade `quality-gates` CodeQL stage to execute pinned CodeQL init+analyze in-workflow before policy evaluation.
+- [x] Run local full validation (`npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch`), and iterate until remaining P2 findings are burned down.

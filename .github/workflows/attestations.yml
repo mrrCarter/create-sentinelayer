@@ -149,27 +149,24 @@ jobs:
                 )
               | {
                   completed_at: (.completed_at // ""),
-                  details_url: .details_url
+                  details_url: .details_url,
+                  run_id: (.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id)
                 }
             ]
-            | sort_by(.completed_at)
+            | sort_by(.completed_at, (.run_id | tonumber))
           ')"
           candidate_count="$(echo "${quality_candidates}" | jq 'length')"
           if [ "${candidate_count}" -lt 1 ]; then
             echo "::error::No successful 'Quality Summary' check-run found for ${TARGET_SHA}."
             exit 1
           fi
-          quality_run_count="$(echo "${quality_candidates}" | jq '
-            [ .[] | .details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id ]
-            | unique
-            | length
-          ')"
-          if [ "${quality_run_count}" -ne 1 ]; then
-            echo "::error::Ambiguous quality artifact source: expected one quality workflow run for ${TARGET_SHA}, found ${quality_run_count}."
-            echo "${quality_candidates}" | jq '.'
-            exit 1
+          quality_run_count="$(echo "${quality_candidates}" | jq '[.[].run_id] | unique | length')"
+          quality_run_ids="$(echo "${quality_candidates}" | jq -r '[.[].run_id] | unique | join(",")')"
+          if [ "${quality_run_count}" -gt 1 ]; then
+            echo "::notice::Multiple successful quality workflow runs found for ${TARGET_SHA}; selecting canonical latest successful run."
+            echo "::notice::quality_run_candidates=${quality_run_ids}"
           fi
-          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id')"
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
           if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Failed to resolve quality workflow run id."
             exit 1

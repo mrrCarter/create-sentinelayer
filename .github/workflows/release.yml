@@ -285,6 +285,8 @@ jobs:
               | select(
                   .conclusion == "success"
                   and .path == ".github/workflows/attestations.yml"
+                  and (.event // "") == "push"
+                  and (.head_branch // "") == "main"
                   and (.head_sha // "") == env.GITHUB_SHA
                 )
               | {
@@ -294,6 +296,7 @@ jobs:
                   created_at: (.created_at // ""),
                   updated_at: (.updated_at // ""),
                   event: (.event // ""),
+                  head_branch: (.head_branch // ""),
                   name: (.name // ""),
                   path: (.path // ""),
                   html_url: (.html_url // "")
@@ -320,6 +323,7 @@ jobs:
           run_name="$(echo "${run_meta_json}" | jq -r '.name // empty')"
           run_path="$(echo "${run_meta_json}" | jq -r '.path // empty')"
           run_conclusion="$(echo "${run_meta_json}" | jq -r '.conclusion // empty')"
+          run_event="$(echo "${run_meta_json}" | jq -r '.event // empty')"
           run_head_sha="$(echo "${run_meta_json}" | jq -r '.headSha // empty')"
           if [ "${run_conclusion}" != "success" ]; then
             echo "::error::Resolved attestation run ${attestation_run_id} is not successful (conclusion=${run_conclusion})."
@@ -331,6 +335,10 @@ jobs:
           fi
           if [ "${run_path}" != ".github/workflows/attestations.yml" ]; then
             echo "::error::Resolved run ${attestation_run_id} has unexpected workflow path '${run_path}'."
+            exit 1
+          fi
+          if [ "${run_event}" != "push" ]; then
+            echo "::error::Resolved run ${attestation_run_id} has unexpected event '${run_event}'. Expected push."
             exit 1
           fi
           if [ "${run_head_sha}" != "${GITHUB_SHA}" ]; then

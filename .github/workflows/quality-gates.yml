@@ -341,27 +341,40 @@ jobs:
   security-codeql:
     name: Security CodeQL
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     needs: [eval-enforce, lint, syntax-matrix, test]
     permissions:
       contents: read
       pull-requests: read
-      security-events: read
+      security-events: write
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Evaluate CodeQL alerts directly in workflow
+      - name: Initialize CodeQL (javascript)
+        uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
+        with:
+          languages: javascript
+          build-mode: none
+
+      - name: Analyze with CodeQL
+        uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
+        with:
+          category: "/language:javascript"
+
+      - name: Evaluate CodeQL alerts directly after analysis
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.sha }}
           PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
           PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
-          CODEQL_ALERTS_POLL_SECONDS: "3"
+          CODEQL_ALERTS_POLL_SECONDS: "10"
+          CODEQL_ALERTS_MAX_ATTEMPTS: "12"
         run: |
           set -euo pipefail
           case "${CODEQL_ALERTS_POLL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ALERTS_POLL_SECONDS value: ${CODEQL_ALERTS_POLL_SECONDS}" ; exit 1 ;; esac
+          case "${CODEQL_ALERTS_MAX_ATTEMPTS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ALERTS_MAX_ATTEMPTS value: ${CODEQL_ALERTS_MAX_ATTEMPTS}" ; exit 1 ;; esac
           target_ref_sha="${TARGET_SHA}"
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_SHA}" ]; then
             target_ref_sha="${PR_HEAD_SHA}"
@@ -374,14 +387,14 @@ jobs:
           alerts_json=""
           selected_endpoint=""
           for endpoint in "${endpoints[@]}"; do
-            for attempt in 1 2 3; do
+            for attempt in $(seq 1 "${CODEQL_ALERTS_MAX_ATTEMPTS}"); do
               response="$(gh api "${endpoint}" 2>/tmp/codeql-policy.err || true)"
               if [ -n "${response}" ]; then
                 alerts_json="${response}"
                 selected_endpoint="${endpoint}"
                 break 2
               fi
-              if [ "${attempt}" -lt 3 ]; then
+              if [ "${attempt}" -lt "${CODEQL_ALERTS_MAX_ATTEMPTS}" ]; then
                 sleep "${CODEQL_ALERTS_POLL_SECONDS}"
               fi
             done

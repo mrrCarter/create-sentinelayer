@@ -304,6 +304,70 @@ jobs:
           echo "npm_token=${npm_ephemeral_token}" >> "$GITHUB_OUTPUT"
           echo "npm_token_expires_at=${npm_token_expires_at}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify rollback target package provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          target_pkg="sentinelayer-cli@${ROLLBACK_TARGET_VERSION}"
+          target_tarball_url="$(npm view "${target_pkg}" dist.tarball --json | jq -r 'if type=="string" then . else empty end')"
+          target_shasum="$(npm view "${target_pkg}" dist.shasum --json | jq -r 'if type=="string" then . else empty end')"
+          if [ -z "${target_tarball_url}" ]; then
+            echo "::error::Unable to resolve tarball URL for ${target_pkg}."
+            exit 1
+          fi
+          downloaded_tarball="$(mktemp -t rollback-target-XXXXXX.tgz)"
+          cleanup_target_tarball() {
+            rm -f "${downloaded_tarball}"
+          }
+          trap cleanup_target_tarball EXIT
+          curl -fsSL \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 5 \
+            --max-time 60 \
+            "${target_tarball_url}" \
+            -o "${downloaded_tarball}"
+          if [ -n "${target_shasum}" ] && [ "${target_shasum}" != "null" ]; then
+            actual_shasum="$(sha1sum "${downloaded_tarball}" | awk '{print $1}')"
+            if [ "${actual_shasum}" != "${target_shasum}" ]; then
+              echo "::error::Rollback target shasum mismatch. expected=${target_shasum} actual=${actual_shasum}."
+              exit 1
+            fi
+          fi
+          gh attestation verify "${downloaded_tarball}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --format json > rollback-target-attestation.json
+          jq -e 'length > 0' rollback-target-attestation.json > /dev/null
+          attested_sha256="$(jq -r '
+            [
+              .. | objects
+              | select(has("digest"))
+              | .digest
+              | if type == "object" then .sha256 // empty else empty end
+            ]
+            | map(select(type == "string" and length > 0))
+            | first // empty
+          ' rollback-target-attestation.json)"
+          if [ -z "${attested_sha256}" ]; then
+            echo "::error::Missing attested digest in rollback-target-attestation.json."
+            exit 1
+          fi
+          actual_sha256="$(sha256sum "${downloaded_tarball}" | awk '{print $1}')"
+          if [ "${attested_sha256}" != "${actual_sha256}" ]; then
+            echo "::error::Rollback target attested digest mismatch. attested=${attested_sha256} actual=${actual_sha256}."
+            exit 1
+          fi
+          {
+            echo "### Rollback target provenance"
+            echo "- package: \`${target_pkg}\`"
+            echo "- tarball_url: \`${target_tarball_url}\`"
+            echo "- sha256: \`${actual_sha256}\`"
+            echo "- signer_workflow: \`${GITHUB_REPOSITORY}/.github/workflows/release.yml\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Execute rollback dist-tag update
         shell: bash
         env:
@@ -394,5 +458,6 @@ jobs:
           path: |
             release-rollback-readiness.json
             release-rollback-execution.json
+            rollback-target-attestation.json
           if-no-files-found: error
           retention-days: 14
