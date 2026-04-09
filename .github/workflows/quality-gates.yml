@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: quality-gates-${{ github.ref }}
-  cancel-in-progress: true
+  group: quality-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
