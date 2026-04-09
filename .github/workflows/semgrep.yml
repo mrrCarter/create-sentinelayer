@@ -33,6 +33,8 @@ jobs:
       - name: Install Semgrep
         run: |
           set -euo pipefail
+          export PIP_DEFAULT_TIMEOUT=30
+          export PIP_RETRIES=5
           policy_file=".github/policies/tool-digests.json"
           expected_requirements_sha="$(jq -r '.semgrep.requirements_sha256 // empty' "${policy_file}")"
           expected_semgrep_version="$(jq -r '.semgrep.version // empty' "${policy_file}")"
@@ -54,6 +56,8 @@ jobs:
             exit 1
           fi
           python -m pip install --disable-pip-version-check \
+            --timeout "${PIP_DEFAULT_TIMEOUT}" \
+            --retries "${PIP_RETRIES}" \
             "pip==${expected_pip_version}" \
             "setuptools==${expected_setuptools_version}" \
             "wheel==${expected_wheel_version}"
@@ -74,7 +78,11 @@ jobs:
             echo "::error::wheel version mismatch. expected=${expected_wheel_version} actual=${wheel_version}"
             exit 1
           fi
-          python -m pip install --disable-pip-version-check --require-hashes -r .github/policies/semgrep-requirements.txt
+          python -m pip install --disable-pip-version-check \
+            --timeout "${PIP_DEFAULT_TIMEOUT}" \
+            --retries "${PIP_RETRIES}" \
+            --require-hashes \
+            -r .github/policies/semgrep-requirements.txt
           semgrep_version="$(semgrep --version | tr -d '\r' | xargs || true)"
           if [ "${semgrep_version}" != "${expected_semgrep_version}" ]; then
             echo "::error::Semgrep version mismatch."

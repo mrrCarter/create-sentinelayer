@@ -717,7 +717,58 @@ jobs:
             npm config delete //registry.npmjs.org/:_authToken || true
           fi
 
+      - name: Guard deterministic npm publish idempotency
+        id: publish_guard
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+          if [ -z "${package_name}" ] || [ -z "${package_version}" ]; then
+            echo "::error::Failed to resolve package identity from package.json."
+            exit 1
+          fi
+          if [ "${package_version}" != "${tag_version}" ]; then
+            echo "::error::Tag/version mismatch. tag=${tag_version} package=${package_version}."
+            exit 1
+          fi
+          expected_sha1="$(sha1sum "${VERIFIED_TARBALL}" | awk '{print $1}')"
+          published_version="$(npm view "${package_name}@${package_version}" version --json 2>/tmp/npm-view.err || true)"
+          published_version="$(echo "${published_version}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          if [ -n "${published_version}" ]; then
+            if [ "${published_version}" != "${package_version}" ]; then
+              echo "::error::Unexpected published version response for ${package_name}@${package_version}: ${published_version}"
+              exit 1
+            fi
+            published_sha1="$(npm view "${package_name}@${package_version}" dist.shasum --json 2>/tmp/npm-view.err || true)"
+            published_sha1="$(echo "${published_sha1}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+            if [ -n "${published_sha1}" ] && [ "${published_sha1}" != "${expected_sha1}" ]; then
+              echo "::error::Published tarball checksum mismatch for ${package_name}@${package_version}. expected=${expected_sha1} published=${published_sha1}."
+              exit 1
+            fi
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### npm publish idempotency guard"
+              echo "- package: \`${package_name}@${package_version}\`"
+              echo "- status: \`already published\`"
+              echo "- published_sha1: \`${published_sha1:-<unavailable>}\`"
+              echo "- expected_sha1: \`${expected_sha1}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "already_published=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### npm publish idempotency guard"
+            echo "- package: \`${package_name}@${package_version}\`"
+            echo "- status: \`not published yet\`"
+            echo "- expected_sha1: \`${expected_sha1}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish to npm
+        if: steps.publish_guard.outputs.already_published != 'true'
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"

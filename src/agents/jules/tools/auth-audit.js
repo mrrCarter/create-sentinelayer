@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 
@@ -282,10 +282,23 @@ function isRetryableAidenidProvisionError(error) {
   return classifyAidenidProvisionFailure(error).retryable;
 }
 
-function computeAidenidProvisionBackoffMs(attempt, baseBackoffMs = AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS) {
+function deriveAidenidBackoffSeed(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) {
+    return randomBytes(4).readUInt32BE(0);
+  }
+  return createHash("sha256").update(normalizedRequestId).digest().readUInt32BE(0);
+}
+
+function computeAidenidProvisionBackoffMs(
+  attempt,
+  baseBackoffMs = AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS,
+  jitterSeed = 0
+) {
   const cappedBase = Math.max(1, Number.isFinite(baseBackoffMs) ? Math.trunc(baseBackoffMs) : AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS);
   const exponential = Math.min(2500, cappedBase * Math.pow(2, Math.max(0, attempt)));
-  const deterministicJitter = ((Math.max(0, attempt) * 1664525 + 1013904223) % 1000) / 1000;
+  const normalizedSeed = Number.isFinite(jitterSeed) ? Math.abs(Math.trunc(jitterSeed)) : 0;
+  const deterministicJitter = ((Math.max(0, attempt) * 1664525 + 1013904223 + normalizedSeed) % 1000) / 1000;
   const jitterFactor = 0.5 + (deterministicJitter * 0.5);
   return Math.max(1, Math.trunc(exponential * jitterFactor));
 }
@@ -332,8 +345,16 @@ function deriveProviderBreakerScope(options = {}) {
   if (projectScope !== AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT) {
     parts.push(`proj-${projectScope}`);
   }
+  const repoScope = normalizeProviderBreakerScope(process.env.GITHUB_REPOSITORY || "");
+  if (repoScope !== AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT) {
+    parts.push(`repo-${repoScope}`);
+  }
   if (parts.length === 0) {
-    return AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT;
+    const workspaceFallback = createHash("sha256")
+      .update(process.cwd())
+      .digest("hex")
+      .slice(0, 20);
+    parts.push(`ws-${workspaceFallback}`);
   }
   return normalizeProviderBreakerScope(parts.join(":"));
 }
@@ -600,6 +621,9 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
     ? { ...options.requestOptions }
     : {};
   const requestId = String(options.requestId || createAuditRequestId());
+  const jitterSeed = Number.isFinite(options.jitterSeed)
+    ? Math.abs(Math.trunc(options.jitterSeed))
+    : deriveAidenidBackoffSeed(requestId);
   const totalBudgetMs = normalizeAidenidTotalBudgetMs(options.totalBudgetMs);
   const minAttemptTimeoutMs = Number.isFinite(options.minAttemptTimeoutMs) && options.minAttemptTimeoutMs > 0
     ? Math.trunc(options.minAttemptTimeoutMs)
@@ -760,7 +784,7 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
         throw terminal;
       }
     }
-    const backoffMs = computeAidenidProvisionBackoffMs(attempt, baseBackoffMs);
+    const backoffMs = computeAidenidProvisionBackoffMs(attempt, baseBackoffMs, jitterSeed);
     const remainingAfterAttemptMs = totalBudgetMs - (Date.now() - retryWindowStartedAt);
     if (remainingAfterAttemptMs <= 0) {
       break;

@@ -495,6 +495,8 @@ describe("authAudit", () => {
     assert.ok(source.includes("AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS"));
     assert.ok(source.includes("AUTH_AIDENID_PROVISION_MAX_RETRIES"));
     assert.ok(source.includes("provisionEmailIdentityWithRetry"));
+    assert.ok(source.includes("deriveAidenidBackoffSeed"));
+    assert.ok(source.includes("computeAidenidProvisionBackoffMs(attempt, baseBackoffMs, jitterSeed)"));
     assert.ok(source.includes("new AbortController()"));
     assert.ok(source.includes("Promise.race(["));
     assert.ok(source.includes("AIDENID_ATTEMPT_TIMEOUT"));
@@ -525,6 +527,8 @@ describe("authAudit", () => {
     assert.ok(source.includes("hydrateProviderBreakerState"));
     assert.ok(source.includes("persistProviderBreakerState"));
     assert.ok(source.includes("deriveProviderBreakerScope"));
+    assert.ok(source.includes("repo-"));
+    assert.ok(source.includes("ws-"));
     assert.ok(source.includes("enforceProviderBreaker(providerKey, providerScope, requestId)"));
     assert.ok(source.includes("recordProviderBreakerFailure(providerKey, providerScope"));
     assert.ok(source.includes("providerBreaker"));
