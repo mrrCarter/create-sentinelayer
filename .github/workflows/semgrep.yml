@@ -47,7 +47,7 @@ jobs:
             echo "::error::Invalid semgrep requirements SHA256 in ${policy_file}."
             exit 1
           fi
-          actual_requirements_sha="$(git show HEAD:.github/policies/semgrep-requirements.txt | sha256sum | awk '{print $1}')"
+          actual_requirements_sha="$(sha256sum .github/policies/semgrep-requirements.txt | awk '{print $1}')"
           if [ "${actual_requirements_sha}" != "${expected_requirements_sha}" ]; then
             echo "::error::Semgrep requirements digest mismatch."
             echo "::error::expected=${expected_requirements_sha} actual=${actual_requirements_sha}"

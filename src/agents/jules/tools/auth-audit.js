@@ -54,6 +54,12 @@ const AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS =
   (AUTH_AIDENID_PROVISION_TIMEOUT_MS * (AUTH_AIDENID_PROVISION_MAX_RETRIES + 1))
   + (AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS * AUTH_AIDENID_PROVISION_MAX_RETRIES * 2);
 const AUTH_AIDENID_PROVISION_MIN_ATTEMPT_TIMEOUT_MS = 1_500;
+const AUTH_AUDIT_PROVIDER_BREAKER_FAILURE_THRESHOLD = 3;
+const AUTH_AUDIT_PROVIDER_BREAKER_WINDOW_MS = 5 * 60 * 1000;
+const AUTH_AUDIT_PROVIDER_BREAKER_COOLDOWN_MS = 2 * 60 * 1000;
+const AUTH_AUDIT_PROVIDER_BREAKERS = new Map();
+const AUTH_AUDIT_PROVIDER_AIDENID = "aidenid";
+const AUTH_AUDIT_PROVIDER_PLAYWRIGHT_TARGET = "playwright-target";
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
 const AUTH_AUDIT_ENVELOPE_ENV = "SENTINELAYER_AUTH_AUDIT_ENVELOPE";
 const AUTH_AUDIT_ENVELOPE_VERSION = "v2";
@@ -114,6 +120,9 @@ function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
   };
   if (options.retryTelemetry && typeof options.retryTelemetry === "object") {
     errorPayload.retryTelemetry = options.retryTelemetry;
+  }
+  if (options.providerBreaker && typeof options.providerBreaker === "object") {
+    errorPayload.providerBreaker = options.providerBreaker;
   }
   return {
     available: false,
@@ -260,6 +269,95 @@ function normalizeAidenidTotalBudgetMs(value) {
     return AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS;
   }
   return Math.max(1, Math.trunc(value));
+}
+
+function getProviderBreakerState(provider) {
+  const normalizedProvider = String(provider || "").trim().toLowerCase();
+  if (!normalizedProvider) {
+    return null;
+  }
+  if (!AUTH_AUDIT_PROVIDER_BREAKERS.has(normalizedProvider)) {
+    AUTH_AUDIT_PROVIDER_BREAKERS.set(normalizedProvider, {
+      provider: normalizedProvider,
+      consecutiveFailures: 0,
+      windowStartedAt: 0,
+      openUntilMs: 0,
+      lastFailureCode: "",
+    });
+  }
+  return AUTH_AUDIT_PROVIDER_BREAKERS.get(normalizedProvider);
+}
+
+function getProviderBreakerSnapshot(provider, nowMs = Date.now()) {
+  const state = getProviderBreakerState(provider);
+  if (!state) {
+    return null;
+  }
+  const remainingCooldownMs = state.openUntilMs > nowMs ? state.openUntilMs - nowMs : 0;
+  return {
+    provider: state.provider,
+    consecutiveFailures: state.consecutiveFailures,
+    windowStartedAt: state.windowStartedAt || 0,
+    remainingCooldownMs,
+    cooldownUntilMs: state.openUntilMs || 0,
+    lastFailureCode: state.lastFailureCode || "",
+  };
+}
+
+function enforceProviderBreaker(provider, requestId) {
+  const state = getProviderBreakerState(provider);
+  if (!state) {
+    return;
+  }
+  const nowMs = Date.now();
+  if (state.openUntilMs > nowMs) {
+    const snapshot = getProviderBreakerSnapshot(provider, nowMs);
+    const blocked = new AuthAuditError(
+      `Provider circuit is open for ${state.provider}; retry after cooldown (requestId=${requestId}).`
+    );
+    blocked.errorCode = "AUTH_AUDIT_PROVIDER_CIRCUIT_OPEN";
+    blocked.retryable = false;
+    blocked.providerBreaker = snapshot;
+    throw blocked;
+  }
+  if (state.openUntilMs > 0 && state.openUntilMs <= nowMs) {
+    state.consecutiveFailures = 0;
+    state.windowStartedAt = nowMs;
+    state.openUntilMs = 0;
+    state.lastFailureCode = "";
+    AUTH_AUDIT_PROVIDER_BREAKERS.set(state.provider, state);
+  }
+}
+
+function recordProviderBreakerSuccess(provider) {
+  const state = getProviderBreakerState(provider);
+  if (!state) {
+    return;
+  }
+  state.consecutiveFailures = 0;
+  state.windowStartedAt = 0;
+  state.openUntilMs = 0;
+  state.lastFailureCode = "";
+  AUTH_AUDIT_PROVIDER_BREAKERS.set(state.provider, state);
+}
+
+function recordProviderBreakerFailure(provider, errorCode = "") {
+  const state = getProviderBreakerState(provider);
+  if (!state) {
+    return null;
+  }
+  const nowMs = Date.now();
+  if (!state.windowStartedAt || (nowMs - state.windowStartedAt) > AUTH_AUDIT_PROVIDER_BREAKER_WINDOW_MS) {
+    state.windowStartedAt = nowMs;
+    state.consecutiveFailures = 0;
+  }
+  state.consecutiveFailures += 1;
+  state.lastFailureCode = String(errorCode || "").trim().toUpperCase();
+  if (state.consecutiveFailures >= AUTH_AUDIT_PROVIDER_BREAKER_FAILURE_THRESHOLD) {
+    state.openUntilMs = nowMs + AUTH_AUDIT_PROVIDER_BREAKER_COOLDOWN_MS;
+  }
+  AUTH_AUDIT_PROVIDER_BREAKERS.set(state.provider, state);
+  return getProviderBreakerSnapshot(provider, nowMs);
 }
 
 function isAbortSignalLike(signal) {
@@ -555,7 +653,9 @@ function evaluateAuthenticatedHeaderFindings(targetUrl, headers = {}, authSignal
 
 async function provisionTestIdentity(input) {
   const requestId = String(input.requestId || createAuditRequestId());
+  const providerKey = AUTH_AUDIT_PROVIDER_AIDENID;
   try {
+    enforceProviderBreaker(providerKey, requestId);
     const executeRequested = input.execute === true;
     const allowLiveProvision = input.allowProvisioning === true || process.env.SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION === "1";
     if (executeRequested && !allowLiveProvision) {
@@ -596,12 +696,21 @@ async function provisionTestIdentity(input) {
     const retryTelemetry = result && typeof result === "object" && result.retryTelemetry
       ? result.retryTelemetry
       : null;
+    recordProviderBreakerSuccess(providerKey);
     return { available: true, requestId, dryRun: !executeRequested, identity, retryTelemetry };
   } catch (err) {
     const message = "AIdenID provisioning failed: " + normalizeErrorMessage(err, "unknown error");
+    const retryable = isRetryableAidenidProvisionError(err);
+    let providerBreaker = err && typeof err === "object" && err.providerBreaker ? err.providerBreaker : null;
+    if (retryable) {
+      providerBreaker = recordProviderBreakerFailure(providerKey, err && typeof err === "object" ? err.errorCode : "") || providerBreaker;
+    } else if (!providerBreaker) {
+      providerBreaker = getProviderBreakerSnapshot(providerKey);
+    }
     return buildUnavailableAuditResponse(requestId, "AIDENID_PROVISION_FAILED", message, {
-      retryable: isRetryableAidenidProvisionError(err),
+      retryable,
       retryTelemetry: err && typeof err === "object" && err.retryTelemetry ? err.retryTelemetry : null,
+      providerBreaker,
     });
   }
 }
@@ -616,6 +725,7 @@ async function provisionTestIdentity(input) {
  */
 async function authenticatedPageCheck(input) {
   const requestId = String(input.requestId || createAuditRequestId());
+  const providerKey = AUTH_AUDIT_PROVIDER_PLAYWRIGHT_TARGET;
   const url = input.url;
   if (!url) throw new AuthAuditError("authenticated_page_check requires url");
   const targetUrl = resolveAuthAuditTarget(url, input, "authenticated_page_check.target");
@@ -625,6 +735,7 @@ async function authenticatedPageCheck(input) {
   const allowAuthMutation = input.allowAuthMutation === true || process.env[AUTH_MUTATION_ALLOWED_ENV] === "1";
 
   try {
+    enforceProviderBreaker(providerKey, requestId);
     const authContextJson = JSON.stringify({
       email: input.email || "",
       password: input.password || "",
@@ -660,12 +771,21 @@ async function authenticatedPageCheck(input) {
       }
     }
     findings.push(...evaluateAuthenticatedHeaderFindings(targetUrl, result.headers || {}, result.authSignals || {}));
+    recordProviderBreakerSuccess(providerKey);
     return { available: true, requestId, method: "playwright", mutationAllowed: allowAuthMutation, findings, ...result };
   } catch (err) {
     const code = err instanceof AuthAuditError ? "AUTH_AUDIT_VALIDATION_FAILED" : "AUTH_AUDIT_PLAYWRIGHT_FAILED";
     const baseMessage = err instanceof AuthAuditError ? err.message : "Playwright auth audit failed: " + normalizeErrorMessage(err, "unknown error");
+    const retryable = isRetryablePlaywrightExecutionError(err);
+    let providerBreaker = err && typeof err === "object" && err.providerBreaker ? err.providerBreaker : null;
+    if (retryable) {
+      providerBreaker = recordProviderBreakerFailure(providerKey, err && typeof err === "object" ? err.errorCode : "") || providerBreaker;
+    } else if (!providerBreaker) {
+      providerBreaker = getProviderBreakerSnapshot(providerKey);
+    }
     return buildUnavailableAuditResponse(requestId, code, baseMessage, {
-      retryable: isRetryablePlaywrightExecutionError(err),
+      retryable,
+      providerBreaker,
     });
   }
 }

@@ -516,6 +516,16 @@ describe("authAudit", () => {
     assert.ok(source.includes("composeAbortSignals(callerSignal, controller.signal)"));
   });
 
+  it("provider circuit-breaker state is enforced for repeated auth provider degradation", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKER_FAILURE_THRESHOLD"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKERS"));
+    assert.ok(source.includes("enforceProviderBreaker(providerKey, requestId)"));
+    assert.ok(source.includes("recordProviderBreakerFailure(providerKey"));
+    assert.ok(source.includes("providerBreaker"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_CIRCUIT_OPEN"));
+  });
+
   it("AuthAudit registered in dispatch as read-only", async () => {
     const { listTools, isReadOnlyTool } = await import("../src/agents/jules/tools/dispatch.js");
     assert.ok(listTools().includes("AuthAudit"));

@@ -28,6 +28,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ALLOWED_TAG_ACTORS: ${{ vars.RELEASE_ALLOWED_TAG_ACTORS || 'github-actions[bot],mrrCarter' }}
+          RELEASE_ALLOWED_TAG_SIGNER_EMAILS: ${{ vars.RELEASE_ALLOWED_TAG_SIGNER_EMAILS || '41898282+github-actions[bot]@users.noreply.github.com,32074640+mrrCarter@users.noreply.github.com' }}
           EVENT_CREATED: ${{ github.event.created }}
           EVENT_DELETED: ${{ github.event.deleted }}
         run: |
@@ -59,9 +60,41 @@ jobs:
             echo "::error::Actor ${actor} is not allowed to trigger release tags. Allowed actors: ${allowed_csv}."
             exit 1
           fi
-          tag_object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.type')"
-          if [ "${tag_object_type}" != "commit" ] && [ "${tag_object_type}" != "tag" ]; then
-            echo "::error::Unexpected tag object type for ${GITHUB_REF_NAME}: ${tag_object_type}"
+          tag_ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}")"
+          tag_object_type="$(echo "${tag_ref_json}" | jq -r '.object.type // empty')"
+          tag_object_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // empty')"
+          if [ "${tag_object_type}" != "tag" ]; then
+            echo "::error::Release tags must be annotated and cryptographically signed. Lightweight tag object type '${tag_object_type}' is not allowed."
+            exit 1
+          fi
+          if [ -z "${tag_object_sha}" ]; then
+            echo "::error::Failed to resolve annotated tag object SHA for ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          tag_object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
+          tag_signature_verified="$(echo "${tag_object_json}" | jq -r '.verification.verified // false')"
+          tag_signature_reason="$(echo "${tag_object_json}" | jq -r '.verification.reason // "unknown"')"
+          if [ "${tag_signature_verified}" != "true" ]; then
+            echo "::error::Release tag signature verification failed for ${GITHUB_REF_NAME} (reason=${tag_signature_reason})."
+            exit 1
+          fi
+          signer_email="$(echo "${tag_object_json}" | jq -r '.tagger.email // empty' | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          signer_allowlist="${RELEASE_ALLOWED_TAG_SIGNER_EMAILS}"
+          if [ -z "$(echo "${signer_allowlist}" | xargs || true)" ]; then
+            echo "::error::RELEASE_ALLOWED_TAG_SIGNER_EMAILS is empty."
+            exit 1
+          fi
+          signer_allowed="false"
+          IFS=',' read -r -a signer_items <<< "${signer_allowlist}"
+          for item in "${signer_items[@]}"; do
+            candidate="$(echo "${item}" | tr '[:upper:]' '[:lower:]' | xargs)"
+            if [ -n "${candidate}" ] && [ "${candidate}" = "${signer_email}" ]; then
+              signer_allowed="true"
+              break
+            fi
+          done
+          if [ "${signer_allowed}" != "true" ]; then
+            echo "::error::Tag signer email '${signer_email:-<none>}' is not allowlisted. Allowed signer emails: ${signer_allowlist}."
             exit 1
           fi
           {
@@ -70,6 +103,9 @@ jobs:
             echo "- actor: \`${actor}\`"
             echo "- created_event: \`${EVENT_CREATED}\`"
             echo "- tag_object_type: \`${tag_object_type}\`"
+            echo "- tag_signature_verified: \`${tag_signature_verified}\`"
+            echo "- tag_signature_reason: \`${tag_signature_reason}\`"
+            echo "- signer_email: \`${signer_email:-<none>}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   tag-preflight:

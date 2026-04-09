@@ -235,18 +235,37 @@ jobs:
             fi
             sleep $((attempt * 2))
           done
-          npm_ephemeral_token="$(echo "${exchange_response}" | jq -r '.npm_token // .token // .access_token // empty')"
-          if [ -z "${npm_ephemeral_token}" ]; then
-            echo "::error::OIDC token exchange did not return an npm token."
+          exchange_contract="$(echo "${exchange_response}" | jq -cer '
+            if type == "object"
+              and (.npm_token | type == "string" and length > 0)
+              and (.expires_at | type == "string" and length > 0)
+              and ((.aud | type) == "string" or (.aud | type) == "array")
+              and (.iss | type == "string" and length > 0)
+              and (.repository | type == "string" and length > 0)
+              and ((.run_id | type) == "string" or (.run_id | type) == "number")
+            then {
+              npm_token: .npm_token,
+              expires_at: .expires_at,
+              aud: .aud,
+              iss: .iss,
+              repository: .repository,
+              run_id: (.run_id | tostring)
+            }
+            else empty
+            end
+          ' 2>/dev/null || true)"
+          if [ -z "${exchange_contract}" ]; then
+            echo "::error::OIDC token exchange response failed schema validation."
             exit 1
           fi
-          exchange_issuer="$(echo "${exchange_response}" | jq -r '.issuer // .iss // empty')"
+          npm_ephemeral_token="$(echo "${exchange_contract}" | jq -r '.npm_token // empty')"
+          exchange_issuer="$(echo "${exchange_contract}" | jq -r '.iss // empty')"
           if [ -n "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ] && [ "${exchange_issuer}" != "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ]; then
             echo "::error::OIDC token exchange issuer mismatch. expected=${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER} actual=${exchange_issuer:-<none>}."
             exit 1
           fi
-          audience_ok="$(echo "${exchange_response}" | jq -r --arg expected "${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}" '
-            (.audience // .aud // empty) as $aud
+          audience_ok="$(echo "${exchange_contract}" | jq -r --arg expected "${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}" '
+            (.aud // empty) as $aud
             | if ($expected | length) == 0 then "true"
               elif ($aud | type) == "string" then (if $aud == $expected then "true" else "false" end)
               elif ($aud | type) == "array" then (if ($aud | index($expected)) != null then "true" else "false" end)
@@ -257,7 +276,17 @@ jobs:
             echo "::error::OIDC token exchange audience mismatch for expected audience ${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}."
             exit 1
           fi
-          npm_token_expires_at="$(echo "${exchange_response}" | jq -r '.expires_at // .expiresAt // empty')"
+          response_repository="$(echo "${exchange_contract}" | jq -r '.repository // empty')"
+          if [ "${response_repository}" != "${GITHUB_REPOSITORY}" ]; then
+            echo "::error::OIDC token exchange repository mismatch. expected=${GITHUB_REPOSITORY} actual=${response_repository:-<none>}."
+            exit 1
+          fi
+          response_run_id="$(echo "${exchange_contract}" | jq -r '.run_id // empty')"
+          if [ "${response_run_id}" != "${GITHUB_RUN_ID}" ]; then
+            echo "::error::OIDC token exchange run_id mismatch. expected=${GITHUB_RUN_ID} actual=${response_run_id:-<none>}."
+            exit 1
+          fi
+          npm_token_expires_at="$(echo "${exchange_contract}" | jq -r '.expires_at // empty')"
           if [ -z "${npm_token_expires_at}" ]; then
             echo "::error::OIDC token exchange response missing token expiry (expires_at)."
             exit 1

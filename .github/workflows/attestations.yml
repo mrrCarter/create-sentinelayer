@@ -196,6 +196,34 @@ jobs:
           echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
 
+      - name: Verify downloaded quality artifact attestation
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/quality-gates.yml
+        run: |
+          set -euo pipefail
+          tarballs=(quality-build-source/sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one quality package tarball before attestation verification, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          source_tarball="${tarballs[0]}"
+          for attempt in 1 2 3 4 5; do
+            if gh attestation verify "${source_tarball}" --repo "${REPO}" --signer-workflow "${QUALITY_SIGNER_WORKFLOW}" --format json > quality-source-attestation.json; then
+              break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::Quality artifact attestation verification failed after retries."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -e 'length > 0' quality-source-attestation.json > /dev/null
+
       - name: Prepare attestation subject from canonical quality artifact
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: pack
@@ -260,6 +288,7 @@ jobs:
           path: |
             attestation-manifest.json
             quality-source-manifest.json
+            quality-source-attestation.json
             ${{ steps.pack.outputs.tarball }}
           if-no-files-found: error
           retention-days: 7
@@ -272,6 +301,7 @@ jobs:
           path: |
             attestation-manifest.json
             quality-source-manifest.json
+            quality-source-attestation.json
           if-no-files-found: warn
           retention-days: 3
 
@@ -324,7 +354,9 @@ jobs:
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-verification-artifacts
-          path: attestation-verify.json
+          path: |
+            attestation-verify.json
+            quality-source-attestation.json
           if-no-files-found: warn
           retention-days: 7
 
