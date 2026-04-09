@@ -1370,3 +1370,13 @@ Review:
 - [x] Extend auth-audit unit coverage for new retry/cancellation hardening.
 - [x] Run local validation (`node --test tests/unit.jules-auth-audit.test.mjs`, `npm run verify`).
 - [ ] Push updates, run Omar loop (`gh run watch` for Omar + required checks), and iterate until green and P2 reduced.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A39)
+
+- [x] Reproduce latest Omar P2 set on PR `#274` (`P2=4`) and map concrete fixes.
+- [x] Add bounded `gh run watch` timeout enforcement in `release-please.yml`.
+- [x] Pin Semgrep Python runtime to exact patch version from policy and assert match at install time.
+- [x] Strengthen release publish gate with explicit `release-authorize` dependency and fail-closed assertion in publish job.
+- [x] Extend required-check runner validation with workflow-run provenance binding (`workflow_path` + `head_sha`) and wire policy entries in release/attestation callers.
+- [x] Run local full validation (`npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch`), and merge PR `#274` when required checks are green.

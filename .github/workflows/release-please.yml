@@ -117,15 +117,15 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           REQUIRED_CHECKS_JSON: >-
             [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/semgrep.yml"},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/gitleaks.yml"},
+              {"name":"IaC Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/iac-scan.yml"},
+              {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
+              {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
+              {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
+              {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "1800"
@@ -163,8 +163,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PLEASE_OUTPUTS_JSON: ${{ toJson(steps.release_please.outputs) }}
           EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          WATCH_TIMEOUT_SECONDS: "1800"
         run: |
           set -euo pipefail
+          case "${WATCH_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid WATCH_TIMEOUT_SECONDS value: ${WATCH_TIMEOUT_SECONDS}" ; exit 1 ;; esac
           tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
           if [ -z "${tag_name}" ]; then
             tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '
@@ -232,7 +234,19 @@ jobs:
             exit 1
           fi
 
-          gh run watch "${release_run_id}" --exit-status
+          set +e
+          timeout "${WATCH_TIMEOUT_SECONDS}"s gh run watch "${release_run_id}" --exit-status
+          watch_exit="$?"
+          set -e
+          if [ "${watch_exit}" -ne 0 ]; then
+            if [ "${watch_exit}" -eq 124 ]; then
+              echo "::error::Timed out after ${WATCH_TIMEOUT_SECONDS}s while waiting for Release workflow run ${release_run_id}."
+              echo "::error::Rerun guidance: gh run watch ${release_run_id} --exit-status"
+            else
+              echo "::error::gh run watch failed for Release workflow run ${release_run_id} (exit=${watch_exit})."
+            fi
+            exit 1
+          fi
           release_conclusion="$(gh run view "${release_run_id}" --json conclusion --jq '.conclusion')"
           if [ "${release_conclusion}" != "success" ]; then
             echo "::error::Release workflow failed for ${tag_name} (run_id=${release_run_id}, conclusion=${release_conclusion})."

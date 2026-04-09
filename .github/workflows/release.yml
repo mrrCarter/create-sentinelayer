@@ -190,15 +190,15 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           REQUIRED_CHECKS_JSON: >-
             [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false},
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/semgrep.yml"},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/gitleaks.yml"},
+              {"name":"IaC Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/iac-scan.yml"},
+              {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
+              {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
+              {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
+              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "1800"
@@ -523,24 +523,29 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           REQUIRED_CHECKS_JSON: >-
             [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false},
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/semgrep.yml"},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/gitleaks.yml"},
+              {"name":"IaC Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/iac-scan.yml"},
+              {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
+              {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
+              {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
+              {"name":"Attestation Trusted Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "900"
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-  publish:
-    needs: [pre-publish-gates]
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish-release:
+    needs: [pre-publish-gates, release-authorize]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.pre-publish-gates.result == 'success' &&
+        needs.release-authorize.result == 'success'
+      }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     environment: package-release
@@ -553,6 +558,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Assert release authorization gate state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.release-authorize.result }}" != "success" ]; then
+            echo "::error::release-authorize did not complete successfully (result=${{ needs.release-authorize.result }})."
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

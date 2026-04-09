@@ -15,6 +15,7 @@
     "version": "1.124.0",
     "requirements_sha256": "ba7525b832a7175d16c68af22c034ffea23d5421bd2db3ff55dd541165c65cc6",
     "python_toolchain": {
+      "python": "3.11.15",
       "pip": "24.3.1",
       "setuptools": "75.6.0",
       "wheel": "0.45.1"

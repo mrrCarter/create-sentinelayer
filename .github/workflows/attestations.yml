@@ -102,25 +102,25 @@ jobs:
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/semgrep.yml"},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/gitleaks.yml"},
+              {"name":"IaC Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/iac-scan.yml"},
+              {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
+              {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
+              {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]'
           else
             REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Semgrep Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/semgrep.yml"},
+              {"name":"Gitleaks Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/gitleaks.yml"},
+              {"name":"IaC Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/iac-scan.yml"},
+              {"name":"SCA Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sca-audit.yml"},
+              {"name":"License Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/license-gate.yml"},
+              {"name":"SBOM Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/sbom.yml"},
               {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]'
           fi
