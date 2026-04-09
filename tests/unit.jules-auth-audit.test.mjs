@@ -521,6 +521,9 @@ describe("authAudit", () => {
     assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKER_FAILURE_THRESHOLD"));
     assert.ok(source.includes("AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT"));
     assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKERS"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV"));
+    assert.ok(source.includes("hydrateProviderBreakerState"));
+    assert.ok(source.includes("persistProviderBreakerState"));
     assert.ok(source.includes("deriveProviderBreakerScope"));
     assert.ok(source.includes("enforceProviderBreaker(providerKey, providerScope, requestId)"));
     assert.ok(source.includes("recordProviderBreakerFailure(providerKey, providerScope"));

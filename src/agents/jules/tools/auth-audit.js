@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertPermittedAuditTarget } from "./url-policy.js";
@@ -60,6 +62,8 @@ const AUTH_AUDIT_PROVIDER_BREAKER_COOLDOWN_MS = 2 * 60 * 1000;
 const AUTH_AUDIT_PROVIDER_BREAKER_ENTRY_TTL_MS = 15 * 60 * 1000;
 const AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT = "default";
 const AUTH_AUDIT_PROVIDER_BREAKERS = new Map();
+const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV = "SENTINELAYER_AUTH_AUDIT_BREAKER_STATE_FILE";
+const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT = ".sentinelayer/state/auth-audit-provider-breakers.json";
 const AUTH_AUDIT_PROVIDER_AIDENID = "aidenid";
 const AUTH_AUDIT_PROVIDER_PLAYWRIGHT_TARGET = "playwright-target";
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
@@ -94,6 +98,8 @@ const RETRYABLE_AIDENID_PROVISION_MESSAGE_PATTERNS = [
   /\b(?:econnreset|econnrefused|eai_again|enotfound|etimedout)\b/i,
   /\bconnection\b.*\b(?:reset|closed|terminated)\b/i,
 ];
+
+let AUTH_AUDIT_PROVIDER_BREAKERS_HYDRATED = false;
 
 function createAuditRequestId() {
   try {
@@ -336,7 +342,85 @@ function getProviderBreakerKey(provider, scope) {
   return `${provider}:${scope}`;
 }
 
+function getProviderBreakerStatePath() {
+  const configuredPath = String(
+    process.env[AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV] || AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT
+  ).trim();
+  if (!configuredPath) {
+    return "";
+  }
+  if (path.isAbsolute(configuredPath)) {
+    return configuredPath;
+  }
+  return path.resolve(process.cwd(), configuredPath);
+}
+
+function hydrateProviderBreakerState() {
+  if (AUTH_AUDIT_PROVIDER_BREAKERS_HYDRATED) {
+    return;
+  }
+  AUTH_AUDIT_PROVIDER_BREAKERS_HYDRATED = true;
+  const statePath = getProviderBreakerStatePath();
+  if (!statePath || !fs.existsSync(statePath)) {
+    return;
+  }
+  try {
+    const raw = fs.readFileSync(statePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+    for (const entry of entries) {
+      const provider = String(entry?.provider || "").trim().toLowerCase();
+      if (!provider) {
+        continue;
+      }
+      const scope = normalizeProviderBreakerScope(entry?.scope);
+      const key = getProviderBreakerKey(provider, scope);
+      AUTH_AUDIT_PROVIDER_BREAKERS.set(key, {
+        key,
+        provider,
+        scope,
+        consecutiveFailures: Number.isFinite(entry?.consecutiveFailures) ? Math.max(0, Math.trunc(entry.consecutiveFailures)) : 0,
+        windowStartedAt: Number.isFinite(entry?.windowStartedAt) ? Math.max(0, Math.trunc(entry.windowStartedAt)) : 0,
+        openUntilMs: Number.isFinite(entry?.openUntilMs) ? Math.max(0, Math.trunc(entry.openUntilMs)) : 0,
+        lastFailureCode: String(entry?.lastFailureCode || "").trim().toUpperCase(),
+        lastUpdatedAtMs: Number.isFinite(entry?.lastUpdatedAtMs) ? Math.max(0, Math.trunc(entry.lastUpdatedAtMs)) : Date.now(),
+      });
+    }
+  } catch {
+    // Fall back to in-memory behavior if persisted state cannot be loaded.
+  }
+}
+
+function persistProviderBreakerState(nowMs = Date.now()) {
+  const statePath = getProviderBreakerStatePath();
+  if (!statePath) {
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    const payload = {
+      version: 1,
+      updatedAtMs: nowMs,
+      entries: [...AUTH_AUDIT_PROVIDER_BREAKERS.values()].map((state) => ({
+        provider: state.provider,
+        scope: state.scope,
+        consecutiveFailures: state.consecutiveFailures,
+        windowStartedAt: state.windowStartedAt,
+        openUntilMs: state.openUntilMs,
+        lastFailureCode: state.lastFailureCode,
+        lastUpdatedAtMs: state.lastUpdatedAtMs || nowMs,
+      })),
+    };
+    const tmpPath = `${statePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload), "utf-8");
+    fs.renameSync(tmpPath, statePath);
+  } catch {
+    // Persistence is best-effort; in-memory safeguards remain active.
+  }
+}
+
 function sweepProviderBreakers(nowMs = Date.now()) {
+  let mutated = false;
   for (const [breakerKey, state] of AUTH_AUDIT_PROVIDER_BREAKERS.entries()) {
     const isOpen = Number(state.openUntilMs || 0) > nowMs;
     const lastUpdatedAtMs = Number(state.lastUpdatedAtMs || state.windowStartedAt || 0);
@@ -345,11 +429,16 @@ function sweepProviderBreakers(nowMs = Date.now()) {
     }
     if (lastUpdatedAtMs > 0 && (nowMs - lastUpdatedAtMs) > AUTH_AUDIT_PROVIDER_BREAKER_ENTRY_TTL_MS) {
       AUTH_AUDIT_PROVIDER_BREAKERS.delete(breakerKey);
+      mutated = true;
     }
+  }
+  if (mutated) {
+    persistProviderBreakerState(nowMs);
   }
 }
 
 function getProviderBreakerState(provider, scope) {
+  hydrateProviderBreakerState();
   const normalizedProvider = String(provider || "").trim().toLowerCase();
   if (!normalizedProvider) {
     return null;
@@ -369,6 +458,7 @@ function getProviderBreakerState(provider, scope) {
       lastFailureCode: "",
       lastUpdatedAtMs: nowMs,
     });
+    persistProviderBreakerState(nowMs);
   }
   return AUTH_AUDIT_PROVIDER_BREAKERS.get(breakerKey);
 }
@@ -414,6 +504,7 @@ function enforceProviderBreaker(provider, scope, requestId) {
     state.lastFailureCode = "";
     state.lastUpdatedAtMs = nowMs;
     AUTH_AUDIT_PROVIDER_BREAKERS.set(state.key, state);
+    persistProviderBreakerState(nowMs);
   }
 }
 
@@ -428,6 +519,7 @@ function recordProviderBreakerSuccess(provider, scope) {
   state.lastFailureCode = "";
   state.lastUpdatedAtMs = Date.now();
   AUTH_AUDIT_PROVIDER_BREAKERS.set(state.key, state);
+  persistProviderBreakerState(state.lastUpdatedAtMs);
 }
 
 function recordProviderBreakerFailure(provider, scope, errorCode = "") {
@@ -447,6 +539,7 @@ function recordProviderBreakerFailure(provider, scope, errorCode = "") {
   }
   state.lastUpdatedAtMs = nowMs;
   AUTH_AUDIT_PROVIDER_BREAKERS.set(state.key, state);
+  persistProviderBreakerState(nowMs);
   return getProviderBreakerSnapshot(provider, scope, nowMs);
 }
 

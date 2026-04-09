@@ -573,11 +573,19 @@ jobs:
             echo "::error::Non-deterministic npm pack output detected for the same commit. first=${sha256} repeat=${repeat_sha256}."
             exit 1
           fi
+          node_version="$(node --version)"
+          npm_version="$(npm --version)"
+          toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${node_version}" "${npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
             --arg repeat_sha256 "${repeat_sha256}" \
             --arg lockfile_sha256 "${lockfile_sha256}" \
+            --arg node_version "${node_version}" \
+            --arg npm_version "${npm_version}" \
+            --arg runner_os "${RUNNER_OS}" \
+            --arg runner_arch "${RUNNER_ARCH}" \
+            --arg toolchain_fingerprint "${toolchain_fingerprint}" \
             --arg commit_sha "${TARGET_COMMIT_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg workflow_name "${GITHUB_WORKFLOW}" \
@@ -588,12 +596,18 @@ jobs:
               sha256: $sha256,
               repeat_sha256: $repeat_sha256,
               lockfile_sha256: $lockfile_sha256,
+              node_version: $node_version,
+              npm_version: $npm_version,
+              runner_os: $runner_os,
+              runner_arch: $runner_arch,
+              toolchain_fingerprint: $toolchain_fingerprint,
               commit_sha: $commit_sha,
               workflow_ref: $workflow_ref,
               workflow_name: $workflow_name,
               run_id: $run_id,
               run_attempt: $run_attempt
-            }' > quality-package-manifest.json
+            }' > quality-build-manifest.json
+          cp quality-build-manifest.json quality-package-manifest.json
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
 
@@ -604,6 +618,7 @@ jobs:
           path: |
             pack.json
             pack-repeat.json
+            quality-build-manifest.json
             quality-package-manifest.json
             ${{ steps.pack.outputs.tarball }}
           if-no-files-found: error

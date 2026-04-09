@@ -84,7 +84,7 @@ jobs:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${SENTINELAYER_TOKEN}" || (echo "required credential unavailable in this context" && exit 1)
+          bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${SENTINELAYER_TOKEN}"
       - name: Validate OpenAI key secret for Omar LLM scan
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -92,7 +92,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY}" || (echo "required credential unavailable in this context" && exit 1)
+          bash .github/scripts/require-secret.sh "OPENAI_API_KEY" "${OPENAI_API_KEY}"
       - name: Validate Omar configuration invariants
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
