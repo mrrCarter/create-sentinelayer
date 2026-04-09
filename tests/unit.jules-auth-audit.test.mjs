@@ -226,6 +226,27 @@ describe("authAudit", () => {
     assert.equal(attemptCount, 3);
   });
 
+  it("runPlaywrightAuditScriptWithRetry forwards context via stdin payload", async () => {
+    let receivedInput = null;
+    let receivedArgs = null;
+    const stubExec = (_bin, args, options) => {
+      receivedArgs = args;
+      receivedInput = options.input;
+      return "{\"authenticated\":false}";
+    };
+
+    const payload = JSON.stringify({ email: "demo@example.com", password: "redacted" });
+    await runPlaywrightAuditScriptWithRetry(null, {}, {
+      exec: stubExec,
+      scriptSource: "console.log('{}')",
+      stdinPayload: payload,
+      timeoutMs: 1000,
+    });
+
+    assert.deepEqual(receivedArgs, ["-e", "console.log('{}')"]);
+    assert.equal(receivedInput, payload);
+  });
+
   it("runPlaywrightAuditScriptWithRetry fails after retry budget exhaustion", async () => {
     let attemptCount = 0;
     const stubExec = () => {
@@ -282,6 +303,12 @@ describe("authAudit", () => {
     assert.ok(source.includes("loginFormVisible"));
     assert.ok(source.includes("authCookiePresent"));
     assert.ok(source.includes("results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);"));
+  });
+
+  it("playwright context is sourced from stdin instead of temporary credential files", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("fs.readFileSync(0, 'utf-8')"));
+    assert.equal(source.includes("SL_AUDIT_CONTEXT_FILE"), false);
   });
 
   it("auth flow header fetch uses explicit timeout wrapper", () => {

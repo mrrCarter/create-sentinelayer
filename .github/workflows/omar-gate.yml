@@ -85,14 +85,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
-      - name: Skip Omar Gate for untrusted fork PR context
+      - name: Block untrusted fork PR contexts
         if: steps.trust_boundary.outputs.trusted_context != 'true'
         shell: bash
         run: |
           set -euo pipefail
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- status: \`skipped\` (untrusted fork pull request context)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- merge_threshold: \`maintainers must run Omar Gate from trusted repository context\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: \`blocked\` (untrusted fork pull request context)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- remediation: \`maintainer must run Omar Gate in trusted base-repository context before merge\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Untrusted fork pull request context cannot receive Sentinelayer/OpenAI secrets. Omar Gate is blocked in this context."
+          exit 1
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
