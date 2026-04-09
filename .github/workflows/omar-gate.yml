@@ -47,6 +47,7 @@ jobs:
   omar_gate:
     name: Omar Gate
     runs-on: ubuntu-latest
+    environment: security-review
     permissions:
       contents: read
       checks: write
@@ -54,7 +55,22 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Resolve trusted execution boundary
+        id: trust_boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_context="true"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
+            if [ "${pr_head_repo}" != "${GITHUB_REPOSITORY}" ]; then
+              trusted_context="false"
+              echo "::notice::Fork PR context detected (${pr_head_repo}); Omar action is skipped to avoid exposing repository secrets."
+            fi
+          fi
+          echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
       - name: Validate Sentinelayer token secret
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
@@ -62,13 +78,23 @@ jobs:
           set -euo pipefail
           test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
       - name: Validate OpenAI key secret for Omar LLM scan
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+      - name: Skip Omar Gate for untrusted fork PR context
+        if: steps.trust_boundary.outputs.trusted_context != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: \`skipped\` (untrusted fork pull request context)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- merge_threshold: \`maintainers must run Omar Gate from trusted repository context\`" >> "$GITHUB_STEP_SUMMARY"
       - name: Run Omar Gate
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
         with:
@@ -86,6 +112,7 @@ jobs:
           codex_only: "false"
           llm_failure_policy: block
       - name: Enforce Omar reviewer merge thresholds
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
           P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
@@ -133,6 +160,7 @@ jobs:
               ;;
           esac
       - name: Emit Omar run summary
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         run: |
           set -euo pipefail
