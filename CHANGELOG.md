@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.2...v0.4.3) (2026-04-09)
+
+
+### Bug Fixes
+
+* **ci:** allow release bot actor for tag authorization ([#265](https://github.com/mrrCarter/create-sentinelayer/issues/265)) ([21d488e](https://github.com/mrrCarter/create-sentinelayer/commit/21d488edce5b374d51969be4f70a2ccde89608bf))
+
 ## [0.4.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.1...v0.4.2) (2026-04-09)
 
 
