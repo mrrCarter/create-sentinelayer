@@ -1357,3 +1357,16 @@ Review:
 - [x] Add global retry-budget and per-attempt timeout race controls to `provisionEmailIdentityWithRetry` in `auth-audit.js`.
 - [x] Update auth-audit unit assertions and run full local validation (`node --check`, workflow YAML parse, `node --test tests/unit.jules-auth-audit.test.mjs`, `npm run verify`).
 - [ ] Push updates on `hardening/nonblocking-p2-batch2`, run Omar Gate watch loop on PR `#274`, and iterate to drive remaining P2 to zero.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A38)
+
+- [x] Reproduce failing required checks on PR `#274` and confirm root cause in `Quality Gates` (`Security CodeQL` timeout).
+- [x] Remove non-deterministic CodeQL analysis-id wait and switch to deterministic CodeQL alert query fallback (`pr`-scoped first, `ref`-scoped second) in `quality-gates.yml`.
+- [x] Remove broad `secrets: inherit` from reusable `security-*` workflow calls in `quality-gates.yml`.
+- [x] Harden quality-gates concurrency cancellation to avoid cancelling protected/main runs.
+- [x] Extend `attestations.yml` trigger surface with trusted `push` on `main` to guarantee post-merge provenance coverage.
+- [x] Reduce secret-inventory disclosure in `omar-gate.yml` credential validation logs.
+- [x] Harden `auth-audit` retry fetch wrapper to preserve caller abort semantics and dispose retryable response bodies.
+- [x] Extend auth-audit unit coverage for new retry/cancellation hardening.
+- [x] Run local validation (`node --test tests/unit.jules-auth-audit.test.mjs`, `npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch` for Omar + required checks), and iterate until green and P2 reduced.

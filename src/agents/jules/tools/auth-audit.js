@@ -262,6 +262,49 @@ function normalizeAidenidTotalBudgetMs(value) {
   return Math.max(1, Math.trunc(value));
 }
 
+function isAbortSignalLike(signal) {
+  return Boolean(
+    signal &&
+    typeof signal === "object" &&
+    typeof signal.aborted === "boolean" &&
+    typeof signal.addEventListener === "function" &&
+    typeof signal.removeEventListener === "function"
+  );
+}
+
+function composeAbortSignals(primarySignal, secondarySignal) {
+  const hasPrimary = isAbortSignalLike(primarySignal);
+  const hasSecondary = isAbortSignalLike(secondarySignal);
+  if (!hasPrimary && !hasSecondary) {
+    return { signal: undefined, cleanup: () => {} };
+  }
+  if (!hasPrimary) {
+    return { signal: secondarySignal, cleanup: () => {} };
+  }
+  if (!hasSecondary) {
+    return { signal: primarySignal, cleanup: () => {} };
+  }
+  const mergedController = new AbortController();
+  const forwardAbort = () => {
+    if (!mergedController.signal.aborted) {
+      mergedController.abort();
+    }
+  };
+  if (primarySignal.aborted || secondarySignal.aborted) {
+    forwardAbort();
+    return { signal: mergedController.signal, cleanup: () => {} };
+  }
+  primarySignal.addEventListener("abort", forwardAbort, { once: true });
+  secondarySignal.addEventListener("abort", forwardAbort, { once: true });
+  return {
+    signal: mergedController.signal,
+    cleanup: () => {
+      primarySignal.removeEventListener("abort", forwardAbort);
+      secondarySignal.removeEventListener("abort", forwardAbort);
+    },
+  };
+}
+
 async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
     ? Math.trunc(options.timeoutMs)
@@ -329,15 +372,24 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
       const attemptPromise = provisionEmailIdentity({
         ...requestOptions,
         fetchImpl: async (resource, init = {}) => {
+          const callerSignal = isAbortSignalLike(init.signal) ? init.signal : undefined;
           const controller = new AbortController();
           const timeoutHandle = setTimeout(() => controller.abort(), attemptTimeoutMs);
+          const { signal: compositeSignal, cleanup: cleanupCompositeSignal } = composeAbortSignals(callerSignal, controller.signal);
           const nextInit = {
             ...init,
-            signal: controller.signal,
+            ...(compositeSignal ? { signal: compositeSignal } : {}),
           };
           try {
             const response = await fetch(resource, nextInit);
             if (response && RETRYABLE_AIDENID_PROVISION_STATUS_CODES.has(Number(response.status || 0))) {
+              if (response.body && typeof response.body.cancel === "function") {
+                try {
+                  await response.body.cancel();
+                } catch {
+                  // No-op: retry classification still applies if body drain fails.
+                }
+              }
               const transientHttpError = new AuthAuditError(`AIdenID transient HTTP ${response.status}`);
               transientHttpError.errorCode = "AIDENID_HTTP_RETRYABLE";
               transientHttpError.statusCode = Number(response.status || 0);
@@ -346,6 +398,12 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
             }
             return response;
           } catch (error) {
+            if (callerSignal && callerSignal.aborted === true) {
+              const aborted = new AuthAuditError("AIdenID provisioning aborted by caller");
+              aborted.errorCode = "AIDENID_ABORTED_BY_CALLER";
+              aborted.retryable = false;
+              throw aborted;
+            }
             const failure = classifyAidenidProvisionFailure(error);
             if (failure.retryable) {
               const wrapped = new AuthAuditError(normalizeErrorMessage(error, "AIdenID provisioning transport failed"));
@@ -357,6 +415,7 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
             throw error;
           } finally {
             clearTimeout(timeoutHandle);
+            cleanupCompositeSignal();
           }
         },
       });
@@ -1046,12 +1105,18 @@ function assertSecureAuthFlowTarget(urlValue, options = {}) {
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
+  const callerSignal = isAbortSignalLike(options?.signal) ? options.signal : undefined;
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  const { signal: compositeSignal, cleanup: cleanupCompositeSignal } = composeAbortSignals(callerSignal, controller.signal);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await fetch(url, {
+      ...options,
+      ...(compositeSignal ? { signal: compositeSignal } : {}),
+    });
   } finally {
     clearTimeout(timeoutHandle);
+    cleanupCompositeSignal();
   }
 }
 

@@ -4,6 +4,8 @@ on:
   workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
 
 concurrency:
   group: build-attestation-${{ github.workflow }}-${{ github.sha }}

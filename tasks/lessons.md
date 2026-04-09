@@ -144,3 +144,4 @@
 ## 2026-04-09
 
 - When Omar reports multiple workflow-level P2 findings, address them in one cohesive hardening batch (auth/tooling + CI provenance + rollback auth), then run targeted checks plus full `npm run verify` before pushing to avoid spending Omar iterations on local regressions.
+- In `quality-gates`, never block on CodeQL `analyses` ID availability for PR head SHAs; enforce policy from `code-scanning/alerts` with deterministic PR-first/ref-fallback queries so required checks do not fail on analysis-index lag.

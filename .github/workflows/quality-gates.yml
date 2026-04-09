@@ -14,7 +14,7 @@ concurrency:
       (github.ref == 'refs/heads/main' && 'quality-gates-main') ||
       format('quality-gates-ref-{0}', github.ref)
     }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.ref_protected != true }}
 
 permissions:
   checks: read
@@ -251,7 +251,6 @@ jobs:
     name: Security Semgrep
     needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/semgrep.yml
-    secrets: inherit
     permissions:
       contents: read
 
@@ -259,7 +258,6 @@ jobs:
     name: Security Gitleaks
     needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/gitleaks.yml
-    secrets: inherit
     permissions:
       contents: read
 
@@ -267,7 +265,6 @@ jobs:
     name: Security IaC
     needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/iac-scan.yml
-    secrets: inherit
     permissions:
       contents: read
 
@@ -275,7 +272,6 @@ jobs:
     name: Security SCA
     needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/sca-audit.yml
-    secrets: inherit
     permissions:
       contents: read
 
@@ -283,7 +279,6 @@ jobs:
     name: Security License
     needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/license-gate.yml
-    secrets: inherit
     permissions:
       contents: read
 
@@ -291,7 +286,6 @@ jobs:
     name: Security SBOM
     needs: [eval-enforce, lint, syntax-matrix]
     uses: ./.github/workflows/sbom.yml
-    secrets: inherit
     permissions:
       contents: read
 
@@ -314,48 +308,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.sha }}
           PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
-          CODEQL_ANALYSIS_TIMEOUT_SECONDS: "600"
-          CODEQL_ANALYSIS_POLL_SECONDS: "15"
+          PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+          CODEQL_ALERTS_POLL_SECONDS: "3"
         run: |
           set -euo pipefail
-          case "${CODEQL_ANALYSIS_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ANALYSIS_TIMEOUT_SECONDS value: ${CODEQL_ANALYSIS_TIMEOUT_SECONDS}" ; exit 1 ;; esac
-          case "${CODEQL_ANALYSIS_POLL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ANALYSIS_POLL_SECONDS value: ${CODEQL_ANALYSIS_POLL_SECONDS}" ; exit 1 ;; esac
+          case "${CODEQL_ALERTS_POLL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ALERTS_POLL_SECONDS value: ${CODEQL_ALERTS_POLL_SECONDS}" ; exit 1 ;; esac
           target_ref_sha="${TARGET_SHA}"
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_SHA}" ]; then
             target_ref_sha="${PR_HEAD_SHA}"
           fi
-          analysis_id=""
-          analysis_deadline="$(( $(date +%s) + CODEQL_ANALYSIS_TIMEOUT_SECONDS ))"
-          while [ "$(date +%s)" -lt "${analysis_deadline}" ]; do
-            analyses_json="$(gh api "repos/${GITHUB_REPOSITORY}/code-scanning/analyses?tool_name=CodeQL&ref=${target_ref_sha}&per_page=100" 2>/tmp/codeql-analyses.err || true)"
-            if [ -n "${analyses_json}" ]; then
-              analysis_id="$(echo "${analyses_json}" | jq -r --arg sha "${target_ref_sha}" '
-                [
-                  .[]?
-                  | select((.commit_sha // .commit_oid // "") == $sha)
-                  | .id
-                ]
-                | map(select(type == "number"))
-                | last // empty
-              ')"
-              case "${analysis_id}" in ''|*[!0-9]*) analysis_id="" ;; esac
-              if [ -n "${analysis_id}" ]; then
-                break
-              fi
-            fi
-            sleep "${CODEQL_ANALYSIS_POLL_SECONDS}"
-          done
-          if [ -z "${analysis_id}" ]; then
-            echo "::error::analysis_not_ready: no completed CodeQL analysis found for target SHA ${target_ref_sha} within ${CODEQL_ANALYSIS_TIMEOUT_SECONDS}s."
-            cat /tmp/codeql-analyses.err || true
-            exit 1
+          endpoints=()
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+            endpoints+=("repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&pr=${PR_NUMBER}&tool_name=CodeQL&per_page=100")
           fi
-          endpoint="repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${target_ref_sha}&tool_name=CodeQL&per_page=100"
-          alerts_json="$(gh api "${endpoint}" 2>/tmp/codeql-policy.err || true)"
+          endpoints+=("repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${target_ref_sha}&tool_name=CodeQL&per_page=100")
+          alerts_json=""
+          selected_endpoint=""
+          for endpoint in "${endpoints[@]}"; do
+            for attempt in 1 2 3; do
+              response="$(gh api "${endpoint}" 2>/tmp/codeql-policy.err || true)"
+              if [ -n "${response}" ]; then
+                alerts_json="${response}"
+                selected_endpoint="${endpoint}"
+                break 2
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep "${CODEQL_ALERTS_POLL_SECONDS}"
+              fi
+            done
+          done
           if [ -z "${alerts_json}" ]; then
             echo "::error::Unable to resolve CodeQL alerts via GitHub code-scanning API."
             cat /tmp/codeql-policy.err || true
             exit 1
+          fi
+          query_mode="ref"
+          if [[ "${selected_endpoint}" == *"pr="* ]]; then
+            query_mode="pull_request"
           fi
           total_alerts="$(echo "${alerts_json}" | jq 'if type=="array" then length else 0 end')"
           high_critical_alerts="$(echo "${alerts_json}" | jq '
@@ -376,7 +365,8 @@ jobs:
             {
               echo "## Security CodeQL"
               echo "- mode: \`in-workflow-policy\`"
-              echo "- analysis_id: \`${analysis_id}\`"
+              echo "- query_mode: \`${query_mode}\`"
+              echo "- query_endpoint: \`${selected_endpoint}\`"
               echo "- analysis_target_sha: \`${target_ref_sha}\`"
               echo "- total_open_alerts: \`${total_alerts}\`"
               echo "- high_critical_open_alerts: \`${high_critical_alerts}\`"

@@ -502,6 +502,20 @@ describe("authAudit", () => {
     assert.ok(source.includes("AIdenID provisioning failed after"));
   });
 
+  it("AIdenID provisioning retry preserves caller abort semantics and disposes transient bodies", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("composeAbortSignals(callerSignal, controller.signal)"));
+    assert.ok(source.includes("AIDENID_ABORTED_BY_CALLER"));
+    assert.ok(source.includes("response.body && typeof response.body.cancel === \"function\""));
+    assert.ok(source.includes("await response.body.cancel()"));
+  });
+
+  it("fetch timeout wrapper composes caller signal with timeout signal", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("const callerSignal = isAbortSignalLike(options?.signal) ? options.signal : undefined;"));
+    assert.ok(source.includes("composeAbortSignals(callerSignal, controller.signal)"));
+  });
+
   it("AuthAudit registered in dispatch as read-only", async () => {
     const { listTools, isReadOnlyTool } = await import("../src/agents/jules/tools/dispatch.js");
     assert.ok(listTools().includes("AuthAudit"));
