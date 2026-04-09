@@ -952,9 +952,12 @@ async function runLocalOmarGateCommand(args) {
   const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
   const aiEnabled = !hasCommandOption(args, "--no-ai");
   const aiDryRun = hasCommandOption(args, "--ai-dry-run");
-  const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "1.0") || 1.0;
+  const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
   const modelOverride = getCommandOptionValue(args, "--model") || "";
   const providerOverride = getCommandOptionValue(args, "--provider") || "";
+  const scanMode = getCommandOptionValue(args, "--scan-mode") || "";
+  const maxParallel = parseInt(getCommandOptionValue(args, "--max-parallel") || "4", 10) || 4;
+  const streamEnabled = hasCommandOption(args, "--stream");
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -979,7 +982,48 @@ async function runLocalOmarGateCommand(args) {
 
   // Phase 2: AI review layer (optional, default enabled)
   let aiResult = null;
-  if (aiEnabled) {
+  let orchestratorResult = null;
+  if (aiEnabled && scanMode) {
+    // Multi-persona orchestrator mode
+    try {
+      const { runOmarGateOrchestrator } = await import("./review/omargate-orchestrator.js");
+      const streamHandler = streamEnabled
+        ? (evt) => console.log(JSON.stringify(evt))
+        : null;
+
+      orchestratorResult = await runOmarGateOrchestrator({
+        targetPath,
+        scanMode,
+        maxParallel,
+        provider: providerOverride || undefined,
+        model: modelOverride || undefined,
+        maxCostUsd,
+        dryRun: aiDryRun,
+        outputDir: outputDirArg,
+        deterministic: {
+          summary: detSummary,
+          findings: detFindings,
+          metadata: deterministic.metadata || {},
+        },
+        onEvent: streamHandler,
+      });
+
+      // Use orchestrator results as the AI layer
+      aiResult = {
+        findings: orchestratorResult.findings || [],
+        summary: orchestratorResult.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
+        costUsd: orchestratorResult.totalCostUsd || 0,
+        model: modelOverride || "multi-persona",
+        provider: providerOverride || "sentinelayer",
+        dryRun: aiDryRun,
+      };
+    } catch (aiError) {
+      if (!asJson) {
+        console.log(pc.yellow(`Orchestrator skipped: ${aiError.message}`));
+      }
+    }
+  } else if (aiEnabled) {
+    // Single AI review layer (legacy, no --scan-mode)
     try {
       const { runAiReviewLayer } = await import("./review/ai-review.js");
       aiResult = await runAiReviewLayer({
