@@ -1304,3 +1304,13 @@ Review:
 - [x] Run deterministic local gates (`/omargate deep`, `/audit`) and capture findings delta.
 - [ ] Open PR and complete Omar Gate + required checks watch loop.
 - [ ] Merge after green and record run IDs/findings delta.
+
+## 2026-04-09 - Non-Blocking Burn-Down (Batch P2-A33)
+
+- [x] Finalize pending workflow hardening in `create-sentinelayer` (`release.yml`, `attestations.yml`, `license-gate.yml`) to remove weak fallback paths and runtime drift.
+- [x] Run `npm run verify` in the hardening worktree and ensure no local regressions.
+- [ ] Open PR from `hardening/nonblocking-p2-batch1`, run Omar Gate loop (`gh run watch`), merge on green.
+- [ ] Pull latest `sentinelayer-api` main and reproduce current non-blocking findings from latest Omar run evidence.
+- [ ] Implement low-risk non-blocking fixes in one batch PR (entropy false positives + static quality debt with no runtime behavior change).
+- [ ] Run API checks (`ruff check`, targeted pytest), open PR, run Omar Gate loop (`gh run watch`), merge on green.
+- [ ] Re-run post-merge Omar run inventory across CLI/API/Web and capture remaining non-blocking backlog (if any) for next batch.

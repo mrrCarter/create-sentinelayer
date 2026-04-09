@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Install dependencies
@@ -37,8 +37,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          license_checker="./node_modules/.bin/license-checker-rseidelsohn"
+          if [ ! -x "${license_checker}" ]; then
+            echo "::error::Expected local license-checker binary at ${license_checker}."
+            exit 1
+          fi
           set +e
-          version_output="$(npx --no-install license-checker-rseidelsohn --version 2>&1)"
+          version_output="$(${license_checker} --version 2>&1)"
           version_exit="$?"
           set -e
           if [ "${version_exit}" -ne 0 ]; then
@@ -46,7 +51,7 @@ jobs:
           fi
           echo "${version_output}"
           set +e
-          npx --no-install license-checker-rseidelsohn --production --json > license-report.json
+          "${license_checker}" --production --json > license-report.json
           tool_exit="$?"
           set -e
           if [ ! -s license-report.json ]; then
