@@ -28,7 +28,7 @@ jobs:
       - name: Ensure target commit passed required upstream gates
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.sha }}
+          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         shell: bash
