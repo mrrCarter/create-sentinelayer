@@ -393,7 +393,7 @@ describe("authAudit", () => {
     assert.ok(source.includes("didLeaveLoginSurface"));
     assert.ok(source.includes("loginFormVisible"));
     assert.ok(source.includes("authCookiePresent"));
-    assert.ok(source.includes("results.authenticated = !loginFormVisible && urlChanged && authCookiePresent;"));
+    assert.ok(source.includes("results.authenticated = navigationSucceeded && !loginFormVisible && urlChanged && authCookiePresent;"));
     assert.ok(source.includes("targetLoginFormVisible"));
     assert.ok(source.includes("targetStatusOk"));
     assert.ok(source.includes("results.authenticated = !targetLoginFormVisible && targetStatusOk;"));
@@ -405,6 +405,20 @@ describe("authAudit", () => {
     assert.ok(source.includes("mutationAllowed"));
     assert.ok(source.includes("mutationPerformed"));
     assert.ok(source.includes("if (allowAuthMutation)"));
+  });
+
+  it("requestId fallback uses cryptographic randomness", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("randomBytes(16).toString(\"hex\")"));
+    assert.equal(source.includes("Math.random().toString(36)"), false);
+  });
+
+  it("playwright navigation and runtime failures are captured with explicit signals", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("navigationTimeout"));
+    assert.ok(source.includes("type: 'navigation'"));
+    assert.ok(source.includes("results.executionFailed = true"));
+    assert.ok(source.includes("process.exitCode = 1"));
   });
 
   it("playwright retry backoff jitter is deterministic", () => {

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 
@@ -49,7 +49,7 @@ function createAuditRequestId() {
     return randomUUID();
   } catch {
     const ts = Date.now().toString(36);
-    const rand = Math.random().toString(36).slice(2, 10);
+    const rand = randomBytes(16).toString("hex");
     return `authaudit-${ts}-${rand}`;
   }
 }
@@ -204,7 +204,7 @@ const fs = require('node:fs');
   if (Object.prototype.hasOwnProperty.call(context, 'secret')) delete context.secret;
 
   let browser = null;
-  const results = { authenticated: false, authSignals: {}, errors: [], cookies: [], headers: {}, domStats: {} };
+  const results = { authenticated: false, authSignals: {}, errors: [], cookies: [], headers: {}, domStats: {}, executionFailed: false };
   results.authSignals.mutationAllowed = allowAuthMutation;
   function normalizePath(value) {
     const normalized = String(value || '/').replace(/\\/+$/, '');
@@ -254,7 +254,14 @@ const fs = require('node:fs');
         await page.fill(emailSelector, email);
         await page.fill(passwordSelector, password);
         await page.click(submitSelector);
-        await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+        let navigationError = null;
+        await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch((err) => {
+          navigationError = sanitizeErrorText(err && err.message ? err.message : 'navigation timeout');
+        });
+        if (navigationError) {
+          results.authSignals.navigationTimeout = true;
+          results.errors.push({ type: 'navigation', text: navigationError });
+        }
         results.authSignals.mutationPerformed = true;
       } else {
         results.authSignals.mutationPerformed = false;
@@ -269,7 +276,8 @@ const fs = require('node:fs');
       results.authSignals = { urlChanged, authCookiePresent, loginFormVisible };
       results.authSignals.mutationAllowed = allowAuthMutation;
       results.authSignals.mutationPerformed = allowAuthMutation ? true : false;
-      results.authenticated = !loginFormVisible && urlChanged && authCookiePresent;
+      const navigationSucceeded = results.authSignals.navigationTimeout !== true;
+      results.authenticated = navigationSucceeded && !loginFormVisible && urlChanged && authCookiePresent;
       email = '';
       password = '';
     }
@@ -313,12 +321,16 @@ const fs = require('node:fs');
       };
     }
   } catch (err) {
+    results.executionFailed = true;
     const text = sanitizeErrorText('Playwright error: ' + (err && err.message ? err.message : ''));
     results.errors.push({ type: 'playwright', text });
   } finally {
     try { console.log(JSON.stringify(results)); } catch {}
     if (browser) {
       await browser.close().catch(() => {});
+    }
+    if (results.executionFailed) {
+      process.exitCode = 1;
     }
   }
 })();

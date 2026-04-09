@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-attestation-${{ github.workflow }}-${{ github.ref }}
+  group: build-attestation-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:

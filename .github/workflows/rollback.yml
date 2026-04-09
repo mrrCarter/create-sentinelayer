@@ -115,7 +115,7 @@ jobs:
           NON_BLOCKING_DIAGNOSTICS: "0"
         run: bash .github/scripts/release-rollback-readiness.sh
 
-      - name: Require npm rollback token
+      - name: Execute rollback dist-tag update
         shell: bash
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -125,12 +125,14 @@ jobs:
             echo "::error::Missing NPM_TOKEN in package-release environment secrets."
             exit 1
           fi
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "${HOME}/.npmrc"
-
-      - name: Execute rollback dist-tag update
-        shell: bash
-        run: |
-          set -euo pipefail
+          npm_userconfig="$(mktemp)"
+          cleanup_npmrc() {
+            rm -f "${npm_userconfig}"
+          }
+          trap cleanup_npmrc EXIT
+          chmod 600 "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" > "${npm_userconfig}"
+          export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
           npm dist-tag add "sentinelayer-cli@${ROLLBACK_TARGET_VERSION}" latest
 
       - name: Verify rollback result and emit report
@@ -170,12 +172,26 @@ jobs:
       - name: Deprecate rolled-back release version
         if: ${{ inputs.deprecate_release && inputs.release_version != '' }}
         shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${ROLLBACK_RELEASE_VERSION}" ]; then
             echo "::error::Cannot deprecate release: release_version input is empty after normalization."
             exit 1
           fi
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::error::Missing NPM_TOKEN in package-release environment secrets."
+            exit 1
+          fi
+          npm_userconfig="$(mktemp)"
+          cleanup_npmrc() {
+            rm -f "${npm_userconfig}"
+          }
+          trap cleanup_npmrc EXIT
+          chmod 600 "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" > "${npm_userconfig}"
+          export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
           npm deprecate \
             "sentinelayer-cli@${ROLLBACK_RELEASE_VERSION}" \
             "Superseded by rollback to ${ROLLBACK_TARGET_VERSION}"
