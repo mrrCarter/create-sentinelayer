@@ -132,7 +132,7 @@ jobs:
       - name: Enforce release tag and actor authorization policy
         shell: bash
         env:
-          RELEASE_ALLOWED_ACTORS: ${{ vars.RELEASE_ALLOWED_ACTORS || 'mrrCarter' }}
+          RELEASE_ALLOWED_ACTORS: ${{ vars.RELEASE_ALLOWED_ACTORS || 'mrrCarter,github-actions[bot]' }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF}" != "refs/tags/${GITHUB_REF_NAME}" ]; then
