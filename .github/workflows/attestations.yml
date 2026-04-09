@@ -110,7 +110,7 @@ jobs:
               {"name":"SCA Summary","app":"github-actions","optional":false},
               {"name":"License Summary","app":"github-actions","optional":false},
               {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]'
           else
             REQUIRED_CHECKS_JSON='[
@@ -121,7 +121,7 @@ jobs:
               {"name":"SCA Summary","app":"github-actions","optional":false},
               {"name":"License Summary","app":"github-actions","optional":false},
               {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]'
           fi
           export REQUIRED_CHECKS_JSON

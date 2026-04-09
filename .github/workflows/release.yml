@@ -195,7 +195,7 @@ jobs:
               {"name":"License Summary","app":"github-actions","optional":false},
               {"name":"SBOM Summary","app":"github-actions","optional":false},
               {"name":"Attestation Trusted Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
@@ -528,7 +528,7 @@ jobs:
               {"name":"License Summary","app":"github-actions","optional":false},
               {"name":"SBOM Summary","app":"github-actions","optional":false},
               {"name":"Attestation Trusted Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"CodeQL Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "900"
           POLL_INTERVAL_SECONDS: "10"

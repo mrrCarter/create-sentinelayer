@@ -237,20 +237,13 @@ jobs:
           done
           exchange_contract="$(echo "${exchange_response}" | jq -cer '
             if type == "object"
-              and (.npm_token | type == "string" and length > 0)
-              and (.expires_at | type == "string" and length > 0)
-              and ((.aud | type) == "string" or (.aud | type) == "array")
-              and (.iss | type == "string" and length > 0)
-              and (.repository | type == "string" and length > 0)
-              and ((.run_id | type) == "string" or (.run_id | type) == "number")
-            then {
-              npm_token: .npm_token,
-              expires_at: .expires_at,
-              aud: .aud,
-              iss: .iss,
-              repository: .repository,
-              run_id: (.run_id | tostring)
-            }
+              and (.["npm_token"] | type == "string" and length > 0)
+              and (.["expires_at"] | type == "string" and length > 0)
+              and ((.["aud"] | type) == "string" or (.["aud"] | type) == "array")
+              and (.["iss"] | type == "string" and length > 0)
+              and (.["repository"] | type == "string" and length > 0)
+              and ((.["run_id"] | type) == "string" or (.["run_id"] | type) == "number")
+            then .
             else empty
             end
           ' 2>/dev/null || true)"
@@ -258,7 +251,7 @@ jobs:
             echo "::error::OIDC token exchange response failed schema validation."
             exit 1
           fi
-          npm_ephemeral_token="$(echo "${exchange_contract}" | jq -r '.npm_token // empty')"
+          npm_ephemeral_token="$(echo "${exchange_contract}" | jq -r '."npm_token" // empty')"
           exchange_issuer="$(echo "${exchange_contract}" | jq -r '.iss // empty')"
           if [ -n "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ] && [ "${exchange_issuer}" != "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ]; then
             echo "::error::OIDC token exchange issuer mismatch. expected=${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER} actual=${exchange_issuer:-<none>}."

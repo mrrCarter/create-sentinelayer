@@ -180,6 +180,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
       - name: Run lint gate
         run: npm run check
 
@@ -204,6 +211,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
 
       - name: Validate CLI runtime entrypoints
         shell: bash
@@ -232,6 +246,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
       - name: Run test suite
         run: npm test
 
@@ -256,6 +277,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
 
       - name: Enforce unit coverage thresholds
         run: npm run test:coverage
@@ -475,6 +503,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
       - name: Run E2E tests
         run: npm run test:e2e
 
@@ -507,6 +542,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
       - name: Build canonical package tarball
         id: pack
         shell: bash
@@ -519,9 +561,23 @@ jobs:
           test -n "${tarball}"
           test -f "${tarball}"
           sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          lockfile_sha256="$(sha256sum package-lock.json | awk '{print $1}')"
+          mkdir -p .tmp-pack-repeat
+          npm pack --ignore-scripts --pack-destination .tmp-pack-repeat --json > pack-repeat.json
+          repeat_tarball_name="$(jq -r '.[0].filename' pack-repeat.json)"
+          repeat_tarball=".tmp-pack-repeat/${repeat_tarball_name}"
+          test -n "${repeat_tarball_name}"
+          test -f "${repeat_tarball}"
+          repeat_sha256="$(sha256sum "${repeat_tarball}" | awk '{print $1}')"
+          if [ "${repeat_sha256}" != "${sha256}" ]; then
+            echo "::error::Non-deterministic npm pack output detected for the same commit. first=${sha256} repeat=${repeat_sha256}."
+            exit 1
+          fi
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
+            --arg repeat_sha256 "${repeat_sha256}" \
+            --arg lockfile_sha256 "${lockfile_sha256}" \
             --arg commit_sha "${TARGET_COMMIT_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg workflow_name "${GITHUB_WORKFLOW}" \
@@ -530,6 +586,8 @@ jobs:
             '{
               tarball: $tarball,
               sha256: $sha256,
+              repeat_sha256: $repeat_sha256,
+              lockfile_sha256: $lockfile_sha256,
               commit_sha: $commit_sha,
               workflow_ref: $workflow_ref,
               workflow_name: $workflow_name,
@@ -545,6 +603,7 @@ jobs:
           name: quality-package-artifacts
           path: |
             pack.json
+            pack-repeat.json
             quality-package-manifest.json
             ${{ steps.pack.outputs.tarball }}
           if-no-files-found: error

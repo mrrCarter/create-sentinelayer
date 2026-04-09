@@ -519,11 +519,21 @@ describe("authAudit", () => {
   it("provider circuit-breaker state is enforced for repeated auth provider degradation", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKER_FAILURE_THRESHOLD"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT"));
     assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKERS"));
-    assert.ok(source.includes("enforceProviderBreaker(providerKey, requestId)"));
-    assert.ok(source.includes("recordProviderBreakerFailure(providerKey"));
+    assert.ok(source.includes("deriveProviderBreakerScope"));
+    assert.ok(source.includes("enforceProviderBreaker(providerKey, providerScope, requestId)"));
+    assert.ok(source.includes("recordProviderBreakerFailure(providerKey, providerScope"));
     assert.ok(source.includes("providerBreaker"));
     assert.ok(source.includes("AUTH_AUDIT_PROVIDER_CIRCUIT_OPEN"));
+  });
+
+  it("audit error messages are sanitized before envelope emission", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("sanitizeAuditErrorMessage"));
+    assert.ok(source.includes("replace(/\\bbearer\\s+[a-z0-9._~+/=-]+\\b/gi, \"bearer [REDACTED]\")"));
+    assert.ok(source.includes("replace(/\\bhttps?:\\/\\/[^\\s\"'`]+/gi, \"<redacted-url>\")"));
+    assert.ok(source.includes("const safeMessage = sanitizeAuditErrorMessage(message"));
   });
 
   it("AuthAudit registered in dispatch as read-only", async () => {
