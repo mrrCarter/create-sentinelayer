@@ -1,13 +1,17 @@
+import { invokeViaProxy, DEFAULT_PROXY_MODEL } from "./proxy.js";
+
 const PROVIDER_ENV_KEYS = Object.freeze({
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   google: "GOOGLE_API_KEY",
+  sentinelayer: "SENTINELAYER_TOKEN",
 });
 
 const DEFAULT_MODELS = Object.freeze({
   openai: "gpt-4o",
   anthropic: "claude-sonnet-4",
   google: "gemini-2.5-pro",
+  sentinelayer: DEFAULT_PROXY_MODEL,
 });
 
 const SUPPORTED_PROVIDERS = Object.freeze(Object.keys(PROVIDER_ENV_KEYS));
@@ -309,6 +313,30 @@ export function resolveProvider({ provider, configProvider, env = process.env } 
 }
 
 /**
+ * Async version of resolveProvider that also checks for stored sentinelayer session.
+ * Use this when you can await (e.g., in command handlers).
+ */
+export async function resolveProviderAsync({ provider, configProvider, env = process.env } = {}) {
+  const sync = resolveProvider({ provider, configProvider, env });
+  if (sync !== "openai" || provider || configProvider) {
+    return sync; // explicit or env-detected, no need to check session
+  }
+
+  // No explicit provider and no env keys — check for stored session
+  try {
+    const { readStoredSessionMetadata } = await import("../auth/session-store.js");
+    const meta = await readStoredSessionMetadata();
+    if (meta && meta.tokenId) {
+      return "sentinelayer";
+    }
+  } catch {
+    // No session — fall through
+  }
+
+  return sync;
+}
+
+/**
  * Resolve model precedence for a provider: explicit -> config -> provider default.
  *
  * @param {{ provider?: string, model?: string, configModel?: string }} [options]
@@ -401,6 +429,23 @@ export class MultiProviderApiClient {
   } = {}) {
     const resolvedProvider = resolveProvider({ provider, env });
     const resolvedModel = resolveModel({ provider: resolvedProvider, model });
+
+    // SentinelLayer proxy: delegate to proxy.js instead of direct API call
+    if (resolvedProvider === "sentinelayer") {
+      const result = await invokeViaProxy({
+        prompt,
+        systemPrompt: "",
+        model: resolvedModel,
+        maxTokens: 4096,
+      });
+      return {
+        text: result.text,
+        usage: result.usage,
+        provider: "sentinelayer",
+        model: resolvedModel,
+      };
+    }
+
     const resolvedApiKey = resolveApiKey({
       provider: resolvedProvider,
       explicitApiKey: apiKey,
