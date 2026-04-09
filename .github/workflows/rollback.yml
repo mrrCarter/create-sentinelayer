@@ -326,8 +326,17 @@ jobs:
           target_pkg="sentinelayer-cli@${ROLLBACK_TARGET_VERSION}"
           target_tarball_url="$(npm view "${target_pkg}" dist.tarball --json | jq -r 'if type=="string" then . else empty end')"
           target_shasum="$(npm view "${target_pkg}" dist.shasum --json | jq -r 'if type=="string" then . else empty end')"
+          target_integrity="$(npm view "${target_pkg}" dist.integrity --json | jq -r 'if type=="string" then . else empty end')"
           if [ -z "${target_tarball_url}" ]; then
             echo "::error::Unable to resolve tarball URL for ${target_pkg}."
+            exit 1
+          fi
+          if [ -z "${target_integrity}" ] || [ "${target_integrity}" = "null" ]; then
+            echo "::error::Rollback target integrity metadata is missing for ${target_pkg}."
+            exit 1
+          fi
+          if ! echo "${target_integrity}" | grep -Eq '^sha512-[A-Za-z0-9+/=]+$'; then
+            echo "::error::Rollback target integrity format is invalid for ${target_pkg}: ${target_integrity}."
             exit 1
           fi
           downloaded_tarball="$(mktemp -t rollback-target-XXXXXX.tgz)"
@@ -342,12 +351,11 @@ jobs:
             --max-time 60 \
             "${target_tarball_url}" \
             -o "${downloaded_tarball}"
-          if [ -n "${target_shasum}" ] && [ "${target_shasum}" != "null" ]; then
-            actual_shasum="$(sha1sum "${downloaded_tarball}" | awk '{print $1}')"
-            if [ "${actual_shasum}" != "${target_shasum}" ]; then
-              echo "::error::Rollback target shasum mismatch. expected=${target_shasum} actual=${actual_shasum}."
-              exit 1
-            fi
+          expected_integrity_b64="${target_integrity#sha512-}"
+          actual_integrity_b64="$(openssl dgst -sha512 -binary "${downloaded_tarball}" | openssl base64 -A)"
+          if [ "${actual_integrity_b64}" != "${expected_integrity_b64}" ]; then
+            echo "::error::Rollback target sha512 integrity mismatch."
+            exit 1
           fi
           gh attestation verify "${downloaded_tarball}" \
             --repo "${GITHUB_REPOSITORY}" \
@@ -377,6 +385,10 @@ jobs:
             echo "### Rollback target provenance"
             echo "- package: \`${target_pkg}\`"
             echo "- tarball_url: \`${target_tarball_url}\`"
+            if [ -n "${target_shasum}" ] && [ "${target_shasum}" != "null" ]; then
+              echo "- npm_dist_shasum: \`${target_shasum}\` (diagnostic only)"
+            fi
+            echo "- npm_dist_integrity: \`${target_integrity}\`"
             echo "- sha256: \`${actual_sha256}\`"
             echo "- signer_workflow: \`${GITHUB_REPOSITORY}/.github/workflows/release.yml\`"
           } >> "$GITHUB_STEP_SUMMARY"

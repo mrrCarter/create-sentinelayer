@@ -790,6 +790,8 @@ jobs:
             echo "::error::Tag/version mismatch. tag=${tag_version} package=${package_version}."
             exit 1
           fi
+          echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
+          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
           expected_sha1="$(sha1sum "${VERIFIED_TARBALL}" | awk '{print $1}')"
           published_version="$(npm view "${package_name}@${package_version}" version --json 2>/tmp/npm-view.err || true)"
           published_version="$(echo "${published_version}" | tr -d '\r\n\"[:space:]' | xargs || true)"
@@ -822,12 +824,60 @@ jobs:
             echo "- expected_sha1: \`${expected_sha1}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish to npm
+      - name: Publish canary release to npm (`next`)
         if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
-          npm publish "./${VERIFIED_TARBALL}" --provenance --access public
+          npm publish "./${VERIFIED_TARBALL}" --provenance --access public --tag next
+          next_tag="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
+          next_tag="$(echo "${next_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          if [ "${next_tag}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Canary publish verification failed. dist-tags.next=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
+            cat /tmp/npm-next.err || true
+            exit 1
+          fi
+
+      - name: Validate canary install from npm registry
+        if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" --ignore-scripts "${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          "${prefix_dir}/node_modules/.bin/sentinelayer-cli" --version > /tmp/canary-version.out
+          canary_version="$(tr -d '\r\n ' < /tmp/canary-version.out | sed 's/^v//')"
+          if [ "${canary_version}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Canary runtime validation failed. CLI version=${canary_version:-<none>} expected=${PACKAGE_VERSION}."
+            exit 1
+          fi
+
+      - name: Promote canary to stable (`latest`) dist-tag
+        if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          npm dist-tag add "${PACKAGE_NAME}@${PACKAGE_VERSION}" latest
+          latest_tag="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/tmp/npm-latest.err || true)"
+          latest_tag="$(echo "${latest_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          if [ "${latest_tag}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Stable promotion failed. dist-tags.latest=${latest_tag:-<none>} expected=${PACKAGE_VERSION}."
+            cat /tmp/npm-latest.err || true
+            exit 1
+          fi
+          {
+            echo "### Progressive rollout"
+            echo "- canary_tag: \`next\`"
+            echo "- stable_tag: \`latest\`"
+            echo "- promoted_version: \`${PACKAGE_VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Finalize npm auth session
         if: always()

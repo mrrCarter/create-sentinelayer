@@ -2,14 +2,14 @@ name: Build Attestation
 
 on:
   workflow_call:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
 
 concurrency:
-  group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request_target' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+  group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   checks: read
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -41,9 +41,12 @@ jobs:
         run: |
           set -euo pipefail
           trusted_context="true"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
-            echo "::notice::pull_request_target attestation running in trusted base-repository context for ${pr_head_repo}."
+            if [ "${pr_head_repo}" != "${GITHUB_REPOSITORY}" ]; then
+              trusted_context="false"
+              echo "::notice::Fork PR context detected (${pr_head_repo}); running metadata-only attestation checks without OIDC provenance minting."
+            fi
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
@@ -53,13 +56,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+          PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
         run: |
           set -euo pipefail
           canonical_sha="${GITHUB_SHA}"
           check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
           case "${check_count}" in ''|*[!0-9]*) echo "::error::Invalid check-run count for canonical SHA ${canonical_sha}: ${check_count}" ; exit 1 ;; esac
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ] && [ "${check_count}" -eq 0 ] && [ -n "${PR_HEAD_SHA}" ] && [ "${PR_HEAD_SHA}" != "${canonical_sha}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${check_count}" -eq 0 ] && [ -n "${PR_HEAD_SHA}" ] && [ "${PR_HEAD_SHA}" != "${canonical_sha}" ]; then
             echo "::notice::No check-runs found on merge SHA ${canonical_sha}; falling back to PR head SHA ${PR_HEAD_SHA}."
             canonical_sha="${PR_HEAD_SHA}"
             check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
@@ -87,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             REQUIRED_CHECKS_JSON='[
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
@@ -349,8 +352,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.trust_boundary.outputs.trusted_context }}" != "true" ]; then
-            echo "::error::Attestation trusted-context invariant failed."
-            exit 1
+            echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: \`fork-pr-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- status: \`passed-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- reason: \`fork pull request cannot mint trusted OIDC provenance in this workflow context\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           if [ "${{ steps.pack.outcome }}" != "success" ] || [ -z "${{ steps.pack.outputs.tarball }}" ]; then
             echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
@@ -364,7 +370,7 @@ jobs:
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- source_quality_run_id: \`${{ steps.quality_source.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- source_quality_run_url: \`${{ steps.quality_source.outputs.run_url }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             echo "- mode: \`pr-trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"

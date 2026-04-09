@@ -1399,3 +1399,10 @@ Review:
 - [x] Remove semgrep bootstrap package installs from live index and enforce toolchain version match from pinned runtime.
 - [x] Run local full validation (`npm run verify`).
 - [ ] Push updates, run Omar loop (`gh run watch`), and continue non-blocking P2 burn-down.
+
+## PR #274 Omar Loop Batch A42 (2026-04-09)
+- [x] Remove reusable workflow secret inheritance on security scanner jobs to eliminate fork secret-path ambiguity.
+- [x] Re-align attestation PR execution to `pull_request` trust boundary and remove `pull_request_target` privileged checkout path.
+- [x] Enforce progressive npm rollout in release workflow (`next` canary -> install validation -> `latest` promotion).
+- [x] Upgrade rollback target integrity verification from SHA-1 shasum enforcement to SHA-512 `dist.integrity` verification.
+- [ ] Push batch A42 and re-run Omar Gate watch on PR `#274`.
