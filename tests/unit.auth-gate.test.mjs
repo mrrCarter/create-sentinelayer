@@ -13,6 +13,8 @@ test("Unit auth gate: CI=true alone does not bypass auth", async () => {
   const previousUserProfile = process.env.USERPROFILE;
   const previousCi = process.env.CI;
   const previousSkipAuth = process.env.SENTINELAYER_CLI_SKIP_AUTH;
+  const previousTestMode = process.env.SENTINELAYER_CLI_TEST_MODE;
+  const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
   try {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
@@ -31,6 +33,10 @@ test("Unit auth gate: CI=true alone does not bypass auth", async () => {
     else process.env.CI = previousCi;
     if (previousSkipAuth === undefined) delete process.env.SENTINELAYER_CLI_SKIP_AUTH;
     else process.env.SENTINELAYER_CLI_SKIP_AUTH = previousSkipAuth;
+    if (previousTestMode === undefined) delete process.env.SENTINELAYER_CLI_TEST_MODE;
+    else process.env.SENTINELAYER_CLI_TEST_MODE = previousTestMode;
+    if (previousBypassNonce === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = previousBypassNonce;
     await rm(tempHome, { recursive: true, force: true });
   }
 });
@@ -42,12 +48,16 @@ test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains support
   const previousCi = process.env.CI;
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSkipAuth = process.env.SENTINELAYER_CLI_SKIP_AUTH;
+  const previousTestMode = process.env.SENTINELAYER_CLI_TEST_MODE;
+  const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
   const previousUnsafeBypass = process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
   try {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
     process.env.CI = "true";
     process.env.NODE_ENV = "test";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = "unit-test-nonce";
     process.env.SENTINELAYER_CLI_SKIP_AUTH = "1";
     delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
 
@@ -65,6 +75,10 @@ test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains support
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousSkipAuth === undefined) delete process.env.SENTINELAYER_CLI_SKIP_AUTH;
     else process.env.SENTINELAYER_CLI_SKIP_AUTH = previousSkipAuth;
+    if (previousTestMode === undefined) delete process.env.SENTINELAYER_CLI_TEST_MODE;
+    else process.env.SENTINELAYER_CLI_TEST_MODE = previousTestMode;
+    if (previousBypassNonce === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = previousBypassNonce;
     if (previousUnsafeBypass === undefined) delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
     else process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = previousUnsafeBypass;
     await rm(tempHome, { recursive: true, force: true });
@@ -78,12 +92,16 @@ test("Unit auth gate: SENTINELAYER_CLI_SKIP_AUTH alone is ignored outside truste
   const previousCi = process.env.CI;
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSkipAuth = process.env.SENTINELAYER_CLI_SKIP_AUTH;
+  const previousTestMode = process.env.SENTINELAYER_CLI_TEST_MODE;
+  const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
   const previousUnsafeBypass = process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
   try {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
     process.env.CI = "true";
     process.env.NODE_ENV = "production";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = "unit-test-nonce";
     process.env.SENTINELAYER_CLI_SKIP_AUTH = "1";
     delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
 
@@ -101,6 +119,10 @@ test("Unit auth gate: SENTINELAYER_CLI_SKIP_AUTH alone is ignored outside truste
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousSkipAuth === undefined) delete process.env.SENTINELAYER_CLI_SKIP_AUTH;
     else process.env.SENTINELAYER_CLI_SKIP_AUTH = previousSkipAuth;
+    if (previousTestMode === undefined) delete process.env.SENTINELAYER_CLI_TEST_MODE;
+    else process.env.SENTINELAYER_CLI_TEST_MODE = previousTestMode;
+    if (previousBypassNonce === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = previousBypassNonce;
     if (previousUnsafeBypass === undefined) delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
     else process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = previousUnsafeBypass;
     await rm(tempHome, { recursive: true, force: true });
@@ -114,12 +136,16 @@ test("Unit auth gate: unsafe override flag does not bypass outside test contexts
   const previousCi = process.env.CI;
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSkipAuth = process.env.SENTINELAYER_CLI_SKIP_AUTH;
+  const previousTestMode = process.env.SENTINELAYER_CLI_TEST_MODE;
+  const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
   const previousUnsafeBypass = process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
   try {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
     process.env.CI = "true";
     process.env.NODE_ENV = "production";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = "unit-test-nonce";
     process.env.SENTINELAYER_CLI_SKIP_AUTH = "1";
     process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = "1";
 
@@ -137,6 +163,10 @@ test("Unit auth gate: unsafe override flag does not bypass outside test contexts
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousSkipAuth === undefined) delete process.env.SENTINELAYER_CLI_SKIP_AUTH;
     else process.env.SENTINELAYER_CLI_SKIP_AUTH = previousSkipAuth;
+    if (previousTestMode === undefined) delete process.env.SENTINELAYER_CLI_TEST_MODE;
+    else process.env.SENTINELAYER_CLI_TEST_MODE = previousTestMode;
+    if (previousBypassNonce === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = previousBypassNonce;
     if (previousUnsafeBypass === undefined) delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
     else process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = previousUnsafeBypass;
     await rm(tempHome, { recursive: true, force: true });

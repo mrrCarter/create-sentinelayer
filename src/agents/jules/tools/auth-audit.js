@@ -1,8 +1,4 @@
 import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 
@@ -36,6 +32,15 @@ const AUTH_DISPATCH = {
 const AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS = 60_000;
 const AUTH_PLAYWRIGHT_EXEC_MAX_RETRIES = 2;
 const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
+const RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "EPIPE",
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+]);
 
 async function provisionTestIdentity(input) {
   try {
@@ -79,35 +84,27 @@ async function authenticatedPageCheck(input) {
 
   const loginUrlCandidate = input.loginUrl || targetUrl + "/login";
   const loginUrl = resolveAuthAuditTarget(loginUrlCandidate, input, "authenticated_page_check.login");
-  let scriptPath = null;
-  let contextPath = null;
 
   try {
-    scriptPath = secureTempFile("sl-auth-audit-" + randomUUID().slice(0, 8) + ".cjs");
-    fs.writeFileSync(scriptPath, PLAYWRIGHT_AUTH_SCRIPT);
-    contextPath = secureTempFile("sl-auth-context-" + randomUUID().slice(0, 8) + ".json");
-    fs.writeFileSync(
-      contextPath,
-      JSON.stringify({
-        email: input.email || "",
-        password: input.password || "",
-        emailField: input.emailField || "",
-        passwordField: input.passwordField || "",
-        submitSelector: input.submitSelector || "",
-      }),
-      { encoding: "utf-8", mode: 0o600 },
-    );
-
+    const authContextJson = JSON.stringify({
+      email: input.email || "",
+      password: input.password || "",
+      emailField: input.emailField || "",
+      passwordField: input.passwordField || "",
+      submitSelector: input.submitSelector || "",
+    });
     // Use scrubbed env — strip API keys/tokens from child process
     const { buildScrubbedEnv } = await import("./shell.js");
     const env = {
       ...buildScrubbedEnv(),
       SL_AUDIT_TARGET_URL: targetUrl,
       SL_AUDIT_LOGIN_URL: loginUrl,
-      SL_AUDIT_CONTEXT_FILE: contextPath,
     };
 
-    const output = await runPlaywrightAuditScriptWithRetry(scriptPath, env);
+    const output = await runPlaywrightAuditScriptWithRetry(null, env, {
+      scriptSource: PLAYWRIGHT_AUTH_SCRIPT,
+      stdinPayload: authContextJson,
+    });
 
     const result = JSON.parse(output.trim());
     const findings = [];
@@ -128,14 +125,11 @@ async function authenticatedPageCheck(input) {
       return { available: false, reason: err.message };
     }
     return { available: false, reason: "Playwright auth audit failed: " + err.message };
-  } finally {
-    cleanupTempFile(scriptPath);
-    cleanupTempFile(contextPath);
   }
 }
 
 // Playwright script as a constant — no string interpolation of URLs/credentials.
-// Dynamic auth context is read from a secure temp JSON file at runtime.
+// Dynamic auth context is read from stdin at runtime to avoid local credential temp files.
 const PLAYWRIGHT_AUTH_SCRIPT = `
 const { chromium } = require('playwright');
 const fs = require('node:fs');
@@ -143,14 +137,14 @@ const fs = require('node:fs');
 (async () => {
   const targetUrl = process.env.SL_AUDIT_TARGET_URL;
   const loginUrl = process.env.SL_AUDIT_LOGIN_URL;
-  const contextPath = process.env.SL_AUDIT_CONTEXT_FILE;
   let context = {};
-  if (contextPath) {
-    try {
-      context = JSON.parse(fs.readFileSync(contextPath, 'utf-8')) || {};
-    } catch {
-      context = {};
+  try {
+    const stdinPayload = fs.readFileSync(0, 'utf-8');
+    if (stdinPayload) {
+      context = JSON.parse(stdinPayload) || {};
     }
+  } catch {
+    context = {};
   }
 
   const email = context.email || '';
@@ -287,23 +281,29 @@ const RETRYABLE_AUTH_FLOW_MESSAGE_PATTERNS = [
 const AUTH_FLOW_LOCAL_TEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function computePlaywrightBackoffMs(attempt, baseBackoffMs = AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS) {
-  const computed = Math.max(1, baseBackoffMs) * Math.pow(2, Math.max(0, attempt));
-  return Math.min(1000, computed);
+  const cappedBase = Math.max(1, Number.isFinite(baseBackoffMs) ? Math.trunc(baseBackoffMs) : AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS);
+  const exponential = Math.min(4000, cappedBase * Math.pow(2, Math.max(0, attempt)));
+  const deterministicJitter = ((Math.max(0, attempt) * 1103515245 + 12345) % 1000) / 1000;
+  const jitterFactor = 0.5 + (deterministicJitter * 0.5);
+  return Math.max(1, Math.trunc(exponential * jitterFactor));
 }
 
 function isRetryablePlaywrightExecutionError(error) {
   if (!(error instanceof Error)) {
     return false;
   }
+  if (error.name === "AbortError" || error.name === "TimeoutError") {
+    return true;
+  }
   const code = String(error.code || "").toUpperCase();
-  if (code === "ETIMEDOUT" || code === "ECONNRESET" || code === "EPIPE" || code === "EAI_AGAIN") {
+  if (RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES.has(code)) {
     return true;
   }
-  if (error.killed === true || error.signal === "SIGTERM") {
+  if (error.killed === true && (error.signal === "SIGTERM" || error.signal === "SIGKILL")) {
     return true;
   }
-  const message = (error.name + " " + (error.message || "")).toLowerCase();
-  return message.includes("timeout") || message.includes("timed out") || message.includes("socket hang up");
+  const causeCode = String(error.cause?.code || error.cause?.errno || "").toUpperCase();
+  return RETRYABLE_PLAYWRIGHT_EXEC_ERROR_CODES.has(causeCode);
 }
 
 function normalizeAuthAuditErrorMessage(error, fallbackMessage) {
@@ -315,9 +315,12 @@ function normalizeAuthAuditErrorMessage(error, fallbackMessage) {
 }
 
 export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options = {}) {
-  if (!scriptPath) {
+  const scriptSource = String(options.scriptSource || "");
+  const runArgs = scriptSource ? ["-e", scriptSource] : (scriptPath ? [scriptPath] : []);
+  if (runArgs.length === 0) {
     throw new AuthAuditError("Playwright auth audit failed: missing script path");
   }
+  const stdinPayload = String(options.stdinPayload || "");
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
     ? Math.trunc(options.timeoutMs)
     : AUTH_PLAYWRIGHT_EXEC_TIMEOUT_MS;
@@ -331,11 +334,12 @@ export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      return execute(process.execPath, [scriptPath], {
+      return execute(process.execPath, runArgs, {
         encoding: "utf-8",
         timeout: timeoutMs,
         stdio: ["pipe", "pipe", "pipe"],
         env,
+        input: stdinPayload,
       });
     } catch (error) {
       if (!isRetryablePlaywrightExecutionError(error) || attempt >= maxRetries) {
@@ -500,14 +504,20 @@ async function checkAuthFlowSecurity(input) {
 
 async function fetchLoginHeaders(loginUrl, options = {}) {
   let currentUrl = loginUrl;
-  const visited = new Set();
+  const visitedUrls = new Set();
+  let redirectCount = 0;
 
-  for (let hop = 0; hop < MAX_AUTH_REDIRECT_HOPS; hop++) {
+  while (true) {
+    if (redirectCount > MAX_AUTH_REDIRECT_HOPS) {
+      throw new AuthAuditError(
+        `Exceeded ${MAX_AUTH_REDIRECT_HOPS} redirects while checking auth flow (last=${currentUrl})`
+      );
+    }
     const currentParsedUrl = assertSecureAuthFlowTarget(currentUrl, options);
-    if (visited.has(currentUrl)) {
+    if (visitedUrls.has(currentUrl)) {
       throw new AuthAuditError("Redirect loop detected while checking auth headers");
     }
-    visited.add(currentUrl);
+    visitedUrls.add(currentUrl);
 
     const response = await fetchLoginResponseWithRetry(currentUrl);
     const headers = Object.fromEntries(response.headers.entries());
@@ -522,13 +532,12 @@ async function fetchLoginHeaders(loginUrl, options = {}) {
         return { headers, finalUrl: currentUrl, crossOriginRedirect: true };
       }
       currentUrl = nextParsedUrl.toString();
+      redirectCount += 1;
       continue;
     }
 
     return { headers, finalUrl: currentUrl, crossOriginRedirect: false };
   }
-
-  throw new AuthAuditError(`Exceeded ${MAX_AUTH_REDIRECT_HOPS} redirects while checking auth flow`);
 }
 
 function resolveAuthAuditTarget(urlValue, input, operation) {
@@ -541,19 +550,6 @@ function resolveAuthAuditTarget(urlValue, input, operation) {
   } catch (error) {
     throw new AuthAuditError(error.message);
   }
-}
-
-function cleanupTempFile(filePath) {
-  if (!filePath) {
-    return;
-  }
-  try { fs.unlinkSync(filePath); } catch {}
-  try { fs.rmdirSync(path.dirname(filePath)); } catch {}
-}
-
-function secureTempFile(name) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sl-auth-"));
-  return path.join(dir, name);
 }
 
 export class AuthAuditError extends Error {

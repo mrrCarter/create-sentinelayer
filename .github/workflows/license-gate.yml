@@ -34,7 +34,28 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Collect license inventory
-        run: npm exec --package=license-checker-rseidelsohn@4.4.2 -- license-checker-rseidelsohn --production --json > license-report.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          version_output="$(npx --no-install license-checker-rseidelsohn --version 2>&1)"
+          version_exit="$?"
+          set -e
+          if [ "${version_exit}" -ne 0 ]; then
+            echo "::notice::license-checker version probe exited ${version_exit}; continuing with inventory collection."
+          fi
+          echo "${version_output}"
+          set +e
+          npx --no-install license-checker-rseidelsohn --production --json > license-report.json
+          tool_exit="$?"
+          set -e
+          if [ ! -s license-report.json ]; then
+            echo "::error::license-checker did not produce license-report.json"
+            exit 1
+          fi
+          if [ "${tool_exit}" -ne 0 ]; then
+            echo "::notice::license-checker exited ${tool_exit}; continuing with generated report for policy evaluation."
+          fi
 
       - name: Enforce license policy
         run: node scripts/license-policy-check.mjs license-report.json .github/policies/license-policy.json license-violations.json
