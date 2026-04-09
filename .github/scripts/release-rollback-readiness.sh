@@ -69,6 +69,45 @@ rollback_target_resolved="false"
 rollback_target_installable="false"
 rollback_target_tarball=""
 rollback_target_integrity=""
+rollback_target_smoke_checked="false"
+rollback_target_smoke_install="false"
+rollback_target_smoke_cli_checks="false"
+rollback_target_smoke_failure_reason=""
+rollback_smoke_tmp_dir=""
+
+cleanup_rollback_smoke_dir() {
+  if [ -n "${rollback_smoke_tmp_dir}" ] && [ -d "${rollback_smoke_tmp_dir}" ]; then
+    rm -rf "${rollback_smoke_tmp_dir}"
+  fi
+}
+trap cleanup_rollback_smoke_dir EXIT
+
+run_rollback_smoke_check() {
+  rollback_smoke_tmp_dir="$(mktemp -d)"
+  if ! npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${PACKAGE_NAME}@${rollback_target}" >/dev/null 2>&1; then
+    rollback_target_smoke_failure_reason="npm install failed for ${PACKAGE_NAME}@${rollback_target}"
+    return 1
+  fi
+
+  local bin_dir="${rollback_smoke_tmp_dir}/node_modules/.bin"
+  local bin_name=""
+  local bins=(sentinelayer-cli create-sentinelayer sentinel sl)
+
+  for bin_name in "${bins[@]}"; do
+    if [ ! -x "${bin_dir}/${bin_name}" ]; then
+      rollback_target_smoke_failure_reason="missing CLI binary: ${bin_name}"
+      return 1
+    fi
+    if ! "${bin_dir}/${bin_name}" --version >/dev/null 2>&1; then
+      rollback_target_smoke_failure_reason="CLI binary version check failed: ${bin_name}"
+      return 1
+    fi
+  done
+
+  rollback_target_smoke_install="true"
+  rollback_target_smoke_cli_checks="true"
+  return 0
+}
 
 if [ -n "${rollback_target}" ]; then
   if echo "${versions_array}" | jq -e --arg version "${rollback_target}" 'index($version) != null' >/dev/null; then
@@ -109,6 +148,16 @@ if [ "${rollback_target_installable}" != "true" ]; then
   exit 1
 fi
 
+rollback_target_smoke_checked="true"
+if ! run_rollback_smoke_check; then
+  if [ "${NON_BLOCKING_DIAGNOSTICS}" = "1" ]; then
+    echo "::warning::Rollback smoke check failed in non-blocking diagnostics mode: ${rollback_target_smoke_failure_reason}."
+  else
+    echo "::error::Rollback smoke check failed: ${rollback_target_smoke_failure_reason}."
+    exit 1
+  fi
+fi
+
 echo "## Rollback Readiness (${ROLLBACK_MODE})" >> "${GITHUB_STEP_SUMMARY}"
 echo "- package: \`${PACKAGE_NAME}\`" >> "${GITHUB_STEP_SUMMARY}"
 if [ -n "${RELEASE_VERSION}" ]; then
@@ -121,6 +170,12 @@ echo "- release_already_published: \`${release_already_published}\`" >> "${GITHU
 echo "- rollback_target_resolved: \`${rollback_target_resolved}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- rollback_target_installable: \`${rollback_target_installable}\`" >> "${GITHUB_STEP_SUMMARY}"
 echo "- rollback_target_tarball: \`${rollback_target_tarball:-<none>}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- rollback_target_smoke_checked: \`${rollback_target_smoke_checked}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- rollback_target_smoke_install: \`${rollback_target_smoke_install}\`" >> "${GITHUB_STEP_SUMMARY}"
+echo "- rollback_target_smoke_cli_checks: \`${rollback_target_smoke_cli_checks}\`" >> "${GITHUB_STEP_SUMMARY}"
+if [ -n "${rollback_target_smoke_failure_reason}" ]; then
+  echo "- rollback_target_smoke_failure_reason: \`${rollback_target_smoke_failure_reason}\`" >> "${GITHUB_STEP_SUMMARY}"
+fi
 echo "- non_blocking_diagnostics: \`${NON_BLOCKING_DIAGNOSTICS}\`" >> "${GITHUB_STEP_SUMMARY}"
 
 echo "" >> "${GITHUB_STEP_SUMMARY}"
@@ -144,6 +199,10 @@ jq -n \
   --arg rollback_target_installable "${rollback_target_installable}" \
   --arg rollback_target_tarball "${rollback_target_tarball}" \
   --arg rollback_target_integrity "${rollback_target_integrity}" \
+  --arg rollback_target_smoke_checked "${rollback_target_smoke_checked}" \
+  --arg rollback_target_smoke_install "${rollback_target_smoke_install}" \
+  --arg rollback_target_smoke_cli_checks "${rollback_target_smoke_cli_checks}" \
+  --arg rollback_target_smoke_failure_reason "${rollback_target_smoke_failure_reason}" \
   --arg non_blocking_diagnostics "${NON_BLOCKING_DIAGNOSTICS}" \
   '{
     package: $package,
@@ -157,7 +216,11 @@ jq -n \
       rollback_target_resolved: ($rollback_target_resolved == "true"),
       rollback_target_installable: ($rollback_target_installable == "true"),
       rollback_target_tarball: ($rollback_target_tarball | if length > 0 then . else null end),
-      rollback_target_integrity: ($rollback_target_integrity | if length > 0 then . else null end)
+      rollback_target_integrity: ($rollback_target_integrity | if length > 0 then . else null end),
+      rollback_target_smoke_checked: ($rollback_target_smoke_checked == "true"),
+      rollback_target_smoke_install: ($rollback_target_smoke_install == "true"),
+      rollback_target_smoke_cli_checks: ($rollback_target_smoke_cli_checks == "true"),
+      rollback_target_smoke_failure_reason: ($rollback_target_smoke_failure_reason | if length > 0 then . else null end)
     },
     non_blocking_diagnostics: ($non_blocking_diagnostics == "1")
   }' > release-rollback-readiness.json
