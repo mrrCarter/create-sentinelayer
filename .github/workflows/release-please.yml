@@ -68,6 +68,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PLEASE_OUTPUTS_JSON: ${{ toJson(steps.release_please.outputs) }}
+          EXPECTED_RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
@@ -83,4 +84,28 @@ jobs:
             echo "${RELEASE_PLEASE_OUTPUTS_JSON}"
             exit 1
           fi
+
+          tag_object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag_name}" --jq '.object.type')"
+          tag_object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag_name}" --jq '.object.sha')"
+          if [ -z "${tag_object_type}" ] || [ -z "${tag_object_sha}" ]; then
+            echo "::error::Unable to resolve tag object for ${tag_name}."
+            exit 1
+          fi
+          if [ "${tag_object_type}" = "commit" ]; then
+            resolved_release_sha="${tag_object_sha}"
+          elif [ "${tag_object_type}" = "tag" ]; then
+            resolved_release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.sha')"
+          else
+            echo "::error::Unsupported tag object type '${tag_object_type}' for ${tag_name}."
+            exit 1
+          fi
+          if [ -z "${resolved_release_sha}" ]; then
+            echo "::error::Unable to resolve release commit SHA for tag ${tag_name}."
+            exit 1
+          fi
+          if [ "${resolved_release_sha}" != "${EXPECTED_RELEASE_SHA}" ]; then
+            echo "::error::Release tag commit mismatch for ${tag_name}. Expected ${EXPECTED_RELEASE_SHA}, got ${resolved_release_sha}."
+            exit 1
+          fi
+
           gh workflow run "Release" --ref "${tag_name}"
