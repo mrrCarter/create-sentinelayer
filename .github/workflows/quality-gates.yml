@@ -382,10 +382,72 @@ jobs:
         if: ${{ matrix.node == '22' }}
         run: npm pack --dry-run
 
+  build-package:
+    name: Build Package Artifact
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [unit-coverage, security-stage, e2e-packaging]
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build canonical package tarball
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json > pack.json
+          tarball="$(jq -r '.[0].filename' pack.json)"
+          test -n "${tarball}"
+          test -f "${tarball}"
+          sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          jq -n \
+            --arg tarball "${tarball}" \
+            --arg sha256 "${sha256}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg workflow_name "${GITHUB_WORKFLOW}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{
+              tarball: $tarball,
+              sha256: $sha256,
+              commit_sha: $commit_sha,
+              workflow_ref: $workflow_ref,
+              workflow_name: $workflow_name,
+              run_id: $run_id,
+              run_attempt: $run_attempt
+            }' > quality-package-manifest.json
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload quality package artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-package-artifacts
+          path: |
+            pack.json
+            quality-package-manifest.json
+            ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-impact, lint, syntax-matrix, unit-coverage, security-stage, e2e-packaging]
+    needs: [eval-impact, lint, syntax-matrix, unit-coverage, security-stage, e2e-packaging, build-package]
     if: >-
       ${{
         always() &&
@@ -395,8 +457,12 @@ jobs:
         needs.syntax-matrix.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
         needs.security-stage.result == 'success' &&
-        needs.e2e-packaging.result == 'success'
+        needs.e2e-packaging.result == 'success' &&
+        needs.build-package.result == 'success'
       }}
     steps:
       - name: Confirm all quality gates passed
-        run: echo "All quality checks passed."
+        run: |
+          echo "All quality checks passed."
+          echo "Canonical package tarball: ${{ needs.build-package.outputs.tarball }}"
+          echo "Canonical package sha256: ${{ needs.build-package.outputs.sha256 }}"

@@ -492,9 +492,13 @@ describe("authAudit", () => {
   it("AIdenID provisioning path includes bounded retry and timeout controls", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     assert.ok(source.includes("AUTH_AIDENID_PROVISION_TIMEOUT_MS"));
+    assert.ok(source.includes("AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS"));
     assert.ok(source.includes("AUTH_AIDENID_PROVISION_MAX_RETRIES"));
     assert.ok(source.includes("provisionEmailIdentityWithRetry"));
     assert.ok(source.includes("new AbortController()"));
+    assert.ok(source.includes("Promise.race(["));
+    assert.ok(source.includes("AIDENID_ATTEMPT_TIMEOUT"));
+    assert.ok(source.includes("remainingBudgetMs"));
     assert.ok(source.includes("AIdenID provisioning failed after"));
   });
 

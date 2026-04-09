@@ -1348,3 +1348,12 @@ Review:
 - [x] Remove static npm rollback token flow and require OIDC token exchange for ephemeral npm credentials in `rollback.yml`.
 - [x] Run local validation (`node --check`, workflow YAML parse, targeted auth-audit tests, `npm run verify`).
 - [ ] Push branch updates, watch Omar Gate to completion, and iterate until P0-P2 are cleared or materially reduced with evidence.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A37)
+
+- [x] Add explicit `build-package` quality gate job and emit canonical package artifact + checksum manifest in `quality-gates.yml`.
+- [x] Refactor `attestations.yml` to attest the canonical quality artifact (downloaded by run-id) instead of rebuilding tarball in attestation workflow.
+- [x] Harden Omar workflow execution boundary with pinned runner, protected environment, and local wrapper action for centralized third-party invocation policy.
+- [x] Add global retry-budget and per-attempt timeout race controls to `provisionEmailIdentityWithRetry` in `auth-audit.js`.
+- [x] Update auth-audit unit assertions and run full local validation (`node --check`, workflow YAML parse, `node --test tests/unit.jules-auth-audit.test.mjs`, `npm run verify`).
+- [ ] Push updates on `hardening/nonblocking-p2-batch2`, run Omar Gate watch loop on PR `#274`, and iterate to drive remaining P2 to zero.

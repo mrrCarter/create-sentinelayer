@@ -50,6 +50,9 @@ const AUTH_PLAYWRIGHT_EXEC_BASE_BACKOFF_MS = 250;
 const AUTH_AIDENID_PROVISION_TIMEOUT_MS = 12_000;
 const AUTH_AIDENID_PROVISION_MAX_RETRIES = 2;
 const AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS = 300;
+const AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS =
+  (AUTH_AIDENID_PROVISION_TIMEOUT_MS * (AUTH_AIDENID_PROVISION_MAX_RETRIES + 1))
+  + (AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS * AUTH_AIDENID_PROVISION_MAX_RETRIES * 2);
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
 const AUTH_AUDIT_ENVELOPE_ENV = "SENTINELAYER_AUTH_AUDIT_ENVELOPE";
 const AUTH_AUDIT_ENVELOPE_VERSION = "v2";
@@ -69,6 +72,7 @@ const RETRYABLE_AIDENID_PROVISION_ERROR_CODES = new Set([
   "EAI_AGAIN",
   "ENOTFOUND",
   "ECONNABORTED",
+  "AIDENID_ATTEMPT_TIMEOUT",
   "UND_ERR_CONNECT_TIMEOUT",
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_BODY_TIMEOUT",
@@ -246,6 +250,13 @@ function computeAidenidProvisionBackoffMs(attempt, baseBackoffMs = AUTH_AIDENID_
   return Math.max(1, Math.trunc(exponential * jitterFactor));
 }
 
+function normalizeAidenidTotalBudgetMs(value) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS;
+  }
+  return Math.max(1, Math.trunc(value));
+}
+
 async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
     ? Math.trunc(options.timeoutMs)
@@ -259,13 +270,22 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
   const requestOptions = options.requestOptions && typeof options.requestOptions === "object"
     ? { ...options.requestOptions }
     : {};
+  const requestId = String(options.requestId || createAuditRequestId());
+  const totalBudgetMs = normalizeAidenidTotalBudgetMs(options.totalBudgetMs);
+  const retryWindowStartedAt = Date.now();
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const elapsedMs = Date.now() - retryWindowStartedAt;
+    const remainingBudgetMs = totalBudgetMs - elapsedMs;
+    if (remainingBudgetMs <= 0) {
+      throw new AuthAuditError(`AIdenID provisioning retry budget exhausted after ${attempt} attempt(s) (requestId=${requestId})`);
+    }
+    const attemptTimeoutMs = Math.max(1, Math.min(timeoutMs, remainingBudgetMs));
     try {
-      return await provisionEmailIdentity({
+      const attemptPromise = provisionEmailIdentity({
         ...requestOptions,
         fetchImpl: async (resource, init = {}) => {
           const controller = new AbortController();
-          const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+          const timeoutHandle = setTimeout(() => controller.abort(), attemptTimeoutMs);
           const nextInit = {
             ...init,
             signal: controller.signal,
@@ -295,16 +315,36 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
           }
         },
       });
+      const result = await Promise.race([
+        attemptPromise,
+        new Promise((_, reject) => {
+          const timer = setTimeout(() => {
+            const timeoutError = new AuthAuditError(
+              `AIdenID provisioning attempt ${attempt + 1} timed out after ${attemptTimeoutMs}ms (requestId=${requestId})`
+            );
+            timeoutError.errorCode = "AIDENID_ATTEMPT_TIMEOUT";
+            timeoutError.retryable = true;
+            reject(timeoutError);
+          }, attemptTimeoutMs);
+          attemptPromise.finally(() => clearTimeout(timer));
+        }),
+      ]);
+      return result;
     } catch (error) {
       const failure = classifyAidenidProvisionFailure(error);
       if (!failure.retryable || attempt >= maxRetries) {
         const reason = normalizeErrorMessage(error, "AIdenID provisioning failed");
-        throw new AuthAuditError(`AIdenID provisioning failed after ${attempt + 1} attempt(s): ${reason}`);
+        throw new AuthAuditError(`AIdenID provisioning failed after ${attempt + 1} attempt(s) (requestId=${requestId}): ${reason}`);
       }
     }
-    await sleep(computeAidenidProvisionBackoffMs(attempt, baseBackoffMs));
+    const backoffMs = computeAidenidProvisionBackoffMs(attempt, baseBackoffMs);
+    const remainingAfterAttemptMs = totalBudgetMs - (Date.now() - retryWindowStartedAt);
+    if (remainingAfterAttemptMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(backoffMs, remainingAfterAttemptMs));
   }
-  throw new AuthAuditError("AIdenID provisioning failed after retry budget was exhausted");
+  throw new AuthAuditError(`AIdenID provisioning failed after retry budget was exhausted (requestId=${requestId})`);
 }
 
 function normalizeHeaderValue(value) {
@@ -386,6 +426,8 @@ async function provisionTestIdentity(input) {
       timeoutMs: AUTH_AIDENID_PROVISION_TIMEOUT_MS,
       maxRetries: AUTH_AIDENID_PROVISION_MAX_RETRIES,
       baseBackoffMs: AUTH_AIDENID_PROVISION_BASE_BACKOFF_MS,
+      totalBudgetMs: AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS,
+      requestId,
       requestOptions: {
         apiUrl: creds.apiUrl,
         apiKey: creds.apiKey,

@@ -46,7 +46,8 @@ jobs:
   omar_scan:
     name: Omar Gate Scan
     if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    environment: security-review
     permissions:
       contents: read
       id-token: write
@@ -114,21 +115,14 @@ jobs:
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+        uses: ./.github/actions/omar-gate
         with:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "true"
-          codex_only: "false"
-          llm_failure_policy: block
       - name: Validate Omar output contract
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -153,7 +147,7 @@ jobs:
     name: Omar Gate
     needs: [omar_scan]
     if: needs.omar_scan.outputs.trusted_context == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       checks: write

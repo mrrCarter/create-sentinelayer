@@ -115,36 +115,120 @@ jobs:
           export REQUIRED_CHECKS_JSON
           .github/scripts/require-check-runs.sh
 
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Verify package before attestation build
-        run: npm run verify
-
-      - name: Build package tarball
-        id: pack
+      - name: Resolve canonical quality artifact source
+        id: quality_source
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
         run: |
           set -euo pipefail
-          npm pack --ignore-scripts --json > pack.json
-          tarball="$(jq -r '.[0].filename' pack.json)"
-          test -n "${tarball}"
-          test -f "${tarball}"
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/check-runs?per_page=100")"
+          quality_candidates="$(echo "${check_runs_json}" | jq -c '
+            [
+              (.check_runs // [])[]
+              | select(
+                  .name == "Quality Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                )
+              | {
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url
+                }
+            ]
+            | sort_by(.completed_at)
+          ')"
+          candidate_count="$(echo "${quality_candidates}" | jq 'length')"
+          if [ "${candidate_count}" -lt 1 ]; then
+            echo "::error::No successful 'Quality Summary' check-run found for ${TARGET_SHA}."
+            exit 1
+          fi
+          quality_run_count="$(echo "${quality_candidates}" | jq '
+            [ .[] | .details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id ]
+            | unique
+            | length
+          ')"
+          if [ "${quality_run_count}" -ne 1 ]; then
+            echo "::error::Ambiguous quality artifact source: expected one quality workflow run for ${TARGET_SHA}, found ${quality_run_count}."
+            echo "${quality_candidates}" | jq '.'
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id')"
+          if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to resolve quality workflow run id."
+            exit 1
+          fi
+          quality_run_meta="$(gh run view "${quality_run_id}" --json databaseId,name,path,conclusion,headSha,url)"
+          quality_run_name="$(echo "${quality_run_meta}" | jq -r '.name // empty')"
+          quality_run_path="$(echo "${quality_run_meta}" | jq -r '.path // empty')"
+          quality_run_head_sha="$(echo "${quality_run_meta}" | jq -r '.headSha // empty')"
+          quality_run_conclusion="$(echo "${quality_run_meta}" | jq -r '.conclusion // empty')"
+          if [ "${quality_run_name}" != "Quality Gates" ]; then
+            echo "::error::Unexpected quality workflow name '${quality_run_name}' for run ${quality_run_id}."
+            exit 1
+          fi
+          if [ "${quality_run_path}" != ".github/workflows/quality-gates.yml" ]; then
+            echo "::error::Unexpected quality workflow path '${quality_run_path}' for run ${quality_run_id}."
+            exit 1
+          fi
+          if [ "${quality_run_conclusion}" != "success" ]; then
+            echo "::error::Quality workflow run ${quality_run_id} did not succeed (conclusion=${quality_run_conclusion})."
+            exit 1
+          fi
+          if [ "${quality_run_head_sha}" != "${TARGET_SHA}" ]; then
+            echo "::error::Quality workflow run ${quality_run_id} head SHA mismatch. expected=${TARGET_SHA} actual=${quality_run_head_sha}."
+            exit 1
+          fi
+          rm -rf quality-build-source
+          mkdir -p quality-build-source
+          gh run download "${quality_run_id}" --name "quality-package-artifacts" --dir quality-build-source
+          echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare attestation subject from canonical quality artifact
+        id: pack
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          source_manifest="quality-build-source/quality-package-manifest.json"
+          if [ ! -f "${source_manifest}" ]; then
+            echo "::error::Missing quality package manifest in downloaded artifact."
+            exit 1
+          fi
+          source_commit_sha="$(jq -r '.commit_sha // empty' "${source_manifest}")"
+          if [ -z "${source_commit_sha}" ] || [ "${source_commit_sha}" != "${TARGET_SHA}" ]; then
+            echo "::error::Quality package manifest commit mismatch. expected=${TARGET_SHA} source=${source_commit_sha:-<none>}."
+            exit 1
+          fi
+          source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
+          tarballs=(quality-build-source/sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one quality package tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          source_tarball_path="${tarballs[0]}"
+          tarball="$(basename "${source_tarball_path}")"
+          cp "${source_tarball_path}" "${tarball}"
           sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          if [ -n "${source_sha256}" ] && [ "${source_sha256}" != "${sha256}" ]; then
+            echo "::error::Quality package digest mismatch. source=${source_sha256} copied=${sha256}."
+            exit 1
+          fi
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
-            --arg commit_sha "${GITHUB_SHA}" \
+            --arg commit_sha "${TARGET_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg workflow_name "${GITHUB_WORKFLOW}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg quality_run_id "${{ steps.quality_source.outputs.run_id }}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
@@ -152,8 +236,10 @@ jobs:
               workflow_ref: $workflow_ref,
               workflow_name: $workflow_name,
               run_id: $run_id,
-              run_attempt: $run_attempt
+              run_attempt: $run_attempt,
+              source_quality_run_id: ($quality_run_id | if length > 0 then . else null end)
             }' > attestation-manifest.json
+          cp "${source_manifest}" quality-source-manifest.json
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
 
@@ -163,8 +249,8 @@ jobs:
         with:
           name: attestation-build-artifacts
           path: |
-            pack.json
             attestation-manifest.json
+            quality-source-manifest.json
             ${{ steps.pack.outputs.tarball }}
           if-no-files-found: error
           retention-days: 7
@@ -175,8 +261,8 @@ jobs:
         with:
           name: attestation-build-diagnostics
           path: |
-            pack.json
             attestation-manifest.json
+            quality-source-manifest.json
           if-no-files-found: warn
           retention-days: 3
 
@@ -224,6 +310,8 @@ jobs:
           echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
           echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source_quality_run_id: \`${{ steps.quality_source.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source_quality_run_url: \`${{ steps.quality_source.outputs.run_url }}\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             echo "- mode: \`pr-trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
           else
