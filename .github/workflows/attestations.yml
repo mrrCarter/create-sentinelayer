@@ -1,15 +1,15 @@
 name: Build Attestation
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
-  workflow_dispatch:
 
 concurrency:
-  group: build-attestation-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   checks: read
@@ -21,18 +21,102 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  attestation-context:
+    name: Attestation Context
+    runs-on: ubuntu-22.04
+    outputs:
+      trusted_context: ${{ steps.classify.outputs.trusted_context }}
+    steps:
+      - name: Classify trusted attestation context
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_context="true"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
+            if [ "${pr_head_repo}" != "${GITHUB_REPOSITORY}" ]; then
+              trusted_context="false"
+              echo "::notice::Fork PR context detected (${pr_head_repo}); attestation workflow will run untrusted metadata-only path."
+            fi
+          fi
+          echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
+
   attest-build:
     name: Attest Build Artifact
+    needs: [attestation-context]
+    if: needs.attestation-context.outputs.trusted_context == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    environment: artifact-attestation
+    outputs:
+      trusted_context: ${{ needs.attestation-context.outputs.trusted_context }}
     steps:
+      - name: Validate attestation environment approval policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_ENVIRONMENT: artifact-attestation
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          environment_json="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ATTESTATION_ENVIRONMENT}")"
+          reviewer_count="$(echo "${environment_json}" | jq '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?] | length')"
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid attestation environment reviewer count: ${reviewer_count}" ; exit 1 ;; esac
+          if [ "${reviewer_count}" -lt 1 ]; then
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::Environment ${ATTESTATION_ENVIRONMENT} must configure at least one required reviewer on protected refs."
+              exit 1
+            fi
+            echo "::warning::Environment ${ATTESTATION_ENVIRONMENT} has no required reviewers configured for this non-protected ref."
+          fi
+          {
+            echo "## Attestation Environment Policy"
+            echo "- environment: \`${ATTESTATION_ENVIRONMENT}\`"
+            echo "- required_reviewers: \`${reviewer_count}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve canonical required-check target SHA
+        id: checks_target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          canonical_sha="${GITHUB_SHA}"
+          check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
+          case "${check_count}" in ''|*[!0-9]*) echo "::error::Invalid check-run count for canonical SHA ${canonical_sha}: ${check_count}" ; exit 1 ;; esac
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${check_count}" -eq 0 ] && [ -n "${PR_HEAD_SHA}" ] && [ "${PR_HEAD_SHA}" != "${canonical_sha}" ]; then
+            echo "::notice::No check-runs found on merge SHA ${canonical_sha}; falling back to PR head SHA ${PR_HEAD_SHA}."
+            canonical_sha="${PR_HEAD_SHA}"
+            check_count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${canonical_sha}/check-runs" --jq '.total_count')"
+            case "${check_count}" in ''|*[!0-9]*) echo "::error::Invalid check-run count for fallback SHA ${canonical_sha}: ${check_count}" ; exit 1 ;; esac
+          fi
+          if [ "${check_count}" -eq 0 ]; then
+            echo "::error::No check-runs are available for attestation gating on SHA ${canonical_sha}."
+            exit 1
+          fi
+          echo "target_sha=${canonical_sha}" >> "${GITHUB_OUTPUT}"
+          echo "check_count=${check_count}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Attestation Gate Target"
+            echo "- target_sha: \`${canonical_sha}\`"
+            echo "- discovered_check_runs: \`${check_count}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure target commit passed required upstream gates
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         shell: bash
@@ -40,87 +124,204 @@ jobs:
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"}
             ]'
           else
             REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"}
             ]'
           fi
           export REQUIRED_CHECKS_JSON
           .github/scripts/require-check-runs.sh
 
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Verify package before attestation build
-        run: npm run verify
-
-      - name: Build package tarball
-        id: pack
+      - name: Resolve canonical quality artifact source
+        id: quality_source
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
         run: |
           set -euo pipefail
-          npm pack --json > pack.json
-          tarball="$(jq -r '.[0].filename' pack.json)"
-          test -n "${tarball}"
-          test -f "${tarball}"
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/check-runs?per_page=100")"
+          quality_candidates="$(echo "${check_runs_json}" | jq -c '
+            [
+              (.check_runs // [])[]
+              | select(
+                  .name == "Quality Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                )
+              | {
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url,
+                  run_id: (.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id)
+                }
+            ]
+            | sort_by(.completed_at, (.run_id | tonumber))
+          ')"
+          candidate_count="$(echo "${quality_candidates}" | jq 'length')"
+          if [ "${candidate_count}" -lt 1 ]; then
+            echo "::error::No successful 'Quality Summary' check-run found for ${TARGET_SHA}."
+            exit 1
+          fi
+          quality_run_count="$(echo "${quality_candidates}" | jq '[.[].run_id] | unique | length')"
+          quality_run_ids="$(echo "${quality_candidates}" | jq -r '[.[].run_id] | unique | join(",")')"
+          if [ "${quality_run_count}" -gt 1 ]; then
+            echo "::notice::Multiple successful quality workflow runs found for ${TARGET_SHA}; selecting canonical latest successful run."
+            echo "::notice::quality_run_candidates=${quality_run_ids}"
+          fi
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
+          if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to resolve quality workflow run id."
+            exit 1
+          fi
+          quality_run_meta="$(gh run view "${quality_run_id}" --json databaseId,name,conclusion,headSha,url)"
+          quality_run_name="$(echo "${quality_run_meta}" | jq -r '.name // empty')"
+          quality_run_head_sha="$(echo "${quality_run_meta}" | jq -r '.headSha // empty')"
+          quality_run_conclusion="$(echo "${quality_run_meta}" | jq -r '.conclusion // empty')"
+          if [ "${quality_run_name}" != "Quality Gates" ]; then
+            echo "::error::Unexpected quality workflow name '${quality_run_name}' for run ${quality_run_id}."
+            exit 1
+          fi
+          if [ "${quality_run_conclusion}" != "success" ]; then
+            echo "::error::Quality workflow run ${quality_run_id} did not succeed (conclusion=${quality_run_conclusion})."
+            exit 1
+          fi
+          if [ "${quality_run_head_sha}" != "${TARGET_SHA}" ]; then
+            echo "::error::Quality workflow run ${quality_run_id} head SHA mismatch. expected=${TARGET_SHA} actual=${quality_run_head_sha}."
+            exit 1
+          fi
+          rm -rf quality-build-source
+          mkdir -p quality-build-source
+          gh run download "${quality_run_id}" --name "quality-package-artifacts" --dir quality-build-source
+          echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify downloaded quality artifact attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          QUALITY_SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/quality-gates.yml
+        run: |
+          set -euo pipefail
+          tarballs=(quality-build-source/sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one quality package tarball before attestation verification, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          source_tarball="${tarballs[0]}"
+          for attempt in 1 2 3 4 5; do
+            if gh attestation verify "${source_tarball}" --repo "${REPO}" --signer-workflow "${QUALITY_SIGNER_WORKFLOW}" --format json > quality-source-attestation.json; then
+              break
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::Quality artifact attestation verification failed after retries."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -e 'length > 0' quality-source-attestation.json > /dev/null
+
+      - name: Prepare attestation subject from canonical quality artifact
+        id: pack
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          source_manifest="quality-build-source/quality-package-manifest.json"
+          if [ ! -f "${source_manifest}" ]; then
+            echo "::error::Missing quality package manifest in downloaded artifact."
+            exit 1
+          fi
+          source_commit_sha="$(jq -r '.commit_sha // empty' "${source_manifest}")"
+          if [ -z "${source_commit_sha}" ] || [ "${source_commit_sha}" != "${TARGET_SHA}" ]; then
+            echo "::error::Quality package manifest commit mismatch. expected=${TARGET_SHA} source=${source_commit_sha:-<none>}."
+            exit 1
+          fi
+          source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
+          tarballs=(quality-build-source/sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one quality package tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          source_tarball_path="${tarballs[0]}"
+          tarball="$(basename "${source_tarball_path}")"
+          cp "${source_tarball_path}" "${tarball}"
           sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          if [ -n "${source_sha256}" ] && [ "${source_sha256}" != "${sha256}" ]; then
+            echo "::error::Quality package digest mismatch. source=${source_sha256} copied=${sha256}."
+            exit 1
+          fi
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
-            --arg commit_sha "${GITHUB_SHA}" \
+            --arg commit_sha "${TARGET_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg workflow_name "${GITHUB_WORKFLOW}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg quality_run_id "${{ steps.quality_source.outputs.run_id }}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
               commit_sha: $commit_sha,
-              workflow_ref: $workflow_ref
+              workflow_ref: $workflow_ref,
+              workflow_name: $workflow_name,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              source_quality_run_id: ($quality_run_id | if length > 0 then . else null end)
             }' > attestation-manifest.json
+          cp "${source_manifest}" quality-source-manifest.json
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload attestation build artifacts
-        if: always()
+        if: success()
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-build-artifacts
           path: |
-            pack.json
             attestation-manifest.json
+            quality-source-manifest.json
+            quality-source-attestation.json
             ${{ steps.pack.outputs.tarball }}
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload attestation diagnostics artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: attestation-build-diagnostics
+          path: |
+            attestation-manifest.json
+            quality-source-manifest.json
+            quality-source-attestation.json
+          if-no-files-found: warn
+          retention-days: 3
+
       - name: Generate build provenance attestation
-        if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: >-
+          ${{
+            steps.pack.outcome == 'success' &&
+            steps.pack.outputs.tarball != ''
+          }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
 
       - name: Verify attestation policy
-        if: github.event_name != 'pull_request'
+        if: >-
+          ${{
+            steps.pack.outcome == 'success' &&
+            steps.pack.outputs.tarball != ''
+          }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -142,11 +343,18 @@ jobs:
           jq -e 'length > 0' attestation-verify.json > /dev/null
 
       - name: Upload verification artifacts
-        if: always() && github.event_name != 'pull_request'
+        if: >-
+          ${{
+            always() &&
+            steps.pack.outcome == 'success' &&
+            steps.pack.outputs.tarball != ''
+          }}
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-verification-artifacts
-          path: attestation-verify.json
+          path: |
+            attestation-verify.json
+            quality-source-attestation.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -154,25 +362,79 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${{ steps.pack.outcome }}" != "success" ] || [ -z "${{ steps.pack.outputs.tarball }}" ]; then
+            echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: \`deferred_no_subject\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- status: \`deferred\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- reason: \`canonical package subject was not prepared successfully\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
           echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source_quality_run_id: \`${{ steps.quality_source.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source_quality_run_url: \`${{ steps.quality_source.outputs.run_url }}\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            echo "- mode: \`pr-verification-only\` (provenance generation skipped for unmerged refs)" >> "$GITHUB_STEP_SUMMARY"
+            echo "- mode: \`pr-trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  attest-untrusted:
+    name: Attest Untrusted Context
+    needs: [attestation-context]
+    if: needs.attestation-context.outputs.trusted_context != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      trusted_context: ${{ needs.attestation-context.outputs.trusted_context }}
+    steps:
+      - name: Emit untrusted metadata-only attestation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- mode: \`fork-pr-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: \`passed-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- reason: \`fork pull request cannot mint trusted OIDC provenance in this workflow context\`" >> "$GITHUB_STEP_SUMMARY"
+
   attestation-summary:
     name: Attestation Summary
     runs-on: ubuntu-22.04
-    needs: [attest-build]
+    needs: [attestation-context, attest-build, attest-untrusted]
+    if: always()
+    steps:
+      - name: Emit attestation summary check contract
+        shell: bash
+        env:
+          TRUSTED_CONTEXT: ${{ needs.attestation-context.outputs.trusted_context || '' }}
+          ATTEST_BUILD_RESULT: ${{ needs.attest-build.result }}
+          ATTEST_UNTRUSTED_RESULT: ${{ needs.attest-untrusted.result }}
+        run: |
+          set -euo pipefail
+          if [ "${TRUSTED_CONTEXT}" = "true" ] && [ "${ATTEST_BUILD_RESULT}" = "success" ]; then
+            echo "Build attestation generated and verified successfully."
+            exit 0
+          fi
+          if [ "${TRUSTED_CONTEXT}" != "true" ] && [ "${ATTEST_UNTRUSTED_RESULT}" = "success" ]; then
+            echo "Build attestation completed with non-trusted context classification."
+            exit 0
+          fi
+          echo "::error::Attestation summary contract failed (trusted_context=${TRUSTED_CONTEXT} trusted_result=${ATTEST_BUILD_RESULT} untrusted_result=${ATTEST_UNTRUSTED_RESULT})."
+          exit 1
+
+  attestation-trusted-summary:
+    name: Attestation Trusted Summary
+    runs-on: ubuntu-22.04
+    needs: [attestation-context, attest-build]
     if: >-
       ${{
         always() &&
-        needs.attest-build.result == 'success'
+        needs.attestation-context.outputs.trusted_context == 'true' &&
+        needs.attest-build.result == 'success' &&
+        needs.attest-build.outputs.trusted_context == 'true'
       }}
     steps:
-      - name: Confirm attestation workflow passed
-        run: echo "Build attestation generated and verified successfully."
+      - name: Confirm trusted attestation lineage is available
+        run: echo "Trusted attestation lineage is available for release/publish gates."

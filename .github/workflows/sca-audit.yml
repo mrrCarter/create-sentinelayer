@@ -1,6 +1,7 @@
 name: SCA Audit
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
@@ -14,6 +15,9 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CANONICAL_NODE_VERSION: "22"
+  SCA_AUDIT_ATTEMPTS: "3"
+  SCA_AUDIT_TIMEOUT_SECONDS: "120"
 
 jobs:
   sca-audit:
@@ -27,7 +31,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
@@ -35,17 +39,37 @@ jobs:
 
       - name: Run npm audit policy
         run: |
-          set +e
-          npm audit --audit-level=moderate --json > npm-audit.json
-          audit_exit=$?
-          set -e
-
-          if [ ! -s npm-audit.json ]; then
-            echo "::error::npm-audit.json was empty."
+          set -euo pipefail
+          case "${SCA_AUDIT_ATTEMPTS}" in ''|*[!0-9]*) echo "::error::Invalid SCA_AUDIT_ATTEMPTS: ${SCA_AUDIT_ATTEMPTS}" ; exit 1 ;; esac
+          case "${SCA_AUDIT_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid SCA_AUDIT_TIMEOUT_SECONDS: ${SCA_AUDIT_TIMEOUT_SECONDS}" ; exit 1 ;; esac
+          if [ "${SCA_AUDIT_ATTEMPTS}" -lt 1 ]; then
+            echo "::error::SCA_AUDIT_ATTEMPTS must be >= 1."
+            exit 1
+          fi
+          if [ "${SCA_AUDIT_TIMEOUT_SECONDS}" -lt 10 ]; then
+            echo "::error::SCA_AUDIT_TIMEOUT_SECONDS must be >= 10."
             exit 1
           fi
 
-          node <<'NODE'
+          audit_exit=1
+          validated_report="false"
+          for attempt in $(seq 1 "${SCA_AUDIT_ATTEMPTS}"); do
+            set +e
+            timeout "${SCA_AUDIT_TIMEOUT_SECONDS}" npm audit --audit-level=moderate --json > npm-audit.json
+            audit_exit=$?
+            set -e
+
+            if [ ! -s npm-audit.json ]; then
+              if [ "${attempt}" -lt "${SCA_AUDIT_ATTEMPTS}" ]; then
+                echo "::warning::npm audit attempt ${attempt}/${SCA_AUDIT_ATTEMPTS} produced an empty report (exit=${audit_exit}); retrying."
+                sleep $((attempt * 2))
+                continue
+              fi
+              echo "::error::npm-audit.json was empty after ${SCA_AUDIT_ATTEMPTS} attempt(s)."
+              exit 1
+            fi
+
+            if node <<'NODE'
           const fs = require("node:fs");
           const requiredKeys = ["info", "low", "moderate", "high", "critical", "total"];
           let report;
@@ -72,6 +96,21 @@ jobs:
 
           console.log(`npm audit summary: ${JSON.stringify(vulnerabilities)}`);
           NODE
+            then
+              validated_report="true"
+              break
+            fi
+
+            if [ "${attempt}" -lt "${SCA_AUDIT_ATTEMPTS}" ]; then
+              echo "::warning::npm audit attempt ${attempt}/${SCA_AUDIT_ATTEMPTS} produced an invalid report (exit=${audit_exit}); retrying."
+              sleep $((attempt * 2))
+            fi
+          done
+
+          if [ "${validated_report}" != "true" ]; then
+            echo "::error::npm audit report validation failed after ${SCA_AUDIT_ATTEMPTS} attempt(s)."
+            exit 1
+          fi
 
           if [ "${audit_exit}" -ne 0 ]; then
             echo "::error::npm audit policy failed (moderate+ vulnerability detected)."

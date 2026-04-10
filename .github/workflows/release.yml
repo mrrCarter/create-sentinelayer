@@ -1,12 +1,16 @@
 name: Release
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "v*"
 
+concurrency:
+  group: release-publish-prod
+  cancel-in-progress: false
+
 permissions:
+  actions: read
   checks: read
   contents: read
   attestations: write
@@ -15,36 +19,59 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-concurrency:
-  group: release-workflow-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  manual-validate:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+  policy-precheck:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    environment: package-release
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Enforce workflow_dispatch branch policy
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "::error::Manual release dispatch validation is restricted to refs/heads/main. Current ref: ${GITHUB_REF}."
-            exit 1
-          fi
-
-      - name: Enforce manual release actor allowlist
+      - name: Enforce trusted tag trigger policy
         shell: bash
         env:
-          RELEASE_ALLOWED_ACTORS: ${{ vars.RELEASE_ALLOWED_ACTORS || 'mrrCarter' }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT_CREATED: ${{ github.event.created }}
+          EVENT_DELETED: ${{ github.event.deleted }}
         run: |
           set -euo pipefail
-          allowed_csv="${RELEASE_ALLOWED_ACTORS}"
+          policy_file=".github/policies/release-tag-policy.json"
+          if [ ! -f "${policy_file}" ]; then
+            echo "::error::Missing release tag policy file: ${policy_file}."
+            exit 1
+          fi
+          if ! jq -e '
+            type == "object"
+            and (.allowed_tag_actors | type == "array" and length > 0)
+            and (.allowed_tag_signer_emails | type == "array" and length > 0)
+            and (.required_release_workflow_path | type == "string" and length > 0)
+            and (.required_release_workflow_name | type == "string" and length > 0)
+            and (.required_release_workflow_actor | type == "string" and length > 0)
+          ' "${policy_file}" >/dev/null 2>&1; then
+            echo "::error::Invalid release tag policy schema in ${policy_file}."
+            exit 1
+          fi
+          allowed_csv="$(jq -r '[.allowed_tag_actors[] | strings | select(length > 0)] | join(",")' "${policy_file}")"
+          signer_allowlist="$(jq -r '[.allowed_tag_signer_emails[] | strings | ascii_downcase | select(length > 0)] | join(",")' "${policy_file}")"
+          required_release_workflow_path="$(jq -r '.required_release_workflow_path' "${policy_file}")"
+          required_release_workflow_name="$(jq -r '.required_release_workflow_name' "${policy_file}")"
+          required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
+          export required_release_workflow_path
+          export required_release_workflow_name
+          export required_release_workflow_actor
+          if [ "${EVENT_DELETED}" = "true" ]; then
+            echo "::error::Release workflow does not run on deleted tags."
+            exit 1
+          fi
+          if [ "${EVENT_CREATED}" != "true" ]; then
+            echo "::error::Release workflow requires newly created semver tags (event.created=true)."
+            exit 1
+          fi
           actor="${GITHUB_ACTOR}"
+          if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
+            echo "::error::allowed_tag_actors is empty in ${policy_file}."
+            exit 1
+          fi
           actor_allowed="false"
           IFS=',' read -r -a allowed_items <<< "${allowed_csv}"
           for item in "${allowed_items[@]}"; do
@@ -55,7 +82,134 @@ jobs:
             fi
           done
           if [ "${actor_allowed}" != "true" ]; then
-            echo "::error::Actor ${actor} is not in RELEASE_ALLOWED_ACTORS (${allowed_csv})."
+            echo "::error::Actor ${actor} is not allowed to trigger release tags. Allowed actors: ${allowed_csv}."
+            exit 1
+          fi
+          tag_ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}")"
+          tag_object_type="$(echo "${tag_ref_json}" | jq -r '.object.type // empty')"
+          tag_object_sha="$(echo "${tag_ref_json}" | jq -r '.object.sha // empty')"
+          if [ "${tag_object_type}" != "tag" ]; then
+            echo "::error::Release tags must be annotated and cryptographically signed. Lightweight tag object type '${tag_object_type}' is not allowed."
+            exit 1
+          fi
+          if [ -z "${tag_object_sha}" ]; then
+            echo "::error::Failed to resolve annotated tag object SHA for ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          tag_object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
+          tag_signature_verified="$(echo "${tag_object_json}" | jq -r '.verification.verified // false')"
+          tag_signature_reason="$(echo "${tag_object_json}" | jq -r '.verification.reason // "unknown"')"
+          if [ "${tag_signature_verified}" != "true" ]; then
+            echo "::error::Release tag signature verification failed for ${GITHUB_REF_NAME} (reason=${tag_signature_reason})."
+            exit 1
+          fi
+          tagger_date="$(echo "${tag_object_json}" | jq -r '.tagger.date // empty' | xargs || true)"
+          signer_email="$(echo "${tag_object_json}" | jq -r '.tagger.email // empty' | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          if [ -z "$(echo "${signer_allowlist}" | xargs || true)" ]; then
+            echo "::error::allowed_tag_signer_emails is empty in ${policy_file}."
+            exit 1
+          fi
+          signer_allowed="false"
+          IFS=',' read -r -a signer_items <<< "${signer_allowlist}"
+          for item in "${signer_items[@]}"; do
+            candidate="$(echo "${item}" | tr '[:upper:]' '[:lower:]' | xargs)"
+            if [ -n "${candidate}" ] && [ "${candidate}" = "${signer_email}" ]; then
+              signer_allowed="true"
+              break
+            fi
+          done
+          if [ "${signer_allowed}" != "true" ]; then
+            echo "::error::Tag signer email '${signer_email:-<none>}' is not allowlisted. Allowed signer emails: ${signer_allowlist}."
+            exit 1
+          fi
+          release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100")"
+          release_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
+            [
+              (.workflow_runs // [])[]
+              | select(
+                  .conclusion == "success"
+                  and (.event // "") == "push"
+                  and (.head_branch // "") == "main"
+                  and (.head_sha // "") == $sha
+                  and (.path // "") == env.required_release_workflow_path
+                  and (.name // "") == env.required_release_workflow_name
+                  and (.actor.login // "") == env.required_release_workflow_actor
+                )
+              | {
+                  id: (.id | tostring),
+                  run_number: (.run_number // 0),
+                  run_attempt: (.run_attempt // 0),
+                  created_at: (.created_at // ""),
+                  updated_at: (.updated_at // "")
+                }
+            ]
+            | sort_by(.run_number, .run_attempt, .updated_at, .created_at)
+          ')"
+          release_candidate_count="$(echo "${release_candidates}" | jq 'length')"
+          if [ "${release_candidate_count}" -lt 1 ]; then
+            echo "::error::No successful release-please workflow run found on main for tagged commit ${GITHUB_SHA}."
+            exit 1
+          fi
+          release_please_run_id="$(echo "${release_candidates}" | jq -r 'last.id // empty')"
+          release_please_created_at="$(echo "${release_candidates}" | jq -r 'last.created_at // empty')"
+          if ! [[ "${release_please_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve canonical release-please workflow run id."
+            exit 1
+          fi
+          if [ -n "${tagger_date}" ] && [ -n "${release_please_created_at}" ]; then
+            tag_epoch="$(date -u -d "${tagger_date}" +%s)"
+            release_please_epoch="$(date -u -d "${release_please_created_at}" +%s)"
+            if [ "${release_please_epoch}" -gt "${tag_epoch}" ]; then
+              echo "::error::Release tag predates release-please run creation. tagger_date=${tagger_date} release_please_created_at=${release_please_created_at}."
+              exit 1
+            fi
+          fi
+          {
+            echo "## Release Trigger Policy"
+            echo "- tag: \`${GITHUB_REF_NAME}\`"
+            echo "- actor: \`${actor}\`"
+            echo "- created_event: \`${EVENT_CREATED}\`"
+            echo "- tag_object_type: \`${tag_object_type}\`"
+            echo "- tag_signature_verified: \`${tag_signature_verified}\`"
+            echo "- tag_signature_reason: \`${tag_signature_reason}\`"
+            echo "- signer_email: \`${signer_email:-<none>}\`"
+            echo "- tagger_date: \`${tagger_date:-<none>}\`"
+            echo "- release_please_run_id: \`${release_please_run_id}\`"
+            echo "- release_please_match_count: \`${release_candidate_count}\`"
+            echo "- policy_file: \`${policy_file}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  tag-preflight:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [policy-precheck]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Enforce release tag policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "::error::Unsupported release preflight context: ${GITHUB_EVENT_NAME} ${GITHUB_REF}"
+            exit 1
+          fi
+          if ! echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Release tag must match semantic version pattern (vMAJOR.MINOR.PATCH[-suffix]). Received ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+
+      - name: Enforce release tag ancestry on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"; then
+            echo "::error::Release tag commit ${GITHUB_SHA} is not reachable from origin/main."
             exit 1
           fi
 
@@ -65,167 +219,216 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           REQUIRED_CHECKS_JSON: >-
             [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Validate package
-        run: npm run verify
-
-      - name: Emit manual validation summary
+      - name: Emit preflight summary
         run: |
           set -euo pipefail
-          echo "## Manual Release Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Release Tag Preflight" >> "$GITHUB_STEP_SUMMARY"
+          echo "- mode: \`tag-preflight\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- ref: \`${GITHUB_REF}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- note: workflow_dispatch validates only; publish remains tag-only and upstream checks must already be green." >> "$GITHUB_STEP_SUMMARY"
-
-  rollback-readiness-manual:
-    if: github.event_name == 'workflow_dispatch'
-    needs: [manual-validate]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    environment: package-release
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Validate rollback readiness (manual dry-run)
-        env:
-          PACKAGE_NAME: sentinelayer-cli
-          ROLLBACK_MODE: manual-validate
-        run: bash .github/scripts/release-rollback-readiness.sh
 
   release-authorize:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tag-preflight]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     environment: package-release
     steps:
-      - name: Enforce release tag and actor authorization policy
+      - name: Confirm release preflight completed
         shell: bash
-        env:
-          RELEASE_ALLOWED_ACTORS: ${{ vars.RELEASE_ALLOWED_ACTORS || 'mrrCarter,github-actions[bot]' }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF}" != "refs/tags/${GITHUB_REF_NAME}" ]; then
             echo "::error::Unexpected ref format: ${GITHUB_REF}"
             exit 1
           fi
-          if ! echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
-            echo "::error::Release tag must match semantic version pattern (vMAJOR.MINOR.PATCH[-suffix]). Received ${GITHUB_REF_NAME}."
-            exit 1
-          fi
-          allowed_csv="${RELEASE_ALLOWED_ACTORS}"
-          actor="${GITHUB_ACTOR}"
-          actor_allowed="false"
-          IFS=',' read -r -a allowed_items <<< "${allowed_csv}"
-          for item in "${allowed_items[@]}"; do
-            candidate="$(echo "${item}" | xargs)"
-            if [ -n "${candidate}" ] && [ "${candidate}" = "${actor}" ]; then
-              actor_allowed="true"
-              break
-            fi
-          done
-          if [ "${actor_allowed}" != "true" ]; then
-            echo "::error::Actor ${actor} is not allowed to authorize tag releases. RELEASE_ALLOWED_ACTORS=${allowed_csv}."
-            exit 1
-          fi
+          echo "Release preflight gate passed for ${GITHUB_REF_NAME}."
 
-  release-prereqs:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-authorize]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Run release prerequisite verification
-        run: npm run verify
-
-      - name: Ensure release commit passed required upstream checks
+      - name: Enforce package-release environment reviewer policy
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.sha }}
-          REQUIRED_CHECKS_JSON: >-
-            [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
-            ]
-          MAX_WAIT_SECONDS: "900"
-          POLL_INTERVAL_SECONDS: "10"
-        run: .github/scripts/require-check-runs.sh
+        run: |
+          set -euo pipefail
+          response="$(gh api "repos/${GITHUB_REPOSITORY}/environments/package-release")"
+          rule_count="$(echo "${response}" | jq -r '.protection_rules | length')"
+          reviewer_count="$(echo "${response}" | jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers // [])[]] | length')"
+          case "${rule_count}" in ''|*[!0-9]*) echo "::error::Invalid protection rule count returned for package-release environment." ; exit 1 ;; esac
+          case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid reviewer count returned for package-release environment." ; exit 1 ;; esac
+          if [ "${rule_count}" -lt 1 ]; then
+            echo "::error::package-release environment has no protection rules configured. Add required reviewers before publishing."
+            exit 1
+          fi
+          if [ "${reviewer_count}" -lt 1 ]; then
+            echo "::error::package-release environment has no required reviewers configured. Add required reviewers before publishing."
+            exit 1
+          fi
 
   build-release-artifact:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-authorize, release-prereqs]
+    needs: [release-authorize]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     concurrency:
       group: release-build-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-
-      - name: Enforce release tag ancestry on main
+      - name: Resolve canonical attested artifact for release commit
+        id: attested_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
-          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"; then
-            echo "::error::Release tag commit ${GITHUB_SHA} is not reachable from origin/main."
+          workflow_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/attestations.yml/runs?head_sha=${GITHUB_SHA}&status=completed&per_page=100")"
+          attestation_candidates="$(echo "${workflow_runs_json}" | jq -c '
+            [
+              (.workflow_runs // [])[]
+              | select(
+                  .conclusion == "success"
+                  and .path == ".github/workflows/attestations.yml"
+                  and (.event // "") == "push"
+                  and (.head_branch // "") == "main"
+                  and (.head_sha // "") == env.GITHUB_SHA
+                )
+              | {
+                  id: (.id | tostring),
+                  run_number: (.run_number // 0),
+                  run_attempt: (.run_attempt // 0),
+                  created_at: (.created_at // ""),
+                  updated_at: (.updated_at // ""),
+                  event: (.event // ""),
+                  head_branch: (.head_branch // ""),
+                  name: (.name // ""),
+                  path: (.path // ""),
+                  html_url: (.html_url // "")
+                }
+            ]
+            | sort_by(.run_number, .run_attempt, .updated_at, .created_at)
+          ')"
+          candidate_count="$(echo "${attestation_candidates}" | jq 'length')"
+          if [ "${candidate_count}" -lt 1 ]; then
+            echo "::error::No successful attestation workflow run found for commit ${GITHUB_SHA}."
             exit 1
           fi
+          candidate_ids="$(echo "${attestation_candidates}" | jq -r '[.[].id] | join(",")')"
+          if [ "${candidate_count}" -gt 1 ]; then
+            echo "::notice::Multiple successful attestation producers found for ${GITHUB_SHA}; selecting deterministic winner by run_number/run_attempt/updated_at ordering."
+            echo "::notice::candidate_ids=${candidate_ids}"
+          fi
+          attestation_run_id="$(echo "${attestation_candidates}" | jq -r 'last.id // empty')"
+          if ! [[ "${attestation_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to resolve canonical attestation workflow run id."
+            exit 1
+          fi
+          run_meta_json="$(gh run view "${attestation_run_id}" --json databaseId,name,path,conclusion,event,headSha,url)"
+          run_name="$(echo "${run_meta_json}" | jq -r '.name // empty')"
+          run_path="$(echo "${run_meta_json}" | jq -r '.path // empty')"
+          run_conclusion="$(echo "${run_meta_json}" | jq -r '.conclusion // empty')"
+          run_event="$(echo "${run_meta_json}" | jq -r '.event // empty')"
+          run_head_sha="$(echo "${run_meta_json}" | jq -r '.headSha // empty')"
+          if [ "${run_conclusion}" != "success" ]; then
+            echo "::error::Resolved attestation run ${attestation_run_id} is not successful (conclusion=${run_conclusion})."
+            exit 1
+          fi
+          if [ "${run_name}" != "Build Attestation" ]; then
+            echo "::error::Resolved run ${attestation_run_id} has unexpected workflow name '${run_name}'."
+            exit 1
+          fi
+          if [ "${run_path}" != ".github/workflows/attestations.yml" ]; then
+            echo "::error::Resolved run ${attestation_run_id} has unexpected workflow path '${run_path}'."
+            exit 1
+          fi
+          if [ "${run_event}" != "push" ]; then
+            echo "::error::Resolved run ${attestation_run_id} has unexpected event '${run_event}'. Expected push."
+            exit 1
+          fi
+          if [ "${run_head_sha}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Resolved run ${attestation_run_id} head SHA mismatch. expected=${GITHUB_SHA} actual=${run_head_sha}."
+            exit 1
+          fi
+          rm -rf attestation-source
+          mkdir -p attestation-source
+          gh run download "${attestation_run_id}" --name "attestation-build-artifacts" --dir attestation-source
+          echo "run_id=${attestation_run_id}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Canonical Attestation Source"
+            echo "- run_id: \`${attestation_run_id}\`"
+            echo "- candidate_count: \`${candidate_count}\`"
+            echo "- candidate_run_ids: \`${candidate_ids}\`"
+            echo "- workflow: \`${run_name}\`"
+            echo "- path: \`${run_path}\`"
+            echo "- discovery: \`workflow-runs-api(head_sha=${GITHUB_SHA})\`"
+            echo "- source_url: \`$(echo "${run_meta_json}" | jq -r '.url // empty')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate release artifact manifest
+        id: artifact_manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          SOURCE_MANIFEST="attestation-source/attestation-manifest.json"
+          if [ ! -f "${SOURCE_MANIFEST}" ]; then
+            echo "::error::Missing attestation manifest from canonical artifact source."
+            exit 1
+          fi
+          SOURCE_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${SOURCE_MANIFEST}")"
+          if [ -z "${SOURCE_COMMIT_SHA}" ] || [ "${SOURCE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Canonical artifact commit mismatch. expected=${GITHUB_SHA} source=${SOURCE_COMMIT_SHA:-<none>}."
+            exit 1
+          fi
+          SOURCE_WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_WORKFLOW_NAME="$(jq -r '.workflow_name // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_RUN_ID="$(jq -r '.run_id // empty' "${SOURCE_MANIFEST}")"
+          if [ -z "${SOURCE_WORKFLOW_REF}" ] || ! echo "${SOURCE_WORKFLOW_REF}" | grep -Eq "^${GITHUB_REPOSITORY}/\\.github/workflows/attestations\\.yml@"; then
+            echo "::error::Canonical artifact workflow_ref is missing or invalid: ${SOURCE_WORKFLOW_REF:-<none>}."
+            exit 1
+          fi
+          if [ "${SOURCE_WORKFLOW_NAME}" != "Build Attestation" ]; then
+            echo "::error::Canonical artifact workflow_name mismatch: ${SOURCE_WORKFLOW_NAME:-<none>}."
+            exit 1
+          fi
+          if [ -z "${SOURCE_RUN_ID}" ] || [ "${SOURCE_RUN_ID}" != "${{ steps.attested_source.outputs.run_id }}" ]; then
+            echo "::error::Canonical artifact run_id mismatch. expected=${{ steps.attested_source.outputs.run_id }} source=${SOURCE_RUN_ID:-<none>}."
+            exit 1
+          fi
+          SOURCE_SHA256="$(jq -r '.sha256 // empty' "${SOURCE_MANIFEST}")"
+          tarballs=(attestation-source/sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one canonical release tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          SOURCE_TARBALL_PATH="${tarballs[0]}"
+          TARBALL="$(basename "${SOURCE_TARBALL_PATH}")"
+          cp "${SOURCE_TARBALL_PATH}" "${TARBALL}"
+          SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          if [ -n "${SOURCE_SHA256}" ] && [ "${SOURCE_SHA256}" != "${SHA256}" ]; then
+            echo "::error::Canonical artifact digest mismatch. source=${SOURCE_SHA256} actual=${SHA256}."
+            exit 1
+          fi
+          jq -n \
+            --arg tarball "${TARBALL}" \
+            --arg sha256 "${SHA256}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg attestation_run_id "${{ steps.attested_source.outputs.run_id }}" \
+            '{
+              tarball: $tarball,
+              sha256: $sha256,
+              commit_sha: $commit_sha,
+              workflow_ref: $workflow_ref,
+              source_attestation_run_id: ($attestation_run_id | if length > 0 then . else null end)
+            }' > release-artifact-manifest.json
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -233,64 +436,6 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Validate package
-        run: npm run verify
-
-      - name: Ensure release commit passed required upstream gates
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.sha }}
-          REQUIRED_CHECKS_JSON: >-
-            [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
-            ]
-          MAX_WAIT_SECONDS: "900"
-          POLL_INTERVAL_SECONDS: "10"
-        run: .github/scripts/require-check-runs.sh
-
-      - name: Build release tarball
-        run: npm pack --ignore-scripts
-
-      - name: Generate release artifact manifest
-        id: artifact_manifest
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          tarballs=(sentinelayer-cli-*.tgz)
-          if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one release tarball, found ${#tarballs[@]}."
-            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
-            exit 1
-          fi
-          TARBALL="${tarballs[0]}"
-          SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
-          jq -n \
-            --arg tarball "${TARBALL}" \
-            --arg sha256 "${SHA256}" \
-            --arg commit_sha "${GITHUB_SHA}" \
-            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
-            '{
-              tarball: $tarball,
-              sha256: $sha256,
-              commit_sha: $commit_sha,
-              workflow_ref: $workflow_ref
-            }' > release-artifact-manifest.json
-          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
-          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Validate packaged CLI install
         run: |
@@ -305,7 +450,7 @@ jobs:
           rm -rf "${PREFIX_DIR}"
 
       - name: Generate release build attestation
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
         with:
           subject-path: ${{ steps.artifact_manifest.outputs.tarball }}
 
@@ -395,26 +540,25 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           REQUIRED_CHECKS_JSON: >-
             [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
           MAX_WAIT_SECONDS: "900"
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-  publish:
-    needs: [pre-publish-gates]
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish-release:
+    needs: [pre-publish-gates, release-authorize]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.pre-publish-gates.result == 'success' &&
+        needs.release-authorize.result == 'success'
+      }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    environment: package-release
     permissions:
       contents: read
       id-token: write
@@ -425,6 +569,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Assert release authorization gate state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.release-authorize.result }}" != "success" ]; then
+            echo "::error::release-authorize did not complete successfully (result=${{ needs.release-authorize.result }})."
+            exit 1
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -433,23 +586,55 @@ jobs:
           cache: npm
 
       - name: Download release tarball artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # digest-pinned (actions/download-artifact)
         with:
           name: sentinelayer-cli-tarball
           path: release-artifact
 
       - name: Enforce trusted npm publishing context
         shell: bash
+        env:
+          NPM_OIDC_MAX_TTL_SECONDS: ${{ vars.NPM_OIDC_MAX_TTL_SECONDS || '900' }}
         run: |
           set -euo pipefail
           if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
             echo "::error::Trusted publishing requires GitHub OIDC runtime context, but id-token environment is unavailable."
             exit 1
           fi
+          case "${NPM_OIDC_MAX_TTL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid NPM_OIDC_MAX_TTL_SECONDS value: ${NPM_OIDC_MAX_TTL_SECONDS}" ; exit 1 ;; esac
+          oidc_payload="$(curl -fsSL \
+            --fail-with-body \
+            --proto '=https' \
+            --tlsv1.2 \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npmjs.org")"
+          oidc_token="$(echo "${oidc_payload}" | jq -r '.value // empty')"
+          if [ -z "${oidc_token}" ] || [ "${oidc_token}" = "null" ]; then
+            echo "::error::Failed to mint GitHub OIDC token for npm trusted publishing."
+            exit 1
+          fi
+          claims_json="$(node -e "const token=process.argv[1]||''; const p=token.split('.')[1]||''; const b=p.replace(/-/g,'+').replace(/_/g,'/'); const pad=b + '='.repeat((4 - (b.length % 4)) % 4); try { process.stdout.write(Buffer.from(pad,'base64').toString('utf8')); } catch { process.exit(1); }" "${oidc_token}" || true)"
+          oidc_iat="$(echo "${claims_json}" | jq -r '.iat // empty')"
+          oidc_exp="$(echo "${claims_json}" | jq -r '.exp // empty')"
+          case "${oidc_iat}" in ''|*[!0-9]*) echo "::error::Invalid OIDC iat claim: ${oidc_iat}" ; exit 1 ;; esac
+          case "${oidc_exp}" in ''|*[!0-9]*) echo "::error::Invalid OIDC exp claim: ${oidc_exp}" ; exit 1 ;; esac
+          oidc_ttl="$((oidc_exp - oidc_iat))"
+          if [ "${oidc_ttl}" -le 0 ]; then
+            echo "::error::Invalid OIDC token TTL computed from claims: ${oidc_ttl}."
+            exit 1
+          fi
+          if [ "${oidc_ttl}" -gt "${NPM_OIDC_MAX_TTL_SECONDS}" ]; then
+            echo "::error::OIDC token TTL ${oidc_ttl}s exceeds policy maximum ${NPM_OIDC_MAX_TTL_SECONDS}s."
+            exit 1
+          fi
           echo "PUBLISH_AUTH_MODE=trusted" >> "$GITHUB_ENV"
-          echo "### npm publish auth mode: trusted (OIDC)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### npm publish auth mode: trusted (OIDC)"
+            echo "- oidc_ttl_seconds: \`${oidc_ttl}\`"
+            echo "- oidc_ttl_policy_max_seconds: \`${NPM_OIDC_MAX_TTL_SECONDS}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce release artifact checksum manifest
+      - name: Enforce release artifact checksum manifest and bind publish tarball
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -462,10 +647,28 @@ jobs:
           TARBALL="${tarballs[0]}"
           MANIFEST="release-artifact/release-artifact-manifest.json"
           test -f "${MANIFEST}"
+          MANIFEST_TARBALL="$(jq -r '.tarball // empty' "${MANIFEST}")"
           EXPECTED_SHA256="$(jq -r '.sha256' "${MANIFEST}")"
+          MANIFEST_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${MANIFEST}")"
           ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          if [ -z "${MANIFEST_TARBALL}" ]; then
+            echo "::error::Manifest missing expected tarball name."
+            exit 1
+          fi
+          if [ "$(basename "${TARBALL}")" != "${MANIFEST_TARBALL}" ]; then
+            echo "::error::Manifest tarball mismatch. expected=${MANIFEST_TARBALL} actual=$(basename "${TARBALL}")"
+            exit 1
+          fi
           if [ -z "${EXPECTED_SHA256}" ] || [ "${EXPECTED_SHA256}" = "null" ]; then
             echo "::error::Manifest missing expected sha256."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_COMMIT_SHA}" ] || [ "${MANIFEST_COMMIT_SHA}" = "null" ]; then
+            echo "::error::Manifest missing commit_sha."
+            exit 1
+          fi
+          if [ "${MANIFEST_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Manifest commit mismatch. expected=${MANIFEST_COMMIT_SHA} actual=${GITHUB_SHA}"
             exit 1
           fi
           if [ "${EXPECTED_SHA256}" != "${ACTUAL_SHA256}" ]; then
@@ -473,7 +676,26 @@ jobs:
             echo "::error::Expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}."
             exit 1
           fi
-          echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+          BUILD_ATTESTATION_FILE="release-artifact/release-attestation-verify.json"
+          if [ ! -f "${BUILD_ATTESTATION_FILE}" ]; then
+            echo "::error::Missing build-stage attestation verification artifact at ${BUILD_ATTESTATION_FILE}."
+            exit 1
+          fi
+          BUILD_ATTESTED_SHA256="$(jq -r '
+            [
+              .. | objects
+              | select(has("digest"))
+              | .digest
+              | if type == "object" then .sha256 // empty else empty end
+            ]
+            | map(select(type == "string" and length > 0))
+            | first // empty
+          ' "${BUILD_ATTESTATION_FILE}")"
+          if [ -n "${BUILD_ATTESTED_SHA256}" ] && [ "${BUILD_ATTESTED_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Build-stage attested digest mismatch. expected=${EXPECTED_SHA256} build_attested=${BUILD_ATTESTED_SHA256}."
+            exit 1
+          fi
+          echo "VERIFIED_TARBALL=${TARBALL}" >> "$GITHUB_ENV"
           echo "EXPECTED_SHA256=${EXPECTED_SHA256}" >> "$GITHUB_ENV"
 
       - name: Enforce release attestation verification policy
@@ -483,7 +705,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3 4 5; do
-            if gh attestation verify "${TARBALL}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > release-attestation-publish-verify.json; then
+            if gh attestation verify "${VERIFIED_TARBALL}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > release-attestation-publish-verify.json; then
               break
             fi
             if [ "${attempt}" -eq 5 ]; then
@@ -522,9 +744,135 @@ jobs:
             npm config delete //registry.npmjs.org/:_authToken || true
           fi
 
-      - name: Publish to npm
+      - name: Guard deterministic npm publish idempotency
+        id: publish_guard
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          test -f "${TARBALL}"
-          npm publish "./${TARBALL}" --provenance --access public
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+          if [ -z "${package_name}" ] || [ -z "${package_version}" ]; then
+            echo "::error::Failed to resolve package identity from package.json."
+            exit 1
+          fi
+          if [ "${package_version}" != "${tag_version}" ]; then
+            echo "::error::Tag/version mismatch. tag=${tag_version} package=${package_version}."
+            exit 1
+          fi
+          echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
+          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
+          expected_sha1="$(sha1sum "${VERIFIED_TARBALL}" | awk '{print $1}')"
+          published_version="$(npm view "${package_name}@${package_version}" version --json 2>/tmp/npm-view.err || true)"
+          published_version="$(echo "${published_version}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          if [ -n "${published_version}" ]; then
+            if [ "${published_version}" != "${package_version}" ]; then
+              echo "::error::Unexpected published version response for ${package_name}@${package_version}: ${published_version}"
+              exit 1
+            fi
+            published_sha1="$(npm view "${package_name}@${package_version}" dist.shasum --json 2>/tmp/npm-view.err || true)"
+            published_sha1="$(echo "${published_sha1}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+            if [ -n "${published_sha1}" ] && [ "${published_sha1}" != "${expected_sha1}" ]; then
+              echo "::error::Published tarball checksum mismatch for ${package_name}@${package_version}. expected=${expected_sha1} published=${published_sha1}."
+              exit 1
+            fi
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### npm publish idempotency guard"
+              echo "- package: \`${package_name}@${package_version}\`"
+              echo "- status: \`already published\`"
+              echo "- published_sha1: \`${published_sha1:-<unavailable>}\`"
+              echo "- expected_sha1: \`${expected_sha1}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "already_published=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### npm publish idempotency guard"
+            echo "- package: \`${package_name}@${package_version}\`"
+            echo "- status: \`not published yet\`"
+            echo "- expected_sha1: \`${expected_sha1}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish canary release to npm (`next`)
+        if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          test -f "${VERIFIED_TARBALL}"
+          npm publish "./${VERIFIED_TARBALL}" --provenance --access public --tag next
+          next_tag="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
+          next_tag="$(echo "${next_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          if [ "${next_tag}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Canary publish verification failed. dist-tags.next=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
+            cat /tmp/npm-next.err || true
+            exit 1
+          fi
+
+      - name: Validate canary install from npm registry
+        if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          prefix_dir="$(mktemp -d)"
+          npm install --prefix "${prefix_dir}" --ignore-scripts "${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          "${prefix_dir}/node_modules/.bin/sentinelayer-cli" --version > /tmp/canary-version.out
+          canary_version="$(tr -d '\r\n ' < /tmp/canary-version.out | sed 's/^v//')"
+          if [ "${canary_version}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Canary runtime validation failed. CLI version=${canary_version:-<none>} expected=${PACKAGE_VERSION}."
+            exit 1
+          fi
+
+      - name: Promote canary to stable (`latest`) dist-tag
+        if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          npm dist-tag add "${PACKAGE_NAME}@${PACKAGE_VERSION}" latest
+          latest_tag="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/tmp/npm-latest.err || true)"
+          latest_tag="$(echo "${latest_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          if [ "${latest_tag}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Stable promotion failed. dist-tags.latest=${latest_tag:-<none>} expected=${PACKAGE_VERSION}."
+            cat /tmp/npm-latest.err || true
+            exit 1
+          fi
+          {
+            echo "### Progressive rollout"
+            echo "- canary_tag: \`next\`"
+            echo "- stable_tag: \`latest\`"
+            echo "- promoted_version: \`${PACKAGE_VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Finalize npm auth session
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config delete //registry.npmjs.org/:_authToken || true
+          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
+          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
+            echo "::error::Residual npm auth token detected after publish finalization."
+            exit 1
+          fi
+          echo "No residual npm auth token remains after publish."
+
+      - name: Run post-publish rollback readiness drill
+        shell: bash
+        env:
+          PACKAGE_NAME: sentinelayer-cli
+          ROLLBACK_MODE: post-publish
+          RELEASE_VERSION: ${{ github.ref_name }}
+          NON_BLOCKING_DIAGNOSTICS: "0"
+        run: |
+          set -euo pipefail
+          release_version="${RELEASE_VERSION#v}"
+          RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
 

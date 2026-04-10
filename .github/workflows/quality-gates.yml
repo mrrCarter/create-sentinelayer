@@ -8,14 +8,21 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: quality-gates-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ${{
+      github.event_name == 'pull_request' && format('quality-gates-pr-{0}', github.event.pull_request.number) ||
+      (github.ref == 'refs/heads/main' && 'quality-gates-main') ||
+      format('quality-gates-ref-{0}', github.ref)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.ref_protected != true }}
 
 permissions:
+  checks: read
   contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CANONICAL_NODE_VERSION: "22"
 
 jobs:
   eval-impact:
@@ -41,7 +48,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
-          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || 'workflow_dispatch' }}
+          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || '' }}
         run: |
           set -euo pipefail
           append_output() {
@@ -101,11 +108,117 @@ jobs:
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
           append_output "eval_resolution=resolved"
 
+  eval-enforce:
+    name: Eval Impact Enforcement
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-impact]
+    if: always()
+    outputs:
+      eval_resolution: ${{ needs.eval-impact.outputs.eval_resolution }}
+      eval_required: ${{ needs.eval-impact.outputs.eval_required }}
+      eval_evidence_found: ${{ needs.eval-impact.outputs.eval_evidence_found }}
+    steps:
+      - name: Enforce eval-impact policy for protected events
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVAL_JOB_RESULT: ${{ needs.eval-impact.result }}
+          EVAL_RESOLUTION: ${{ needs.eval-impact.outputs.eval_resolution }}
+          EVAL_REQUIRED: ${{ needs.eval-impact.outputs.eval_required }}
+          EVAL_EVIDENCE_FOUND: ${{ needs.eval-impact.outputs.eval_evidence_found }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          if [ "${EVAL_JOB_RESULT}" != "success" ]; then
+            echo "::error::eval-impact job did not succeed (result=${EVAL_JOB_RESULT})."
+            exit 1
+          fi
+          case "${EVAL_RESOLUTION}" in
+            resolved|approved_skip) ;;
+            *)
+              echo "::error::Unsupported eval_resolution '${EVAL_RESOLUTION}'."
+              exit 1
+              ;;
+          esac
+          if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "::error::approved_skip is only allowed for workflow_dispatch events."
+            exit 1
+          fi
+          if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${ref_protected}" = "true" ]; then
+            echo "::error::approved_skip is not allowed on protected refs."
+            exit 1
+          fi
+          if [ "${EVAL_REQUIRED}" = "true" ] && [ "${EVAL_EVIDENCE_FOUND}" != "true" ]; then
+            echo "::error::Eval evidence required but not found."
+            exit 1
+          fi
+
+  action-pin-policy:
+    name: Action Pin Policy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-enforce]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Enforce locked action pin policy
+        shell: bash
+        run: bash .github/scripts/verify-workflow-action-pins.sh
+
+  security-workflow-digest-policy:
+    name: Security Workflow Digest Policy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-enforce, action-pin-policy]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Enforce reusable security workflow digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          policy_file=".github/policies/reusable-workflow-digests.json"
+          if [ ! -f "${policy_file}" ]; then
+            echo "::error::Missing reusable workflow digest policy file: ${policy_file}"
+            exit 1
+          fi
+          if ! jq -e 'type == "object" and length > 0' "${policy_file}" >/dev/null 2>&1; then
+            echo "::error::Invalid reusable workflow digest policy format in ${policy_file}"
+            exit 1
+          fi
+          verified_count=0
+          while IFS=$'\t' read -r workflow_path expected_digest; do
+            if [ ! -f "${workflow_path}" ]; then
+              echo "::error::Reusable workflow missing: ${workflow_path}"
+              exit 1
+            fi
+            if ! echo "${expected_digest}" | grep -Eq '^[a-f0-9]{64}$'; then
+              echo "::error::Invalid expected digest for ${workflow_path}: ${expected_digest}"
+              exit 1
+            fi
+            actual_digest="$(sha256sum "${workflow_path}" | awk '{print $1}')"
+            if [ "${actual_digest}" != "${expected_digest}" ]; then
+              echo "::error::Reusable workflow digest mismatch for ${workflow_path}."
+              echo "::error::expected=${expected_digest} actual=${actual_digest}"
+              exit 1
+            fi
+            verified_count="$((verified_count + 1))"
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "${policy_file}")
+          {
+            echo "## Security Workflow Digest Policy"
+            echo "- policy_file: \`${policy_file}\`"
+            echo "- verified_workflows: \`${verified_count}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Lint
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-impact]
+    needs: [eval-enforce, action-pin-policy]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -113,11 +226,18 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
 
       - name: Run lint gate
         run: npm run check
@@ -126,7 +246,7 @@ jobs:
     name: Syntax & Sanity (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-impact]
+    needs: [eval-enforce, action-pin-policy]
     strategy:
       fail-fast: false
       matrix:
@@ -143,6 +263,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
 
       - name: Validate CLI runtime entrypoints
         shell: bash
@@ -153,11 +280,39 @@ jobs:
           node bin/create-sentinelayer.js --version
           node bin/sl.js --version
 
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    needs: [eval-enforce, lint, syntax-matrix]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Run test suite
+        run: npm test
+
   unit-coverage:
     name: Unit Coverage (>=80%, Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-impact, lint, syntax-matrix]
+    needs: [eval-enforce, lint, syntax-matrix, test]
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +329,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
 
       - name: Enforce unit coverage thresholds
         run: npm run test:coverage
@@ -186,53 +348,15 @@ jobs:
           path: coverage/lcov.info
           if-no-files-found: error
 
-  security-stage:
-    name: Security Stage
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    needs: [unit-coverage]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Define required security summary policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat <<'JSON' > /tmp/security-required-checks.json
-          [
-            {"name":"Semgrep Summary","app":"github-actions","optional":false},
-            {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-            {"name":"IaC Summary","app":"github-actions","optional":false},
-            {"name":"SCA Summary","app":"github-actions","optional":false},
-            {"name":"License Summary","app":"github-actions","optional":false},
-            {"name":"SBOM Summary","app":"github-actions","optional":false},
-            {"name":"CodeQL Summary","app":"github-actions","optional":true}
-          ]
-          JSON
-          echo "REQUIRED_CHECKS_JSON<<EOF" >> "$GITHUB_ENV"
-          cat /tmp/security-required-checks.json >> "$GITHUB_ENV"
-          echo "EOF" >> "$GITHUB_ENV"
-
-      - name: Verify security summary checks passed
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          REQUIRED_CHECKS_JSON: ${{ env.REQUIRED_CHECKS_JSON }}
-          MAX_WAIT_SECONDS: "900"
-          POLL_INTERVAL_SECONDS: "10"
-        run: .github/scripts/require-check-runs.sh
-
   e2e-packaging:
     name: E2E & Package (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [unit-coverage, security-stage]
+    needs: [unit-coverage]
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        node: ["22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -246,6 +370,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
       - name: Run E2E tests
         run: npm run test:e2e
 
@@ -253,21 +384,167 @@ jobs:
         if: ${{ matrix.node == '22' }}
         run: npm pack --dry-run
 
-  quality-summary:
-    name: Quality Summary
+  build-package:
+    name: Build Package Artifact
     runs-on: ubuntu-22.04
-    needs: [eval-impact, lint, syntax-matrix, unit-coverage, security-stage, e2e-packaging]
+    timeout-minutes: 10
+    needs: [unit-coverage, e2e-packaging]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Build canonical package tarball
+        id: pack
+        shell: bash
+        env:
+          TARGET_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json > pack.json
+          tarball="$(jq -r '.[0].filename' pack.json)"
+          test -n "${tarball}"
+          test -f "${tarball}"
+          sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          lockfile_sha256="$(sha256sum package-lock.json | awk '{print $1}')"
+          mkdir -p .tmp-pack-repeat
+          npm pack --ignore-scripts --pack-destination .tmp-pack-repeat --json > pack-repeat.json
+          repeat_tarball_name="$(jq -r '.[0].filename' pack-repeat.json)"
+          repeat_tarball=".tmp-pack-repeat/${repeat_tarball_name}"
+          test -n "${repeat_tarball_name}"
+          test -f "${repeat_tarball}"
+          repeat_sha256="$(sha256sum "${repeat_tarball}" | awk '{print $1}')"
+          if [ "${repeat_sha256}" != "${sha256}" ]; then
+            echo "::error::Non-deterministic npm pack output detected for the same commit. first=${sha256} repeat=${repeat_sha256}."
+            exit 1
+          fi
+          node_version="$(node --version)"
+          npm_version="$(npm --version)"
+          toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${node_version}" "${npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
+          jq -n \
+            --arg tarball "${tarball}" \
+            --arg sha256 "${sha256}" \
+            --arg repeat_sha256 "${repeat_sha256}" \
+            --arg lockfile_sha256 "${lockfile_sha256}" \
+            --arg node_version "${node_version}" \
+            --arg npm_version "${npm_version}" \
+            --arg runner_os "${RUNNER_OS}" \
+            --arg runner_arch "${RUNNER_ARCH}" \
+            --arg toolchain_fingerprint "${toolchain_fingerprint}" \
+            --arg commit_sha "${TARGET_COMMIT_SHA}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg workflow_name "${GITHUB_WORKFLOW}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{
+              tarball: $tarball,
+              sha256: $sha256,
+              repeat_sha256: $repeat_sha256,
+              lockfile_sha256: $lockfile_sha256,
+              node_version: $node_version,
+              npm_version: $npm_version,
+              runner_os: $runner_os,
+              runner_arch: $runner_arch,
+              toolchain_fingerprint: $toolchain_fingerprint,
+              commit_sha: $commit_sha,
+              workflow_ref: $workflow_ref,
+              workflow_name: $workflow_name,
+              run_id: $run_id,
+              run_attempt: $run_attempt
+            }' > quality-build-manifest.json
+          cp quality-build-manifest.json quality-package-manifest.json
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload quality package artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-package-artifacts
+          path: |
+            pack.json
+            pack-repeat.json
+            quality-build-manifest.json
+            quality-package-manifest.json
+            ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Generate quality artifact provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+
+  deploy-readiness:
+    name: Deploy Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [build-package]
     if: >-
       ${{
         always() &&
-        needs.eval-impact.result == 'success' &&
-        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-impact.outputs.eval_resolution) &&
+        needs.build-package.result == 'success'
+      }}
+    steps:
+      - name: Validate deploy-ready artifact contract
+        shell: bash
+        env:
+          TARBALL: ${{ needs.build-package.outputs.tarball }}
+          SHA256: ${{ needs.build-package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARBALL}" ]; then
+            echo "::error::Missing build tarball output."
+            exit 1
+          fi
+          if [ -z "${SHA256}" ] || ! echo "${SHA256}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Invalid build sha256 output."
+            exit 1
+          fi
+          echo "deploy-ready tarball: ${TARBALL} (${SHA256})"
+
+  quality-summary:
+    name: Quality Summary
+    runs-on: ubuntu-22.04
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, e2e-packaging, build-package, deploy-readiness]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-enforce.result == 'success' &&
+        needs.action-pin-policy.result == 'success' &&
+        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-enforce.outputs.eval_resolution) &&
         needs.lint.result == 'success' &&
         needs.syntax-matrix.result == 'success' &&
+        needs.test.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
-        needs.security-stage.result == 'success' &&
-        needs.e2e-packaging.result == 'success'
+        needs.e2e-packaging.result == 'success' &&
+        needs.build-package.result == 'success' &&
+        needs.deploy-readiness.result == 'success'
       }}
     steps:
       - name: Confirm all quality gates passed
-        run: echo "All quality checks passed."
+        run: |
+          echo "All quality checks passed."
+          echo "Canonical package tarball: ${{ needs.build-package.outputs.tarball }}"
+          echo "Canonical package sha256: ${{ needs.build-package.outputs.sha256 }}"

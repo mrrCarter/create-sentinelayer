@@ -1314,3 +1314,113 @@ Review:
 - [ ] Implement low-risk non-blocking fixes in one batch PR (entropy false positives + static quality debt with no runtime behavior change).
 - [ ] Run API checks (`ruff check`, targeted pytest), open PR, run Omar Gate loop (`gh run watch`), merge on green.
 - [ ] Re-run post-merge Omar run inventory across CLI/API/Web and capture remaining non-blocking backlog (if any) for next batch.
+
+## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)
+
+- [x] Align `omar-gate.yml` severity gate defaults (`workflow_dispatch` + runtime fallback) to eliminate policy ambiguity.
+- [x] Convert security workflows (`semgrep`, `gitleaks`, `iac-scan`, `sca-audit`, `license-gate`, `sbom`) into reusable workflows (`workflow_call`) for in-graph quality gating.
+- [x] Replace `quality-gates` external check polling with in-workflow security suite dependencies and deterministic pass confirmation.
+- [x] Tighten release policy with explicit `package-release` environment enforcement on publish path and reviewer-rule validation.
+- [x] Remove release dependency on detached attestation summary check and tighten manifest integrity checks (`tarball`, `sha256`, `commit_sha`) before publish.
+- [x] Restrict attestation workflow to reusable/PR/manual modes and enforce `npm pack --ignore-scripts` parity.
+- [x] Run local verification (`npm run verify`) on the hardening branch.
+- [ ] Open PR, run Omar loop (`gh run watch`), merge on green, and record finding deltas.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A35)
+
+- [x] Reproduce Omar P2 set on PR `#274` after the first hardening patch.
+- [x] Branch release actor policy by trigger context (manual dispatch vs tag release) with explicit policy summary output.
+- [x] Make `release-please` dispatch fail closed by resolving/watching the downstream `Release` workflow run and propagating failure.
+- [x] Add explicit rollback execution workflow (`.github/workflows/rollback.yml`) with protected approval, dist-tag execution, and post-action verification artifacts.
+- [x] Extend rollback readiness script to support explicit target override (`ROLLBACK_TARGET_OVERRIDE`) for controlled rollback execution.
+- [x] Harden auth-audit outbound target governance with required `allowProvisioning` + `approvedTargetId` + approved host allowlist for live checks.
+- [x] Add/adjust unit coverage for auth-audit approval guard behavior and stronger fail-closed semantics.
+- [x] Run local full verification (`npm run verify`) on branch `hardening/nonblocking-p2-batch2`.
+- [ ] Push updates, run Omar Gate loop (`gh run watch`), and merge PR `#274` once required checks are green.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A36)
+
+- [x] Reproduce current Omar P2 set on PR `#274` (`P2=6`) and map each finding to concrete file-level fixes.
+- [x] Complete `auth-audit` reliability hardening (bounded AIdenID retry/timeout wrapper + stable envelope contract for success/error/validation paths).
+- [x] Add branch-protection preflight job split in `release-please` before privileged write actions.
+- [x] Strengthen attestation gating SHA resolution + check-run availability precheck in `attestations.yml`.
+- [x] Bind release provenance to check-run-derived attestation workflow run identity in `release.yml`.
+- [x] Remove static npm rollback token flow and require OIDC token exchange for ephemeral npm credentials in `rollback.yml`.
+- [x] Run local validation (`node --check`, workflow YAML parse, targeted auth-audit tests, `npm run verify`).
+- [ ] Push branch updates, watch Omar Gate to completion, and iterate until P0-P2 are cleared or materially reduced with evidence.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A37)
+
+- [x] Add explicit `build-package` quality gate job and emit canonical package artifact + checksum manifest in `quality-gates.yml`.
+- [x] Refactor `attestations.yml` to attest the canonical quality artifact (downloaded by run-id) instead of rebuilding tarball in attestation workflow.
+- [x] Harden Omar workflow execution boundary with pinned runner, protected environment, and local wrapper action for centralized third-party invocation policy.
+- [x] Add global retry-budget and per-attempt timeout race controls to `provisionEmailIdentityWithRetry` in `auth-audit.js`.
+- [x] Update auth-audit unit assertions and run full local validation (`node --check`, workflow YAML parse, `node --test tests/unit.jules-auth-audit.test.mjs`, `npm run verify`).
+- [ ] Push updates on `hardening/nonblocking-p2-batch2`, run Omar Gate watch loop on PR `#274`, and iterate to drive remaining P2 to zero.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A38)
+
+- [x] Reproduce failing required checks on PR `#274` and confirm root cause in `Quality Gates` (`Security CodeQL` timeout).
+- [x] Remove non-deterministic CodeQL analysis-id wait and switch to deterministic CodeQL alert query fallback (`pr`-scoped first, `ref`-scoped second) in `quality-gates.yml`.
+- [x] Remove broad `secrets: inherit` from reusable `security-*` workflow calls in `quality-gates.yml`.
+- [x] Harden quality-gates concurrency cancellation to avoid cancelling protected/main runs.
+- [x] Extend `attestations.yml` trigger surface with trusted `push` on `main` to guarantee post-merge provenance coverage.
+- [x] Reduce secret-inventory disclosure in `omar-gate.yml` credential validation logs.
+- [x] Harden `auth-audit` retry fetch wrapper to preserve caller abort semantics and dispose retryable response bodies.
+- [x] Extend auth-audit unit coverage for new retry/cancellation hardening.
+- [x] Run local validation (`node --test tests/unit.jules-auth-audit.test.mjs`, `npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch` for Omar + required checks), and iterate until green and P2 reduced.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A39)
+
+- [x] Reproduce latest Omar P2 set on PR `#274` (`P2=4`) and map concrete fixes.
+- [x] Add bounded `gh run watch` timeout enforcement in `release-please.yml`.
+- [x] Pin Semgrep Python runtime to exact patch version from policy and assert match at install time.
+- [x] Strengthen release publish gate with explicit `release-authorize` dependency and fail-closed assertion in publish job.
+- [x] Extend required-check runner validation with workflow-run provenance binding (`workflow_path` + `head_sha`) and wire policy entries in release/attestation callers.
+- [x] Run local full validation (`npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch`), and merge PR `#274` when required checks are green.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A40)
+
+- [x] Reproduce post-push Omar findings on PR `#274` and isolate the new P2 set.
+- [x] Remove attestation deadlock by selecting canonical latest successful Quality Gates run when multiple successful candidates exist.
+- [x] Add rollback target provenance verification (`gh attestation verify` against release workflow signer) before any dist-tag mutation.
+- [x] Enforce trusted attestation source context in release flow (`event=push`, `head_branch=main`) before selecting canonical source run.
+- [x] Upgrade `quality-gates` CodeQL stage to execute pinned CodeQL init+analyze in-workflow before policy evaluation.
+- [x] Run local full validation (`npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch`), and iterate until remaining P2 findings are burned down.
+
+## 2026-04-09 - Remaining P2 Closure (Batch P2-A41)
+
+- [x] Add reusable security-workflow digest policy gate to `quality-gates` and wire all security jobs through it.
+- [x] Tighten rollback OIDC exchange contract with explicit HTTP status and content-type validation.
+- [x] Add post-publish rollback-readiness drill in `release.yml` publish path.
+- [x] Remove semgrep bootstrap package installs from live index and enforce toolchain version match from pinned runtime.
+- [x] Run local full validation (`npm run verify`).
+- [ ] Push updates, run Omar loop (`gh run watch`), and continue non-blocking P2 burn-down.
+
+## PR #274 Omar Loop Batch A42 (2026-04-09)
+- [x] Remove reusable workflow secret inheritance on security scanner jobs to eliminate fork secret-path ambiguity.
+- [x] Re-align attestation PR execution to `pull_request` trust boundary and remove `pull_request_target` privileged checkout path.
+- [x] Enforce progressive npm rollout in release workflow (`next` canary -> install validation -> `latest` promotion).
+- [x] Upgrade rollback target integrity verification from SHA-1 shasum enforcement to SHA-512 `dist.integrity` verification.
+- [ ] Push batch A42 and re-run Omar Gate watch on PR `#274`.
+
+## PR #274 Omar Loop Batch A43 (2026-04-10)
+- [x] Add bounded retry/timeout wrapper for `npm audit` in `.github/workflows/sca-audit.yml` and preserve last JSON artifact for triage.
+- [x] Replace broad digest comments in workflow `uses:` lines and harden `.github/scripts/verify-workflow-action-pins.sh` against major-only (`vN`) annotations.
+- [x] Split attestation paths into explicit trusted and untrusted jobs with a stable `Attestation Summary` contract for fork PRs.
+- [x] Add explicit `deploy-readiness` stage in `quality-gates.yml` to enforce `lint -> test -> security -> build -> deploy-ready` ordering.
+- [x] Upgrade `omar-gate.yml` credential resolver with OIDC exchange capability (safe fallback to static secret mode when exchange vars are unset).
+- [x] Preserve diagnostic host context in auth-audit URL sanitization while redacting path/query/token material.
+- [x] Run full local validation (`npm run verify`).
+- [ ] Push batch A43, watch Omar Gate, and continue iterative non-blocking burn-down.
+
+## PR #274 Omar Loop Batch A44 (2026-04-10)
+- [x] Add bounded network retry/timeout controls to gitleaks and trivy binary downloads.
+- [x] Add timeout/retry budget controls around Semgrep analyzer execution with fail-fast for policy findings.
+- [x] Add Omar OIDC exchange URL host/path allowlist validation before outbound token exchange call.
+- [x] Strengthen `quality-summary` contract by requiring direct success of all security reusable jobs plus aggregate security stage.
+- [x] Run full local validation (`npm run verify`).
+- [ ] Push batch A44, watch Omar Gate, and continue iterative non-blocking burn-down.

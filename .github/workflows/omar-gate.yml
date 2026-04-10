@@ -22,7 +22,7 @@ on:
       severity_gate:
         description: Severity threshold that blocks merge
         required: false
-        default: P2
+        default: P1
         type: choice
         options:
           - P0
@@ -36,25 +36,34 @@ on:
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
   id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OMAR_SPEC_ID: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
 
 jobs:
-  omar_gate:
-    name: Omar Gate
+  omar_scan:
+    name: Omar Gate Scan
     if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    environment: security-review
     permissions:
       contents: read
+      id-token: write
       checks: write
       pull-requests: write
-      id-token: write
+    outputs:
+      trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
+      credential_mode: ${{ steps.resolve_omar_credentials.outputs.credential_mode }}
+      run_id: ${{ steps.omar.outputs.run_id }}
+      gate_status: ${{ steps.omar.outputs.gate_status }}
+      p0_count: ${{ steps.omar.outputs.p0_count }}
+      p1_count: ${{ steps.omar.outputs.p1_count }}
+      p2_count: ${{ steps.omar.outputs.p2_count }}
+      p3_count: ${{ steps.omar.outputs.p3_count }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
       - name: Resolve trusted execution boundary
         id: trust_boundary
         shell: bash
@@ -69,14 +78,125 @@ jobs:
             fi
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
+      - name: Resolve Omar credential mode
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        id: resolve_omar_credentials
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
+          OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || '' }}
+          OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
+          OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/sentinelayer' }}
+          OMAR_REQUIRE_OIDC_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_OIDC_ON_PROTECTED_REF || 'true' }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          mode="static-secrets"
+          resolved_token="${SENTINELAYER_TOKEN}"
+          exchange_url="$(echo "${OMAR_TOKEN_EXCHANGE_URL}" | xargs || true)"
+          exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
+          if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
+            if ! echo "${exchange_url}" | grep -Eq '^https://'; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL must use https://."
+              exit 1
+            fi
+            exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${exchange_url}" || true)"
+            exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${exchange_url}" || true)"
+            if [ -z "${exchange_host}" ] || [ -z "${exchange_path}" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL is not a valid absolute URL."
+              exit 1
+            fi
+            host_allowed="false"
+            IFS=',' read -r -a allowed_hosts <<< "${OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS}"
+            for host in "${allowed_hosts[@]}"; do
+              candidate="$(echo "${host}" | tr '[:upper:]' '[:lower:]' | xargs)"
+              if [ -n "${candidate}" ] && [ "${candidate}" = "${exchange_host}" ]; then
+                host_allowed="true"
+                break
+              fi
+            done
+            if [ "${host_allowed}" != "true" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL host '${exchange_host}' is not allowlisted. Allowed hosts: ${OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS}."
+              exit 1
+            fi
+            path_allowed="false"
+            IFS=',' read -r -a allowed_paths <<< "${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}"
+            for allowed_path in "${allowed_paths[@]}"; do
+              candidate_path="$(echo "${allowed_path}" | xargs)"
+              if [ -n "${candidate_path}" ] && [ "${candidate_path}" = "${exchange_path}" ]; then
+                path_allowed="true"
+                break
+              fi
+            done
+            if [ "${path_allowed}" != "true" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL path '${exchange_path}' is not allowlisted. Allowed paths: ${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}."
+              exit 1
+            fi
+            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+              echo "::error::OIDC exchange is configured but GitHub OIDC request context is unavailable."
+              exit 1
+            fi
+            oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${exchange_audience}"
+            oidc_response="$(curl -fsS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${oidc_url}")"
+            oidc_token="$(echo "${oidc_response}" | jq -r '.value // empty')"
+            if [ -z "${oidc_token}" ]; then
+              echo "::error::OIDC exchange failed: missing id_token value in GitHub OIDC response."
+              exit 1
+            fi
+            exchange_payload="$(jq -n \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --arg run_id "${GITHUB_RUN_ID}" \
+              --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+              --arg ref "${GITHUB_REF}" \
+              --arg sha "${GITHUB_SHA}" \
+              '{repository: $repository, run_id: $run_id, run_attempt: $run_attempt, ref: $ref, sha: $sha}')"
+            exchange_response="$(curl -fsS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
+              -H "Authorization: Bearer ${oidc_token}" \
+              -H "Content-Type: application/json" \
+              -d "${exchange_payload}" \
+              "${exchange_url}")"
+            resolved_token="$(echo "${exchange_response}" | jq -r '.sentinelayer_token // empty')"
+            if [ -z "${resolved_token}" ]; then
+              echo "::error::OIDC exchange response missing sentinelayer_token."
+              exit 1
+            fi
+            mode="oidc-exchange"
+          fi
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          require_oidc="$(echo "${OMAR_REQUIRE_OIDC_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          if [ "${mode}" = "static-secrets" ] && [ "${ref_protected}" = "true" ] && [ "${require_oidc}" != "false" ]; then
+            echo "::error::Static-secret Omar mode is blocked on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
+            exit 1
+          fi
+          echo "::add-mask::${resolved_token}"
+          echo "sentinelayer_token=${resolved_token}" >> "${GITHUB_OUTPUT}"
+          echo "credential_mode=${mode}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Omar Credential Mode"
+            echo "- mode: \`${mode}\`"
+            if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
+              echo "- exchange_url: \`${exchange_url}\`"
+              echo "- exchange_audience: \`${exchange_audience}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Sentinelayer token secret
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
+          CREDENTIAL_MODE: ${{ steps.resolve_omar_credentials.outputs.credential_mode || '' }}
+          RESOLVED_SENTINELAYER_TOKEN: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token || '' }}
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${SENTINELAYER_TOKEN}" || (echo "Missing SENTINELAYER_TOKEN" && exit 1)
+          mode="$(echo "${CREDENTIAL_MODE}" | xargs || true)"
+          if [ "${mode}" = "oidc-exchange" ]; then
+            bash .github/scripts/require-secret.sh "OMAR_OIDC_EXCHANGED_SENTINELAYER_TOKEN" "${RESOLVED_SENTINELAYER_TOKEN}"
+            exit 0
+          fi
+          bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${SENTINELAYER_TOKEN}"
       - name: Validate OpenAI key secret for Omar LLM scan
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -84,7 +204,16 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY}" || (echo "Missing OPENAI_API_KEY" && exit 1)
+          bash .github/scripts/require-secret.sh "OPENAI_API_KEY" "${OPENAI_API_KEY}"
+      - name: Validate Omar configuration invariants
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! echo "${OMAR_SPEC_ID}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::OMAR_SPEC_ID must be a 64-character lowercase hex digest."
+            exit 1
+          fi
       - name: Block untrusted fork PR contexts
         if: steps.trust_boundary.outputs.trusted_context != 'true'
         shell: bash
@@ -98,42 +227,124 @@ jobs:
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+        uses: ./.github/actions/omar-gate
         with:
           github_token: ${{ github.token }}
-          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
-          sentinelayer_spec_id: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+          sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
+          sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          sentinelayer_managed_llm: "false"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "true"
-          codex_only: "false"
-          llm_failure_policy: block
-      - name: Enforce Omar reviewer merge thresholds
+      - name: Validate Omar output contract
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
-          P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
-          P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
-          P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
-          P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+          OMAR_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
+          OMAR_P0: ${{ steps.omar.outputs.p0_count || '0' }}
+          OMAR_P1: ${{ steps.omar.outputs.p1_count || '0' }}
+          OMAR_P2: ${{ steps.omar.outputs.p2_count || '0' }}
+          OMAR_P3: ${{ steps.omar.outputs.p3_count || '0' }}
         run: |
           set -euo pipefail
+          if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9-]{8,64}$'; then
+            echo "::error::Invalid Omar run_id output: ${OMAR_RUN_ID}"
+            exit 1
+          fi
+          case "${OMAR_GATE_STATUS}" in ''|pass|passed|blocked|fail|failed) ;; *) echo "::error::Invalid Omar gate_status output: ${OMAR_GATE_STATUS}" ; exit 1 ;; esac
+          for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
+            case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
+          done
+  omar_enforce:
+    name: Omar Gate
+    needs: [omar_scan]
+    if: needs.omar_scan.outputs.trusted_context == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Enforce Omar reviewer merge thresholds
+        shell: bash
+        env:
+          P0_COUNT: ${{ needs.omar_scan.outputs.p0_count || '0' }}
+          P1_COUNT: ${{ needs.omar_scan.outputs.p1_count || '0' }}
+          P2_COUNT: ${{ needs.omar_scan.outputs.p2_count || '0' }}
+          P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
+          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          OMAR_POLICY_MIN_SEVERITY_GATE: ${{ vars.OMAR_POLICY_MIN_SEVERITY_GATE || 'P1' }}
+          OMAR_POLICY_P2_MAX_ALLOWED: ${{ vars.OMAR_POLICY_P2_MAX_ALLOWED || '5' }}
+          OMAR_ALLOW_RELAXATION_ON_DISPATCH: ${{ vars.OMAR_ALLOW_RELAXATION_ON_DISPATCH || 'false' }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          severity_rank() {
+            case "$1" in
+              P0) echo 0 ;;
+              P1) echo 1 ;;
+              P2) echo 2 ;;
+              *) echo -1 ;;
+            esac
+          }
+          rank_to_severity() {
+            case "$1" in
+              0) echo "P0" ;;
+              1) echo "P1" ;;
+              2) echo "P2" ;;
+              *) echo "" ;;
+            esac
+          }
           p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
           p1="$(echo "${P1_COUNT}" | tr -d '\r' | xargs || true)"
           p2="$(echo "${P2_COUNT}" | tr -d '\r' | xargs || true)"
           p2_max="$(echo "${P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
           severity_gate="$(echo "${SEVERITY_GATE_SELECTED}" | tr -d '\r' | xargs || true)"
+          policy_gate="$(echo "${OMAR_POLICY_MIN_SEVERITY_GATE}" | tr -d '\r' | xargs || true)"
+          policy_p2_max="$(echo "${OMAR_POLICY_P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
+          relaxation_allowed="$(echo "${OMAR_ALLOW_RELAXATION_ON_DISPATCH}" | tr -d '\r' | xargs || true)"
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           case "${p0}" in ''|*[!0-9]*) echo "::error::Invalid Omar P0 count: ${p0}" ; exit 1 ;; esac
           case "${p1}" in ''|*[!0-9]*) echo "::error::Invalid Omar P1 count: ${p1}" ; exit 1 ;; esac
           case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
           case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
-          case "${severity_gate}" in
+          case "${policy_p2_max}" in ''|*[!0-9]*) echo "::error::Invalid OMAR_POLICY_P2_MAX_ALLOWED value: ${policy_p2_max}" ; exit 1 ;; esac
+          selected_rank="$(severity_rank "${severity_gate}")"
+          policy_rank="$(severity_rank "${policy_gate}")"
+          if [ "${selected_rank}" -lt 0 ]; then
+            echo "::error::Invalid severity_gate value: ${severity_gate}"
+            exit 1
+          fi
+          if [ "${policy_rank}" -lt 0 ]; then
+            echo "::error::Invalid OMAR_POLICY_MIN_SEVERITY_GATE value: ${policy_gate}"
+            exit 1
+          fi
+          if [ "${selected_rank}" -lt "${policy_rank}" ] && [ "${ref_protected}" = "true" ] && [ "${relaxation_allowed}" != "true" ]; then
+            echo "::error::workflow_dispatch severity_gate ${severity_gate} is weaker than policy minimum ${policy_gate} on protected ref."
+            exit 1
+          fi
+          effective_rank="${selected_rank}"
+          if [ "${policy_rank}" -gt "${effective_rank}" ]; then
+            effective_rank="${policy_rank}"
+          fi
+          effective_gate="$(rank_to_severity "${effective_rank}")"
+          if [ -z "${effective_gate}" ]; then
+            echo "::error::Failed to resolve effective Omar severity gate."
+            exit 1
+          fi
+          effective_p2_max="${p2_max}"
+          if [ "${effective_gate}" = "P2" ]; then
+            if [ "${effective_p2_max}" -gt "${policy_p2_max}" ] && [ "${ref_protected}" = "true" ] && [ "${relaxation_allowed}" != "true" ]; then
+              echo "::error::p2_max_allowed ${effective_p2_max} exceeds policy maximum ${policy_p2_max} on protected ref."
+              exit 1
+            fi
+            if [ "${policy_p2_max}" -lt "${effective_p2_max}" ]; then
+              effective_p2_max="${policy_p2_max}"
+            fi
+          fi
+          echo "OMAR_EFFECTIVE_SEVERITY_GATE=${effective_gate}" >> "$GITHUB_ENV"
+          echo "OMAR_EFFECTIVE_P2_MAX_ALLOWED=${effective_p2_max}" >> "$GITHUB_ENV"
+          case "${effective_gate}" in
             P0)
               if [ "${p0}" -gt 0 ]; then
                 echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
@@ -151,23 +362,28 @@ jobs:
                 echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
                 exit 1
               fi
-              if [ "${p2}" -gt "${p2_max}" ]; then
-                echo "::error::Omar Gate blocked: P2=${p2} exceeds max allowed ${p2_max}."
+              if [ "${p2}" -gt "${effective_p2_max}" ]; then
+                echo "::error::Omar Gate blocked: P2=${p2} exceeds max allowed ${effective_p2_max}."
                 exit 1
               fi
               ;;
             *)
-              echo "::error::Invalid severity_gate value: ${severity_gate}"
+              echo "::error::Invalid effective severity_gate value: ${effective_gate}"
               exit 1
               ;;
           esac
+          if [ "${effective_gate}" != "${severity_gate}" ]; then
+            echo "::notice::Omar severity gate hardened by policy from ${severity_gate} to ${effective_gate}."
+          fi
       - name: Emit Omar run summary
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
+        env:
+          EFFECTIVE_SEVERITY_GATE: ${{ env.OMAR_EFFECTIVE_SEVERITY_GATE || (github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1') }}
+          EFFECTIVE_P2_MAX_ALLOWED: ${{ env.OMAR_EFFECTIVE_P2_MAX_ALLOWED || (github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5') }}
         run: |
           set -euo pipefail
-          severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
-          p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
+          severity_gate="${EFFECTIVE_SEVERITY_GATE}"
+          p2_max="${EFFECTIVE_P2_MAX_ALLOWED}"
           threshold_line="P0=0, P1=0"
           if [ "${severity_gate}" = "P0" ]; then
             threshold_line="P0=0"
@@ -175,8 +391,8 @@ jobs:
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- run_id: \`${{ steps.omar.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- gate_status: \`${{ steps.omar.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- findings: \`P0=${{ steps.omar.outputs.p0_count }} P1=${{ steps.omar.outputs.p1_count }} P2=${{ steps.omar.outputs.p2_count }} P3=${{ steps.omar.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- run_id: \`${{ needs.omar_scan.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- gate_status: \`${{ needs.omar_scan.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- findings: \`P0=${{ needs.omar_scan.outputs.p0_count }} P1=${{ needs.omar_scan.outputs.p1_count }} P2=${{ needs.omar_scan.outputs.p2_count }} P3=${{ needs.omar_scan.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"

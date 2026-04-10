@@ -1,0 +1,488 @@
+name: Release Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: Version to restore as latest (v prefix optional)
+        required: true
+        type: string
+      release_version:
+        description: Version being rolled back/deprecated (v prefix optional)
+        required: false
+        type: string
+      confirm:
+        description: Type ROLLBACK to execute dist-tag change
+        required: true
+        default: ""
+        type: string
+      deprecate_release:
+        description: Deprecate release_version after rollback
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: release-publish-prod
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    environment: package-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Require explicit rollback confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.confirm }}" != "ROLLBACK" ]; then
+            echo "::error::Rollback confirmation missing. Re-run with confirm=ROLLBACK."
+            exit 1
+          fi
+
+      - name: Resolve rollback target and release context
+        shell: bash
+        env:
+          INPUT_TARGET_VERSION: ${{ inputs.target_version }}
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          normalize_version() {
+            local value
+            value="$(echo "${1:-}" | xargs || true)"
+            value="${value#v}"
+            echo "${value}"
+          }
+
+          target_version="$(normalize_version "${INPUT_TARGET_VERSION}")"
+          release_version="$(normalize_version "${INPUT_RELEASE_VERSION}")"
+          if [ -z "${target_version}" ]; then
+            echo "::error::Explicit target_version is required for rollback execution."
+            exit 1
+          fi
+          if ! echo "${target_version}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Rollback target must be semver-like. Received ${target_version}."
+            exit 1
+          fi
+
+          resolved_version="$(npm view "sentinelayer-cli@${target_version}" version --json | jq -r 'if type=="string" then . else empty end')"
+          if [ "${resolved_version}" != "${target_version}" ]; then
+            echo "::error::Rollback target sentinelayer-cli@${target_version} is not resolvable."
+            exit 1
+          fi
+
+          echo "ROLLBACK_TARGET_VERSION=${target_version}" >> "$GITHUB_ENV"
+          echo "ROLLBACK_RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+
+      - name: Validate rollback readiness (execution mode)
+        shell: bash
+        env:
+          PACKAGE_NAME: sentinelayer-cli
+          ROLLBACK_MODE: execute
+          RELEASE_VERSION: ${{ env.ROLLBACK_RELEASE_VERSION }}
+          ROLLBACK_TARGET_OVERRIDE: ${{ env.ROLLBACK_TARGET_VERSION }}
+          NON_BLOCKING_DIAGNOSTICS: "0"
+        run: bash .github/scripts/release-rollback-readiness.sh
+
+      - name: Enforce trusted rollback auth context
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::OIDC token exchange requires id-token runtime permissions."
+            exit 1
+          fi
+
+      - name: Exchange OIDC token for ephemeral npm credential
+        id: npm_exchange
+        shell: bash
+        env:
+          NPM_TOKEN_EXCHANGE_URL: ${{ vars.NPM_TOKEN_EXCHANGE_URL || '' }}
+          NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
+          NPM_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.NPM_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/npm' }}
+          NPM_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.NPM_TOKEN_EXCHANGE_AUDIENCE || 'npmjs.org' }}
+          NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE: ${{ vars.NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE || 'npmjs.org' }}
+          NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER: ${{ vars.NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER || '' }}
+          NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '1800' }}
+          NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
+          NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN_EXCHANGE_URL}" ]; then
+            echo "::error::Missing NPM_TOKEN_EXCHANGE_URL repository variable for OIDC npm token exchange."
+            exit 1
+          fi
+          if ! [[ "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || [ "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" -lt 5 ]; then
+            echo "::error::Invalid NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS value: ${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}"
+            exit 1
+          fi
+          if ! echo "${NPM_TOKEN_EXCHANGE_URL}" | grep -Eq '^https://'; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL must use https://."
+            exit 1
+          fi
+          exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
+          exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
+          if [ -z "${exchange_host}" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL is not a valid absolute URL."
+            exit 1
+          fi
+          if [ -z "${exchange_path}" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL path could not be resolved."
+            exit 1
+          fi
+          host_allowed="false"
+          IFS=',' read -r -a allowed_hosts <<< "${NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS}"
+          for host in "${allowed_hosts[@]}"; do
+            candidate="$(echo "${host}" | tr '[:upper:]' '[:lower:]' | xargs)"
+            if [ -n "${candidate}" ] && [ "${candidate}" = "${exchange_host}" ]; then
+              host_allowed="true"
+              break
+            fi
+          done
+          if [ "${host_allowed}" != "true" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL host '${exchange_host}' is not allowlisted. Allowed hosts: ${NPM_TOKEN_EXCHANGE_ALLOWED_HOSTS}."
+            exit 1
+          fi
+          path_allowed="false"
+          IFS=',' read -r -a allowed_paths <<< "${NPM_TOKEN_EXCHANGE_ALLOWED_PATHS}"
+          for allowed_path in "${allowed_paths[@]}"; do
+            candidate_path="$(echo "${allowed_path}" | xargs)"
+            if [ -n "${candidate_path}" ] && [ "${candidate_path}" = "${exchange_path}" ]; then
+              path_allowed="true"
+              break
+            fi
+          done
+          if [ "${path_allowed}" != "true" ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_URL path '${exchange_path}' is not allowlisted. Allowed paths: ${NPM_TOKEN_EXCHANGE_ALLOWED_PATHS}."
+            exit 1
+          fi
+          oidc_payload=""
+          for attempt in 1 2 3; do
+            if oidc_payload="$(curl -fsSL \
+              --retry 0 \
+              --connect-timeout 5 \
+              --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${NPM_TOKEN_EXCHANGE_AUDIENCE}")"; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::Failed to acquire GitHub OIDC identity token after ${attempt} attempts."
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done
+          oidc_jwt="$(echo "${oidc_payload}" | jq -r '.value // empty')"
+          if [ -z "${oidc_jwt}" ]; then
+            echo "::error::Failed to acquire GitHub OIDC identity token for rollback exchange."
+            exit 1
+          fi
+          exchange_request="$(jq -n \
+            --arg token "${oidc_jwt}" \
+            --arg audience "${NPM_TOKEN_EXCHANGE_AUDIENCE}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg actor "${GITHUB_ACTOR}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg workflow "${GITHUB_WORKFLOW}" \
+            --arg client_id "${NPM_TOKEN_EXCHANGE_CLIENT_ID}" \
+            '{
+              oidc_token: $token,
+              audience: $audience,
+              repository: $repository,
+              actor: $actor,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              ref: $ref,
+              sha: $sha,
+              workflow: $workflow,
+              client_id: (if ($client_id | length) > 0 then $client_id else null end)
+            }')"
+          exchange_response=""
+          exchange_headers_file="$(mktemp)"
+          exchange_body_file="$(mktemp)"
+          cleanup_exchange_contract_files() {
+            rm -f "${exchange_headers_file}" "${exchange_body_file}"
+          }
+          trap cleanup_exchange_contract_files EXIT
+          for attempt in 1 2 3; do
+            exchange_http_code="$(curl -sS \
+              --retry 0 \
+              --connect-timeout 5 \
+              --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+              -H "Content-Type: application/json" \
+              -D "${exchange_headers_file}" \
+              -o "${exchange_body_file}" \
+              -w "%{http_code}" \
+              -d "${exchange_request}" \
+              "${NPM_TOKEN_EXCHANGE_URL}" || true)"
+            exchange_content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/ { sub(/\r$/, "", $0); sub(/^content-type:[[:space:]]*/, "", $0); print $0; exit }' "${exchange_headers_file}" || true)"
+            if [ "${exchange_http_code}" = "200" ] && echo "${exchange_content_type}" | grep -Eqi '(^|[;[:space:]])application/json($|[;[:space:]])'; then
+              exchange_response="$(cat "${exchange_body_file}")"
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::OIDC token exchange failed strict HTTP contract after ${attempt} attempts."
+              echo "::error::http_status=${exchange_http_code:-<none>} content_type=${exchange_content_type:-<none>}"
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done
+          exchange_contract="$(echo "${exchange_response}" | jq -cer '
+            if type == "object"
+              and (.["npm_token"] | type == "string" and length > 0)
+              and (.["expires_at"] | type == "string" and length > 0)
+              and ((.["aud"] | type) == "string" or (.["aud"] | type) == "array")
+              and (.["iss"] | type == "string" and length > 0)
+              and (.["repository"] | type == "string" and length > 0)
+              and ((.["run_id"] | type) == "string" or (.["run_id"] | type) == "number")
+            then .
+            else empty
+            end
+          ' 2>/dev/null || true)"
+          if [ -z "${exchange_contract}" ]; then
+            echo "::error::OIDC token exchange response failed schema validation."
+            exit 1
+          fi
+          npm_ephemeral_token="$(echo "${exchange_contract}" | jq -r '."npm_token" // empty')"
+          exchange_issuer="$(echo "${exchange_contract}" | jq -r '.iss // empty')"
+          if [ -n "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ] && [ "${exchange_issuer}" != "${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER}" ]; then
+            echo "::error::OIDC token exchange issuer mismatch. expected=${NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER} actual=${exchange_issuer:-<none>}."
+            exit 1
+          fi
+          audience_ok="$(echo "${exchange_contract}" | jq -r --arg expected "${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}" '
+            (.aud // empty) as $aud
+            | if ($expected | length) == 0 then "true"
+              elif ($aud | type) == "string" then (if $aud == $expected then "true" else "false" end)
+              elif ($aud | type) == "array" then (if ($aud | index($expected)) != null then "true" else "false" end)
+              else "false"
+              end
+          ')"
+          if [ "${audience_ok}" != "true" ]; then
+            echo "::error::OIDC token exchange audience mismatch for expected audience ${NPM_TOKEN_EXCHANGE_EXPECTED_AUDIENCE}."
+            exit 1
+          fi
+          response_repository="$(echo "${exchange_contract}" | jq -r '.repository // empty')"
+          if [ "${response_repository}" != "${GITHUB_REPOSITORY}" ]; then
+            echo "::error::OIDC token exchange repository mismatch. expected=${GITHUB_REPOSITORY} actual=${response_repository:-<none>}."
+            exit 1
+          fi
+          response_run_id="$(echo "${exchange_contract}" | jq -r '.run_id // empty')"
+          if [ "${response_run_id}" != "${GITHUB_RUN_ID}" ]; then
+            echo "::error::OIDC token exchange run_id mismatch. expected=${GITHUB_RUN_ID} actual=${response_run_id:-<none>}."
+            exit 1
+          fi
+          npm_token_expires_at="$(echo "${exchange_contract}" | jq -r '.expires_at // empty')"
+          if [ -z "${npm_token_expires_at}" ]; then
+            echo "::error::OIDC token exchange response missing token expiry (expires_at)."
+            exit 1
+          fi
+          case "${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS value: ${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" ; exit 1 ;; esac
+          expires_epoch="$(date -u -d "${npm_token_expires_at}" +%s 2>/dev/null || true)"
+          if [ -z "${expires_epoch}" ] || ! [[ "${expires_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to parse npm token expiry timestamp: ${npm_token_expires_at}."
+            exit 1
+          fi
+          now_epoch="$(date +%s)"
+          ttl_seconds="$((expires_epoch - now_epoch))"
+          if [ "${ttl_seconds}" -le 0 ]; then
+            echo "::error::OIDC token exchange returned expired npm token (ttl=${ttl_seconds}s)."
+            exit 1
+          fi
+          if [ "${ttl_seconds}" -gt "${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" ]; then
+            echo "::error::OIDC token exchange token ttl ${ttl_seconds}s exceeds policy max ${NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS}s."
+            exit 1
+          fi
+          echo "::add-mask::${npm_ephemeral_token}"
+          echo "npm_token=${npm_ephemeral_token}" >> "$GITHUB_OUTPUT"
+          echo "npm_token_expires_at=${npm_token_expires_at}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify rollback target package provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          target_pkg="sentinelayer-cli@${ROLLBACK_TARGET_VERSION}"
+          target_tarball_url="$(npm view "${target_pkg}" dist.tarball --json | jq -r 'if type=="string" then . else empty end')"
+          target_shasum="$(npm view "${target_pkg}" dist.shasum --json | jq -r 'if type=="string" then . else empty end')"
+          target_integrity="$(npm view "${target_pkg}" dist.integrity --json | jq -r 'if type=="string" then . else empty end')"
+          if [ -z "${target_tarball_url}" ]; then
+            echo "::error::Unable to resolve tarball URL for ${target_pkg}."
+            exit 1
+          fi
+          if [ -z "${target_integrity}" ] || [ "${target_integrity}" = "null" ]; then
+            echo "::error::Rollback target integrity metadata is missing for ${target_pkg}."
+            exit 1
+          fi
+          if ! echo "${target_integrity}" | grep -Eq '^sha512-[A-Za-z0-9+/=]+$'; then
+            echo "::error::Rollback target integrity format is invalid for ${target_pkg}: ${target_integrity}."
+            exit 1
+          fi
+          downloaded_tarball="$(mktemp -t rollback-target-XXXXXX.tgz)"
+          cleanup_target_tarball() {
+            rm -f "${downloaded_tarball}"
+          }
+          trap cleanup_target_tarball EXIT
+          curl -fsSL \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 5 \
+            --max-time 60 \
+            "${target_tarball_url}" \
+            -o "${downloaded_tarball}"
+          expected_integrity_b64="${target_integrity#sha512-}"
+          actual_integrity_b64="$(openssl dgst -sha512 -binary "${downloaded_tarball}" | openssl base64 -A)"
+          if [ "${actual_integrity_b64}" != "${expected_integrity_b64}" ]; then
+            echo "::error::Rollback target sha512 integrity mismatch."
+            exit 1
+          fi
+          gh attestation verify "${downloaded_tarball}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --format json > rollback-target-attestation.json
+          jq -e 'length > 0' rollback-target-attestation.json > /dev/null
+          attested_sha256="$(jq -r '
+            [
+              .. | objects
+              | select(has("digest"))
+              | .digest
+              | if type == "object" then .sha256 // empty else empty end
+            ]
+            | map(select(type == "string" and length > 0))
+            | first // empty
+          ' rollback-target-attestation.json)"
+          if [ -z "${attested_sha256}" ]; then
+            echo "::error::Missing attested digest in rollback-target-attestation.json."
+            exit 1
+          fi
+          actual_sha256="$(sha256sum "${downloaded_tarball}" | awk '{print $1}')"
+          if [ "${attested_sha256}" != "${actual_sha256}" ]; then
+            echo "::error::Rollback target attested digest mismatch. attested=${attested_sha256} actual=${actual_sha256}."
+            exit 1
+          fi
+          {
+            echo "### Rollback target provenance"
+            echo "- package: \`${target_pkg}\`"
+            echo "- tarball_url: \`${target_tarball_url}\`"
+            if [ -n "${target_shasum}" ] && [ "${target_shasum}" != "null" ]; then
+              echo "- npm_dist_shasum: \`${target_shasum}\` (diagnostic only)"
+            fi
+            echo "- npm_dist_integrity: \`${target_integrity}\`"
+            echo "- sha256: \`${actual_sha256}\`"
+            echo "- signer_workflow: \`${GITHUB_REPOSITORY}/.github/workflows/release.yml\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Execute rollback dist-tag update
+        shell: bash
+        env:
+          NPM_EPHEMERAL_TOKEN: ${{ steps.npm_exchange.outputs.npm_token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_EPHEMERAL_TOKEN}" ]; then
+            echo "::error::Missing exchanged ephemeral npm token."
+            exit 1
+          fi
+          npm_userconfig="$(mktemp)"
+          cleanup_npmrc() {
+            rm -f "${npm_userconfig}"
+          }
+          trap cleanup_npmrc EXIT
+          chmod 600 "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_EPHEMERAL_TOKEN}" > "${npm_userconfig}"
+          export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
+          npm dist-tag add "sentinelayer-cli@${ROLLBACK_TARGET_VERSION}" latest
+
+      - name: Verify rollback result and emit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist_tags_json="$(npm view sentinelayer-cli dist-tags --json)"
+          latest_tag="$(echo "${dist_tags_json}" | jq -r '.latest // empty')"
+          if [ "${latest_tag}" != "${ROLLBACK_TARGET_VERSION}" ]; then
+            echo "::error::Rollback verification failed. latest=${latest_tag} expected=${ROLLBACK_TARGET_VERSION}."
+            exit 1
+          fi
+          jq -n \
+            --arg package "sentinelayer-cli" \
+            --arg rollback_target "${ROLLBACK_TARGET_VERSION}" \
+            --arg release_version "${ROLLBACK_RELEASE_VERSION}" \
+            --arg latest_tag "${latest_tag}" \
+            --arg triggered_by "${GITHUB_ACTOR}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{
+              package: $package,
+              rollback_target: $rollback_target,
+              release_version: ($release_version | if length > 0 then . else null end),
+              latest_dist_tag: $latest_tag,
+              triggered_by: $triggered_by,
+              run_id: $run_id,
+              run_url: $run_url
+            }' > release-rollback-execution.json
+          {
+            echo "## Rollback Execution"
+            echo "- package: \`sentinelayer-cli\`"
+            echo "- rollback_target: \`${ROLLBACK_TARGET_VERSION}\`"
+            echo "- latest_dist_tag: \`${latest_tag}\`"
+            echo "- auth_mode: \`oidc-exchange\`"
+            echo "- token_expires_at: \`${{ steps.npm_exchange.outputs.npm_token_expires_at }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deprecate rolled-back release version
+        if: ${{ inputs.deprecate_release && inputs.release_version != '' }}
+        shell: bash
+        env:
+          NPM_EPHEMERAL_TOKEN: ${{ steps.npm_exchange.outputs.npm_token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ROLLBACK_RELEASE_VERSION}" ]; then
+            echo "::error::Cannot deprecate release: release_version input is empty after normalization."
+            exit 1
+          fi
+          if [ -z "${NPM_EPHEMERAL_TOKEN}" ]; then
+            echo "::error::Missing exchanged ephemeral npm token."
+            exit 1
+          fi
+          npm_userconfig="$(mktemp)"
+          cleanup_npmrc() {
+            rm -f "${npm_userconfig}"
+          }
+          trap cleanup_npmrc EXIT
+          chmod 600 "${npm_userconfig}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_EPHEMERAL_TOKEN}" > "${npm_userconfig}"
+          export NPM_CONFIG_USERCONFIG="${npm_userconfig}"
+          npm deprecate \
+            "sentinelayer-cli@${ROLLBACK_RELEASE_VERSION}" \
+            "Superseded by rollback to ${ROLLBACK_TARGET_VERSION}"
+
+      - name: Upload rollback execution artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-rollback-execution
+          path: |
+            release-rollback-readiness.json
+            release-rollback-execution.json
+            rollback-target-attestation.json
+          if-no-files-found: error
+          retention-days: 14
