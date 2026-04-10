@@ -63,7 +63,7 @@ jobs:
       p2_count: ${{ steps.omar.outputs.p2_count }}
       p3_count: ${{ steps.omar.outputs.p3_count }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
       - name: Resolve trusted execution boundary
         id: trust_boundary
         shell: bash

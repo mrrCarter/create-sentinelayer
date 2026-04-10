@@ -450,7 +450,7 @@ jobs:
           rm -rf "${PREFIX_DIR}"
 
       - name: Generate release build attestation
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
         with:
           subject-path: ${{ steps.artifact_manifest.outputs.tarball }}
 
@@ -586,7 +586,7 @@ jobs:
           cache: npm
 
       - name: Download release tarball artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # digest-pinned (actions/download-artifact)
         with:
           name: sentinelayer-cli-tarball
           path: release-artifact

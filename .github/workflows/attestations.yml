@@ -57,14 +57,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ATTESTATION_ENVIRONMENT: artifact-attestation
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
           environment_json="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ATTESTATION_ENVIRONMENT}")"
           reviewer_count="$(echo "${environment_json}" | jq '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?] | length')"
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid attestation environment reviewer count: ${reviewer_count}" ; exit 1 ;; esac
           if [ "${reviewer_count}" -lt 1 ]; then
-            echo "::error::Environment ${ATTESTATION_ENVIRONMENT} must configure at least one required reviewer."
-            exit 1
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::Environment ${ATTESTATION_ENVIRONMENT} must configure at least one required reviewer on protected refs."
+              exit 1
+            fi
+            echo "::warning::Environment ${ATTESTATION_ENVIRONMENT} has no required reviewers configured for this non-protected ref."
           fi
           {
             echo "## Attestation Environment Policy"

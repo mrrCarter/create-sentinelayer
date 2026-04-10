@@ -60,7 +60,14 @@ jobs:
           fi
           pip_version="$(python -m pip --version | awk '{print $2}' | tr -d '\r' | xargs || true)"
           setuptools_version="$(python -c 'import setuptools; print(setuptools.__version__)')"
-          wheel_version="$(python -c 'import wheel; print(wheel.__version__)')"
+          wheel_version="$(python -m pip show wheel 2>/dev/null | awk '/^Version:/{print $2}' | tr -d '\r' | xargs || true)"
+          if [ -z "${wheel_version}" ]; then
+            python -m pip install --disable-pip-version-check \
+              --timeout "${PIP_DEFAULT_TIMEOUT}" \
+              --retries "${PIP_RETRIES}" \
+              "wheel==${expected_wheel_version}"
+            wheel_version="$(python -m pip show wheel 2>/dev/null | awk '/^Version:/{print $2}' | tr -d '\r' | xargs || true)"
+          fi
           setuptools_version="$(echo "${setuptools_version}" | tr -d '\r' | xargs || true)"
           wheel_version="$(echo "${wheel_version}" | tr -d '\r' | xargs || true)"
           if [ "${pip_version}" != "${expected_pip_version}" ]; then
