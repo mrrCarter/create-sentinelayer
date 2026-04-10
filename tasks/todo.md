@@ -3,6 +3,14 @@
 ## Mission
 Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SWE_excellence_framework.md` gates and `.claude/CLAUDE.md` autonomous loop discipline.
 
+## Execution Board (2026-04-10: Omar-Only + Admin/API Error Burn-Down)
+- [ ] `PR-CLI-OMAR-ONLY` (`hardening/cli-omar-only-ci`): remove non-Omar security workflows (`semgrep`, `gitleaks`, `iac`, `sca`, `license`, `sbom`) and align required-check contracts to Omar + quality/build checks only.
+- [ ] `PR-API-OMAR-ONLY` (`hardening/api-omar-only`): remove/disable multi-agent watchdog comment workflow and keep `omar-gate.yml` as the single security review path.
+- [ ] `PR-API-ERROR-BATCH` (`fix/api-admin-error-batch`): stream current admin/API error surfaces (workflow failures + runtime/admin stream integration), reproduce each issue, and patch in one grouped PR.
+- [ ] `PR-WEB-ERROR-BATCH` (`fix/web-admin-error-batch`) if needed: patch dashboard/admin error-stream handling regressions discovered during API burn-down.
+- [ ] For each PR: run local verification, open PR, run Omar loop (`gh run watch`), resolve P0-P2 in batches, merge only after green required checks.
+- [ ] Document resolved errors, evidence commands, and residual risk in this file review section before closing the batch.
+
 ## Plan
 - [x] Audit roadmap scope, dependencies, and phase ordering.
 - [x] Audit implementation baseline across `create-sentinelayer`, `sentinelayer-api`, `sentinelayer-web`, `sentinellayer-v1-action`, `sentinellayer-aws-terraform`.

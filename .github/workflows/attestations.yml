@@ -41,25 +41,12 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             REQUIRED_CHECKS_JSON='[
               {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Omar Gate","app":"github-actions","optional":false}
             ]'
           else
             REQUIRED_CHECKS_JSON='[
               {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Omar Gate","app":"github-actions","optional":false}
             ]'
           fi
           export REQUIRED_CHECKS_JSON
@@ -176,3 +163,5 @@ jobs:
     steps:
       - name: Confirm attestation workflow passed
         run: echo "Build attestation generated and verified successfully."
+
+

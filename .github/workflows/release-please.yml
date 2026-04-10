@@ -41,14 +41,7 @@ jobs:
             [
               {"name":"Quality Summary","app":"github-actions","optional":false},
               {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Semgrep Summary","app":"github-actions","optional":false},
-              {"name":"Gitleaks Summary","app":"github-actions","optional":false},
-              {"name":"IaC Summary","app":"github-actions","optional":false},
-              {"name":"SCA Summary","app":"github-actions","optional":false},
-              {"name":"License Summary","app":"github-actions","optional":false},
-              {"name":"SBOM Summary","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false},
-              {"name":"CodeQL Summary","app":"github-actions","optional":true}
+              {"name":"Attestation Summary","app":"github-actions","optional":false}
             ]
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
@@ -109,3 +102,5 @@ jobs:
           fi
 
           gh workflow run "Release" --ref "${tag_name}"
+
+
