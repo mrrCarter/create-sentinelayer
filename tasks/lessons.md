@@ -147,6 +147,7 @@
 - In `quality-gates`, never block on CodeQL `analyses` ID availability for PR head SHAs; enforce policy from `code-scanning/alerts` with deterministic PR-first/ref-fallback queries so required checks do not fail on analysis-index lag.
 - In bash workflows using `set -e`, do not rely on `if ! cmd; then $?` to capture command exit values; run under `set +e` for the command, capture status explicitly, then re-enable `set -e` for deterministic timeout/failure handling.
 - For required-check policy scripts, bind check-runs to immutable workflow metadata (`workflow_path`, `head_sha`) from Actions run API, not just check name/app, to prevent provenance ambiguity across similarly named checks.
+- Workflow hardening should enforce both pinned digest and annotation quality; broad `vN` comments around SHA-pinned actions drift into false confidence and should fail policy checks.
 
 ## 2026-04-09
 

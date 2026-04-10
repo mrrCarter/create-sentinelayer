@@ -568,7 +568,9 @@ describe("authAudit", () => {
     assert.ok(source.includes("replace(/\\bbearer\\s+[a-z0-9._~+/=-]+\\b/gi, \"bearer [REDACTED]\")"));
     assert.ok(source.includes("replace(/\\b[a-z0-9_-]+\\.[a-z0-9_-]+\\.[a-z0-9_-]+\\b/gi, \"[REDACTED_JWT]\")"));
     assert.ok(source.includes("access[_-]?token|refresh[_-]?token|id[_-]?token"));
-    assert.ok(source.includes("replace(/\\bhttps?:\\/\\/[^\\s\"'`]+/gi, \"<redacted-url>\")"));
+    assert.ok(source.includes("replace(/\\bhttps?:\\/\\/[^\\s\"'`]+/gi, (rawUrl) => sanitizeDiagnosticUrl(rawUrl))"));
+    assert.ok(source.includes("function sanitizeDiagnosticUrl(rawUrl)"));
+    assert.ok(source.includes("<redacted-path>"));
     assert.ok(source.includes("const safeMessage = sanitizeAuditErrorMessage(message"));
   });
 

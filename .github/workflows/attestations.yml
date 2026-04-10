@@ -21,22 +21,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  attest-build:
-    name: Attest Build Artifact
+  attestation-context:
+    name: Attestation Context
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
     outputs:
-      trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
+      trusted_context: ${{ steps.classify.outputs.trusted_context }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Resolve trusted attestation boundary
-        id: trust_boundary
+      - name: Classify trusted attestation context
+        id: classify
         shell: bash
         run: |
           set -euo pipefail
@@ -45,13 +37,28 @@ jobs:
             pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
             if [ "${pr_head_repo}" != "${GITHUB_REPOSITORY}" ]; then
               trusted_context="false"
-              echo "::notice::Fork PR context detected (${pr_head_repo}); running metadata-only attestation checks without OIDC provenance minting."
+              echo "::notice::Fork PR context detected (${pr_head_repo}); attestation workflow will run untrusted metadata-only path."
             fi
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
+  attest-build:
+    name: Attest Build Artifact
+    needs: [attestation-context]
+    if: needs.attestation-context.outputs.trusted_context == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    outputs:
+      trusted_context: ${{ needs.attestation-context.outputs.trusted_context }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Resolve canonical required-check target SHA
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: checks_target
         shell: bash
         env:
@@ -81,7 +88,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure target commit passed required upstream gates
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
@@ -118,7 +124,6 @@ jobs:
           .github/scripts/require-check-runs.sh
 
       - name: Resolve canonical quality artifact source
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: quality_source
         shell: bash
         env:
@@ -184,7 +189,6 @@ jobs:
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
 
       - name: Verify downloaded quality artifact attestation
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -212,7 +216,6 @@ jobs:
           jq -e 'length > 0' quality-source-attestation.json > /dev/null
 
       - name: Prepare attestation subject from canonical quality artifact
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: pack
         shell: bash
         env:
@@ -268,7 +271,7 @@ jobs:
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload attestation build artifacts
-        if: success() && steps.trust_boundary.outputs.trusted_context == 'true'
+        if: success()
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-build-artifacts
@@ -281,7 +284,7 @@ jobs:
           retention-days: 7
 
       - name: Upload attestation diagnostics artifacts
-        if: (failure() || cancelled()) && steps.trust_boundary.outputs.trusted_context == 'true'
+        if: failure() || cancelled()
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-build-diagnostics
@@ -295,18 +298,16 @@ jobs:
       - name: Generate build provenance attestation
         if: >-
           ${{
-            steps.trust_boundary.outputs.trusted_context == 'true' &&
             steps.pack.outcome == 'success' &&
             steps.pack.outputs.tarball != ''
           }}
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
 
       - name: Verify attestation policy
         if: >-
           ${{
-            steps.trust_boundary.outputs.trusted_context == 'true' &&
             steps.pack.outcome == 'success' &&
             steps.pack.outputs.tarball != ''
           }}
@@ -334,7 +335,6 @@ jobs:
         if: >-
           ${{
             always() &&
-            steps.trust_boundary.outputs.trusted_context == 'true' &&
             steps.pack.outcome == 'success' &&
             steps.pack.outputs.tarball != ''
           }}
@@ -351,13 +351,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ steps.trust_boundary.outputs.trusted_context }}" != "true" ]; then
-            echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
-            echo "- mode: \`fork-pr-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- status: \`passed-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- reason: \`fork pull request cannot mint trusted OIDC provenance in this workflow context\`" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           if [ "${{ steps.pack.outcome }}" != "success" ] || [ -z "${{ steps.pack.outputs.tarball }}" ]; then
             echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
             echo "- mode: \`deferred_no_subject\`" >> "$GITHUB_STEP_SUMMARY"
@@ -377,37 +370,57 @@ jobs:
             echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  attest-untrusted:
+    name: Attest Untrusted Context
+    needs: [attestation-context]
+    if: needs.attestation-context.outputs.trusted_context != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      trusted_context: ${{ needs.attestation-context.outputs.trusted_context }}
+    steps:
+      - name: Emit untrusted metadata-only attestation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- mode: \`fork-pr-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: \`passed-metadata-only\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- reason: \`fork pull request cannot mint trusted OIDC provenance in this workflow context\`" >> "$GITHUB_STEP_SUMMARY"
+
   attestation-summary:
     name: Attestation Summary
     runs-on: ubuntu-22.04
-    needs: [attest-build]
+    needs: [attestation-context, attest-build, attest-untrusted]
     if: always()
     steps:
       - name: Emit attestation summary check contract
         shell: bash
         env:
+          TRUSTED_CONTEXT: ${{ needs.attestation-context.outputs.trusted_context || '' }}
           ATTEST_BUILD_RESULT: ${{ needs.attest-build.result }}
-          TRUSTED_CONTEXT: ${{ needs.attest-build.outputs.trusted_context || '' }}
+          ATTEST_UNTRUSTED_RESULT: ${{ needs.attest-untrusted.result }}
         run: |
           set -euo pipefail
-          if [ "${ATTEST_BUILD_RESULT}" = "success" ]; then
-            if [ "${TRUSTED_CONTEXT}" = "true" ]; then
-              echo "Build attestation generated and verified successfully."
-            else
-              echo "Build attestation completed with non-trusted context classification."
-            fi
+          if [ "${TRUSTED_CONTEXT}" = "true" ] && [ "${ATTEST_BUILD_RESULT}" = "success" ]; then
+            echo "Build attestation generated and verified successfully."
             exit 0
           fi
-          echo "::error::Attestation build job did not succeed in trusted context (result=${ATTEST_BUILD_RESULT})."
+          if [ "${TRUSTED_CONTEXT}" != "true" ] && [ "${ATTEST_UNTRUSTED_RESULT}" = "success" ]; then
+            echo "Build attestation completed with non-trusted context classification."
+            exit 0
+          fi
+          echo "::error::Attestation summary contract failed (trusted_context=${TRUSTED_CONTEXT} trusted_result=${ATTEST_BUILD_RESULT} untrusted_result=${ATTEST_UNTRUSTED_RESULT})."
           exit 1
 
   attestation-trusted-summary:
     name: Attestation Trusted Summary
     runs-on: ubuntu-22.04
-    needs: [attest-build]
+    needs: [attestation-context, attest-build]
     if: >-
       ${{
         always() &&
+        needs.attestation-context.outputs.trusted_context == 'true' &&
         needs.attest-build.result == 'success' &&
         needs.attest-build.outputs.trusted_context == 'true'
       }}

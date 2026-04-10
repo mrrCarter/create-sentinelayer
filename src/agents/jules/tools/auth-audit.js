@@ -130,13 +130,29 @@ function sanitizeAuditErrorMessage(message, fallback = "Auth audit failed") {
     .replace(/\bbearer\s+[a-z0-9._~+/=-]+\b/gi, "bearer [REDACTED]")
     .replace(/\b(token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi, "$1=[REDACTED]")
     .replace(/\b[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, "[REDACTED_JWT]")
-    .replace(/\bhttps?:\/\/[^\s"'`]+/gi, "<redacted-url>")
+    .replace(/\bhttps?:\/\/[^\s"'`]+/gi, (rawUrl) => sanitizeDiagnosticUrl(rawUrl))
     .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, "<redacted-email>")
     .replace(/\b[a-z0-9_=-]{32,}\b/gi, "[REDACTED]");
   if (sanitized.length <= 280) {
     return sanitized;
   }
   return `${sanitized.slice(0, 277)}...`;
+}
+
+function sanitizeDiagnosticUrl(rawUrl) {
+  const candidate = String(rawUrl || "").trim();
+  if (!candidate) {
+    return "<redacted-url>";
+  }
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.hostname) {
+      return "<redacted-url>";
+    }
+    return `${parsed.protocol}//${parsed.host}/<redacted-path>`;
+  } catch {
+    return "<redacted-url>";
+  }
 }
 
 function buildUnavailableAuditResponse(requestId, code, message, options = {}) {

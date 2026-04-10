@@ -36,6 +36,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -49,6 +50,7 @@ jobs:
     environment: security-review
     permissions:
       contents: read
+      id-token: write
       checks: write
       pull-requests: write
     outputs:
@@ -80,21 +82,74 @@ jobs:
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: resolve_omar_credentials
         shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
+          OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || '' }}
         run: |
           set -euo pipefail
           mode="static-secrets"
+          resolved_token="${SENTINELAYER_TOKEN}"
+          exchange_url="$(echo "${OMAR_TOKEN_EXCHANGE_URL}" | xargs || true)"
+          exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
+          if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
+            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+              echo "::error::OIDC exchange is configured but GitHub OIDC request context is unavailable."
+              exit 1
+            fi
+            oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${exchange_audience}"
+            oidc_response="$(curl -fsS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${oidc_url}")"
+            oidc_token="$(echo "${oidc_response}" | jq -r '.value // empty')"
+            if [ -z "${oidc_token}" ]; then
+              echo "::error::OIDC exchange failed: missing id_token value in GitHub OIDC response."
+              exit 1
+            fi
+            exchange_payload="$(jq -n \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --arg run_id "${GITHUB_RUN_ID}" \
+              --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+              --arg ref "${GITHUB_REF}" \
+              --arg sha "${GITHUB_SHA}" \
+              '{repository: $repository, run_id: $run_id, run_attempt: $run_attempt, ref: $ref, sha: $sha}')"
+            exchange_response="$(curl -fsS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
+              -H "Authorization: Bearer ${oidc_token}" \
+              -H "Content-Type: application/json" \
+              -d "${exchange_payload}" \
+              "${exchange_url}")"
+            resolved_token="$(echo "${exchange_response}" | jq -r '.sentinelayer_token // empty')"
+            if [ -z "${resolved_token}" ]; then
+              echo "::error::OIDC exchange response missing sentinelayer_token."
+              exit 1
+            fi
+            mode="oidc-exchange"
+          fi
+          echo "::add-mask::${resolved_token}"
+          echo "sentinelayer_token=${resolved_token}" >> "${GITHUB_OUTPUT}"
           echo "credential_mode=${mode}" >> "${GITHUB_OUTPUT}"
           {
             echo "## Omar Credential Mode"
             echo "- mode: \`${mode}\`"
+            if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
+              echo "- exchange_url: \`${exchange_url}\`"
+              echo "- exchange_audience: \`${exchange_audience}\`"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Sentinelayer token secret
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
+          CREDENTIAL_MODE: ${{ steps.resolve_omar_credentials.outputs.credential_mode || '' }}
+          RESOLVED_SENTINELAYER_TOKEN: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token || '' }}
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
         run: |
           set -euo pipefail
+          mode="$(echo "${CREDENTIAL_MODE}" | xargs || true)"
+          if [ "${mode}" = "oidc-exchange" ]; then
+            bash .github/scripts/require-secret.sh "OMAR_OIDC_EXCHANGED_SENTINELAYER_TOKEN" "${RESOLVED_SENTINELAYER_TOKEN}"
+            exit 0
+          fi
           bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${SENTINELAYER_TOKEN}"
       - name: Validate OpenAI key secret for Omar LLM scan
         if: steps.trust_boundary.outputs.trusted_context == 'true'
@@ -129,7 +184,7 @@ jobs:
         uses: ./.github/actions/omar-gate
         with:
           github_token: ${{ github.token }}
-          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}

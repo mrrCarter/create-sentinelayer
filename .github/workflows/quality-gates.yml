@@ -398,13 +398,13 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Initialize CodeQL (javascript)
-        uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
+        uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # digest-pinned (github/codeql-action/init)
         with:
           languages: javascript
           build-mode: none
 
       - name: Analyze with CodeQL
-        uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3
+        uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # digest-pinned (github/codeql-action/analyze)
         with:
           category: "/language:javascript"
 
@@ -682,14 +682,42 @@ jobs:
           retention-days: 7
 
       - name: Generate quality artifact provenance
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
+
+  deploy-readiness:
+    name: Deploy Readiness
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [build-package]
+    if: >-
+      ${{
+        always() &&
+        needs.build-package.result == 'success'
+      }}
+    steps:
+      - name: Validate deploy-ready artifact contract
+        shell: bash
+        env:
+          TARBALL: ${{ needs.build-package.outputs.tarball }}
+          SHA256: ${{ needs.build-package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARBALL}" ]; then
+            echo "::error::Missing build tarball output."
+            exit 1
+          fi
+          if [ -z "${SHA256}" ] || ! echo "${SHA256}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Invalid build sha256 output."
+            exit 1
+          fi
+          echo "deploy-ready tarball: ${TARBALL} (${SHA256})"
 
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, security-stage, e2e-packaging, build-package]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, security-stage, e2e-packaging, build-package, deploy-readiness]
     if: >-
       ${{
         always() &&
@@ -702,7 +730,8 @@ jobs:
         needs.unit-coverage.result == 'success' &&
         needs.security-stage.result == 'success' &&
         needs.e2e-packaging.result == 'success' &&
-        needs.build-package.result == 'success'
+        needs.build-package.result == 'success' &&
+        needs.deploy-readiness.result == 'success'
       }}
     steps:
       - name: Confirm all quality gates passed

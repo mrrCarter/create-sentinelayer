@@ -1406,3 +1406,13 @@ Review:
 - [x] Enforce progressive npm rollout in release workflow (`next` canary -> install validation -> `latest` promotion).
 - [x] Upgrade rollback target integrity verification from SHA-1 shasum enforcement to SHA-512 `dist.integrity` verification.
 - [ ] Push batch A42 and re-run Omar Gate watch on PR `#274`.
+
+## PR #274 Omar Loop Batch A43 (2026-04-10)
+- [x] Add bounded retry/timeout wrapper for `npm audit` in `.github/workflows/sca-audit.yml` and preserve last JSON artifact for triage.
+- [x] Replace broad digest comments in workflow `uses:` lines and harden `.github/scripts/verify-workflow-action-pins.sh` against major-only (`vN`) annotations.
+- [x] Split attestation paths into explicit trusted and untrusted jobs with a stable `Attestation Summary` contract for fork PRs.
+- [x] Add explicit `deploy-readiness` stage in `quality-gates.yml` to enforce `lint -> test -> security -> build -> deploy-ready` ordering.
+- [x] Upgrade `omar-gate.yml` credential resolver with OIDC exchange capability (safe fallback to static secret mode when exchange vars are unset).
+- [x] Preserve diagnostic host context in auth-audit URL sanitization while redacting path/query/token material.
+- [x] Run full local validation (`npm run verify`).
+- [ ] Push batch A43, watch Omar Gate, and continue iterative non-blocking burn-down.

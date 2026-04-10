@@ -18,6 +18,7 @@ const lockFile = process.env.LOCK_FILE || ".github/policies/actions-lock.json";
 const workflowRoots = [".github/workflows", ".github/actions"];
 const usesPattern = /^\s*uses:\s*([^\s#]+)@([A-Za-z0-9._-]+)\b/;
 const shaPattern = /^[a-f0-9]{40}$/;
+const broadVersionCommentPattern = /^v\d+$/i;
 
 function readJson(filePath) {
   try {
@@ -79,7 +80,8 @@ function collectUsesRefs(filePath) {
       filePath,
       lineNumber: index + 1,
       actionRef,
-      pin
+      pin,
+      inlineComment: line.includes("#") ? line.slice(line.indexOf("#") + 1).trim() : ""
     });
   }
   return refs;
@@ -95,6 +97,13 @@ function main() {
     if (!shaPattern.test(ref.pin)) {
       errors.push(
         `${ref.filePath}:${ref.lineNumber} uses ${ref.actionRef}@${ref.pin} but pin is not a full 40-char commit SHA.`
+      );
+      continue;
+    }
+    if (ref.inlineComment && broadVersionCommentPattern.test(ref.inlineComment)) {
+      errors.push(
+        `${ref.filePath}:${ref.lineNumber} uses ${ref.actionRef}@${ref.pin} with broad version comment '${ref.inlineComment}'. ` +
+        "Use a specific release annotation or 'digest-pinned (<action>)'."
       );
       continue;
     }
