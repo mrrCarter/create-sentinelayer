@@ -154,3 +154,8 @@
 - When Omar raises workflow-only P2s, treat them as a live queue and batch-fix by control-plane theme (trust boundary, release lineage, rollback integrity) before the next watch cycle.
 - Avoid `pull_request_target` for workflows that mint provenance or run packaging steps on PR head code; keep PR checks in `pull_request` context and reserve trusted attestation minting for `push`/trusted calls.
 - For release hardening, implement progressive rollout as a concrete gate (`next` canary publish + registry install validation + explicit `latest` promotion) rather than documenting strategy without enforcement.
+
+## 2026-04-10
+
+- When the policy direction is "Omar-only", remove supplemental scanner workflows and their policy plumbing entirely; marking them non-blocking still violates expected governance.
+- Keep documentation and required-check narratives in lockstep with live workflows; stale README gate lists create false confidence and operator confusion during incident review.

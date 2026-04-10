@@ -871,15 +871,10 @@ Ledger contract:
 
 This repo includes `.github/workflows/release.yml`.
 Automated version/tag PR flow is handled by `.github/workflows/release-please.yml`.
-AppSec SAST is enforced by `.github/workflows/codeql.yml` (`CodeQL Summary` check).
-Custom static policy checks are enforced by `.github/workflows/semgrep.yml` (`Semgrep Summary` check) using `.semgrep/rules/sentinelayer-cli.yml`.
-Secret scanning is enforced by `.github/workflows/gitleaks.yml` (`Gitleaks Summary` check).
-IaC misconfiguration scanning is enforced by `.github/workflows/iac-scan.yml` (`IaC Summary` check).
-Dependency vulnerability policy is enforced by `.github/workflows/sca-audit.yml` (`SCA Summary` check).
-Open-source license policy is enforced by `.github/workflows/license-gate.yml` (`License Summary` check) using `.github/policies/license-policy.json` (`allowed_licenses` with `fail_on_unknown` policy behavior).
-Dependabot auto-fix governance is enforced by `.github/workflows/dependabot-governance.yml` with policy controls in `.github/policies/dependabot-governance.json`.
-SBOM governance is enforced by `.github/workflows/sbom.yml` (`SBOM Summary`) with CycloneDX/SPDX JSON artifacts and hash-manifest output.
-Build provenance attestations are enforced by `.github/workflows/attestations.yml` (`Attestation Summary`) with verification against signer-workflow policy.
+Primary gate enforcement is Omar-first:
+- `.github/workflows/omar-gate.yml` (`Omar Gate`) for AppSec findings and merge thresholds
+- `.github/workflows/quality-gates.yml` (`Quality Summary`) for deterministic build/test/package checks
+- `.github/workflows/attestations.yml` (`Attestation Summary`) for provenance verification
 
 Prerequisites:
 
@@ -902,13 +897,6 @@ Release guardrails now require successful upstream checks on the target commit:
 
 - `Quality Summary`
 - `Omar Gate`
-- `CodeQL Summary`
-- `Semgrep Summary`
-- `Gitleaks Summary`
-- `IaC Summary`
-- `SCA Summary`
-- `License Summary`
-- `SBOM Summary`
 - `Attestation Summary`
 
 ## Local verification

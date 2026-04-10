@@ -1424,3 +1424,12 @@ Review:
 - [x] Strengthen `quality-summary` contract by requiring direct success of all security reusable jobs plus aggregate security stage.
 - [x] Run full local validation (`npm run verify`).
 - [ ] Push batch A44, watch Omar Gate, and continue iterative non-blocking burn-down.
+
+## 2026-04-10 - Omar-Only CI Contract + Error Batch Intake (Batch R1)
+- [x] Remove auxiliary scanner workflows (`semgrep`, `gitleaks`, `iac-scan`, `sca-audit`, `license-gate`, `sbom`) so CI contract is Omar-only plus quality/provenance.
+- [x] Remove scanner digest-policy coupling from `quality-gates.yml` and delete obsolete policy file (`.github/policies/reusable-workflow-digests.json`).
+- [x] Update README gate documentation to match active contract (`Quality Summary`, `Omar Gate`, `Attestation Summary`).
+- [x] Run local validation (`npm run verify`) after CI contract cleanup.
+- [ ] Open PR from `hardening/cli-omar-only-ci-v2`, run Omar Gate watch loop (`gh run watch`), and merge on green.
+- [ ] Stream admin/API errors from `sentinelayer-api` + dashboard surfaces, group reproducible issues by root cause.
+- [ ] Implement grouped fixes in batch PR(s) with Omar loop and merge only after Omar pass.
