@@ -1346,10 +1346,12 @@ export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options
     ? Math.trunc(options.minAttemptTimeoutMs)
     : AUTH_PLAYWRIGHT_EXEC_MIN_ATTEMPT_TIMEOUT_MS;
   const execute = typeof options.exec === "function" ? options.exec : execFileSync;
-  const retryWindowStartedAt = Date.now();
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const sleepFn = typeof options.sleep === "function" ? options.sleep : sleep;
+  const retryWindowStartedAt = now();
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    const elapsedMs = Date.now() - retryWindowStartedAt;
+    const elapsedMs = now() - retryWindowStartedAt;
     const remainingBudgetMs = totalBudgetMs - elapsedMs;
     if (remainingBudgetMs <= 0) {
       throw new AuthAuditError(
@@ -1377,13 +1379,13 @@ export async function runPlaywrightAuditScriptWithRetry(scriptPath, env, options
       }
     }
     const backoffMs = computePlaywrightBackoffMs(attempt, baseBackoffMs);
-    const remainingAfterAttemptMs = totalBudgetMs - (Date.now() - retryWindowStartedAt);
+    const remainingAfterAttemptMs = totalBudgetMs - (now() - retryWindowStartedAt);
     if (remainingAfterAttemptMs <= 0) {
       throw new AuthAuditError(
         `Playwright auth audit failed: retry budget exhausted after ${attempt + 1} attempt(s) over ${totalBudgetMs}ms`
       );
     }
-    await sleep(Math.min(backoffMs, remainingAfterAttemptMs));
+    await sleepFn(Math.min(backoffMs, remainingAfterAttemptMs));
   }
 
   throw new AuthAuditError("Playwright auth audit failed after retry budget was exhausted");

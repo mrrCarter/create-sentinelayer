@@ -399,16 +399,24 @@ describe("authAudit", () => {
 
   it("runPlaywrightAuditScriptWithRetry enforces cumulative retry deadline", async () => {
     let attemptCount = 0;
+    let virtualNowMs = 0;
     const stubExec = () => {
       attemptCount += 1;
+      virtualNowMs += 3;
       const error = new Error("timed out waiting for playwright");
       error.code = "ETIMEDOUT";
       throw error;
+    };
+    const now = () => virtualNowMs;
+    const stubSleep = async (ms) => {
+      virtualNowMs += Number(ms) || 0;
     };
 
     await assert.rejects(
       () => runPlaywrightAuditScriptWithRetry("fake-script.cjs", {}, {
         exec: stubExec,
+        now,
+        sleep: stubSleep,
         maxRetries: 5,
         baseBackoffMs: 1,
         timeoutMs: 1000,
@@ -421,7 +429,7 @@ describe("authAudit", () => {
         return true;
       },
     );
-    assert.ok(attemptCount <= 2);
+    assert.equal(attemptCount, 1);
   });
 
   it("registers console listener before target navigation in Playwright script", () => {
