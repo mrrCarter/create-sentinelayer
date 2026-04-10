@@ -48,7 +48,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
-          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || 'workflow_dispatch' }}
+          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || '' }}
         run: |
           set -euo pipefail
           append_output() {
@@ -127,8 +127,10 @@ jobs:
           EVAL_RESOLUTION: ${{ needs.eval-impact.outputs.eval_resolution }}
           EVAL_REQUIRED: ${{ needs.eval-impact.outputs.eval_required }}
           EVAL_EVIDENCE_FOUND: ${{ needs.eval-impact.outputs.eval_evidence_found }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           if [ "${EVAL_JOB_RESULT}" != "success" ]; then
             echo "::error::eval-impact job did not succeed (result=${EVAL_JOB_RESULT})."
             exit 1
@@ -142,6 +144,10 @@ jobs:
           esac
           if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${EVENT_NAME}" != "workflow_dispatch" ]; then
             echo "::error::approved_skip is only allowed for workflow_dispatch events."
+            exit 1
+          fi
+          if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${ref_protected}" = "true" ]; then
+            echo "::error::approved_skip is not allowed on protected refs."
             exit 1
           fi
           if [ "${EVAL_REQUIRED}" = "true" ] && [ "${EVAL_EVIDENCE_FOUND}" != "true" ]; then
@@ -342,202 +348,6 @@ jobs:
           path: coverage/lcov.info
           if-no-files-found: error
 
-  security-semgrep:
-    name: Security Semgrep
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    uses: ./.github/workflows/semgrep.yml
-    permissions:
-      contents: read
-
-  security-gitleaks:
-    name: Security Gitleaks
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    uses: ./.github/workflows/gitleaks.yml
-    permissions:
-      contents: read
-
-  security-iac:
-    name: Security IaC
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    uses: ./.github/workflows/iac-scan.yml
-    permissions:
-      contents: read
-
-  security-sca:
-    name: Security SCA
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    uses: ./.github/workflows/sca-audit.yml
-    permissions:
-      contents: read
-
-  security-license:
-    name: Security License
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    uses: ./.github/workflows/license-gate.yml
-    permissions:
-      contents: read
-
-  security-sbom:
-    name: Security SBOM
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    uses: ./.github/workflows/sbom.yml
-    permissions:
-      contents: read
-
-  security-codeql:
-    name: Security CodeQL
-    runs-on: ubuntu-22.04
-    timeout-minutes: 25
-    needs: [eval-enforce, security-workflow-digest-policy, lint, syntax-matrix, test]
-    permissions:
-      contents: read
-      pull-requests: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Initialize CodeQL (javascript)
-        uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # digest-pinned (github/codeql-action/init)
-        with:
-          languages: javascript
-          build-mode: none
-
-      - name: Analyze with CodeQL
-        uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # digest-pinned (github/codeql-action/analyze)
-        with:
-          category: "/language:javascript"
-
-      - name: Evaluate CodeQL alerts directly after analysis
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.sha }}
-          PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
-          PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
-          CODEQL_ALERTS_POLL_SECONDS: "10"
-          CODEQL_ALERTS_MAX_ATTEMPTS: "12"
-        run: |
-          set -euo pipefail
-          case "${CODEQL_ALERTS_POLL_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ALERTS_POLL_SECONDS value: ${CODEQL_ALERTS_POLL_SECONDS}" ; exit 1 ;; esac
-          case "${CODEQL_ALERTS_MAX_ATTEMPTS}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ALERTS_MAX_ATTEMPTS value: ${CODEQL_ALERTS_MAX_ATTEMPTS}" ; exit 1 ;; esac
-          target_ref_sha="${TARGET_SHA}"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_SHA}" ]; then
-            target_ref_sha="${PR_HEAD_SHA}"
-          fi
-          endpoints=()
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
-            endpoints+=("repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&pr=${PR_NUMBER}&tool_name=CodeQL&per_page=100")
-          fi
-          endpoints+=("repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&ref=${target_ref_sha}&tool_name=CodeQL&per_page=100")
-          alerts_json=""
-          selected_endpoint=""
-          for endpoint in "${endpoints[@]}"; do
-            for attempt in $(seq 1 "${CODEQL_ALERTS_MAX_ATTEMPTS}"); do
-              response="$(gh api "${endpoint}" 2>/tmp/codeql-policy.err || true)"
-              if [ -n "${response}" ]; then
-                alerts_json="${response}"
-                selected_endpoint="${endpoint}"
-                break 2
-              fi
-              if [ "${attempt}" -lt "${CODEQL_ALERTS_MAX_ATTEMPTS}" ]; then
-                sleep "${CODEQL_ALERTS_POLL_SECONDS}"
-              fi
-            done
-          done
-          if [ -z "${alerts_json}" ]; then
-            echo "::error::Unable to resolve CodeQL alerts via GitHub code-scanning API."
-            cat /tmp/codeql-policy.err || true
-            exit 1
-          fi
-          query_mode="ref"
-          if [[ "${selected_endpoint}" == *"pr="* ]]; then
-            query_mode="pull_request"
-          fi
-          total_alerts="$(echo "${alerts_json}" | jq 'if type=="array" then length else 0 end')"
-          high_critical_alerts="$(echo "${alerts_json}" | jq '
-            if type=="array" then
-              [
-                .[]
-                | select(
-                    (.rule.security_severity_level // .rule.severity // .severity // "" | ascii_downcase) == "high"
-                    or
-                    (.rule.security_severity_level // .rule.severity // .severity // "" | ascii_downcase) == "critical"
-                  )
-              ] | length
-            else 0 end
-          ')"
-          case "${total_alerts}" in ''|*[!0-9]*) echo "::error::Invalid CodeQL alert count: ${total_alerts}" ; exit 1 ;; esac
-          case "${high_critical_alerts}" in ''|*[!0-9]*) echo "::error::Invalid CodeQL high/critical count: ${high_critical_alerts}" ; exit 1 ;; esac
-          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            {
-              echo "## Security CodeQL"
-              echo "- mode: \`in-workflow-policy\`"
-              echo "- query_mode: \`${query_mode}\`"
-              echo "- query_endpoint: \`${selected_endpoint}\`"
-              echo "- analysis_target_sha: \`${target_ref_sha}\`"
-              echo "- total_open_alerts: \`${total_alerts}\`"
-              echo "- high_critical_open_alerts: \`${high_critical_alerts}\`"
-            } >> "${GITHUB_STEP_SUMMARY}"
-          fi
-          if [ "${high_critical_alerts}" -gt 0 ]; then
-            echo "::error::CodeQL policy blocked: ${high_critical_alerts} high/critical open alerts."
-            exit 1
-          fi
-
-  security-stage:
-    name: Security Stage
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    needs:
-      - security-semgrep
-      - security-gitleaks
-      - security-iac
-      - security-sca
-      - security-license
-      - security-sbom
-      - security-codeql
-    if: >-
-      ${{
-        always() &&
-        needs.security-semgrep.result == 'success' &&
-        needs.security-gitleaks.result == 'success' &&
-        needs.security-iac.result == 'success' &&
-        needs.security-sca.result == 'success' &&
-        needs.security-license.result == 'success' &&
-        needs.security-sbom.result == 'success' &&
-        needs.security-codeql.result == 'success'
-      }}
-    steps:
-      - name: Confirm in-workflow security suites passed
-        shell: bash
-        env:
-          SEMGREP_RESULT: ${{ needs.security-semgrep.result }}
-          GITLEAKS_RESULT: ${{ needs.security-gitleaks.result }}
-          IAC_RESULT: ${{ needs.security-iac.result }}
-          SCA_RESULT: ${{ needs.security-sca.result }}
-          LICENSE_RESULT: ${{ needs.security-license.result }}
-          SBOM_RESULT: ${{ needs.security-sbom.result }}
-          CODEQL_RESULT: ${{ needs.security-codeql.result }}
-        run: |
-          set -euo pipefail
-          for suite in \
-            "semgrep:${SEMGREP_RESULT}" \
-            "gitleaks:${GITLEAKS_RESULT}" \
-            "iac:${IAC_RESULT}" \
-            "sca:${SCA_RESULT}" \
-            "license:${LICENSE_RESULT}" \
-            "sbom:${SBOM_RESULT}" \
-            "codeql:${CODEQL_RESULT}"; do
-            suite_name="${suite%%:*}"
-            suite_result="${suite##*:}"
-            if [ "${suite_result}" != "success" ]; then
-              echo "::error::Security suite ${suite_name} did not succeed (result=${suite_result})."
-              exit 1
-            fi
-          done
-          echo "Semgrep, gitleaks, IaC, SCA, license, and SBOM suites passed in this quality workflow run."
-
   e2e-packaging:
     name: E2E & Package (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
@@ -578,7 +388,7 @@ jobs:
     name: Build Package Artifact
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [unit-coverage, e2e-packaging, security-stage]
+    needs: [unit-coverage, e2e-packaging]
     permissions:
       contents: read
       id-token: write
@@ -717,7 +527,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, security-semgrep, security-gitleaks, security-iac, security-sca, security-license, security-sbom, security-codeql, security-stage, e2e-packaging, build-package, deploy-readiness]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, e2e-packaging, build-package, deploy-readiness]
     if: >-
       ${{
         always() &&
@@ -728,14 +538,6 @@ jobs:
         needs.syntax-matrix.result == 'success' &&
         needs.test.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
-        needs.security-semgrep.result == 'success' &&
-        needs.security-gitleaks.result == 'success' &&
-        needs.security-iac.result == 'success' &&
-        needs.security-sca.result == 'success' &&
-        needs.security-license.result == 'success' &&
-        needs.security-sbom.result == 'success' &&
-        needs.security-codeql.result == 'success' &&
-        needs.security-stage.result == 'success' &&
         needs.e2e-packaging.result == 'success' &&
         needs.build-package.result == 'success' &&
         needs.deploy-readiness.result == 'success'

@@ -30,7 +30,8 @@ export async function authAudit(input = {}) {
   } catch (error) {
     const code = error instanceof AuthAuditError ? "AUTH_AUDIT_VALIDATION_FAILED" : "AUTH_AUDIT_EXECUTION_FAILED";
     const message = normalizeErrorMessage(error, "Auth audit failed");
-    return finalizeAuditEnvelope(operation, requestId, buildUnavailableAuditResponse(requestId, code, message));
+    const diagnostics = extractErrorDiagnostics(error, operation || "auth_audit");
+    return finalizeAuditEnvelope(operation, requestId, buildUnavailableAuditResponse(requestId, code, message, diagnostics));
   }
 }
 
@@ -131,12 +132,11 @@ function sanitizeAuditErrorMessage(message, fallback = "Auth audit failed") {
     .replace(/\b(token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi, "$1=[REDACTED]")
     .replace(/\b[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, "[REDACTED_JWT]")
     .replace(/\bhttps?:\/\/[^\s"'`]+/gi, (rawUrl) => sanitizeDiagnosticUrl(rawUrl))
-    .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, "<redacted-email>")
-    .replace(/\b[a-z0-9_=-]{32,}\b/gi, "[REDACTED]");
-  if (sanitized.length <= 280) {
+    .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, "<redacted-email>");
+  if (sanitized.length <= 512) {
     return sanitized;
   }
-  return `${sanitized.slice(0, 277)}...`;
+  return `${sanitized.slice(0, 509)}...`;
 }
 
 function sanitizeDiagnosticUrl(rawUrl) {
@@ -163,6 +163,18 @@ function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
     requestId,
     retryable: options.retryable === true,
   };
+  const phase = String(options.phase || "").trim();
+  if (phase) {
+    errorPayload.phase = phase;
+  }
+  const parsedStatusCode = Number.parseInt(String(options.statusCode || ""), 10);
+  if (Number.isInteger(parsedStatusCode) && parsedStatusCode > 0) {
+    errorPayload.statusCode = parsedStatusCode;
+  }
+  const errorCode = String(options.errorCode || "").trim();
+  if (errorCode) {
+    errorPayload.errorCode = errorCode.toUpperCase();
+  }
   if (options.retryTelemetry && typeof options.retryTelemetry === "object") {
     errorPayload.retryTelemetry = options.retryTelemetry;
   }
@@ -175,6 +187,24 @@ function buildUnavailableAuditResponse(requestId, code, message, options = {}) {
     reason: safeMessage,
     error: errorPayload,
   };
+}
+
+function extractErrorDiagnostics(error, phase = "auth_audit") {
+  const diagnostics = {
+    phase: String(phase || "auth_audit").trim().slice(0, 64) || "auth_audit",
+  };
+  const statusCode = resolveAidenidProvisionStatusCode(error);
+  if (Number.isInteger(statusCode) && statusCode > 0) {
+    diagnostics.statusCode = statusCode;
+  }
+  let errorCode = resolveAidenidProvisionErrorCode(error);
+  if (!errorCode && error instanceof Error) {
+    errorCode = String(error.name || "").trim().toUpperCase();
+  }
+  if (errorCode) {
+    diagnostics.errorCode = errorCode.toUpperCase();
+  }
+  return diagnostics;
 }
 
 function isAuditEnvelopeV2Enabled() {

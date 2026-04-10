@@ -571,6 +571,11 @@ describe("authAudit", () => {
     assert.ok(source.includes("replace(/\\bhttps?:\\/\\/[^\\s\"'`]+/gi, (rawUrl) => sanitizeDiagnosticUrl(rawUrl))"));
     assert.ok(source.includes("function sanitizeDiagnosticUrl(rawUrl)"));
     assert.ok(source.includes("<redacted-path>"));
+    assert.ok(source.includes("if (sanitized.length <= 512)"));
+    assert.ok(source.includes("function extractErrorDiagnostics(error, phase = \"auth_audit\")"));
+    assert.ok(source.includes("errorPayload.phase = phase;"));
+    assert.ok(source.includes("errorPayload.statusCode = parsedStatusCode;"));
+    assert.ok(source.includes("errorPayload.errorCode = errorCode.toUpperCase();"));
     assert.ok(source.includes("const safeMessage = sanitizeAuditErrorMessage(message"));
   });
 
