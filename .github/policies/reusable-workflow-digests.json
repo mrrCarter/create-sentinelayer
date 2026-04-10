@@ -1,5 +1,5 @@
 {
-  ".github/workflows/semgrep.yml": "5d302da0521a921a14a14558f877b6db822b039d0207b6c90ff8e0ff1d539c67",
+  ".github/workflows/semgrep.yml": "118ed527f862890b4a12f8a3485749474a12eef0c132b8a3679d91a0e9f3c1b7",
   ".github/workflows/gitleaks.yml": "34e4f7774c649ee0051eb98e6f151303c8b805053a6212a6ad4775fc31fc3140",
   ".github/workflows/iac-scan.yml": "6232198de49721440b5c7da05333873359fc969445ffaf21853c5c7b0e2c7242",
   ".github/workflows/sca-audit.yml": "52188265fc9b6d3efe17a6aa60e17c8f2cec1f46c3437c7411e3cf11a8471a61",
