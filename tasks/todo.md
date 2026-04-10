@@ -1,3 +1,31 @@
+# Sentinelayer CLI Full E2E Demo Validation (2026-04-10)
+
+## Plan
+- [x] Build and execute a 30+ command E2E runbook using only shipped CLI command surfaces (`node bin/sl.js`). (Executed 67 commands; 56 success, 11 failure.)
+- [x] Run full auth flow (`auth login/status/sessions`) and validate AIdenID command paths in execute mode where credentials allow. (Auth login timed out and workspace token was invalid; execute-mode AIdenID failed due missing creds, dry-run paths passed.)
+- [x] Create a net-new demo codebase from generated spec/prompt artifacts and implement strictly against generated spec (not ad-hoc design).
+- [x] Use local PR-style batch loop: code batch -> `review scan` -> local Omar (`/omargate`) -> fix P0/P1 -> re-run -> local merge.
+- [x] Run frontend audit and full audit command paths and capture stream + JSON artifacts.
+- [x] Validate command behavior coverage (worked / failed / partial) and document defects with repro commands.
+- [x] Produce a single markdown report with receipts, outputs, and go-forward recommendations.
+
+## Review
+- Completed. Report: `tasks/e2e-demo-2026-04-10/SENTINELAYER_CLI_E2E_REPORT_2026-04-10.md`.
+
+# Permanent Auth Resolution Hardening (2026-04-10)
+
+## Plan
+- [x] Remove stored-session-only auth gate behavior and resolve active auth from `env -> config -> session`.
+- [x] Harden AIdenID credential resolution to auto-resolve active SentinelLayer auth and lazy-fetch creds without local session dependency.
+- [x] Replace remaining stored-session-only token paths in CLI runtime surfaces (`scan setup-secrets`, LLM proxy, runtime scanner API, telemetry sync).
+- [x] Add regression test coverage for env-token auth-gate acceptance.
+- [x] Run full verification (`npm run verify`) after changes.
+
+## Review
+- Completed. Active-auth fallback now works without a local session file.
+- Updated files: `src/auth/gate.js`, `src/ai/aidenid.js`, `src/commands/scan.js`, `src/ai/proxy.js`, `src/agents/jules/tools/runtime-audit.js`, `src/telemetry/sync.js`, `tests/unit.auth-gate.test.mjs`.
+- Verification evidence: `npm run verify` passed (89 e2e + 410 unit tests, coverage and pack checks successful).
+
 # Sentinelayer CLI Roadmap PR Preparation (2026-03-31)
 
 ## Mission

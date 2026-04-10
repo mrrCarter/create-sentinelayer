@@ -8,7 +8,7 @@
  * Response: { content, usage: { model, provider, tokens_in, tokens_out, cost_usd, latency_ms } }
  */
 
-import { readStoredSession } from "../auth/session-store.js";
+import { resolveActiveAuthSession } from "../auth/service.js";
 
 const DEFAULT_PROXY_MODEL = "gpt-5.3-codex";
 const PROXY_TIMEOUT_MS = 120_000;
@@ -42,7 +42,11 @@ export async function invokeViaProxy({
   let resolvedToken = String(token || "").trim();
 
   if (!resolvedApiUrl || !resolvedToken) {
-    const session = await readStoredSession();
+    const session = await resolveActiveAuthSession({
+      cwd: process.cwd(),
+      env: process.env,
+      autoRotate: false,
+    });
     if (!session || !session.token) {
       throw new Error(
         "SentinelLayer LLM proxy requires authentication. Run 'sl auth login' first."

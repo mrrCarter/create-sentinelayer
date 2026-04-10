@@ -1,6 +1,6 @@
 import process from "node:process";
 import pc from "picocolors";
-import { readStoredSession } from "./session-store.js";
+import { resolveActiveAuthSession } from "./service.js";
 
 /**
  * Auth gate — ensures user is logged in before running any command.
@@ -68,6 +68,19 @@ function isSessionUnexpired(tokenExpiresAt) {
   return expiresAt >= Date.now();
 }
 
+function isAuthenticatedSessionValid(session) {
+  if (!isValidSessionToken(session)) {
+    return false;
+  }
+
+  // Persisted sessions must include a valid expiry bound. Env/config tokens
+  // are accepted as active auth sources and validated downstream by API calls.
+  if (String(session?.source || "").trim() === "session") {
+    return isSessionUnexpired(session?.tokenExpiresAt);
+  }
+  return true;
+}
+
 /**
  * Check if the current command requires authentication.
  * Returns true if auth is required but user is not logged in.
@@ -92,10 +105,14 @@ export async function checkAuthGate(args) {
     return { authenticated: true, session: null, bypassReason: "env_bypass_guarded" };
   }
 
-  // Check for stored session
+  // Check for active auth session across env -> config -> stored session.
   try {
-    const session = await readStoredSession();
-    if (session && isValidSessionToken(session) && isSessionUnexpired(session.tokenExpiresAt)) {
+    const session = await resolveActiveAuthSession({
+      cwd: process.cwd(),
+      env: process.env,
+      autoRotate: false,
+    });
+    if (session && isAuthenticatedSessionValid(session)) {
       return { authenticated: true, session, bypassReason: null };
     }
   } catch {

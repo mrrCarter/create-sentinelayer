@@ -429,8 +429,12 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 async function callScannerApi(url) {
   let session;
   try {
-    const { readStoredSession } = await import("../../../auth/session-store.js");
-    session = await readStoredSession();
+    const { resolveActiveAuthSession } = await import("../../../auth/service.js");
+    session = await resolveActiveAuthSession({
+      cwd: process.cwd(),
+      env: process.env,
+      autoRotate: false,
+    });
   } catch { /* session read failed */ }
 
   if (!session || !session.token) {
