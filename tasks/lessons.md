@@ -159,3 +159,4 @@
 
 - When the policy direction is "Omar-only", remove supplemental scanner workflows and their policy plumbing entirely; marking them non-blocking still violates expected governance.
 - Keep documentation and required-check narratives in lockstep with live workflows; stale README gate lists create false confidence and operator confusion during incident review.
+- Treat auth/session regressions as source-of-truth issues, not user-environment issues: any command that needs SentinelLayer auth must resolve credentials via `resolveActiveAuthSession (env -> config -> session)` rather than direct `readStoredSession()` reads.

@@ -41,6 +41,32 @@ test("Unit auth gate: CI=true alone does not bypass auth", async () => {
   }
 });
 
+test("Unit auth gate: accepts env token without stored session", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousToken = process.env.SENTINELAYER_TOKEN;
+  try {
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    process.env.SENTINELAYER_TOKEN = "env_token_live";
+
+    const result = await checkAuthGate(["audit"]);
+    assert.equal(result.authenticated, true);
+    assert.equal(result.bypassReason, null);
+    assert.equal(result.session?.source, "env");
+    assert.equal(result.session?.token, "env_token_live");
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousToken === undefined) delete process.env.SENTINELAYER_TOKEN;
+    else process.env.SENTINELAYER_TOKEN = previousToken;
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains supported", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
   const previousHome = process.env.HOME;

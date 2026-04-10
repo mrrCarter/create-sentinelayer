@@ -30,7 +30,7 @@ import {
 } from "../scan/generator.js";
 import { detectRepoSlug, setupSecrets } from "../scan/gh-secrets.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
-import { readStoredSession } from "../auth/session-store.js";
+import { resolveActiveAuthSession } from "../auth/service.js";
 
 const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
 
@@ -832,16 +832,21 @@ export function registerScanCommand(program) {
 
       let tokenValue = "";
       try {
-        const session = await readStoredSession();
+        const session = await resolveActiveAuthSession({
+          cwd: targetPath,
+          env: process.env,
+          autoRotate: false,
+        });
         if (session && session.token) {
           tokenValue = session.token;
         }
       } catch {
-        /* no stored session */
+        /* no active auth session */
       }
 
       if (!tokenValue) {
-        const msg = "No SentinelLayer token found. Run 'sl auth login' first, or use --dry-run for instructions.";
+        const msg =
+          "No SentinelLayer token found. Run 'sl auth login', set SENTINELAYER_TOKEN, or use --dry-run for instructions.";
         if (emitJson) {
           console.log(JSON.stringify({ command: "scan setup-secrets", ok: false, reason: msg }, null, 2));
         } else {
