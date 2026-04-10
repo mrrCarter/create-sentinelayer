@@ -44,6 +44,11 @@ jobs:
             exit 1
           fi
           curl -fsSL \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            --connect-timeout 5 \
+            --max-time 60 \
             "${release_base_url}/${release_asset}" \
             -o trivy.tar.gz
           actual_sha="$(sha256sum trivy.tar.gz | awk '{print $1}')"

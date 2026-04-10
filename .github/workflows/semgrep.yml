@@ -15,6 +15,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  SEMGREP_SCAN_TIMEOUT_SECONDS: "600"
+  SEMGREP_SCAN_ATTEMPTS: "2"
 
 jobs:
   semgrep-scan:
@@ -112,12 +114,43 @@ jobs:
       - name: Run Semgrep custom policy pack
         run: |
           set -euo pipefail
-          semgrep scan \
-            --config .semgrep/rules/sentinelayer-cli.yml \
-            --error \
-            --metrics=off \
-            --json \
-            --output semgrep-results.json
+          case "${SEMGREP_SCAN_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid SEMGREP_SCAN_TIMEOUT_SECONDS: ${SEMGREP_SCAN_TIMEOUT_SECONDS}" ; exit 1 ;; esac
+          case "${SEMGREP_SCAN_ATTEMPTS}" in ''|*[!0-9]*) echo "::error::Invalid SEMGREP_SCAN_ATTEMPTS: ${SEMGREP_SCAN_ATTEMPTS}" ; exit 1 ;; esac
+          if [ "${SEMGREP_SCAN_ATTEMPTS}" -lt 1 ]; then
+            echo "::error::SEMGREP_SCAN_ATTEMPTS must be >= 1."
+            exit 1
+          fi
+          semgrep_exit=1
+          for attempt in $(seq 1 "${SEMGREP_SCAN_ATTEMPTS}"); do
+            set +e
+            timeout "${SEMGREP_SCAN_TIMEOUT_SECONDS}" semgrep scan \
+              --config .semgrep/rules/sentinelayer-cli.yml \
+              --error \
+              --metrics=off \
+              --json \
+              --output semgrep-results.json
+            semgrep_exit=$?
+            set -e
+            if [ "${semgrep_exit}" -eq 0 ]; then
+              break
+            fi
+            if [ "${semgrep_exit}" -eq 1 ]; then
+              echo "::error::Semgrep policy findings detected."
+              exit 1
+            fi
+            if [ "${semgrep_exit}" -ne 124 ] && [ "${semgrep_exit}" -ne 137 ] && [ "${semgrep_exit}" -ne 143 ]; then
+              echo "::error::Semgrep scan failed with non-retryable exit code ${semgrep_exit}."
+              exit "${semgrep_exit}"
+            fi
+            if [ "${attempt}" -lt "${SEMGREP_SCAN_ATTEMPTS}" ]; then
+              echo "::warning::Semgrep scan attempt ${attempt}/${SEMGREP_SCAN_ATTEMPTS} timed out; retrying."
+              sleep $((attempt * 2))
+            fi
+          done
+          if [ "${semgrep_exit}" -ne 0 ]; then
+            echo "::error::Semgrep scan failed after ${SEMGREP_SCAN_ATTEMPTS} attempt(s) with exit code ${semgrep_exit}."
+            exit "${semgrep_exit}"
+          fi
 
       - name: Upload Semgrep artifact
         if: always()

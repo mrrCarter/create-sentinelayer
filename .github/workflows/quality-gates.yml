@@ -717,7 +717,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, security-stage, e2e-packaging, build-package, deploy-readiness]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, security-semgrep, security-gitleaks, security-iac, security-sca, security-license, security-sbom, security-codeql, security-stage, e2e-packaging, build-package, deploy-readiness]
     if: >-
       ${{
         always() &&
@@ -728,6 +728,13 @@ jobs:
         needs.syntax-matrix.result == 'success' &&
         needs.test.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
+        needs.security-semgrep.result == 'success' &&
+        needs.security-gitleaks.result == 'success' &&
+        needs.security-iac.result == 'success' &&
+        needs.security-sca.result == 'success' &&
+        needs.security-license.result == 'success' &&
+        needs.security-sbom.result == 'success' &&
+        needs.security-codeql.result == 'success' &&
         needs.security-stage.result == 'success' &&
         needs.e2e-packaging.result == 'success' &&
         needs.build-package.result == 'success' &&

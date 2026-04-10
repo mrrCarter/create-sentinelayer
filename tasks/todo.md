@@ -1416,3 +1416,11 @@ Review:
 - [x] Preserve diagnostic host context in auth-audit URL sanitization while redacting path/query/token material.
 - [x] Run full local validation (`npm run verify`).
 - [ ] Push batch A43, watch Omar Gate, and continue iterative non-blocking burn-down.
+
+## PR #274 Omar Loop Batch A44 (2026-04-10)
+- [x] Add bounded network retry/timeout controls to gitleaks and trivy binary downloads.
+- [x] Add timeout/retry budget controls around Semgrep analyzer execution with fail-fast for policy findings.
+- [x] Add Omar OIDC exchange URL host/path allowlist validation before outbound token exchange call.
+- [x] Strengthen `quality-summary` contract by requiring direct success of all security reusable jobs plus aggregate security stage.
+- [x] Run full local validation (`npm run verify`).
+- [ ] Push batch A44, watch Omar Gate, and continue iterative non-blocking burn-down.

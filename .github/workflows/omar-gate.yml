@@ -86,6 +86,8 @@ jobs:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
           OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
           OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || '' }}
+          OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
+          OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/sentinelayer' }}
         run: |
           set -euo pipefail
           mode="static-secrets"
@@ -93,6 +95,42 @@ jobs:
           exchange_url="$(echo "${OMAR_TOKEN_EXCHANGE_URL}" | xargs || true)"
           exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
           if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
+            if ! echo "${exchange_url}" | grep -Eq '^https://'; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL must use https://."
+              exit 1
+            fi
+            exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${exchange_url}" || true)"
+            exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${exchange_url}" || true)"
+            if [ -z "${exchange_host}" ] || [ -z "${exchange_path}" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL is not a valid absolute URL."
+              exit 1
+            fi
+            host_allowed="false"
+            IFS=',' read -r -a allowed_hosts <<< "${OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS}"
+            for host in "${allowed_hosts[@]}"; do
+              candidate="$(echo "${host}" | tr '[:upper:]' '[:lower:]' | xargs)"
+              if [ -n "${candidate}" ] && [ "${candidate}" = "${exchange_host}" ]; then
+                host_allowed="true"
+                break
+              fi
+            done
+            if [ "${host_allowed}" != "true" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL host '${exchange_host}' is not allowlisted. Allowed hosts: ${OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS}."
+              exit 1
+            fi
+            path_allowed="false"
+            IFS=',' read -r -a allowed_paths <<< "${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}"
+            for allowed_path in "${allowed_paths[@]}"; do
+              candidate_path="$(echo "${allowed_path}" | xargs)"
+              if [ -n "${candidate_path}" ] && [ "${candidate_path}" = "${exchange_path}" ]; then
+                path_allowed="true"
+                break
+              fi
+            done
+            if [ "${path_allowed}" != "true" ]; then
+              echo "::error::OMAR_TOKEN_EXCHANGE_URL path '${exchange_path}' is not allowlisted. Allowed paths: ${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}."
+              exit 1
+            fi
             if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
               echo "::error::OIDC exchange is configured but GitHub OIDC request context is unavailable."
               exit 1
