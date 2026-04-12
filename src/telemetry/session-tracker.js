@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import process from "node:process";
 
 /**
  * Session Tracker — tracks tokens, tool calls, cost, and time per CLI run.

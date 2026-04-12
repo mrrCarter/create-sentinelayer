@@ -13,10 +13,24 @@ export const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const CIRCUIT_TRACK_STATUS_CODES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
-const circuitState = {
-  consecutiveFailures: 0,
-  openedAtMs: 0,
-};
+const circuitStateByScope = new Map();
+
+function resolveCircuitScope(url) {
+  try {
+    const parsed = new URL(String(url));
+    return parsed.origin;
+  } catch {
+    return "unknown";
+  }
+}
+
+function getCircuitState(scope) {
+  const key = String(scope || "unknown");
+  if (!circuitStateByScope.has(key)) {
+    circuitStateByScope.set(key, { consecutiveFailures: 0, openedAtMs: 0 });
+  }
+  return circuitStateByScope.get(key);
+}
 
 function normalizeApiError(errorPayload = {}) {
   if (!errorPayload || typeof errorPayload !== "object" || Array.isArray(errorPayload)) {
@@ -92,7 +106,8 @@ function computeBackoffMs({ attempt, retryDelayMs, retryAfterHeader }) {
   return Math.min(Math.max(1, computed), MAX_RETRY_DELAY_MS);
 }
 
-function isCircuitOpen() {
+function isCircuitOpen(scope) {
+  const circuitState = getCircuitState(scope);
   if (circuitState.openedAtMs <= 0) {
     return false;
   }
@@ -104,14 +119,16 @@ function isCircuitOpen() {
   return true;
 }
 
-function recordFailureForCircuit() {
+function recordFailureForCircuit(scope) {
+  const circuitState = getCircuitState(scope);
   circuitState.consecutiveFailures += 1;
   if (circuitState.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
     circuitState.openedAtMs = Date.now();
   }
 }
 
-function recordSuccessForCircuit() {
+function recordSuccessForCircuit(scope) {
+  const circuitState = getCircuitState(scope);
   circuitState.consecutiveFailures = 0;
   circuitState.openedAtMs = 0;
 }
@@ -124,9 +141,14 @@ function shouldRecordFailureForStatus(statusCode) {
   return CIRCUIT_TRACK_STATUS_CODES.has(Number(statusCode || 0));
 }
 
-export function __resetRequestCircuitForTests() {
-  circuitState.consecutiveFailures = 0;
-  circuitState.openedAtMs = 0;
+export function __resetRequestCircuitForTests(scope) {
+  if (scope) {
+    const circuitState = getCircuitState(scope);
+    circuitState.consecutiveFailures = 0;
+    circuitState.openedAtMs = 0;
+    return;
+  }
+  circuitStateByScope.clear();
 }
 
 /**
@@ -155,7 +177,8 @@ export async function requestJson(
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   } = {}
 ) {
-  if (isCircuitOpen()) {
+  const circuitScope = resolveCircuitScope(url);
+  if (isCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Request circuit breaker is open after consecutive API failures.", {
       status: 503,
       code: "CIRCUIT_OPEN",
@@ -198,7 +221,7 @@ export async function requestJson(
       }
 
       if (response.ok) {
-        recordSuccessForCircuit();
+        recordSuccessForCircuit(circuitScope);
         return json;
       }
 
@@ -214,7 +237,7 @@ export async function requestJson(
 
       if (!retryable || attempt >= normalizedMaxRetries) {
         if (shouldRecordCircuitFailure) {
-          recordFailureForCircuit();
+          recordFailureForCircuit(circuitScope);
         }
         throw error;
       }
@@ -242,7 +265,7 @@ export async function requestJson(
       );
 
       if (attempt >= normalizedMaxRetries) {
-        recordFailureForCircuit();
+        recordFailureForCircuit(circuitScope);
         throw normalizedError;
       }
 

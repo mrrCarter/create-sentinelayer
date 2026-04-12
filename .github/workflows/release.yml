@@ -188,9 +188,52 @@ jobs:
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
+  release-security:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release-prereqs]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Verify Omar Gate security check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          api_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/check-runs?check_name=Omar%20Gate"
+          response="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${api_url}")"
+          total="$(echo "${response}" | jq -r '.total_count // 0')"
+          if [ "${total}" -lt 1 ]; then
+            echo "::error::Omar Gate check run not found for ${TARGET_SHA}."
+            exit 1
+          fi
+          selected="$(echo "${response}" | jq -c '
+            .check_runs
+            | sort_by(.completed_at // .started_at)
+            | reverse
+            | map(select(.app.slug == "github-actions"))
+            | first // empty
+          ')"
+          if [ -z "${selected}" ]; then
+            echo "::error::No GitHub Actions Omar Gate check run found for ${TARGET_SHA}."
+            exit 1
+          fi
+          status="$(echo "${selected}" | jq -r '.status // empty')"
+          conclusion="$(echo "${selected}" | jq -r '.conclusion // empty')"
+          if [ "${status}" != "completed" ] || [ "${conclusion}" != "success" ]; then
+            echo "::error::Omar Gate is not successful (status=${status}, conclusion=${conclusion})."
+            exit 1
+          fi
+          echo "Omar Gate check run is successful for ${TARGET_SHA}."
+
   build-release-artifact:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-authorize, release-prereqs]
+    needs: [release-authorize, release-prereqs, release-security]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
@@ -245,6 +288,37 @@ jobs:
 
       - name: Build release tarball
         run: npm pack --ignore-scripts
+
+      - name: Verify deterministic tarball build
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=(sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          first_tarball="${tarballs[0]}"
+          first_sha="$(sha256sum "${first_tarball}" | awk '{print $1}')"
+          mv "${first_tarball}" /tmp/sentinelayer-cli-first.tgz
+          rm -f sentinelayer-cli-*.tgz
+          npm pack --ignore-scripts
+          tarballs=(sentinelayer-cli-*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one rebuild tarball, found ${#tarballs[@]}."
+            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+            exit 1
+          fi
+          second_tarball="${tarballs[0]}"
+          second_sha="$(sha256sum "${second_tarball}" | awk '{print $1}')"
+          if [ "${first_sha}" != "${second_sha}" ]; then
+            echo "::error::Release tarball is not deterministic (sha mismatch)."
+            echo "::error::First ${first_sha} != Second ${second_sha}"
+            exit 1
+          fi
+          rm -f "${second_tarball}"
+          mv /tmp/sentinelayer-cli-first.tgz "${first_tarball}"
 
       - name: Generate release artifact manifest
         id: artifact_manifest

@@ -171,6 +171,13 @@ jobs:
           TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
+            if [ "${pr_head_repo}" != "${REPO}" ]; then
+              echo "::notice::Fork PR context detected (${pr_head_repo}); skipping Omar Gate enforcement in Quality Gates."
+              exit 0
+            fi
+          fi
           api_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/check-runs?check_name=Omar%20Gate"
           response="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${api_url}")"
           total="$(echo "${response}" | jq -r '.total_count // 0')"
@@ -178,8 +185,19 @@ jobs:
             echo "::error::Omar Gate check run not found for ${TARGET_SHA}."
             exit 1
           fi
-          status="$(echo "${response}" | jq -r '.check_runs[0].status // empty')"
-          conclusion="$(echo "${response}" | jq -r '.check_runs[0].conclusion // empty')"
+          selected="$(echo "${response}" | jq -c '
+            .check_runs
+            | sort_by(.completed_at // .started_at)
+            | reverse
+            | map(select(.app.slug == "github-actions"))
+            | first // empty
+          ')"
+          if [ -z "${selected}" ]; then
+            echo "::error::No GitHub Actions Omar Gate check run found for ${TARGET_SHA}."
+            exit 1
+          fi
+          status="$(echo "${selected}" | jq -r '.status // empty')"
+          conclusion="$(echo "${selected}" | jq -r '.conclusion // empty')"
           if [ "${status}" != "completed" ] || [ "${conclusion}" != "success" ]; then
             echo "::error::Omar Gate is not successful (status=${status}, conclusion=${conclusion})."
             exit 1
