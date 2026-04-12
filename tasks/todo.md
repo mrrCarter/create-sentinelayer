@@ -1,3 +1,14 @@
+# 2026-04-12 - Fix Omar Gate LLM Disabled (Workflow/Input Contract)
+
+## Plan
+- [x] Confirm Omar Gate runs are using the legacy v1 action that respects `sentinelayer_managed_llm` and `openai_api_key`.
+- [x] Update the local Omar wrapper to enable managed LLM (`sentinelayer_managed_llm: "true"`) so runs do not skip LLM when BYOK is absent/invalid.
+- [x] Verify the workflow still declares `permissions: id-token: write` for managed proxy OIDC.
+- [ ] Open PR, run Omar Gate loop (`gh run watch`), and merge only after Omar passes.
+
+## Review
+- [ ] Pending.
+
 # Sentinelayer CLI Full E2E Demo Validation (2026-04-10)
 
 ## Plan
