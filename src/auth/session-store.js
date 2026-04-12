@@ -121,14 +121,34 @@ async function readMetadata({ homeDir } = {}) {
 
 async function writeMetadata(filePath, metadata) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${JSON.stringify(metadata, null, 2)}\n`, {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  const directory = path.dirname(filePath);
+  const tmpPath = path.join(
+    directory,
+    `.credentials.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString("hex")}.tmp`
+  );
+  const payload = `${JSON.stringify(metadata, null, 2)}\n`;
   try {
-    await fsp.chmod(filePath, 0o600);
-  } catch {
-    // Windows does not reliably support POSIX chmod semantics.
+    await fsp.writeFile(tmpPath, payload, { encoding: "utf-8", mode: 0o600 });
+    try {
+      await fsp.chmod(tmpPath, 0o600);
+    } catch {
+      // Windows does not reliably support POSIX chmod semantics.
+    }
+    try {
+      await fsp.rename(tmpPath, filePath);
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "EEXIST") {
+        await fsp.rm(filePath, { force: true });
+        await fsp.rename(tmpPath, filePath);
+      } else if (error && typeof error === "object" && error.code === "EPERM") {
+        await fsp.rm(filePath, { force: true });
+        await fsp.rename(tmpPath, filePath);
+      } else {
+        throw error;
+      }
+    }
+  } finally {
+    await fsp.rm(tmpPath, { force: true }).catch(() => {});
   }
 }
 

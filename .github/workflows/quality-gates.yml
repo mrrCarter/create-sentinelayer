@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: read
+  checks: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -153,6 +154,38 @@ jobs:
           node bin/create-sentinelayer.js --version
           node bin/sl.js --version
 
+  security-omar:
+    name: Security Gate (Omar)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-impact]
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Confirm Omar Gate check success
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          api_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/check-runs?check_name=Omar%20Gate"
+          response="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${api_url}")"
+          total="$(echo "${response}" | jq -r '.total_count // 0')"
+          if [ "${total}" -lt 1 ]; then
+            echo "::error::Omar Gate check run not found for ${TARGET_SHA}."
+            exit 1
+          fi
+          status="$(echo "${response}" | jq -r '.check_runs[0].status // empty')"
+          conclusion="$(echo "${response}" | jq -r '.check_runs[0].conclusion // empty')"
+          if [ "${status}" != "completed" ] || [ "${conclusion}" != "success" ]; then
+            echo "::error::Omar Gate is not successful (status=${status}, conclusion=${conclusion})."
+            exit 1
+          fi
+          echo "Omar Gate check run is successful for ${TARGET_SHA}."
+
   unit-coverage:
     name: Unit Coverage (>=80%, Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
@@ -218,14 +251,16 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-impact, lint, syntax-matrix, unit-coverage, e2e-packaging]
+    needs: [eval-impact, lint, syntax-matrix, security-omar, unit-coverage, e2e-packaging]
     if: >-
       ${{
         always() &&
         needs.eval-impact.result == 'success' &&
         contains(fromJSON('["resolved","approved_skip"]'), needs.eval-impact.outputs.eval_resolution) &&
+        (needs.eval-impact.outputs.eval_required != 'true' || needs.eval-impact.outputs.eval_evidence_found == 'true') &&
         needs.lint.result == 'success' &&
         needs.syntax-matrix.result == 'success' &&
+        needs.security-omar.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
         needs.e2e-packaging.result == 'success'
       }}

@@ -9,8 +9,6 @@ on:
 permissions:
   checks: read
   contents: read
-  attestations: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -195,6 +193,10 @@ jobs:
     needs: [release-authorize, release-prereqs]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     concurrency:
       group: release-build-${{ github.ref }}
       cancel-in-progress: false

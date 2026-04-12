@@ -67,16 +67,22 @@ export async function invokeViaProxy({
 
   for (let attempt = 0; attempt <= PROXY_MAX_RETRIES; attempt++) {
     try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${resolvedToken}`,
-          Accept: "application/json",
-        },
-        body,
-        signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${resolvedToken}`,
+            Accept: "application/json",
+          },
+          body,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (PROXY_RETRY_STATUSES.has(response.status) && attempt < PROXY_MAX_RETRIES) {
         const retryAfter = response.headers.get("Retry-After");
