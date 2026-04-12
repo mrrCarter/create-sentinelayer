@@ -37,6 +37,15 @@
 - Updated files: `src/auth/gate.js`, `src/ai/aidenid.js`, `src/commands/scan.js`, `src/ai/proxy.js`, `src/agents/jules/tools/runtime-audit.js`, `src/telemetry/sync.js`, `tests/unit.auth-gate.test.mjs`.
 - Verification evidence: `npm run verify` passed (89 e2e + 410 unit tests, coverage and pack checks successful).
 
+# CLI API Token Scope Alignment (2026-04-12)
+
+## Plan
+- [x] Issue CLI API tokens with scope `cli` (not `github_app_bridge`) to match general CLI usage.
+- [x] Align with sentinelayer-api guard changes to accept CLI tokens for `/auth/me`.
+
+## Review
+- Completed in `src/auth/service.js` (scope set to `cli`).
+
 # Sentinelayer CLI Roadmap PR Preparation (2026-03-31)
 
 ## Mission
