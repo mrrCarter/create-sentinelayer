@@ -40,6 +40,10 @@ permissions:
   pull-requests: write
   id-token: write
 
+concurrency:
+  group: omar-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 

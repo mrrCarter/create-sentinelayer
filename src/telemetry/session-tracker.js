@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import crypto from "node:crypto";
 import process from "node:process";
 
 /**
@@ -11,14 +12,25 @@ import process from "node:process";
  * - Print summary on completion
  */
 
-let SESSION = null;
+const SESSIONS = new Map();
+let ACTIVE_SESSION_ID = null;
+
+function resolveSession(sessionId) {
+  const resolvedId = String(sessionId || ACTIVE_SESSION_ID || "").trim();
+  if (!resolvedId) {
+    return null;
+  }
+  return SESSIONS.get(resolvedId) || null;
+}
 
 /**
  * Initialize a new tracking session.
  * Call this at the start of any auditable command.
  */
 export function startSession(command) {
-  SESSION = {
+  const sessionId = crypto.randomUUID();
+  const session = {
+    id: sessionId,
     command: command || "unknown",
     startedAt: Date.now(),
     inputTokens: 0,
@@ -28,55 +40,61 @@ export function startSession(command) {
     llmCalls: 0,
     findings: { P0: 0, P1: 0, P2: 0, P3: 0 },
   };
-  return SESSION;
+  SESSIONS.set(sessionId, session);
+  ACTIVE_SESSION_ID = sessionId;
+  return session;
 }
 
 /**
  * Record token usage from an LLM call.
  */
-export function recordLlmUsage({ inputTokens = 0, outputTokens = 0, costUsd = 0 } = {}) {
-  if (!SESSION) return;
-  SESSION.inputTokens += inputTokens;
-  SESSION.outputTokens += outputTokens;
-  SESSION.costUsd += costUsd;
-  SESSION.llmCalls += 1;
+export function recordLlmUsage({ inputTokens = 0, outputTokens = 0, costUsd = 0, sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return;
+  session.inputTokens += inputTokens;
+  session.outputTokens += outputTokens;
+  session.costUsd += costUsd;
+  session.llmCalls += 1;
 }
 
 /**
  * Record a tool call.
  */
-export function recordToolCall() {
-  if (!SESSION) return;
-  SESSION.toolCalls += 1;
+export function recordToolCall({ sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return;
+  session.toolCalls += 1;
 }
 
 /**
  * Record findings.
  */
-export function recordFindings(summary) {
-  if (!SESSION) return;
-  if (summary?.P0) SESSION.findings.P0 += summary.P0;
-  if (summary?.P1) SESSION.findings.P1 += summary.P1;
-  if (summary?.P2) SESSION.findings.P2 += summary.P2;
-  if (summary?.P3) SESSION.findings.P3 += summary.P3;
+export function recordFindings(summary, { sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return;
+  if (summary?.P0) session.findings.P0 += summary.P0;
+  if (summary?.P1) session.findings.P1 += summary.P1;
+  if (summary?.P2) session.findings.P2 += summary.P2;
+  if (summary?.P3) session.findings.P3 += summary.P3;
 }
 
 /**
  * Get the current session summary.
  */
-export function getSessionSummary() {
-  if (!SESSION) return null;
-  const durationMs = Date.now() - SESSION.startedAt;
+export function getSessionSummary({ sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return null;
+  const durationMs = Date.now() - session.startedAt;
   return {
-    command: SESSION.command,
+    command: session.command,
     durationMs,
-    inputTokens: SESSION.inputTokens,
-    outputTokens: SESSION.outputTokens,
-    totalTokens: SESSION.inputTokens + SESSION.outputTokens,
-    costUsd: SESSION.costUsd,
-    toolCalls: SESSION.toolCalls,
-    llmCalls: SESSION.llmCalls,
-    findings: { ...SESSION.findings },
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    totalTokens: session.inputTokens + session.outputTokens,
+    costUsd: session.costUsd,
+    toolCalls: session.toolCalls,
+    llmCalls: session.llmCalls,
+    findings: { ...session.findings },
   };
 }
 
@@ -84,8 +102,8 @@ export function getSessionSummary() {
  * Print the session summary to stderr.
  * Called at the end of any auditable command.
  */
-export function printSessionSummary() {
-  const summary = getSessionSummary();
+export function printSessionSummary({ sessionId } = {}) {
+  const summary = getSessionSummary({ sessionId });
   if (!summary) return;
 
   const duration = summary.durationMs < 60000

@@ -114,7 +114,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Install dependencies
@@ -131,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        node: ["22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -174,8 +174,15 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
             if [ "${pr_head_repo}" != "${REPO}" ]; then
-              echo "::notice::Fork PR context detected (${pr_head_repo}); skipping Omar Gate enforcement in Quality Gates."
-              exit 0
+              pr_number="${{ github.event.pull_request.number }}"
+              labels_url="https://api.github.com/repos/${REPO}/issues/${pr_number}/labels"
+              labels="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${labels_url}")"
+              has_override="$(echo "${labels}" | jq -r '[.[].name] | map(ascii_downcase) | any(. == "omar:trusted")')"
+              if [ "${has_override}" != "true" ]; then
+                echo "::error::Fork PR requires maintainer review. Apply label 'omar:trusted' after running Omar Gate in trusted context."
+                exit 1
+              fi
+              echo "::notice::Fork PR override label detected; continuing Omar Gate enforcement."
             fi
           fi
           api_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/check-runs?check_name=Omar%20Gate"
@@ -212,7 +219,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        node: ["22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -245,7 +252,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["20", "22"]
+        node: ["22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

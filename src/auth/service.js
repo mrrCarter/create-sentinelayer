@@ -270,6 +270,7 @@ async function rotateStoredApiTokenIfNeeded({
     { homeDir }
   );
 
+  let revokeError = null;
   if (session.tokenId) {
     try {
       await revokeApiToken({
@@ -277,14 +278,15 @@ async function rotateStoredApiTokenIfNeeded({
         authToken: nextSession.token,
         tokenId: session.tokenId,
       });
-    } catch {
-      // Ignore revoke failures; new token is already active.
+    } catch (error) {
+      revokeError = error;
     }
   }
 
   return {
     session: nextSession,
     rotated: true,
+    revokeError,
   };
 }
 
@@ -513,6 +515,12 @@ export async function resolveActiveAuthSession({
       });
       active = rotateResult.session;
       rotated = rotateResult.rotated;
+      if (rotateResult.revokeError) {
+        console.warn(
+          "Sentinelayer token rotation succeeded but previous token revocation failed. " +
+          "Revoke the old token manually in the dashboard if needed."
+        );
+      }
     } catch {
       // Keep existing token if rotation fails.
       active = stored;

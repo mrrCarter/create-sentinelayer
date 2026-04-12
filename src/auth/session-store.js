@@ -26,6 +26,60 @@ export function resolveCredentialsFilePath({ homeDir } = {}) {
   return path.join(resolvedHome, ".sentinelayer", "credentials.json");
 }
 
+function resolveCredentialsKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer", "credentials.key");
+}
+
+async function loadOrCreateFileKey({ homeDir } = {}) {
+  const keyPath = resolveCredentialsKeyPath({ homeDir });
+  try {
+    const raw = await fsp.readFile(keyPath, "utf-8");
+    const key = Buffer.from(String(raw || "").trim(), "base64");
+    if (key.length === 32) {
+      return key;
+    }
+  } catch (error) {
+    if (!(error && typeof error === "object" && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+
+  const key = crypto.randomBytes(32);
+  await fsp.mkdir(path.dirname(keyPath), { recursive: true });
+  await fsp.writeFile(keyPath, key.toString("base64"), { encoding: "utf-8", mode: 0o600 });
+  try {
+    await fsp.chmod(keyPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  return key;
+}
+
+function encryptToken(token, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(token, "utf-8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    tokenEncrypted: ciphertext.toString("base64"),
+    tokenIv: iv.toString("base64"),
+    tokenTag: tag.toString("base64"),
+  };
+}
+
+function decryptToken({ tokenEncrypted, tokenIv, tokenTag }, key) {
+  const iv = Buffer.from(tokenIv, "base64");
+  const tag = Buffer.from(tokenTag, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(tokenEncrypted, "base64")),
+    decipher.final(),
+  ]);
+  return plaintext.toString("utf-8");
+}
+
 function buildKeyringAccountName(apiUrl) {
   const digest = crypto
     .createHash("sha256")
@@ -72,6 +126,9 @@ function normalizeMetadata(raw = {}) {
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
     token: String(raw.token || "").trim() || null,
+    tokenEncrypted: String(raw.tokenEncrypted || "").trim() || null,
+    tokenIv: String(raw.tokenIv || "").trim() || null,
+    tokenTag: String(raw.tokenTag || "").trim() || null,
     aidenid: normalizeAidenId(raw.aidenid),
   };
 }
@@ -205,6 +262,30 @@ export async function readStoredSession({ homeDir } = {}) {
   }
 
   if (!metadata.token) {
+    if (metadata.tokenEncrypted && metadata.tokenIv && metadata.tokenTag) {
+      try {
+        const key = await loadOrCreateFileKey({ homeDir });
+        const token = decryptToken(
+          {
+            tokenEncrypted: metadata.tokenEncrypted,
+            tokenIv: metadata.tokenIv,
+            tokenTag: metadata.tokenTag,
+          },
+          key
+        );
+        if (!token) {
+          return null;
+        }
+        return {
+          ...metadata,
+          filePath,
+          token,
+          storage: "file",
+        };
+      } catch {
+        return null;
+      }
+    }
     return null;
   }
   return {
@@ -339,7 +420,12 @@ export async function writeStoredSession(
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
-    nextMetadata.token = normalizedToken;
+    const key = await loadOrCreateFileKey({ homeDir });
+    const encrypted = encryptToken(normalizedToken, key);
+    nextMetadata.token = null;
+    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
   }
 
   await writeMetadata(filePath, nextMetadata);
