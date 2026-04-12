@@ -60,7 +60,7 @@ runs:
         sentinelayer_token: ${{ inputs.sentinelayer_token }}
         sentinelayer_spec_id: ${{ inputs.sentinelayer_spec_id }}
         openai_api_key: ${{ inputs.openai_api_key }}
-        sentinelayer_managed_llm: "false"
+        sentinelayer_managed_llm: "true"
         scan_mode: ${{ inputs.scan_mode }}
         severity_gate: ${{ inputs.severity_gate }}
         model: gpt-5.3-codex
