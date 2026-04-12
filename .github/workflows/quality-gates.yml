@@ -178,7 +178,15 @@ jobs:
             fi
           fi
           api_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/check-runs?check_name=Omar%20Gate"
-          response="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${api_url}")"
+          response="$(curl -fsSL \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --retry 3 \
+            --retry-delay 2 \
+            --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api_url}")"
           total="$(echo "${response}" | jq -r '.total_count // 0')"
           if [ "${total}" -lt 1 ]; then
             echo "::error::Omar Gate check run not found for ${TARGET_SHA}."

@@ -15,6 +15,14 @@ import process from "node:process";
 const SESSIONS = new Map();
 let ACTIVE_SESSION_ID = null;
 
+function normalizeNonNegativeNumber(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return 0;
+  }
+  return normalized;
+}
+
 function resolveSession(sessionId) {
   const resolvedId = String(sessionId || ACTIVE_SESSION_ID || "").trim();
   if (!resolvedId) {
@@ -51,9 +59,12 @@ export function startSession(command) {
 export function recordLlmUsage({ inputTokens = 0, outputTokens = 0, costUsd = 0, sessionId } = {}) {
   const session = resolveSession(sessionId);
   if (!session) return;
-  session.inputTokens += inputTokens;
-  session.outputTokens += outputTokens;
-  session.costUsd += costUsd;
+  const safeInput = normalizeNonNegativeNumber(inputTokens);
+  const safeOutput = normalizeNonNegativeNumber(outputTokens);
+  const safeCost = normalizeNonNegativeNumber(costUsd);
+  session.inputTokens += safeInput;
+  session.outputTokens += safeOutput;
+  session.costUsd += safeCost;
   session.llmCalls += 1;
 }
 
@@ -72,10 +83,14 @@ export function recordToolCall({ sessionId } = {}) {
 export function recordFindings(summary, { sessionId } = {}) {
   const session = resolveSession(sessionId);
   if (!session) return;
-  if (summary?.P0) session.findings.P0 += summary.P0;
-  if (summary?.P1) session.findings.P1 += summary.P1;
-  if (summary?.P2) session.findings.P2 += summary.P2;
-  if (summary?.P3) session.findings.P3 += summary.P3;
+  const p0 = normalizeNonNegativeNumber(summary?.P0);
+  const p1 = normalizeNonNegativeNumber(summary?.P1);
+  const p2 = normalizeNonNegativeNumber(summary?.P2);
+  const p3 = normalizeNonNegativeNumber(summary?.P3);
+  if (p0) session.findings.P0 += p0;
+  if (p1) session.findings.P1 += p1;
+  if (p2) session.findings.P2 += p2;
+  if (p3) session.findings.P3 += p3;
 }
 
 /**

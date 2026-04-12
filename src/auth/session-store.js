@@ -62,7 +62,17 @@ async function loadOrCreateFileKey({ homeDir } = {}) {
       } catch {
         // Windows does not reliably support POSIX chmod semantics.
       }
-      await fsp.rm(legacyKeyPath, { force: true });
+      let verified = false;
+      try {
+        const verifyRaw = await fsp.readFile(keyPath, "utf-8");
+        const verifyKey = Buffer.from(String(verifyRaw || "").trim(), "base64");
+        verified = verifyKey.length === 32 && verifyKey.equals(legacyKey);
+      } catch {
+        verified = false;
+      }
+      if (verified) {
+        await fsp.rm(legacyKeyPath, { force: true });
+      }
       return legacyKey;
     }
   } catch (error) {
