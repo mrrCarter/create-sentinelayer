@@ -174,15 +174,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
             if [ "${pr_head_repo}" != "${REPO}" ]; then
-              pr_number="${{ github.event.pull_request.number }}"
-              labels_url="https://api.github.com/repos/${REPO}/issues/${pr_number}/labels"
-              labels="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${labels_url}")"
-              has_override="$(echo "${labels}" | jq -r '[.[].name] | map(ascii_downcase) | any(. == "omar:trusted")')"
-              if [ "${has_override}" != "true" ]; then
-                echo "::error::Fork PR requires maintainer review. Apply label 'omar:trusted' after running Omar Gate in trusted context."
-                exit 1
-              fi
-              echo "::notice::Fork PR override label detected; continuing Omar Gate enforcement."
+              echo "::notice::Fork PR detected; Omar Gate must run in trusted base-repository context before merge."
             fi
           fi
           api_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/check-runs?check_name=Omar%20Gate"
@@ -205,8 +197,21 @@ jobs:
           fi
           status="$(echo "${selected}" | jq -r '.status // empty')"
           conclusion="$(echo "${selected}" | jq -r '.conclusion // empty')"
+          summary="$(echo "${selected}" | jq -r '.output.summary // ""')"
           if [ "${status}" != "completed" ] || [ "${conclusion}" != "success" ]; then
             echo "::error::Omar Gate is not successful (status=${status}, conclusion=${conclusion})."
+            exit 1
+          fi
+          if [ -z "${summary}" ]; then
+            echo "::error::Omar Gate summary missing; cannot validate trusted scan outputs."
+            exit 1
+          fi
+          if echo "${summary}" | grep -q "status: \`skipped\`"; then
+            echo "::error::Omar Gate was skipped for this commit; trusted scan outputs are required."
+            exit 1
+          fi
+          if ! echo "${summary}" | grep -q "run_id:"; then
+            echo "::error::Omar Gate summary missing run_id; cannot validate trusted scan outputs."
             exit 1
           fi
           echo "Omar Gate check run is successful for ${TARGET_SHA}."

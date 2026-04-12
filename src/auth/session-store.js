@@ -28,11 +28,17 @@ export function resolveCredentialsFilePath({ homeDir } = {}) {
 
 function resolveCredentialsKeyPath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer", "keys", "credentials.key");
+}
+
+function resolveLegacyCredentialsKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
   return path.join(resolvedHome, ".sentinelayer", "credentials.key");
 }
 
 async function loadOrCreateFileKey({ homeDir } = {}) {
   const keyPath = resolveCredentialsKeyPath({ homeDir });
+  const legacyKeyPath = resolveLegacyCredentialsKeyPath({ homeDir });
   try {
     const raw = await fsp.readFile(keyPath, "utf-8");
     const key = Buffer.from(String(raw || "").trim(), "base64");
@@ -45,8 +51,28 @@ async function loadOrCreateFileKey({ homeDir } = {}) {
     }
   }
 
+  try {
+    const legacyRaw = await fsp.readFile(legacyKeyPath, "utf-8");
+    const legacyKey = Buffer.from(String(legacyRaw || "").trim(), "base64");
+    if (legacyKey.length === 32) {
+      await fsp.mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+      await fsp.writeFile(keyPath, legacyKey.toString("base64"), { encoding: "utf-8", mode: 0o600 });
+      try {
+        await fsp.chmod(keyPath, 0o600);
+      } catch {
+        // Windows does not reliably support POSIX chmod semantics.
+      }
+      await fsp.rm(legacyKeyPath, { force: true });
+      return legacyKey;
+    }
+  } catch (error) {
+    if (!(error && typeof error === "object" && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+
   const key = crypto.randomBytes(32);
-  await fsp.mkdir(path.dirname(keyPath), { recursive: true });
+  await fsp.mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
   await fsp.writeFile(keyPath, key.toString("base64"), { encoding: "utf-8", mode: 0o600 });
   try {
     await fsp.chmod(keyPath, 0o600);

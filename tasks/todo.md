@@ -10,6 +10,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] `PR-WEB-ERROR-BATCH` (`fix/web-admin-error-batch`) if needed: patch dashboard/admin error-stream handling regressions discovered during API burn-down.
 - [ ] For each PR: run local verification, open PR, run Omar loop (`gh run watch`), resolve P0-P2 in batches, merge only after green required checks.
 - [ ] Document resolved errors, evidence commands, and residual risk in this file review section before closing the batch.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24319174224): align Omar severity defaults, fail-closed fork enforcement, bind release canary to tag publish, remove gitleaks suppressions by eliminating secret-like fixtures, move file-key storage away from credentials file (with legacy migration), rerun Omar Gate and merge only on clean P0-P2.
 
 ## Plan
 - [x] Audit roadmap scope, dependencies, and phase ordering.
@@ -1322,3 +1323,11 @@ Review:
 - [ ] Implement low-risk non-blocking fixes in one batch PR (entropy false positives + static quality debt with no runtime behavior change).
 - [ ] Run API checks (`ruff check`, targeted pytest), open PR, run Omar Gate loop (`gh run watch`), merge on green.
 - [ ] Re-run post-merge Omar run inventory across CLI/API/Web and capture remaining non-blocking backlog (if any) for next batch.
+
+## 2026-04-12 - PR-CLI-OMAR-ONLY P2 Remediation (hardening/cli-omar-only-ci)
+
+- [x] `npm run verify` (local): check + e2e + unit coverage + npm pack succeeded.
+- [x] `/omargate deep` (local, test bypass): P1=15, P2=85, blocking=true (deterministic baseline; report saved under `.sentinelayer/reports/`).
+- [x] `/audit` (local, test bypass): P1=0, P2=8, blocking=false.
+- [ ] Push updates and re-run Omar Gate on PR `hardening/cli-omar-only-ci`.
+- [ ] Resolve any remaining P0-P2 findings and merge after Omar Gate passes.

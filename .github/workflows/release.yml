@@ -90,6 +90,7 @@ jobs:
           echo "## Manual Release Validation" >> "$GITHUB_STEP_SUMMARY"
           echo "- ref: \`${GITHUB_REF}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- note: workflow_dispatch validates only; publish remains tag-only and upstream checks must already be green." >> "$GITHUB_STEP_SUMMARY"
+          echo "- canary: dry-run publish executes in tag release path using the same tarball." >> "$GITHUB_STEP_SUMMARY"
 
   rollback-readiness-manual:
     if: github.event_name == 'workflow_dispatch'
@@ -112,41 +113,6 @@ jobs:
         env:
           PACKAGE_NAME: sentinelayer-cli
           ROLLBACK_MODE: manual-validate
-        run: bash .github/scripts/release-rollback-readiness.sh
-
-  canary-publish:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    needs: [manual-validate, rollback-readiness-manual]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-    environment: package-release
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build canary tarball
-        run: npm pack --ignore-scripts
-
-      - name: Simulate canary publish (dry-run)
-        run: |
-          set -euo pipefail
-          tarball="$(ls sentinelayer-cli-*.tgz)"
-          npm publish --dry-run --tag canary "${tarball}"
-
-      - name: Validate rollback readiness (canary dry-run)
-        env:
-          PACKAGE_NAME: sentinelayer-cli
-          ROLLBACK_MODE: canary-dry-run
         run: bash .github/scripts/release-rollback-readiness.sh
 
   release-authorize:
@@ -604,6 +570,12 @@ jobs:
           if [ "${PUBLISH_AUTH_MODE:-}" = "trusted" ]; then
             npm config delete //registry.npmjs.org/:_authToken || true
           fi
+
+      - name: Simulate canary publish (dry-run)
+        run: |
+          set -euo pipefail
+          test -f "${TARBALL}"
+          npm publish "./${TARBALL}" --dry-run --tag canary
 
       - name: Publish to npm
         run: |

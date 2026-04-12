@@ -109,7 +109,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           sentinelayer_managed_llm: "true"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}
           model: gpt-5.3-codex
           codex_model: gpt-5.3-codex
           model_fallback: gpt-4.1-mini
@@ -124,7 +124,7 @@ jobs:
           P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
           P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
           P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}
         run: |
           set -euo pipefail
           p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
@@ -169,7 +169,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          severity_gate="${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}"
+          severity_gate="${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}"
           p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
           threshold_line="P0=0, P1=0"
           if [ "${severity_gate}" = "P0" ]; then

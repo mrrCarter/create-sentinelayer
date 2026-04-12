@@ -142,3 +142,8 @@
 - Hash-locked Python workflows can still break at runtime if lock resolution drifts across major behavior changes (`setuptools` 82 removed `pkg_resources`); pin known-compatible upper bounds in the `.in` source and regenerate hashes, then confirm by executing the tool binary (`semgrep --version`) in CI.
 - When a user requests Omar-only gating, remove supplemental security workflows entirely (not just make them non-blocking) so the active CI contract matches policy intent.
 - Reusable-workflow digest policies must hash canonical git blob bytes (`git show HEAD:<path>`), not platform working-tree bytes, or Windows CRLF conversion will cause false digest mismatches in Linux CI.
+
+## 2026-04-12
+
+- When Omar Gate is the required security path, do not rely on multi-agent review workflows or substitute checks; ensure the Omar Gate workflow is the only enforcement path and is actually executed per PR.
+- If Omar LLM analysis is required, explicitly set `sentinelayer_managed_llm: "true"` (or equivalent action input) and verify the workflow is not running in a skipped/LLM-disabled mode before merging.

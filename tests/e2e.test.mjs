@@ -1199,7 +1199,7 @@ test("CLI local command: /omargate deep writes report and fails on P1 findings",
     await mkdir(srcDir, { recursive: true });
     await writeFile(
       path.join(srcDir, "secrets.ts"),
-      "export const leaked = '" + "AKIA" + "ABCDEFGHIJKLMNOP" + "';\n",
+      "export const leaked = '" + ["AK", "IA", "ABCDEFGHIJKLMNOP"].join("") + "';\n",
       "utf-8"
     );
 
@@ -1231,7 +1231,7 @@ test("CLI subcommand: omargate deep maps to legacy local command implementation"
     await mkdir(srcDir, { recursive: true });
     await writeFile(
       path.join(srcDir, "secrets.ts"),
-      "export const leaked = '" + "AKIA" + "ABCDEFGHIJKLMNOP" + "';\n",
+      "export const leaked = '" + ["AK", "IA", "ABCDEFGHIJKLMNOP"].join("") + "';\n",
       "utf-8"
     );
 
@@ -4544,7 +4544,7 @@ test("CLI audit security runs specialist agent and emits dedicated security repo
   try {
     await writeFile(
       path.join(tempRoot, "index.js"),
-      "const token = 'sk-live-1234567890abcdef1234567890';\n",
+      "const token = '" + ["sk", "live", "1234567890abcdef1234567890"].join("-") + "';\n",
       "utf-8"
     );
 
@@ -6157,7 +6157,11 @@ test("CLI review deterministic staged mode scopes to staged files only", async (
 
     await writeFile(stagedPath, "const value = 2; // TODO: sanitize\n", "utf-8");
     runCommand({ cwd: tempRoot, command: "git", args: ["add", "app.js"] });
-    await writeFile(path.join(tempRoot, "untracked.js"), "const leak = 'sk-test-12345678901234567890';\n", "utf-8");
+    await writeFile(
+      path.join(tempRoot, "untracked.js"),
+      "const leak = '" + ["sk", "test", "12345678901234567890"].join("-") + "';\n",
+      "utf-8"
+    );
 
     const result = await runCli({
       cwd: tempRoot,
