@@ -176,6 +176,16 @@ jobs:
       - name: Run release prerequisite verification
         run: npm run verify
 
+      - name: Validate rollback readiness (tag release)
+        env:
+          PACKAGE_NAME: sentinelayer-cli
+          ROLLBACK_MODE: tag-release
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          release_version="${RELEASE_VERSION#v}"
+          RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
+
       - name: Ensure release commit passed required upstream checks
         env:
           GH_TOKEN: ${{ github.token }}
@@ -404,35 +414,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  rollback-readiness-tag:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-release-artifact]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Validate rollback readiness (tag release dry-run)
-        env:
-          PACKAGE_NAME: sentinelayer-cli
-          ROLLBACK_MODE: tag-release
-          RELEASE_VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          release_version="${RELEASE_VERSION#v}"
-          RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
-
   release-approval:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-release-artifact, rollback-readiness-tag]
+    needs: [build-release-artifact]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     environment: package-release
@@ -444,7 +428,7 @@ jobs:
 
   pre-publish-gates:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-release-artifact, rollback-readiness-tag, release-approval]
+    needs: [build-release-artifact, release-approval]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
@@ -481,9 +465,6 @@ jobs:
       group: release-publish-prod
       cancel-in-progress: false
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

@@ -177,6 +177,8 @@ export async function requestJson(
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   } = {}
 ) {
+  const normalizedMethod = String(method || "GET").trim().toUpperCase();
+  const retryableMethod = normalizedMethod === "GET" || normalizedMethod === "HEAD" || normalizedMethod === "OPTIONS";
   const circuitScope = resolveCircuitScope(url);
   if (isCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Request circuit breaker is open after consecutive API failures.", {
@@ -196,7 +198,7 @@ export async function requestJson(
 
     try {
       const response = await fetch(String(url), {
-        method,
+        method: normalizedMethod,
         headers: {
           "Content-Type": "application/json",
           ...headers,
@@ -227,7 +229,7 @@ export async function requestJson(
 
       const apiError = normalizeApiError(json && typeof json === "object" ? json.error : {});
       const statusCode = Number(response.status || 500);
-      const retryable = shouldRetryStatus(statusCode);
+      const retryable = retryableMethod && shouldRetryStatus(statusCode);
       const shouldRecordCircuitFailure = shouldRecordFailureForStatus(statusCode);
       const error = new SentinelayerApiError(apiError.message, {
         status: statusCode,
@@ -264,7 +266,7 @@ export async function requestJson(
         }
       );
 
-      if (attempt >= normalizedMaxRetries) {
+      if (!retryableMethod || attempt >= normalizedMaxRetries) {
         recordFailureForCircuit(circuitScope);
         throw normalizedError;
       }
