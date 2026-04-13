@@ -17,6 +17,9 @@ const circuitStateByScope = new Map();
 const REQUEST_ID_HEADERS = ["x-request-id", "request-id", "x-correlation-id"];
 const DEBUG_API_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
 const MAX_API_ERROR_MESSAGE_LENGTH = 512;
+const IDEMPOTENCY_KEY_MIN_LENGTH = 32;
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PREFIXED_UUID_V4_PATTERN = /^[a-z0-9][a-z0-9_-]{1,48}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function resolveCircuitScope(url) {
   try {
@@ -91,6 +94,32 @@ function resolveIdempotencyKey(headers) {
     }
   }
   return null;
+}
+
+function isValidIdempotencyKey(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return false;
+  }
+  if (UUID_V4_PATTERN.test(normalized)) {
+    return true;
+  }
+  if (PREFIXED_UUID_V4_PATTERN.test(normalized)) {
+    return true;
+  }
+  if (normalized.length < IDEMPOTENCY_KEY_MIN_LENGTH) {
+    return false;
+  }
+  return /^[A-Za-z0-9_-]+$/.test(normalized);
+}
+
+function validateIdempotencyKey(value) {
+  if (!isValidIdempotencyKey(value)) {
+    throw new SentinelayerApiError("Idempotency-Key must be a UUIDv4 or a prefixed UUID.", {
+      status: 400,
+      code: "IDEMPOTENCY_KEY_INVALID",
+    });
+  }
 }
 
 function normalizeHeaderObject(headers) {
@@ -312,6 +341,9 @@ export async function requestJson(
       status: 400,
       code: "IDEMPOTENCY_KEY_REQUIRED",
     });
+  }
+  if (isMutationMethod && isIdempotentMutation) {
+    validateIdempotencyKey(resolvedIdempotencyKey);
   }
   const retryableMethod =
     normalizedMethod === "GET" ||

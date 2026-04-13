@@ -76,7 +76,7 @@ test("Unit auth http: retries idempotent mutation when Idempotency-Key is presen
     const response = await requestJson("https://api.example.com/test", {
       method: "POST",
       headers: {
-        "Idempotency-Key": "idem-123",
+        "Idempotency-Key": "sl-cli-auth-start-6dbbe1ee-38a5-4b42-8f8c-63f7d9a79b72",
       },
       maxRetries: 1,
       retryDelayMs: 1,
@@ -107,7 +107,7 @@ test("Unit auth http: retries idempotent mutation when Headers contains Idempote
 
   try {
     const headers = new Headers();
-    headers.set("Idempotency-Key", "idem-headers");
+    headers.set("Idempotency-Key", "sl-cli-auth-start-88435282-0140-4b34-9e36-4b5993c6869d");
     const response = await requestJson("https://api.example.com/test", {
       method: "POST",
       headers,

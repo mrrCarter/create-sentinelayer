@@ -1,4 +1,5 @@
 import process from "node:process";
+import crypto from "node:crypto";
 import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
 
@@ -28,13 +29,50 @@ const NO_AUTH_REQUIRED = new Set([
   "config",    // local config inspection
 ]);
 
+const TEST_BYPASS_NONCE_ENV = "SENTINELAYER_CLI_TEST_BYPASS_NONCE";
+const TEST_BYPASS_SECRET_ENV = "SENTINELAYER_CLI_TEST_BYPASS_SECRET";
+const TEST_BYPASS_TOKEN_ENV = "SENTINELAYER_CLI_TEST_BYPASS_TOKEN";
+
+function isKnownTestRunner() {
+  if (process.execArgv.includes("--test")) {
+    return true;
+  }
+  const argv1 = String(process.argv[1] || "");
+  return /node_modules[\\/](vitest|jest|mocha|ava|tap|cypress|playwright|@vitest)[\\/]/i.test(argv1);
+}
+
+function isValidTestBypassToken({ nonce, secret, token }) {
+  const normalizedNonce = String(nonce || "").trim();
+  const normalizedSecret = String(secret || "").trim();
+  const rawToken = String(token || "").trim();
+  if (!normalizedNonce || !normalizedSecret || !rawToken) {
+    return false;
+  }
+  const normalizedToken = rawToken.replace(/^sha256:/i, "");
+  if (!/^[a-f0-9]{64}$/i.test(normalizedToken)) {
+    return false;
+  }
+  const computed = crypto.createHmac("sha256", normalizedSecret).update(normalizedNonce).digest("hex");
+  const expectedBuffer = Buffer.from(computed, "hex");
+  const candidateBuffer = Buffer.from(normalizedToken.toLowerCase(), "hex");
+  if (expectedBuffer.length !== candidateBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, candidateBuffer);
+}
+
 function hasTrustedBypassContext() {
-  const nonce = String(process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE || "").trim();
-  return (
-    process.env.NODE_ENV === "test" &&
-    process.env.SENTINELAYER_CLI_TEST_MODE === "1" &&
-    nonce.length >= 12
-  );
+  if (process.env.NODE_ENV !== "test" || process.env.SENTINELAYER_CLI_TEST_MODE !== "1") {
+    return false;
+  }
+  if (!isKnownTestRunner()) {
+    return false;
+  }
+  return isValidTestBypassToken({
+    nonce: process.env[TEST_BYPASS_NONCE_ENV],
+    secret: process.env[TEST_BYPASS_SECRET_ENV],
+    token: process.env[TEST_BYPASS_TOKEN_ENV],
+  });
 }
 
 function isValidSessionToken(session) {

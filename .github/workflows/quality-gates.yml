@@ -472,24 +472,16 @@ jobs:
           echo "tarball_name=${first_tarball_name}" >> "$GITHUB_OUTPUT"
           echo "sha256=${first_sha256}" >> "$GITHUB_OUTPUT"
 
-  build-package:
-    name: Build Package Artifact
+  build-artifact:
+    name: Build Artifact
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [e2e-packaging, reproducible-build]
-    if: >-
-      ${{
-        (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
-        needs.e2e-packaging.result == 'success' &&
-        needs.reproducible-build.result == 'success'
-      }}
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
+    needs: [reproducible-build]
+    if: ${{ needs.reproducible-build.result == 'success' }}
     outputs:
       tarball: ${{ steps.pack.outputs.tarball }}
       sha256: ${{ steps.pack.outputs.sha256 }}
+      integrity: ${{ steps.pack.outputs.integrity }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -510,7 +502,7 @@ jobs:
           git update-index -q --refresh
           git diff --exit-code -- package-lock.json package.json
 
-      - name: Build canonical package tarball
+      - name: Build deterministic package artifact
         id: pack
         shell: bash
         env:
@@ -527,18 +519,8 @@ jobs:
             echo "::error::Build tarball sha256 mismatch with reproducible-build output. expected=${REPRODUCIBLE_SHA256} actual=${sha256}."
             exit 1
           fi
+          integrity="sha512-$(openssl dgst -sha512 -binary "${tarball}" | openssl base64 -A)"
           lockfile_sha256="$(sha256sum package-lock.json | awk '{print $1}')"
-          mkdir -p .tmp-pack-repeat
-          npm pack --ignore-scripts --pack-destination .tmp-pack-repeat --json > pack-repeat.json
-          repeat_tarball_name="$(jq -r '.[0].filename' pack-repeat.json)"
-          repeat_tarball=".tmp-pack-repeat/${repeat_tarball_name}"
-          test -n "${repeat_tarball_name}"
-          test -f "${repeat_tarball}"
-          repeat_sha256="$(sha256sum "${repeat_tarball}" | awk '{print $1}')"
-          if [ "${repeat_sha256}" != "${sha256}" ]; then
-            echo "::error::Non-deterministic npm pack output detected for the same commit. first=${sha256} repeat=${repeat_sha256}."
-            exit 1
-          fi
           node_version="$(node --version)"
           npm_version="$(npm --version)"
           toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${node_version}" "${npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
@@ -547,7 +529,7 @@ jobs:
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
-            --arg repeat_sha256 "${repeat_sha256}" \
+            --arg integrity "${integrity}" \
             --arg lockfile_sha256 "${lockfile_sha256}" \
             --arg workflow_path "${workflow_path}" \
             --arg workflow_sha256 "${workflow_sha256}" \
@@ -564,7 +546,7 @@ jobs:
             '{
               tarball: $tarball,
               sha256: $sha256,
-              repeat_sha256: $repeat_sha256,
+              integrity: $integrity,
               lockfile_sha256: $lockfile_sha256,
               workflow_path: $workflow_path,
               workflow_sha256: $workflow_sha256,
@@ -579,27 +561,94 @@ jobs:
               run_id: $run_id,
               run_attempt: $run_attempt
             }' > quality-build-manifest.json
-          cp quality-build-manifest.json quality-package-manifest.json
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "integrity=${integrity}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload deterministic build artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-build-artifacts
+          path: |
+            pack.json
+            quality-build-manifest.json
+            ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+  build-package:
+    name: Build Package Artifact
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [build-artifact, reproducible-build]
+    if: >-
+      ${{
+        (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
+        needs.build-artifact.result == 'success' &&
+        needs.reproducible-build.result == 'success'
+      }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      tarball: ${{ steps.resolve.outputs.tarball }}
+      sha256: ${{ steps.resolve.outputs.sha256 }}
+    steps:
+      - name: Download deterministic build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # digest-pinned (actions/download-artifact)
+        with:
+          name: quality-build-artifacts
+          path: build-artifact
+
+      - name: Resolve build artifact manifest
+        id: resolve
+        shell: bash
+        env:
+          REPRODUCIBLE_SHA256: ${{ needs.reproducible-build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          manifest="build-artifact/quality-build-manifest.json"
+          test -f "${manifest}"
+          tarball="$(jq -r '.tarball // empty' "${manifest}")"
+          sha256="$(jq -r '.sha256 // empty' "${manifest}")"
+          integrity="$(jq -r '.integrity // empty' "${manifest}")"
+          if [ -z "${tarball}" ] || [ -z "${sha256}" ]; then
+            echo "::error::Build manifest missing tarball or sha256."
+            exit 1
+          fi
+          tarball_path="build-artifact/${tarball}"
+          test -f "${tarball_path}"
+          actual_sha256="$(sha256sum "${tarball_path}" | awk '{print $1}')"
+          if [ "${actual_sha256}" != "${sha256}" ]; then
+            echo "::error::Build artifact checksum mismatch. manifest=${sha256} actual=${actual_sha256}."
+            exit 1
+          fi
+          if [ -n "${REPRODUCIBLE_SHA256}" ] && [ "${sha256}" != "${REPRODUCIBLE_SHA256}" ]; then
+            echo "::error::Build artifact sha256 mismatch with reproducible-build output. expected=${REPRODUCIBLE_SHA256} actual=${sha256}."
+            exit 1
+          fi
+          cp "${manifest}" quality-build-manifest.json
+          cp "${manifest}" quality-package-manifest.json
+          echo "tarball=${tarball_path}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "integrity=${integrity}" >> "$GITHUB_OUTPUT"
 
       - name: Upload quality package artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: quality-package-artifacts
           path: |
-            pack.json
-            pack-repeat.json
             quality-build-manifest.json
             quality-package-manifest.json
-            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.resolve.outputs.tarball }}
           if-no-files-found: error
           retention-days: 7
 
       - name: Generate quality artifact provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # digest-pinned (actions/attest-build-provenance)
         with:
-          subject-path: ${{ steps.pack.outputs.tarball }}
+          subject-path: ${{ steps.resolve.outputs.tarball }}
 
   deploy-readiness:
     name: Deploy Readiness

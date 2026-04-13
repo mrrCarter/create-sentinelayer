@@ -406,7 +406,7 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   if (!normalizedTokenId) {
     return false;
   }
-  const idempotencyKey = `sl-cli-revoke-token-${normalizedTokenId}`;
+  const idempotencyKey = createIdempotencyKey("sl-cli-revoke-token");
   await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
     method: "DELETE",
     headers: {
