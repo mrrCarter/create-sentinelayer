@@ -250,7 +250,7 @@ jobs:
     name: Test
     runs-on: ubuntu-22.04
     timeout-minutes: 20
-    needs: [eval-enforce, lint, syntax-matrix, security-scan]
+    needs: [eval-enforce, lint, syntax-matrix]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -278,7 +278,7 @@ jobs:
     name: Deterministic Security Scan
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-enforce, lint, syntax-matrix]
+    needs: [test]
     outputs:
       scan_path: ${{ steps.scan.outputs.scan_path }}
       scan_sha256: ${{ steps.scan.outputs.scan_sha256 }}
@@ -339,7 +339,7 @@ jobs:
     name: Unit Coverage (>=80%, Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [test]
+    needs: [security-scan]
     strategy:
       fail-fast: false
       matrix:

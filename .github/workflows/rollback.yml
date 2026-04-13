@@ -208,6 +208,9 @@ jobs:
           NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '1800' }}
           NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
           NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
+          NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256: ${{ vars.NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256 || '' }}
+          NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF: ${{ vars.NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF || 'true' }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
           if [ -z "${NPM_TOKEN_EXCHANGE_URL}" ]; then
@@ -221,6 +224,21 @@ jobs:
           if ! echo "${NPM_TOKEN_EXCHANGE_URL}" | grep -Eq '^https://'; then
             echo "::error::NPM_TOKEN_EXCHANGE_URL must use https://."
             exit 1
+          fi
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          require_pinned="$(echo "${NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          pinned_pubkey="$(echo "${NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
+          if [ "${ref_protected}" = "true" ] && [ "${require_pinned}" != "false" ] && [ -z "${pinned_pubkey}" ]; then
+            echo "::error::Pinned public key is required for npm token exchange on protected refs. Set NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256."
+            exit 1
+          fi
+          curl_pinned_arg=()
+          if [ -n "${pinned_pubkey}" ]; then
+            if echo "${pinned_pubkey}" | grep -q '^sha256//'; then
+              curl_pinned_arg=(--pinnedpubkey "${pinned_pubkey}")
+            else
+              curl_pinned_arg=(--pinnedpubkey "sha256//${pinned_pubkey}")
+            fi
           fi
           exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
           exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
@@ -314,6 +332,7 @@ jobs:
               --retry 0 \
               --connect-timeout 5 \
               --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+              "${curl_pinned_arg[@]}" \
               -H "Content-Type: application/json" \
               -D "${exchange_headers_file}" \
               -o "${exchange_body_file}" \

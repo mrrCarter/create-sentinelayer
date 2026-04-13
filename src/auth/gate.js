@@ -36,13 +36,11 @@ const TEST_BYPASS_NONCE_ENV = "SENTINELAYER_CLI_TEST_BYPASS_NONCE";
 const TEST_BYPASS_SECRET_ENV = "SENTINELAYER_CLI_TEST_BYPASS_SECRET";
 const TEST_BYPASS_TOKEN_ENV = "SENTINELAYER_CLI_TEST_BYPASS_TOKEN";
 const TEST_BYPASS_NONCE_FILENAME_PREFIX = "sentinelayer-cli-test-bypass";
+const TEST_BYPASS_NONCE_MAX_AGE_MS = 5 * 60 * 1000;
 
-function isKnownTestRunner() {
-  if (process.execArgv.includes("--test")) {
-    return true;
-  }
-  const argv1 = String(process.argv[1] || "");
-  return /node_modules[\\/](vitest|jest|mocha|ava|tap|cypress|playwright|@vitest)[\\/]/i.test(argv1);
+function isTruthy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 function isPackagedBuild() {
@@ -54,46 +52,74 @@ function isPackagedBuild() {
   return execBase !== "node" && execBase !== "node.exe";
 }
 
-function hasValidNonceFile(nonce) {
+function readNonceEnvelope(nonce) {
   const normalizedNonce = String(nonce || "").trim();
   if (!normalizedNonce) {
-    return false;
+    return null;
   }
   const nonceFile = path.join(os.tmpdir(), `${TEST_BYPASS_NONCE_FILENAME_PREFIX}-${normalizedNonce}.nonce`);
   try {
     const stats = fs.statSync(nonceFile);
     if (!stats.isFile()) {
-      return false;
+      return null;
     }
     if (typeof process.getuid === "function") {
       if (stats.uid !== process.getuid()) {
-        return false;
+        return null;
       }
       if (stats.mode & 0o002) {
-        return false;
+        return null;
       }
     }
     if (stats.size <= 0 || stats.size > 1024) {
-      return false;
+      return null;
     }
-    return true;
+    const payloadRaw = fs.readFileSync(nonceFile, "utf-8");
+    const payload = JSON.parse(payloadRaw);
+    const payloadNonce = String(payload?.nonce || "").trim();
+    const payloadPid = Number(payload?.pid);
+    const payloadTs = Number(payload?.ts);
+    if (payloadNonce !== normalizedNonce) {
+      return null;
+    }
+    if (!Number.isInteger(payloadPid) || payloadPid <= 0) {
+      return null;
+    }
+    if (!Number.isFinite(payloadTs) || payloadTs <= 0) {
+      return null;
+    }
+    if (Math.abs(Date.now() - payloadTs) > TEST_BYPASS_NONCE_MAX_AGE_MS) {
+      return null;
+    }
+    return { nonce: payloadNonce, pid: payloadPid, ts: payloadTs };
   } catch {
-    return false;
+    return null;
   }
 }
 
-function isValidTestBypassToken({ nonce, secret, token }) {
+function isValidTestBypassToken({ nonce, pid, ts, secret, token }) {
   const normalizedNonce = String(nonce || "").trim();
+  const normalizedPid = Number(pid);
+  const normalizedTs = Number(ts);
   const normalizedSecret = String(secret || "").trim();
   const rawToken = String(token || "").trim();
-  if (!normalizedNonce || !normalizedSecret || !rawToken) {
+  if (
+    !normalizedNonce ||
+    !Number.isInteger(normalizedPid) ||
+    normalizedPid <= 0 ||
+    !Number.isFinite(normalizedTs) ||
+    normalizedTs <= 0 ||
+    !normalizedSecret ||
+    !rawToken
+  ) {
     return false;
   }
   const normalizedToken = rawToken.replace(/^sha256:/i, "");
   if (!/^[a-f0-9]{64}$/i.test(normalizedToken)) {
     return false;
   }
-  const computed = crypto.createHmac("sha256", normalizedSecret).update(normalizedNonce).digest("hex");
+  const message = `${normalizedNonce}|${normalizedPid}|${normalizedTs}`;
+  const computed = crypto.createHmac("sha256", normalizedSecret).update(message).digest("hex");
   const expectedBuffer = Buffer.from(computed, "hex");
   const candidateBuffer = Buffer.from(normalizedToken.toLowerCase(), "hex");
   if (expectedBuffer.length !== candidateBuffer.length) {
@@ -103,21 +129,23 @@ function isValidTestBypassToken({ nonce, secret, token }) {
 }
 
 function hasTrustedBypassContext() {
+  if (isTruthy(process.env.CI)) {
+    return false;
+  }
   if (process.env.NODE_ENV !== "test" || process.env.SENTINELAYER_CLI_TEST_MODE !== "1") {
     return false;
   }
   if (isPackagedBuild()) {
     return false;
   }
-  if (!isKnownTestRunner()) {
-    return false;
-  }
-  const nonce = process.env[TEST_BYPASS_NONCE_ENV];
-  if (!hasValidNonceFile(nonce)) {
+  const nonceEnvelope = readNonceEnvelope(process.env[TEST_BYPASS_NONCE_ENV]);
+  if (!nonceEnvelope) {
     return false;
   }
   return isValidTestBypassToken({
-    nonce,
+    nonce: nonceEnvelope.nonce,
+    pid: nonceEnvelope.pid,
+    ts: nonceEnvelope.ts,
     secret: process.env[TEST_BYPASS_SECRET_ENV],
     token: process.env[TEST_BYPASS_TOKEN_ENV],
   });
