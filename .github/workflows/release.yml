@@ -230,8 +230,14 @@ jobs:
             echo "::error::No successful release-please workflow run found on main for tagged commit ${GITHUB_SHA}."
             exit 1
           fi
-          release_please_run_id="$(echo "${release_candidates}" | jq -r 'last.id // empty')"
-          release_please_created_at="$(echo "${release_candidates}" | jq -r 'last.created_at // empty')"
+          if [ "${release_candidate_count}" -gt 1 ]; then
+            candidate_ids="$(echo "${release_candidates}" | jq -r '[.[].id] | join(",")')"
+            echo "::error::Multiple successful release-please runs found for ${GITHUB_SHA}; refusing nondeterministic selection."
+            echo "::error::candidate_run_ids=${candidate_ids}"
+            exit 1
+          fi
+          release_please_run_id="$(echo "${release_candidates}" | jq -r 'first.id // empty')"
+          release_please_created_at="$(echo "${release_candidates}" | jq -r 'first.created_at // empty')"
           if ! [[ "${release_please_run_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Unable to resolve canonical release-please workflow run id."
             exit 1

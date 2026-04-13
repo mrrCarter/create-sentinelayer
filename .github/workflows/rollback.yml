@@ -34,7 +34,7 @@ env:
 
 concurrency:
   group: release-rollback-prod
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   rollback:
@@ -59,6 +59,19 @@ jobs:
           set -euo pipefail
           if [ "${{ inputs.confirm }}" != "ROLLBACK" ]; then
             echo "::error::Rollback confirmation missing. Re-run with confirm=ROLLBACK."
+            exit 1
+          fi
+
+      - name: Block concurrent rollback executions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active_runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/rollback.yml/runs?status=in_progress&per_page=50" --jq '.workflow_runs[] | select(.id != '"${GITHUB_RUN_ID}"') | .id')"
+          if [ -n "${active_runs}" ]; then
+            echo "::error::Another rollback execution is already running: ${active_runs}."
+            echo "::error::Wait for the existing rollback to finish or cancel it before retrying."
             exit 1
           fi
 

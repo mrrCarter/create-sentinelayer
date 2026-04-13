@@ -237,10 +237,15 @@ export function registerAuthCommand(program) {
 
       if (status.remoteError) {
         console.log(pc.red(`Remote validation failed: ${status.remoteError.message}`));
+        const requestIdValue = status.remoteError.requestId
+          ? (shouldExposeSensitiveAuthInfo()
+            ? status.remoteError.requestId
+            : maskIdentifier(status.remoteError.requestId))
+          : "";
         console.log(
           pc.gray(
             `Error code: ${status.remoteError.code} status=${status.remoteError.status}${
-              status.remoteError.requestId ? ` request_id=${status.remoteError.requestId}` : ""
+              requestIdValue ? ` request_id=${requestIdValue}` : ""
             }`
           )
         );

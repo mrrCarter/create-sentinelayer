@@ -338,24 +338,40 @@ jobs:
           done
           jq -e 'length > 0' quality-source-attestation.json > /dev/null
 
-      - name: Prepare attestation subject from canonical quality artifact
-        id: pack
-        shell: bash
-        env:
-          TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
-        run: |
-          set -euo pipefail
-          source_manifest="quality-build-source/quality-package-manifest.json"
-          if [ ! -f "${source_manifest}" ]; then
-            echo "::error::Missing quality package manifest in downloaded artifact."
-            exit 1
-          fi
-          source_commit_sha="$(jq -r '.commit_sha // empty' "${source_manifest}")"
-          if [ -z "${source_commit_sha}" ] || [ "${source_commit_sha}" != "${TARGET_SHA}" ]; then
-            echo "::error::Quality package manifest commit mismatch. expected=${TARGET_SHA} source=${source_commit_sha:-<none>}."
-            exit 1
-          fi
-          source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
+        - name: Prepare attestation subject from canonical quality artifact
+          id: pack
+          shell: bash
+          env:
+            TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
+          run: |
+            set -euo pipefail
+            source_manifest="quality-build-source/quality-package-manifest.json"
+            if [ ! -f "${source_manifest}" ]; then
+              echo "::error::Missing quality package manifest in downloaded artifact."
+              exit 1
+            fi
+            source_commit_sha="$(jq -r '.commit_sha // empty' "${source_manifest}")"
+            if [ -z "${source_commit_sha}" ] || [ "${source_commit_sha}" != "${TARGET_SHA}" ]; then
+              echo "::error::Quality package manifest commit mismatch. expected=${TARGET_SHA} source=${source_commit_sha:-<none>}."
+              exit 1
+            fi
+            source_workflow_path="$(jq -r '.workflow_path // empty' "${source_manifest}")"
+            if [ "${source_workflow_path}" != ".github/workflows/quality-gates.yml" ]; then
+              echo "::error::Quality package manifest workflow_path mismatch. expected=.github/workflows/quality-gates.yml source=${source_workflow_path:-<none>}."
+              exit 1
+            fi
+            source_workflow_ref="$(jq -r '.workflow_ref // empty' "${source_manifest}")"
+            if ! echo "${source_workflow_ref}" | grep -Eq "^${GITHUB_REPOSITORY}/\\.github/workflows/quality-gates\\.yml@"; then
+              echo "::error::Quality package manifest workflow_ref is invalid: ${source_workflow_ref:-<none>}."
+              exit 1
+            fi
+            source_workflow_sha256="$(jq -r '.workflow_sha256 // empty' "${source_manifest}")"
+            expected_workflow_sha256="$(sha256sum .github/workflows/quality-gates.yml | awk '{print $1}')"
+            if [ -z "${source_workflow_sha256}" ] || [ "${source_workflow_sha256}" != "${expected_workflow_sha256}" ]; then
+              echo "::error::Quality package manifest workflow sha256 mismatch. expected=${expected_workflow_sha256} source=${source_workflow_sha256:-<none>}."
+              exit 1
+            fi
+            source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
           tarballs=(quality-build-source/sentinelayer-cli-*.tgz)
           if [ "${#tarballs[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one quality package tarball, found ${#tarballs[@]}."

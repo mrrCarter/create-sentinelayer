@@ -63,6 +63,7 @@ export function startSession(command) {
   }
   const session = {
     id: sessionId,
+    traceId: sessionId,
     command: command || "unknown",
     startedAt: Date.now(),
     inputTokens: 0,
@@ -135,6 +136,7 @@ export function getSessionSummary({ sessionId } = {}) {
   if (!session) return null;
   const durationMs = Date.now() - session.startedAt;
   return {
+    traceId: session.traceId || session.id,
     command: session.command,
     durationMs,
     inputTokens: session.inputTokens,
@@ -169,6 +171,9 @@ export function printSessionSummary({ sessionId } = {}) {
   parts.push(pc.white(summary.toolCalls + " tools"));
   if (summary.costUsd > 0) parts.push(pc.white("$" + summary.costUsd.toFixed(2)));
   parts.push(pc.white(duration));
+  if (summary.traceId) {
+    parts.push(pc.gray(`trace_id=${summary.traceId}`));
+  }
 
   const findingParts = [];
   if (summary.findings.P0 > 0) findingParts.push(pc.red("P0=" + summary.findings.P0));
