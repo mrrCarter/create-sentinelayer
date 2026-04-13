@@ -292,60 +292,24 @@ jobs:
         shell: bash
         env:
           OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE: ${{ vars.OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE || 'false' }}
-          GITLEAKS_VERSION: "8.24.2"
         run: |
           set -euo pipefail
           if [ ! -d "omar-artifacts" ]; then
             exit 0
           fi
           allow_override="$(echo "${OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          digest_policy=".github/policies/tool-digests.json"
-          if [ ! -f "${digest_policy}" ]; then
-            echo "::error::Missing tool digest policy file: ${digest_policy}"
-            exit 1
-          fi
-          archive="$(jq -r --arg version "${GITLEAKS_VERSION}" '.gitleaks[$version].asset // empty' "${digest_policy}")"
-          expected_sha="$(jq -r --arg version "${GITLEAKS_VERSION}" '.gitleaks[$version].sha256 // empty' "${digest_policy}")"
-          if [ -z "${archive}" ] || [ "${archive}" = "null" ]; then
-            echo "::error::No gitleaks asset entry found in ${digest_policy} for version ${GITLEAKS_VERSION}."
-            exit 1
-          fi
-          if [ -z "${expected_sha}" ] || [ "${expected_sha}" = "null" ]; then
-            echo "::error::No gitleaks sha256 entry found in ${digest_policy} for version ${GITLEAKS_VERSION}."
-            exit 1
-          fi
-          checksum_file="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          mkdir -p .gitleaks-bin
-          curl -sSL -o ".gitleaks-bin/${archive}" "${base_url}/${archive}"
-          curl -sSL -o ".gitleaks-bin/${checksum_file}" "${base_url}/${checksum_file}"
-          if ! grep -F " ${archive}" ".gitleaks-bin/${checksum_file}" > .gitleaks-bin/checksum.txt; then
-            echo "::error::Unable to locate checksum entry for ${archive}."
-            exit 1
-          fi
-          computed_sha="$(sha256sum ".gitleaks-bin/${archive}" | awk '{print $1}')"
-          if [ "${computed_sha}" != "${expected_sha}" ]; then
-            echo "::error::Gitleaks checksum mismatch. expected=${expected_sha} actual=${computed_sha}."
-            exit 1
-          fi
-          (cd .gitleaks-bin && sha256sum -c checksum.txt)
-          tar -xzf ".gitleaks-bin/${archive}" -C .gitleaks-bin
-          gitleaks_bin=".gitleaks-bin/gitleaks"
-          if [ ! -x "${gitleaks_bin}" ]; then
-            chmod +x "${gitleaks_bin}"
-          fi
-          report="omar-artifacts/gitleaks-omar.json"
+          report="omar-artifacts/secret-scan.json"
           set +e
-          "${gitleaks_bin}" detect --no-git --source omar-artifacts --redact --report-format json --report-path "${report}"
+          node .github/scripts/scan-omar-artifacts.js --path omar-artifacts --report "${report}"
           scan_exit="$?"
           set -e
           if [ "${scan_exit}" -ne 0 ]; then
             findings="$(jq 'length' "${report}" 2>/dev/null || echo 0)"
             if [ "${allow_override}" != "true" ]; then
-              echo "::error::Gitleaks detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
+              echo "::error::Secret scan detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
               exit 1
             fi
-            match_files="$(jq -r '.[].File // .[].file // empty' "${report}" | sort -u | tr '\n' ' ')"
+            match_files="$(jq -r '.[].file // empty' "${report}" | sort -u | tr '\n' ' ')"
             if [ -n "${match_files}" ]; then
               echo "::warning::Secret override enabled; removing matching files before upload."
               echo "${match_files}" | tr ' ' '\n' | while read -r file; do

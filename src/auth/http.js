@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import crypto from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /**
@@ -94,30 +94,12 @@ function resolveIdempotencyKey(headers) {
   return null;
 }
 
-function buildIdempotencyKey({ method, url, body }) {
-  const stableSerialize = (value) => {
-    if (value === null || value === undefined) {
-      return value;
-    }
-    if (Array.isArray(value)) {
-      return value.map((entry) => stableSerialize(entry));
-    }
-    if (typeof value === "object") {
-      const sorted = {};
-      for (const key of Object.keys(value).sort()) {
-        sorted[key] = stableSerialize(value[key]);
-      }
-      return sorted;
-    }
-    return value;
-  };
-  const fingerprint = JSON.stringify({
-    method: String(method || "").toUpperCase(),
-    url: String(url || ""),
-    body: body === undefined ? null : stableSerialize(body),
-  });
-  const digest = createHash("sha256").update(fingerprint).digest("hex");
-  return `sl-${digest.slice(0, 32)}`;
+function createOperationId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `op-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
 }
 
 function normalizeHeaderObject(headers) {
@@ -324,7 +306,7 @@ export async function requestJson(
     normalizedMethod === "PATCH" ||
     normalizedMethod === "DELETE";
   const autoIdempotencyKey =
-    isMutationMethod && !existingIdempotencyKey ? buildIdempotencyKey({ method: normalizedMethod, url, body }) : null;
+    isMutationMethod && !existingIdempotencyKey ? `sl-${createOperationId()}` : null;
   const resolvedIdempotencyKey = existingIdempotencyKey || autoIdempotencyKey;
   const requestHeaders = applyIdempotencyKey(headers, resolvedIdempotencyKey);
   const isIdempotentMutation = Boolean(resolvedIdempotencyKey);

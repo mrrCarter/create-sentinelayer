@@ -76,6 +76,24 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
+function createFlowRequestId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `flow-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
+}
+
+function withFlowRequestId(headers, flowRequestId) {
+  if (!flowRequestId) {
+    return headers;
+  }
+  return {
+    ...(headers || {}),
+    "X-Request-Id": flowRequestId,
+  };
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -143,9 +161,10 @@ export async function resolveApiUrl({
   return normalizeApiUrl(DEFAULT_API_URL);
 }
 
-async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {
+async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"), {
     method: "POST",
+    headers: withFlowRequestId(null, flowRequestId),
     body: {
       challenge,
       ide: String(ide || DEFAULT_IDE_NAME),
@@ -160,6 +179,7 @@ async function pollCliAuthSession({
   challenge,
   timeoutMs,
   pollIntervalSeconds,
+  flowRequestId,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
@@ -207,6 +227,7 @@ async function pollCliAuthSession({
     try {
       payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
         method: "POST",
+        headers: withFlowRequestId(null, flowRequestId),
         body: {
           session_id: sessionId,
           challenge,
@@ -224,7 +245,7 @@ async function pollCliAuthSession({
             throw new SentinelayerApiError("CLI authentication polling rate limits exceeded.", {
               status: 429,
               code: "CLI_AUTH_RATE_LIMIT_EXHAUSTED",
-              requestId: error.requestId || null,
+              requestId: error.requestId || flowRequestId || null,
             });
           }
         } else if (classification === "server") {
@@ -233,7 +254,7 @@ async function pollCliAuthSession({
             throw new SentinelayerApiError("CLI authentication polling failed after repeated server errors.", {
               status: 503,
               code: "CLI_AUTH_SERVER_EXHAUSTED",
-              requestId: error.requestId || null,
+              requestId: error.requestId || flowRequestId || null,
             });
           }
         } else {
@@ -242,7 +263,7 @@ async function pollCliAuthSession({
             throw new SentinelayerApiError("CLI authentication polling aborted after repeated network failures.", {
               status: 503,
               code: "CLI_AUTH_NETWORK_EXHAUSTED",
-              requestId: error.requestId || null,
+              requestId: error.requestId || flowRequestId || null,
             });
           }
         }
@@ -252,7 +273,7 @@ async function pollCliAuthSession({
           throw new SentinelayerApiError("CLI authentication polling exceeded retry sleep budget.", {
             status: 503,
             code: "CLI_AUTH_SLEEP_BUDGET_EXHAUSTED",
-            requestId: error.requestId || null,
+            requestId: error.requestId || flowRequestId || null,
           });
         }
         cumulativeSleepMs += delayMs;
@@ -271,12 +292,14 @@ async function pollCliAuthSession({
       throw new SentinelayerApiError("CLI authentication was not approved.", {
         status: 401,
         code: "CLI_AUTH_REJECTED",
+        requestId: flowRequestId || null,
       });
     }
     if (status === "expired") {
       throw new SentinelayerApiError("CLI authentication session expired.", {
         status: 401,
         code: "CLI_AUTH_EXPIRED",
+        requestId: flowRequestId || null,
       });
     }
 
@@ -288,13 +311,14 @@ async function pollCliAuthSession({
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {
     status: 408,
     code: "CLI_AUTH_TIMEOUT",
+    requestId: flowRequestId || null,
   });
 }
 
-async function fetchCurrentUser({ apiUrl, token }) {
+async function fetchCurrentUser({ apiUrl, token, flowRequestId }) {
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/me"), {
     method: "GET",
-    headers: toAuthHeader(token),
+    headers: withFlowRequestId(toAuthHeader(token), flowRequestId),
   });
 }
 
@@ -303,6 +327,7 @@ async function issueApiToken({
   authToken,
   tokenLabel,
   tokenTtlDays,
+  flowRequestId,
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
@@ -310,10 +335,13 @@ async function issueApiToken({
   const idempotencyKey = createIdempotencyKey("sl-cli-issue-token");
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/api-tokens"), {
     method: "POST",
-    headers: {
-      ...toAuthHeader(authToken),
-      "Idempotency-Key": idempotencyKey,
-    },
+    headers: withFlowRequestId(
+      {
+        ...toAuthHeader(authToken),
+        "Idempotency-Key": idempotencyKey,
+      },
+      flowRequestId
+    ),
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
       scope: "cli",
@@ -439,11 +467,13 @@ export async function loginAndPersistSession({
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
   const challenge = generateChallenge();
+  const flowRequestId = createFlowRequestId();
   const session = await startCliAuthSession({
     apiUrl,
     challenge,
     ide,
     cliVersion,
+    flowRequestId,
   });
 
   const authorizeUrl = String(session.authorize_url || "").trim();
@@ -463,6 +493,7 @@ export async function loginAndPersistSession({
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
+    flowRequestId,
   });
 
   const approvalToken = String(approval.auth_token || "").trim();
@@ -470,15 +501,19 @@ export async function loginAndPersistSession({
     throw new SentinelayerApiError("Authentication completed but no auth token was returned.", {
       status: 503,
       code: "CLI_AUTH_MISSING_TOKEN",
+      requestId: flowRequestId || null,
     });
   }
 
-  const user = normalizeUser(approval.user || (await fetchCurrentUser({ apiUrl, token: approvalToken })));
+  const user = normalizeUser(
+    approval.user || (await fetchCurrentUser({ apiUrl, token: approvalToken, flowRequestId }))
+  );
   const issuedApiToken = await issueApiToken({
     apiUrl,
     authToken: approvalToken,
     tokenLabel,
     tokenTtlDays,
+    flowRequestId,
   });
 
   // Extract AIdenID metadata from approval (no secret stored locally)
@@ -517,6 +552,7 @@ export async function loginAndPersistSession({
     storage: stored.storage,
     filePath: stored.filePath,
     aidenid: stored.aidenid || null,
+    flowRequestId,
   };
 }
 
