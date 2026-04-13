@@ -955,7 +955,7 @@ async function runLocalOmarGateCommand(args) {
   const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
   const modelOverride = getCommandOptionValue(args, "--model") || "";
   const providerOverride = getCommandOptionValue(args, "--provider") || "";
-  const scanMode = getCommandOptionValue(args, "--scan-mode") || "";
+  const scanMode = getCommandOptionValue(args, "--scan-mode") || "deep";
   const maxParallel = parseInt(getCommandOptionValue(args, "--max-parallel") || "4", 10) || 4;
   const streamEnabled = hasCommandOption(args, "--stream");
   const targetPath = path.resolve(process.cwd(), pathArg);
@@ -1021,6 +1021,7 @@ async function runLocalOmarGateCommand(args) {
       if (!asJson) {
         console.log(pc.yellow(`Orchestrator skipped: ${aiError.message}`));
       }
+      aiResult = { skipped: true, reason: aiError.message, findings: [], summary: { P0: 0, P1: 0, P2: 0, P3: 0 } };
     }
   } else if (aiEnabled) {
     // Single AI review layer (legacy, no --scan-mode)
@@ -1047,6 +1048,7 @@ async function runLocalOmarGateCommand(args) {
       if (!asJson) {
         console.log(pc.yellow(`AI review layer skipped: ${aiError.message}`));
       }
+      aiResult = { skipped: true, reason: aiError.message, findings: [], summary: { P0: 0, P1: 0, P2: 0, P3: 0 } };
     }
   }
 
