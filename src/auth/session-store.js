@@ -245,6 +245,53 @@ async function writeMetadata(filePath, metadata) {
   }
 }
 
+async function migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir } = {}) {
+  if (!metadata || !metadata.token) {
+    return { metadata, token: null, migrated: false };
+  }
+
+  const plaintextToken = String(metadata.token || "").trim();
+  if (!plaintextToken) {
+    return { metadata: { ...metadata, token: null }, token: null, migrated: false };
+  }
+
+  const updatedAt = nowIso();
+  const nextMetadata = normalizeMetadata({
+    ...metadata,
+    token: null,
+    updatedAt,
+  });
+
+  const keytar = await loadKeytarClient();
+  if (keytar) {
+    const keyringAccount = metadata.keyringAccount || buildKeyringAccountName(metadata.apiUrl);
+    await keytar.setPassword(KEYRING_SERVICE, keyringAccount, plaintextToken);
+    nextMetadata.storage = "keyring";
+    nextMetadata.keyringService = KEYRING_SERVICE;
+    nextMetadata.keyringAccount = keyringAccount;
+    nextMetadata.tokenEncrypted = null;
+    nextMetadata.tokenIv = null;
+    nextMetadata.tokenTag = null;
+  } else {
+    const key = await loadOrCreateFileKey({ homeDir });
+    const encrypted = encryptToken(plaintextToken, key);
+    nextMetadata.storage = "file";
+    nextMetadata.keyringService = KEYRING_SERVICE;
+    nextMetadata.keyringAccount = "";
+    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
+  }
+
+  await writeMetadata(filePath, nextMetadata);
+  const { metadata: verify } = await readMetadata({ homeDir });
+  if (verify && verify.token) {
+    throw new Error("Plaintext token migration failed: token field persisted.");
+  }
+
+  return { metadata: nextMetadata, token: plaintextToken, migrated: true };
+}
+
 /**
  * Load the active stored session, resolving keyring-backed tokens when configured.
  *
@@ -275,6 +322,18 @@ export async function readStoredSession({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (!metadata) {
     return null;
+  }
+
+  if (metadata.token) {
+    const migrated = await migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir });
+    if (migrated.migrated) {
+      return {
+        ...migrated.metadata,
+        filePath,
+        token: migrated.token,
+        storage: migrated.metadata.storage || "file",
+      };
+    }
   }
 
   if (metadata.storage === "keyring") {
@@ -362,6 +421,14 @@ export async function readStoredSessionMetadata({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (!metadata) {
     return null;
+  }
+  if (metadata.token) {
+    const migrated = await migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir });
+    return {
+      ...migrated.metadata,
+      filePath,
+      token: null,
+    };
   }
   return {
     ...metadata,

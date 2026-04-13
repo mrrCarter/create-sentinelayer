@@ -251,6 +251,7 @@ export async function requestJson(
           ...headers,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: "error",
         signal: controller.signal,
       });
 

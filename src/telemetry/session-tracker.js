@@ -14,6 +14,8 @@ import process from "node:process";
 
 const SESSIONS = new Map();
 let ACTIVE_SESSION_ID = null;
+const MAX_SESSIONS = 50;
+const SESSION_TTL_MS = 60 * 60 * 1000;
 
 function normalizeNonNegativeNumber(value) {
   const normalized = Number(value);
@@ -31,11 +33,26 @@ function resolveSession(sessionId) {
   return SESSIONS.get(resolvedId) || null;
 }
 
+function pruneSessions(now = Date.now()) {
+  for (const [sessionId, session] of SESSIONS.entries()) {
+    if (!session || !session.startedAt) continue;
+    if (now - session.startedAt > SESSION_TTL_MS) {
+      SESSIONS.delete(sessionId);
+    }
+  }
+  while (SESSIONS.size > MAX_SESSIONS) {
+    const oldestKey = SESSIONS.keys().next().value;
+    if (!oldestKey) break;
+    SESSIONS.delete(oldestKey);
+  }
+}
+
 /**
  * Initialize a new tracking session.
  * Call this at the start of any auditable command.
  */
 export function startSession(command) {
+  pruneSessions();
   const sessionId = crypto.randomUUID();
   const session = {
     id: sessionId,
@@ -51,6 +68,16 @@ export function startSession(command) {
   SESSIONS.set(sessionId, session);
   ACTIVE_SESSION_ID = sessionId;
   return session;
+}
+
+export function endSession({ sessionId } = {}) {
+  const resolvedId = String(sessionId || ACTIVE_SESSION_ID || "").trim();
+  if (!resolvedId) return false;
+  const existed = SESSIONS.delete(resolvedId);
+  if (ACTIVE_SESSION_ID === resolvedId) {
+    ACTIVE_SESSION_ID = null;
+  }
+  return existed;
 }
 
 /**
@@ -147,6 +174,6 @@ export function printSessionSummary({ sessionId } = {}) {
     process.stderr.write(" | " + findingParts.join(" "));
   }
   process.stderr.write("\n");
-
+  endSession({ sessionId });
   return summary;
 }

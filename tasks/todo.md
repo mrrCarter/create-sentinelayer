@@ -1386,6 +1386,8 @@ Review:
 - [x] Set repo var `OMAR_ALLOW_STATIC_SECRETS=true` to allow emergency static fallback until OIDC exchange is configured.
 - [x] Omar Gate run `24321292167` (run_id `31ac9ff3-3b4c-4d72-8455-f61c9ee0182d`): P0=0, P1=0, P2=5.
 - [x] Apply remaining P2 fixes: headers-based idempotency detection, strict JSON response validation, release tag semver filter, security-scan dependency for packaging, rollback actor allowlist enforcement.
+- [x] Omar Gate run `24321422734` (run_id `f26eaddf-81d7-4e6a-81ee-9d31e8055674`): P0=0, P1=0, P2=5.
+- [x] Apply remaining P2 fixes: redirect policy for auth HTTP, plaintext token migration in session store, session tracker TTL/eviction, attestation intent gating, quality-gates workflow_dispatch guard.
 - [ ] Re-run Omar Gate on PR `hardening/cli-omar-only-ci` and fix any remaining P0-P2 findings.
 - [ ] Merge after Omar Gate passes; record run IDs and findings delta.
 ## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)

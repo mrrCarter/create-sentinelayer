@@ -7,7 +7,7 @@ import os from "node:os";
 import { detectRepos } from "../src/interactive/workspace.js";
 import { checkIngestFreshness } from "../src/interactive/auto-ingest.js";
 import {
-  startSession, recordLlmUsage, recordToolCall, recordFindings, getSessionSummary,
+  startSession, recordLlmUsage, recordToolCall, recordFindings, getSessionSummary, endSession,
 } from "../src/telemetry/session-tracker.js";
 
 let tmpDir;
@@ -61,6 +61,10 @@ describe("checkIngestFreshness", () => {
 });
 
 describe("session-tracker", () => {
+  afterEach(() => {
+    endSession();
+  });
+
   it("tracks tokens, tools, cost, and findings", () => {
     startSession("test-command");
     recordLlmUsage({ inputTokens: 1000, outputTokens: 500, costUsd: 0.02 });
@@ -84,9 +88,8 @@ describe("session-tracker", () => {
   });
 
   it("returns null when no session started", () => {
-    // Reset by starting a new session and checking
     const summary = getSessionSummary();
-    assert.ok(summary !== null); // previous test started one
+    assert.equal(summary, null);
   });
 });
 

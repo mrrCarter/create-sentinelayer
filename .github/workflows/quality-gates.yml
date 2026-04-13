@@ -371,6 +371,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [unit-coverage, e2e-packaging, security-scan]
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref_protected == true }}
     permissions:
       contents: read
       id-token: write
@@ -486,6 +487,7 @@ jobs:
     if: >-
       ${{
         always() &&
+        (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
         needs.build-package.result == 'success'
       }}
     steps:

@@ -380,8 +380,13 @@ jobs:
             exit 1
           fi
           SOURCE_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_INTENT="$(jq -r '.attestation_intent // empty' "${SOURCE_MANIFEST}")"
           if [ -z "${SOURCE_COMMIT_SHA}" ] || [ "${SOURCE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
             echo "::error::Canonical artifact commit mismatch. expected=${GITHUB_SHA} source=${SOURCE_COMMIT_SHA:-<none>}."
+            exit 1
+          fi
+          if [ "${SOURCE_INTENT}" != "release_candidate" ]; then
+            echo "::error::Attestation intent mismatch. expected=release_candidate actual=${SOURCE_INTENT:-<none>}."
             exit 1
           fi
           SOURCE_WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${SOURCE_MANIFEST}")"

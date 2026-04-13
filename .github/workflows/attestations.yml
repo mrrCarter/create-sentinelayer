@@ -2,10 +2,14 @@ name: Build Attestation
 
 on:
   workflow_call:
-  pull_request:
-    types: [opened, synchronize, reopened]
+    inputs:
+      attestation_intent:
+        description: Intent for the attestation run (release_candidate)
+        required: false
+        type: string
   push:
-    branches: [main]
+    tags:
+      - "v*.*.*"
 
 concurrency:
   group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
@@ -19,6 +23,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ATTESTATION_INTENT: ${{ github.event_name == 'workflow_call' && inputs.attestation_intent || (startsWith(github.ref, 'refs/tags/v') && 'release_candidate' || '') }}
 
 jobs:
   attestation-context:
@@ -52,6 +57,19 @@ jobs:
     outputs:
       trusted_context: ${{ needs.attestation-context.outputs.trusted_context }}
     steps:
+      - name: Enforce attestation intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          intent="$(echo "${ATTESTATION_INTENT}" | xargs || true)"
+          if [ "${intent}" != "release_candidate" ]; then
+            echo "::error::Attestation intent must be release_candidate. Received '${intent:-<none>}'"
+            exit 1
+          fi
+          {
+            echo "## Attestation Intent"
+            echo "- intent: \`${intent}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate attestation environment approval policy
         shell: bash
         env:
@@ -264,6 +282,7 @@ jobs:
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
             --arg commit_sha "${TARGET_SHA}" \
+            --arg attestation_intent "${ATTESTATION_INTENT}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg workflow_name "${GITHUB_WORKFLOW}" \
             --arg run_id "${GITHUB_RUN_ID}" \
@@ -273,6 +292,7 @@ jobs:
               tarball: $tarball,
               sha256: $sha256,
               commit_sha: $commit_sha,
+              attestation_intent: $attestation_intent,
               workflow_ref: $workflow_ref,
               workflow_name: $workflow_name,
               run_id: $run_id,
