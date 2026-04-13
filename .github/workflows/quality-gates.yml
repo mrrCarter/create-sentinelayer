@@ -317,18 +317,48 @@ jobs:
     name: Quality Summary
     runs-on: ubuntu-22.04
     needs: [eval-impact, lint, syntax-matrix, security-omar, unit-coverage, e2e-packaging]
-    if: >-
-      ${{
-        always() &&
-        needs.eval-impact.result == 'success' &&
-        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-impact.outputs.eval_resolution) &&
-        (needs.eval-impact.outputs.eval_required != 'true' || needs.eval-impact.outputs.eval_evidence_found == 'true') &&
-        needs.lint.result == 'success' &&
-        needs.syntax-matrix.result == 'success' &&
-        needs.security-omar.result == 'success' &&
-        needs.unit-coverage.result == 'success' &&
-        needs.e2e-packaging.result == 'success'
-      }}
+    if: ${{ always() }}
     steps:
       - name: Confirm all quality gates passed
-        run: echo "All quality checks passed."
+        run: |
+          set -euo pipefail
+          failures=0
+          eval_ok="true"
+          if [ "${{ needs.eval-impact.result }}" != "success" ]; then
+            eval_ok="false"
+          fi
+          if ! echo '["resolved","approved_skip"]' | jq -e --arg value "${{ needs.eval-impact.outputs.eval_resolution }}" 'index($value) != null' >/dev/null; then
+            eval_ok="false"
+          fi
+          if [ "${{ needs.eval-impact.outputs.eval_required }}" = "true" ] && [ "${{ needs.eval-impact.outputs.eval_evidence_found }}" != "true" ]; then
+            eval_ok="false"
+          fi
+          if [ "${eval_ok}" != "true" ]; then
+            echo "::error::Eval Impact Gate failed."
+            failures=1
+          fi
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "::error::Lint gate failed."
+            failures=1
+          fi
+          if [ "${{ needs.syntax-matrix.result }}" != "success" ]; then
+            echo "::error::Syntax matrix gate failed."
+            failures=1
+          fi
+          if [ "${{ needs.security-omar.result }}" != "success" ]; then
+            echo "::error::Security Omar gate failed."
+            failures=1
+          fi
+          if [ "${{ needs.unit-coverage.result }}" != "success" ]; then
+            echo "::error::Unit coverage gate failed."
+            failures=1
+          fi
+          if [ "${{ needs.e2e-packaging.result }}" != "success" ]; then
+            echo "::error::E2E packaging gate failed."
+            failures=1
+          fi
+          if [ "${failures}" -ne 0 ]; then
+            echo "::error::Quality Summary failed."
+            exit 1
+          fi
+          echo "All quality checks passed."

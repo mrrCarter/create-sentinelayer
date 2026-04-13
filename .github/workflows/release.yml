@@ -258,6 +258,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       actions: read
+      attestations: read
       contents: read
     concurrency:
       group: release-build-${{ github.ref }}
@@ -487,6 +488,7 @@ jobs:
     timeout-minutes: 10
     environment: package-release
     permissions:
+      attestations: read
       contents: read
       id-token: write
     concurrency:

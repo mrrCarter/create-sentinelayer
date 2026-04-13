@@ -98,6 +98,8 @@ jobs:
           echo "- status: \`skipped\` (untrusted fork pull request context)" >> "$GITHUB_STEP_SUMMARY"
           echo "- remediation: \`maintainer must run Omar Gate in trusted base-repository context before merge\`" >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::Untrusted fork pull request context cannot receive Sentinelayer/OpenAI secrets. Omar Gate skipped in this context."
+          echo "::error::Omar Gate skipped for fork PR; maintainer must run a trusted scan before merge."
+          exit 1
       - name: Resolve severity gate (trusted context)
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: severity_gate

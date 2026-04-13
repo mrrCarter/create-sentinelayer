@@ -155,6 +155,8 @@ async function pollCliAuthSession({
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
+  const maxPollIntervalMs = Math.max(pollIntervalMs, Math.min(5_000, Math.floor(timeout / 4)));
+  let pollAttempt = 0;
   const deadline = Date.now() + timeout;
   const isTransientPollError = (error) =>
     error instanceof SentinelayerApiError &&
@@ -162,6 +164,12 @@ async function pollCliAuthSession({
       error.code === "TIMEOUT" ||
       error.status === 429 ||
       error.status >= 500);
+  const computePollDelayMs = () => {
+    const exponent = Math.min(6, pollAttempt);
+    const backoffMs = Math.min(maxPollIntervalMs, Math.round(pollIntervalMs * Math.pow(1.5, exponent)));
+    const jitterFactor = 0.85 + Math.random() * 0.3;
+    return Math.max(250, Math.round(backoffMs * jitterFactor));
+  };
 
   while (Date.now() < deadline) {
     let payload;
@@ -175,7 +183,9 @@ async function pollCliAuthSession({
       });
     } catch (error) {
       if (isTransientPollError(error)) {
-        await sleep(pollIntervalMs);
+        const delayMs = computePollDelayMs();
+        pollAttempt += 1;
+        await sleep(delayMs);
         continue;
       }
       throw error;
@@ -198,7 +208,9 @@ async function pollCliAuthSession({
       });
     }
 
-    await sleep(pollIntervalMs);
+    const delayMs = computePollDelayMs();
+    pollAttempt += 1;
+    await sleep(delayMs);
   }
 
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {
