@@ -2,6 +2,7 @@
 
 ## 2026-04-13
 
+- PowerShell reserves `sl` for `Set-Location`; runtime auth hints and quickstart docs must resolve to a platform-safe command (`sentinelayer-cli`/`slc` on Windows) instead of hardcoding `sl`.
 - When hardening auth bypass controls, run full `npm test` immediately afterward and update the e2e harness to authenticate via deterministic test token/session paths; otherwise CI can silently break with broad auth-gate failures.
 - Always parse all workflow YAML files locally after workflow edits; a single indentation error creates opaque GitHub runs named by file path and can be mistaken for unrelated gate failures.
 

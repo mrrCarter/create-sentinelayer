@@ -1,3 +1,23 @@
+# 2026-04-13 - Windows Auth Command Compatibility + Hint Hardening
+
+## Plan
+- [x] Add a platform-aware CLI command hint helper so runtime auth guidance does not point PowerShell users to `sl` (Set-Location alias collision).
+- [x] Wire runtime auth/error hints to use the helper (`auth`, auth-gate, watch, scan setup-secrets, AIdenID/proxy paths).
+- [x] Add stable non-colliding npm bin aliases (`slc`, `sl-cli`) while keeping existing command names.
+- [x] Add unit coverage for command hint resolution and update docs with explicit PowerShell guidance.
+- [x] Run local verification (`npm run check`, targeted unit tests, `npm run verify`).
+- [ ] Open PR, run Omar Gate watch loop, and merge only after Omar pass.
+
+## Review
+- Added `src/ui/command-hints.js` and switched runtime auth hints to platform-safe command text (`sentinelayer-cli` on Windows, `sl` elsewhere).
+- Updated runtime guidance surfaces in `auth`, auth gate, watch run-events, scan setup-secrets, AIdenID credential resolver, proxy auth error, and interactive equivalent-command output.
+- Added npm bin aliases: `slc`, `sl-cli`.
+- Added unit coverage in `tests/unit.command-hints.test.mjs`.
+- Validation:
+  - `npm run check`
+  - `node --test tests/unit.command-hints.test.mjs`
+  - `npm run verify` (passes after `npm install` in fresh clone)
+
 # 2026-04-13 - PR-283 Omar + Quality Unblock Batch 2
 
 ## Plan

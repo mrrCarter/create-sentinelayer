@@ -31,6 +31,7 @@ import {
 import { detectRepoSlug, setupSecrets } from "../scan/gh-secrets.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
+import { authLoginHint } from "../ui/command-hints.js";
 
 const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
 
@@ -846,7 +847,7 @@ export function registerScanCommand(program) {
 
       if (!tokenValue) {
         const msg =
-          "No SentinelLayer token found. Run 'sl auth login', set SENTINELAYER_TOKEN, or use --dry-run for instructions.";
+          `No SentinelLayer token found. Run '${authLoginHint()}', set SENTINELAYER_TOKEN, or use --dry-run for instructions.`;
         if (emitJson) {
           console.log(JSON.stringify({ command: "scan setup-secrets", ok: false, reason: msg }, null, 2));
         } else {

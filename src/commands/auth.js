@@ -14,6 +14,7 @@ import {
 } from "../auth/service.js";
 import { resolveCredentialsFilePath } from "../auth/session-store.js";
 import { CLI_VERSION } from "../legacy-cli.js";
+import { authLoginHint } from "../ui/command-hints.js";
 
 const AUTH_DEBUG_ENV = "SENTINELAYER_DEBUG_ERRORS";
 const AUTH_UNMASK_REQUEST_IDS_ENV = "SENTINELAYER_UNMASK_REQUEST_IDS";
@@ -88,7 +89,7 @@ function maskIdentifier(value) {
 }
 
 function printAuthHint() {
-  console.log(pc.gray("Run `sl auth login` to create a persistent CLI session."));
+  console.log(pc.gray(`Run \`${authLoginHint()}\` to create a persistent CLI session.`));
 }
 
 export function registerAuthCommand(program) {
