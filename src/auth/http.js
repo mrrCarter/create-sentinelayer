@@ -15,6 +15,8 @@ const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const CIRCUIT_TRACK_STATUS_CODES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 const circuitStateByScope = new Map();
 const REQUEST_ID_HEADERS = ["x-request-id", "request-id", "x-correlation-id"];
+const DEBUG_API_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
+const MAX_API_ERROR_MESSAGE_LENGTH = 512;
 
 function resolveCircuitScope(url) {
   try {
@@ -34,16 +36,22 @@ function getCircuitState(scope) {
 }
 
 function normalizeApiError(errorPayload = {}) {
+  const fallbackMessage = "Unknown API error";
   if (!errorPayload || typeof errorPayload !== "object" || Array.isArray(errorPayload)) {
     return {
       code: "UNKNOWN",
-      message: "Unknown API error",
+      message: sanitizeApiErrorMessage(fallbackMessage, fallbackMessage),
       requestId: null,
     };
   }
+  const rawMessage = String(errorPayload.message || fallbackMessage);
+  const safeMessage = sanitizeApiErrorMessage(rawMessage, fallbackMessage);
+  const message = shouldExposeApiErrorDetails()
+    ? appendDebugDetails(safeMessage, rawMessage)
+    : safeMessage;
   return {
     code: String(errorPayload.code || "UNKNOWN"),
-    message: String(errorPayload.message || "Unknown API error"),
+    message,
     requestId: errorPayload.request_id ? String(errorPayload.request_id) : null,
   };
 }
@@ -89,7 +97,11 @@ export class SentinelayerApiError extends Error {
    * @param {{ status?: number, code?: string, requestId?: string | null }} [options]
    */
   constructor(message, { status = 500, code = "UNKNOWN", requestId = null } = {}) {
-    super(String(message || "Sentinelayer API error"));
+    const safeMessage = sanitizeApiErrorMessage(message, "Sentinelayer API error");
+    const resolvedMessage = shouldExposeApiErrorDetails()
+      ? appendDebugDetails(safeMessage, message)
+      : safeMessage;
+    super(resolvedMessage);
     this.name = "SentinelayerApiError";
     this.status = Number(status || 500);
     this.code = String(code || "UNKNOWN");
@@ -161,6 +173,35 @@ function recordFailureForCircuit(scope) {
   if (circuitState.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
     circuitState.openedAtMs = Date.now();
   }
+}
+
+function shouldExposeApiErrorDetails() {
+  const normalized = String(process.env[DEBUG_API_ERRORS_ENV] || "").trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function sanitizeApiErrorMessage(message, fallback = "Sentinelayer API error") {
+  const fallbackMessage = String(fallback || "Sentinelayer API error");
+  const normalized = String(message || "").trim();
+  const candidate = normalized || fallbackMessage;
+  const sanitized = candidate
+    .replace(/\bbearer\s+[a-z0-9._~+/=-]+\b/gi, "bearer [REDACTED]")
+    .replace(/\b(token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi, "$1=[REDACTED]")
+    .replace(/\b[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, "[REDACTED_JWT]")
+    .replace(/\bhttps?:\/\/[^\s"'`]+/gi, () => "<redacted-url>")
+    .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, "<redacted-email>");
+  if (sanitized.length <= MAX_API_ERROR_MESSAGE_LENGTH) {
+    return sanitized;
+  }
+  return `${sanitized.slice(0, MAX_API_ERROR_MESSAGE_LENGTH - 3)}...`;
+}
+
+function appendDebugDetails(safeMessage, rawMessage) {
+  const raw = String(rawMessage || "").trim();
+  if (!raw) return safeMessage;
+  const maxDetailLength = 240;
+  const trimmed = raw.length > maxDetailLength ? `${raw.slice(0, maxDetailLength - 3)}...` : raw;
+  return `${safeMessage} (debug: ${trimmed})`;
 }
 
 function recordSuccessForCircuit(scope) {

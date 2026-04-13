@@ -1,5 +1,9 @@
 # Lessons
 
+## 2026-04-12
+
+- When the requirement is "Omar Gate only," do not rely on any multi-agent review workflows or alternative scanners; fix Omar-specific findings first and rerun the Omar Gate loop until P0-P2 are cleared.
+
 ## 2026-03-31
 
 - When a roadmap spans multiple repos, baseline every dependent repo before starting feature PRs; unresolved upstream drift can invalidate downstream design decisions.

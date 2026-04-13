@@ -14,7 +14,7 @@ concurrency:
       (github.ref == 'refs/heads/main' && 'quality-gates-main') ||
       format('quality-gates-ref-{0}', github.ref)
     }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.ref_protected != true }}
+  cancel-in-progress: true
 
 permissions:
   checks: read

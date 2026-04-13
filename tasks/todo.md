@@ -59,6 +59,7 @@ Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SW
 - [ ] For each PR: run local verification, open PR, run Omar loop (`gh run watch`), resolve P0-P2 in batches, merge only after green required checks.
 - [ ] Document resolved errors, evidence commands, and residual risk in this file review section before closing the batch.
 - [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24319174224): align Omar severity defaults, fail-closed fork enforcement, bind release canary to tag publish, remove gitleaks suppressions by eliminating secret-like fixtures, move file-key storage away from credentials file (with legacy migration), rerun Omar Gate and merge only on clean P0-P2.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24321597245): add PR attestation trigger, remove static-secret Omar fallback on protected refs, enforce single-flight quality-gates concurrency, hard-fail duplicate/whitespace allowlists in release policy, sanitize upstream API errors unless debug, add randomUUID fallback in session tracker, rerun Omar Gate and merge only when P0-P2 clear.
 
 ## Plan
 - [x] Audit roadmap scope, dependencies, and phase ordering.

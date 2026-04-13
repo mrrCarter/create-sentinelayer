@@ -51,14 +51,45 @@ jobs:
             echo "::error::Invalid release tag policy schema in ${policy_file}."
             exit 1
           fi
-          allowed_csv="$(jq -r '[.allowed_tag_actors[] | strings | select(length > 0)] | join(",")' "${policy_file}")"
-          signer_allowlist="$(jq -r '[.allowed_tag_signer_emails[] | strings | ascii_downcase | select(length > 0)] | join(",")' "${policy_file}")"
+          allowed_actors_json="$(jq -c '[.allowed_tag_actors[] | strings | gsub("^\\s+|\\s+$"; "") | select(length > 0)]' "${policy_file}")"
+          signer_allowlist_json="$(jq -c '[.allowed_tag_signer_emails[] | strings | ascii_downcase | gsub("^\\s+|\\s+$"; "") | select(length > 0)]' "${policy_file}")"
+          actor_count="$(echo "${allowed_actors_json}" | jq 'length')"
+          actor_unique_count="$(echo "${allowed_actors_json}" | jq 'unique | length')"
+          signer_count="$(echo "${signer_allowlist_json}" | jq 'length')"
+          signer_unique_count="$(echo "${signer_allowlist_json}" | jq 'unique | length')"
+          case "${actor_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_actors list count: ${actor_count}" ; exit 1 ;; esac
+          case "${actor_unique_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_actors unique count: ${actor_unique_count}" ; exit 1 ;; esac
+          case "${signer_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_signer_emails list count: ${signer_count}" ; exit 1 ;; esac
+          case "${signer_unique_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_signer_emails unique count: ${signer_unique_count}" ; exit 1 ;; esac
+          if [ "${actor_count}" -ne "${actor_unique_count}" ]; then
+            echo "::error::allowed_tag_actors contains duplicate or whitespace-equivalent entries."
+            exit 1
+          fi
+          if [ "${signer_count}" -ne "${signer_unique_count}" ]; then
+            echo "::error::allowed_tag_signer_emails contains duplicate or whitespace-equivalent entries."
+            exit 1
+          fi
+          if ! echo "${allowed_actors_json}" | jq -e 'all(.[]; test("^[A-Za-z0-9-]{1,39}$"))' >/dev/null; then
+            echo "::error::allowed_tag_actors contains invalid GitHub actor names."
+            exit 1
+          fi
+          if ! echo "${signer_allowlist_json}" | jq -e 'all(.[]; test("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))' >/dev/null; then
+            echo "::error::allowed_tag_signer_emails contains invalid email entries."
+            exit 1
+          fi
+          allowed_csv="$(echo "${allowed_actors_json}" | jq -r 'join(\",\")')"
+          signer_allowlist="$(echo "${signer_allowlist_json}" | jq -r 'join(\",\")')"
           required_release_workflow_path="$(jq -r '.required_release_workflow_path' "${policy_file}")"
           required_release_workflow_name="$(jq -r '.required_release_workflow_name' "${policy_file}")"
           required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
           export required_release_workflow_path
           export required_release_workflow_name
           export required_release_workflow_actor
+          {
+            echo "## Release Policy Allowlist"
+            echo "- allowed_tag_actors: \`${allowed_csv}\`"
+            echo "- allowed_tag_signer_emails: \`${signer_allowlist}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ "${EVENT_DELETED}" = "true" ]; then
             echo "::error::Release workflow does not run on deleted tags."
             exit 1

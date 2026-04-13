@@ -1,6 +1,11 @@
 name: Build Attestation
 
 on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
   workflow_call:
     inputs:
       attestation_intent:
@@ -23,7 +28,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ATTESTATION_INTENT: ${{ github.event_name == 'workflow_call' && inputs.attestation_intent || (startsWith(github.ref, 'refs/tags/v') && 'release_candidate' || '') }}
+  ATTESTATION_INTENT: ${{ github.event_name == 'workflow_call' && inputs.attestation_intent || (github.event_name == 'pull_request' && 'pull_request' || (startsWith(github.ref, 'refs/tags/v') && 'release_candidate' || '')) }}
 
 jobs:
   attestation-context:
@@ -62,9 +67,16 @@ jobs:
         run: |
           set -euo pipefail
           intent="$(echo "${ATTESTATION_INTENT}" | xargs || true)"
-          if [ "${intent}" != "release_candidate" ]; then
-            echo "::error::Attestation intent must be release_candidate. Received '${intent:-<none>}'"
-            exit 1
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ "${intent}" != "pull_request" ]; then
+              echo "::error::Attestation intent must be pull_request for PR events. Received '${intent:-<none>}'"
+              exit 1
+            fi
+          else
+            if [ "${intent}" != "release_candidate" ]; then
+              echo "::error::Attestation intent must be release_candidate. Received '${intent:-<none>}'"
+              exit 1
+            fi
           fi
           {
             echo "## Attestation Intent"

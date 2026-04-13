@@ -53,7 +53,14 @@ function pruneSessions(now = Date.now()) {
  */
 export function startSession(command) {
   pruneSessions();
-  const sessionId = crypto.randomUUID();
+  let sessionId;
+  try {
+    sessionId = crypto.randomUUID();
+  } catch {
+    const ts = Date.now().toString(36);
+    const rand = crypto.randomBytes(16).toString("hex");
+    sessionId = `sess-${ts}-${rand}`;
+  }
   const session = {
     id: sessionId,
     command: command || "unknown",
