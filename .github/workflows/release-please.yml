@@ -5,33 +5,105 @@ on:
     branches: [main]
 
 concurrency:
-  group: release-please-${{ github.workflow }}-${{ github.ref }}
+  group: release-please-main
   cancel-in-progress: false
 
 permissions:
-  actions: write
+  actions: read
   checks: read
-  contents: read
-  pull-requests: read
+  contents: write
+  pull-requests: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  release-please:
+  release-preflight:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
-      actions: write
+      actions: read
       checks: read
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
     concurrency:
-      group: release-please-main
+      group: release-please-preflight-main
       cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Enforce main branch protection preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" 2>/tmp/branch-protection.err || true)"
+          if [ -z "${protection_json}" ]; then
+            echo "::error::Failed to read branch protection for main."
+            cat /tmp/branch-protection.err || true
+            exit 1
+          fi
+          required_contexts_json="$(echo "${protection_json}" | jq -c '
+            [
+              (.required_status_checks.contexts[]?),
+              (.required_status_checks.checks[]?.context)
+            ]
+            | map(select(type == "string" and length > 0))
+            | unique
+          ')"
+          if [ "${required_contexts_json}" = "[]" ]; then
+            echo "::error::main branch protection is missing required status checks."
+            exit 1
+          fi
+          strict_checks="$(echo "${protection_json}" | jq -r '.required_status_checks.strict // false')"
+          if [ "${strict_checks}" != "true" ]; then
+            echo "::error::main branch protection must require up-to-date branches (required_status_checks.strict=true)."
+            exit 1
+          fi
+          reviews_required="$(echo "${protection_json}" | jq -r '.required_pull_request_reviews != null')"
+          if [ "${reviews_required}" != "true" ]; then
+            echo "::error::main branch protection must require pull request reviews."
+            exit 1
+          fi
+          force_push_allowed="$(echo "${protection_json}" | jq -r '.allow_force_pushes.enabled // false')"
+          if [ "${force_push_allowed}" = "true" ]; then
+            echo "::error::main branch protection must block force pushes."
+            exit 1
+          fi
+          deletion_allowed="$(echo "${protection_json}" | jq -r '.allow_deletions.enabled // false')"
+          if [ "${deletion_allowed}" = "true" ]; then
+            echo "::error::main branch protection must block branch deletions."
+            exit 1
+          fi
+          REQUIRED_RELEASE_CONTEXTS='[
+            "Quality Summary",
+            "Omar Gate",
+            "Attestation Summary"
+          ]'
+          missing_contexts="$(jq -n \
+            --argjson expected "${REQUIRED_RELEASE_CONTEXTS}" \
+            --argjson actual "${required_contexts_json}" '
+              [
+                $expected[]
+                | select(($actual | index(.)) == null)
+              ]
+            ')"
+          if [ "$(echo "${missing_contexts}" | jq 'length')" -gt 0 ]; then
+            echo "::error::main branch protection is missing required checks for release automation."
+            echo "Missing: $(echo "${missing_contexts}" | jq -r 'join(", ")')"
+            exit 1
+          fi
+          {
+            echo "## Branch Protection Preflight"
+            echo "- branch: \`main\`"
+            echo "- required_checks_verified: \`$(echo "${required_contexts_json}" | jq 'length')\`"
+            echo "- strict_required_checks: \`${strict_checks}\`"
+            echo "- requires_pull_request_reviews: \`${reviews_required}\`"
+            echo "- allow_force_pushes: \`${force_push_allowed}\`"
+            echo "- allow_deletions: \`${deletion_allowed}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure main commit passed required upstream gates
         env:
@@ -39,31 +111,49 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
           REQUIRED_CHECKS_JSON: >-
             [
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false},
-              {"name":"Attestation Summary","app":"github-actions","optional":false}
+              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
+              {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
+  release-please:
+    needs: [release-preflight]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-please-mutate-main
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
       - name: Run release-please
         id: release_please
-        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # digest-pinned (googleapis/release-please-action)
         with:
           token: ${{ github.token }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Dispatch Release workflow for generated release tag
+      - name: Track Release workflow triggered by generated release tag
         if: steps.release_please.outputs.release_created == 'true' || steps.release_please.outputs.releases_created == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PLEASE_OUTPUTS_JSON: ${{ toJson(steps.release_please.outputs) }}
           EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          WATCH_TIMEOUT_SECONDS: "1800"
         run: |
           set -euo pipefail
+          case "${WATCH_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid WATCH_TIMEOUT_SECONDS value: ${WATCH_TIMEOUT_SECONDS}" ; exit 1 ;; esac
           tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
           if [ -z "${tag_name}" ]; then
             tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '
@@ -101,6 +191,58 @@ jobs:
             exit 1
           fi
 
-          gh workflow run "Release" --ref "${tag_name}"
+          release_run_id=""
+          for attempt in $(seq 1 40); do
+            run_list_json="$(gh run list --workflow "Release" --limit 50 --json databaseId,event,headBranch,headSha,createdAt)"
+            release_run_id="$(echo "${run_list_json}" | jq -r \
+              --arg tag "${tag_name}" \
+              --arg sha "${resolved_release_sha}" \
+              '
+                [
+                  .[]
+                  | select(
+                      .event == "push"
+                      and .headBranch == $tag
+                      and .headSha == $sha
+                    )
+                ]
+                | sort_by(.createdAt)
+                | last
+                | .databaseId // empty
+              ')"
+            if [ -n "${release_run_id}" ] && [ "${release_run_id}" != "null" ]; then
+              break
+            fi
+            sleep 10
+          done
 
+          if [ -z "${release_run_id}" ] || [ "${release_run_id}" = "null" ]; then
+            echo "::error::Unable to resolve Release workflow run id for tag ${tag_name} (push event, sha=${resolved_release_sha})."
+            exit 1
+          fi
 
+          set +e
+          timeout "${WATCH_TIMEOUT_SECONDS}"s gh run watch "${release_run_id}" --exit-status
+          watch_exit="$?"
+          set -e
+          if [ "${watch_exit}" -ne 0 ]; then
+            if [ "${watch_exit}" -eq 124 ]; then
+              echo "::error::Timed out after ${WATCH_TIMEOUT_SECONDS}s while waiting for Release workflow run ${release_run_id}."
+              echo "::error::Rerun guidance: gh run watch ${release_run_id} --exit-status"
+            else
+              echo "::error::gh run watch failed for Release workflow run ${release_run_id} (exit=${watch_exit})."
+            fi
+            exit 1
+          fi
+          release_conclusion="$(gh run view "${release_run_id}" --json conclusion --jq '.conclusion')"
+          if [ "${release_conclusion}" != "success" ]; then
+            echo "::error::Release workflow failed for ${tag_name} (run_id=${release_run_id}, conclusion=${release_conclusion})."
+            exit 1
+          fi
+
+          {
+            echo "## Release Workflow Tracking"
+            echo "- tag: \`${tag_name}\`"
+            echo "- run_id: \`${release_run_id}\`"
+            echo "- conclusion: \`${release_conclusion}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -871,8 +871,10 @@ Ledger contract:
 
 This repo includes `.github/workflows/release.yml`.
 Automated version/tag PR flow is handled by `.github/workflows/release-please.yml`.
-Omar security review is enforced by `.github/workflows/omar-gate.yml` (`Omar Gate` check).
-Build provenance attestations are enforced by `.github/workflows/attestations.yml` (`Attestation Summary`) with verification against signer-workflow policy.
+Primary gate enforcement is Omar-first:
+- `.github/workflows/omar-gate.yml` (`Omar Gate`) for AppSec findings and merge thresholds
+- `.github/workflows/quality-gates.yml` (`Quality Summary`) for deterministic build/test/package checks
+- `.github/workflows/attestations.yml` (`Attestation Summary`) for provenance verification
 
 Prerequisites:
 

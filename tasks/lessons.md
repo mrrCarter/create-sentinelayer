@@ -143,6 +143,24 @@
 - When a user requests Omar-only gating, remove supplemental security workflows entirely (not just make them non-blocking) so the active CI contract matches policy intent.
 - Reusable-workflow digest policies must hash canonical git blob bytes (`git show HEAD:<path>`), not platform working-tree bytes, or Windows CRLF conversion will cause false digest mismatches in Linux CI.
 
+## 2026-04-09
+
+- When Omar reports multiple workflow-level P2 findings, address them in one cohesive hardening batch (auth/tooling + CI provenance + rollback auth), then run targeted checks plus full `npm run verify` before pushing to avoid spending Omar iterations on local regressions.
+- In `quality-gates`, never block on CodeQL `analyses` ID availability for PR head SHAs; enforce policy from `code-scanning/alerts` with deterministic PR-first/ref-fallback queries so required checks do not fail on analysis-index lag.
+- In bash workflows using `set -e`, do not rely on `if ! cmd; then $?` to capture command exit values; run under `set +e` for the command, capture status explicitly, then re-enable `set -e` for deterministic timeout/failure handling.
+- For required-check policy scripts, bind check-runs to immutable workflow metadata (`workflow_path`, `head_sha`) from Actions run API, not just check name/app, to prevent provenance ambiguity across similarly named checks.
+- Workflow hardening should enforce both pinned digest and annotation quality; broad `vN` comments around SHA-pinned actions drift into false confidence and should fail policy checks.
+- When Omar raises workflow-only P2s, treat them as a live queue and batch-fix by control-plane theme (trust boundary, release lineage, rollback integrity) before the next watch cycle.
+- Avoid `pull_request_target` for workflows that mint provenance or run packaging steps on PR head code; keep PR checks in `pull_request` context and reserve trusted attestation minting for `push`/trusted calls.
+- For release hardening, implement progressive rollout as a concrete gate (`next` canary publish + registry install validation + explicit `latest` promotion) rather than documenting strategy without enforcement.
+
+## 2026-04-10
+
+- When the policy direction is "Omar-only", remove supplemental scanner workflows and their policy plumbing entirely; marking them non-blocking still violates expected governance.
+- Keep documentation and required-check narratives in lockstep with live workflows; stale README gate lists create false confidence and operator confusion during incident review.
+- Treat auth/session regressions as source-of-truth issues, not user-environment issues: any command that needs SentinelLayer auth must resolve credentials via `resolveActiveAuthSession (env -> config -> session)` rather than direct `readStoredSession()` reads.
+- CLI login should issue API tokens with a scope designed for general CLI endpoints; using a narrow `github_app_bridge` scope causes `/auth/me` and telemetry validation failures downstream.
+
 ## 2026-04-12
 
 - When Omar Gate is the required security path, do not rely on multi-agent review workflows or substitute checks; ensure the Omar Gate workflow is the only enforcement path and is actually executed per PR.

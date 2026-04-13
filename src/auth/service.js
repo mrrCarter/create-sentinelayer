@@ -244,7 +244,7 @@ async function issueApiToken({
     },
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: "github_app_bridge",
+      scope: "cli",
       llm_credential_mode: "managed",
       expires_in_days: expiresInDays,
     },

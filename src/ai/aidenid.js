@@ -158,11 +158,40 @@ export function buildChildIdentityPayload({
   };
 }
 
+async function resolveSessionCredentialContext({ env, session, fetchCredentials }) {
+  let resolvedSession = session;
+  let resolvedFetcher = typeof fetchCredentials === "function" ? fetchCredentials : null;
+
+  try {
+    const { resolveActiveAuthSession, fetchAidenIdCredentials } = await import("../auth/service.js");
+    const activeSession = await resolveActiveAuthSession({
+      cwd: process.cwd(),
+      env,
+      autoRotate: false,
+    });
+    if (activeSession && activeSession.token) {
+      resolvedSession = activeSession;
+    }
+    if (resolvedSession && resolvedSession.token && (!resolvedFetcher || activeSession?.token)) {
+      resolvedFetcher = () =>
+        fetchAidenIdCredentials({
+          apiUrl: resolvedSession.apiUrl || "https://api.sentinelayer.com",
+          token: resolvedSession.token,
+        });
+    }
+  } catch {
+    // Auth context resolution is best-effort.
+  }
+
+  return { session: resolvedSession, fetchCredentials: resolvedFetcher };
+}
+
 /**
  * Resolve AIdenID credentials with precedence:
  * 1. Explicit flags (--api-key, --org-id, --project-id)
  * 2. Environment vars (AIDENID_API_KEY, AIDENID_ORG_ID, AIDENID_PROJECT_ID)
- * 3. Session metadata (org_id, project_id from local store) + lazy-fetch secret from SL API
+ * 3. Session metadata (org_id, project_id) + lazy-fetch secret from SL API
+ *    using active auth source resolution (env -> config -> stored session)
  * 4. Error with guidance
  *
  * @param {object} options
@@ -180,17 +209,24 @@ export async function resolveAidenIdCredentials(
     fetchCredentials = null,
   } = {}
 ) {
-  const sessionAidenId = session && session.aidenid ? session.aidenid : null;
-  const hasSessionToken = Boolean(String(session && session.token ? session.token : "").trim());
+  const sessionContext = await resolveSessionCredentialContext({
+    env,
+    session,
+    fetchCredentials,
+  });
+  const activeSession = sessionContext.session;
+  const activeFetchCredentials = sessionContext.fetchCredentials;
+  const sessionAidenId = activeSession && activeSession.aidenid ? activeSession.aidenid : null;
+  const hasSessionToken = Boolean(String(activeSession && activeSession.token ? activeSession.token : "").trim());
 
   let resolvedApiKey = String(apiKey || env.AIDENID_API_KEY || "").trim();
   let resolvedOrgId = String(orgId || env.AIDENID_ORG_ID || (sessionAidenId && sessionAidenId.orgId) || "").trim();
   let resolvedProjectId = String(projectId || env.AIDENID_PROJECT_ID || (sessionAidenId && sessionAidenId.projectId) || "").trim();
 
   // Lazy-fetch secret from SentinelLayer API when a CLI session token is available.
-  if (!resolvedApiKey && hasSessionToken && typeof fetchCredentials === "function") {
+  if (!resolvedApiKey && hasSessionToken && typeof activeFetchCredentials === "function") {
     try {
-      const fetched = await fetchCredentials();
+      const fetched = await activeFetchCredentials();
       if (fetched && fetched.apiKey) {
         resolvedApiKey = String(fetched.apiKey).trim();
         if (!resolvedOrgId && fetched.orgId) resolvedOrgId = String(fetched.orgId).trim();

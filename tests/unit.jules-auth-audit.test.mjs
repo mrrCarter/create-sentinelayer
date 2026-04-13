@@ -22,8 +22,19 @@ function createResponse(status, headers = {}) {
 }
 
 describe("authAudit", () => {
-  it("rejects unknown operation", () => {
-    assert.throws(() => authAudit({ operation: "nonexistent" }), AuthAuditError);
+  const LIVE_AUTH_APPROVAL = {
+    allowProvisioning: true,
+    approvedTargetId: "sl-approved-example",
+    approvedHosts: ["example.com"],
+  };
+
+  it("rejects unknown operation with structured envelope", async () => {
+    const result = await authAudit({ operation: "nonexistent" });
+    assert.equal(result.available, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.operation, "nonexistent");
+    assert.equal(result.envelope, "v2");
+    assert.equal(result.error.code, "AUTH_AUDIT_UNKNOWN_OPERATION");
   });
 
   it("provision_test_identity returns unavailable without API key", async () => {
@@ -40,33 +51,104 @@ describe("authAudit", () => {
     assert.match(result.reason, /allowProvisioning=true|SENTINELAYER_ALLOW_LIVE_IDENTITY_PROVISION/);
   });
 
+  it("provision_test_identity unavailable responses include structured error metadata", async () => {
+    const result = await authAudit({ operation: "provision_test_identity", execute: true });
+    assert.equal(result.available, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.envelope, "v2");
+    assert.equal(typeof result.requestId, "string");
+    assert.ok(result.error && typeof result.error === "object");
+    assert.equal(result.error.requestId, result.requestId);
+    assert.equal(typeof result.error.code, "string");
+    assert.equal(typeof result.error.message, "string");
+    assert.equal(typeof result.error.retryable, "boolean");
+    assert.equal(result.data, null);
+  });
+
   it("authenticated_page_check requires url", async () => {
-    await assert.rejects(
-      () => authAudit({ operation: "authenticated_page_check" }),
-      AuthAuditError,
-    );
+    const result = await authAudit({ operation: "authenticated_page_check" });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /requires url/);
   });
 
   it("authenticated_page_check rejects invalid url", async () => {
-    await assert.rejects(
-      () => authAudit({ operation: "authenticated_page_check", url: "not-a-url" }),
-      AuthAuditError,
-    );
+    const result = await authAudit({ operation: "authenticated_page_check", url: "not-a-url" });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /Invalid URL|must be a valid URL/i);
   });
 
   it("authenticated_page_check blocks private localhost targets by default", async () => {
-    await assert.rejects(
-      () => authAudit({ operation: "authenticated_page_check", url: "http://localhost:3000/app" }),
-      AuthAuditError,
-    );
+    const result = await authAudit({ operation: "authenticated_page_check", url: "http://localhost:3000/app" });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /private|localhost/i);
   });
 
   it("check_auth_flow_security works for reachable url", async () => {
-    const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com" });
+    const result = await authAudit({
+      operation: "check_auth_flow_security",
+      url: "https://example.com",
+      ...LIVE_AUTH_APPROVAL,
+    });
     assert.ok(typeof result.available === "boolean");
+    assert.equal(typeof result.requestId, "string");
     if (result.available) {
       assert.ok(Array.isArray(result.findings));
+      assert.equal(result.ok, true);
+      assert.equal(result.envelope, "v2");
+      assert.ok(result.data && typeof result.data === "object");
+    } else {
+      assert.ok(result.error && typeof result.error === "object");
+      assert.equal(result.error.requestId, result.requestId);
     }
+  });
+
+  it("authAudit success envelope includes stable metadata fields", async () => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () => createResponse(200, {
+      "strict-transport-security": "max-age=31536000",
+      "content-security-policy": "default-src 'self'",
+    });
+    try {
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
+      assert.equal(result.available, true);
+      assert.equal(result.ok, true);
+      assert.equal(result.envelope, "v2");
+      assert.equal(result.operation, "check_auth_flow_security");
+      assert.ok(result.data && typeof result.data === "object");
+      assert.equal(result.data.requestId, result.requestId);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("check_auth_flow_security requires approved target context for live mode", async () => {
+    const result = await authAudit({
+      operation: "check_auth_flow_security",
+      url: "https://example.com/login",
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /allowProvisioning=true and approvedTargetId/);
+  });
+
+  it("check_auth_flow_security blocks unapproved hosts even with approval id", async () => {
+    const result = await authAudit({
+      operation: "check_auth_flow_security",
+      url: "https://api.unknown-host.example/login",
+      allowProvisioning: true,
+      approvedTargetId: "sl-approved-example",
+      approvedHosts: ["example.com"],
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+    assert.match(result.reason, /Blocked unapproved auth audit host/);
   });
 
   it("check_auth_flow_security retries transient retryable statuses and succeeds", async () => {
@@ -83,7 +165,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, true);
       assert.equal(callCount, 2);
     } finally {
@@ -105,7 +191,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, true);
       assert.equal(callCount, 2);
     } finally {
@@ -121,7 +211,11 @@ describe("authAudit", () => {
       throw new TypeError("Failed to parse URL from config");
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /failed after 1 attempt\(s\)/);
       assert.equal(callCount, 1);
@@ -140,7 +234,11 @@ describe("authAudit", () => {
       throw error;
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /failed after 3 attempt\(s\)/);
       assert.equal(callCount, 3);
@@ -159,7 +257,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /HTTPS downgrade detected/);
       assert.ok(Array.isArray(result.findings));
@@ -180,7 +282,11 @@ describe("authAudit", () => {
       });
     };
     try {
-      const result = await authAudit({ operation: "check_auth_flow_security", url: "https://example.com/login" });
+      const result = await authAudit({
+        operation: "check_auth_flow_security",
+        url: "https://example.com/login",
+        ...LIVE_AUTH_APPROVAL,
+      });
       assert.equal(result.available, false);
       assert.match(result.reason, /Exceeded 5 redirects/);
       assert.ok(callCount >= 6);
@@ -211,10 +317,10 @@ describe("authAudit", () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "production";
     try {
-      await assert.rejects(
-        () => authAudit({ operation: "check_auth_flow_security", url: "http://localhost:3000/login" }),
-        AuthAuditError,
-      );
+      const result = await authAudit({ operation: "check_auth_flow_security", url: "http://localhost:3000/login" });
+      assert.equal(result.available, false);
+      assert.equal(result.error.code, "AUTH_AUDIT_VALIDATION_FAILED");
+      assert.match(result.reason, /private|localhost/i);
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
     }
@@ -291,6 +397,41 @@ describe("authAudit", () => {
     assert.equal(attemptCount, 3);
   });
 
+  it("runPlaywrightAuditScriptWithRetry enforces cumulative retry deadline", async () => {
+    let attemptCount = 0;
+    let virtualNowMs = 0;
+    const stubExec = () => {
+      attemptCount += 1;
+      virtualNowMs += 3;
+      const error = new Error("timed out waiting for playwright");
+      error.code = "ETIMEDOUT";
+      throw error;
+    };
+    const now = () => virtualNowMs;
+    const stubSleep = async (ms) => {
+      virtualNowMs += Number(ms) || 0;
+    };
+
+    await assert.rejects(
+      () => runPlaywrightAuditScriptWithRetry("fake-script.cjs", {}, {
+        exec: stubExec,
+        now,
+        sleep: stubSleep,
+        maxRetries: 5,
+        baseBackoffMs: 1,
+        timeoutMs: 1000,
+        totalBudgetMs: 5,
+        minAttemptTimeoutMs: 4,
+      }),
+      (error) => {
+        assert.ok(error instanceof AuthAuditError);
+        assert.match(error.message, /retry budget|remaining retry budget/i);
+        return true;
+      },
+    );
+    assert.equal(attemptCount, 1);
+  });
+
   it("registers console listener before target navigation in Playwright script", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
     const listenerIndex = source.indexOf("page.on('console', msg =>");
@@ -321,7 +462,46 @@ describe("authAudit", () => {
     assert.ok(source.includes("didLeaveLoginSurface"));
     assert.ok(source.includes("loginFormVisible"));
     assert.ok(source.includes("authCookiePresent"));
-    assert.ok(source.includes("results.authenticated = !loginFormVisible && (urlChanged || authCookiePresent);"));
+    assert.ok(source.includes("authVerificationMaxAttempts"));
+    assert.ok(source.includes("authVerificationAttemptsUsed"));
+    assert.ok(source.includes("authVerificationRetried"));
+    assert.ok(source.includes("results.authenticated = navigationSucceeded && !loginFormVisible && urlChanged && authCookiePresent;"));
+    assert.ok(source.includes("targetLoginFormVisible"));
+    assert.ok(source.includes("targetStatusOk"));
+    assert.ok(source.includes("results.authenticated = !targetLoginFormVisible && targetStatusOk;"));
+  });
+
+  it("authenticated header policy is enforced as deterministic findings", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("evaluateAuthenticatedHeaderFindings"));
+    assert.ok(source.includes("Authenticated page missing Content-Security-Policy header"));
+    assert.ok(source.includes("Authenticated page missing Strict-Transport-Security header"));
+    assert.ok(source.includes("Authenticated page missing X-Frame-Options header"));
+    assert.ok(source.includes("headerPolicyBreaches"));
+    assert.ok(source.includes("headerPolicyPassed"));
+    assert.ok(source.includes("headerPolicyFailed"));
+  });
+
+  it("auth mutation is gated by explicit allowAuthMutation policy", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("SL_AUDIT_ALLOW_AUTH_MUTATION"));
+    assert.ok(source.includes("mutationAllowed"));
+    assert.ok(source.includes("mutationPerformed"));
+    assert.ok(source.includes("if (allowAuthMutation)"));
+  });
+
+  it("requestId fallback uses cryptographic randomness", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("randomBytes(16).toString(\"hex\")"));
+    assert.equal(source.includes("Math.random().toString(36)"), false);
+  });
+
+  it("playwright navigation and runtime failures are captured with explicit signals", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("navigationTimeout"));
+    assert.ok(source.includes("type: 'navigation'"));
+    assert.ok(source.includes("results.executionFailed = true"));
+    assert.ok(source.includes("process.exitCode = 1"));
   });
 
   it("playwright retry backoff jitter is deterministic", () => {
@@ -342,6 +522,77 @@ describe("authAudit", () => {
     assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
     assert.ok(source.includes("fetchWithTimeout(currentUrl, {"));
     assert.ok(source.includes("AUTH_FLOW_FETCH_TIMEOUT_MS"));
+  });
+
+  it("AIdenID provisioning path includes bounded retry and timeout controls", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("AUTH_AIDENID_PROVISION_TIMEOUT_MS"));
+    assert.ok(source.includes("AUTH_AIDENID_PROVISION_TOTAL_BUDGET_MS"));
+    assert.ok(source.includes("AUTH_AIDENID_PROVISION_MAX_RETRIES"));
+    assert.ok(source.includes("provisionEmailIdentityWithRetry"));
+    assert.ok(source.includes("deriveAidenidBackoffSeed"));
+    assert.ok(source.includes("computeAidenidProvisionBackoffMs(attempt, baseBackoffMs, jitterSeed)"));
+    assert.ok(source.includes("new AbortController()"));
+    assert.ok(source.includes("Promise.race(["));
+    assert.ok(source.includes("AIDENID_ATTEMPT_TIMEOUT"));
+    assert.ok(source.includes("remainingBudgetMs"));
+    assert.ok(source.includes("AIdenID provisioning failed after"));
+  });
+
+  it("AIdenID provisioning retry preserves caller abort semantics and disposes transient bodies", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("composeAbortSignals(callerSignal, controller.signal)"));
+    assert.ok(source.includes("AIDENID_ABORTED_BY_CALLER"));
+    assert.ok(source.includes("response.body && typeof response.body.cancel === \"function\""));
+    assert.ok(source.includes("await response.body.cancel()"));
+  });
+
+  it("fetch timeout wrapper composes caller signal with timeout signal", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("const callerSignal = isAbortSignalLike(options?.signal) ? options.signal : undefined;"));
+    assert.ok(source.includes("composeAbortSignals(callerSignal, controller.signal)"));
+  });
+
+  it("provider circuit-breaker state is enforced for repeated auth provider degradation", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKER_FAILURE_THRESHOLD"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKERS"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV"));
+    assert.ok(source.includes("hydrateProviderBreakerState"));
+    assert.ok(source.includes("persistProviderBreakerState"));
+    assert.ok(source.includes("deriveProviderBreakerScope"));
+    assert.ok(source.includes("repo-"));
+    assert.ok(source.includes("ws-"));
+    assert.ok(source.includes("enforceProviderBreaker(providerKey, providerScope, requestId)"));
+    assert.ok(source.includes("recordProviderBreakerFailure(providerKey, providerScope"));
+    assert.ok(source.includes("providerBreaker"));
+    assert.ok(source.includes("AUTH_AUDIT_PROVIDER_CIRCUIT_OPEN"));
+  });
+
+  it("audit error messages are sanitized before envelope emission", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("sanitizeAuditErrorMessage"));
+    assert.ok(source.includes("replace(/\\bbearer\\s+[a-z0-9._~+/=-]+\\b/gi, \"bearer [REDACTED]\")"));
+    assert.ok(source.includes("replace(/\\b[a-z0-9_-]+\\.[a-z0-9_-]+\\.[a-z0-9_-]+\\b/gi, \"[REDACTED_JWT]\")"));
+    assert.ok(source.includes("access[_-]?token|refresh[_-]?token|id[_-]?token"));
+    assert.ok(source.includes("replace(/\\bhttps?:\\/\\/[^\\s\"'`]+/gi, (rawUrl) => sanitizeDiagnosticUrl(rawUrl))"));
+    assert.ok(source.includes("function sanitizeDiagnosticUrl(rawUrl)"));
+    assert.ok(source.includes("<redacted-path>"));
+    assert.ok(source.includes("if (sanitized.length <= 512)"));
+    assert.ok(source.includes("function extractErrorDiagnostics(error, phase = \"auth_audit\")"));
+    assert.ok(source.includes("errorPayload.phase = phase;"));
+    assert.ok(source.includes("errorPayload.statusCode = parsedStatusCode;"));
+    assert.ok(source.includes("errorPayload.errorCode = errorCode.toUpperCase();"));
+    assert.ok(source.includes("const safeMessage = sanitizeAuditErrorMessage(message"));
+  });
+
+  it("playwright retry path enforces cumulative execution budget controls", () => {
+    const source = fs.readFileSync(new URL("../src/agents/jules/tools/auth-audit.js", import.meta.url), "utf-8");
+    assert.ok(source.includes("AUTH_PLAYWRIGHT_EXEC_TOTAL_BUDGET_MS"));
+    assert.ok(source.includes("AUTH_PLAYWRIGHT_EXEC_MIN_ATTEMPT_TIMEOUT_MS"));
+    assert.ok(source.includes("remaining retry budget"));
+    assert.ok(source.includes("totalBudgetMs"));
   });
 
   it("AuthAudit registered in dispatch as read-only", async () => {

@@ -1,0 +1,71 @@
+name: Omar Gate Wrapper
+description: Local wrapper around the pinned Sentinelayer Omar action.
+inputs:
+  github_token:
+    description: GitHub token for comments/check updates.
+    required: true
+  sentinelayer_token:
+    description: Sentinelayer token for authenticated scan execution.
+    required: true
+  sentinelayer_spec_id:
+    description: Sentinelayer spec digest id.
+    required: true
+  openai_api_key:
+    description: OpenAI API key for BYOK Omar scans.
+    required: true
+  scan_mode:
+    description: Omar scan profile.
+    required: true
+  severity_gate:
+    description: Severity gate selection.
+    required: true
+outputs:
+  run_id:
+    description: Sentinelayer run id.
+    value: ${{ steps.omar.outputs.run_id }}
+  gate_status:
+    description: Gate status returned by Omar.
+    value: ${{ steps.omar.outputs.gate_status }}
+  p0_count:
+    description: P0 finding count.
+    value: ${{ steps.omar.outputs.p0_count }}
+  p1_count:
+    description: P1 finding count.
+    value: ${{ steps.omar.outputs.p1_count }}
+  p2_count:
+    description: P2 finding count.
+    value: ${{ steps.omar.outputs.p2_count }}
+  p3_count:
+    description: P3 finding count.
+    value: ${{ steps.omar.outputs.p3_count }}
+runs:
+  using: composite
+  steps:
+    - name: Validate wrapper inputs
+      shell: bash
+      env:
+        SENTINELAYER_SPEC_ID: ${{ inputs.sentinelayer_spec_id }}
+      run: |
+        set -euo pipefail
+        if ! echo "${SENTINELAYER_SPEC_ID}" | grep -Eq '^[a-f0-9]{64}$'; then
+          echo "::error::sentinelayer_spec_id must be a 64-character lowercase hex digest."
+          exit 1
+        fi
+
+    - name: Execute pinned Omar action
+      id: omar
+      uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+      with:
+        github_token: ${{ inputs.github_token }}
+        sentinelayer_token: ${{ inputs.sentinelayer_token }}
+        sentinelayer_spec_id: ${{ inputs.sentinelayer_spec_id }}
+        openai_api_key: ${{ inputs.openai_api_key }}
+        sentinelayer_managed_llm: "true"
+        scan_mode: ${{ inputs.scan_mode }}
+        severity_gate: ${{ inputs.severity_gate }}
+        model: gpt-5.3-codex
+        codex_model: gpt-5.3-codex
+        model_fallback: gpt-4.1-mini
+        use_codex: "true"
+        codex_only: "false"
+        llm_failure_policy: block

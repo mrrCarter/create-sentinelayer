@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { readStoredSession } from "../auth/session-store.js";
+import { resolveActiveAuthSession } from "../auth/service.js";
 
 // Read CLI version from package.json at module load
 const __filename = fileURLToPath(import.meta.url);
@@ -62,7 +62,11 @@ export async function syncRunToDashboard(runData) {
 
   let session;
   try {
-    session = await readStoredSession();
+    session = await resolveActiveAuthSession({
+      cwd: process.cwd(),
+      env: process.env,
+      autoRotate: false,
+    });
   } catch {
     return { synced: false, reason: "no_session" };
   }

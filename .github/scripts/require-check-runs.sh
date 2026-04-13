@@ -54,6 +54,23 @@ fetch_check_runs_json() {
   printf '%s' "${all_runs}"
 }
 
+fetch_workflow_run_json() {
+  local run_id="$1"
+  if ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    echo "::error::Invalid workflow run id: ${run_id}"
+    exit 1
+  fi
+  curl -fsSL \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+}
+
+extract_run_id_from_details_url() {
+  local details_url="$1"
+  echo "${details_url}" | sed -n 's#^.*/actions/runs/\([0-9][0-9]*\).*$#\1#p'
+}
+
 deadline_epoch="$(( $(date +%s) + MAX_WAIT_SECONDS ))"
 missing_or_pending=""
 
@@ -65,6 +82,8 @@ while true; do
     check_name="$(echo "${check_spec}" | jq -r '.name')"
     check_app="$(echo "${check_spec}" | jq -r '.app')"
     check_optional="$(echo "${check_spec}" | jq -r '.optional // false')"
+    check_workflow_path="$(echo "${check_spec}" | jq -r '.workflow_path // empty')"
+    check_workflow_name="$(echo "${check_spec}" | jq -r '.workflow_name // empty')"
 
     if [ -z "${check_name}" ] || [ "${check_name}" = "null" ]; then
       echo "::error::Invalid check spec: missing name."
@@ -84,7 +103,8 @@ while true; do
           | {
               status: .status,
               conclusion: (.conclusion // ""),
-              completed_at: (.completed_at // "")
+              completed_at: (.completed_at // ""),
+              details_url: (.details_url // "")
             }
         ]
         | sort_by(.completed_at)
@@ -102,6 +122,7 @@ while true; do
 
     latest_status="$(echo "${latest_match}" | jq -r '.status')"
     latest_conclusion="$(echo "${latest_match}" | jq -r '.conclusion')"
+    latest_details_url="$(echo "${latest_match}" | jq -r '.details_url // empty')"
 
     if [ "${latest_status}" != "completed" ]; then
       missing_or_pending="${missing_or_pending}${check_name}@${check_app} (${latest_status}), "
@@ -111,6 +132,30 @@ while true; do
     if [ "${latest_conclusion}" != "success" ]; then
       echo "::error::Required check '${check_name}' from app '${check_app}' concluded '${latest_conclusion}' for commit ${TARGET_SHA}."
       exit 1
+    fi
+
+    if [ -n "${check_workflow_path}" ] || [ -n "${check_workflow_name}" ]; then
+      run_id="$(extract_run_id_from_details_url "${latest_details_url}")"
+      if [ -z "${run_id}" ]; then
+        echo "::error::Required check '${check_name}' could not resolve workflow run id from details URL '${latest_details_url}'."
+        exit 1
+      fi
+      run_meta="$(fetch_workflow_run_json "${run_id}")"
+      run_path="$(echo "${run_meta}" | jq -r '.path // empty')"
+      run_name="$(echo "${run_meta}" | jq -r '.name // empty')"
+      run_head_sha="$(echo "${run_meta}" | jq -r '.head_sha // empty')"
+      if [ -n "${check_workflow_path}" ] && [ "${run_path}" != "${check_workflow_path}" ]; then
+        echo "::error::Required check '${check_name}' workflow path mismatch. expected='${check_workflow_path}' actual='${run_path}' run_id=${run_id}."
+        exit 1
+      fi
+      if [ -n "${check_workflow_name}" ] && [ "${run_name}" != "${check_workflow_name}" ]; then
+        echo "::error::Required check '${check_name}' workflow name mismatch. expected='${check_workflow_name}' actual='${run_name}' run_id=${run_id}."
+        exit 1
+      fi
+      if [ "${run_head_sha}" != "${TARGET_SHA}" ]; then
+        echo "::error::Required check '${check_name}' run head SHA mismatch. expected='${TARGET_SHA}' actual='${run_head_sha}' run_id=${run_id}."
+        exit 1
+      fi
     fi
   done < <(echo "${REQUIRED_CHECKS_JSON}" | jq -c '.[]')
 
