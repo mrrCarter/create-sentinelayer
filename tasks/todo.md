@@ -1,3 +1,16 @@
+# 2026-04-13 - PR-283 Omar + Quality Unblock Batch 2
+
+## Plan
+- [x] Repair `.github/workflows/attestations.yml` YAML integrity so push runs do not fail at parse time.
+- [x] Restore e2e auth harness compatibility with guarded auth gate (`npm test` in CI must pass).
+- [x] Tighten guarded auth bypass controls (single-use nonce + command scope + executable scope).
+- [x] Add session metadata write durability barriers (temp fsync + directory sync best-effort).
+- [x] Address current Omar P2 workflow findings across quality/release/attestation gates in one commit batch.
+- [ ] Run local verification (`npm run check`, targeted tests, full `npm test`), push branch, approve/wait Omar Gate and Quality Gates.
+
+## Review
+- [ ] Pending.
+
 # 2026-04-12 - Fix Omar Gate LLM Disabled (Workflow/Input Contract)
 
 ## Plan

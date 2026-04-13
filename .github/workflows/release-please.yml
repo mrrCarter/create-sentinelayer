@@ -79,6 +79,7 @@ jobs:
           fi
           REQUIRED_RELEASE_CONTEXTS='[
             "Quality Summary",
+            "Quality Gates Terminal",
             "Omar Gate",
             "Attestation Summary"
           ]'
@@ -112,6 +113,7 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Quality Gates Terminal","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]

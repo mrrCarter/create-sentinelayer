@@ -93,7 +93,9 @@ test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains support
   const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
   const previousBypassSecret = process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
   const previousBypassToken = process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+  const previousArgv1 = process.argv[1];
   try {
+    process.argv[1] = path.join(process.cwd(), "bin", "create-sentinelayer.js");
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
     delete process.env.CI;

@@ -676,6 +676,7 @@ jobs:
           fi
           node_version="$(node --version)"
           npm_version="$(npm --version)"
+          npm_registry="$(npm config get registry | tr -d '\r' | xargs)"
           toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${node_version}" "${npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
           workflow_path=".github/workflows/quality-gates.yml"
           workflow_sha256="$(sha256sum "${workflow_path}" | awk '{print $1}')"
@@ -688,6 +689,7 @@ jobs:
             --arg workflow_sha256 "${workflow_sha256}" \
             --arg node_version "${node_version}" \
             --arg npm_version "${npm_version}" \
+            --arg npm_registry "${npm_registry}" \
             --arg runner_os "${RUNNER_OS}" \
             --arg runner_arch "${RUNNER_ARCH}" \
             --arg toolchain_fingerprint "${toolchain_fingerprint}" \
@@ -705,6 +707,7 @@ jobs:
               workflow_sha256: $workflow_sha256,
               node_version: $node_version,
               npm_version: $npm_version,
+              npm_registry: $npm_registry,
               runner_os: $runner_os,
               runner_arch: $runner_arch,
               toolchain_fingerprint: $toolchain_fingerprint,
@@ -1029,8 +1032,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  quality-terminal:
-    name: Quality Terminal
+  quality-gates-terminal:
+    name: Quality Gates Terminal
     runs-on: ubuntu-22.04
     needs: [quality-summary]
     if: ${{ always() }}

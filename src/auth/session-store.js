@@ -280,6 +280,42 @@ async function renameWithRetry(sourcePath, destinationPath, { attempts = 3, base
   throw lastError;
 }
 
+async function syncFile(filePath) {
+  const normalizedPath = String(filePath || "").trim();
+  if (!normalizedPath) {
+    return;
+  }
+  let handle = null;
+  try {
+    handle = await fsp.open(normalizedPath, "r");
+    await handle.sync();
+  } catch {
+    // Best effort only. Some filesystems/runtimes do not support explicit fsync.
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
+async function syncDirectory(directoryPath) {
+  const normalizedPath = String(directoryPath || "").trim();
+  if (!normalizedPath) {
+    return;
+  }
+  let handle = null;
+  try {
+    handle = await fsp.open(normalizedPath, "r");
+    await handle.sync();
+  } catch {
+    // Directory fsync support is platform-dependent; ignore when unsupported.
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
 async function replaceWithBackup(tmpPath, filePath) {
   const directory = path.dirname(filePath);
   const backupPath = path.join(
@@ -291,6 +327,7 @@ async function replaceWithBackup(tmpPath, filePath) {
     try {
       await fsp.rename(filePath, backupPath);
       backupCreated = true;
+      await syncDirectory(directory);
     } catch (error) {
       if (!(error && typeof error === "object" && error.code === "ENOENT")) {
         throw error;
@@ -298,14 +335,19 @@ async function replaceWithBackup(tmpPath, filePath) {
     }
 
     await renameWithRetry(tmpPath, filePath, { attempts: 3, baseDelayMs: 40 });
+    await syncFile(filePath);
+    await syncDirectory(directory);
 
     if (backupCreated) {
       await fsp.rm(backupPath, { force: true }).catch(() => {});
+      await syncDirectory(directory);
     }
   } catch (error) {
     if (backupCreated) {
       try {
         await fsp.rename(backupPath, filePath);
+        await syncFile(filePath);
+        await syncDirectory(directory);
       } catch {
         // Best-effort restore; keep original error as the primary failure.
       }
@@ -383,7 +425,16 @@ async function writeMetadata(filePath, metadata) {
   );
   const payload = `${JSON.stringify(metadata, null, 2)}\n`;
   try {
-    await fsp.writeFile(tmpPath, payload, { encoding: "utf-8", mode: 0o600 });
+    let tmpHandle = null;
+    try {
+      tmpHandle = await fsp.open(tmpPath, "w", 0o600);
+      await tmpHandle.writeFile(payload, { encoding: "utf-8" });
+      await tmpHandle.sync();
+    } finally {
+      if (tmpHandle) {
+        await tmpHandle.close().catch(() => {});
+      }
+    }
     try {
       await fsp.chmod(tmpPath, 0o600);
     } catch {
@@ -398,6 +449,8 @@ async function writeMetadata(filePath, metadata) {
         throw error;
       }
     }
+    await syncFile(filePath);
+    await syncDirectory(directory);
   } finally {
     await fsp.rm(tmpPath, { force: true }).catch(() => {});
   }

@@ -1,5 +1,10 @@
 # Lessons
 
+## 2026-04-13
+
+- When hardening auth bypass controls, run full `npm test` immediately afterward and update the e2e harness to authenticate via deterministic test token/session paths; otherwise CI can silently break with broad auth-gate failures.
+- Always parse all workflow YAML files locally after workflow edits; a single indentation error creates opaque GitHub runs named by file path and can be mistaken for unrelated gate failures.
+
 ## 2026-04-12
 
 - When the requirement is "Omar Gate only," do not rely on any multi-agent review workflows or alternative scanners; fix Omar-specific findings first and rerun the Omar Gate loop until P0-P2 are cleared.

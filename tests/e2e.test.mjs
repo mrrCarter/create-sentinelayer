@@ -571,6 +571,7 @@ async function runCli({ cwd, env, args = [] }) {
         SENTINELAYER_CLI_TEST_MODE: "1",
         SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
         SENTINELAYER_CLI_SKIP_AUTH: "1",
+        SENTINELAYER_TOKEN: "api_token_e2e_test_session",
         ...(env || {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
