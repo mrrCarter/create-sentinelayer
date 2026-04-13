@@ -58,6 +58,45 @@ jobs:
             exit 1
           fi
 
+      - name: Enforce rollback trigger policy
+        shell: bash
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          policy_file=".github/policies/rollback-policy.json"
+          if [ ! -f "${policy_file}" ]; then
+            echo "::error::Missing rollback policy file: ${policy_file}."
+            exit 1
+          fi
+          allowed_actors="$(jq -r '.allowed_actors[]? // empty' "${policy_file}" | tr '\n' ' ')"
+          actor_allowed="false"
+          for actor in ${allowed_actors}; do
+            if [ "${actor}" = "${GITHUB_ACTOR}" ]; then
+              actor_allowed="true"
+              break
+            fi
+          done
+          if [ "${actor_allowed}" != "true" ]; then
+            echo "::error::Rollback trigger blocked. Actor ${GITHUB_ACTOR} is not in allowlist."
+            exit 1
+          fi
+          require_protected="$(jq -r '.require_protected_ref // false' "${policy_file}")"
+          if [ "${require_protected}" = "true" ]; then
+            ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+            if [ "${ref_protected}" != "true" ]; then
+              echo "::error::Rollback trigger blocked. Ref is not protected."
+              exit 1
+            fi
+          fi
+          {
+            echo "### Rollback trigger policy"
+            echo "- actor: \`${GITHUB_ACTOR}\`"
+            echo "- ref_protected: \`${GITHUB_REF_PROTECTED}\`"
+            echo "- allowlist: \`${allowed_actors:-<empty>}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Resolve rollback target and release context
         shell: bash
         env:

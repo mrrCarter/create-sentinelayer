@@ -1384,6 +1384,8 @@ Review:
 - [x] Omar Gate run `24320900087` (run_id `3c2e3208-c247-48ee-8d23-558ad0eff9ac`): P0=0, P1=0, P2=6.
 - [x] Apply P2 fixes: static-secret gating -> workflow_dispatch only, idempotent mutation retries, deterministic poll jitter, attestations require Omar Gate, quality-gates security scan, release manifest integrity checks.
 - [x] Set repo var `OMAR_ALLOW_STATIC_SECRETS=true` to allow emergency static fallback until OIDC exchange is configured.
+- [x] Omar Gate run `24321292167` (run_id `31ac9ff3-3b4c-4d72-8455-f61c9ee0182d`): P0=0, P1=0, P2=5.
+- [x] Apply remaining P2 fixes: headers-based idempotency detection, strict JSON response validation, release tag semver filter, security-scan dependency for packaging, rollback actor allowlist enforcement.
 - [ ] Re-run Omar Gate on PR `hardening/cli-omar-only-ci` and fix any remaining P0-P2 findings.
 - [ ] Merge after Omar Gate passes; record run IDs and findings delta.
 ## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)

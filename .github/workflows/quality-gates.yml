@@ -334,7 +334,7 @@ jobs:
     name: E2E & Package (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [unit-coverage]
+    needs: [unit-coverage, security-scan]
     strategy:
       fail-fast: false
       matrix:

@@ -12,6 +12,9 @@ function createResponse(status, payload, headers = {}) {
   const normalizedHeaders = Object.fromEntries(
     Object.entries(headers).map(([key, value]) => [String(key).toLowerCase(), String(value)])
   );
+  if (!Object.prototype.hasOwnProperty.call(normalizedHeaders, "content-type")) {
+    normalizedHeaders["content-type"] = "application/json";
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -82,6 +85,131 @@ test("Unit auth http: retries idempotent mutation when Idempotency-Key is presen
     assert.equal(callCount, 2);
     assert.equal(response.ok, true);
     assert.equal(response.attempt, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: retries idempotent mutation when Headers contains Idempotency-Key", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return createResponse(503, {
+        error: { code: "TEMP_UNAVAILABLE", message: "Retry" },
+      });
+    }
+    return createResponse(200, { ok: true, attempt: callCount });
+  };
+
+  try {
+    const headers = new Headers();
+    headers.set("Idempotency-Key", "idem-headers");
+    const response = await requestJson("https://api.example.com/test", {
+      method: "POST",
+      headers,
+      maxRetries: 1,
+      retryDelayMs: 1,
+      timeoutMs: 1000,
+    });
+    assert.equal(callCount, 2);
+    assert.equal(response.ok, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: rejects ok responses with empty JSON body", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return "";
+    },
+    headers: {
+      get(key) {
+        if (String(key).toLowerCase() === "content-type") {
+          return "application/json";
+        }
+        return null;
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => requestJson("https://api.example.com/test"),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "EMPTY_BODY");
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: allows empty body for 204 responses", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 204,
+    async text() {
+      return "";
+    },
+    headers: {
+      get() {
+        return null;
+      },
+    },
+  });
+
+  try {
+    const response = await requestJson("https://api.example.com/test");
+    assert.deepEqual(response, {});
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: rejects ok responses with non-JSON content-type", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return "<html>ok</html>";
+    },
+    headers: {
+      get(key) {
+        if (String(key).toLowerCase() === "content-type") {
+          return "text/html";
+        }
+        return null;
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => requestJson("https://api.example.com/test"),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "INVALID_CONTENT_TYPE");
+        return true;
+      }
+    );
   } finally {
     globalThis.fetch = previousFetch;
     __resetRequestCircuitForTests();

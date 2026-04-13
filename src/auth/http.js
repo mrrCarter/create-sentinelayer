@@ -62,16 +62,22 @@ function resolveRequestId(headers) {
 }
 
 function hasIdempotencyKey(headers) {
-  if (!headers || typeof headers !== "object") {
+  if (!headers) {
     return false;
   }
-  const candidates = ["Idempotency-Key", "idempotency-key", "IDEMPOTENCY-KEY"];
-  for (const name of candidates) {
-    if (Object.prototype.hasOwnProperty.call(headers, name)) {
-      const value = String(headers[name] || "").trim();
-      if (value) {
-        return true;
-      }
+  if (typeof headers.get === "function") {
+    const value =
+      headers.get("idempotency-key") ||
+      headers.get("Idempotency-Key") ||
+      headers.get("IDEMPOTENCY-KEY");
+    return Boolean(String(value || "").trim());
+  }
+  if (typeof headers !== "object") {
+    return false;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key || "").toLowerCase() === "idempotency-key" && String(value || "").trim()) {
+      return true;
     }
   }
   return false;
@@ -193,6 +199,7 @@ export function __resetRequestCircuitForTests(scope) {
  *   timeoutMs?: number
  *   maxRetries?: number,
  *   retryDelayMs?: number
+ *   allowEmptyBody?: boolean
  * }} [options]
  * @returns {Promise<any>}
  */
@@ -205,6 +212,7 @@ export async function requestJson(
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    allowEmptyBody = false,
   } = {}
 ) {
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
@@ -247,18 +255,42 @@ export async function requestJson(
       });
 
       const rawBody = await response.text();
+      const trimmedBody = rawBody.trim();
+      const contentType = response.headers.get("content-type") || "";
+      const isJson = /application\/json/i.test(contentType);
       let json = {};
-      if (rawBody.trim()) {
-        try {
-          json = JSON.parse(rawBody);
-        } catch {
+      if (!trimmedBody) {
+        const statusCode = Number(response.status || 0);
+        const allowEmpty = Boolean(allowEmptyBody) || statusCode === 204 || statusCode === 205;
+        if (response.ok && !allowEmpty) {
           const requestId = resolveRequestId(response.headers);
-          if (response.ok) {
-            throw new SentinelayerApiError("Invalid JSON returned by API.", {
-              status: response.status,
-              code: "INVALID_JSON",
-              requestId,
-            });
+          throw new SentinelayerApiError("Empty response body returned by API.", {
+            status: response.status,
+            code: "EMPTY_BODY",
+            requestId,
+          });
+        }
+      } else {
+        if (response.ok && !isJson) {
+          const requestId = resolveRequestId(response.headers);
+          throw new SentinelayerApiError("Invalid content-type returned by API.", {
+            status: response.status,
+            code: "INVALID_CONTENT_TYPE",
+            requestId,
+          });
+        }
+        if (isJson) {
+          try {
+            json = JSON.parse(rawBody);
+          } catch {
+            const requestId = resolveRequestId(response.headers);
+            if (response.ok) {
+              throw new SentinelayerApiError("Invalid JSON returned by API.", {
+                status: response.status,
+                code: "INVALID_JSON",
+                requestId,
+              });
+            }
           }
         }
       }
