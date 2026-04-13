@@ -291,26 +291,50 @@ jobs:
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
-          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE: ${{ vars.OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE || 'false' }}
+          GITLEAKS_VERSION: "8.18.2"
         run: |
           set -euo pipefail
           if [ ! -d "omar-artifacts" ]; then
             exit 0
           fi
-          pattern='(bearer[[:space:]]+[A-Za-z0-9._~+/=-]{16,}|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|x-?api-?key|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)'
-          matches="$(grep -RInE "${pattern}" omar-artifacts || true)"
-          if [ -n "${matches}" ]; then
-            ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-            match_files="$(echo "${matches}" | cut -d: -f1 | sort -u | tr '\n' ' ')"
-            if [ "${ref_protected}" = "true" ]; then
-              echo "::error::Potential secret-like content detected in Omar artifacts on protected ref. Aborting upload."
-              echo "::error::Affected files: ${match_files}"
+          allow_override="$(echo "${OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          checksum_file="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          mkdir -p .gitleaks-bin
+          curl -sSL -o ".gitleaks-bin/${archive}" "${base_url}/${archive}"
+          curl -sSL -o ".gitleaks-bin/${checksum_file}" "${base_url}/${checksum_file}"
+          if ! grep -F " ${archive}" ".gitleaks-bin/${checksum_file}" > .gitleaks-bin/checksum.txt; then
+            echo "::error::Unable to locate checksum entry for ${archive}."
+            exit 1
+          fi
+          (cd .gitleaks-bin && sha256sum -c checksum.txt)
+          tar -xzf ".gitleaks-bin/${archive}" -C .gitleaks-bin
+          gitleaks_bin=".gitleaks-bin/gitleaks"
+          if [ ! -x "${gitleaks_bin}" ]; then
+            chmod +x "${gitleaks_bin}"
+          fi
+          report="omar-artifacts/gitleaks-omar.json"
+          set +e
+          "${gitleaks_bin}" detect --no-git --source omar-artifacts --redact --report-format json --report-path "${report}"
+          scan_exit="$?"
+          set -e
+          if [ "${scan_exit}" -ne 0 ]; then
+            findings="$(jq 'length' "${report}" 2>/dev/null || echo 0)"
+            if [ "${allow_override}" != "true" ]; then
+              echo "::error::Gitleaks detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
               exit 1
             fi
-            echo "::warning::Secret-like content detected in Omar artifacts; removing matching files before upload."
-            echo "${match_files}" | tr ' ' '\n' | while read -r file; do
-              rm -f "${file}"
-            done
+            match_files="$(jq -r '.[].File // .[].file // empty' "${report}" | sort -u | tr '\n' ' ')"
+            if [ -n "${match_files}" ]; then
+              echo "::warning::Secret override enabled; removing matching files before upload."
+              echo "${match_files}" | tr ' ' '\n' | while read -r file; do
+                if [ -n "${file}" ]; then
+                  rm -f "${file}"
+                fi
+              done
+            fi
           fi
       - name: Upload Omar artifacts
         if: steps.trust_boundary.outputs.trusted_context == 'true'

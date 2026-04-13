@@ -1392,7 +1392,9 @@ Review:
 - [x] Apply remaining P2 fixes: headers-based idempotency detection, strict JSON response validation, release tag semver filter, security-scan dependency for packaging, rollback actor allowlist enforcement.
 - [x] Omar Gate run `24321422734` (run_id `f26eaddf-81d7-4e6a-81ee-9d31e8055674`): P0=0, P1=0, P2=5.
 - [x] Apply remaining P2 fixes: redirect policy for auth HTTP, plaintext token migration in session store, session tracker TTL/eviction, attestation intent gating, quality-gates workflow_dispatch guard.
+- [ ] Stage + commit current remediation batch (attestation push-main trigger, secret-scan hard-fail, quality manifest artifact, auth poll timeouts).
 - [ ] Re-run Omar Gate on PR `hardening/cli-omar-only-ci` and fix any remaining P0-P2 findings.
+- [ ] Address remaining Omar P2s (release-please deterministic selection, Omar artifact secret scan determinism, quality manifest verification) in a single batch.
 - [ ] Merge after Omar Gate passes; record run IDs and findings delta.
 ## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)
 

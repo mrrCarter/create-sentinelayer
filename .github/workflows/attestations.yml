@@ -13,6 +13,8 @@ on:
         required: false
         type: string
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
@@ -28,7 +30,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ATTESTATION_INTENT: ${{ github.event_name == 'workflow_call' && inputs.attestation_intent || (github.event_name == 'pull_request' && 'pull_request' || (startsWith(github.ref, 'refs/tags/v') && 'release_candidate' || '')) }}
+  ATTESTATION_INTENT: ${{ github.event_name == 'workflow_call' && inputs.attestation_intent || (github.event_name == 'pull_request' && 'pull_request' || ((startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main') && 'release_candidate' || '')) }}
 
 jobs:
   attestation-context:
@@ -229,6 +231,22 @@ jobs:
           rm -rf quality-build-source
           mkdir -p quality-build-source
           gh run download "${quality_run_id}" --name "quality-package-artifacts" --dir quality-build-source
+          gh run download "${quality_run_id}" --name "quality-summary-manifest" --dir quality-build-source
+          summary_manifest="quality-build-source/quality-summary-manifest.json"
+          if [ ! -f "${summary_manifest}" ]; then
+            echo "::error::Missing quality-summary-manifest.json in quality artifacts."
+            exit 1
+          fi
+          summary_commit="$(jq -r '.commit_sha // empty' "${summary_manifest}")"
+          summary_run_id="$(jq -r '.run_id // empty' "${summary_manifest}")"
+          if [ -z "${summary_commit}" ] || [ "${summary_commit}" != "${TARGET_SHA}" ]; then
+            echo "::error::Quality summary manifest commit mismatch. expected=${TARGET_SHA} actual=${summary_commit:-<none>}."
+            exit 1
+          fi
+          if [ -n "${summary_run_id}" ] && [ "${summary_run_id}" != "${quality_run_id}" ]; then
+            echo "::error::Quality summary manifest run id mismatch. expected=${quality_run_id} actual=${summary_run_id}."
+            exit 1
+          fi
           echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
 

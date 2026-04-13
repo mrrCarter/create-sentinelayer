@@ -287,7 +287,8 @@ export async function requestJson(
   let lastRetryableError = null;
   for (let attempt = 0; attempt <= normalizedMaxRetries; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), normalizedTimeoutMs);
+    let timeoutHandle;
+    timeoutHandle = setTimeout(() => controller.abort(), normalizedTimeoutMs);
 
     try {
       const response = await fetch(String(url), {
@@ -403,7 +404,9 @@ export async function requestJson(
       await sleep(delayMs);
       continue;
     } finally {
-      clearTimeout(timeout);
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
       await sleep(0);
     }
   }

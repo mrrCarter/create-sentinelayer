@@ -164,6 +164,9 @@ async function pollCliAuthSession({
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
   const maxPollIntervalMs = Math.max(pollIntervalMs, Math.min(5_000, Math.floor(timeout / 4)));
+  const pollRequestTimeoutMs = Math.min(5_000, Math.max(1_000, pollIntervalMs));
+  const pollRequestMaxRetries = 1;
+  const pollRequestRetryDelayMs = 250;
   const maxTransientErrors = Math.max(5, Math.ceil(timeout / maxPollIntervalMs));
   let pollAttempt = 0;
   let transientErrorCount = 0;
@@ -193,6 +196,9 @@ async function pollCliAuthSession({
           session_id: sessionId,
           challenge,
         },
+        timeoutMs: pollRequestTimeoutMs,
+        maxRetries: pollRequestMaxRetries,
+        retryDelayMs: pollRequestRetryDelayMs,
       });
     } catch (error) {
       if (isTransientPollError(error)) {

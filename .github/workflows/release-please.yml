@@ -154,6 +154,11 @@ jobs:
         run: |
           set -euo pipefail
           case "${WATCH_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid WATCH_TIMEOUT_SECONDS value: ${WATCH_TIMEOUT_SECONDS}" ; exit 1 ;; esac
+          current_run_created_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at')"
+          if [ -z "${current_run_created_at}" ] || [ "${current_run_created_at}" = "null" ]; then
+            echo "::error::Unable to resolve current workflow run created_at timestamp."
+            exit 1
+          fi
           tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
           if [ -z "${tag_name}" ]; then
             tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '
@@ -193,10 +198,11 @@ jobs:
 
           release_run_id=""
           for attempt in $(seq 1 40); do
-            run_list_json="$(gh run list --workflow "Release" --limit 50 --json databaseId,event,headBranch,headSha,createdAt)"
+            run_list_json="$(gh run list --workflow "Release" --limit 50 --json databaseId,event,headBranch,headSha,createdAt,actor)"
             release_run_id="$(echo "${run_list_json}" | jq -r \
               --arg tag "${tag_name}" \
               --arg sha "${resolved_release_sha}" \
+              --arg min_created_at "${current_run_created_at}" \
               '
                 [
                   .[]
@@ -204,6 +210,8 @@ jobs:
                       .event == "push"
                       and .headBranch == $tag
                       and .headSha == $sha
+                      and (.createdAt >= $min_created_at)
+                      and (.actor.login == "github-actions" or .actor.login == "github-actions[bot]")
                     )
                 ]
                 | sort_by(.createdAt)

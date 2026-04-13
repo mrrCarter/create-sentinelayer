@@ -583,3 +583,36 @@ jobs:
           echo "All quality checks passed."
           echo "Canonical package tarball: ${{ needs.build-package.outputs.tarball }}"
           echo "Canonical package sha256: ${{ needs.build-package.outputs.sha256 }}"
+      - name: Emit quality summary manifest
+        shell: bash
+        env:
+          TAR_BALL: ${{ needs.build-package.outputs.tarball }}
+          SHA256: ${{ needs.build-package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAR_BALL}" ] || [ -z "${SHA256}" ]; then
+            echo "::error::Missing build-package outputs for summary manifest."
+            exit 1
+          fi
+          jq -n \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg tarball "${TAR_BALL}" \
+            --arg sha256 "${SHA256}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              commit_sha: $commit_sha,
+              tarball: $tarball,
+              sha256: $sha256,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              workflow_ref: $workflow_ref
+            }' > quality-summary-manifest.json
+      - name: Upload quality summary manifest
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-summary-manifest
+          path: quality-summary-manifest.json
+          if-no-files-found: error
+          retention-days: 7
