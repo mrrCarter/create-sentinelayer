@@ -473,6 +473,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    environment: package-release
     permissions:
       contents: read
       id-token: write

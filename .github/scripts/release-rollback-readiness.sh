@@ -5,6 +5,9 @@ PACKAGE_NAME="${PACKAGE_NAME:-sentinelayer-cli}"
 ROLLBACK_MODE="${ROLLBACK_MODE:-release}"
 RELEASE_VERSION="${RELEASE_VERSION:-}"
 NON_BLOCKING_DIAGNOSTICS="${NON_BLOCKING_DIAGNOSTICS:-0}"
+NPM_VIEW_TIMEOUT_SECONDS="${NPM_VIEW_TIMEOUT_SECONDS:-15}"
+NPM_VIEW_MAX_ATTEMPTS="${NPM_VIEW_MAX_ATTEMPTS:-3}"
+NPM_VIEW_RETRY_DELAY_SECONDS="${NPM_VIEW_RETRY_DELAY_SECONDS:-2}"
 
 npm_view_json() {
   local package_spec="$1"
@@ -13,10 +16,28 @@ npm_view_json() {
   local fallback="$4"
   local output=""
 
-  if output="$(npm view "${package_spec}" "${field}" --json 2>/dev/null)"; then
-    printf '%s' "${output}"
-    return 0
+  local attempt=1
+  local timeout_cmd="timeout"
+  if ! command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=""
   fi
+  while [ "${attempt}" -le "${NPM_VIEW_MAX_ATTEMPTS}" ]; do
+    if [ -n "${timeout_cmd}" ]; then
+      if output="$(${timeout_cmd} "${NPM_VIEW_TIMEOUT_SECONDS}s" npm view "${package_spec}" "${field}" --json 2>/dev/null)"; then
+        printf '%s' "${output}"
+        return 0
+      fi
+    else
+      if output="$(npm view "${package_spec}" "${field}" --json 2>/dev/null)"; then
+        printf '%s' "${output}"
+        return 0
+      fi
+    fi
+    if [ "${attempt}" -lt "${NPM_VIEW_MAX_ATTEMPTS}" ]; then
+      sleep "${NPM_VIEW_RETRY_DELAY_SECONDS}"
+    fi
+    attempt=$((attempt + 1))
+  done
 
   if [ "${NON_BLOCKING_DIAGNOSTICS}" = "1" ]; then
     echo "::warning::Non-blocking diagnostics enabled; npm query failed for ${label} (${package_spec} ${field})."

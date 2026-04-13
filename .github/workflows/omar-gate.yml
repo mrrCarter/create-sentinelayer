@@ -51,7 +51,7 @@ jobs:
   omar_gate:
     name: Omar Gate
     if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       checks: write
