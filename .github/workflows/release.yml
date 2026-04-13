@@ -18,6 +18,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GLOBAL_MAX_SECONDS: "3600"
 
 jobs:
   policy-precheck:
@@ -186,9 +187,16 @@ jobs:
             echo "::error::Tag signer email '${signer_email:-<none>}' is not allowlisted. Allowed signer emails: ${signer_allowlist}."
             exit 1
           fi
+          start_epoch="$(date +%s)"
           release_candidates='[]'
           page=1
           while true; do
+            now_epoch="$(date +%s)"
+            elapsed="$((now_epoch - start_epoch))"
+            if [ "${elapsed}" -gt "${GLOBAL_MAX_SECONDS}" ]; then
+              echo "::error::Release policy evaluation exceeded global budget (${elapsed}s > ${GLOBAL_MAX_SECONDS}s)."
+              exit 1
+            fi
             release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100&page=${page}")"
             page_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
               [
@@ -978,7 +986,14 @@ jobs:
           SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
         run: |
           set -euo pipefail
+          start_epoch="$(date +%s)"
           for attempt in 1 2 3 4 5; do
+            now_epoch="$(date +%s)"
+            elapsed="$((now_epoch - start_epoch))"
+            if [ "${elapsed}" -gt "${GLOBAL_MAX_SECONDS}" ]; then
+              echo "::error::Release attestation verification exceeded global budget (${elapsed}s > ${GLOBAL_MAX_SECONDS}s)."
+              exit 1
+            fi
             if gh attestation verify "${VERIFIED_TARBALL}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > release-attestation-publish-verify.json; then
               break
             fi

@@ -98,6 +98,8 @@ jobs:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
           OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
           OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || '' }}
+          OMAR_TOKEN_EXCHANGE_ISSUER: ${{ vars.OMAR_TOKEN_EXCHANGE_ISSUER || '' }}
+          OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '3600' }}
           OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
           OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/sentinelayer' }}
           OMAR_REQUIRE_OIDC_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_OIDC_ON_PROTECTED_REF || 'true' }}
@@ -179,14 +181,59 @@ jobs:
               --arg ref "${GITHUB_REF}" \
               --arg sha "${GITHUB_SHA}" \
               '{repository: $repository, run_id: $run_id, run_attempt: $run_attempt, ref: $ref, sha: $sha}')"
-            exchange_response="$(curl -fsS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
+            exchange_headers="$(mktemp)"
+            exchange_body="$(mktemp)"
+            exchange_status="$(curl -sS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
+              -D "${exchange_headers}" \
+              -o "${exchange_body}" \
+              -w "%{http_code}" \
               -H "Authorization: Bearer ${oidc_token}" \
               -H "Content-Type: application/json" \
               -d "${exchange_payload}" \
               "${exchange_url}")"
-            resolved_token="$(echo "${exchange_response}" | jq -r '.sentinelayer_token // empty')"
-            if [ -z "${resolved_token}" ]; then
-              echo "::error::OIDC exchange response missing sentinelayer_token."
+            if [ "${exchange_status}" != "200" ]; then
+              echo "::error::OIDC exchange failed with status ${exchange_status}."
+              head -c 1024 "${exchange_body}" || true
+              exit 1
+            fi
+            content_type="$(grep -i '^content-type:' "${exchange_headers}" | tail -n 1 | cut -d':' -f2- | xargs || true)"
+            if ! echo "${content_type}" | grep -qi '^application/json'; then
+              echo "::error::OIDC exchange response content-type must be application/json (received '${content_type:-<none>}')."
+              exit 1
+            fi
+            if ! jq -e 'type=="object" and (.sentinelayer_token|type=="string" and length>0) and (.expires_at|type=="string" and length>0) and (.issuer|type=="string" and length>0) and (.audience|type=="string" and length>0)' "${exchange_body}" >/dev/null 2>&1; then
+              echo "::error::OIDC exchange response schema invalid or missing required fields."
+              cat "${exchange_body}" || true
+              exit 1
+            fi
+            resolved_token="$(jq -r '.sentinelayer_token' "${exchange_body}")"
+            exchange_issuer="$(jq -r '.issuer' "${exchange_body}")"
+            exchange_audience_resp="$(jq -r '.audience' "${exchange_body}")"
+            exchange_expires_at="$(jq -r '.expires_at' "${exchange_body}")"
+            if [ -n "${exchange_audience}" ] && [ "${exchange_audience_resp}" != "${exchange_audience}" ]; then
+              echo "::error::OIDC exchange audience mismatch. expected=${exchange_audience} actual=${exchange_audience_resp}."
+              exit 1
+            fi
+            expected_issuer="$(echo "${OMAR_TOKEN_EXCHANGE_ISSUER}" | xargs || true)"
+            if [ -n "${expected_issuer}" ] && [ "${exchange_issuer}" != "${expected_issuer}" ]; then
+              echo "::error::OIDC exchange issuer mismatch. expected=${expected_issuer} actual=${exchange_issuer}."
+              exit 1
+            fi
+            expires_epoch="$(date -u -d "${exchange_expires_at}" +%s 2>/dev/null || true)"
+            if [ -z "${expires_epoch}" ]; then
+              echo "::error::OIDC exchange expires_at is invalid: ${exchange_expires_at}."
+              exit 1
+            fi
+            now_epoch="$(date +%s)"
+            ttl_seconds="$((expires_epoch - now_epoch))"
+            max_ttl="$(echo "${OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" | xargs || true)"
+            case "${max_ttl}" in ''|*[!0-9]*) echo "::error::Invalid OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS value: ${max_ttl}" ; exit 1 ;; esac
+            if [ "${ttl_seconds}" -le 0 ]; then
+              echo "::error::OIDC exchange token is already expired (ttl=${ttl_seconds})."
+              exit 1
+            fi
+            if [ "${ttl_seconds}" -gt "${max_ttl}" ]; then
+              echo "::error::OIDC exchange token TTL ${ttl_seconds}s exceeds maximum ${max_ttl}s."
               exit 1
             fi
             mode="oidc-exchange"

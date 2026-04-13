@@ -177,6 +177,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
       - name: Resolve canonical required-check target SHA
         id: checks_target
         shell: bash
@@ -310,6 +316,31 @@ jobs:
           fi
           echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
+
+      - name: Rebuild package locally and verify digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_manifest="quality-build-source/quality-package-manifest.json"
+          if [ ! -f "${source_manifest}" ]; then
+            echo "::error::Missing quality package manifest in downloaded artifact."
+            exit 1
+          fi
+          source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
+          if [ -z "${source_sha256}" ]; then
+            echo "::error::Quality package manifest missing sha256."
+            exit 1
+          fi
+          npm ci --ignore-scripts
+          npm pack --ignore-scripts --json > local-pack.json
+          local_tarball="$(jq -r '.[0].filename' local-pack.json)"
+          test -n "${local_tarball}"
+          test -f "${local_tarball}"
+          local_sha256="$(sha256sum "${local_tarball}" | awk '{print $1}')"
+          if [ "${local_sha256}" != "${source_sha256}" ]; then
+            echo "::error::Local rebuild digest mismatch. expected=${source_sha256} actual=${local_sha256}."
+            exit 1
+          fi
 
       - name: Verify downloaded quality artifact attestation
         shell: bash
