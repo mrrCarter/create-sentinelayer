@@ -6,9 +6,33 @@ import process from "node:process";
 
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
+const SESSION_WARNING_PREFIX = "sentinelayer.auth.session";
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function createSessionWarningId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `session-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
+}
+
+function emitSessionWarning(code, details = {}) {
+  const payload = {
+    level: "warn",
+    code: String(code || "SESSION_WARNING").toUpperCase(),
+    warningId: createSessionWarningId(),
+    timestamp: nowIso(),
+    ...details,
+  };
+  try {
+    console.warn(`${SESSION_WARNING_PREFIX} ${JSON.stringify(payload)}`);
+  } catch {
+    console.warn(`${SESSION_WARNING_PREFIX} ${payload.code}`);
+  }
 }
 
 function resolveHomeDir(homeDir) {
@@ -269,9 +293,11 @@ async function migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir } = {
     nextMetadata.storage = "keyring";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
-    nextMetadata.tokenEncrypted = null;
-    nextMetadata.tokenIv = null;
-    nextMetadata.tokenTag = null;
+    const key = await loadOrCreateFileKey({ homeDir });
+    const encrypted = encryptToken(plaintextToken, key);
+    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
   } else {
     const key = await loadOrCreateFileKey({ homeDir });
     const encrypted = encryptToken(plaintextToken, key);
@@ -290,6 +316,26 @@ async function migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir } = {
   }
 
   return { metadata: nextMetadata, token: plaintextToken, migrated: true };
+}
+
+async function tryDecryptFileToken({ metadata, homeDir }) {
+  if (!metadata || !metadata.tokenEncrypted || !metadata.tokenIv || !metadata.tokenTag) {
+    return null;
+  }
+  try {
+    const key = await loadOrCreateFileKey({ homeDir });
+    const token = decryptToken(
+      {
+        tokenEncrypted: metadata.tokenEncrypted,
+        tokenIv: metadata.tokenIv,
+        tokenTag: metadata.tokenTag,
+      },
+      key
+    );
+    return token || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -338,48 +384,60 @@ export async function readStoredSession({ homeDir } = {}) {
 
   if (metadata.storage === "keyring") {
     const keytar = await loadKeytarClient();
-    if (!keytar || !metadata.keyringAccount) {
-      return null;
+    let keyringError = null;
+    if (keytar && metadata.keyringAccount) {
+      try {
+        const token = await keytar.getPassword(
+          metadata.keyringService || KEYRING_SERVICE,
+          metadata.keyringAccount
+        );
+        if (token) {
+          return {
+            ...metadata,
+            filePath,
+            token,
+            storage: "keyring",
+          };
+        }
+        keyringError = new Error("Keyring token not found");
+      } catch (error) {
+        keyringError = error instanceof Error ? error : new Error("Keyring access failed");
+      }
+    } else {
+      keyringError = new Error("Keyring unavailable");
     }
-    const token = await keytar.getPassword(
-      metadata.keyringService || KEYRING_SERVICE,
-      metadata.keyringAccount
-    );
-    if (!token) {
-      return null;
+    const fallbackToken = await tryDecryptFileToken({ metadata, homeDir });
+    if (fallbackToken) {
+      emitSessionWarning("KEYRING_FALLBACK_USED", {
+        reason: keyringError ? String(keyringError.message || keyringError) : "unknown",
+        source: "file-encrypted",
+      });
+      return {
+        ...metadata,
+        filePath,
+        token: fallbackToken,
+        storage: "file",
+      };
     }
-    return {
-      ...metadata,
-      filePath,
-      token,
-      storage: "keyring",
-    };
+    emitSessionWarning("KEYRING_FALLBACK_UNAVAILABLE", {
+      reason: keyringError ? String(keyringError.message || keyringError) : "unknown",
+      source: "keyring",
+    });
+    return null;
   }
 
   if (!metadata.token) {
     if (metadata.tokenEncrypted && metadata.tokenIv && metadata.tokenTag) {
-      try {
-        const key = await loadOrCreateFileKey({ homeDir });
-        const token = decryptToken(
-          {
-            tokenEncrypted: metadata.tokenEncrypted,
-            tokenIv: metadata.tokenIv,
-            tokenTag: metadata.tokenTag,
-          },
-          key
-        );
-        if (!token) {
-          return null;
-        }
-        return {
-          ...metadata,
-          filePath,
-          token,
-          storage: "file",
-        };
-      } catch {
+      const token = await tryDecryptFileToken({ metadata, homeDir });
+      if (!token) {
         return null;
       }
+      return {
+        ...metadata,
+        filePath,
+        token,
+        storage: "file",
+      };
     }
     return null;
   }

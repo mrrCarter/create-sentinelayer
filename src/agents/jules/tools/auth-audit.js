@@ -103,6 +103,8 @@ const RETRYABLE_AIDENID_PROVISION_MESSAGE_PATTERNS = [
 ];
 
 let AUTH_AUDIT_PROVIDER_BREAKERS_HYDRATED = false;
+const AUTH_AUDIT_JITTER_SECRET = randomBytes(16).toString("hex");
+let AUTH_AUDIT_JITTER_COUNTER = 0;
 
 function createAuditRequestId() {
   try {
@@ -333,10 +335,9 @@ function isRetryableAidenidProvisionError(error) {
 
 function deriveAidenidBackoffSeed(requestId) {
   const normalizedRequestId = String(requestId || "").trim();
-  if (!normalizedRequestId) {
-    return randomBytes(4).readUInt32BE(0);
-  }
-  return createHash("sha256").update(normalizedRequestId).digest().readUInt32BE(0);
+  const counter = AUTH_AUDIT_JITTER_COUNTER++;
+  const seedMaterial = `${AUTH_AUDIT_JITTER_SECRET}:${normalizedRequestId || "fallback"}:${counter}`;
+  return createHash("sha256").update(seedMaterial).digest().readUInt32BE(0);
 }
 
 function computeAidenidProvisionBackoffMs(

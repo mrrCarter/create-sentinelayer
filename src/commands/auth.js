@@ -15,6 +15,8 @@ import {
 import { resolveCredentialsFilePath } from "../auth/session-store.js";
 import { CLI_VERSION } from "../legacy-cli.js";
 
+const AUTH_DEBUG_ENV = "SENTINELAYER_DEBUG_ERRORS";
+
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
   const globalFromCommand =
@@ -55,6 +57,20 @@ function formatApiError(error) {
   }
   const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
   return `${error.message} [${error.code}] status=${error.status}${requestId}`;
+}
+
+function shouldExposeSensitiveAuthInfo() {
+  const normalized = String(process.env[AUTH_DEBUG_ENV] || "").trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function maskIdentifier(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.length <= 6) {
+    return `${raw.slice(0, 2)}…`;
+  }
+  return `${raw.slice(0, 4)}…${raw.slice(-2)}`;
 }
 
 function printAuthHint() {
@@ -192,10 +208,16 @@ export function registerAuthCommand(program) {
         const displayUser = status.remoteUser || status.user || {};
         console.log(pc.green(`Authenticated as ${renderUserSummary(displayUser)}`));
 
-        if (status.aidenid && status.aidenid.orgId) {
-          console.log(pc.green(`AIdenID: provisioned (org: ${status.aidenid.orgId}, project: ${status.aidenid.projectId || "unknown"})`));
-          if (status.aidenid.apiKeyPrefix) {
-            console.log(pc.gray(`  API key prefix: ${status.aidenid.apiKeyPrefix}`));
+        if (status.aidenid && (status.aidenid.orgId || status.aidenid.projectId)) {
+          if (shouldExposeSensitiveAuthInfo()) {
+            const orgDisplay = status.aidenid.orgId ? maskIdentifier(status.aidenid.orgId) : "unknown";
+            const projectDisplay = status.aidenid.projectId ? maskIdentifier(status.aidenid.projectId) : "unknown";
+            console.log(pc.green(`AIdenID: provisioned (org: ${orgDisplay}, project: ${projectDisplay})`));
+            if (status.aidenid.apiKeyPrefix) {
+              console.log(pc.gray(`  API key prefix: ${maskIdentifier(status.aidenid.apiKeyPrefix)}`));
+            }
+          } else {
+            console.log(pc.green("AIdenID: provisioned"));
           }
         } else {
           console.log(pc.gray("AIdenID: not provisioned (will provision on next login)"));

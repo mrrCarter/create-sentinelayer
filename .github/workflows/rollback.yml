@@ -23,6 +23,7 @@ on:
         type: boolean
 
 permissions:
+  actions: write
   contents: read
   id-token: write
 
@@ -30,8 +31,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: release-publish-prod
-  cancel-in-progress: false
+  group: release-rollback-prod
+  cancel-in-progress: true
 
 jobs:
   rollback:
@@ -56,6 +57,20 @@ jobs:
           if [ "${{ inputs.confirm }}" != "ROLLBACK" ]; then
             echo "::error::Rollback confirmation missing. Re-run with confirm=ROLLBACK."
             exit 1
+          fi
+
+      - name: Abort active release runs before rollback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active_runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?status=in_progress&per_page=50" --jq '.workflow_runs[].id')"
+          if [ -n "${active_runs}" ]; then
+            echo "::warning::Cancelling active release runs: ${active_runs}"
+            for run_id in ${active_runs}; do
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null
+            done
           fi
 
       - name: Enforce rollback trigger policy

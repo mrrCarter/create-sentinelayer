@@ -268,15 +268,31 @@ jobs:
           for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
             case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
           done
+      - name: Stage Omar artifacts (redacted)
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          OMAR_UPLOAD_LOGS: ${{ vars.OMAR_UPLOAD_LOGS || 'false' }}
+        run: |
+          set -euo pipefail
+          rm -rf omar-artifacts
+          mkdir -p omar-artifacts/reports omar-artifacts/telemetry
+          if [ -d ".sentinelayer/reports" ]; then
+            cp -R .sentinelayer/reports/. omar-artifacts/reports/ 2>/dev/null || true
+          fi
+          if [ -d ".sentinelayer/telemetry" ]; then
+            cp -R .sentinelayer/telemetry/. omar-artifacts/telemetry/ 2>/dev/null || true
+          fi
+          if [ "$(echo "${OMAR_UPLOAD_LOGS}" | tr '[:upper:]' '[:lower:]' | xargs || true)" = "true" ] && [ -d ".sentinelayer/logs" ]; then
+            mkdir -p omar-artifacts/logs
+            cp -R .sentinelayer/logs/. omar-artifacts/logs/ 2>/dev/null || true
+          fi
       - name: Upload Omar artifacts
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: omar-gate-artifacts
-          path: |
-            .sentinelayer/reports/**
-            .sentinelayer/telemetry/**
-            .sentinelayer/logs/**
+          path: omar-artifacts/**
           if-no-files-found: ignore
   omar_enforce:
     name: Omar Gate

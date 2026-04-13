@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      emergency_eval_skip:
+        description: "Allow eval-impact skip when base commit is unavailable (requires approval)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: >-
@@ -19,6 +25,7 @@ concurrency:
 permissions:
   checks: read
   contents: read
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -48,7 +55,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
-          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || '' }}
+          EMERGENCY_EVAL_SKIP: ${{ github.event_name == 'workflow_dispatch' && inputs.emergency_eval_skip || 'false' }}
         run: |
           set -euo pipefail
           append_output() {
@@ -56,19 +63,6 @@ jobs:
             if [ -n "${GITHUB_OUTPUT:-}" ]; then
               echo "${line}" >> "${GITHUB_OUTPUT}"
             fi
-          }
-          csv_contains_event() {
-            local csv="$1"
-            local event_name="$2"
-            local item=""
-            IFS=',' read -r -a items <<< "${csv}"
-            for item in "${items[@]}"; do
-              item="$(echo "${item}" | xargs)"
-              if [ "${item}" = "${event_name}" ]; then
-                return 0
-              fi
-            done
-            return 1
           }
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             base_sha="${PR_BASE_SHA}"
@@ -85,15 +79,15 @@ jobs:
               base_sha="$(git rev-parse "${head_sha}^")"
               echo "::notice::Eval impact gate resolved base from ${head_sha} parent commit ${base_sha}."
             else
-              if csv_contains_event "${ALLOW_SKIP_EVENTS}" "${EVENT_NAME}"; then
-                echo "::notice::No parent commit available for ${head_sha}; approved skip for event ${EVENT_NAME} (ALLOW_SKIP_EVENTS=${ALLOW_SKIP_EVENTS})."
+              emergency_skip="$(echo "${EMERGENCY_EVAL_SKIP}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+              if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${emergency_skip}" = "true" ]; then
+                echo "::notice::No parent commit available for ${head_sha}; approved skip for workflow_dispatch with emergency_eval_skip=true."
                 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                   {
                     echo "## Eval Impact Gate"
                     echo "- status: \`approved_skip\`"
                     echo "- event: \`${EVENT_NAME}\`"
-                    echo "- reason: no parent commit available and event is allowlisted."
-                    echo "- allow_skip_events: \`${ALLOW_SKIP_EVENTS}\`"
+                    echo "- reason: no parent commit available and emergency_eval_skip=true."
                   } >> "${GITHUB_STEP_SUMMARY}"
                 fi
                 append_output "eval_resolution=approved_skip"
@@ -101,18 +95,28 @@ jobs:
                 append_output "eval_evidence_found=false"
                 exit 0
               fi
-              echo "::error::Eval impact gate could not resolve base commit for ${EVENT_NAME} (head=${head_sha}) and this event is not allowlisted to skip."
+              echo "::error::Eval impact gate could not resolve base commit for ${EVENT_NAME} (head=${head_sha}); emergency_eval_skip is not enabled."
               exit 1
             fi
           fi
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
           append_output "eval_resolution=resolved"
 
+  eval-skip-approval:
+    name: Eval Skip Approval
+    runs-on: ubuntu-22.04
+    needs: [eval-impact]
+    if: needs.eval-impact.outputs.eval_resolution == 'approved_skip'
+    environment: eval-impact-override
+    steps:
+      - name: Require reviewer approval for eval skip
+        run: echo "Eval impact skip approved by environment reviewers."
+
   eval-enforce:
     name: Eval Impact Enforcement
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    needs: [eval-impact]
+    needs: [eval-impact, eval-skip-approval]
     if: always()
     outputs:
       eval_resolution: ${{ needs.eval-impact.outputs.eval_resolution }}
@@ -128,9 +132,11 @@ jobs:
           EVAL_REQUIRED: ${{ needs.eval-impact.outputs.eval_required }}
           EVAL_EVIDENCE_FOUND: ${{ needs.eval-impact.outputs.eval_evidence_found }}
           GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          EMERGENCY_EVAL_SKIP: ${{ github.event_name == 'workflow_dispatch' && inputs.emergency_eval_skip || 'false' }}
         run: |
           set -euo pipefail
           ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          emergency_skip="$(echo "${EMERGENCY_EVAL_SKIP}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           if [ "${EVAL_JOB_RESULT}" != "success" ]; then
             echo "::error::eval-impact job did not succeed (result=${EVAL_JOB_RESULT})."
             exit 1
@@ -144,6 +150,10 @@ jobs:
           esac
           if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${EVENT_NAME}" != "workflow_dispatch" ]; then
             echo "::error::approved_skip is only allowed for workflow_dispatch events."
+            exit 1
+          fi
+          if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${emergency_skip}" != "true" ]; then
+            echo "::error::approved_skip requires emergency_eval_skip=true."
             exit 1
           fi
           if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${ref_protected}" = "true" ]; then
