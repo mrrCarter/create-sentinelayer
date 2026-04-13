@@ -207,7 +207,11 @@ jobs:
             fi
             if ! jq -e 'type=="object" and (.sentinelayer_token|type=="string" and length>0) and (.expires_at|type=="string" and length>0) and (.issuer|type=="string" and length>0) and (.audience|type=="string" and length>0)' "${exchange_body}" >/dev/null 2>&1; then
               echo "::error::OIDC exchange response schema invalid or missing required fields."
-              cat "${exchange_body}" || true
+              exchange_error_code="$(jq -r '.error_code // .code // empty' "${exchange_body}" 2>/dev/null || true)"
+              exchange_request_id="$(jq -r '.request_id // .requestId // empty' "${exchange_body}" 2>/dev/null || true)"
+              if [ -n "${exchange_error_code}" ] || [ -n "${exchange_request_id}" ]; then
+                echo "::error::exchange_error_code=${exchange_error_code:-<none>} exchange_request_id=${exchange_request_id:-<none>}"
+              fi
               exit 1
             fi
             resolved_token="$(jq -r '.sentinelayer_token' "${exchange_body}")"

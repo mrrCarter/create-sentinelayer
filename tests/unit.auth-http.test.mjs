@@ -450,6 +450,8 @@ test("Unit auth http: allowNonIdempotent works only in test guard", async () => 
   try {
     process.env.NODE_ENV = "test";
     process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT = "1";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    delete process.env.CI;
     const response = await requestJson("https://api.example.com/test", {
       method: "POST",
       allowNonIdempotent: true,
@@ -459,6 +461,33 @@ test("Unit auth http: allowNonIdempotent works only in test guard", async () => 
   } finally {
     process.env = previousEnv;
     globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: allowNonIdempotent is blocked when CI is set", async () => {
+  __resetRequestCircuitForTests();
+  const previousEnv = { ...process.env };
+
+  try {
+    process.env.NODE_ENV = "test";
+    process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT = "1";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    process.env.CI = "1";
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          method: "POST",
+          allowNonIdempotent: true,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "IDEMPOTENCY_KEY_REQUIRED");
+        return true;
+      }
+    );
+  } finally {
+    process.env = previousEnv;
     __resetRequestCircuitForTests();
   }
 });

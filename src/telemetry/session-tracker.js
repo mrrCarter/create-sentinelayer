@@ -16,6 +16,8 @@ const SESSIONS = new Map();
 let ACTIVE_SESSION_ID = null;
 const MAX_SESSIONS = 50;
 const SESSION_TTL_MS = 60 * 60 * 1000;
+const VERBOSE_TELEMETRY_ENV = "SENTINELAYER_VERBOSE_TELEMETRY";
+const DEBUG_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
 
 function normalizeNonNegativeNumber(value) {
   const normalized = Number(value);
@@ -45,6 +47,22 @@ function pruneSessions(now = Date.now()) {
     if (!oldestKey) break;
     SESSIONS.delete(oldestKey);
   }
+}
+
+function shouldExposeTraceId() {
+  const verbose = String(process.env[VERBOSE_TELEMETRY_ENV] || "").trim().toLowerCase();
+  const debug = String(process.env[DEBUG_ERRORS_ENV] || "").trim().toLowerCase();
+  return verbose === "true" || verbose === "1" || verbose === "yes" || debug === "true" || debug === "1" || debug === "yes";
+}
+
+function maskTraceId(traceId) {
+  const normalized = String(traceId || "").trim();
+  if (normalized.length <= 8) {
+    return "trace_id=****";
+  }
+  const prefix = normalized.slice(0, 4);
+  const suffix = normalized.slice(-4);
+  return `trace_id=${prefix}…${suffix}`;
 }
 
 /**
@@ -172,7 +190,8 @@ export function printSessionSummary({ sessionId } = {}) {
   if (summary.costUsd > 0) parts.push(pc.white("$" + summary.costUsd.toFixed(2)));
   parts.push(pc.white(duration));
   if (summary.traceId) {
-    parts.push(pc.gray(`trace_id=${summary.traceId}`));
+    const traceLabel = shouldExposeTraceId() ? `trace_id=${summary.traceId}` : maskTraceId(summary.traceId);
+    parts.push(pc.gray(traceLabel));
   }
 
   const findingParts = [];

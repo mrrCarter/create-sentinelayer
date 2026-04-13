@@ -691,10 +691,63 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  deploy-candidate:
+    name: Deploy Candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [promote-candidate, build-package]
+    if: >-
+      ${{
+        always() &&
+        needs.promote-candidate.result == 'success' &&
+        needs.build-package.result == 'success'
+      }}
+    environment: deploy-candidate
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download quality package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # digest-pinned (actions/download-artifact)
+        with:
+          name: quality-package-artifacts
+          path: deploy-artifact
+
+      - name: Verify promoted artifact integrity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          manifest="deploy-artifact/quality-package-manifest.json"
+          if [ ! -f "${manifest}" ]; then
+            echo "::error::Missing quality package manifest for deploy candidate."
+            exit 1
+          fi
+          tarball="$(jq -r '.tarball // empty' "${manifest}")"
+          sha256="$(jq -r '.sha256 // empty' "${manifest}")"
+          if [ -z "${tarball}" ] || [ -z "${sha256}" ]; then
+            echo "::error::Deploy manifest missing tarball or sha256."
+            exit 1
+          fi
+          tarball_path="deploy-artifact/${tarball}"
+          if [ ! -f "${tarball_path}" ]; then
+            echo "::error::Deploy tarball missing at ${tarball_path}."
+            exit 1
+          fi
+          actual_sha256="$(sha256sum "${tarball_path}" | awk '{print $1}')"
+          if [ "${actual_sha256}" != "${sha256}" ]; then
+            echo "::error::Deploy tarball checksum mismatch. expected=${sha256} actual=${actual_sha256}."
+            exit 1
+          fi
+          gh attestation verify "${tarball_path}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/quality-gates.yml" --format json > deploy-attestation-verify.json
+          jq -e 'length > 0' deploy-attestation-verify.json > /dev/null
+          echo "deploy candidate artifact verified."
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness, promote-candidate]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness, promote-candidate, deploy-candidate]
     if: ${{ always() }}
     steps:
       - name: Confirm all quality gates passed
@@ -755,6 +808,10 @@ jobs:
           fi
           if [ "${{ needs.promote-candidate.result }}" != "success" ]; then
             echo "::error::promote-candidate failed."
+            failed=1
+          fi
+          if [ "${{ needs.deploy-candidate.result }}" != "success" ]; then
+            echo "::error::deploy-candidate failed."
             failed=1
           fi
           if [ "${failed}" -ne 0 ]; then

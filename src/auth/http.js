@@ -234,7 +234,12 @@ function shouldExposeApiErrorDetails() {
 }
 
 function isTestNonIdempotentAllowed() {
-  return process.env.NODE_ENV === "test" && process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT === "1";
+  return (
+    process.env.NODE_ENV === "test" &&
+    process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT === "1" &&
+    process.env.SENTINELAYER_CLI_TEST_MODE === "1" &&
+    !process.env.CI
+  );
 }
 
 function sanitizeApiErrorMessage(message, fallback = "Sentinelayer API error") {
