@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /**
@@ -92,14 +91,6 @@ function resolveIdempotencyKey(headers) {
     }
   }
   return null;
-}
-
-function createOperationId() {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `op-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
-  }
 }
 
 function normalizeHeaderObject(headers) {
@@ -277,6 +268,7 @@ export function __resetRequestCircuitForTests(scope) {
  *   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
  *   headers?: Record<string, string>,
  *   body?: unknown,
+ *   idempotencyKey?: string | null,
  *   timeoutMs?: number
  *   maxRetries?: number,
  *   retryDelayMs?: number
@@ -305,9 +297,7 @@ export async function requestJson(
     normalizedMethod === "PUT" ||
     normalizedMethod === "PATCH" ||
     normalizedMethod === "DELETE";
-  const autoIdempotencyKey =
-    isMutationMethod && !existingIdempotencyKey ? `sl-${createOperationId()}` : null;
-  const resolvedIdempotencyKey = existingIdempotencyKey || autoIdempotencyKey;
+  const resolvedIdempotencyKey = existingIdempotencyKey;
   const requestHeaders = applyIdempotencyKey(headers, resolvedIdempotencyKey);
   const isIdempotentMutation = Boolean(resolvedIdempotencyKey);
   const retryableMethod =

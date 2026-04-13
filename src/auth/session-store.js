@@ -239,6 +239,18 @@ async function loadKeytarClient() {
   if (disableKeyring === "1" || disableKeyring === "true" || disableKeyring === "yes" || disableKeyring === "on") {
     return null;
   }
+  const keyringMode = String(process.env.SENTINELAYER_KEYRING_MODE || "")
+    .trim()
+    .toLowerCase();
+  const enableKeyring =
+    keyringMode === "keyring" ||
+    keyringMode === "enabled" ||
+    keyringMode === "on" ||
+    keyringMode === "true" ||
+    keyringMode === "1";
+  if (!enableKeyring) {
+    return null;
+  }
   try {
     const mod = await import("keytar");
     const client = mod && typeof mod === "object" ? mod.default || mod : null;

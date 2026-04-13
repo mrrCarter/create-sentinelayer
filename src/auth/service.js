@@ -94,6 +94,17 @@ function withFlowRequestId(headers, flowRequestId) {
   };
 }
 
+async function requestAuthJson(flowRequestId, ...args) {
+  try {
+    return await requestJson(...args);
+  } catch (error) {
+    if (error instanceof SentinelayerApiError && !error.requestId && flowRequestId) {
+      error.requestId = flowRequestId;
+    }
+    throw error;
+  }
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -162,15 +173,19 @@ export async function resolveApiUrl({
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
-  return requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"), {
-    method: "POST",
-    headers: withFlowRequestId(null, flowRequestId),
-    body: {
-      challenge,
-      ide: String(ide || DEFAULT_IDE_NAME),
-      cli_version: String(cliVersion || "").trim() || null,
-    },
-  });
+  return requestAuthJson(
+    flowRequestId,
+    buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"),
+    {
+      method: "POST",
+      headers: withFlowRequestId(null, flowRequestId),
+      body: {
+        challenge,
+        ide: String(ide || DEFAULT_IDE_NAME),
+        cli_version: String(cliVersion || "").trim() || null,
+      },
+    }
+  );
 }
 
 async function pollCliAuthSession({
@@ -225,18 +240,25 @@ async function pollCliAuthSession({
   while (Date.now() < deadline) {
     let payload;
     try {
-      payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
-        method: "POST",
-        headers: withFlowRequestId(null, flowRequestId),
-        body: {
-          session_id: sessionId,
-          challenge,
-        },
-        timeoutMs: pollRequestTimeoutMs,
-        maxRetries: pollRequestMaxRetries,
-        retryDelayMs: pollRequestRetryDelayMs,
-      });
+      payload = await requestAuthJson(
+        flowRequestId,
+        buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"),
+        {
+          method: "POST",
+          headers: withFlowRequestId(null, flowRequestId),
+          body: {
+            session_id: sessionId,
+            challenge,
+          },
+          timeoutMs: pollRequestTimeoutMs,
+          maxRetries: pollRequestMaxRetries,
+          retryDelayMs: pollRequestRetryDelayMs,
+        }
+      );
     } catch (error) {
+      if (error instanceof SentinelayerApiError && !error.requestId && flowRequestId) {
+        error.requestId = flowRequestId;
+      }
       const classification = classifyPollError(error);
       if (classification) {
         if (classification === "rate_limit") {
@@ -316,10 +338,14 @@ async function pollCliAuthSession({
 }
 
 async function fetchCurrentUser({ apiUrl, token, flowRequestId }) {
-  return requestJson(buildApiPath(apiUrl, "/api/v1/auth/me"), {
-    method: "GET",
-    headers: withFlowRequestId(toAuthHeader(token), flowRequestId),
-  });
+  return requestAuthJson(
+    flowRequestId,
+    buildApiPath(apiUrl, "/api/v1/auth/me"),
+    {
+      method: "GET",
+      headers: withFlowRequestId(toAuthHeader(token), flowRequestId),
+    }
+  );
 }
 
 async function issueApiToken({
@@ -333,22 +359,26 @@ async function issueApiToken({
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
   );
   const idempotencyKey = createIdempotencyKey("sl-cli-issue-token");
-  return requestJson(buildApiPath(apiUrl, "/api/v1/auth/api-tokens"), {
-    method: "POST",
-    headers: withFlowRequestId(
-      {
-        ...toAuthHeader(authToken),
-        "Idempotency-Key": idempotencyKey,
+  return requestAuthJson(
+    flowRequestId,
+    buildApiPath(apiUrl, "/api/v1/auth/api-tokens"),
+    {
+      method: "POST",
+      headers: withFlowRequestId(
+        {
+          ...toAuthHeader(authToken),
+          "Idempotency-Key": idempotencyKey,
+        },
+        flowRequestId
+      ),
+      body: {
+        label: String(tokenLabel || "").trim() || defaultTokenLabel(),
+        scope: "cli",
+        llm_credential_mode: "managed",
+        expires_in_days: expiresInDays,
       },
-      flowRequestId
-    ),
-    body: {
-      label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: "cli",
-      llm_credential_mode: "managed",
-      expires_in_days: expiresInDays,
-    },
-  });
+    }
+  );
 }
 
 async function revokeApiToken({ apiUrl, authToken, tokenId }) {

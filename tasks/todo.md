@@ -4,7 +4,10 @@
 - [x] Confirm Omar Gate runs are using the legacy v1 action that respects `sentinelayer_managed_llm` and `openai_api_key`.
 - [x] Update the local Omar wrapper to enable managed LLM (`sentinelayer_managed_llm: "true"`) so runs do not skip LLM when BYOK is absent/invalid.
 - [x] Verify the workflow still declares `permissions: id-token: write` for managed proxy OIDC.
-- [ ] Open PR, run Omar Gate loop (`gh run watch`), and merge only after Omar passes.
+- [ ] Finish P2 fixes from latest Omar Gate run (request-id continuity, remove auto idempotency, keytar determinism, workflow guardrails).
+- [ ] Run targeted tests for auth/service + auth/http to confirm behavior.
+- [ ] Commit and push updates to `hardening/cli-omar-only-ci`.
+- [ ] Approve Omar Gate environment, run `gh run watch`, and iterate until P0-P2 clear.
 
 ## Review
 - [ ] Pending.

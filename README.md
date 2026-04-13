@@ -146,13 +146,17 @@ Behavior:
 - login uses browser approval (`/api/v1/auth/cli/sessions/*`)
 - after approval, CLI mints a long-lived API token (`/api/v1/auth/api-tokens`)
 - session metadata is stored at `~/.sentinelayer/credentials.json`
-- token storage uses OS keyring when `keytar` is available; file fallback is used otherwise
+- token storage uses OS keyring only when explicitly enabled (`SENTINELAYER_KEYRING_MODE=keyring`) and `keytar` is installed; file fallback is used otherwise
 - near-expiry token rotation is automatic on command use for stored sessions
 - env/config tokens still take precedence:
   - `SENTINELAYER_TOKEN`
   - `.sentinelayer.yml` `sentinelayerToken`
 
-Opt-out of keyring usage:
+Opt-in to keyring usage:
+
+- `SENTINELAYER_KEYRING_MODE=keyring` (requires `npm install keytar`)
+
+Opt-out of keyring usage (overrides any opt-in):
 
 - `SENTINELAYER_DISABLE_KEYRING=1`
 

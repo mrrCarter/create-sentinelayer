@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 concurrency:
-  group: release-publish-${{ github.ref_name }}
+  group: release-publish
   cancel-in-progress: false
 
 permissions:

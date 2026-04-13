@@ -290,14 +290,11 @@ jobs:
       - name: Scan staged artifacts for secrets
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
-        env:
-          OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE: ${{ vars.OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE || 'false' }}
         run: |
           set -euo pipefail
           if [ ! -d "omar-artifacts" ]; then
             exit 0
           fi
-          allow_override="$(echo "${OMAR_ALLOW_ARTIFACT_SECRET_OVERRIDE}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           report="omar-artifacts/secret-scan.json"
           set +e
           node .github/scripts/scan-omar-artifacts.js --path omar-artifacts --report "${report}"
@@ -305,19 +302,8 @@ jobs:
           set -e
           if [ "${scan_exit}" -ne 0 ]; then
             findings="$(jq 'length' "${report}" 2>/dev/null || echo 0)"
-            if [ "${allow_override}" != "true" ]; then
-              echo "::error::Secret scan detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
-              exit 1
-            fi
-            match_files="$(jq -r '.[].file // empty' "${report}" | sort -u | tr '\n' ' ')"
-            if [ -n "${match_files}" ]; then
-              echo "::warning::Secret override enabled; removing matching files before upload."
-              echo "${match_files}" | tr ' ' '\n' | while read -r file; do
-                if [ -n "${file}" ]; then
-                  rm -f "${file}"
-                fi
-              done
-            fi
+            echo "::error::Secret scan detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
+            exit 1
           fi
       - name: Upload Omar artifacts
         if: steps.trust_boundary.outputs.trusted_context == 'true'
