@@ -207,6 +207,7 @@ jobs:
           NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER: ${{ vars.NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER || '' }}
           NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '1800' }}
           NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
+          NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS || '60' }}
           NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
           NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256: ${{ vars.NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256 || '' }}
           NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF: ${{ vars.NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF || 'true' }}
@@ -221,6 +222,39 @@ jobs:
             echo "::error::Invalid NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS value: ${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}"
             exit 1
           fi
+          case "${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS value: ${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" ; exit 1 ;; esac
+          if [ "${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" -lt 1 ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS must be >=1."
+            exit 1
+          fi
+          backoff_elapsed=0
+          deterministic_jitter() {
+            local attempt="$1"
+            local seed="${GITHUB_RUN_ID:-0}"
+            case "${seed}" in ''|*[!0-9]*) seed=0 ;; esac
+            echo $(( (seed + attempt * 17) % 3 ))
+          }
+          sleep_exchange_backoff() {
+            local attempt="$1"
+            local phase="$2"
+            local base_delay=$((2 ** (attempt - 1)))
+            if [ "${base_delay}" -gt 8 ]; then
+              base_delay=8
+            fi
+            local jitter
+            jitter="$(deterministic_jitter "${attempt}")"
+            local delay=$((base_delay + jitter))
+            if [ "${delay}" -gt 12 ]; then
+              delay=12
+            fi
+            if [ $((backoff_elapsed + delay)) -gt "${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" ]; then
+              echo "::error::OIDC token exchange retry budget exceeded during ${phase} (${backoff_elapsed}s + ${delay}s > ${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}s)."
+              exit 1
+            fi
+            backoff_elapsed=$((backoff_elapsed + delay))
+            echo "::notice::OIDC exchange backoff phase=${phase} attempt=${attempt} delay=${delay}s elapsed=${backoff_elapsed}s budget=${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}s."
+            sleep "${delay}"
+          }
           if ! echo "${NPM_TOKEN_EXCHANGE_URL}" | grep -Eq '^https://'; then
             echo "::error::NPM_TOKEN_EXCHANGE_URL must use https://."
             exit 1
@@ -290,7 +324,7 @@ jobs:
               echo "::error::Failed to acquire GitHub OIDC identity token after ${attempt} attempts."
               exit 1
             fi
-            sleep $((attempt * 2))
+            sleep_exchange_backoff "${attempt}" "oidc-jwt"
           done
           oidc_jwt="$(echo "${oidc_payload}" | jq -r '.value // empty')"
           if [ -z "${oidc_jwt}" ]; then
@@ -348,7 +382,7 @@ jobs:
               echo "::error::http_status=${exchange_http_code:-<none>} content_type=${exchange_content_type:-<none>}"
               exit 1
             fi
-            sleep $((attempt * 2))
+            sleep_exchange_backoff "${attempt}" "exchange-http"
           done
           exchange_contract="$(echo "${exchange_response}" | jq -cer '
             if type == "object"

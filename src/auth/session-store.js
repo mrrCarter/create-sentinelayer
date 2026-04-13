@@ -247,6 +247,73 @@ function normalizeMetadata(raw = {}) {
   };
 }
 
+function isRetriableRenameError(error) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  return (
+    error.code === "EPERM" ||
+    error.code === "EACCES" ||
+    error.code === "EEXIST" ||
+    error.code === "EBUSY"
+  );
+}
+
+function delayMilliseconds(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function renameWithRetry(sourcePath, destinationPath, { attempts = 3, baseDelayMs = 25 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await fsp.rename(sourcePath, destinationPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetriableRenameError(error) || attempt >= attempts) {
+        break;
+      }
+      await delayMilliseconds(baseDelayMs * attempt);
+    }
+  }
+  throw lastError;
+}
+
+async function replaceWithBackup(tmpPath, filePath) {
+  const directory = path.dirname(filePath);
+  const backupPath = path.join(
+    directory,
+    `.credentials.backup.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.bak`
+  );
+  let backupCreated = false;
+  try {
+    try {
+      await fsp.rename(filePath, backupPath);
+      backupCreated = true;
+    } catch (error) {
+      if (!(error && typeof error === "object" && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
+
+    await renameWithRetry(tmpPath, filePath, { attempts: 3, baseDelayMs: 40 });
+
+    if (backupCreated) {
+      await fsp.rm(backupPath, { force: true }).catch(() => {});
+    }
+  } catch (error) {
+    if (backupCreated) {
+      try {
+        await fsp.rename(backupPath, filePath);
+      } catch {
+        // Best-effort restore; keep original error as the primary failure.
+      }
+    }
+    throw error;
+  }
+}
+
 async function loadKeytarClient() {
   const disableKeyring = String(process.env.SENTINELAYER_DISABLE_KEYRING || "")
     .trim()
@@ -323,14 +390,10 @@ async function writeMetadata(filePath, metadata) {
       // Windows does not reliably support POSIX chmod semantics.
     }
     try {
-      await fsp.rename(tmpPath, filePath);
+      await renameWithRetry(tmpPath, filePath, { attempts: 3, baseDelayMs: 25 });
     } catch (error) {
-      if (error && typeof error === "object" && error.code === "EEXIST") {
-        await fsp.rm(filePath, { force: true });
-        await fsp.rename(tmpPath, filePath);
-      } else if (error && typeof error === "object" && error.code === "EPERM") {
-        await fsp.rm(filePath, { force: true });
-        await fsp.rename(tmpPath, filePath);
+      if (isRetriableRenameError(error)) {
+        await replaceWithBackup(tmpPath, filePath);
       } else {
         throw error;
       }

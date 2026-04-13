@@ -224,11 +224,13 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
           REQUIRED_CHECKS_JSON='[
             {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Build Package (Deterministic)","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
             {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"}
           ]'
           else
           REQUIRED_CHECKS_JSON='[
             {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Build Package (Deterministic)","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
             {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"}
           ]'
           fi
@@ -319,28 +321,17 @@ jobs:
 
       - name: Rebuild package locally for reproducibility comparison
         shell: bash
-        env:
-          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
-          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           source_manifest="quality-build-source/quality-package-manifest.json"
           if [ ! -f "${source_manifest}" ]; then
-            if [ "${ref_protected}" = "true" ]; then
-              echo "::error::Missing quality package manifest in downloaded artifact."
-              exit 1
-            fi
-            echo "::warning::Missing quality package manifest in downloaded artifact; skipping local rebuild diagnostic on non-protected ref."
-            exit 0
+            echo "::error::Missing quality package manifest in downloaded artifact."
+            exit 1
           fi
           source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
           if [ -z "${source_sha256}" ]; then
-            if [ "${ref_protected}" = "true" ]; then
-              echo "::error::Quality package manifest missing sha256."
-              exit 1
-            fi
-            echo "::warning::Quality package manifest missing sha256; skipping local rebuild diagnostic on non-protected ref."
-            exit 0
+            echo "::error::Quality package manifest missing sha256."
+            exit 1
           fi
           npm ci --ignore-scripts
           npm pack --ignore-scripts --json > local-pack.json
@@ -349,11 +340,8 @@ jobs:
           test -f "${local_tarball}"
           local_sha256="$(sha256sum "${local_tarball}" | awk '{print $1}')"
           if [ "${local_sha256}" != "${source_sha256}" ]; then
-            if [ "${ref_protected}" = "true" ]; then
-              echo "::error::Local rebuild digest mismatch on protected ref. expected=${source_sha256} actual=${local_sha256}."
-              exit 1
-            fi
-            echo "::warning::Local rebuild digest differs from canonical artifact on non-protected ref. expected=${source_sha256} actual=${local_sha256}."
+            echo "::error::Local rebuild digest mismatch. expected=${source_sha256} actual=${local_sha256}."
+            exit 1
           else
             echo "::notice::Local rebuild digest matches canonical artifact (${local_sha256})."
           fi
