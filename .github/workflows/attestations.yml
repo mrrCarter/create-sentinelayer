@@ -54,6 +54,67 @@ jobs:
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
+  attest-metadata-untrusted:
+    name: Attestation Metadata (Untrusted)
+    needs: [attestation-context]
+    if: needs.attestation-context.outputs.trusted_context != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Emit untrusted attestation manifest
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg event_name "${EVENT_NAME}" \
+            --arg pr_number "${PR_NUMBER}" \
+            --arg pr_head_sha "${PR_HEAD_SHA}" \
+            --arg pr_base_sha "${PR_BASE_SHA}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg workflow_name "${GITHUB_WORKFLOW}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '{
+              intent: "metadata_untrusted",
+              event_name: $event_name,
+              repository: $repository,
+              commit_sha: $commit_sha,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              workflow_ref: $workflow_ref,
+              workflow_name: $workflow_name,
+              pull_request: {
+                number: (if ($pr_number | length) > 0 then ($pr_number | tonumber) else null end),
+                head_sha: (if ($pr_head_sha | length) > 0 then $pr_head_sha else null end),
+                base_sha: (if ($pr_base_sha | length) > 0 then $pr_base_sha else null end)
+              }
+            }' > attestation-manifest.json
+          {
+            echo "## Attestation (Untrusted)"
+            echo "- intent: \`metadata_untrusted\`"
+            echo "- commit_sha: \`${GITHUB_SHA}\`"
+            if [ -n "${PR_NUMBER}" ]; then
+              echo "- pull_request: \`#${PR_NUMBER}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload attestation metadata
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: attestation-metadata-untrusted
+          path: attestation-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
   attest-build:
     name: Attest Build Artifact
     needs: [attestation-context]

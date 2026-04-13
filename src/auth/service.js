@@ -112,7 +112,13 @@ function defaultTokenLabel() {
 
 function createIdempotencyKey(prefix) {
   const normalizedPrefix = String(prefix || "sl-cli").trim() || "sl-cli";
-  return `${normalizedPrefix}-${crypto.randomUUID()}`;
+  let suffix;
+  try {
+    suffix = crypto.randomUUID();
+  } catch {
+    suffix = `${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
+  return `${normalizedPrefix}-${suffix}`;
 }
 
 function computeDeterministicJitterFactor({ sessionId, attempt }) {

@@ -299,6 +299,10 @@ export async function requestJson(
     normalizedMethod === "DELETE";
   const resolvedIdempotencyKey = existingIdempotencyKey;
   const requestHeaders = applyIdempotencyKey(headers, resolvedIdempotencyKey);
+  const outgoingHeaders = { ...requestHeaders };
+  if (body !== undefined) {
+    outgoingHeaders["Content-Type"] = "application/json";
+  }
   const isIdempotentMutation = Boolean(resolvedIdempotencyKey);
   const retryableMethod =
     normalizedMethod === "GET" ||
@@ -334,10 +338,7 @@ export async function requestJson(
     try {
       const response = await fetch(String(url), {
         method: normalizedMethod,
-        headers: {
-          "Content-Type": "application/json",
-          ...requestHeaders,
-        },
+        headers: outgoingHeaders,
         body: body === undefined ? undefined : JSON.stringify(body),
         redirect: "error",
         signal: controller.signal,
