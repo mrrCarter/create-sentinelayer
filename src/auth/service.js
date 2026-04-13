@@ -179,11 +179,13 @@ export async function resolveApiUrl({
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
+  const idempotencyKey = createIdempotencyKey("sl-cli-auth-start");
   return requestAuthJson(
     flowRequestId,
     buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"),
     {
       method: "POST",
+      idempotencyKey,
       headers: withFlowRequestId(null, flowRequestId),
       body: {
         challenge,
@@ -256,11 +258,13 @@ async function pollCliAuthSession({
     }
     let payload;
     try {
+      const idempotencyKey = createIdempotencyKey("sl-cli-auth-poll");
       payload = await requestAuthJson(
         flowRequestId,
         buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"),
         {
           method: "POST",
+          idempotencyKey,
           headers: withFlowRequestId(null, flowRequestId),
           body: {
             session_id: sessionId,

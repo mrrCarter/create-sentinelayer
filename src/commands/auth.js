@@ -55,17 +55,23 @@ function formatApiError(error) {
   if (!(error instanceof SentinelayerApiError)) {
     return error instanceof Error ? error.message : String(error || "Unknown error");
   }
-  const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
+  const requestIdValue = error.requestId
+    ? (shouldExposeSensitiveAuthInfo() ? error.requestId : maskIdentifier(error.requestId))
+    : "";
+  const requestId = requestIdValue ? ` request_id=${requestIdValue}` : "";
   return `${error.message} [${error.code}] status=${error.status}${requestId}`;
 }
 
 function shouldExposeSensitiveAuthInfo() {
   const normalized = String(process.env[AUTH_DEBUG_ENV] || "").trim().toLowerCase();
-  return normalized === "true" || normalized === "1" || normalized === "yes";
+  const isTty = Boolean(process.stdout && process.stdout.isTTY);
+  const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
+  const isDev = nodeEnv === "development";
+  return (normalized === "true" || normalized === "1" || normalized === "yes") && isTty && isDev;
 }
 
 function shouldRevealTokenIdentifiers() {
-  return shouldExposeSensitiveAuthInfo() && Boolean(process.stdout && process.stdout.isTTY);
+  return shouldExposeSensitiveAuthInfo();
 }
 
 function maskIdentifier(value) {

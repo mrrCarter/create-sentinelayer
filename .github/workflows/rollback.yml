@@ -572,7 +572,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  rollback-readiness-scheduled:
+  rollback-readiness-audit:
     if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
@@ -588,21 +588,21 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - name: Run rollback readiness diagnostic (scheduled)
+      - name: Run rollback readiness audit (scheduled)
         shell: bash
         env:
           PACKAGE_NAME: sentinelayer-cli
           ROLLBACK_MODE: diagnostic
-          NON_BLOCKING_DIAGNOSTICS: "0"
+          NON_BLOCKING_DIAGNOSTICS: "1"
         run: |
           set -euo pipefail
           bash .github/scripts/release-rollback-readiness.sh
           test -f release-rollback-readiness.json
 
-      - name: Upload rollback readiness diagnostic artifact
+      - name: Upload rollback readiness audit artifact
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
-          name: rollback-readiness-scheduled
+          name: rollback-readiness-audit
           path: release-rollback-readiness.json
           if-no-files-found: error
           retention-days: 30

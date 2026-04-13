@@ -765,6 +765,17 @@ jobs:
       group: release-publish-prod
       cancel-in-progress: false
     steps:
+      - name: Enforce protected release tag
+        shell: bash
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          if [ "${ref_protected}" != "true" ]; then
+            echo "::error::Release publish requires a protected ref (ref_protected=true)."
+            exit 1
+          fi
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 

@@ -412,15 +412,76 @@ jobs:
         if: ${{ matrix.node == '22' }}
         run: npm pack --dry-run
 
+  reproducible-build:
+    name: Reproducible Build Check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [e2e-packaging]
+    outputs:
+      tarball_name: ${{ steps.pack.outputs.tarball_name }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Verify reproducible npm pack output
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp_one="$(mktemp -d)"
+          tmp_two="$(mktemp -d)"
+          cleanup_tmp() {
+            rm -rf "${tmp_one}" "${tmp_two}"
+          }
+          trap cleanup_tmp EXIT
+          npm pack --ignore-scripts --json --pack-destination "${tmp_one}" > "${tmp_one}/pack.json"
+          first_tarball_name="$(jq -r '.[0].filename' "${tmp_one}/pack.json")"
+          first_tarball_path="${tmp_one}/${first_tarball_name}"
+          test -f "${first_tarball_path}"
+          first_sha256="$(sha256sum "${first_tarball_path}" | awk '{print $1}')"
+          npm pack --ignore-scripts --json --pack-destination "${tmp_two}" > "${tmp_two}/pack.json"
+          second_tarball_name="$(jq -r '.[0].filename' "${tmp_two}/pack.json")"
+          second_tarball_path="${tmp_two}/${second_tarball_name}"
+          test -f "${second_tarball_path}"
+          second_sha256="$(sha256sum "${second_tarball_path}" | awk '{print $1}')"
+          if [ "${first_tarball_name}" != "${second_tarball_name}" ]; then
+            echo "::error::Non-deterministic tarball name detected: ${first_tarball_name} vs ${second_tarball_name}."
+            exit 1
+          fi
+          if [ "${first_sha256}" != "${second_sha256}" ]; then
+            echo "::error::Non-deterministic npm pack output detected. first=${first_sha256} second=${second_sha256}."
+            exit 1
+          fi
+          echo "tarball_name=${first_tarball_name}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${first_sha256}" >> "$GITHUB_OUTPUT"
+
   build-package:
     name: Build Package Artifact
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [e2e-packaging]
+    needs: [e2e-packaging, reproducible-build]
     if: >-
       ${{
         (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
-        needs.e2e-packaging.result == 'success'
+        needs.e2e-packaging.result == 'success' &&
+        needs.reproducible-build.result == 'success'
       }}
     permissions:
       contents: read
@@ -454,6 +515,7 @@ jobs:
         shell: bash
         env:
           TARGET_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          REPRODUCIBLE_SHA256: ${{ needs.reproducible-build.outputs.sha256 }}
         run: |
           set -euo pipefail
           npm pack --ignore-scripts --json > pack.json
@@ -461,6 +523,10 @@ jobs:
           test -n "${tarball}"
           test -f "${tarball}"
           sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          if [ -n "${REPRODUCIBLE_SHA256}" ] && [ "${sha256}" != "${REPRODUCIBLE_SHA256}" ]; then
+            echo "::error::Build tarball sha256 mismatch with reproducible-build output. expected=${REPRODUCIBLE_SHA256} actual=${sha256}."
+            exit 1
+          fi
           lockfile_sha256="$(sha256sum package-lock.json | awk '{print $1}')"
           mkdir -p .tmp-pack-repeat
           npm pack --ignore-scripts --pack-destination .tmp-pack-repeat --json > pack-repeat.json
@@ -561,7 +627,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, build-package, deploy-readiness]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness]
     if: ${{ always() }}
     steps:
       - name: Confirm all quality gates passed
@@ -608,6 +674,10 @@ jobs:
             echo "::error::e2e-packaging failed."
             failed=1
           fi
+          if [ "${{ needs.reproducible-build.result }}" != "success" ]; then
+            echo "::error::reproducible-build failed."
+            failed=1
+          fi
           if [ "${{ needs.build-package.result }}" != "success" ]; then
             echo "::error::build-package failed."
             failed=1
@@ -630,10 +700,15 @@ jobs:
           SHA256: ${{ needs.build-package.outputs.sha256 }}
           SECURITY_SCAN_PATH: ${{ needs.security-scan.outputs.scan_path }}
           SECURITY_SCAN_SHA256: ${{ needs.security-scan.outputs.scan_sha256 }}
+          REPRODUCIBLE_SHA256: ${{ needs.reproducible-build.outputs.sha256 }}
         run: |
           set -euo pipefail
           if [ -z "${TAR_BALL}" ] || [ -z "${SHA256}" ]; then
             echo "::error::Missing build-package outputs for summary manifest."
+            exit 1
+          fi
+          if [ -z "${REPRODUCIBLE_SHA256}" ]; then
+            echo "::error::Missing reproducible-build sha256 output for summary manifest."
             exit 1
           fi
           if [ -z "${SECURITY_SCAN_PATH}" ] || [ -z "${SECURITY_SCAN_SHA256}" ]; then
@@ -644,6 +719,7 @@ jobs:
             --arg commit_sha "${GITHUB_SHA}" \
             --arg tarball "${TAR_BALL}" \
             --arg sha256 "${SHA256}" \
+            --arg reproducible_sha256 "${REPRODUCIBLE_SHA256}" \
             --arg security_scan_path "${SECURITY_SCAN_PATH}" \
             --arg security_scan_sha256 "${SECURITY_SCAN_SHA256}" \
             --arg run_id "${GITHUB_RUN_ID}" \
@@ -653,6 +729,7 @@ jobs:
               commit_sha: $commit_sha,
               tarball: $tarball,
               sha256: $sha256,
+              reproducible_sha256: $reproducible_sha256,
               security_scan_path: $security_scan_path,
               security_scan_sha256: $security_scan_sha256,
               run_id: $run_id,

@@ -269,6 +269,7 @@ export function __resetRequestCircuitForTests(scope) {
  *   headers?: Record<string, string>,
  *   body?: unknown,
  *   idempotencyKey?: string | null,
+ *   allowNonIdempotent?: boolean,
  *   timeoutMs?: number
  *   maxRetries?: number,
  *   retryDelayMs?: number
@@ -283,6 +284,7 @@ export async function requestJson(
     headers = {},
     body,
     idempotencyKey = null,
+    allowNonIdempotent = false,
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
@@ -304,6 +306,13 @@ export async function requestJson(
     outgoingHeaders["Content-Type"] = "application/json";
   }
   const isIdempotentMutation = Boolean(resolvedIdempotencyKey);
+  const allowUnsafeMutation = Boolean(allowNonIdempotent);
+  if (isMutationMethod && !isIdempotentMutation && !allowUnsafeMutation) {
+    throw new SentinelayerApiError("Idempotency-Key is required for mutation requests.", {
+      status: 400,
+      code: "IDEMPOTENCY_KEY_REQUIRED",
+    });
+  }
   const retryableMethod =
     normalizedMethod === "GET" ||
     normalizedMethod === "HEAD" ||
