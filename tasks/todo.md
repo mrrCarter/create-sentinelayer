@@ -1329,5 +1329,9 @@ Review:
 - [x] `npm run verify` (local): check + e2e + unit coverage + npm pack succeeded.
 - [x] `/omargate deep` (local, test bypass): P1=15, P2=85, blocking=true (deterministic baseline; report saved under `.sentinelayer/reports/`).
 - [x] `/audit` (local, test bypass): P1=0, P2=8, blocking=false.
-- [ ] Push updates and re-run Omar Gate on PR `hardening/cli-omar-only-ci`.
-- [ ] Resolve any remaining P0-P2 findings and merge after Omar Gate passes.
+- [ ] Plan: harden Omar Gate gating (disallow weaker workflow_dispatch severity, reject non-PR check runs) in `omar-gate.yml` and `quality-gates.yml`.
+- [ ] Plan: align release provenance to use attested artifact from `attestations.yml` (no re-pack in release workflow).
+- [ ] Plan: enforce HTTPS API base URL normalization (allow localhost http only).
+- [ ] Implement the above fixes on `hardening/cli-omar-only-ci`.
+- [ ] Re-run Omar Gate on PR `hardening/cli-omar-only-ci` and fix any remaining P0-P2 findings.
+- [ ] Merge after Omar Gate passes; record run IDs and findings delta.

@@ -203,6 +203,29 @@ jobs:
             echo "::error::No GitHub Actions Omar Gate check run found for ${TARGET_SHA}."
             exit 1
           fi
+          check_suite_id="$(echo "${selected}" | jq -r '.check_suite.id // empty')"
+          if [ -z "${check_suite_id}" ] || [ "${check_suite_id}" = "null" ]; then
+            echo "::error::Omar Gate check run missing check_suite id; cannot validate event source."
+            exit 1
+          fi
+          check_suite="$(curl -fsSL \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --retry 3 \
+            --retry-delay 2 \
+            --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/check-suites/${check_suite_id}")"
+          check_event="$(echo "${check_suite}" | jq -r '.event // empty')"
+          expected_event="push"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            expected_event="pull_request"
+          fi
+          if [ "${check_event}" != "${expected_event}" ]; then
+            echo "::error::Omar Gate check suite event mismatch (expected=${expected_event}, got=${check_event})."
+            exit 1
+          fi
           status="$(echo "${selected}" | jq -r '.status // empty')"
           conclusion="$(echo "${selected}" | jq -r '.conclusion // empty')"
           summary="$(echo "${selected}" | jq -r '.output.summary // ""')"
@@ -216,6 +239,10 @@ jobs:
           fi
           if echo "${summary}" | grep -q "status: \`skipped\`"; then
             echo "::error::Omar Gate was skipped for this commit; trusted scan outputs are required."
+            exit 1
+          fi
+          if ! echo "${summary}" | grep -q "severity_gate: \`P1\`"; then
+            echo "::error::Omar Gate severity gate must be P1 for trusted enforcement."
             exit 1
           fi
           if ! echo "${summary}" | grep -q "run_id:"; then

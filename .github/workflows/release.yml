@@ -257,9 +257,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
+      actions: read
       contents: read
-      attestations: write
-      id-token: write
     concurrency:
       group: release-build-${{ github.ref }}
       cancel-in-progress: false
@@ -306,58 +305,75 @@ jobs:
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-      - name: Build release tarball
-        run: npm pack --ignore-scripts
-
-      - name: Verify deterministic tarball build
+      - name: Resolve attestation workflow run
+        id: attestation_run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          tarballs=(sentinelayer-cli-*.tgz)
-          if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one release tarball, found ${#tarballs[@]}."
-            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+          response="$(curl -fsSL \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --retry 3 \
+            --retry-delay 2 \
+            --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/attestations.yml/runs?status=success&per_page=5&head_sha=${TARGET_SHA}")"
+          run_id="$(echo "${response}" | jq -r '.workflow_runs[0].id // empty')"
+          if [ -z "${run_id}" ] || [ "${run_id}" = "null" ]; then
+            echo "::error::No successful build attestation run found for ${TARGET_SHA}."
             exit 1
           fi
-          first_tarball="${tarballs[0]}"
-          first_sha="$(sha256sum "${first_tarball}" | awk '{print $1}')"
-          mv "${first_tarball}" /tmp/sentinelayer-cli-first.tgz
-          rm -f sentinelayer-cli-*.tgz
-          npm pack --ignore-scripts
-          tarballs=(sentinelayer-cli-*.tgz)
-          if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one rebuild tarball, found ${#tarballs[@]}."
-            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
-            exit 1
-          fi
-          second_tarball="${tarballs[0]}"
-          second_sha="$(sha256sum "${second_tarball}" | awk '{print $1}')"
-          if [ "${first_sha}" != "${second_sha}" ]; then
-            echo "::error::Release tarball is not deterministic (sha mismatch)."
-            echo "::error::First ${first_sha} != Second ${second_sha}"
-            exit 1
-          fi
-          rm -f "${second_tarball}"
-          mv /tmp/sentinelayer-cli-first.tgz "${first_tarball}"
+          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download attested build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: attestation-build-artifacts
+          run-id: ${{ steps.attestation_run.outputs.run_id }}
+          path: attestation-artifacts
+          github-token: ${{ github.token }}
 
       - name: Generate release artifact manifest
         id: artifact_manifest
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          tarballs=(sentinelayer-cli-*.tgz)
-          if [ "${#tarballs[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one release tarball, found ${#tarballs[@]}."
-            printf 'Found tarballs: %s\n' "${tarballs[@]:-<none>}"
+          manifest="attestation-artifacts/attestation-manifest.json"
+          if [ ! -f "${manifest}" ]; then
+            echo "::error::Missing attestation-manifest.json from build attestation artifacts."
             exit 1
           fi
-          TARBALL="${tarballs[0]}"
-          SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          TARBALL_NAME="$(jq -r '.tarball // empty' "${manifest}")"
+          SHA256="$(jq -r '.sha256 // empty' "${manifest}")"
+          COMMIT_SHA="$(jq -r '.commit_sha // empty' "${manifest}")"
+          WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${manifest}")"
+          if [ -z "${TARBALL_NAME}" ] || [ -z "${SHA256}" ]; then
+            echo "::error::Attestation manifest missing tarball or sha256."
+            exit 1
+          fi
+          if [ "${COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Attested commit ${COMMIT_SHA} does not match release commit ${GITHUB_SHA}."
+            exit 1
+          fi
+          TARBALL="attestation-artifacts/${TARBALL_NAME}"
+          if [ ! -f "${TARBALL}" ]; then
+            echo "::error::Attested tarball ${TARBALL} not found in build artifacts."
+            exit 1
+          fi
+          ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          if [ "${ACTUAL_SHA256}" != "${SHA256}" ]; then
+            echo "::error::Attested tarball checksum mismatch (expected ${SHA256}, got ${ACTUAL_SHA256})."
+            exit 1
+          fi
           jq -n \
             --arg tarball "${TARBALL}" \
             --arg sha256 "${SHA256}" \
-            --arg commit_sha "${GITHUB_SHA}" \
-            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg commit_sha "${COMMIT_SHA}" \
+            --arg workflow_ref "${WORKFLOW_REF}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
@@ -379,16 +395,11 @@ jobs:
           "${PREFIX_DIR}/node_modules/.bin/sl" --version
           rm -rf "${PREFIX_DIR}"
 
-      - name: Generate release build attestation
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
-        with:
-          subject-path: ${{ steps.artifact_manifest.outputs.tarball }}
-
-      - name: Verify release build attestation policy
+      - name: Verify build attestation policy
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL: ${{ steps.artifact_manifest.outputs.tarball }}
-          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/attestations.yml
         run: |
           set -euo pipefail
           for attempt in 1 2 3 4 5; do

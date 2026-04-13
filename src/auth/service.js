@@ -30,6 +30,11 @@ function normalizeApiUrl(rawValue) {
   } catch {
     throw new Error(`Invalid API URL '${candidate}'.`);
   }
+  const hostname = String(parsed.hostname || "").toLowerCase();
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocalhost)) {
+    throw new Error(`API URL must use https (received '${candidate}').`);
+  }
   parsed.pathname = "/";
   parsed.search = "";
   parsed.hash = "";

@@ -98,6 +98,20 @@ jobs:
           echo "- status: \`skipped\` (untrusted fork pull request context)" >> "$GITHUB_STEP_SUMMARY"
           echo "- remediation: \`maintainer must run Omar Gate in trusted base-repository context before merge\`" >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::Untrusted fork pull request context cannot receive Sentinelayer/OpenAI secrets. Omar Gate skipped in this context."
+      - name: Resolve severity gate (trusted context)
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        id: severity_gate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_GATE: ${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}
+        run: |
+          set -euo pipefail
+          requested="$(echo "${REQUESTED_GATE}" | tr -d '\r' | xargs || true)"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${requested}" != "P1" ]; then
+            echo "::notice::Workflow dispatch requests must use severity_gate=P1 for trusted enforcement; overriding ${requested} -> P1."
+          fi
+          echo "severity_gate=P1" >> "${GITHUB_OUTPUT}"
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
@@ -109,7 +123,7 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           sentinelayer_managed_llm: "true"
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}
+          severity_gate: ${{ steps.severity_gate.outputs.severity_gate }}
       - name: Enforce Omar reviewer merge thresholds
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -118,7 +132,7 @@ jobs:
           P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
           P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
           P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}
+          SEVERITY_GATE_SELECTED: ${{ steps.severity_gate.outputs.severity_gate }}
         run: |
           set -euo pipefail
           p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
@@ -163,7 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          severity_gate="${{ github.event_name == 'workflow_dispatch' && (inputs.severity_gate || 'P2') || 'P1' }}"
+          severity_gate="${{ steps.severity_gate.outputs.severity_gate }}"
           p2_max="${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}"
           threshold_line="P0=0, P1=0"
           if [ "${severity_gate}" = "P0" ]; then
