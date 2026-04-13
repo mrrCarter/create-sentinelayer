@@ -30,6 +30,8 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CANONICAL_NODE_VERSION: "22"
+  SECURITY_SCAN_P0_MAX: "0"
+  SECURITY_SCAN_P1_MAX: "0"
 
 jobs:
   eval-impact:
@@ -308,6 +310,18 @@ jobs:
           node bin/sl.js review scan --path . --json --refresh > security-scan.json
           scan_sha256="$(sha256sum security-scan.json | awk '{print $1}')"
           printf '%s  %s\n' "${scan_sha256}" "security-scan.json" > security-scan.sha256
+          p0="$(jq -r '.p0 // 0' security-scan.json)"
+          p1="$(jq -r '.p1 // 0' security-scan.json)"
+          case "${p0}" in ''|*[!0-9]*) echo "::error::Invalid P0 count in security-scan.json: ${p0}" ; exit 1 ;; esac
+          case "${p1}" in ''|*[!0-9]*) echo "::error::Invalid P1 count in security-scan.json: ${p1}" ; exit 1 ;; esac
+          max_p0="$(echo "${SECURITY_SCAN_P0_MAX}" | xargs || true)"
+          max_p1="$(echo "${SECURITY_SCAN_P1_MAX}" | xargs || true)"
+          case "${max_p0}" in ''|*[!0-9]*) echo "::error::Invalid SECURITY_SCAN_P0_MAX value: ${max_p0}" ; exit 1 ;; esac
+          case "${max_p1}" in ''|*[!0-9]*) echo "::error::Invalid SECURITY_SCAN_P1_MAX value: ${max_p1}" ; exit 1 ;; esac
+          if [ "${p0}" -gt "${max_p0}" ] || [ "${p1}" -gt "${max_p1}" ]; then
+            echo "::error::Deterministic security scan gate failed (P0=${p0}, P1=${p1}, max_p0=${max_p0}, max_p1=${max_p1})."
+            exit 1
+          fi
           echo "scan_path=security-scan.json" >> "$GITHUB_OUTPUT"
           echo "scan_sha256=${scan_sha256}" >> "$GITHUB_OUTPUT"
 

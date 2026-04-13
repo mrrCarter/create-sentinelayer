@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 concurrency:
-  group: release-publish
+  group: release-publish-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -98,6 +98,39 @@ jobs:
             echo "::error::Release workflow requires newly created semver tags (event.created=true)."
             exit 1
           fi
+      - name: Fail stale release runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STALE_RUN_MAX_MINUTES: ${{ vars.RELEASE_STALE_RUN_MAX_MINUTES || '90' }}
+        run: |
+          set -euo pipefail
+          max_minutes="$(echo "${STALE_RUN_MAX_MINUTES}" | xargs || true)"
+          case "${max_minutes}" in ''|*[!0-9]*) echo "::error::Invalid RELEASE_STALE_RUN_MAX_MINUTES value: ${max_minutes}" ; exit 1 ;; esac
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+          created_at="$(echo "${run_json}" | jq -r '.created_at // empty')"
+          if [ -z "${created_at}" ]; then
+            echo "::error::Failed to resolve release run created_at timestamp."
+            exit 1
+          fi
+          created_epoch="$(date -u -d "${created_at}" +%s 2>/dev/null || true)"
+          if [ -z "${created_epoch}" ]; then
+            echo "::error::Unable to parse release run created_at timestamp: ${created_at}."
+            exit 1
+          fi
+          now_epoch="$(date +%s)"
+          age_minutes="$(( (now_epoch - created_epoch) / 60 ))"
+          if [ "${age_minutes}" -gt "${max_minutes}" ]; then
+            echo "::error::Release run is stale (age=${age_minutes}m, max=${max_minutes}m). Cancel the run and re-tag."
+            echo "::error::Cancel via: gh run cancel ${GITHUB_RUN_ID}"
+            exit 1
+          fi
+          {
+            echo "## Release Run Freshness"
+            echo "- age_minutes: \`${age_minutes}\`"
+            echo "- max_minutes: \`${max_minutes}\`"
+            echo "- cancel_command: \`gh run cancel ${GITHUB_RUN_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           actor="${GITHUB_ACTOR}"
           if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
             echo "::error::allowed_tag_actors is empty in ${policy_file}."

@@ -227,6 +227,26 @@ jobs:
             echo "::error::OMAR_SPEC_ID must be a 64-character lowercase hex digest."
             exit 1
           fi
+      - name: Enforce security-review environment policy
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          env_json="$(gh api "repos/${GITHUB_REPOSITORY}/environments/security-review")"
+          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?] | length')"
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid security-review reviewer count: ${reviewer_count}" ; exit 1 ;; esac
+          if [ "${ref_protected}" = "true" ] && [ "${reviewer_count}" -lt 1 ]; then
+            echo "::error::security-review environment has no required reviewers configured for protected refs."
+            exit 1
+          fi
+          {
+            echo "## Security Review Environment"
+            echo "- required_reviewers: \`${reviewer_count}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Block untrusted fork PR contexts
         if: steps.trust_boundary.outputs.trusted_context != 'true'
         shell: bash

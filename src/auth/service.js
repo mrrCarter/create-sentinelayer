@@ -213,10 +213,12 @@ async function pollCliAuthSession({
   const maxServerErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
   const maxNetworkErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
   const maxSleepBudgetMs = Math.max(2_000, Math.floor(timeout * 0.8));
+  const maxPollAttempts = Math.max(1, Math.ceil(timeout / 250));
   let rateLimitErrorCount = 0;
   let serverErrorCount = 0;
   let networkErrorCount = 0;
   let cumulativeSleepMs = 0;
+  let pollIterations = 0;
   const deadline = Date.now() + timeout;
   const classifyPollError = (error) => {
     if (!(error instanceof SentinelayerApiError)) {
@@ -244,6 +246,14 @@ async function pollCliAuthSession({
   };
 
   while (Date.now() < deadline) {
+    pollIterations += 1;
+    if (pollIterations > maxPollAttempts) {
+      throw new SentinelayerApiError("CLI authentication polling exceeded attempt budget.", {
+        status: 408,
+        code: "CLI_AUTH_POLL_EXHAUSTED",
+        requestId: flowRequestId || null,
+      });
+    }
     let payload;
     try {
       payload = await requestAuthJson(

@@ -288,8 +288,13 @@ async function readMetadata({ homeDir } = {}) {
 }
 
 async function writeMetadata(filePath, metadata) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const directory = path.dirname(filePath);
+  await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+  try {
+    await fsp.chmod(directory, 0o700);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
   const tmpPath = path.join(
     directory,
     `.credentials.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString("hex")}.tmp`
