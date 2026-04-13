@@ -621,3 +621,19 @@ jobs:
           path: quality-summary-manifest.json
           if-no-files-found: error
           retention-days: 7
+
+  quality-terminal:
+    name: Quality Terminal
+    runs-on: ubuntu-22.04
+    needs: [quality-summary]
+    if: ${{ always() }}
+    steps:
+      - name: Confirm terminal quality status
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.quality-summary.result }}" != "success" ]; then
+            echo "::error::Quality Summary did not complete successfully (result=${{ needs.quality-summary.result }})."
+            exit 1
+          fi
+          echo "Quality Summary completed successfully."

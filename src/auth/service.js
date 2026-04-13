@@ -167,16 +167,31 @@ async function pollCliAuthSession({
   const pollRequestTimeoutMs = Math.min(5_000, Math.max(1_000, pollIntervalMs));
   const pollRequestMaxRetries = 1;
   const pollRequestRetryDelayMs = 250;
-  const maxTransientErrors = Math.max(5, Math.ceil(timeout / maxPollIntervalMs));
   let pollAttempt = 0;
-  let transientErrorCount = 0;
+  const maxRateLimitErrors = Math.max(2, Math.min(6, Math.ceil(timeout / maxPollIntervalMs)));
+  const maxServerErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
+  const maxNetworkErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
+  const maxSleepBudgetMs = Math.max(2_000, Math.floor(timeout * 0.8));
+  let rateLimitErrorCount = 0;
+  let serverErrorCount = 0;
+  let networkErrorCount = 0;
+  let cumulativeSleepMs = 0;
   const deadline = Date.now() + timeout;
-  const isTransientPollError = (error) =>
-    error instanceof SentinelayerApiError &&
-    (error.code === "NETWORK_ERROR" ||
-      error.code === "TIMEOUT" ||
-      error.status === 429 ||
-      error.status >= 500);
+  const classifyPollError = (error) => {
+    if (!(error instanceof SentinelayerApiError)) {
+      return null;
+    }
+    if (error.status === 429) {
+      return "rate_limit";
+    }
+    if (error.status >= 500) {
+      return "server";
+    }
+    if (error.code === "NETWORK_ERROR" || error.code === "TIMEOUT") {
+      return "network";
+    }
+    return null;
+  };
   const computePollDelayMs = (retryAfterMs = null) => {
     if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
       return Math.max(250, Math.min(maxPollIntervalMs, Math.round(retryAfterMs)));
@@ -201,17 +216,46 @@ async function pollCliAuthSession({
         retryDelayMs: pollRequestRetryDelayMs,
       });
     } catch (error) {
-      if (isTransientPollError(error)) {
-        transientErrorCount += 1;
-        if (transientErrorCount > maxTransientErrors) {
-          throw new SentinelayerApiError("CLI authentication polling aborted after repeated transient failures.", {
-            status: 503,
-            code: "CLI_AUTH_TRANSIENT_EXHAUSTED",
-            requestId: error.requestId || null,
-          });
+      const classification = classifyPollError(error);
+      if (classification) {
+        if (classification === "rate_limit") {
+          rateLimitErrorCount += 1;
+          if (rateLimitErrorCount > maxRateLimitErrors) {
+            throw new SentinelayerApiError("CLI authentication polling rate limits exceeded.", {
+              status: 429,
+              code: "CLI_AUTH_RATE_LIMIT_EXHAUSTED",
+              requestId: error.requestId || null,
+            });
+          }
+        } else if (classification === "server") {
+          serverErrorCount += 1;
+          if (serverErrorCount > maxServerErrors) {
+            throw new SentinelayerApiError("CLI authentication polling failed after repeated server errors.", {
+              status: 503,
+              code: "CLI_AUTH_SERVER_EXHAUSTED",
+              requestId: error.requestId || null,
+            });
+          }
+        } else {
+          networkErrorCount += 1;
+          if (networkErrorCount > maxNetworkErrors) {
+            throw new SentinelayerApiError("CLI authentication polling aborted after repeated network failures.", {
+              status: 503,
+              code: "CLI_AUTH_NETWORK_EXHAUSTED",
+              requestId: error.requestId || null,
+            });
+          }
         }
         const retryAfterMs = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : null;
         const delayMs = computePollDelayMs(retryAfterMs);
+        if (cumulativeSleepMs + delayMs > maxSleepBudgetMs) {
+          throw new SentinelayerApiError("CLI authentication polling exceeded retry sleep budget.", {
+            status: 503,
+            code: "CLI_AUTH_SLEEP_BUDGET_EXHAUSTED",
+            requestId: error.requestId || null,
+          });
+        }
+        cumulativeSleepMs += delayMs;
         pollAttempt += 1;
         await sleep(delayMs);
         continue;

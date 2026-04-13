@@ -64,6 +64,10 @@ function shouldExposeSensitiveAuthInfo() {
   return normalized === "true" || normalized === "1" || normalized === "yes";
 }
 
+function shouldRevealTokenIdentifiers() {
+  return shouldExposeSensitiveAuthInfo() && Boolean(process.stdout && process.stdout.isTTY);
+}
+
 function maskIdentifier(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -282,7 +286,8 @@ export function registerAuthCommand(program) {
           `${renderUserSummary(session.user)} | source=${session.source} | storage=${session.storage || "unknown"}`
         );
         if (session.tokenId) {
-          console.log(pc.gray(`  token_id: ${session.tokenId}`));
+          const tokenDisplay = shouldRevealTokenIdentifiers() ? session.tokenId : maskIdentifier(session.tokenId);
+          console.log(pc.gray(`  token_id: ${tokenDisplay}`));
         }
         if (session.tokenExpiresAt) {
           console.log(pc.gray(`  expires_at: ${session.tokenExpiresAt}`));
@@ -325,7 +330,8 @@ export function registerAuthCommand(program) {
         return;
       }
 
-      console.log(pc.green(`Revoked token: ${result.tokenId}`));
+      const tokenDisplay = shouldRevealTokenIdentifiers() ? result.tokenId : maskIdentifier(result.tokenId);
+      console.log(pc.green(`Revoked token: ${tokenDisplay}`));
       console.log(pc.gray(`API: ${result.apiUrl}`));
       if (result.matchedStoredSession) {
         console.log(

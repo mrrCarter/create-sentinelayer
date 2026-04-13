@@ -888,6 +888,22 @@ jobs:
           echo "EXPECTED_PACKAGE_NAME=${MANIFEST_PACKAGE_NAME}" >> "$GITHUB_ENV"
           echo "EXPECTED_PACKAGE_VERSION=${MANIFEST_PACKAGE_VERSION}" >> "$GITHUB_ENV"
 
+      - name: Enforce immutable publish artifact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${VERIFIED_TARBALL:-}" ]; then
+            echo "::error::VERIFIED_TARBALL is not set; refusing to publish from workspace."
+            exit 1
+          fi
+          case "${VERIFIED_TARBALL}" in
+            release-artifact/*) ;;
+            *) echo "::error::VERIFIED_TARBALL must reference release-artifact/ (got ${VERIFIED_TARBALL})." ; exit 1 ;;
+          esac
+          if [ -f package.json ]; then
+            echo "::notice::Workspace package.json present; publish will use ${VERIFIED_TARBALL} only."
+          fi
+
       - name: Enforce release attestation verification policy
         env:
           GH_TOKEN: ${{ github.token }}

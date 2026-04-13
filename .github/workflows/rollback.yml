@@ -65,11 +65,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          cancel_timeout_seconds=300
+          poll_interval_seconds=5
+          case "${cancel_timeout_seconds}" in ''|*[!0-9]*) echo "::error::Invalid cancel_timeout_seconds." ; exit 1 ;; esac
+          case "${poll_interval_seconds}" in ''|*[!0-9]*) echo "::error::Invalid poll_interval_seconds." ; exit 1 ;; esac
           active_runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?status=in_progress&per_page=50" --jq '.workflow_runs[].id')"
           if [ -n "${active_runs}" ]; then
             echo "::warning::Cancelling active release runs: ${active_runs}"
             for run_id in ${active_runs}; do
               gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null
+            done
+            echo "### Release cancellation status" >> "$GITHUB_STEP_SUMMARY"
+            for run_id in ${active_runs}; do
+              completed="false"
+              attempts="$((cancel_timeout_seconds / poll_interval_seconds))"
+              for attempt in $(seq 1 "${attempts}"); do
+                run_state="$(gh run view "${run_id}" --json status,conclusion --jq '{status,conclusion}')"
+                run_status="$(echo "${run_state}" | jq -r '.status // empty')"
+                run_conclusion="$(echo "${run_state}" | jq -r '.conclusion // empty')"
+                if [ "${run_status}" = "completed" ]; then
+                  completed="true"
+                  break
+                fi
+                sleep "${poll_interval_seconds}"
+              done
+              if [ "${completed}" != "true" ]; then
+                echo "::error::Release run ${run_id} did not finish cancellation within ${cancel_timeout_seconds}s."
+                exit 1
+              fi
+              {
+                echo "- run_id: \`${run_id}\`"
+                echo "  status: \`${run_status:-completed}\`"
+                echo "  conclusion: \`${run_conclusion:-unknown}\`"
+              } >> "$GITHUB_STEP_SUMMARY"
             done
           fi
 

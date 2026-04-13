@@ -95,10 +95,26 @@ function resolveIdempotencyKey(headers) {
 }
 
 function buildIdempotencyKey({ method, url, body }) {
+  const stableSerialize = (value) => {
+    if (value === null || value === undefined) {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => stableSerialize(entry));
+    }
+    if (typeof value === "object") {
+      const sorted = {};
+      for (const key of Object.keys(value).sort()) {
+        sorted[key] = stableSerialize(value[key]);
+      }
+      return sorted;
+    }
+    return value;
+  };
   const fingerprint = JSON.stringify({
     method: String(method || "").toUpperCase(),
     url: String(url || ""),
-    body: body === undefined ? null : body,
+    body: body === undefined ? null : stableSerialize(body),
   });
   const digest = createHash("sha256").update(fingerprint).digest("hex");
   return `sl-${digest.slice(0, 32)}`;
@@ -292,6 +308,7 @@ export async function requestJson(
     method = "GET",
     headers = {},
     body,
+    idempotencyKey = null,
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
@@ -299,7 +316,8 @@ export async function requestJson(
   } = {}
 ) {
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
-  const existingIdempotencyKey = resolveIdempotencyKey(headers);
+  const explicitIdempotencyKey = String(idempotencyKey || "").trim() || null;
+  const existingIdempotencyKey = explicitIdempotencyKey || resolveIdempotencyKey(headers);
   const isMutationMethod =
     normalizedMethod === "POST" ||
     normalizedMethod === "PUT" ||
@@ -307,9 +325,9 @@ export async function requestJson(
     normalizedMethod === "DELETE";
   const autoIdempotencyKey =
     isMutationMethod && !existingIdempotencyKey ? buildIdempotencyKey({ method: normalizedMethod, url, body }) : null;
-  const idempotencyKey = existingIdempotencyKey || autoIdempotencyKey;
-  const requestHeaders = applyIdempotencyKey(headers, idempotencyKey);
-  const isIdempotentMutation = Boolean(idempotencyKey);
+  const resolvedIdempotencyKey = existingIdempotencyKey || autoIdempotencyKey;
+  const requestHeaders = applyIdempotencyKey(headers, resolvedIdempotencyKey);
+  const isIdempotentMutation = Boolean(resolvedIdempotencyKey);
   const retryableMethod =
     normalizedMethod === "GET" ||
     normalizedMethod === "HEAD" ||

@@ -7,6 +7,8 @@ import process from "node:process";
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
 const SESSION_WARNING_PREFIX = "sentinelayer.auth.session";
+const SESSION_WARNING_REDACT_KEYS = /token|secret|password|key|authorization/i;
+const SESSION_WARNING_MAX_VALUE_LENGTH = 200;
 
 function nowIso() {
   return new Date().toISOString();
@@ -20,13 +22,50 @@ function createSessionWarningId() {
   }
 }
 
+function sanitizeSessionWarningValue(value, depth = 0) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (depth > 3) {
+    return "[TRUNCATED]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeSessionWarningValue(entry, depth + 1));
+  }
+  if (typeof value === "object") {
+    const sanitized = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (SESSION_WARNING_REDACT_KEYS.test(key)) {
+        sanitized[key] = "[REDACTED]";
+        continue;
+      }
+      sanitized[key] = sanitizeSessionWarningValue(entry, depth + 1);
+    }
+    return sanitized;
+  }
+  if (typeof value === "string") {
+    if (value.length > SESSION_WARNING_MAX_VALUE_LENGTH) {
+      return `${value.slice(0, SESSION_WARNING_MAX_VALUE_LENGTH)}…`;
+    }
+    return value;
+  }
+  return value;
+}
+
+function sanitizeSessionWarningDetails(details) {
+  if (!details || typeof details !== "object") {
+    return {};
+  }
+  return sanitizeSessionWarningValue(details, 0);
+}
+
 function emitSessionWarning(code, details = {}) {
   const payload = {
     level: "warn",
     code: String(code || "SESSION_WARNING").toUpperCase(),
     warningId: createSessionWarningId(),
     timestamp: nowIso(),
-    ...details,
+    ...sanitizeSessionWarningDetails(details),
   };
   try {
     console.warn(`${SESSION_WARNING_PREFIX} ${JSON.stringify(payload)}`);
