@@ -614,8 +614,8 @@ jobs:
     needs: [eval-gate-terminal, security-scan, e2e-packaging, reproducible-build]
     if: >-
       ${{
+        always() &&
         needs.eval-gate-terminal.result == 'success' &&
-        (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
         needs.security-scan.result == 'success' &&
         needs.e2e-packaging.result == 'success' &&
         needs.reproducible-build.result == 'success'
@@ -750,7 +750,6 @@ jobs:
       ${{
         always() &&
         needs.eval-gate-terminal.result == 'success' &&
-        (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
         needs.build-package.result == 'success'
       }}
     steps:

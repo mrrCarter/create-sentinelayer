@@ -1536,5 +1536,6 @@ Review:
 - [x] Fix quality-gates deterministic security scan auth context by injecting an ephemeral CI `SENTINELAYER_TOKEN` for local scan execution.
 - [x] Fix `.github/scripts/require-check-runs.sh` to require `/actions/runs/<id>` details URLs for workflow-bound checks so non-workflow check URLs do not break provenance resolution.
 - [x] Run local validation (`npm run verify` + workflow YAML parse) before push.
+- [x] Fix `quality-gates` build-stage skip regression by removing the `workflow_dispatch` ref-protection clause from `build-package` / `deploy-readiness` job guards.
 - [ ] Push PR-283 update and watch `Omar Gate`, `Quality Gates`, and `Build Attestation` to completion (`gh run watch`).
 - [ ] Merge PR-283 once required checks are green.
