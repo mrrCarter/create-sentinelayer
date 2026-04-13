@@ -172,11 +172,11 @@ jobs:
           exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
           event_name="${GITHUB_EVENT_NAME}"
           ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          allow_static="$(echo "${OMAR_ALLOW_STATIC_SECRETS:-false}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           require_pinned="$(echo "${OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           require_response_binding_on_protected="$(echo "${OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
-            allow_static="$(echo "${OMAR_ALLOW_STATIC_SECRETS:-false}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
             if [ "${ref_protected}" = "true" ] && [ "${allow_static}" != "true" ]; then
               echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback)."
               exit 1
@@ -350,7 +350,7 @@ jobs:
             mode="oidc-exchange"
           fi
           require_oidc="$(echo "${OMAR_REQUIRE_OIDC_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          if [ "${mode}" = "static-secrets" ] && [ "${ref_protected}" = "true" ] && [ "${require_oidc}" != "false" ]; then
+          if [ "${mode}" = "static-secrets" ] && [ "${ref_protected}" = "true" ] && [ "${require_oidc}" != "false" ] && [ "${allow_static}" != "true" ]; then
             echo "::error::Static-secret Omar mode is blocked on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
             exit 1
           fi
