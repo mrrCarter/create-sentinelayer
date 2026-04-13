@@ -19,6 +19,7 @@ const SESSION_TTL_MS = 60 * 60 * 1000;
 const VERBOSE_TELEMETRY_ENV = "SENTINELAYER_VERBOSE_TELEMETRY";
 const DEBUG_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
 const UNMASK_TRACE_ID_ENV = "SENTINELAYER_UNMASK_TRACE_ID";
+const EMIT_TRACE_ID_ENV = "SENTINELAYER_EMIT_TRACE_ID";
 
 function isTruthyEnvFlag(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -66,6 +67,13 @@ function shouldExposeTraceId() {
   }
   const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
   if (nodeEnv !== "development" && nodeEnv !== "test") {
+    return false;
+  }
+  return Boolean(process.stderr && process.stderr.isTTY);
+}
+
+function shouldEmitTraceId() {
+  if (!isTruthyEnvFlag(process.env[EMIT_TRACE_ID_ENV])) {
     return false;
   }
   return Boolean(process.stderr && process.stderr.isTTY);
@@ -205,7 +213,7 @@ export function printSessionSummary({ sessionId } = {}) {
   parts.push(pc.white(summary.toolCalls + " tools"));
   if (summary.costUsd > 0) parts.push(pc.white("$" + summary.costUsd.toFixed(2)));
   parts.push(pc.white(duration));
-  if (summary.traceId) {
+  if (summary.traceId && shouldEmitTraceId()) {
     const traceLabel = shouldExposeTraceId() ? `trace_id=${summary.traceId}` : maskTraceId(summary.traceId);
     parts.push(pc.gray(traceLabel));
   }

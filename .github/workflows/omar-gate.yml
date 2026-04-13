@@ -159,6 +159,7 @@ jobs:
           OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '3600' }}
           OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256: ${{ vars.OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256 || '' }}
           OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF || 'true' }}
+          OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF || 'true' }}
           OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
           OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/sentinelayer' }}
           OMAR_REQUIRE_OIDC_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_OIDC_ON_PROTECTED_REF || 'true' }}
@@ -173,6 +174,7 @@ jobs:
           event_name="${GITHUB_EVENT_NAME}"
           ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           require_pinned="$(echo "${OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          require_response_binding_on_protected="$(echo "${OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
             allow_static="$(echo "${OMAR_ALLOW_STATIC_SECRETS:-false}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
@@ -247,13 +249,15 @@ jobs:
               echo "::error::OIDC exchange failed: missing id_token value in GitHub OIDC response."
               exit 1
             fi
+            exchange_nonce="$(printf '%s|%s|%s|%s' "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_SHA}" "$(date +%s%N)" | sha256sum | awk '{print $1}')"
             exchange_payload="$(jq -n \
               --arg repository "${GITHUB_REPOSITORY}" \
               --arg run_id "${GITHUB_RUN_ID}" \
               --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
               --arg ref "${GITHUB_REF}" \
               --arg sha "${GITHUB_SHA}" \
-              '{repository: $repository, run_id: $run_id, run_attempt: $run_attempt, ref: $ref, sha: $sha}')"
+              --arg exchange_nonce "${exchange_nonce}" \
+              '{repository: $repository, run_id: $run_id, run_attempt: $run_attempt, ref: $ref, sha: $sha, exchange_nonce: $exchange_nonce}')"
             exchange_headers="$(mktemp)"
             exchange_body="$(mktemp)"
             exchange_status="$(curl -sS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
@@ -292,6 +296,10 @@ jobs:
             exchange_issuer="$(jq -r '.issuer' "${exchange_body}")"
             exchange_audience_resp="$(jq -r '.audience' "${exchange_body}")"
             exchange_expires_at="$(jq -r '.expires_at' "${exchange_body}")"
+            response_repository="$(jq -r '.repository // empty' "${exchange_body}")"
+            response_run_id="$(jq -r '.run_id // empty' "${exchange_body}")"
+            response_sha="$(jq -r '.sha // empty' "${exchange_body}")"
+            response_nonce="$(jq -r '.exchange_nonce // empty' "${exchange_body}")"
             if [ -n "${exchange_audience}" ] && [ "${exchange_audience_resp}" != "${exchange_audience}" ]; then
               echo "::error::OIDC exchange audience mismatch. expected=${exchange_audience} actual=${exchange_audience_resp}."
               exit 1
@@ -317,6 +325,28 @@ jobs:
             if [ "${ttl_seconds}" -gt "${max_ttl}" ]; then
               echo "::error::OIDC exchange token TTL ${ttl_seconds}s exceeds maximum ${max_ttl}s."
               exit 1
+            fi
+            if [ "${ref_protected}" = "true" ] && [ "${require_response_binding_on_protected}" != "false" ]; then
+              if [ -z "${response_repository}" ] || [ -z "${response_run_id}" ] || [ -z "${response_sha}" ] || [ -z "${response_nonce}" ]; then
+                echo "::error::OIDC exchange response binding fields are required on protected refs (repository, run_id, sha, exchange_nonce)."
+                exit 1
+              fi
+              if [ "${response_repository}" != "${GITHUB_REPOSITORY}" ]; then
+                echo "::error::OIDC exchange repository binding mismatch. expected=${GITHUB_REPOSITORY} actual=${response_repository}."
+                exit 1
+              fi
+              if [ "${response_run_id}" != "${GITHUB_RUN_ID}" ]; then
+                echo "::error::OIDC exchange run_id binding mismatch. expected=${GITHUB_RUN_ID} actual=${response_run_id}."
+                exit 1
+              fi
+              if [ "${response_sha}" != "${GITHUB_SHA}" ]; then
+                echo "::error::OIDC exchange sha binding mismatch. expected=${GITHUB_SHA} actual=${response_sha}."
+                exit 1
+              fi
+              if [ "${response_nonce}" != "${exchange_nonce}" ]; then
+                echo "::error::OIDC exchange nonce binding mismatch."
+                exit 1
+              fi
             fi
             mode="oidc-exchange"
           fi

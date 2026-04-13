@@ -21,7 +21,7 @@ export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
 /** Default threshold at which stored tokens are rotated before expiry (days). */
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
-const MAX_AUTH_POLL_REQUESTS = 120;
+const MAX_AUTH_POLL_REQUESTS = 600;
 const MIN_TRANSIENT_POLL_DELAY_MS = 2_000;
 const TRANSIENT_DELAY_THRESHOLD = 3;
 
@@ -225,14 +225,16 @@ async function pollCliAuthSession({
   const pollRequestMaxRetries = 1;
   const pollRequestRetryDelayMs = 250;
   let pollAttempt = 0;
-  const maxRateLimitErrors = Math.max(2, Math.min(6, Math.ceil(timeout / maxPollIntervalMs)));
-  const maxServerErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
-  const maxNetworkErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
+  const transientErrorBudget = Math.max(8, Math.ceil(timeout / maxPollIntervalMs) * 3);
   const maxSleepBudgetMs = Math.max(2_000, Math.floor(timeout * 0.8));
-  const maxPollAttempts = Math.min(MAX_AUTH_POLL_REQUESTS, Math.max(1, Math.ceil(timeout / 250)));
+  const maxPollAttempts = Math.min(
+    MAX_AUTH_POLL_REQUESTS,
+    Math.max(1, Math.ceil(timeout / Math.max(250, pollIntervalMs)))
+  );
   let rateLimitErrorCount = 0;
   let serverErrorCount = 0;
   let networkErrorCount = 0;
+  let transientBudgetUsed = 0;
   let cumulativeSleepMs = 0;
   let pollIterations = 0;
   const deadline = Date.now() + timeout;
@@ -297,33 +299,21 @@ async function pollCliAuthSession({
       }
       const classification = classifyPollError(error);
       if (classification) {
+        const transientWeight = classification === "rate_limit" ? 3 : classification === "server" ? 2 : 1;
+        if (transientBudgetUsed + transientWeight > transientErrorBudget) {
+          throw new SentinelayerApiError("CLI authentication polling exhausted transient error budget.", {
+            status: 503,
+            code: "CLI_AUTH_TRANSIENT_BUDGET_EXHAUSTED",
+            requestId: error.requestId || flowRequestId || null,
+          });
+        }
+        transientBudgetUsed += transientWeight;
         if (classification === "rate_limit") {
           rateLimitErrorCount += 1;
-          if (rateLimitErrorCount > maxRateLimitErrors) {
-            throw new SentinelayerApiError("CLI authentication polling rate limits exceeded.", {
-              status: 429,
-              code: "CLI_AUTH_RATE_LIMIT_EXHAUSTED",
-              requestId: error.requestId || flowRequestId || null,
-            });
-          }
         } else if (classification === "server") {
           serverErrorCount += 1;
-          if (serverErrorCount > maxServerErrors) {
-            throw new SentinelayerApiError("CLI authentication polling failed after repeated server errors.", {
-              status: 503,
-              code: "CLI_AUTH_SERVER_EXHAUSTED",
-              requestId: error.requestId || flowRequestId || null,
-            });
-          }
         } else {
           networkErrorCount += 1;
-          if (networkErrorCount > maxNetworkErrors) {
-            throw new SentinelayerApiError("CLI authentication polling aborted after repeated network failures.", {
-              status: 503,
-              code: "CLI_AUTH_NETWORK_EXHAUSTED",
-              requestId: error.requestId || flowRequestId || null,
-            });
-          }
         }
         const retryAfterMs = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : null;
         const delayMs = computePollDelayMs(retryAfterMs);

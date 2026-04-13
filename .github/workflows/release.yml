@@ -914,6 +914,7 @@ jobs:
           MANIFEST_PACKAGE_NAME="$(jq -r '.package_name // empty' "${MANIFEST}")"
           MANIFEST_PACKAGE_VERSION="$(jq -r '.package_version // empty' "${MANIFEST}")"
           MANIFEST_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_ATTEST_RUN_ID="$(jq -r '.source_attestation_run_id // empty' "${MANIFEST}")"
           ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
           ACTUAL_INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
           if [ -z "${MANIFEST_TARBALL}" ]; then
@@ -942,6 +943,14 @@ jobs:
           fi
           if [ -z "${MANIFEST_COMMIT_SHA}" ] || [ "${MANIFEST_COMMIT_SHA}" = "null" ]; then
             echo "::error::Manifest missing commit_sha."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_SOURCE_ATTEST_RUN_ID}" ] || [ "${MANIFEST_SOURCE_ATTEST_RUN_ID}" = "null" ]; then
+            echo "::error::Manifest missing source_attestation_run_id."
+            exit 1
+          fi
+          if ! echo "${MANIFEST_SOURCE_ATTEST_RUN_ID}" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Manifest source_attestation_run_id is invalid: ${MANIFEST_SOURCE_ATTEST_RUN_ID}."
             exit 1
           fi
           if [ "${MANIFEST_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
