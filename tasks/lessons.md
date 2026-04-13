@@ -180,3 +180,4 @@
 - Workflow-bound required-check resolvers must filter check-runs to GitHub Actions URLs (`/actions/runs/<run_id>`) before provenance validation; otherwise non-workflow checks with the same name can cause false failures.
 - Any local deterministic CLI command used inside CI (for example `sl review scan`) must receive a deterministic auth context (`SENTINELAYER_TOKEN`) even when it does not call privileged APIs, or auth-gate will fail the workflow.
 - Guard clauses intended for `workflow_dispatch` can accidentally suppress required PR jobs; keep PR build/deploy lanes gated by upstream job success instead of event-type branch-protection shortcuts.
+- For PR workflows, provenance manifests must write the PR head SHA (not `GITHUB_SHA` merge ref) when downstream attestation gates validate against head-commit check-runs.

@@ -1001,7 +1001,7 @@ jobs:
             exit 1
           fi
           jq -n \
-            --arg commit_sha "${GITHUB_SHA}" \
+            --arg commit_sha "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}" \
             --arg tarball "${TAR_BALL}" \
             --arg sha256 "${SHA256}" \
             --arg reproducible_sha256 "${REPRODUCIBLE_SHA256}" \
