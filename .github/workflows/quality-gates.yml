@@ -473,7 +473,7 @@ jobs:
           echo "sha256=${first_sha256}" >> "$GITHUB_OUTPUT"
 
   build-package:
-    name: Build Package Artifact
+    name: Build Artifact (Deterministic)
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [security-scan, e2e-packaging, reproducible-build]

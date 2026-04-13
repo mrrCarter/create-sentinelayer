@@ -298,7 +298,6 @@ jobs:
             exit 1
           fi
           exchange_request="$(jq -n \
-            --arg token "${oidc_jwt}" \
             --arg audience "${NPM_TOKEN_EXCHANGE_AUDIENCE}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg actor "${GITHUB_ACTOR}" \
@@ -309,7 +308,6 @@ jobs:
             --arg workflow "${GITHUB_WORKFLOW}" \
             --arg client_id "${NPM_TOKEN_EXCHANGE_CLIENT_ID}" \
             '{
-              oidc_token: $token,
               audience: $audience,
               repository: $repository,
               actor: $actor,
@@ -333,6 +331,7 @@ jobs:
               --connect-timeout 5 \
               --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
               "${curl_pinned_arg[@]}" \
+              -H "Authorization: Bearer ${oidc_jwt}" \
               -H "Content-Type: application/json" \
               -D "${exchange_headers_file}" \
               -o "${exchange_body_file}" \

@@ -317,19 +317,29 @@ jobs:
           echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
 
-      - name: Rebuild package locally (diagnostic, non-blocking)
-        continue-on-error: true
+      - name: Rebuild package locally for reproducibility comparison
         shell: bash
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           source_manifest="quality-build-source/quality-package-manifest.json"
           if [ ! -f "${source_manifest}" ]; then
-            echo "::warning::Missing quality package manifest in downloaded artifact; skipping local rebuild diagnostic."
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::Missing quality package manifest in downloaded artifact."
+              exit 1
+            fi
+            echo "::warning::Missing quality package manifest in downloaded artifact; skipping local rebuild diagnostic on non-protected ref."
             exit 0
           fi
           source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
           if [ -z "${source_sha256}" ]; then
-            echo "::warning::Quality package manifest missing sha256; skipping local rebuild diagnostic."
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::Quality package manifest missing sha256."
+              exit 1
+            fi
+            echo "::warning::Quality package manifest missing sha256; skipping local rebuild diagnostic on non-protected ref."
             exit 0
           fi
           npm ci --ignore-scripts
@@ -339,7 +349,11 @@ jobs:
           test -f "${local_tarball}"
           local_sha256="$(sha256sum "${local_tarball}" | awk '{print $1}')"
           if [ "${local_sha256}" != "${source_sha256}" ]; then
-            echo "::warning::Local rebuild digest differs from canonical artifact. expected=${source_sha256} actual=${local_sha256}."
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::Local rebuild digest mismatch on protected ref. expected=${source_sha256} actual=${local_sha256}."
+              exit 1
+            fi
+            echo "::warning::Local rebuild digest differs from canonical artifact on non-protected ref. expected=${source_sha256} actual=${local_sha256}."
           else
             echo "::notice::Local rebuild digest matches canonical artifact (${local_sha256})."
           fi

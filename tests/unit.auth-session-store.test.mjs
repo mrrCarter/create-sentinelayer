@@ -117,6 +117,67 @@ test("Unit auth session store: keyring metadata without keytar returns null and 
   }
 });
 
+test("Unit auth session store: warning payload omits non-allowlisted fields and token-like values", async () => {
+  const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
+  process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
+  const warnings = [];
+  const previousWarn = console.warn;
+  console.warn = (message) => {
+    warnings.push(String(message || ""));
+  };
+  try {
+    const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
+    await mkdir(path.dirname(credentialsPath), { recursive: true });
+    await writeFile(
+      credentialsPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          apiUrl: "https://api.sentinelayer.dev",
+          storage: "keyring",
+          keyringService: "sentinelayer-cli",
+          keyringAccount: "default-simulated",
+          user: {
+            id: "user_1",
+            github_username: "demo-user",
+            email: "demo@example.com",
+            is_admin: false,
+          },
+          createdAt: "2026-04-02T00:00:00.000Z",
+          updatedAt: "2026-04-02T00:00:00.000Z",
+        },
+        null,
+        2
+      )}\n`,
+      "utf-8"
+    );
+
+    const stored = await readStoredSession({ homeDir: tempRoot });
+    assert.equal(stored, null);
+
+    const warningLine = warnings.find((entry) => entry.startsWith("sentinelayer.auth.session "));
+    assert.equal(Boolean(warningLine), true);
+    const payload = JSON.parse(warningLine.replace("sentinelayer.auth.session ", ""));
+    assert.equal(typeof payload.code, "string");
+    assert.equal(typeof payload.reason, "string");
+    assert.equal(typeof payload.source, "string");
+    const serialized = JSON.stringify(payload).toLowerCase();
+    assert.equal(serialized.includes("api_token"), false);
+    assert.equal(serialized.includes("authorization"), false);
+    assert.equal(serialized.includes("password"), false);
+  } finally {
+    console.warn = previousWarn;
+    if (previousDisableKeyring === undefined) {
+      delete process.env.SENTINELAYER_DISABLE_KEYRING;
+    } else {
+      process.env.SENTINELAYER_DISABLE_KEYRING = previousDisableKeyring;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit auth session store: invalid metadata payload fails closed", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-"));
   try {

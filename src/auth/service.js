@@ -87,14 +87,15 @@ function createFlowRequestId() {
   }
 }
 
-function withFlowRequestId(headers, flowRequestId) {
-  if (!flowRequestId) {
-    return headers;
-  }
-  return {
+function withFlowRequestHeaders(headers, flowRequestId) {
+  const merged = {
     ...(headers || {}),
-    "X-Request-Id": flowRequestId,
+    "X-Request-Id": createFlowRequestId(),
   };
+  if (flowRequestId) {
+    merged["X-Flow-Request-Id"] = flowRequestId;
+  }
+  return merged;
 }
 
 async function requestAuthJson(flowRequestId, ...args) {
@@ -199,7 +200,7 @@ async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowReq
     {
       method: "POST",
       operationName: "auth-start",
-      headers: withFlowRequestId(null, flowRequestId),
+      headers: withFlowRequestHeaders(null, flowRequestId),
       body: {
         challenge,
         ide: String(ide || DEFAULT_IDE_NAME),
@@ -280,7 +281,7 @@ async function pollCliAuthSession({
         {
           method: "POST",
           operationName: "auth-poll",
-          headers: withFlowRequestId(null, flowRequestId),
+          headers: withFlowRequestHeaders(null, flowRequestId),
           body: {
             session_id: sessionId,
             challenge,
@@ -378,7 +379,7 @@ async function fetchCurrentUser({ apiUrl, token, flowRequestId }) {
     buildApiPath(apiUrl, "/api/v1/auth/me"),
     {
       method: "GET",
-      headers: withFlowRequestId(toAuthHeader(token), flowRequestId),
+      headers: withFlowRequestHeaders(toAuthHeader(token), flowRequestId),
     }
   );
 }
@@ -399,7 +400,7 @@ async function issueApiToken({
     {
       method: "POST",
       operationName: "issue-token",
-      headers: withFlowRequestId(
+      headers: withFlowRequestHeaders(
         {
           ...toAuthHeader(authToken),
         },

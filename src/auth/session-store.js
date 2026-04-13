@@ -9,6 +9,14 @@ const KEYRING_SERVICE = "sentinelayer-cli";
 const SESSION_WARNING_PREFIX = "sentinelayer.auth.session";
 const SESSION_WARNING_REDACT_KEYS = /token|secret|password|key|authorization/i;
 const SESSION_WARNING_MAX_VALUE_LENGTH = 200;
+const SESSION_WARNING_ALLOWED_FIELDS = new Set([
+  "reason",
+  "source",
+  "operation",
+  "storage",
+  "codeHint",
+  "requestIdHash",
+]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -60,13 +68,20 @@ function sanitizeSessionWarningDetails(details) {
 }
 
 function emitSessionWarning(code, details = {}) {
+  const sanitizedDetails = sanitizeSessionWarningDetails(details);
   const payload = {
     level: "warn",
     code: String(code || "SESSION_WARNING").toUpperCase(),
     warningId: createSessionWarningId(),
     timestamp: nowIso(),
-    ...sanitizeSessionWarningDetails(details),
   };
+  for (const [key, value] of Object.entries(sanitizedDetails)) {
+    if (SESSION_WARNING_ALLOWED_FIELDS.has(key)) {
+      payload[key] = value;
+    } else {
+      payload[key] = "[OMITTED]";
+    }
+  }
   try {
     console.warn(`${SESSION_WARNING_PREFIX} ${JSON.stringify(payload)}`);
   } catch {
