@@ -2,6 +2,7 @@ import pc from "picocolors";
 import { selectRepo } from "./workspace.js";
 import { autoIngestWithProgress } from "./auto-ingest.js";
 import { showActionMenu } from "./action-menu.js";
+import { preferredCliCommand } from "../ui/command-hints.js";
 
 /**
  * Interactive CLI mode — the "sl" experience with no args.
@@ -28,7 +29,7 @@ export async function runInteractiveMode(options = {}) {
   // Step 1: Repo selection
   const repo = await selectRepo();
   if (!repo) {
-    console.error(pc.yellow("No repository selected. Run sl --help for available commands."));
+    console.error(pc.yellow(`No repository selected. Run ${preferredCliCommand()} --help for available commands.`));
     return;
   }
 
@@ -59,36 +60,37 @@ export async function runInteractiveMode(options = {}) {
  * Build the equivalent CLI command string for a menu choice.
  */
 function buildEquivalentCommand(choice, repo) {
+  const cli = preferredCliCommand();
   const pathFlag = " --path " + repo.path;
 
   switch (choice.action) {
     case "audit":
-      if (choice.subAction === "deep") return "sl audit" + pathFlag + " --json";
-      return "sl audit " + choice.subAction + pathFlag + " --stream";
+      if (choice.subAction === "deep") return `${cli} audit${pathFlag} --json`;
+      return `${cli} audit ${choice.subAction}${pathFlag} --stream`;
     case "review":
-      if (choice.subAction === "diff") return "sl review scan --mode diff" + pathFlag + " --json";
-      if (choice.subAction === "staged") return "sl review scan --mode staged" + pathFlag + " --json";
-      return "sl review scan --mode full" + pathFlag + " --json";
+      if (choice.subAction === "diff") return `${cli} review scan --mode diff${pathFlag} --json`;
+      if (choice.subAction === "staged") return `${cli} review scan --mode staged${pathFlag} --json`;
+      return `${cli} review scan --mode full${pathFlag} --json`;
     case "feature":
-      return "sl spec generate --description \"" + (choice.input || "").slice(0, 50) + "...\"" + pathFlag;
+      return `${cli} spec generate --description "${(choice.input || "").slice(0, 50)}..."${pathFlag}`;
     case "create":
-      return "sl init";
+      return `${cli} init`;
     case "cost":
-      return "sl cost show" + pathFlag + " --json";
+      return `${cli} cost show${pathFlag} --json`;
     case "telemetry":
-      return "sl telemetry show" + pathFlag + " --json";
+      return `${cli} telemetry show${pathFlag} --json`;
     case "config":
-      return "sl config list --json";
+      return `${cli} config list --json`;
     case "auth-status":
-      return "sl auth status --json";
+      return `${cli} auth status --json`;
     case "plugins":
-      return "sl plugin list --json";
+      return `${cli} plugin list --json`;
     case "watch":
-      return "sl watch history" + pathFlag + " --json";
+      return `${cli} watch history${pathFlag} --json`;
     case "ai":
-      return "sl ai provision-email --json";
+      return `${cli} ai provision-email --json`;
     case "daemon":
-      return "sl daemon budget status" + pathFlag + " --json";
+      return `${cli} daemon budget status${pathFlag} --json`;
     default:
       return null;
   }

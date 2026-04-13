@@ -44,6 +44,8 @@ sl review --diff
 sl watch run-events --run-id <run-id>
 ```
 
+Windows PowerShell note: `sl` is a built-in alias for `Set-Location`. Use `sentinelayer-cli` (or short alias `slc`) instead.
+
 ## 60-second flow
 
 1. Trigger:
@@ -140,6 +142,8 @@ For long-running agent/operator workflows, the CLI now supports persistent auth 
 - `sl auth logout`
 - `sl auth sessions`
 - `sl auth revoke --token-id <token-id>`
+
+On Windows PowerShell, run these as `sentinelayer-cli auth ...` or `slc auth ...`.
 
 Behavior:
 

@@ -12,6 +12,7 @@ import {
   readStoredSessionMetadata,
   writeStoredSession,
 } from "./session-store.js";
+import { authLoginHint } from "../ui/command-hints.js";
 
 const DEFAULT_API_URL = "https://api.sentinelayer.com";
 /** Default maximum wall-clock wait for browser-based CLI auth approval (ms). */
@@ -932,7 +933,7 @@ export async function revokeAuthToken({
     homeDir,
   });
   if (!active || !active.token) {
-    throw new SentinelayerApiError("No active auth token found. Run `sl auth login` first.", {
+    throw new SentinelayerApiError(`No active auth token found. Run \`${authLoginHint()}\` first.`, {
       status: 401,
       code: "AUTH_REQUIRED",
     });

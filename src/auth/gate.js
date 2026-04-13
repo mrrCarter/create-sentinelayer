@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
+import { authLoginHint } from "../ui/command-hints.js";
 
 /**
  * Auth gate — ensures user is logged in before running any command.
@@ -358,7 +359,7 @@ export function printAuthRequired() {
   console.error("");
   console.error("  Log in to SentinelLayer to use CLI commands:");
   console.error("");
-  console.error("    " + pc.cyan("sl auth login"));
+  console.error("    " + pc.cyan(authLoginHint()));
   console.error("");
   console.error("  This opens your browser to authenticate via GitHub or Google.");
   console.error("  Your session is encrypted and stored locally.");

@@ -1,4 +1,5 @@
 import process from "node:process";
+import { authLoginHint } from "../ui/command-hints.js";
 
 export const DEFAULT_AIDENID_API_URL = "https://api.aidenid.com";
 
@@ -244,8 +245,8 @@ export async function resolveAidenIdCredentials(
 
   if (requireAll && missing.length > 0) {
     const hint = hasSessionToken
-      ? " (session token exists but AIdenID credential fetch failed — check network or run 'sl auth login' again)"
-      : " (run 'sl auth login' to auto-provision, or set env vars manually)";
+      ? ` (session token exists but AIdenID credential fetch failed — check network or run '${authLoginHint()}' again)`
+      : ` (run '${authLoginHint()}' to auto-provision, or set env vars manually)`;
     throw new Error(`Missing AIdenID credentials: ${missing.join(", ")}.${hint}`);
   }
 

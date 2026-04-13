@@ -9,6 +9,7 @@
  */
 
 import { resolveActiveAuthSession } from "../auth/service.js";
+import { authLoginHint } from "../ui/command-hints.js";
 
 const DEFAULT_PROXY_MODEL = "gpt-5.3-codex";
 const PROXY_TIMEOUT_MS = 120_000;
@@ -49,7 +50,7 @@ export async function invokeViaProxy({
     });
     if (!session || !session.token) {
       throw new Error(
-        "SentinelLayer LLM proxy requires authentication. Run 'sl auth login' first."
+        `SentinelLayer LLM proxy requires authentication. Run '${authLoginHint()}' first.`
       );
     }
     if (!resolvedApiUrl) resolvedApiUrl = String(session.apiUrl || "https://api.sentinelayer.com").trim();

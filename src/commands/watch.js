@@ -12,6 +12,7 @@ import {
   resolveActiveAuthSession,
 } from "../auth/service.js";
 import { resolveOutputRoot } from "../config/service.js";
+import { authLoginHint } from "../ui/command-hints.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
@@ -369,7 +370,7 @@ export function registerWatchCommand(program) {
       }
 
       if (!session || !session.token) {
-        throw new Error("No active auth token found. Run `sl auth login` first.");
+        throw new Error(`No active auth token found. Run \`${authLoginHint()}\` first.`);
       }
 
       const startedAtEpoch = Date.now();
@@ -446,7 +447,7 @@ export function registerWatchCommand(program) {
         }
       } catch (error) {
         if (error instanceof SentinelayerApiError && (error.status === 401 || error.status === 403)) {
-          throw new Error("Authentication failed while watching runtime events. Run `sl auth login`.");
+          throw new Error(`Authentication failed while watching runtime events. Run \`${authLoginHint()}\`.`);
         }
         throw new Error(formatApiError(error));
       }
