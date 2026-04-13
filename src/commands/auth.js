@@ -15,6 +15,9 @@ import {
 import { resolveCredentialsFilePath } from "../auth/session-store.js";
 import { CLI_VERSION } from "../legacy-cli.js";
 
+const AUTH_DEBUG_ENV = "SENTINELAYER_DEBUG_ERRORS";
+const AUTH_UNMASK_REQUEST_IDS_ENV = "SENTINELAYER_UNMASK_REQUEST_IDS";
+
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
   const globalFromCommand =
@@ -53,8 +56,35 @@ function formatApiError(error) {
   if (!(error instanceof SentinelayerApiError)) {
     return error instanceof Error ? error.message : String(error || "Unknown error");
   }
-  const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
+  const requestIdValue = error.requestId
+    ? (shouldExposeSensitiveAuthInfo() ? error.requestId : maskIdentifier(error.requestId))
+    : "";
+  const requestId = requestIdValue ? ` request_id=${requestIdValue}` : "";
   return `${error.message} [${error.code}] status=${error.status}${requestId}`;
+}
+
+function shouldExposeSensitiveAuthInfo() {
+  const normalized = String(process.env[AUTH_DEBUG_ENV] || "").trim().toLowerCase();
+  const unmask = String(process.env[AUTH_UNMASK_REQUEST_IDS_ENV] || "").trim().toLowerCase();
+  const isTty = Boolean(process.stdout && process.stdout.isTTY);
+  const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
+  const isDev = nodeEnv === "development";
+  const debugEnabled = normalized === "true" || normalized === "1" || normalized === "yes";
+  const unmaskEnabled = unmask === "true" || unmask === "1" || unmask === "yes";
+  return debugEnabled && unmaskEnabled && isTty && isDev;
+}
+
+function shouldRevealTokenIdentifiers() {
+  return shouldExposeSensitiveAuthInfo();
+}
+
+function maskIdentifier(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.length <= 6) {
+    return `${raw.slice(0, 2)}…`;
+  }
+  return `${raw.slice(0, 4)}…${raw.slice(-2)}`;
 }
 
 function printAuthHint() {
@@ -192,10 +222,16 @@ export function registerAuthCommand(program) {
         const displayUser = status.remoteUser || status.user || {};
         console.log(pc.green(`Authenticated as ${renderUserSummary(displayUser)}`));
 
-        if (status.aidenid && status.aidenid.orgId) {
-          console.log(pc.green(`AIdenID: provisioned (org: ${status.aidenid.orgId}, project: ${status.aidenid.projectId || "unknown"})`));
-          if (status.aidenid.apiKeyPrefix) {
-            console.log(pc.gray(`  API key prefix: ${status.aidenid.apiKeyPrefix}`));
+        if (status.aidenid && (status.aidenid.orgId || status.aidenid.projectId)) {
+          if (shouldExposeSensitiveAuthInfo()) {
+            const orgDisplay = status.aidenid.orgId ? maskIdentifier(status.aidenid.orgId) : "unknown";
+            const projectDisplay = status.aidenid.projectId ? maskIdentifier(status.aidenid.projectId) : "unknown";
+            console.log(pc.green(`AIdenID: provisioned (org: ${orgDisplay}, project: ${projectDisplay})`));
+            if (status.aidenid.apiKeyPrefix) {
+              console.log(pc.gray(`  API key prefix: ${maskIdentifier(status.aidenid.apiKeyPrefix)}`));
+            }
+          } else {
+            console.log(pc.green("AIdenID: provisioned"));
           }
         } else {
           console.log(pc.gray("AIdenID: not provisioned (will provision on next login)"));
@@ -205,10 +241,15 @@ export function registerAuthCommand(program) {
 
       if (status.remoteError) {
         console.log(pc.red(`Remote validation failed: ${status.remoteError.message}`));
+        const requestIdValue = status.remoteError.requestId
+          ? (shouldExposeSensitiveAuthInfo()
+            ? status.remoteError.requestId
+            : maskIdentifier(status.remoteError.requestId))
+          : "";
         console.log(
           pc.gray(
             `Error code: ${status.remoteError.code} status=${status.remoteError.status}${
-              status.remoteError.requestId ? ` request_id=${status.remoteError.requestId}` : ""
+              requestIdValue ? ` request_id=${requestIdValue}` : ""
             }`
           )
         );
@@ -260,7 +301,8 @@ export function registerAuthCommand(program) {
           `${renderUserSummary(session.user)} | source=${session.source} | storage=${session.storage || "unknown"}`
         );
         if (session.tokenId) {
-          console.log(pc.gray(`  token_id: ${session.tokenId}`));
+          const tokenDisplay = shouldRevealTokenIdentifiers() ? session.tokenId : maskIdentifier(session.tokenId);
+          console.log(pc.gray(`  token_id: ${tokenDisplay}`));
         }
         if (session.tokenExpiresAt) {
           console.log(pc.gray(`  expires_at: ${session.tokenExpiresAt}`));
@@ -303,7 +345,8 @@ export function registerAuthCommand(program) {
         return;
       }
 
-      console.log(pc.green(`Revoked token: ${result.tokenId}`));
+      const tokenDisplay = shouldRevealTokenIdentifiers() ? result.tokenId : maskIdentifier(result.tokenId);
+      console.log(pc.green(`Revoked token: ${tokenDisplay}`));
       console.log(pc.gray(`API: ${result.apiUrl}`));
       if (result.matchedStoredSession) {
         console.log(

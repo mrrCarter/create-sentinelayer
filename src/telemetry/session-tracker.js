@@ -1,4 +1,6 @@
 import pc from "picocolors";
+import crypto from "node:crypto";
+import process from "node:process";
 
 /**
  * Session Tracker — tracks tokens, tool calls, cost, and time per CLI run.
@@ -10,14 +12,100 @@ import pc from "picocolors";
  * - Print summary on completion
  */
 
-let SESSION = null;
+const SESSIONS = new Map();
+let ACTIVE_SESSION_ID = null;
+const MAX_SESSIONS = 50;
+const SESSION_TTL_MS = 60 * 60 * 1000;
+const VERBOSE_TELEMETRY_ENV = "SENTINELAYER_VERBOSE_TELEMETRY";
+const DEBUG_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
+const UNMASK_TRACE_ID_ENV = "SENTINELAYER_UNMASK_TRACE_ID";
+const EMIT_TRACE_ID_ENV = "SENTINELAYER_EMIT_TRACE_ID";
+
+function isTruthyEnvFlag(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function normalizeNonNegativeNumber(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return 0;
+  }
+  return normalized;
+}
+
+function resolveSession(sessionId) {
+  const resolvedId = String(sessionId || ACTIVE_SESSION_ID || "").trim();
+  if (!resolvedId) {
+    return null;
+  }
+  return SESSIONS.get(resolvedId) || null;
+}
+
+function pruneSessions(now = Date.now()) {
+  for (const [sessionId, session] of SESSIONS.entries()) {
+    if (!session || !session.startedAt) continue;
+    if (now - session.startedAt > SESSION_TTL_MS) {
+      SESSIONS.delete(sessionId);
+    }
+  }
+  while (SESSIONS.size > MAX_SESSIONS) {
+    const oldestKey = SESSIONS.keys().next().value;
+    if (!oldestKey) break;
+    SESSIONS.delete(oldestKey);
+  }
+}
+
+function shouldExposeTraceId() {
+  const verbose = isTruthyEnvFlag(process.env[VERBOSE_TELEMETRY_ENV]);
+  const debug = isTruthyEnvFlag(process.env[DEBUG_ERRORS_ENV]);
+  if (!verbose && !debug) {
+    return false;
+  }
+  if (!isTruthyEnvFlag(process.env[UNMASK_TRACE_ID_ENV])) {
+    return false;
+  }
+  const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
+  if (nodeEnv !== "development" && nodeEnv !== "test") {
+    return false;
+  }
+  return Boolean(process.stderr && process.stderr.isTTY);
+}
+
+function shouldEmitTraceId() {
+  if (!isTruthyEnvFlag(process.env[EMIT_TRACE_ID_ENV])) {
+    return false;
+  }
+  return Boolean(process.stderr && process.stderr.isTTY);
+}
+
+function maskTraceId(traceId) {
+  const normalized = String(traceId || "").trim();
+  if (normalized.length <= 8) {
+    return "trace_id=****";
+  }
+  const prefix = normalized.slice(0, 4);
+  const suffix = normalized.slice(-4);
+  return `trace_id=${prefix}…${suffix}`;
+}
 
 /**
  * Initialize a new tracking session.
  * Call this at the start of any auditable command.
  */
 export function startSession(command) {
-  SESSION = {
+  pruneSessions();
+  let sessionId;
+  try {
+    sessionId = crypto.randomUUID();
+  } catch {
+    const ts = Date.now().toString(36);
+    const rand = crypto.randomBytes(16).toString("hex");
+    sessionId = `sess-${ts}-${rand}`;
+  }
+  const session = {
+    id: sessionId,
+    traceId: sessionId,
     command: command || "unknown",
     startedAt: Date.now(),
     inputTokens: 0,
@@ -27,55 +115,79 @@ export function startSession(command) {
     llmCalls: 0,
     findings: { P0: 0, P1: 0, P2: 0, P3: 0 },
   };
-  return SESSION;
+  SESSIONS.set(sessionId, session);
+  ACTIVE_SESSION_ID = sessionId;
+  return session;
+}
+
+export function endSession({ sessionId } = {}) {
+  const resolvedId = String(sessionId || ACTIVE_SESSION_ID || "").trim();
+  if (!resolvedId) return false;
+  const existed = SESSIONS.delete(resolvedId);
+  if (ACTIVE_SESSION_ID === resolvedId) {
+    ACTIVE_SESSION_ID = null;
+  }
+  return existed;
 }
 
 /**
  * Record token usage from an LLM call.
  */
-export function recordLlmUsage({ inputTokens = 0, outputTokens = 0, costUsd = 0 } = {}) {
-  if (!SESSION) return;
-  SESSION.inputTokens += inputTokens;
-  SESSION.outputTokens += outputTokens;
-  SESSION.costUsd += costUsd;
-  SESSION.llmCalls += 1;
+export function recordLlmUsage({ inputTokens = 0, outputTokens = 0, costUsd = 0, sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return;
+  const safeInput = normalizeNonNegativeNumber(inputTokens);
+  const safeOutput = normalizeNonNegativeNumber(outputTokens);
+  const safeCost = normalizeNonNegativeNumber(costUsd);
+  session.inputTokens += safeInput;
+  session.outputTokens += safeOutput;
+  session.costUsd += safeCost;
+  session.llmCalls += 1;
 }
 
 /**
  * Record a tool call.
  */
-export function recordToolCall() {
-  if (!SESSION) return;
-  SESSION.toolCalls += 1;
+export function recordToolCall({ sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return;
+  session.toolCalls += 1;
 }
 
 /**
  * Record findings.
  */
-export function recordFindings(summary) {
-  if (!SESSION) return;
-  if (summary?.P0) SESSION.findings.P0 += summary.P0;
-  if (summary?.P1) SESSION.findings.P1 += summary.P1;
-  if (summary?.P2) SESSION.findings.P2 += summary.P2;
-  if (summary?.P3) SESSION.findings.P3 += summary.P3;
+export function recordFindings(summary, { sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return;
+  const p0 = normalizeNonNegativeNumber(summary?.P0);
+  const p1 = normalizeNonNegativeNumber(summary?.P1);
+  const p2 = normalizeNonNegativeNumber(summary?.P2);
+  const p3 = normalizeNonNegativeNumber(summary?.P3);
+  if (p0) session.findings.P0 += p0;
+  if (p1) session.findings.P1 += p1;
+  if (p2) session.findings.P2 += p2;
+  if (p3) session.findings.P3 += p3;
 }
 
 /**
  * Get the current session summary.
  */
-export function getSessionSummary() {
-  if (!SESSION) return null;
-  const durationMs = Date.now() - SESSION.startedAt;
+export function getSessionSummary({ sessionId } = {}) {
+  const session = resolveSession(sessionId);
+  if (!session) return null;
+  const durationMs = Date.now() - session.startedAt;
   return {
-    command: SESSION.command,
+    traceId: session.traceId || session.id,
+    command: session.command,
     durationMs,
-    inputTokens: SESSION.inputTokens,
-    outputTokens: SESSION.outputTokens,
-    totalTokens: SESSION.inputTokens + SESSION.outputTokens,
-    costUsd: SESSION.costUsd,
-    toolCalls: SESSION.toolCalls,
-    llmCalls: SESSION.llmCalls,
-    findings: { ...SESSION.findings },
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    totalTokens: session.inputTokens + session.outputTokens,
+    costUsd: session.costUsd,
+    toolCalls: session.toolCalls,
+    llmCalls: session.llmCalls,
+    findings: { ...session.findings },
   };
 }
 
@@ -83,8 +195,8 @@ export function getSessionSummary() {
  * Print the session summary to stderr.
  * Called at the end of any auditable command.
  */
-export function printSessionSummary() {
-  const summary = getSessionSummary();
+export function printSessionSummary({ sessionId } = {}) {
+  const summary = getSessionSummary({ sessionId });
   if (!summary) return;
 
   const duration = summary.durationMs < 60000
@@ -101,6 +213,10 @@ export function printSessionSummary() {
   parts.push(pc.white(summary.toolCalls + " tools"));
   if (summary.costUsd > 0) parts.push(pc.white("$" + summary.costUsd.toFixed(2)));
   parts.push(pc.white(duration));
+  if (summary.traceId && shouldEmitTraceId()) {
+    const traceLabel = shouldExposeTraceId() ? `trace_id=${summary.traceId}` : maskTraceId(summary.traceId);
+    parts.push(pc.gray(traceLabel));
+  }
 
   const findingParts = [];
   if (summary.findings.P0 > 0) findingParts.push(pc.red("P0=" + summary.findings.P0));
@@ -113,6 +229,6 @@ export function printSessionSummary() {
     process.stderr.write(" | " + findingParts.join(" "));
   }
   process.stderr.write("\n");
-
+  endSession({ sessionId });
   return summary;
 }

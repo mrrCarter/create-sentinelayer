@@ -2,10 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import crypto from "node:crypto";
+import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 
 import { checkAuthGate } from "../src/auth/gate.js";
 import { writeStoredSession } from "../src/auth/session-store.js";
+
+const TEST_BYPASS_NONCE_FILENAME_PREFIX = "sentinelayer-cli-test-bypass";
+
+async function createTrustedBypassFixture({ nonce, secret }) {
+  const ts = Date.now();
+  const pid = process.pid;
+  const noncePath = path.join(os.tmpdir(), `${TEST_BYPASS_NONCE_FILENAME_PREFIX}-${nonce}.nonce`);
+  const token = crypto.createHmac("sha256", secret).update(`${nonce}|${pid}|${ts}`).digest("hex");
+  await writeFile(noncePath, `${JSON.stringify({ nonce, pid, ts })}\n`, "utf-8");
+  return { noncePath, token };
+}
 
 test("Unit auth gate: CI=true alone does not bypass auth", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
@@ -69,6 +81,9 @@ test("Unit auth gate: accepts env token without stored session", async () => {
 
 test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains supported", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
+  const nonce = "unit-test-nonce";
+  const secret = "unit-test-secret";
+  const fixture = await createTrustedBypassFixture({ nonce, secret });
   const previousHome = process.env.HOME;
   const previousUserProfile = process.env.USERPROFILE;
   const previousCi = process.env.CI;
@@ -76,16 +91,20 @@ test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains support
   const previousSkipAuth = process.env.SENTINELAYER_CLI_SKIP_AUTH;
   const previousTestMode = process.env.SENTINELAYER_CLI_TEST_MODE;
   const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
-  const previousUnsafeBypass = process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
+  const previousBypassSecret = process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
+  const previousBypassToken = process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+  const previousArgv1 = process.argv[1];
   try {
+    process.argv[1] = path.join(process.cwd(), "bin", "create-sentinelayer.js");
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
-    process.env.CI = "true";
+    delete process.env.CI;
     process.env.NODE_ENV = "test";
     process.env.SENTINELAYER_CLI_TEST_MODE = "1";
-    process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = "unit-test-nonce";
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = nonce;
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET = secret;
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN = `sha256:${fixture.token}`;
     process.env.SENTINELAYER_CLI_SKIP_AUTH = "1";
-    delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
 
     const result = await checkAuthGate(["audit"]);
     assert.equal(result.authenticated, true);
@@ -105,8 +124,63 @@ test("Unit auth gate: explicit SENTINELAYER_CLI_SKIP_AUTH bypass remains support
     else process.env.SENTINELAYER_CLI_TEST_MODE = previousTestMode;
     if (previousBypassNonce === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
     else process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = previousBypassNonce;
-    if (previousUnsafeBypass === undefined) delete process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS;
-    else process.env.SENTINELAYER_CLI_ALLOW_UNSAFE_AUTH_BYPASS = previousUnsafeBypass;
+    if (previousBypassSecret === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET = previousBypassSecret;
+    if (previousBypassToken === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN = previousBypassToken;
+    await unlink(fixture.noncePath).catch(() => {});
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Unit auth gate: CI mode blocks signed test bypass context", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
+  const nonce = "unit-test-ci-block";
+  const secret = "unit-test-secret";
+  const fixture = await createTrustedBypassFixture({ nonce, secret });
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCi = process.env.CI;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousSkipAuth = process.env.SENTINELAYER_CLI_SKIP_AUTH;
+  const previousTestMode = process.env.SENTINELAYER_CLI_TEST_MODE;
+  const previousBypassNonce = process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+  const previousBypassSecret = process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
+  const previousBypassToken = process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+  try {
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    process.env.CI = "true";
+    process.env.NODE_ENV = "test";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = nonce;
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET = secret;
+    process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN = fixture.token;
+    process.env.SENTINELAYER_CLI_SKIP_AUTH = "1";
+
+    const result = await checkAuthGate(["audit"]);
+    assert.equal(result.authenticated, false);
+    assert.equal(result.bypassReason, null);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousCi === undefined) delete process.env.CI;
+    else process.env.CI = previousCi;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousSkipAuth === undefined) delete process.env.SENTINELAYER_CLI_SKIP_AUTH;
+    else process.env.SENTINELAYER_CLI_SKIP_AUTH = previousSkipAuth;
+    if (previousTestMode === undefined) delete process.env.SENTINELAYER_CLI_TEST_MODE;
+    else process.env.SENTINELAYER_CLI_TEST_MODE = previousTestMode;
+    if (previousBypassNonce === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE = previousBypassNonce;
+    if (previousBypassSecret === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_SECRET = previousBypassSecret;
+    if (previousBypassToken === undefined) delete process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+    else process.env.SENTINELAYER_CLI_TEST_BYPASS_TOKEN = previousBypassToken;
+    await unlink(fixture.noncePath).catch(() => {});
     await rm(tempHome, { recursive: true, force: true });
   }
 });

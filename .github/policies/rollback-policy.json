@@ -1,0 +1,6 @@
+{
+  "allowed_actors": [
+    "mrrCarter"
+  ],
+  "require_protected_ref": true
+}

@@ -1,5 +1,14 @@
 # Lessons
 
+## 2026-04-13
+
+- When hardening auth bypass controls, run full `npm test` immediately afterward and update the e2e harness to authenticate via deterministic test token/session paths; otherwise CI can silently break with broad auth-gate failures.
+- Always parse all workflow YAML files locally after workflow edits; a single indentation error creates opaque GitHub runs named by file path and can be mistaken for unrelated gate failures.
+
+## 2026-04-12
+
+- When the requirement is "Omar Gate only," do not rely on any multi-agent review workflows or alternative scanners; fix Omar-specific findings first and rerun the Omar Gate loop until P0-P2 are cleared.
+
 ## 2026-03-31
 
 - When a roadmap spans multiple repos, baseline every dependent repo before starting feature PRs; unresolved upstream drift can invalidate downstream design decisions.
@@ -140,6 +149,8 @@
 ## 2026-04-08
 
 - Hash-locked Python workflows can still break at runtime if lock resolution drifts across major behavior changes (`setuptools` 82 removed `pkg_resources`); pin known-compatible upper bounds in the `.in` source and regenerate hashes, then confirm by executing the tool binary (`semgrep --version`) in CI.
+- When a user requests Omar-only gating, remove supplemental security workflows entirely (not just make them non-blocking) so the active CI contract matches policy intent.
+- Reusable-workflow digest policies must hash canonical git blob bytes (`git show HEAD:<path>`), not platform working-tree bytes, or Windows CRLF conversion will cause false digest mismatches in Linux CI.
 
 ## 2026-04-09
 
@@ -148,9 +159,6 @@
 - In bash workflows using `set -e`, do not rely on `if ! cmd; then $?` to capture command exit values; run under `set +e` for the command, capture status explicitly, then re-enable `set -e` for deterministic timeout/failure handling.
 - For required-check policy scripts, bind check-runs to immutable workflow metadata (`workflow_path`, `head_sha`) from Actions run API, not just check name/app, to prevent provenance ambiguity across similarly named checks.
 - Workflow hardening should enforce both pinned digest and annotation quality; broad `vN` comments around SHA-pinned actions drift into false confidence and should fail policy checks.
-
-## 2026-04-09
-
 - When Omar raises workflow-only P2s, treat them as a live queue and batch-fix by control-plane theme (trust boundary, release lineage, rollback integrity) before the next watch cycle.
 - Avoid `pull_request_target` for workflows that mint provenance or run packaging steps on PR head code; keep PR checks in `pull_request` context and reserve trusted attestation minting for `push`/trusted calls.
 - For release hardening, implement progressive rollout as a concrete gate (`next` canary publish + registry install validation + explicit `latest` promotion) rather than documenting strategy without enforcement.
@@ -161,3 +169,15 @@
 - Keep documentation and required-check narratives in lockstep with live workflows; stale README gate lists create false confidence and operator confusion during incident review.
 - Treat auth/session regressions as source-of-truth issues, not user-environment issues: any command that needs SentinelLayer auth must resolve credentials via `resolveActiveAuthSession (env -> config -> session)` rather than direct `readStoredSession()` reads.
 - CLI login should issue API tokens with a scope designed for general CLI endpoints; using a narrow `github_app_bridge` scope causes `/auth/me` and telemetry validation failures downstream.
+
+## 2026-04-12
+
+- When Omar Gate is the required security path, do not rely on multi-agent review workflows or substitute checks; ensure the Omar Gate workflow is the only enforcement path and is actually executed per PR.
+- If Omar LLM analysis is required, explicitly set `sentinelayer_managed_llm: "true"` (or equivalent action input) and verify the workflow is not running in a skipped/LLM-disabled mode before merging.
+
+## 2026-04-13
+
+- Workflow-bound required-check resolvers must filter check-runs to GitHub Actions URLs (`/actions/runs/<run_id>`) before provenance validation; otherwise non-workflow checks with the same name can cause false failures.
+- Any local deterministic CLI command used inside CI (for example `sl review scan`) must receive a deterministic auth context (`SENTINELAYER_TOKEN`) even when it does not call privileged APIs, or auth-gate will fail the workflow.
+- Guard clauses intended for `workflow_dispatch` can accidentally suppress required PR jobs; keep PR build/deploy lanes gated by upstream job success instead of event-type branch-protection shortcuts.
+- For PR workflows, provenance manifests must write the PR head SHA (not `GITHUB_SHA` merge ref) when downstream attestation gates validate against head-commit check-runs.

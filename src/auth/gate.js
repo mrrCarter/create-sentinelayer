@@ -1,4 +1,8 @@
 import process from "node:process";
+import crypto from "node:crypto";
+import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
 
@@ -28,13 +32,238 @@ const NO_AUTH_REQUIRED = new Set([
   "config",    // local config inspection
 ]);
 
-function hasTrustedBypassContext() {
-  const nonce = String(process.env.SENTINELAYER_CLI_TEST_BYPASS_NONCE || "").trim();
-  return (
-    process.env.NODE_ENV === "test" &&
-    process.env.SENTINELAYER_CLI_TEST_MODE === "1" &&
-    nonce.length >= 12
-  );
+const TEST_BYPASS_NONCE_ENV = "SENTINELAYER_CLI_TEST_BYPASS_NONCE";
+const TEST_BYPASS_SECRET_ENV = "SENTINELAYER_CLI_TEST_BYPASS_SECRET";
+const TEST_BYPASS_TOKEN_ENV = "SENTINELAYER_CLI_TEST_BYPASS_TOKEN";
+const TEST_BYPASS_NONCE_FILENAME_PREFIX = "sentinelayer-cli-test-bypass";
+const TEST_BYPASS_NONCE_MAX_AGE_MS = 5 * 60 * 1000;
+const TEST_BYPASS_ALLOWED_EXECUTABLES = new Set([
+  "create-sentinelayer.js",
+  "sentinelayer-cli.js",
+  "sl.js",
+  "cli.js",
+]);
+const TEST_BYPASS_ALLOWED_COMMANDS = new Set([
+  "audit",
+  "chat",
+  "config",
+  "cost",
+  "daemon",
+  "guide",
+  "ingest",
+  "mcp",
+  "plugin",
+  "policy",
+  "prompt",
+  "review",
+  "scan",
+  "spec",
+  "swarm",
+  "telemetry",
+  "watch",
+]);
+const TEST_BYPASS_BLOCKED_FLAGS = new Set([
+  "--apply",
+  "--delete",
+  "--deploy",
+  "--destroy",
+  "--execute",
+  "--fix",
+  "--force",
+  "--merge",
+  "--promote",
+  "--publish",
+  "--push",
+  "--regenerate",
+  "--revoke",
+]);
+
+function isTruthy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function isPackagedBuild() {
+  if (process.pkg) {
+    return true;
+  }
+  const execPath = String(process.execPath || "");
+  const execBase = path.basename(execPath).toLowerCase();
+  return execBase !== "node" && execBase !== "node.exe";
+}
+
+function readNonceEnvelope(nonce) {
+  const normalizedNonce = String(nonce || "").trim();
+  if (!normalizedNonce) {
+    return null;
+  }
+  const nonceFile = path.join(os.tmpdir(), `${TEST_BYPASS_NONCE_FILENAME_PREFIX}-${normalizedNonce}.nonce`);
+  try {
+    const stats = fs.statSync(nonceFile);
+    if (!stats.isFile()) {
+      return null;
+    }
+    if (typeof process.getuid === "function") {
+      if (stats.uid !== process.getuid()) {
+        return null;
+      }
+      if (stats.mode & 0o022) {
+        return null;
+      }
+    }
+    if (stats.size <= 0 || stats.size > 1024) {
+      return null;
+    }
+    const payloadRaw = fs.readFileSync(nonceFile, "utf-8");
+    const payload = JSON.parse(payloadRaw);
+    const payloadNonce = String(payload?.nonce || "").trim();
+    const payloadPid = Number(payload?.pid);
+    const payloadTs = Number(payload?.ts);
+    if (payloadNonce !== normalizedNonce) {
+      return null;
+    }
+    if (!Number.isInteger(payloadPid) || payloadPid <= 0) {
+      return null;
+    }
+    if (!Number.isFinite(payloadTs) || payloadTs <= 0) {
+      return null;
+    }
+    if (Math.abs(Date.now() - payloadTs) > TEST_BYPASS_NONCE_MAX_AGE_MS) {
+      return null;
+    }
+    return {
+      nonce: payloadNonce,
+      pid: payloadPid,
+      ts: payloadTs,
+      nonceFile,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function consumeNonceEnvelope(nonceFile) {
+  const normalizedPath = String(nonceFile || "").trim();
+  if (!normalizedPath) {
+    return false;
+  }
+  const consumedPath = `${normalizedPath}.used.${process.pid}.${Date.now()}`;
+  try {
+    fs.renameSync(normalizedPath, consumedPath);
+  } catch {
+    return false;
+  }
+  try {
+    fs.rmSync(consumedPath, { force: true });
+  } catch {
+    // Best effort cleanup only.
+  }
+  return true;
+}
+
+function isValidTestBypassToken({ nonce, pid, ts, secret, token }) {
+  const normalizedNonce = String(nonce || "").trim();
+  const normalizedPid = Number(pid);
+  const normalizedTs = Number(ts);
+  const normalizedSecret = String(secret || "").trim();
+  const rawToken = String(token || "").trim();
+  if (
+    !normalizedNonce ||
+    !Number.isInteger(normalizedPid) ||
+    normalizedPid <= 0 ||
+    !Number.isFinite(normalizedTs) ||
+    normalizedTs <= 0 ||
+    !normalizedSecret ||
+    !rawToken
+  ) {
+    return false;
+  }
+  const normalizedToken = rawToken.replace(/^sha256:/i, "");
+  if (!/^[a-f0-9]{64}$/i.test(normalizedToken)) {
+    return false;
+  }
+  const message = `${normalizedNonce}|${normalizedPid}|${normalizedTs}`;
+  const computed = crypto.createHmac("sha256", normalizedSecret).update(message).digest("hex");
+  const expectedBuffer = Buffer.from(computed, "hex");
+  const candidateBuffer = Buffer.from(normalizedToken.toLowerCase(), "hex");
+  if (expectedBuffer.length !== candidateBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, candidateBuffer);
+}
+
+function isBypassCommandAllowed(args = []) {
+  const first = String(args[0] || "").trim().toLowerCase();
+  if (!first) {
+    return false;
+  }
+  if (first.startsWith("/")) {
+    return true;
+  }
+  if (!TEST_BYPASS_ALLOWED_COMMANDS.has(first)) {
+    return false;
+  }
+  for (const rawArg of args.slice(1)) {
+    const arg = String(rawArg || "").trim().toLowerCase();
+    if (!arg.startsWith("--")) {
+      continue;
+    }
+    const normalizedFlag = arg.split("=")[0];
+    if (TEST_BYPASS_BLOCKED_FLAGS.has(normalizedFlag)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasTrustedBypassExecutableContext() {
+  const argvPath = String(process.argv[1] || "").trim();
+  if (!argvPath) {
+    return false;
+  }
+  const executableName = path.basename(argvPath).toLowerCase();
+  if (!TEST_BYPASS_ALLOWED_EXECUTABLES.has(executableName)) {
+    return false;
+  }
+  const normalizedPath = argvPath.replace(/\\/g, "/").toLowerCase();
+  if (!normalizedPath.includes("/bin/") && !normalizedPath.endsWith("/src/cli.js")) {
+    return false;
+  }
+  return true;
+}
+
+function hasTrustedBypassContext(args = []) {
+  if (isTruthy(process.env.CI)) {
+    return false;
+  }
+  if (process.env.NODE_ENV !== "test" || process.env.SENTINELAYER_CLI_TEST_MODE !== "1") {
+    return false;
+  }
+  if (isPackagedBuild()) {
+    return false;
+  }
+  if (!hasTrustedBypassExecutableContext()) {
+    return false;
+  }
+  if (!isBypassCommandAllowed(args)) {
+    return false;
+  }
+  const nonceEnvelope = readNonceEnvelope(process.env[TEST_BYPASS_NONCE_ENV]);
+  if (!nonceEnvelope) {
+    return false;
+  }
+  if (
+    !isValidTestBypassToken({
+      nonce: nonceEnvelope.nonce,
+      pid: nonceEnvelope.pid,
+      ts: nonceEnvelope.ts,
+      secret: process.env[TEST_BYPASS_SECRET_ENV],
+      token: process.env[TEST_BYPASS_TOKEN_ENV],
+    })
+  ) {
+    return false;
+  }
+  return consumeNonceEnvelope(nonceEnvelope.nonceFile);
 }
 
 function isValidSessionToken(session) {
@@ -91,7 +320,6 @@ function isAuthenticatedSessionValid(session) {
 export async function checkAuthGate(args) {
   const first = String(args[0] || "").trim().toLowerCase();
 
-  // Bypass commands
   if (!first || AUTH_BYPASS_COMMANDS.has(first)) {
     return { authenticated: true, session: null, bypassReason: "auth_bypass_command" };
   }
@@ -100,8 +328,7 @@ export async function checkAuthGate(args) {
     return { authenticated: true, session: null, bypassReason: "no_auth_required" };
   }
 
-  // Explicit bypass is gated to trusted test contexts only.
-  if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" && hasTrustedBypassContext()) {
+  if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" && hasTrustedBypassContext(args)) {
     return { authenticated: true, session: null, bypassReason: "env_bypass_guarded" };
   }
 

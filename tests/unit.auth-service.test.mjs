@@ -45,6 +45,8 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
     tokenIssueCalls: 0,
     tokenDeleteIds: [],
     statusCalls: 0,
+    requestIds: [],
+    flowRequestIds: [],
   };
   const runtimeEvents = [
     {
@@ -77,6 +79,8 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
       const pathname = parsedUrl.pathname;
 
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/start") {
+        state.requestIds.push(String(req.headers["x-request-id"] || ""));
+        state.flowRequestIds.push(String(req.headers["x-flow-request-id"] || ""));
         await readJsonBody(req);
         return jsonResponse(res, 200, {
           session_id: "sess_1",
@@ -86,6 +90,8 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
       }
 
       if (req.method === "POST" && pathname === "/api/v1/auth/cli/sessions/poll") {
+        state.requestIds.push(String(req.headers["x-request-id"] || ""));
+        state.flowRequestIds.push(String(req.headers["x-flow-request-id"] || ""));
         await readJsonBody(req);
         state.pollCalls += 1;
         if (Array.isArray(pollResponses) && pollResponses.length > 0) {
@@ -114,6 +120,8 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
       }
 
       if (req.method === "GET" && pathname === "/api/v1/auth/me") {
+        state.requestIds.push(String(req.headers["x-request-id"] || ""));
+        state.flowRequestIds.push(String(req.headers["x-flow-request-id"] || ""));
         const authHeader = String(req.headers.authorization || "");
         if (!authHeader.startsWith("Bearer ")) {
           return jsonResponse(res, 401, {
@@ -128,6 +136,8 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
       }
 
       if (req.method === "POST" && pathname === "/api/v1/auth/api-tokens") {
+        state.requestIds.push(String(req.headers["x-request-id"] || ""));
+        state.flowRequestIds.push(String(req.headers["x-flow-request-id"] || ""));
         await readJsonBody(req);
         state.tokenIssueCalls += 1;
         return jsonResponse(res, 200, {
@@ -226,6 +236,12 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
     assert.equal(loginResult.apiUrl, mock.apiUrl);
     assert.equal(loginResult.storage, "file");
     assert.equal(loginResult.user.githubUsername, "demo-user");
+    const requestIds = mock.state.requestIds.filter(Boolean);
+    const flowRequestIds = mock.state.flowRequestIds.filter(Boolean);
+    assert.equal(requestIds.length >= 3, true);
+    assert.equal(new Set(requestIds).size, requestIds.length);
+    assert.equal(flowRequestIds.length >= 3, true);
+    assert.equal(new Set(flowRequestIds).size, 1);
 
     const credentialsPath = resolveCredentialsFilePath({ homeDir: tempRoot });
     assert.match(credentialsPath, /[\\/]\.sentinelayer[\\/]credentials\.json$/);

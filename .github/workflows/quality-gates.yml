@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      emergency_eval_skip:
+        description: "Allow eval-impact skip when base commit is unavailable (requires approval)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: >-
@@ -14,15 +20,18 @@ concurrency:
       (github.ref == 'refs/heads/main' && 'quality-gates-main') ||
       format('quality-gates-ref-{0}', github.ref)
     }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.ref_protected != true }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   checks: read
   contents: read
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CANONICAL_NODE_VERSION: "22"
+  SECURITY_SCAN_P0_MAX: "0"
+  SECURITY_SCAN_P1_MAX: "0"
 
 jobs:
   eval-impact:
@@ -48,7 +57,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_HEAD_SHA: ${{ github.sha }}
-          ALLOW_SKIP_EVENTS: ${{ vars.EVAL_IMPACT_ALLOW_SKIP_EVENTS || '' }}
+          EMERGENCY_EVAL_SKIP: ${{ github.event_name == 'workflow_dispatch' && inputs.emergency_eval_skip || 'false' }}
         run: |
           set -euo pipefail
           append_output() {
@@ -56,19 +65,6 @@ jobs:
             if [ -n "${GITHUB_OUTPUT:-}" ]; then
               echo "${line}" >> "${GITHUB_OUTPUT}"
             fi
-          }
-          csv_contains_event() {
-            local csv="$1"
-            local event_name="$2"
-            local item=""
-            IFS=',' read -r -a items <<< "${csv}"
-            for item in "${items[@]}"; do
-              item="$(echo "${item}" | xargs)"
-              if [ "${item}" = "${event_name}" ]; then
-                return 0
-              fi
-            done
-            return 1
           }
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             base_sha="${PR_BASE_SHA}"
@@ -85,15 +81,15 @@ jobs:
               base_sha="$(git rev-parse "${head_sha}^")"
               echo "::notice::Eval impact gate resolved base from ${head_sha} parent commit ${base_sha}."
             else
-              if csv_contains_event "${ALLOW_SKIP_EVENTS}" "${EVENT_NAME}"; then
-                echo "::notice::No parent commit available for ${head_sha}; approved skip for event ${EVENT_NAME} (ALLOW_SKIP_EVENTS=${ALLOW_SKIP_EVENTS})."
+              emergency_skip="$(echo "${EMERGENCY_EVAL_SKIP}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+              if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${emergency_skip}" = "true" ]; then
+                echo "::notice::No parent commit available for ${head_sha}; approved skip for workflow_dispatch with emergency_eval_skip=true."
                 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                   {
                     echo "## Eval Impact Gate"
                     echo "- status: \`approved_skip\`"
                     echo "- event: \`${EVENT_NAME}\`"
-                    echo "- reason: no parent commit available and event is allowlisted."
-                    echo "- allow_skip_events: \`${ALLOW_SKIP_EVENTS}\`"
+                    echo "- reason: no parent commit available and emergency_eval_skip=true."
                   } >> "${GITHUB_STEP_SUMMARY}"
                 fi
                 append_output "eval_resolution=approved_skip"
@@ -101,18 +97,28 @@ jobs:
                 append_output "eval_evidence_found=false"
                 exit 0
               fi
-              echo "::error::Eval impact gate could not resolve base commit for ${EVENT_NAME} (head=${head_sha}) and this event is not allowlisted to skip."
+              echo "::error::Eval impact gate could not resolve base commit for ${EVENT_NAME} (head=${head_sha}); emergency_eval_skip is not enabled."
               exit 1
             fi
           fi
           bash scripts/eval/eval-check.sh "${base_sha}" "${head_sha}"
           append_output "eval_resolution=resolved"
 
+  eval-skip-approval:
+    name: Eval Skip Approval
+    runs-on: ubuntu-22.04
+    needs: [eval-impact]
+    if: needs.eval-impact.outputs.eval_resolution == 'approved_skip'
+    environment: eval-impact-override
+    steps:
+      - name: Require reviewer approval for eval skip
+        run: echo "Eval impact skip approved by environment reviewers."
+
   eval-enforce:
     name: Eval Impact Enforcement
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    needs: [eval-impact]
+    needs: [eval-impact, eval-skip-approval]
     if: always()
     outputs:
       eval_resolution: ${{ needs.eval-impact.outputs.eval_resolution }}
@@ -128,9 +134,11 @@ jobs:
           EVAL_REQUIRED: ${{ needs.eval-impact.outputs.eval_required }}
           EVAL_EVIDENCE_FOUND: ${{ needs.eval-impact.outputs.eval_evidence_found }}
           GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          EMERGENCY_EVAL_SKIP: ${{ github.event_name == 'workflow_dispatch' && inputs.emergency_eval_skip || 'false' }}
         run: |
           set -euo pipefail
           ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          emergency_skip="$(echo "${EMERGENCY_EVAL_SKIP}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           if [ "${EVAL_JOB_RESULT}" != "success" ]; then
             echo "::error::eval-impact job did not succeed (result=${EVAL_JOB_RESULT})."
             exit 1
@@ -146,6 +154,10 @@ jobs:
             echo "::error::approved_skip is only allowed for workflow_dispatch events."
             exit 1
           fi
+          if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${emergency_skip}" != "true" ]; then
+            echo "::error::approved_skip requires emergency_eval_skip=true."
+            exit 1
+          fi
           if [ "${EVAL_RESOLUTION}" = "approved_skip" ] && [ "${ref_protected}" = "true" ]; then
             echo "::error::approved_skip is not allowed on protected refs."
             exit 1
@@ -155,11 +167,50 @@ jobs:
             exit 1
           fi
 
+  eval-gate-terminal:
+    name: Eval Gate Terminal
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [eval-impact, eval-skip-approval, eval-enforce]
+    if: always()
+    outputs:
+      eval_resolution: ${{ needs.eval-enforce.outputs.eval_resolution }}
+      eval_required: ${{ needs.eval-enforce.outputs.eval_required }}
+      eval_evidence_found: ${{ needs.eval-enforce.outputs.eval_evidence_found }}
+    steps:
+      - name: Finalize eval gate state
+        shell: bash
+        env:
+          EVAL_ENFORCE_RESULT: ${{ needs.eval-enforce.result }}
+          EVAL_SKIP_APPROVAL_RESULT: ${{ needs.eval-skip-approval.result }}
+          EVAL_RESOLUTION: ${{ needs.eval-enforce.outputs.eval_resolution }}
+        run: |
+          set -euo pipefail
+          if [ "${EVAL_ENFORCE_RESULT}" != "success" ]; then
+            echo "::error::eval-enforce failed or was not successful (result=${EVAL_ENFORCE_RESULT})."
+            exit 1
+          fi
+          case "${EVAL_RESOLUTION}" in
+            resolved)
+              ;;
+            approved_skip)
+              if [ "${EVAL_SKIP_APPROVAL_RESULT}" != "success" ]; then
+                echo "::error::approved_skip requires eval-skip-approval success (result=${EVAL_SKIP_APPROVAL_RESULT})."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported eval_resolution '${EVAL_RESOLUTION}'."
+              exit 1
+              ;;
+          esac
+
   action-pin-policy:
     name: Action Pin Policy
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    needs: [eval-enforce]
+    needs: [eval-gate-terminal]
+    if: ${{ always() && needs.eval-gate-terminal.result == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -172,7 +223,13 @@ jobs:
     name: Lint
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-enforce, action-pin-policy]
+    needs: [eval-gate-terminal, action-pin-policy]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.action-pin-policy.result == 'success'
+      }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -200,7 +257,13 @@ jobs:
     name: Syntax & Sanity (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-enforce, action-pin-policy]
+    needs: [eval-gate-terminal, action-pin-policy]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.action-pin-policy.result == 'success'
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -238,7 +301,14 @@ jobs:
     name: Test
     runs-on: ubuntu-22.04
     timeout-minutes: 20
-    needs: [eval-enforce, lint, syntax-matrix]
+    needs: [eval-gate-terminal, lint, syntax-matrix]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.lint.result == 'success' &&
+        needs.syntax-matrix.result == 'success'
+      }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -262,11 +332,138 @@ jobs:
       - name: Run test suite
         run: npm test
 
+  security-scan:
+    name: Deterministic Security Scan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [eval-gate-terminal, test]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.test.result == 'success'
+      }}
+    outputs:
+      scan_path: ${{ steps.scan.outputs.scan_path }}
+      scan_sha256: ${{ steps.scan.outputs.scan_sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Run deterministic security scan
+        id: scan
+        shell: bash
+        env:
+          SENTINELAYER_TOKEN: ${{ format('ci-token-{0}-{1}', github.run_id, github.run_attempt) }}
+        run: |
+          set -euo pipefail
+          node bin/sl.js review scan --path . --json --refresh > security-scan.json
+          scan_sha256="$(sha256sum security-scan.json | awk '{print $1}')"
+          printf '%s  %s\n' "${scan_sha256}" "security-scan.json" > security-scan.sha256
+          p0="$(jq -r '.p0 // 0' security-scan.json)"
+          p1="$(jq -r '.p1 // 0' security-scan.json)"
+          case "${p0}" in ''|*[!0-9]*) echo "::error::Invalid P0 count in security-scan.json: ${p0}" ; exit 1 ;; esac
+          case "${p1}" in ''|*[!0-9]*) echo "::error::Invalid P1 count in security-scan.json: ${p1}" ; exit 1 ;; esac
+          max_p0="$(echo "${SECURITY_SCAN_P0_MAX}" | xargs || true)"
+          max_p1="$(echo "${SECURITY_SCAN_P1_MAX}" | xargs || true)"
+          case "${max_p0}" in ''|*[!0-9]*) echo "::error::Invalid SECURITY_SCAN_P0_MAX value: ${max_p0}" ; exit 1 ;; esac
+          case "${max_p1}" in ''|*[!0-9]*) echo "::error::Invalid SECURITY_SCAN_P1_MAX value: ${max_p1}" ; exit 1 ;; esac
+          if [ "${p0}" -gt "${max_p0}" ] || [ "${p1}" -gt "${max_p1}" ]; then
+            echo "::error::Deterministic security scan gate failed (P0=${p0}, P1=${p1}, max_p0=${max_p0}, max_p1=${max_p1})."
+            exit 1
+          fi
+          echo "scan_path=security-scan.json" >> "$GITHUB_OUTPUT"
+          echo "scan_sha256=${scan_sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload security scan artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: security-scan-artifacts
+          path: |
+            security-scan.json
+            security-scan.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  rollback-readiness-gate:
+    name: Rollback Readiness Gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [eval-gate-terminal, security-scan]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.security-scan.result == 'success'
+      }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Run rollback readiness gate
+        shell: bash
+        env:
+          PACKAGE_NAME: sentinelayer-cli
+          ROLLBACK_MODE: release
+          NON_BLOCKING_DIAGNOSTICS: "0"
+        run: |
+          set -euo pipefail
+          RELEASE_VERSION="$(node -p "require('./package.json').version")"
+          RELEASE_VERSION="${RELEASE_VERSION}" bash .github/scripts/release-rollback-readiness.sh
+          test -f release-rollback-readiness.json
+
+      - name: Upload rollback readiness artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: rollback-readiness-report
+          path: release-rollback-readiness.json
+          if-no-files-found: error
+          retention-days: 7
+
   unit-coverage:
     name: Unit Coverage (>=80%, Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [eval-enforce, lint, syntax-matrix, test]
+    needs: [eval-gate-terminal, security-scan, rollback-readiness-gate]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.security-scan.result == 'success' &&
+        needs.rollback-readiness-gate.result == 'success'
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -306,7 +503,13 @@ jobs:
     name: E2E & Package (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [unit-coverage]
+    needs: [eval-gate-terminal, unit-coverage]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.unit-coverage.result == 'success'
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -338,11 +541,85 @@ jobs:
         if: ${{ matrix.node == '22' }}
         run: npm pack --dry-run
 
-  build-package:
-    name: Build Package Artifact
+  reproducible-build:
+    name: Reproducible Build Check
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [unit-coverage, e2e-packaging]
+    needs: [eval-gate-terminal, e2e-packaging]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.e2e-packaging.result == 'success'
+      }}
+    outputs:
+      tarball_name: ${{ steps.pack.outputs.tarball_name }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Verify reproducible npm pack output
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp_one="$(mktemp -d)"
+          tmp_two="$(mktemp -d)"
+          cleanup_tmp() {
+            rm -rf "${tmp_one}" "${tmp_two}"
+          }
+          trap cleanup_tmp EXIT
+          npm pack --ignore-scripts --json --pack-destination "${tmp_one}" > "${tmp_one}/pack.json"
+          first_tarball_name="$(jq -r '.[0].filename' "${tmp_one}/pack.json")"
+          first_tarball_path="${tmp_one}/${first_tarball_name}"
+          test -f "${first_tarball_path}"
+          first_sha256="$(sha256sum "${first_tarball_path}" | awk '{print $1}')"
+          npm pack --ignore-scripts --json --pack-destination "${tmp_two}" > "${tmp_two}/pack.json"
+          second_tarball_name="$(jq -r '.[0].filename' "${tmp_two}/pack.json")"
+          second_tarball_path="${tmp_two}/${second_tarball_name}"
+          test -f "${second_tarball_path}"
+          second_sha256="$(sha256sum "${second_tarball_path}" | awk '{print $1}')"
+          if [ "${first_tarball_name}" != "${second_tarball_name}" ]; then
+            echo "::error::Non-deterministic tarball name detected: ${first_tarball_name} vs ${second_tarball_name}."
+            exit 1
+          fi
+          if [ "${first_sha256}" != "${second_sha256}" ]; then
+            echo "::error::Non-deterministic npm pack output detected. first=${first_sha256} second=${second_sha256}."
+            exit 1
+          fi
+          echo "tarball_name=${first_tarball_name}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${first_sha256}" >> "$GITHUB_OUTPUT"
+
+  build-package:
+    name: Build Package (Deterministic)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [eval-gate-terminal, security-scan, e2e-packaging, reproducible-build]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.security-scan.result == 'success' &&
+        needs.e2e-packaging.result == 'success' &&
+        needs.reproducible-build.result == 'success'
+      }}
     permissions:
       contents: read
       id-token: write
@@ -375,6 +652,7 @@ jobs:
         shell: bash
         env:
           TARGET_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          REPRODUCIBLE_SHA256: ${{ needs.reproducible-build.outputs.sha256 }}
         run: |
           set -euo pipefail
           npm pack --ignore-scripts --json > pack.json
@@ -382,6 +660,10 @@ jobs:
           test -n "${tarball}"
           test -f "${tarball}"
           sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          if [ -n "${REPRODUCIBLE_SHA256}" ] && [ "${sha256}" != "${REPRODUCIBLE_SHA256}" ]; then
+            echo "::error::Build tarball sha256 mismatch with reproducible-build output. expected=${REPRODUCIBLE_SHA256} actual=${sha256}."
+            exit 1
+          fi
           lockfile_sha256="$(sha256sum package-lock.json | awk '{print $1}')"
           mkdir -p .tmp-pack-repeat
           npm pack --ignore-scripts --pack-destination .tmp-pack-repeat --json > pack-repeat.json
@@ -396,14 +678,20 @@ jobs:
           fi
           node_version="$(node --version)"
           npm_version="$(npm --version)"
+          npm_registry="$(npm config get registry | tr -d '\r' | xargs)"
           toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${node_version}" "${npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
+          workflow_path=".github/workflows/quality-gates.yml"
+          workflow_sha256="$(sha256sum "${workflow_path}" | awk '{print $1}')"
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
             --arg repeat_sha256 "${repeat_sha256}" \
             --arg lockfile_sha256 "${lockfile_sha256}" \
+            --arg workflow_path "${workflow_path}" \
+            --arg workflow_sha256 "${workflow_sha256}" \
             --arg node_version "${node_version}" \
             --arg npm_version "${npm_version}" \
+            --arg npm_registry "${npm_registry}" \
             --arg runner_os "${RUNNER_OS}" \
             --arg runner_arch "${RUNNER_ARCH}" \
             --arg toolchain_fingerprint "${toolchain_fingerprint}" \
@@ -417,8 +705,11 @@ jobs:
               sha256: $sha256,
               repeat_sha256: $repeat_sha256,
               lockfile_sha256: $lockfile_sha256,
+              workflow_path: $workflow_path,
+              workflow_sha256: $workflow_sha256,
               node_version: $node_version,
               npm_version: $npm_version,
+              npm_registry: $npm_registry,
               runner_os: $runner_os,
               runner_arch: $runner_arch,
               toolchain_fingerprint: $toolchain_fingerprint,
@@ -454,10 +745,11 @@ jobs:
     name: Deploy Readiness
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    needs: [build-package]
+    needs: [eval-gate-terminal, build-package]
     if: >-
       ${{
         always() &&
+        needs.eval-gate-terminal.result == 'success' &&
         needs.build-package.result == 'success'
       }}
     steps:
@@ -478,27 +770,281 @@ jobs:
           fi
           echo "deploy-ready tarball: ${TARBALL} (${SHA256})"
 
-  quality-summary:
-    name: Quality Summary
+  promote-candidate:
+    name: Promote Candidate
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, e2e-packaging, build-package, deploy-readiness]
+    timeout-minutes: 5
+    needs: [eval-gate-terminal, security-scan, unit-coverage, build-package, deploy-readiness]
     if: >-
       ${{
         always() &&
-        needs.eval-enforce.result == 'success' &&
-        needs.action-pin-policy.result == 'success' &&
-        contains(fromJSON('["resolved","approved_skip"]'), needs.eval-enforce.outputs.eval_resolution) &&
-        needs.lint.result == 'success' &&
-        needs.syntax-matrix.result == 'success' &&
-        needs.test.result == 'success' &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.security-scan.result == 'success' &&
         needs.unit-coverage.result == 'success' &&
-        needs.e2e-packaging.result == 'success' &&
         needs.build-package.result == 'success' &&
         needs.deploy-readiness.result == 'success'
       }}
     steps:
-      - name: Confirm all quality gates passed
+      - name: Generate promotion manifest
+        shell: bash
+        env:
+          TAR_BALL: ${{ needs.build-package.outputs.tarball }}
+          SHA256: ${{ needs.build-package.outputs.sha256 }}
+          SECURITY_SCAN_PATH: ${{ needs.security-scan.outputs.scan_path }}
+          SECURITY_SCAN_SHA256: ${{ needs.security-scan.outputs.scan_sha256 }}
         run: |
+          set -euo pipefail
+          if [ -z "${TAR_BALL}" ] || [ -z "${SHA256}" ]; then
+            echo "::error::Missing build-package outputs for promotion manifest."
+            exit 1
+          fi
+          if [ -z "${SECURITY_SCAN_PATH}" ] || [ -z "${SECURITY_SCAN_SHA256}" ]; then
+            echo "::error::Missing security scan outputs for promotion manifest."
+            exit 1
+          fi
+          jq -n \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg tarball "${TAR_BALL}" \
+            --arg sha256 "${SHA256}" \
+            --arg security_scan_path "${SECURITY_SCAN_PATH}" \
+            --arg security_scan_sha256 "${SECURITY_SCAN_SHA256}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              commit_sha: $commit_sha,
+              tarball: $tarball,
+              sha256: $sha256,
+              security_scan_path: $security_scan_path,
+              security_scan_sha256: $security_scan_sha256,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              workflow_ref: $workflow_ref
+            }' > promotion-manifest.json
+          echo "Promotion manifest generated."
+
+      - name: Upload promotion manifest
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: promotion-manifest
+          path: promotion-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy-candidate:
+    name: Deploy Candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [eval-gate-terminal, promote-candidate, build-package]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.promote-candidate.result == 'success' &&
+        needs.build-package.result == 'success'
+      }}
+    environment: deploy-candidate
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download quality package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # digest-pinned (actions/download-artifact)
+        with:
+          name: quality-package-artifacts
+          path: deploy-artifact
+
+      - name: Verify promoted artifact integrity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          manifest="deploy-artifact/quality-package-manifest.json"
+          if [ ! -f "${manifest}" ]; then
+            echo "::error::Missing quality package manifest for deploy candidate."
+            exit 1
+          fi
+          tarball="$(jq -r '.tarball // empty' "${manifest}")"
+          sha256="$(jq -r '.sha256 // empty' "${manifest}")"
+          if [ -z "${tarball}" ] || [ -z "${sha256}" ]; then
+            echo "::error::Deploy manifest missing tarball or sha256."
+            exit 1
+          fi
+          tarball_path="deploy-artifact/${tarball}"
+          if [ ! -f "${tarball_path}" ]; then
+            echo "::error::Deploy tarball missing at ${tarball_path}."
+            exit 1
+          fi
+          actual_sha256="$(sha256sum "${tarball_path}" | awk '{print $1}')"
+          if [ "${actual_sha256}" != "${sha256}" ]; then
+            echo "::error::Deploy tarball checksum mismatch. expected=${sha256} actual=${actual_sha256}."
+            exit 1
+          fi
+          gh attestation verify "${tarball_path}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/quality-gates.yml" --format json > deploy-attestation-verify.json
+          jq -e 'length > 0' deploy-attestation-verify.json > /dev/null
+          echo "deploy candidate artifact verified."
+
+  quality-summary:
+    name: Quality Summary
+    runs-on: ubuntu-22.04
+    needs: [eval-gate-terminal, action-pin-policy, lint, syntax-matrix, test, security-scan, rollback-readiness-gate, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness, promote-candidate, deploy-candidate]
+    if: ${{ always() }}
+    steps:
+      - name: Confirm all quality gates passed
+        shell: bash
+        env:
+          EVAL_RESOLUTION: ${{ needs.eval-gate-terminal.outputs.eval_resolution }}
+          PROMOTE_RESULT: ${{ needs.promote-candidate.result }}
+          DEPLOY_RESULT: ${{ needs.deploy-candidate.result }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PROMOTE_RESULT}" ]; then
+            echo "::error::Missing required job result for promote-candidate."
+            exit 1
+          fi
+          if [ -z "${DEPLOY_RESULT}" ]; then
+            echo "::error::Missing required job result for deploy-candidate."
+            exit 1
+          fi
+          eval_resolution="$(echo "${EVAL_RESOLUTION}" | xargs || true)"
+          if ! echo "${eval_resolution}" | grep -Eq '^(resolved|approved_skip)$'; then
+            echo "::error::eval-gate-terminal produced invalid resolution '${eval_resolution}'."
+            exit 1
+          fi
+          failed=0
+          if [ "${{ needs.eval-gate-terminal.result }}" != "success" ]; then
+            echo "::error::eval-gate-terminal failed."
+            failed=1
+          fi
+          if [ "${{ needs.action-pin-policy.result }}" != "success" ]; then
+            echo "::error::action-pin-policy failed."
+            failed=1
+          fi
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "::error::lint failed."
+            failed=1
+          fi
+          if [ "${{ needs.syntax-matrix.result }}" != "success" ]; then
+            echo "::error::syntax-matrix failed."
+            failed=1
+          fi
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::test failed."
+            failed=1
+          fi
+          if [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "::error::security-scan failed."
+            failed=1
+          fi
+          if [ "${{ needs.rollback-readiness-gate.result }}" != "success" ]; then
+            echo "::error::rollback-readiness-gate failed."
+            failed=1
+          fi
+          if [ "${{ needs.unit-coverage.result }}" != "success" ]; then
+            echo "::error::unit-coverage failed."
+            failed=1
+          fi
+          if [ "${{ needs.e2e-packaging.result }}" != "success" ]; then
+            echo "::error::e2e-packaging failed."
+            failed=1
+          fi
+          if [ "${{ needs.reproducible-build.result }}" != "success" ]; then
+            echo "::error::reproducible-build failed."
+            failed=1
+          fi
+          if [ "${{ needs.build-package.result }}" != "success" ]; then
+            echo "::error::build-package failed."
+            failed=1
+          fi
+          if [ "${{ needs.deploy-readiness.result }}" != "success" ]; then
+            echo "::error::deploy-readiness failed."
+            failed=1
+          fi
+          if [ "${{ needs.promote-candidate.result }}" != "success" ]; then
+            echo "::error::promote-candidate failed."
+            failed=1
+          fi
+          if [ "${{ needs.deploy-candidate.result }}" != "success" ]; then
+            echo "::error::deploy-candidate failed."
+            failed=1
+          fi
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::Quality gates failed; see job logs above."
+            exit 1
+          fi
           echo "All quality checks passed."
           echo "Canonical package tarball: ${{ needs.build-package.outputs.tarball }}"
           echo "Canonical package sha256: ${{ needs.build-package.outputs.sha256 }}"
+      - name: Emit quality summary manifest
+        shell: bash
+        env:
+          TAR_BALL: ${{ needs.build-package.outputs.tarball }}
+          SHA256: ${{ needs.build-package.outputs.sha256 }}
+          SECURITY_SCAN_PATH: ${{ needs.security-scan.outputs.scan_path }}
+          SECURITY_SCAN_SHA256: ${{ needs.security-scan.outputs.scan_sha256 }}
+          REPRODUCIBLE_SHA256: ${{ needs.reproducible-build.outputs.sha256 }}
+          PROMOTE_RESULT: ${{ needs.promote-candidate.result }}
+          DEPLOY_RESULT: ${{ needs.deploy-candidate.result }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAR_BALL}" ] || [ -z "${SHA256}" ]; then
+            echo "::error::Missing build-package outputs for summary manifest."
+            exit 1
+          fi
+          if [ -z "${REPRODUCIBLE_SHA256}" ]; then
+            echo "::error::Missing reproducible-build sha256 output for summary manifest."
+            exit 1
+          fi
+          if [ -z "${SECURITY_SCAN_PATH}" ] || [ -z "${SECURITY_SCAN_SHA256}" ]; then
+            echo "::error::Missing security scan outputs for summary manifest."
+            exit 1
+          fi
+          jq -n \
+            --arg commit_sha "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}" \
+            --arg tarball "${TAR_BALL}" \
+            --arg sha256 "${SHA256}" \
+            --arg reproducible_sha256 "${REPRODUCIBLE_SHA256}" \
+            --arg security_scan_path "${SECURITY_SCAN_PATH}" \
+            --arg security_scan_sha256 "${SECURITY_SCAN_SHA256}" \
+            --arg promote_result "${PROMOTE_RESULT}" \
+            --arg deploy_result "${DEPLOY_RESULT}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              commit_sha: $commit_sha,
+              tarball: $tarball,
+              sha256: $sha256,
+              reproducible_sha256: $reproducible_sha256,
+              security_scan_path: $security_scan_path,
+              security_scan_sha256: $security_scan_sha256,
+              promote_result: $promote_result,
+              deploy_result: $deploy_result,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              workflow_ref: $workflow_ref
+            }' > quality-summary-manifest.json
+      - name: Upload quality summary manifest
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: quality-summary-manifest
+          path: quality-summary-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  quality-gates-terminal:
+    name: Quality Gates Terminal
+    runs-on: ubuntu-22.04
+    needs: [quality-summary]
+    if: ${{ always() }}
+    steps:
+      - name: Confirm terminal quality status
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.quality-summary.result }}" != "success" ]; then
+            echo "::error::Quality Summary did not complete successfully (result=${{ needs.quality-summary.result }})."
+            exit 1
+          fi
+          echo "Quality Summary completed successfully."

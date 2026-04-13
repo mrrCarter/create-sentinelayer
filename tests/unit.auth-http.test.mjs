@@ -6,12 +6,16 @@ import {
   CIRCUIT_BREAKER_THRESHOLD,
   SentinelayerApiError,
   requestJson,
+  requestJsonMutation,
 } from "../src/auth/http.js";
 
 function createResponse(status, payload, headers = {}) {
   const normalizedHeaders = Object.fromEntries(
     Object.entries(headers).map(([key, value]) => [String(key).toLowerCase(), String(value)])
   );
+  if (!Object.prototype.hasOwnProperty.call(normalizedHeaders, "content-type")) {
+    normalizedHeaders["content-type"] = "application/json";
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -52,6 +56,207 @@ test("Unit auth http: retries retryable API statuses with bounded backoff", asyn
   } finally {
     globalThis.fetch = previousFetch;
     __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: retries idempotent mutation when Idempotency-Key is present", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return createResponse(503, {
+        error: { code: "TEMP_UNAVAILABLE", message: "Retry" },
+      });
+    }
+    return createResponse(200, { ok: true, attempt: callCount });
+  };
+
+  try {
+    const response = await requestJson("https://api.example.com/test", {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": "sl-cli-auth-start-6dbbe1ee-38a5-4b42-8f8c-63f7d9a79b72",
+      },
+      maxRetries: 1,
+      retryDelayMs: 1,
+      timeoutMs: 1000,
+    });
+    assert.equal(callCount, 2);
+    assert.equal(response.ok, true);
+    assert.equal(response.attempt, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: retries idempotent mutation when Headers contains Idempotency-Key", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return createResponse(503, {
+        error: { code: "TEMP_UNAVAILABLE", message: "Retry" },
+      });
+    }
+    return createResponse(200, { ok: true, attempt: callCount });
+  };
+
+  try {
+    const headers = new Headers();
+    headers.set("Idempotency-Key", "sl-cli-auth-start-88435282-0140-4b34-9e36-4b5993c6869d");
+    const response = await requestJson("https://api.example.com/test", {
+      method: "POST",
+      headers,
+      maxRetries: 1,
+      retryDelayMs: 1,
+      timeoutMs: 1000,
+    });
+    assert.equal(callCount, 2);
+    assert.equal(response.ok, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: rejects ok responses with empty JSON body", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return "";
+    },
+    headers: {
+      get(key) {
+        if (String(key).toLowerCase() === "content-type") {
+          return "application/json";
+        }
+        return null;
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => requestJson("https://api.example.com/test"),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "EMPTY_BODY");
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: allows empty body for 204 responses", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 204,
+    async text() {
+      return "";
+    },
+    headers: {
+      get() {
+        return null;
+      },
+    },
+  });
+
+  try {
+    const response = await requestJson("https://api.example.com/test");
+    assert.deepEqual(response, {});
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: rejects ok responses with non-JSON content-type", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return "<html>ok</html>";
+    },
+    headers: {
+      get(key) {
+        if (String(key).toLowerCase() === "content-type") {
+          return "text/html";
+        }
+        return null;
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => requestJson("https://api.example.com/test"),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "INVALID_CONTENT_TYPE");
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: debug context redacts request IDs via hashed metadata", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  const previousDebug = process.env.SENTINELAYER_DEBUG_ERRORS;
+  process.env.SENTINELAYER_DEBUG_ERRORS = "1";
+  globalThis.fetch = async () =>
+    createResponse(
+      401,
+      {
+        error: {
+          code: "INVALID_TOKEN",
+          message: "Unauthorized",
+          request_id: "req-sensitive-api-id",
+        },
+      },
+      {
+        "x-request-id": "req-sensitive-header-id",
+      }
+    );
+
+  try {
+    await assert.rejects(
+      () => requestJson("https://api.example.com/test"),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "INVALID_TOKEN");
+        assert.match(error.message, /request_id_hash=[a-f0-9]{12}/);
+        assert.equal(error.message.includes("req-sensitive-api-id"), false);
+        assert.equal(error.message.includes("req-sensitive-header-id"), false);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+    if (previousDebug === undefined) {
+      delete process.env.SENTINELAYER_DEBUG_ERRORS;
+    } else {
+      process.env.SENTINELAYER_DEBUG_ERRORS = previousDebug;
+    }
   }
 });
 
@@ -244,6 +449,111 @@ test("Unit auth http: opens circuit breaker after consecutive retryable failures
       }
     );
     assert.equal(callCount, beforeCircuitCalls);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: allowNonIdempotent is ignored outside test guard", async () => {
+  __resetRequestCircuitForTests();
+  const previousEnv = { ...process.env };
+
+  try {
+    delete process.env.NODE_ENV;
+    delete process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT;
+
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          method: "POST",
+          allowNonIdempotent: true,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "IDEMPOTENCY_KEY_REQUIRED");
+        return true;
+      }
+    );
+  } finally {
+    process.env = previousEnv;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: allowNonIdempotent works only in test guard", async () => {
+  __resetRequestCircuitForTests();
+  const previousEnv = { ...process.env };
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    return createResponse(200, { ok: true });
+  };
+
+  try {
+    process.env.NODE_ENV = "test";
+    process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT = "1";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    delete process.env.CI;
+    const response = await requestJson("https://api.example.com/test", {
+      method: "POST",
+      allowNonIdempotent: true,
+    });
+    assert.equal(response.ok, true);
+    assert.equal(callCount, 1);
+  } finally {
+    process.env = previousEnv;
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: allowNonIdempotent is blocked when CI is set", async () => {
+  __resetRequestCircuitForTests();
+  const previousEnv = { ...process.env };
+
+  try {
+    process.env.NODE_ENV = "test";
+    process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT = "1";
+    process.env.SENTINELAYER_CLI_TEST_MODE = "1";
+    process.env.CI = "1";
+    await assert.rejects(
+      () =>
+        requestJson("https://api.example.com/test", {
+          method: "POST",
+          allowNonIdempotent: true,
+        }),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "IDEMPOTENCY_KEY_REQUIRED");
+        return true;
+      }
+    );
+  } finally {
+    process.env = previousEnv;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: requestJsonMutation auto-derives idempotency key", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let capturedHeaders = null;
+  globalThis.fetch = async (_url, options) => {
+    capturedHeaders = options?.headers || null;
+    return createResponse(200, { ok: true });
+  };
+
+  try {
+    const response = await requestJsonMutation("https://api.example.com/test", {
+      method: "POST",
+      operationName: "unit-test",
+    });
+    assert.equal(response.ok, true);
+    const headerValue = capturedHeaders?.["Idempotency-Key"] || capturedHeaders?.["idempotency-key"];
+    assert.equal(Boolean(headerValue), true);
+    assert.match(String(headerValue), /^sl-cli-[a-z0-9-]+-/);
   } finally {
     globalThis.fetch = previousFetch;
     __resetRequestCircuitForTests();

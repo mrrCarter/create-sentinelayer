@@ -23,6 +23,7 @@ on:
         type: boolean
 
 permissions:
+  actions: write
   contents: read
   id-token: write
 
@@ -30,11 +31,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: release-publish-prod
+  group: release-state-prod
   cancel-in-progress: false
 
 jobs:
-  rollback:
+  rollback-execute:
+    name: Rollback Execute
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     environment: package-release
@@ -57,6 +60,87 @@ jobs:
             echo "::error::Rollback confirmation missing. Re-run with confirm=ROLLBACK."
             exit 1
           fi
+
+      - name: Abort active release runs before rollback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cancel_timeout_seconds=300
+          poll_interval_seconds=5
+          case "${cancel_timeout_seconds}" in ''|*[!0-9]*) echo "::error::Invalid cancel_timeout_seconds." ; exit 1 ;; esac
+          case "${poll_interval_seconds}" in ''|*[!0-9]*) echo "::error::Invalid poll_interval_seconds." ; exit 1 ;; esac
+          active_runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?status=in_progress&per_page=50" --jq '.workflow_runs[].id')"
+          if [ -n "${active_runs}" ]; then
+            echo "::warning::Cancelling active release runs: ${active_runs}"
+            for run_id in ${active_runs}; do
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null
+            done
+            echo "### Release cancellation status" >> "$GITHUB_STEP_SUMMARY"
+            for run_id in ${active_runs}; do
+              completed="false"
+              attempts="$((cancel_timeout_seconds / poll_interval_seconds))"
+              for attempt in $(seq 1 "${attempts}"); do
+                run_state="$(gh run view "${run_id}" --json status,conclusion --jq '{status,conclusion}')"
+                run_status="$(echo "${run_state}" | jq -r '.status // empty')"
+                run_conclusion="$(echo "${run_state}" | jq -r '.conclusion // empty')"
+                if [ "${run_status}" = "completed" ]; then
+                  completed="true"
+                  break
+                fi
+                sleep "${poll_interval_seconds}"
+              done
+              if [ "${completed}" != "true" ]; then
+                echo "::error::Release run ${run_id} did not finish cancellation within ${cancel_timeout_seconds}s."
+                exit 1
+              fi
+              {
+                echo "- run_id: \`${run_id}\`"
+                echo "  status: \`${run_status:-completed}\`"
+                echo "  conclusion: \`${run_conclusion:-unknown}\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
+      - name: Enforce rollback trigger policy
+        shell: bash
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          policy_file=".github/policies/rollback-policy.json"
+          if [ ! -f "${policy_file}" ]; then
+            echo "::error::Missing rollback policy file: ${policy_file}."
+            exit 1
+          fi
+          allowed_actors="$(jq -r '.allowed_actors[]? // empty' "${policy_file}" | tr '\n' ' ')"
+          actor_allowed="false"
+          for actor in ${allowed_actors}; do
+            if [ "${actor}" = "${GITHUB_ACTOR}" ]; then
+              actor_allowed="true"
+              break
+            fi
+          done
+          if [ "${actor_allowed}" != "true" ]; then
+            echo "::error::Rollback trigger blocked. Actor ${GITHUB_ACTOR} is not in allowlist."
+            exit 1
+          fi
+          require_protected="$(jq -r '.require_protected_ref // false' "${policy_file}")"
+          if [ "${require_protected}" = "true" ]; then
+            ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+            if [ "${ref_protected}" != "true" ]; then
+              echo "::error::Rollback trigger blocked. Ref is not protected."
+              exit 1
+            fi
+          fi
+          {
+            echo "### Rollback trigger policy"
+            echo "- actor: \`${GITHUB_ACTOR}\`"
+            echo "- ref_protected: \`${GITHUB_REF_PROTECTED}\`"
+            echo "- allowlist: \`${allowed_actors:-<empty>}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve rollback target and release context
         shell: bash
@@ -123,7 +207,11 @@ jobs:
           NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER: ${{ vars.NPM_TOKEN_EXCHANGE_EXPECTED_ISSUER || '' }}
           NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '1800' }}
           NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS || '20' }}
+          NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS: ${{ vars.NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS || '60' }}
           NPM_TOKEN_EXCHANGE_CLIENT_ID: ${{ vars.NPM_TOKEN_EXCHANGE_CLIENT_ID || '' }}
+          NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256: ${{ vars.NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256 || '' }}
+          NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF: ${{ vars.NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF || 'true' }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
           if [ -z "${NPM_TOKEN_EXCHANGE_URL}" ]; then
@@ -134,9 +222,57 @@ jobs:
             echo "::error::Invalid NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS value: ${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}"
             exit 1
           fi
+          case "${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS value: ${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" ; exit 1 ;; esac
+          if [ "${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" -lt 1 ]; then
+            echo "::error::NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS must be >=1."
+            exit 1
+          fi
+          backoff_elapsed=0
+          deterministic_jitter() {
+            local attempt="$1"
+            local seed="${GITHUB_RUN_ID:-0}"
+            case "${seed}" in ''|*[!0-9]*) seed=0 ;; esac
+            echo $(( (seed + attempt * 17) % 3 ))
+          }
+          sleep_exchange_backoff() {
+            local attempt="$1"
+            local phase="$2"
+            local base_delay=$((2 ** (attempt - 1)))
+            if [ "${base_delay}" -gt 8 ]; then
+              base_delay=8
+            fi
+            local jitter
+            jitter="$(deterministic_jitter "${attempt}")"
+            local delay=$((base_delay + jitter))
+            if [ "${delay}" -gt 12 ]; then
+              delay=12
+            fi
+            if [ $((backoff_elapsed + delay)) -gt "${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}" ]; then
+              echo "::error::OIDC token exchange retry budget exceeded during ${phase} (${backoff_elapsed}s + ${delay}s > ${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}s)."
+              exit 1
+            fi
+            backoff_elapsed=$((backoff_elapsed + delay))
+            echo "::notice::OIDC exchange backoff phase=${phase} attempt=${attempt} delay=${delay}s elapsed=${backoff_elapsed}s budget=${NPM_TOKEN_EXCHANGE_RETRY_BUDGET_SECONDS}s."
+            sleep "${delay}"
+          }
           if ! echo "${NPM_TOKEN_EXCHANGE_URL}" | grep -Eq '^https://'; then
             echo "::error::NPM_TOKEN_EXCHANGE_URL must use https://."
             exit 1
+          fi
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          require_pinned="$(echo "${NPM_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          pinned_pubkey="$(echo "${NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
+          if [ "${ref_protected}" = "true" ] && [ "${require_pinned}" != "false" ] && [ -z "${pinned_pubkey}" ]; then
+            echo "::error::Pinned public key is required for npm token exchange on protected refs. Set NPM_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256."
+            exit 1
+          fi
+          curl_pinned_arg=()
+          if [ -n "${pinned_pubkey}" ]; then
+            if echo "${pinned_pubkey}" | grep -q '^sha256//'; then
+              curl_pinned_arg=(--pinnedpubkey "${pinned_pubkey}")
+            else
+              curl_pinned_arg=(--pinnedpubkey "sha256//${pinned_pubkey}")
+            fi
           fi
           exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
           exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${NPM_TOKEN_EXCHANGE_URL}" || true)"
@@ -188,7 +324,7 @@ jobs:
               echo "::error::Failed to acquire GitHub OIDC identity token after ${attempt} attempts."
               exit 1
             fi
-            sleep $((attempt * 2))
+            sleep_exchange_backoff "${attempt}" "oidc-jwt"
           done
           oidc_jwt="$(echo "${oidc_payload}" | jq -r '.value // empty')"
           if [ -z "${oidc_jwt}" ]; then
@@ -196,7 +332,6 @@ jobs:
             exit 1
           fi
           exchange_request="$(jq -n \
-            --arg token "${oidc_jwt}" \
             --arg audience "${NPM_TOKEN_EXCHANGE_AUDIENCE}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg actor "${GITHUB_ACTOR}" \
@@ -207,7 +342,6 @@ jobs:
             --arg workflow "${GITHUB_WORKFLOW}" \
             --arg client_id "${NPM_TOKEN_EXCHANGE_CLIENT_ID}" \
             '{
-              oidc_token: $token,
               audience: $audience,
               repository: $repository,
               actor: $actor,
@@ -230,6 +364,8 @@ jobs:
               --retry 0 \
               --connect-timeout 5 \
               --max-time "${NPM_TOKEN_EXCHANGE_TIMEOUT_SECONDS}" \
+              "${curl_pinned_arg[@]}" \
+              -H "Authorization: Bearer ${oidc_jwt}" \
               -H "Content-Type: application/json" \
               -D "${exchange_headers_file}" \
               -o "${exchange_body_file}" \
@@ -246,7 +382,7 @@ jobs:
               echo "::error::http_status=${exchange_http_code:-<none>} content_type=${exchange_content_type:-<none>}"
               exit 1
             fi
-            sleep $((attempt * 2))
+            sleep_exchange_backoff "${attempt}" "exchange-http"
           done
           exchange_contract="$(echo "${exchange_response}" | jq -cer '
             if type == "object"

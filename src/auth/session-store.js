@@ -6,9 +6,87 @@ import process from "node:process";
 
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
+const SESSION_WARNING_PREFIX = "sentinelayer.auth.session";
+const SESSION_WARNING_REDACT_KEYS = /token|secret|password|key|authorization/i;
+const SESSION_WARNING_MAX_VALUE_LENGTH = 200;
+const SESSION_WARNING_ALLOWED_FIELDS = new Set([
+  "reason",
+  "source",
+  "operation",
+  "storage",
+  "codeHint",
+  "requestIdHash",
+]);
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function createSessionWarningId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `session-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
+}
+
+function sanitizeSessionWarningValue(value, depth = 0) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (depth > 3) {
+    return "[TRUNCATED]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeSessionWarningValue(entry, depth + 1));
+  }
+  if (typeof value === "object") {
+    const sanitized = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (SESSION_WARNING_REDACT_KEYS.test(key)) {
+        sanitized[key] = "[REDACTED]";
+        continue;
+      }
+      sanitized[key] = sanitizeSessionWarningValue(entry, depth + 1);
+    }
+    return sanitized;
+  }
+  if (typeof value === "string") {
+    if (value.length > SESSION_WARNING_MAX_VALUE_LENGTH) {
+      return `${value.slice(0, SESSION_WARNING_MAX_VALUE_LENGTH)}…`;
+    }
+    return value;
+  }
+  return value;
+}
+
+function sanitizeSessionWarningDetails(details) {
+  if (!details || typeof details !== "object") {
+    return {};
+  }
+  return sanitizeSessionWarningValue(details, 0);
+}
+
+function emitSessionWarning(code, details = {}) {
+  const sanitizedDetails = sanitizeSessionWarningDetails(details);
+  const payload = {
+    level: "warn",
+    code: String(code || "SESSION_WARNING").toUpperCase(),
+    warningId: createSessionWarningId(),
+    timestamp: nowIso(),
+  };
+  for (const [key, value] of Object.entries(sanitizedDetails)) {
+    if (SESSION_WARNING_ALLOWED_FIELDS.has(key)) {
+      payload[key] = value;
+    } else {
+      payload[key] = "[OMITTED]";
+    }
+  }
+  try {
+    console.warn(`${SESSION_WARNING_PREFIX} ${JSON.stringify(payload)}`);
+  } catch {
+    console.warn(`${SESSION_WARNING_PREFIX} ${payload.code}`);
+  }
 }
 
 function resolveHomeDir(homeDir) {
@@ -24,6 +102,96 @@ function resolveHomeDir(homeDir) {
 export function resolveCredentialsFilePath({ homeDir } = {}) {
   const resolvedHome = resolveHomeDir(homeDir);
   return path.join(resolvedHome, ".sentinelayer", "credentials.json");
+}
+
+function resolveCredentialsKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer", "keys", "credentials.key");
+}
+
+function resolveLegacyCredentialsKeyPath({ homeDir } = {}) {
+  const resolvedHome = resolveHomeDir(homeDir);
+  return path.join(resolvedHome, ".sentinelayer", "credentials.key");
+}
+
+async function loadOrCreateFileKey({ homeDir } = {}) {
+  const keyPath = resolveCredentialsKeyPath({ homeDir });
+  const legacyKeyPath = resolveLegacyCredentialsKeyPath({ homeDir });
+  try {
+    const raw = await fsp.readFile(keyPath, "utf-8");
+    const key = Buffer.from(String(raw || "").trim(), "base64");
+    if (key.length === 32) {
+      return key;
+    }
+  } catch (error) {
+    if (!(error && typeof error === "object" && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+
+  try {
+    const legacyRaw = await fsp.readFile(legacyKeyPath, "utf-8");
+    const legacyKey = Buffer.from(String(legacyRaw || "").trim(), "base64");
+    if (legacyKey.length === 32) {
+      await fsp.mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+      await fsp.writeFile(keyPath, legacyKey.toString("base64"), { encoding: "utf-8", mode: 0o600 });
+      try {
+        await fsp.chmod(keyPath, 0o600);
+      } catch {
+        // Windows does not reliably support POSIX chmod semantics.
+      }
+      let verified = false;
+      try {
+        const verifyRaw = await fsp.readFile(keyPath, "utf-8");
+        const verifyKey = Buffer.from(String(verifyRaw || "").trim(), "base64");
+        verified = verifyKey.length === 32 && verifyKey.equals(legacyKey);
+      } catch {
+        verified = false;
+      }
+      if (verified) {
+        await fsp.rm(legacyKeyPath, { force: true });
+      }
+      return legacyKey;
+    }
+  } catch (error) {
+    if (!(error && typeof error === "object" && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+
+  const key = crypto.randomBytes(32);
+  await fsp.mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+  await fsp.writeFile(keyPath, key.toString("base64"), { encoding: "utf-8", mode: 0o600 });
+  try {
+    await fsp.chmod(keyPath, 0o600);
+  } catch {
+    // Windows does not reliably support POSIX chmod semantics.
+  }
+  return key;
+}
+
+function encryptToken(token, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(token, "utf-8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    tokenEncrypted: ciphertext.toString("base64"),
+    tokenIv: iv.toString("base64"),
+    tokenTag: tag.toString("base64"),
+  };
+}
+
+function decryptToken({ tokenEncrypted, tokenIv, tokenTag }, key) {
+  const iv = Buffer.from(tokenIv, "base64");
+  const tag = Buffer.from(tokenTag, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(tokenEncrypted, "base64")),
+    decipher.final(),
+  ]);
+  return plaintext.toString("utf-8");
 }
 
 function buildKeyringAccountName(apiUrl) {
@@ -72,8 +240,120 @@ function normalizeMetadata(raw = {}) {
     updatedAt: String(raw.updatedAt || "").trim() || nowIso(),
     user: normalizeUser(raw.user),
     token: String(raw.token || "").trim() || null,
+    tokenEncrypted: String(raw.tokenEncrypted || "").trim() || null,
+    tokenIv: String(raw.tokenIv || "").trim() || null,
+    tokenTag: String(raw.tokenTag || "").trim() || null,
     aidenid: normalizeAidenId(raw.aidenid),
   };
+}
+
+function isRetriableRenameError(error) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  return (
+    error.code === "EPERM" ||
+    error.code === "EACCES" ||
+    error.code === "EEXIST" ||
+    error.code === "EBUSY"
+  );
+}
+
+function delayMilliseconds(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function renameWithRetry(sourcePath, destinationPath, { attempts = 3, baseDelayMs = 25 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await fsp.rename(sourcePath, destinationPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetriableRenameError(error) || attempt >= attempts) {
+        break;
+      }
+      await delayMilliseconds(baseDelayMs * attempt);
+    }
+  }
+  throw lastError;
+}
+
+async function syncFile(filePath) {
+  const normalizedPath = String(filePath || "").trim();
+  if (!normalizedPath) {
+    return;
+  }
+  let handle = null;
+  try {
+    handle = await fsp.open(normalizedPath, "r");
+    await handle.sync();
+  } catch {
+    // Best effort only. Some filesystems/runtimes do not support explicit fsync.
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
+async function syncDirectory(directoryPath) {
+  const normalizedPath = String(directoryPath || "").trim();
+  if (!normalizedPath) {
+    return;
+  }
+  let handle = null;
+  try {
+    handle = await fsp.open(normalizedPath, "r");
+    await handle.sync();
+  } catch {
+    // Directory fsync support is platform-dependent; ignore when unsupported.
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
+async function replaceWithBackup(tmpPath, filePath) {
+  const directory = path.dirname(filePath);
+  const backupPath = path.join(
+    directory,
+    `.credentials.backup.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.bak`
+  );
+  let backupCreated = false;
+  try {
+    try {
+      await fsp.rename(filePath, backupPath);
+      backupCreated = true;
+      await syncDirectory(directory);
+    } catch (error) {
+      if (!(error && typeof error === "object" && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
+
+    await renameWithRetry(tmpPath, filePath, { attempts: 3, baseDelayMs: 40 });
+    await syncFile(filePath);
+    await syncDirectory(directory);
+
+    if (backupCreated) {
+      await fsp.rm(backupPath, { force: true }).catch(() => {});
+      await syncDirectory(directory);
+    }
+  } catch (error) {
+    if (backupCreated) {
+      try {
+        await fsp.rename(backupPath, filePath);
+        await syncFile(filePath);
+        await syncDirectory(directory);
+      } catch {
+        // Best-effort restore; keep original error as the primary failure.
+      }
+    }
+    throw error;
+  }
 }
 
 async function loadKeytarClient() {
@@ -81,6 +361,18 @@ async function loadKeytarClient() {
     .trim()
     .toLowerCase();
   if (disableKeyring === "1" || disableKeyring === "true" || disableKeyring === "yes" || disableKeyring === "on") {
+    return null;
+  }
+  const keyringMode = String(process.env.SENTINELAYER_KEYRING_MODE || "")
+    .trim()
+    .toLowerCase();
+  const enableKeyring =
+    keyringMode === "keyring" ||
+    keyringMode === "enabled" ||
+    keyringMode === "on" ||
+    keyringMode === "true" ||
+    keyringMode === "1";
+  if (!enableKeyring) {
     return null;
   }
   try {
@@ -120,15 +412,116 @@ async function readMetadata({ homeDir } = {}) {
 }
 
 async function writeMetadata(filePath, metadata) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${JSON.stringify(metadata, null, 2)}\n`, {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  const directory = path.dirname(filePath);
+  await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
   try {
-    await fsp.chmod(filePath, 0o600);
+    await fsp.chmod(directory, 0o700);
   } catch {
     // Windows does not reliably support POSIX chmod semantics.
+  }
+  const tmpPath = path.join(
+    directory,
+    `.credentials.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString("hex")}.tmp`
+  );
+  const payload = `${JSON.stringify(metadata, null, 2)}\n`;
+  try {
+    let tmpHandle = null;
+    try {
+      tmpHandle = await fsp.open(tmpPath, "w", 0o600);
+      await tmpHandle.writeFile(payload, { encoding: "utf-8" });
+      await tmpHandle.sync();
+    } finally {
+      if (tmpHandle) {
+        await tmpHandle.close().catch(() => {});
+      }
+    }
+    try {
+      await fsp.chmod(tmpPath, 0o600);
+    } catch {
+      // Windows does not reliably support POSIX chmod semantics.
+    }
+    try {
+      await renameWithRetry(tmpPath, filePath, { attempts: 3, baseDelayMs: 25 });
+    } catch (error) {
+      if (isRetriableRenameError(error)) {
+        await replaceWithBackup(tmpPath, filePath);
+      } else {
+        throw error;
+      }
+    }
+    await syncFile(filePath);
+    await syncDirectory(directory);
+  } finally {
+    await fsp.rm(tmpPath, { force: true }).catch(() => {});
+  }
+}
+
+async function migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir } = {}) {
+  if (!metadata || !metadata.token) {
+    return { metadata, token: null, migrated: false };
+  }
+
+  const plaintextToken = String(metadata.token || "").trim();
+  if (!plaintextToken) {
+    return { metadata: { ...metadata, token: null }, token: null, migrated: false };
+  }
+
+  const updatedAt = nowIso();
+  const nextMetadata = normalizeMetadata({
+    ...metadata,
+    token: null,
+    updatedAt,
+  });
+
+  const keytar = await loadKeytarClient();
+  if (keytar) {
+    const keyringAccount = metadata.keyringAccount || buildKeyringAccountName(metadata.apiUrl);
+    await keytar.setPassword(KEYRING_SERVICE, keyringAccount, plaintextToken);
+    nextMetadata.storage = "keyring";
+    nextMetadata.keyringService = KEYRING_SERVICE;
+    nextMetadata.keyringAccount = keyringAccount;
+    const key = await loadOrCreateFileKey({ homeDir });
+    const encrypted = encryptToken(plaintextToken, key);
+    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
+  } else {
+    const key = await loadOrCreateFileKey({ homeDir });
+    const encrypted = encryptToken(plaintextToken, key);
+    nextMetadata.storage = "file";
+    nextMetadata.keyringService = KEYRING_SERVICE;
+    nextMetadata.keyringAccount = "";
+    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
+  }
+
+  await writeMetadata(filePath, nextMetadata);
+  const { metadata: verify } = await readMetadata({ homeDir });
+  if (verify && verify.token) {
+    throw new Error("Plaintext token migration failed: token field persisted.");
+  }
+
+  return { metadata: nextMetadata, token: plaintextToken, migrated: true };
+}
+
+async function tryDecryptFileToken({ metadata, homeDir }) {
+  if (!metadata || !metadata.tokenEncrypted || !metadata.tokenIv || !metadata.tokenTag) {
+    return null;
+  }
+  try {
+    const key = await loadOrCreateFileKey({ homeDir });
+    const token = decryptToken(
+      {
+        tokenEncrypted: metadata.tokenEncrypted,
+        tokenIv: metadata.tokenIv,
+        tokenTag: metadata.tokenTag,
+      },
+      key
+    );
+    return token || null;
+  } catch {
+    return null;
   }
 }
 
@@ -164,27 +557,75 @@ export async function readStoredSession({ homeDir } = {}) {
     return null;
   }
 
+  if (metadata.token) {
+    const migrated = await migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir });
+    if (migrated.migrated) {
+      return {
+        ...migrated.metadata,
+        filePath,
+        token: migrated.token,
+        storage: migrated.metadata.storage || "file",
+      };
+    }
+  }
+
   if (metadata.storage === "keyring") {
     const keytar = await loadKeytarClient();
-    if (!keytar || !metadata.keyringAccount) {
-      return null;
+    let keyringError = null;
+    if (keytar && metadata.keyringAccount) {
+      try {
+        const token = await keytar.getPassword(
+          metadata.keyringService || KEYRING_SERVICE,
+          metadata.keyringAccount
+        );
+        if (token) {
+          return {
+            ...metadata,
+            filePath,
+            token,
+            storage: "keyring",
+          };
+        }
+        keyringError = new Error("Keyring token not found");
+      } catch (error) {
+        keyringError = error instanceof Error ? error : new Error("Keyring access failed");
+      }
+    } else {
+      keyringError = new Error("Keyring unavailable");
     }
-    const token = await keytar.getPassword(
-      metadata.keyringService || KEYRING_SERVICE,
-      metadata.keyringAccount
-    );
-    if (!token) {
-      return null;
+    const fallbackToken = await tryDecryptFileToken({ metadata, homeDir });
+    if (fallbackToken) {
+      emitSessionWarning("KEYRING_FALLBACK_USED", {
+        reason: keyringError ? String(keyringError.message || keyringError) : "unknown",
+        source: "file-encrypted",
+      });
+      return {
+        ...metadata,
+        filePath,
+        token: fallbackToken,
+        storage: "file",
+      };
     }
-    return {
-      ...metadata,
-      filePath,
-      token,
-      storage: "keyring",
-    };
+    emitSessionWarning("KEYRING_FALLBACK_UNAVAILABLE", {
+      reason: keyringError ? String(keyringError.message || keyringError) : "unknown",
+      source: "keyring",
+    });
+    return null;
   }
 
   if (!metadata.token) {
+    if (metadata.tokenEncrypted && metadata.tokenIv && metadata.tokenTag) {
+      const token = await tryDecryptFileToken({ metadata, homeDir });
+      if (!token) {
+        return null;
+      }
+      return {
+        ...metadata,
+        filePath,
+        token,
+        storage: "file",
+      };
+    }
     return null;
   }
   return {
@@ -225,6 +666,14 @@ export async function readStoredSessionMetadata({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (!metadata) {
     return null;
+  }
+  if (metadata.token) {
+    const migrated = await migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir });
+    return {
+      ...migrated.metadata,
+      filePath,
+      token: null,
+    };
   }
   return {
     ...metadata,
@@ -319,7 +768,12 @@ export async function writeStoredSession(
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
-    nextMetadata.token = normalizedToken;
+    const key = await loadOrCreateFileKey({ homeDir });
+    const encrypted = encryptToken(normalizedToken, key);
+    nextMetadata.token = null;
+    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
+    nextMetadata.tokenIv = encrypted.tokenIv;
+    nextMetadata.tokenTag = encrypted.tokenTag;
   }
 
   await writeMetadata(filePath, nextMetadata);

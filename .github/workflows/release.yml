@@ -3,10 +3,10 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 concurrency:
-  group: release-publish-prod
+  group: release-state-prod
   cancel-in-progress: false
 
 permissions:
@@ -18,6 +18,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GLOBAL_MAX_SECONDS: "3600"
 
 jobs:
   policy-precheck:
@@ -51,14 +52,45 @@ jobs:
             echo "::error::Invalid release tag policy schema in ${policy_file}."
             exit 1
           fi
-          allowed_csv="$(jq -r '[.allowed_tag_actors[] | strings | select(length > 0)] | join(",")' "${policy_file}")"
-          signer_allowlist="$(jq -r '[.allowed_tag_signer_emails[] | strings | ascii_downcase | select(length > 0)] | join(",")' "${policy_file}")"
+          allowed_actors_json="$(jq -c '[.allowed_tag_actors[] | strings | gsub("^\\s+|\\s+$"; "") | select(length > 0)]' "${policy_file}")"
+          signer_allowlist_json="$(jq -c '[.allowed_tag_signer_emails[] | strings | ascii_downcase | gsub("^\\s+|\\s+$"; "") | select(length > 0)]' "${policy_file}")"
+          actor_count="$(echo "${allowed_actors_json}" | jq 'length')"
+          actor_unique_count="$(echo "${allowed_actors_json}" | jq 'unique | length')"
+          signer_count="$(echo "${signer_allowlist_json}" | jq 'length')"
+          signer_unique_count="$(echo "${signer_allowlist_json}" | jq 'unique | length')"
+          case "${actor_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_actors list count: ${actor_count}" ; exit 1 ;; esac
+          case "${actor_unique_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_actors unique count: ${actor_unique_count}" ; exit 1 ;; esac
+          case "${signer_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_signer_emails list count: ${signer_count}" ; exit 1 ;; esac
+          case "${signer_unique_count}" in ''|*[!0-9]*) echo "::error::Invalid allowed_tag_signer_emails unique count: ${signer_unique_count}" ; exit 1 ;; esac
+          if [ "${actor_count}" -ne "${actor_unique_count}" ]; then
+            echo "::error::allowed_tag_actors contains duplicate or whitespace-equivalent entries."
+            exit 1
+          fi
+          if [ "${signer_count}" -ne "${signer_unique_count}" ]; then
+            echo "::error::allowed_tag_signer_emails contains duplicate or whitespace-equivalent entries."
+            exit 1
+          fi
+          if ! echo "${allowed_actors_json}" | jq -e 'all(.[]; test("^[A-Za-z0-9-]{1,39}$"))' >/dev/null; then
+            echo "::error::allowed_tag_actors contains invalid GitHub actor names."
+            exit 1
+          fi
+          if ! echo "${signer_allowlist_json}" | jq -e 'all(.[]; test("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))' >/dev/null; then
+            echo "::error::allowed_tag_signer_emails contains invalid email entries."
+            exit 1
+          fi
+          allowed_csv="$(echo "${allowed_actors_json}" | jq -r 'join(\",\")')"
+          signer_allowlist="$(echo "${signer_allowlist_json}" | jq -r 'join(\",\")')"
           required_release_workflow_path="$(jq -r '.required_release_workflow_path' "${policy_file}")"
           required_release_workflow_name="$(jq -r '.required_release_workflow_name' "${policy_file}")"
           required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
           export required_release_workflow_path
           export required_release_workflow_name
           export required_release_workflow_actor
+          {
+            echo "## Release Policy Allowlist"
+            echo "- allowed_tag_actors: \`${allowed_csv}\`"
+            echo "- allowed_tag_signer_emails: \`${signer_allowlist}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ "${EVENT_DELETED}" = "true" ]; then
             echo "::error::Release workflow does not run on deleted tags."
             exit 1
@@ -67,6 +99,39 @@ jobs:
             echo "::error::Release workflow requires newly created semver tags (event.created=true)."
             exit 1
           fi
+      - name: Fail stale release runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STALE_RUN_MAX_MINUTES: ${{ vars.RELEASE_STALE_RUN_MAX_MINUTES || '90' }}
+        run: |
+          set -euo pipefail
+          max_minutes="$(echo "${STALE_RUN_MAX_MINUTES}" | xargs || true)"
+          case "${max_minutes}" in ''|*[!0-9]*) echo "::error::Invalid RELEASE_STALE_RUN_MAX_MINUTES value: ${max_minutes}" ; exit 1 ;; esac
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+          created_at="$(echo "${run_json}" | jq -r '.created_at // empty')"
+          if [ -z "${created_at}" ]; then
+            echo "::error::Failed to resolve release run created_at timestamp."
+            exit 1
+          fi
+          created_epoch="$(date -u -d "${created_at}" +%s 2>/dev/null || true)"
+          if [ -z "${created_epoch}" ]; then
+            echo "::error::Unable to parse release run created_at timestamp: ${created_at}."
+            exit 1
+          fi
+          now_epoch="$(date +%s)"
+          age_minutes="$(( (now_epoch - created_epoch) / 60 ))"
+          if [ "${age_minutes}" -gt "${max_minutes}" ]; then
+            echo "::error::Release run is stale (age=${age_minutes}m, max=${max_minutes}m). Cancel the run and re-tag."
+            echo "::error::Cancel via: gh run cancel ${GITHUB_RUN_ID}"
+            exit 1
+          fi
+          {
+            echo "## Release Run Freshness"
+            echo "- age_minutes: \`${age_minutes}\`"
+            echo "- max_minutes: \`${max_minutes}\`"
+            echo "- cancel_command: \`gh run cancel ${GITHUB_RUN_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           actor="${GITHUB_ACTOR}"
           if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
             echo "::error::allowed_tag_actors is empty in ${policy_file}."
@@ -122,36 +187,65 @@ jobs:
             echo "::error::Tag signer email '${signer_email:-<none>}' is not allowlisted. Allowed signer emails: ${signer_allowlist}."
             exit 1
           fi
-          release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100")"
-          release_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
-            [
-              (.workflow_runs // [])[]
-              | select(
-                  .conclusion == "success"
-                  and (.event // "") == "push"
-                  and (.head_branch // "") == "main"
-                  and (.head_sha // "") == $sha
-                  and (.path // "") == env.required_release_workflow_path
-                  and (.name // "") == env.required_release_workflow_name
-                  and (.actor.login // "") == env.required_release_workflow_actor
-                )
-              | {
-                  id: (.id | tostring),
-                  run_number: (.run_number // 0),
-                  run_attempt: (.run_attempt // 0),
-                  created_at: (.created_at // ""),
-                  updated_at: (.updated_at // "")
-                }
-            ]
-            | sort_by(.run_number, .run_attempt, .updated_at, .created_at)
-          ')"
+          start_epoch="$(date +%s)"
+          release_candidates='[]'
+          page=1
+          while true; do
+            now_epoch="$(date +%s)"
+            elapsed="$((now_epoch - start_epoch))"
+            if [ "${elapsed}" -gt "${GLOBAL_MAX_SECONDS}" ]; then
+              echo "::error::Release policy evaluation exceeded global budget (${elapsed}s > ${GLOBAL_MAX_SECONDS}s)."
+              exit 1
+            fi
+            release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100&page=${page}")"
+            page_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
+              [
+                (.workflow_runs // [])[]
+                | select(
+                    .conclusion == "success"
+                    and (.event // "") == "push"
+                    and (.head_branch // "") == "main"
+                    and (.head_sha // "") == $sha
+                    and (.path // "") == env.required_release_workflow_path
+                    and (.name // "") == env.required_release_workflow_name
+                    and (.actor.login // "") == env.required_release_workflow_actor
+                  )
+                | {
+                    id: (.id | tostring),
+                    run_number: (.run_number // 0),
+                    run_attempt: (.run_attempt // 0),
+                    created_at: (.created_at // ""),
+                    updated_at: (.updated_at // "")
+                  }
+              ]
+            ')"
+            release_candidates="$(jq -s '.[0] + .[1]' \
+              <(printf '%s' "${release_candidates}") \
+              <(printf '%s' "${page_candidates}"))"
+            page_size="$(echo "${release_runs_json}" | jq '.workflow_runs | length')"
+            if [ "${page_size}" -lt 100 ]; then
+              break
+            fi
+            page="$((page + 1))"
+            if [ "${page}" -gt 50 ]; then
+              echo "::error::Pagination exceeded 50 pages while resolving release-please candidates."
+              exit 1
+            fi
+          done
+          release_candidates="$(echo "${release_candidates}" | jq -c 'sort_by(.run_number, .run_attempt, .updated_at, .created_at)')"
           release_candidate_count="$(echo "${release_candidates}" | jq 'length')"
           if [ "${release_candidate_count}" -lt 1 ]; then
             echo "::error::No successful release-please workflow run found on main for tagged commit ${GITHUB_SHA}."
             exit 1
           fi
-          release_please_run_id="$(echo "${release_candidates}" | jq -r 'last.id // empty')"
-          release_please_created_at="$(echo "${release_candidates}" | jq -r 'last.created_at // empty')"
+          if [ "${release_candidate_count}" -gt 1 ]; then
+            candidate_ids="$(echo "${release_candidates}" | jq -r '[.[].id] | join(",")')"
+            echo "::error::Multiple successful release-please runs found for ${GITHUB_SHA}; refusing nondeterministic selection."
+            echo "::error::candidate_run_ids=${candidate_ids}"
+            exit 1
+          fi
+          release_please_run_id="$(echo "${release_candidates}" | jq -r 'first.id // empty')"
+          release_please_created_at="$(echo "${release_candidates}" | jq -r 'first.created_at // empty')"
           if ! [[ "${release_please_run_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Unable to resolve canonical release-please workflow run id."
             exit 1
@@ -220,12 +314,61 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Quality Gates Terminal","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Build Package (Deterministic)","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
+
+      - name: Verify Quality Gates security scan job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/check-runs?per_page=100")"
+          quality_candidates="$(echo "${check_runs_json}" | jq -c '
+            [
+              (.check_runs // [])[]
+              | select(
+                  .name == "Quality Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                )
+              | {
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url,
+                  run_id: (.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id)
+                }
+            ]
+            | sort_by(.completed_at, (.run_id | tonumber))
+          ')"
+          candidate_count="$(echo "${quality_candidates}" | jq 'length')"
+          if [ "${candidate_count}" -lt 1 ]; then
+            echo "::error::No successful Quality Summary check-run found for ${TARGET_SHA}."
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
+          if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to resolve quality workflow run id."
+            exit 1
+          fi
+          jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${quality_run_id}/jobs?per_page=100")"
+          security_job="$(echo "${jobs_json}" | jq -r '.jobs[] | select(.name == "Deterministic Security Scan") | .conclusion' | head -n 1)"
+          if [ -z "${security_job}" ]; then
+            echo "::error::Deterministic Security Scan job missing from quality run ${quality_run_id}."
+            exit 1
+          fi
+          if [ "${security_job}" != "success" ]; then
+            echo "::error::Deterministic Security Scan job did not succeed (conclusion=${security_job})."
+            exit 1
+          fi
 
       - name: Emit preflight summary
         run: |
@@ -280,6 +423,54 @@ jobs:
       group: release-build-${{ github.ref }}
       cancel-in-progress: false
     steps:
+      - name: Resolve canonical quality manifest digest
+        id: quality_manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100")"
+          quality_candidates="$(echo "${check_runs_json}" | jq -c '
+            [
+              (.check_runs // [])[]
+              | select(
+                  .name == "Quality Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                )
+              | {
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url,
+                  run_id: (.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id)
+                }
+            ]
+            | sort_by(.completed_at, (.run_id | tonumber))
+          ')"
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
+          if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to resolve quality workflow run id for ${GITHUB_SHA}."
+            exit 1
+          fi
+          rm -rf release-quality-source
+          mkdir -p release-quality-source
+          gh run download "${quality_run_id}" --name "quality-package-artifacts" --dir release-quality-source
+          manifest_path="release-quality-source/quality-package-manifest.json"
+          if [ ! -f "${manifest_path}" ]; then
+            echo "::error::Missing quality-package-manifest.json in quality artifacts."
+            exit 1
+          fi
+          quality_sha256="$(jq -r '.sha256 // empty' "${manifest_path}")"
+          quality_tarball="$(jq -r '.tarball // empty' "${manifest_path}")"
+          if [ -z "${quality_sha256}" ] || ! echo "${quality_sha256}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Invalid quality manifest sha256."
+            exit 1
+          fi
+          echo "sha256=${quality_sha256}" >> "${GITHUB_OUTPUT}"
+          echo "tarball=${quality_tarball}" >> "${GITHUB_OUTPUT}"
+
       - name: Resolve canonical attested artifact for release commit
         id: attested_source
         env:
@@ -375,13 +566,28 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           SOURCE_MANIFEST="attestation-source/attestation-manifest.json"
+          EXPECTED_SHA256="${{ steps.quality_manifest.outputs.sha256 }}"
           if [ ! -f "${SOURCE_MANIFEST}" ]; then
             echo "::error::Missing attestation manifest from canonical artifact source."
             exit 1
           fi
           SOURCE_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_INTENT="$(jq -r '.attestation_intent // empty' "${SOURCE_MANIFEST}")"
           if [ -z "${SOURCE_COMMIT_SHA}" ] || [ "${SOURCE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
             echo "::error::Canonical artifact commit mismatch. expected=${GITHUB_SHA} source=${SOURCE_COMMIT_SHA:-<none>}."
+            exit 1
+          fi
+          if [ "${SOURCE_INTENT}" != "release_candidate" ]; then
+            echo "::error::Attestation intent mismatch. expected=release_candidate actual=${SOURCE_INTENT:-<none>}."
+            exit 1
+          fi
+          SOURCE_SHA256="$(jq -r '.sha256 // empty' "${SOURCE_MANIFEST}")"
+          if [ -z "${SOURCE_SHA256}" ] || ! echo "${SOURCE_SHA256}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Attestation manifest missing or invalid sha256."
+            exit 1
+          fi
+          if [ -n "${EXPECTED_SHA256}" ] && [ "${SOURCE_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Attestation sha256 mismatch. expected=${EXPECTED_SHA256} source=${SOURCE_SHA256}."
             exit 1
           fi
           SOURCE_WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${SOURCE_MANIFEST}")"
@@ -410,6 +616,9 @@ jobs:
           TARBALL="$(basename "${SOURCE_TARBALL_PATH}")"
           cp "${SOURCE_TARBALL_PATH}" "${TARBALL}"
           SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
+          PACKAGE_NAME="$(node -p \"require('./package.json').name\")"
+          PACKAGE_VERSION="$(node -p \"require('./package.json').version\")"
           if [ -n "${SOURCE_SHA256}" ] && [ "${SOURCE_SHA256}" != "${SHA256}" ]; then
             echo "::error::Canonical artifact digest mismatch. source=${SOURCE_SHA256} actual=${SHA256}."
             exit 1
@@ -417,12 +626,18 @@ jobs:
           jq -n \
             --arg tarball "${TARBALL}" \
             --arg sha256 "${SHA256}" \
+            --arg integrity "${INTEGRITY}" \
+            --arg package_name "${PACKAGE_NAME}" \
+            --arg package_version "${PACKAGE_VERSION}" \
             --arg commit_sha "${GITHUB_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg attestation_run_id "${{ steps.attested_source.outputs.run_id }}" \
             '{
+              package_name: $package_name,
+              package_version: $package_version,
               tarball: $tarball,
               sha256: $sha256,
+              integrity: $integrity,
               commit_sha: $commit_sha,
               workflow_ref: $workflow_ref,
               source_attestation_run_id: ($attestation_run_id | if length > 0 then . else null end)
@@ -541,6 +756,8 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Quality Gates Terminal","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Build Package (Deterministic)","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
@@ -548,13 +765,28 @@ jobs:
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-  publish-release:
-    needs: [pre-publish-gates, release-authorize]
+  publish-approval:
+    name: Publish Approval
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [pre-publish-gates]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    environment: package-release
+    steps:
+      - name: Record protected publish approval gate
+        run: |
+          set -euo pipefail
+          echo "Publish approval gate satisfied for ${GITHUB_REF}."
+
+  publish-candidate:
+    name: Publish Candidate
+    needs: [pre-publish-gates, release-authorize, publish-approval]
     if: >-
       ${{
         startsWith(github.ref, 'refs/tags/v') &&
         needs.pre-publish-gates.result == 'success' &&
-        needs.release-authorize.result == 'success'
+        needs.release-authorize.result == 'success' &&
+        needs.publish-approval.result == 'success'
       }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -562,10 +794,41 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      package_name: ${{ steps.publish_guard.outputs.package_name }}
+      package_version: ${{ steps.publish_guard.outputs.package_version }}
+      already_published: ${{ steps.publish_guard.outputs.already_published }}
     concurrency:
       group: release-publish-prod
       cancel-in-progress: false
     steps:
+      - name: Enforce protected release tag
+        shell: bash
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          if [ "${ref_protected}" != "true" ]; then
+            echo "::error::Release publish requires a protected ref (ref_protected=true)."
+            exit 1
+          fi
+
+      - name: Enforce package-release environment reviewer policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          response="$(gh api "repos/${GITHUB_REPOSITORY}/environments/package-release")"
+          rule_count="$(echo "${response}" | jq -r '.protection_rules | length')"
+          reviewer_count="$(echo "${response}" | jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | (.reviewers // [])[]] | length')"
+          case "${rule_count}" in ''|*[!0-9]*) echo "::error::Invalid protection rule count returned for package-release environment." ; exit 1 ;; esac
+          case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid reviewer count returned for package-release environment." ; exit 1 ;; esac
+          if [ "${reviewer_count}" -lt 1 ]; then
+            echo "::error::package-release environment has no required reviewers; refusing to publish."
+            exit 1
+          fi
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -575,6 +838,19 @@ jobs:
           set -euo pipefail
           if [ "${{ needs.release-authorize.result }}" != "success" ]; then
             echo "::error::release-authorize did not complete successfully (result=${{ needs.release-authorize.result }})."
+            exit 1
+          fi
+
+      - name: Block publish when rollback workflow is active
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active_rollback_count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/rollback.yml/runs?status=in_progress&per_page=100" --jq '.workflow_runs | length')"
+          case "${active_rollback_count}" in ''|*[!0-9]*) echo "::error::Invalid rollback run count: ${active_rollback_count}" ; exit 1 ;; esac
+          if [ "${active_rollback_count}" -gt 0 ]; then
+            echo "::error::Rollback workflow is currently in progress; refusing concurrent publish."
             exit 1
           fi
 
@@ -649,8 +925,13 @@ jobs:
           test -f "${MANIFEST}"
           MANIFEST_TARBALL="$(jq -r '.tarball // empty' "${MANIFEST}")"
           EXPECTED_SHA256="$(jq -r '.sha256' "${MANIFEST}")"
+          MANIFEST_INTEGRITY="$(jq -r '.integrity // empty' "${MANIFEST}")"
+          MANIFEST_PACKAGE_NAME="$(jq -r '.package_name // empty' "${MANIFEST}")"
+          MANIFEST_PACKAGE_VERSION="$(jq -r '.package_version // empty' "${MANIFEST}")"
           MANIFEST_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_ATTEST_RUN_ID="$(jq -r '.source_attestation_run_id // empty' "${MANIFEST}")"
           ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          ACTUAL_INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
           if [ -z "${MANIFEST_TARBALL}" ]; then
             echo "::error::Manifest missing expected tarball name."
             exit 1
@@ -663,8 +944,28 @@ jobs:
             echo "::error::Manifest missing expected sha256."
             exit 1
           fi
+          if [ -z "${MANIFEST_INTEGRITY}" ] || [ "${MANIFEST_INTEGRITY}" = "null" ]; then
+            echo "::error::Manifest missing expected integrity."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_PACKAGE_NAME}" ] || [ "${MANIFEST_PACKAGE_NAME}" = "null" ]; then
+            echo "::error::Manifest missing package_name."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_PACKAGE_VERSION}" ] || [ "${MANIFEST_PACKAGE_VERSION}" = "null" ]; then
+            echo "::error::Manifest missing package_version."
+            exit 1
+          fi
           if [ -z "${MANIFEST_COMMIT_SHA}" ] || [ "${MANIFEST_COMMIT_SHA}" = "null" ]; then
             echo "::error::Manifest missing commit_sha."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_SOURCE_ATTEST_RUN_ID}" ] || [ "${MANIFEST_SOURCE_ATTEST_RUN_ID}" = "null" ]; then
+            echo "::error::Manifest missing source_attestation_run_id."
+            exit 1
+          fi
+          if ! echo "${MANIFEST_SOURCE_ATTEST_RUN_ID}" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Manifest source_attestation_run_id is invalid: ${MANIFEST_SOURCE_ATTEST_RUN_ID}."
             exit 1
           fi
           if [ "${MANIFEST_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
@@ -674,6 +975,11 @@ jobs:
           if [ "${EXPECTED_SHA256}" != "${ACTUAL_SHA256}" ]; then
             echo "::error::Release artifact checksum mismatch."
             echo "::error::Expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}."
+            exit 1
+          fi
+          if [ "${MANIFEST_INTEGRITY}" != "${ACTUAL_INTEGRITY}" ]; then
+            echo "::error::Release artifact integrity mismatch."
+            echo "::error::Expected ${MANIFEST_INTEGRITY}, got ${ACTUAL_INTEGRITY}."
             exit 1
           fi
           BUILD_ATTESTATION_FILE="release-artifact/release-attestation-verify.json"
@@ -697,6 +1003,25 @@ jobs:
           fi
           echo "VERIFIED_TARBALL=${TARBALL}" >> "$GITHUB_ENV"
           echo "EXPECTED_SHA256=${EXPECTED_SHA256}" >> "$GITHUB_ENV"
+          echo "EXPECTED_INTEGRITY=${MANIFEST_INTEGRITY}" >> "$GITHUB_ENV"
+          echo "EXPECTED_PACKAGE_NAME=${MANIFEST_PACKAGE_NAME}" >> "$GITHUB_ENV"
+          echo "EXPECTED_PACKAGE_VERSION=${MANIFEST_PACKAGE_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Enforce immutable publish artifact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${VERIFIED_TARBALL:-}" ]; then
+            echo "::error::VERIFIED_TARBALL is not set; refusing to publish from workspace."
+            exit 1
+          fi
+          case "${VERIFIED_TARBALL}" in
+            release-artifact/*) ;;
+            *) echo "::error::VERIFIED_TARBALL must reference release-artifact/ (got ${VERIFIED_TARBALL})." ; exit 1 ;;
+          esac
+          if [ -f package.json ]; then
+            echo "::notice::Workspace package.json present; publish will use ${VERIFIED_TARBALL} only."
+          fi
 
       - name: Enforce release attestation verification policy
         env:
@@ -704,7 +1029,14 @@ jobs:
           SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
         run: |
           set -euo pipefail
+          start_epoch="$(date +%s)"
           for attempt in 1 2 3 4 5; do
+            now_epoch="$(date +%s)"
+            elapsed="$((now_epoch - start_epoch))"
+            if [ "${elapsed}" -gt "${GLOBAL_MAX_SECONDS}" ]; then
+              echo "::error::Release attestation verification exceeded global budget (${elapsed}s > ${GLOBAL_MAX_SECONDS}s)."
+              exit 1
+            fi
             if gh attestation verify "${VERIFIED_TARBALL}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${SIGNER_WORKFLOW}" --format json > release-attestation-publish-verify.json; then
               break
             fi
@@ -758,6 +1090,14 @@ jobs:
             echo "::error::Failed to resolve package identity from package.json."
             exit 1
           fi
+          if [ -n "${EXPECTED_PACKAGE_NAME:-}" ] && [ "${package_name}" != "${EXPECTED_PACKAGE_NAME}" ]; then
+            echo "::error::Manifest package_name mismatch. expected=${EXPECTED_PACKAGE_NAME} actual=${package_name}."
+            exit 1
+          fi
+          if [ -n "${EXPECTED_PACKAGE_VERSION:-}" ] && [ "${package_version}" != "${EXPECTED_PACKAGE_VERSION}" ]; then
+            echo "::error::Manifest package_version mismatch. expected=${EXPECTED_PACKAGE_VERSION} actual=${package_version}."
+            exit 1
+          fi
           if [ "${package_version}" != "${tag_version}" ]; then
             echo "::error::Tag/version mismatch. tag=${tag_version} package=${package_version}."
             exit 1
@@ -778,12 +1118,24 @@ jobs:
               echo "::error::Published tarball checksum mismatch for ${package_name}@${package_version}. expected=${expected_sha1} published=${published_sha1}."
               exit 1
             fi
+            if [ -n "${EXPECTED_INTEGRITY:-}" ]; then
+              published_integrity="$(npm view "${package_name}@${package_version}" dist.integrity --json 2>/tmp/npm-view.err || true)"
+              published_integrity="$(echo "${published_integrity}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+              if [ -n "${published_integrity}" ] && [ "${published_integrity}" != "${EXPECTED_INTEGRITY}" ]; then
+                echo "::error::Published integrity mismatch for ${package_name}@${package_version}. expected=${EXPECTED_INTEGRITY} published=${published_integrity}."
+                exit 1
+              fi
+            fi
             echo "already_published=true" >> "$GITHUB_OUTPUT"
             {
               echo "### npm publish idempotency guard"
               echo "- package: \`${package_name}@${package_version}\`"
               echo "- status: \`already published\`"
               echo "- published_sha1: \`${published_sha1:-<unavailable>}\`"
+              if [ -n "${EXPECTED_INTEGRITY:-}" ]; then
+                echo "- published_integrity: \`${published_integrity:-<unavailable>}\`"
+                echo "- expected_integrity: \`${EXPECTED_INTEGRITY}\`"
+              fi
               echo "- expected_sha1: \`${expected_sha1}\`"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -812,6 +1164,14 @@ jobs:
             cat /tmp/npm-next.err || true
             exit 1
           fi
+          if [ -n "${EXPECTED_INTEGRITY:-}" ]; then
+            published_integrity="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" dist.integrity --json 2>/tmp/npm-view.err || true)"
+            published_integrity="$(echo "${published_integrity}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+            if [ -n "${published_integrity}" ] && [ "${published_integrity}" != "${EXPECTED_INTEGRITY}" ]; then
+              echo "::error::Canary publish integrity mismatch. expected=${EXPECTED_INTEGRITY} published=${published_integrity}."
+              exit 1
+            fi
+          fi
 
       - name: Validate canary install from npm registry
         if: steps.publish_guard.outputs.already_published != 'true'
@@ -829,13 +1189,81 @@ jobs:
             exit 1
           fi
 
-      - name: Promote canary to stable (`latest`) dist-tag
+      - name: Run post-publish smoke checks
         if: steps.publish_guard.outputs.already_published != 'true'
         env:
           PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
           PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
         run: |
           set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          npm install --prefix "${smoke_dir}" --ignore-scripts "${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" --help > /tmp/canary-help.out
+          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" auth --help > /tmp/canary-auth-help.out
+          if ! grep -qi "sentinelayer" /tmp/canary-help.out; then
+            echo "::error::Canary smoke check failed: help output missing sentinelayer signature."
+            exit 1
+          fi
+
+      - name: Finalize npm auth session
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config delete //registry.npmjs.org/:_authToken || true
+          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
+          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
+            echo "::error::Residual npm auth token detected after publish finalization."
+            exit 1
+          fi
+          echo "No residual npm auth token remains after publish."
+
+  promote-latest:
+    name: Promote Latest
+    needs: [publish-candidate]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.publish-candidate.result == 'success' &&
+        needs.publish-candidate.outputs.already_published != 'true'
+      }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment: package-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Enforce soak window before promotion
+        shell: bash
+        env:
+          NPM_PROMOTION_SOAK_SECONDS: ${{ vars.NPM_PROMOTION_SOAK_SECONDS || '300' }}
+        run: |
+          set -euo pipefail
+          soak_seconds="$(echo "${NPM_PROMOTION_SOAK_SECONDS}" | xargs || true)"
+          case "${soak_seconds}" in ''|*[!0-9]*) echo "::error::Invalid NPM_PROMOTION_SOAK_SECONDS value: ${soak_seconds}" ; exit 1 ;; esac
+          if [ "${soak_seconds}" -gt 0 ]; then
+            echo "Waiting ${soak_seconds}s before promoting to latest."
+            sleep "${soak_seconds}"
+          fi
+
+      - name: Promote canary to stable (`latest`) dist-tag
+        env:
+          PACKAGE_NAME: ${{ needs.publish-candidate.outputs.package_name }}
+          PACKAGE_VERSION: ${{ needs.publish-candidate.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PACKAGE_NAME}" ] || [ -z "${PACKAGE_VERSION}" ]; then
+            echo "::error::Missing package identity from publish-candidate outputs."
+            exit 1
+          fi
           npm dist-tag add "${PACKAGE_NAME}@${PACKAGE_VERSION}" latest
           latest_tag="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/tmp/npm-latest.err || true)"
           latest_tag="$(echo "${latest_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
@@ -851,18 +1279,27 @@ jobs:
             echo "- promoted_version: \`${PACKAGE_VERSION}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Finalize npm auth session
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm config delete //registry.npmjs.org/:_authToken || true
-          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
-          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
-            echo "::error::Residual npm auth token detected after publish finalization."
-            exit 1
-          fi
-          echo "No residual npm auth token remains after publish."
+  rollback-readiness:
+    needs: [publish-candidate, promote-latest]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.publish-candidate.result == 'success' &&
+        (needs.promote-latest.result == 'success' || needs.promote-latest.result == 'skipped')
+      }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
 
       - name: Run post-publish rollback readiness drill
         shell: bash
@@ -875,4 +1312,13 @@ jobs:
           set -euo pipefail
           release_version="${RELEASE_VERSION#v}"
           RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
+          test -f release-rollback-readiness.json
+
+      - name: Upload rollback readiness report
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-rollback-readiness
+          path: release-rollback-readiness.json
+          if-no-files-found: error
+          retention-days: 7
 

@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import open from "open";
 
 import { loadConfig } from "../config/service.js";
-import { SentinelayerApiError, requestJson } from "./http.js";
+import { SentinelayerApiError, requestJson, requestJsonMutation } from "./http.js";
 import {
   clearStoredSession,
   readStoredSession,
@@ -21,6 +21,9 @@ export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
 /** Default threshold at which stored tokens are rotated before expiry (days). */
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
+const MAX_AUTH_POLL_REQUESTS = 600;
+const MIN_TRANSIENT_POLL_DELAY_MS = 2_000;
+const TRANSIENT_DELAY_THRESHOLD = 3;
 
 function normalizeApiUrl(rawValue) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
@@ -29,6 +32,11 @@ function normalizeApiUrl(rawValue) {
     parsed = new URL(candidate);
   } catch {
     throw new Error(`Invalid API URL '${candidate}'.`);
+  }
+  const hostname = String(parsed.hostname || "").toLowerCase();
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocalhost)) {
+    throw new Error(`API URL must use https (received '${candidate}').`);
   }
   parsed.pathname = "/";
   parsed.search = "";
@@ -71,9 +79,69 @@ function generateChallenge() {
   return crypto.randomBytes(48).toString("base64url");
 }
 
+function createFlowRequestId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `flow-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
+}
+
+function withFlowRequestHeaders(headers, flowRequestId) {
+  const merged = {
+    ...(headers || {}),
+    "X-Request-Id": createFlowRequestId(),
+  };
+  if (flowRequestId) {
+    merged["X-Flow-Request-Id"] = flowRequestId;
+  }
+  return merged;
+}
+
+async function requestAuthJson(flowRequestId, ...args) {
+  try {
+    return await requestJson(...args);
+  } catch (error) {
+    if (error instanceof SentinelayerApiError && !error.requestId && flowRequestId) {
+      error.requestId = flowRequestId;
+    }
+    throw error;
+  }
+}
+
+async function requestAuthJsonMutation(flowRequestId, ...args) {
+  try {
+    return await requestJsonMutation(...args);
+  } catch (error) {
+    if (error instanceof SentinelayerApiError && !error.requestId && flowRequestId) {
+      error.requestId = flowRequestId;
+    }
+    throw error;
+  }
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
+}
+
+function createIdempotencyKey(prefix) {
+  const normalizedPrefix = String(prefix || "sl-cli").trim() || "sl-cli";
+  let suffix;
+  try {
+    suffix = crypto.randomUUID();
+  } catch {
+    suffix = `${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+  }
+  return `${normalizedPrefix}-${suffix}`;
+}
+
+function computeDeterministicJitterFactor({ sessionId, attempt }) {
+  const seed = `${String(sessionId || "").trim()}|${Number(attempt) || 0}`;
+  const digest = crypto.createHash("sha256").update(seed).digest();
+  const raw = digest.readUInt32BE(0);
+  const ratio = raw / 0xffffffff;
+  return 0.85 + ratio * 0.3;
 }
 
 function isNearExpiry(tokenExpiresAt, thresholdDays) {
@@ -125,15 +193,21 @@ export async function resolveApiUrl({
   return normalizeApiUrl(DEFAULT_API_URL);
 }
 
-async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion }) {
-  return requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"), {
-    method: "POST",
-    body: {
-      challenge,
-      ide: String(ide || DEFAULT_IDE_NAME),
-      cli_version: String(cliVersion || "").trim() || null,
-    },
-  });
+async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
+  return requestAuthJsonMutation(
+    flowRequestId,
+    buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"),
+    {
+      method: "POST",
+      operationName: "auth-start",
+      headers: withFlowRequestHeaders(null, flowRequestId),
+      body: {
+        challenge,
+        ide: String(ide || DEFAULT_IDE_NAME),
+        cli_version: String(cliVersion || "").trim() || null,
+      },
+    }
+  );
 }
 
 async function pollCliAuthSession({
@@ -142,30 +216,126 @@ async function pollCliAuthSession({
   challenge,
   timeoutMs,
   pollIntervalSeconds,
+  flowRequestId,
 }) {
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
+  const maxPollIntervalMs = Math.max(pollIntervalMs, Math.min(5_000, Math.floor(timeout / 4)));
+  const pollRequestTimeoutMs = Math.min(5_000, Math.max(1_000, pollIntervalMs));
+  const pollRequestMaxRetries = 1;
+  const pollRequestRetryDelayMs = 250;
+  let pollAttempt = 0;
+  const transientErrorBudget = Math.max(8, Math.ceil(timeout / maxPollIntervalMs) * 3);
+  const maxSleepBudgetMs = Math.max(2_000, Math.floor(timeout * 0.8));
+  const maxPollAttempts = Math.min(
+    MAX_AUTH_POLL_REQUESTS,
+    Math.max(1, Math.ceil(timeout / Math.max(250, pollIntervalMs)))
+  );
+  let rateLimitErrorCount = 0;
+  let serverErrorCount = 0;
+  let networkErrorCount = 0;
+  let transientBudgetUsed = 0;
+  let cumulativeSleepMs = 0;
+  let pollIterations = 0;
   const deadline = Date.now() + timeout;
-  const isTransientPollError = (error) =>
-    error instanceof SentinelayerApiError &&
-    (error.code === "NETWORK_ERROR" ||
-      error.code === "TIMEOUT" ||
-      error.status === 429 ||
-      error.status >= 500);
+  const classifyPollError = (error) => {
+    if (!(error instanceof SentinelayerApiError)) {
+      return null;
+    }
+    if (error.status === 429) {
+      return "rate_limit";
+    }
+    if (error.status >= 500) {
+      return "server";
+    }
+    if (error.code === "NETWORK_ERROR" || error.code === "TIMEOUT") {
+      return "network";
+    }
+    return null;
+  };
+  const computePollDelayMs = (retryAfterMs = null) => {
+    const transientErrorCount = rateLimitErrorCount + serverErrorCount + networkErrorCount;
+    const minDelayMs =
+      transientErrorCount >= TRANSIENT_DELAY_THRESHOLD ? MIN_TRANSIENT_POLL_DELAY_MS : 250;
+    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      return Math.max(minDelayMs, Math.min(maxPollIntervalMs, Math.round(retryAfterMs)));
+    }
+    const exponent = Math.min(6, pollAttempt);
+    const backoffMs = Math.min(maxPollIntervalMs, Math.round(pollIntervalMs * Math.pow(1.5, exponent)));
+    const jitterFactor = computeDeterministicJitterFactor({ sessionId, attempt: pollAttempt });
+    return Math.max(minDelayMs, Math.round(backoffMs * jitterFactor));
+  };
 
   while (Date.now() < deadline) {
+    const remainingBeforeRequestMs = deadline - Date.now();
+    if (remainingBeforeRequestMs <= 250) {
+      break;
+    }
+    pollIterations += 1;
+    if (pollIterations > maxPollAttempts) {
+      throw new SentinelayerApiError("CLI authentication polling exceeded attempt budget.", {
+        status: 408,
+        code: "CLI_AUTH_POLL_EXHAUSTED",
+        requestId: flowRequestId || null,
+      });
+    }
     let payload;
     try {
-      payload = await requestJson(buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"), {
-        method: "POST",
-        body: {
-          session_id: sessionId,
-          challenge,
-        },
-      });
+      payload = await requestAuthJsonMutation(
+        flowRequestId,
+        buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"),
+        {
+          method: "POST",
+          operationName: "auth-poll",
+          headers: withFlowRequestHeaders(null, flowRequestId),
+          body: {
+            session_id: sessionId,
+            challenge,
+          },
+          timeoutMs: Math.max(250, Math.min(pollRequestTimeoutMs, remainingBeforeRequestMs)),
+          maxRetries: pollRequestMaxRetries,
+          retryDelayMs: pollRequestRetryDelayMs,
+        }
+      );
     } catch (error) {
-      if (isTransientPollError(error)) {
-        await sleep(pollIntervalMs);
+      if (error instanceof SentinelayerApiError && !error.requestId && flowRequestId) {
+        error.requestId = flowRequestId;
+      }
+      const classification = classifyPollError(error);
+      if (classification) {
+        const transientWeight = classification === "rate_limit" ? 3 : classification === "server" ? 2 : 1;
+        if (transientBudgetUsed + transientWeight > transientErrorBudget) {
+          throw new SentinelayerApiError("CLI authentication polling exhausted transient error budget.", {
+            status: 503,
+            code: "CLI_AUTH_TRANSIENT_BUDGET_EXHAUSTED",
+            requestId: error.requestId || flowRequestId || null,
+          });
+        }
+        transientBudgetUsed += transientWeight;
+        if (classification === "rate_limit") {
+          rateLimitErrorCount += 1;
+        } else if (classification === "server") {
+          serverErrorCount += 1;
+        } else {
+          networkErrorCount += 1;
+        }
+        const retryAfterMs = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : null;
+        const delayMs = computePollDelayMs(retryAfterMs);
+        const remainingBeforeSleepMs = deadline - Date.now();
+        if (remainingBeforeSleepMs <= 250) {
+          break;
+        }
+        const boundedDelayMs = Math.max(250, Math.min(delayMs, remainingBeforeSleepMs));
+        if (cumulativeSleepMs + boundedDelayMs > maxSleepBudgetMs) {
+          throw new SentinelayerApiError("CLI authentication polling exceeded retry sleep budget.", {
+            status: 503,
+            code: "CLI_AUTH_SLEEP_BUDGET_EXHAUSTED",
+            requestId: error.requestId || flowRequestId || null,
+          });
+        }
+        cumulativeSleepMs += boundedDelayMs;
+        pollAttempt += 1;
+        await sleep(boundedDelayMs);
         continue;
       }
       throw error;
@@ -179,29 +349,43 @@ async function pollCliAuthSession({
       throw new SentinelayerApiError("CLI authentication was not approved.", {
         status: 401,
         code: "CLI_AUTH_REJECTED",
+        requestId: flowRequestId || null,
       });
     }
     if (status === "expired") {
       throw new SentinelayerApiError("CLI authentication session expired.", {
         status: 401,
         code: "CLI_AUTH_EXPIRED",
+        requestId: flowRequestId || null,
       });
     }
 
-    await sleep(pollIntervalMs);
+    const delayMs = computePollDelayMs();
+    const remainingBeforeSleepMs = deadline - Date.now();
+    if (remainingBeforeSleepMs <= 250) {
+      break;
+    }
+    const boundedDelayMs = Math.max(250, Math.min(delayMs, remainingBeforeSleepMs));
+    pollAttempt += 1;
+    await sleep(boundedDelayMs);
   }
 
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {
     status: 408,
     code: "CLI_AUTH_TIMEOUT",
+    requestId: flowRequestId || null,
   });
 }
 
-async function fetchCurrentUser({ apiUrl, token }) {
-  return requestJson(buildApiPath(apiUrl, "/api/v1/auth/me"), {
-    method: "GET",
-    headers: toAuthHeader(token),
-  });
+async function fetchCurrentUser({ apiUrl, token, flowRequestId }) {
+  return requestAuthJson(
+    flowRequestId,
+    buildApiPath(apiUrl, "/api/v1/auth/me"),
+    {
+      method: "GET",
+      headers: withFlowRequestHeaders(toAuthHeader(token), flowRequestId),
+    }
+  );
 }
 
 async function issueApiToken({
@@ -209,20 +393,31 @@ async function issueApiToken({
   authToken,
   tokenLabel,
   tokenTtlDays,
+  flowRequestId,
 }) {
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
   );
-  return requestJson(buildApiPath(apiUrl, "/api/v1/auth/api-tokens"), {
-    method: "POST",
-    headers: toAuthHeader(authToken),
-    body: {
-      label: String(tokenLabel || "").trim() || defaultTokenLabel(),
-      scope: "cli",
-      llm_credential_mode: "managed",
-      expires_in_days: expiresInDays,
-    },
-  });
+  return requestAuthJsonMutation(
+    flowRequestId,
+    buildApiPath(apiUrl, "/api/v1/auth/api-tokens"),
+    {
+      method: "POST",
+      operationName: "issue-token",
+      headers: withFlowRequestHeaders(
+        {
+          ...toAuthHeader(authToken),
+        },
+        flowRequestId
+      ),
+      body: {
+        label: String(tokenLabel || "").trim() || defaultTokenLabel(),
+        scope: "cli",
+        llm_credential_mode: "managed",
+        expires_in_days: expiresInDays,
+      },
+    }
+  );
 }
 
 async function revokeApiToken({ apiUrl, authToken, tokenId }) {
@@ -230,9 +425,12 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   if (!normalizedTokenId) {
     return false;
   }
-  await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
+  await requestJsonMutation(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
     method: "DELETE",
-    headers: toAuthHeader(authToken),
+    operationName: "revoke-token",
+    headers: {
+      ...toAuthHeader(authToken),
+    },
   });
   return true;
 }
@@ -270,6 +468,7 @@ async function rotateStoredApiTokenIfNeeded({
     { homeDir }
   );
 
+  let revokeError = null;
   if (session.tokenId) {
     try {
       await revokeApiToken({
@@ -277,14 +476,15 @@ async function rotateStoredApiTokenIfNeeded({
         authToken: nextSession.token,
         tokenId: session.tokenId,
       });
-    } catch {
-      // Ignore revoke failures; new token is already active.
+    } catch (error) {
+      revokeError = error;
     }
   }
 
   return {
     session: nextSession,
     rotated: true,
+    revokeError,
   };
 }
 
@@ -335,11 +535,13 @@ export async function loginAndPersistSession({
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
   const challenge = generateChallenge();
+  const flowRequestId = createFlowRequestId();
   const session = await startCliAuthSession({
     apiUrl,
     challenge,
     ide,
     cliVersion,
+    flowRequestId,
   });
 
   const authorizeUrl = String(session.authorize_url || "").trim();
@@ -359,6 +561,7 @@ export async function loginAndPersistSession({
     challenge,
     timeoutMs,
     pollIntervalSeconds: Number(session.poll_interval_seconds || 2),
+    flowRequestId,
   });
 
   const approvalToken = String(approval.auth_token || "").trim();
@@ -366,15 +569,19 @@ export async function loginAndPersistSession({
     throw new SentinelayerApiError("Authentication completed but no auth token was returned.", {
       status: 503,
       code: "CLI_AUTH_MISSING_TOKEN",
+      requestId: flowRequestId || null,
     });
   }
 
-  const user = normalizeUser(approval.user || (await fetchCurrentUser({ apiUrl, token: approvalToken })));
+  const user = normalizeUser(
+    approval.user || (await fetchCurrentUser({ apiUrl, token: approvalToken, flowRequestId }))
+  );
   const issuedApiToken = await issueApiToken({
     apiUrl,
     authToken: approvalToken,
     tokenLabel,
     tokenTtlDays,
+    flowRequestId,
   });
 
   // Extract AIdenID metadata from approval (no secret stored locally)
@@ -413,6 +620,7 @@ export async function loginAndPersistSession({
     storage: stored.storage,
     filePath: stored.filePath,
     aidenid: stored.aidenid || null,
+    flowRequestId,
   };
 }
 
@@ -513,6 +721,12 @@ export async function resolveActiveAuthSession({
       });
       active = rotateResult.session;
       rotated = rotateResult.rotated;
+      if (rotateResult.revokeError) {
+        console.warn(
+          "Sentinelayer token rotation succeeded but previous token revocation failed. " +
+          "Revoke the old token manually in the dashboard if needed."
+        );
+      }
     } catch {
       // Keep existing token if rotation fails.
       active = stored;

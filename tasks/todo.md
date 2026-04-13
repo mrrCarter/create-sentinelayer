@@ -1,10 +1,26 @@
+# 2026-04-13 - PR-283 Omar + Quality Unblock Batch 2
+
+## Plan
+- [x] Repair `.github/workflows/attestations.yml` YAML integrity so push runs do not fail at parse time.
+- [x] Restore e2e auth harness compatibility with guarded auth gate (`npm test` in CI must pass).
+- [x] Tighten guarded auth bypass controls (single-use nonce + command scope + executable scope).
+- [x] Add session metadata write durability barriers (temp fsync + directory sync best-effort).
+- [x] Address current Omar P2 workflow findings across quality/release/attestation gates in one commit batch.
+- [ ] Run local verification (`npm run check`, targeted tests, full `npm test`), push branch, approve/wait Omar Gate and Quality Gates.
+
+## Review
+- [ ] Pending.
+
 # 2026-04-12 - Fix Omar Gate LLM Disabled (Workflow/Input Contract)
 
 ## Plan
 - [x] Confirm Omar Gate runs are using the legacy v1 action that respects `sentinelayer_managed_llm` and `openai_api_key`.
 - [x] Update the local Omar wrapper to enable managed LLM (`sentinelayer_managed_llm: "true"`) so runs do not skip LLM when BYOK is absent/invalid.
 - [x] Verify the workflow still declares `permissions: id-token: write` for managed proxy OIDC.
-- [ ] Open PR, run Omar Gate loop (`gh run watch`), and merge only after Omar passes.
+- [ ] Finish P2 fixes from latest Omar Gate run (request-id continuity, remove auto idempotency, keytar determinism, workflow guardrails).
+- [ ] Run targeted tests for auth/service + auth/http to confirm behavior.
+- [ ] Commit and push updates to `hardening/cli-omar-only-ci`.
+- [ ] Approve Omar Gate environment, run `gh run watch`, and iterate until P0-P2 clear.
 
 ## Review
 - [ ] Pending.
@@ -50,6 +66,19 @@
 
 ## Mission
 Execute `SENTINELAYER_CLI_ROADMAP.md` as secure, merge-safe PR batches using `SWE_excellence_framework.md` gates and `.claude/CLAUDE.md` autonomous loop discipline.
+
+## Execution Board (2026-04-10: Omar-Only + Admin/API Error Burn-Down)
+- [ ] `PR-CLI-OMAR-ONLY` (`hardening/cli-omar-only-ci`): remove non-Omar security workflows (`semgrep`, `gitleaks`, `iac`, `sca`, `license`, `sbom`) and align required-check contracts to Omar + quality/build checks only.
+- [ ] `PR-API-OMAR-ONLY` (`hardening/api-omar-only`): remove/disable multi-agent watchdog comment workflow and keep `omar-gate.yml` as the single security review path.
+- [ ] `PR-API-ERROR-BATCH` (`fix/api-admin-error-batch`): stream current admin/API error surfaces (workflow failures + runtime/admin stream integration), reproduce each issue, and patch in one grouped PR.
+- [ ] `PR-WEB-ERROR-BATCH` (`fix/web-admin-error-batch`) if needed: patch dashboard/admin error-stream handling regressions discovered during API burn-down.
+- [ ] For each PR: run local verification, open PR, run Omar loop (`gh run watch`), resolve P0-P2 in batches, merge only after green required checks.
+- [ ] Document resolved errors, evidence commands, and residual risk in this file review section before closing the batch.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24319174224): align Omar severity defaults, fail-closed fork enforcement, bind release canary to tag publish, remove gitleaks suppressions by eliminating secret-like fixtures, move file-key storage away from credentials file (with legacy migration), rerun Omar Gate and merge only on clean P0-P2.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24321597245): add PR attestation trigger, remove static-secret Omar fallback on protected refs, enforce single-flight quality-gates concurrency, hard-fail duplicate/whitespace allowlists in release policy, sanitize upstream API errors unless debug, add randomUUID fallback in session tracker, rerun Omar Gate and merge only when P0-P2 clear.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24321742604): redact AIdenID identifiers in `auth status`, remove eval-impact allowlist skip in favor of explicit workflow_dispatch override + environment approval, add keyring fallback decrypt, seed auth-audit jitter with process secret, stage Omar artifacts without raw logs, add id-token permission to quality gates, separate rollback concurrency + cancel active releases.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24321908316): add secret scan over staged Omar artifacts, remove raw debug API error details, gate provider-breaker persistence behind explicit env with namespaced state file, explicitly verify Quality Gates security scan job in release preflight, bind release attestation manifest sha256 to Quality Gates manifest digest, rerun Omar Gate and merge only when P0-P2 clear.
+- [ ] `PR-CLI-OMAR-ONLY` P2 remediation (current Omar run 24322086725): remove nondeterministic Quality Summary run selection in attestation (fail if multiple), paginate release-please run lookup, redact secret-scan logs, avoid cancel-in-progress on main quality gates, use tag-specific release concurrency, cap auth polling transient retries + honor Retry-After, rerun Omar Gate and merge only when P0-P2 clear.
 
 ## Plan
 - [x] Audit roadmap scope, dependencies, and phase ordering.
@@ -1363,6 +1392,26 @@ Review:
 - [ ] Run API checks (`ruff check`, targeted pytest), open PR, run Omar Gate loop (`gh run watch`), merge on green.
 - [ ] Re-run post-merge Omar run inventory across CLI/API/Web and capture remaining non-blocking backlog (if any) for next batch.
 
+## 2026-04-12 - PR-CLI-OMAR-ONLY P2 Remediation (hardening/cli-omar-only-ci)
+
+- [x] `npm run verify` (local): check + e2e + unit coverage + npm pack succeeded.
+- [x] `/omargate deep` (local, test bypass): P1=15, P2=85, blocking=true (deterministic baseline; report saved under `.sentinelayer/reports/`).
+- [x] `/audit` (local, test bypass): P1=0, P2=8, blocking=false.
+- [x] Plan: harden Omar Gate gating (disallow weaker workflow_dispatch severity, reject non-PR check runs) in `omar-gate.yml` and `quality-gates.yml`.
+- [x] Plan: align release provenance to use attested artifact from `attestations.yml` (no re-pack in release workflow).
+- [x] Plan: enforce HTTPS API base URL normalization (allow localhost http only).
+- [x] Implement the above fixes on `hardening/cli-omar-only-ci`.
+- [x] Omar Gate run `24320900087` (run_id `3c2e3208-c247-48ee-8d23-558ad0eff9ac`): P0=0, P1=0, P2=6.
+- [x] Apply P2 fixes: static-secret gating -> workflow_dispatch only, idempotent mutation retries, deterministic poll jitter, attestations require Omar Gate, quality-gates security scan, release manifest integrity checks.
+- [x] Set repo var `OMAR_ALLOW_STATIC_SECRETS=true` to allow emergency static fallback until OIDC exchange is configured.
+- [x] Omar Gate run `24321292167` (run_id `31ac9ff3-3b4c-4d72-8455-f61c9ee0182d`): P0=0, P1=0, P2=5.
+- [x] Apply remaining P2 fixes: headers-based idempotency detection, strict JSON response validation, release tag semver filter, security-scan dependency for packaging, rollback actor allowlist enforcement.
+- [x] Omar Gate run `24321422734` (run_id `f26eaddf-81d7-4e6a-81ee-9d31e8055674`): P0=0, P1=0, P2=5.
+- [x] Apply remaining P2 fixes: redirect policy for auth HTTP, plaintext token migration in session store, session tracker TTL/eviction, attestation intent gating, quality-gates workflow_dispatch guard.
+- [ ] Stage + commit current remediation batch (attestation push-main trigger, secret-scan hard-fail, quality manifest artifact, auth poll timeouts).
+- [ ] Re-run Omar Gate on PR `hardening/cli-omar-only-ci` and fix any remaining P0-P2 findings.
+- [ ] Address remaining Omar P2s (release-please deterministic selection, Omar artifact secret scan determinism, quality manifest verification) in a single batch.
+- [ ] Merge after Omar Gate passes; record run IDs and findings delta.
 ## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)
 
 - [x] Align `omar-gate.yml` severity gate defaults (`workflow_dispatch` + runtime fallback) to eliminate policy ambiguity.
@@ -1481,3 +1530,13 @@ Review:
 - [ ] Open PR from `hardening/cli-omar-only-ci-v2`, run Omar Gate watch loop (`gh run watch`), and merge on green.
 - [ ] Stream admin/API errors from `sentinelayer-api` + dashboard surfaces, group reproducible issues by root cause.
 - [ ] Implement grouped fixes in batch PR(s) with Omar loop and merge only after Omar pass.
+
+## 2026-04-13 - PR-283 CI Unblock Batch 3
+- [x] Reproduce failing checks on `hardening/cli-omar-only-ci` and capture exact failing jobs/logs (`Quality Gates` deterministic security scan, `Build Attestation` required-check resolution).
+- [x] Fix quality-gates deterministic security scan auth context by injecting an ephemeral CI `SENTINELAYER_TOKEN` for local scan execution.
+- [x] Fix `.github/scripts/require-check-runs.sh` to require `/actions/runs/<id>` details URLs for workflow-bound checks so non-workflow check URLs do not break provenance resolution.
+- [x] Run local validation (`npm run verify` + workflow YAML parse) before push.
+- [x] Fix `quality-gates` build-stage skip regression by removing the `workflow_dispatch` ref-protection clause from `build-package` / `deploy-readiness` job guards.
+- [x] Fix quality-summary manifest commit identity on PR runs to use head SHA (not merge SHA) so attestation target validation remains deterministic.
+- [ ] Push PR-283 update and watch `Omar Gate`, `Quality Gates`, and `Build Attestation` to completion (`gh run watch`).
+- [ ] Merge PR-283 once required checks are green.

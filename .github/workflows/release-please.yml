@@ -11,8 +11,8 @@ concurrency:
 permissions:
   actions: read
   checks: read
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -79,6 +79,7 @@ jobs:
           fi
           REQUIRED_RELEASE_CONTEXTS='[
             "Quality Summary",
+            "Quality Gates Terminal",
             "Omar Gate",
             "Attestation Summary"
           ]'
@@ -112,6 +113,7 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Quality Gates Terminal","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
@@ -154,6 +156,11 @@ jobs:
         run: |
           set -euo pipefail
           case "${WATCH_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid WATCH_TIMEOUT_SECONDS value: ${WATCH_TIMEOUT_SECONDS}" ; exit 1 ;; esac
+          current_run_created_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at')"
+          if [ -z "${current_run_created_at}" ] || [ "${current_run_created_at}" = "null" ]; then
+            echo "::error::Unable to resolve current workflow run created_at timestamp."
+            exit 1
+          fi
           tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
           if [ -z "${tag_name}" ]; then
             tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '
@@ -193,23 +200,53 @@ jobs:
 
           release_run_id=""
           for attempt in $(seq 1 40); do
-            run_list_json="$(gh run list --workflow "Release" --limit 50 --json databaseId,event,headBranch,headSha,createdAt)"
-            release_run_id="$(echo "${run_list_json}" | jq -r \
+            run_list_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?event=push&per_page=100")"
+            candidate_count="$(echo "${run_list_json}" | jq -r \
               --arg tag "${tag_name}" \
               --arg sha "${resolved_release_sha}" \
+              --arg min_created_at "${current_run_created_at}" \
               '
                 [
-                  .[]
+                  (.workflow_runs // [])[]
                   | select(
                       .event == "push"
-                      and .headBranch == $tag
-                      and .headSha == $sha
+                      and .head_branch == $tag
+                      and .head_sha == $sha
+                      and (.created_at >= $min_created_at)
+                      and .path == ".github/workflows/release.yml"
+                      and (.actor.login == "github-actions" or .actor.login == "github-actions[bot]")
                     )
                 ]
-                | sort_by(.createdAt)
-                | last
-                | .databaseId // empty
+                | length
               ')"
+            case "${candidate_count}" in ''|*[!0-9]*) echo "::error::Invalid release run candidate count: ${candidate_count}" ; exit 1 ;; esac
+            if [ "${candidate_count}" -gt 1 ]; then
+              echo "::error::Multiple Release workflow candidates detected for tag ${tag_name}; refusing nondeterministic selection."
+              echo "::error::candidate_count=${candidate_count}"
+              exit 1
+            fi
+            if [ "${candidate_count}" -eq 1 ]; then
+              release_run_id="$(echo "${run_list_json}" | jq -r \
+                --arg tag "${tag_name}" \
+                --arg sha "${resolved_release_sha}" \
+                --arg min_created_at "${current_run_created_at}" \
+                '
+                  [
+                    (.workflow_runs // [])[]
+                    | select(
+                        .event == "push"
+                        and .head_branch == $tag
+                        and .head_sha == $sha
+                        and (.created_at >= $min_created_at)
+                        and .path == ".github/workflows/release.yml"
+                        and (.actor.login == "github-actions" or .actor.login == "github-actions[bot]")
+                      )
+                  ]
+                  | sort_by(.run_number, .run_attempt, .created_at, .updated_at)
+                  | last
+                  | .id // empty
+                ')"
+            fi
             if [ -n "${release_run_id}" ] && [ "${release_run_id}" != "null" ]; then
               break
             fi

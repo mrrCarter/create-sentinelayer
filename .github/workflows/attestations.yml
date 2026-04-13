@@ -1,11 +1,22 @@
 name: Build Attestation
 
 on:
-  workflow_call:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_call:
+    inputs:
+      attestation_intent:
+        description: Intent for the attestation run (release_candidate)
+        required: false
+        type: string
   push:
-    branches: [main]
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
 
 concurrency:
   group: build-attestation-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
@@ -19,6 +30,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ATTESTATION_INTENT: ${{ github.event_name == 'workflow_call' && inputs.attestation_intent || (github.event_name == 'pull_request' && 'pull_request' || ((startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main') && 'release_candidate' || '')) }}
 
 jobs:
   attestation-context:
@@ -42,6 +54,67 @@ jobs:
           fi
           echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
 
+  attest-metadata-untrusted:
+    name: Attestation Metadata (Untrusted)
+    needs: [attestation-context]
+    if: needs.attestation-context.outputs.trusted_context != 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Emit untrusted attestation manifest
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg event_name "${EVENT_NAME}" \
+            --arg pr_number "${PR_NUMBER}" \
+            --arg pr_head_sha "${PR_HEAD_SHA}" \
+            --arg pr_base_sha "${PR_BASE_SHA}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg workflow_name "${GITHUB_WORKFLOW}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '{
+              intent: "metadata_untrusted",
+              event_name: $event_name,
+              repository: $repository,
+              commit_sha: $commit_sha,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              workflow_ref: $workflow_ref,
+              workflow_name: $workflow_name,
+              pull_request: {
+                number: (if ($pr_number | length) > 0 then ($pr_number | tonumber) else null end),
+                head_sha: (if ($pr_head_sha | length) > 0 then $pr_head_sha else null end),
+                base_sha: (if ($pr_base_sha | length) > 0 then $pr_base_sha else null end)
+              }
+            }' > attestation-manifest.json
+          {
+            echo "## Attestation (Untrusted)"
+            echo "- intent: \`metadata_untrusted\`"
+            echo "- commit_sha: \`${GITHUB_SHA}\`"
+            if [ -n "${PR_NUMBER}" ]; then
+              echo "- pull_request: \`#${PR_NUMBER}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload attestation metadata
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: attestation-metadata-untrusted
+          path: attestation-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
   attest-build:
     name: Attest Build Artifact
     needs: [attestation-context]
@@ -52,6 +125,26 @@ jobs:
     outputs:
       trusted_context: ${{ needs.attestation-context.outputs.trusted_context }}
     steps:
+      - name: Enforce attestation intent
+        shell: bash
+        run: |
+          set -euo pipefail
+          intent="$(echo "${ATTESTATION_INTENT}" | xargs || true)"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ "${intent}" != "pull_request" ]; then
+              echo "::error::Attestation intent must be pull_request for PR events. Received '${intent:-<none>}'"
+              exit 1
+            fi
+          else
+            if [ "${intent}" != "release_candidate" ]; then
+              echo "::error::Attestation intent must be release_candidate. Received '${intent:-<none>}'"
+              exit 1
+            fi
+          fi
+          {
+            echo "## Attestation Intent"
+            echo "- intent: \`${intent}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate attestation environment approval policy
         shell: bash
         env:
@@ -83,6 +176,12 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
 
       - name: Resolve canonical required-check target SHA
         id: checks_target
@@ -123,13 +222,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"}
-            ]'
+          REQUIRED_CHECKS_JSON='[
+            {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Quality Gates Terminal","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Build Package (Deterministic)","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"}
+          ]'
           else
-            REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"}
-            ]'
+          REQUIRED_CHECKS_JSON='[
+            {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Quality Gates Terminal","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Build Package (Deterministic)","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+            {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"}
+          ]'
           fi
           export REQUIRED_CHECKS_JSON
           .github/scripts/require-check-runs.sh
@@ -169,10 +274,11 @@ jobs:
           quality_run_count="$(echo "${quality_candidates}" | jq '[.[].run_id] | unique | length')"
           quality_run_ids="$(echo "${quality_candidates}" | jq -r '[.[].run_id] | unique | join(",")')"
           if [ "${quality_run_count}" -gt 1 ]; then
-            echo "::notice::Multiple successful quality workflow runs found for ${TARGET_SHA}; selecting canonical latest successful run."
-            echo "::notice::quality_run_candidates=${quality_run_ids}"
+            echo "::error::Multiple successful quality workflow runs found for ${TARGET_SHA}; refusing nondeterministic selection."
+            echo "::error::quality_run_candidates=${quality_run_ids}"
+            exit 1
           fi
-          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'first.run_id // empty')"
           if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Failed to resolve quality workflow run id."
             exit 1
@@ -196,8 +302,104 @@ jobs:
           rm -rf quality-build-source
           mkdir -p quality-build-source
           gh run download "${quality_run_id}" --name "quality-package-artifacts" --dir quality-build-source
+          gh run download "${quality_run_id}" --name "quality-summary-manifest" --dir quality-build-source
+          summary_manifest="quality-build-source/quality-summary-manifest.json"
+          if [ ! -f "${summary_manifest}" ]; then
+            echo "::error::Missing quality-summary-manifest.json in quality artifacts."
+            exit 1
+          fi
+          summary_commit="$(jq -r '.commit_sha // empty' "${summary_manifest}")"
+          summary_run_id="$(jq -r '.run_id // empty' "${summary_manifest}")"
+          if [ -z "${summary_commit}" ] || [ "${summary_commit}" != "${TARGET_SHA}" ]; then
+            echo "::error::Quality summary manifest commit mismatch. expected=${TARGET_SHA} actual=${summary_commit:-<none>}."
+            exit 1
+          fi
+          if [ -n "${summary_run_id}" ] && [ "${summary_run_id}" != "${quality_run_id}" ]; then
+            echo "::error::Quality summary manifest run id mismatch. expected=${quality_run_id} actual=${summary_run_id}."
+            exit 1
+          fi
           echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
+
+      - name: Rebuild package locally for reproducibility comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_manifest="quality-build-source/quality-package-manifest.json"
+          if [ ! -f "${source_manifest}" ]; then
+            echo "::error::Missing quality package manifest in downloaded artifact."
+            exit 1
+          fi
+          source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
+          if [ -z "${source_sha256}" ]; then
+            echo "::error::Quality package manifest missing sha256."
+            exit 1
+          fi
+          source_lockfile_sha256="$(jq -r '.lockfile_sha256 // empty' "${source_manifest}")"
+          if [ -z "${source_lockfile_sha256}" ]; then
+            echo "::error::Quality package manifest missing lockfile_sha256."
+            exit 1
+          fi
+          source_npm_registry="$(jq -r '.npm_registry // empty' "${source_manifest}")"
+          if [ -z "${source_npm_registry}" ]; then
+            echo "::error::Quality package manifest missing npm_registry."
+            exit 1
+          fi
+          if [ "${source_npm_registry}" != "https://registry.npmjs.org/" ]; then
+            echo "::error::Quality package manifest npm_registry mismatch: ${source_npm_registry}."
+            exit 1
+          fi
+          source_runner_os="$(jq -r '.runner_os // empty' "${source_manifest}")"
+          source_runner_arch="$(jq -r '.runner_arch // empty' "${source_manifest}")"
+          source_node_version="$(jq -r '.node_version // empty' "${source_manifest}")"
+          source_npm_version="$(jq -r '.npm_version // empty' "${source_manifest}")"
+          source_toolchain_fingerprint="$(jq -r '.toolchain_fingerprint // empty' "${source_manifest}")"
+          npm ci --ignore-scripts
+          local_lockfile_sha256="$(sha256sum package-lock.json | awk '{print $1}')"
+          if [ "${local_lockfile_sha256}" != "${source_lockfile_sha256}" ]; then
+            echo "::error::Lockfile sha256 mismatch. expected=${source_lockfile_sha256} actual=${local_lockfile_sha256}."
+            exit 1
+          fi
+          local_registry="$(npm config get registry | tr -d '\r' | xargs)"
+          if [ "${local_registry}" != "${source_npm_registry}" ]; then
+            echo "::error::npm registry mismatch. expected=${source_npm_registry} actual=${local_registry}."
+            exit 1
+          fi
+          npm pack --ignore-scripts --json > local-pack.json
+          local_tarball="$(jq -r '.[0].filename' local-pack.json)"
+          test -n "${local_tarball}"
+          test -f "${local_tarball}"
+          local_sha256="$(sha256sum "${local_tarball}" | awk '{print $1}')"
+          if [ "${local_sha256}" != "${source_sha256}" ]; then
+            echo "::error::Local rebuild digest mismatch. expected=${source_sha256} actual=${local_sha256}."
+            exit 1
+          else
+            echo "::notice::Local rebuild digest matches canonical artifact (${local_sha256})."
+          fi
+          local_node_version="$(node --version)"
+          local_npm_version="$(npm --version)"
+          local_toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${local_node_version}" "${local_npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
+          if [ -n "${source_runner_os}" ] && [ "${source_runner_os}" != "${RUNNER_OS}" ]; then
+            echo "::error::Runner OS mismatch. expected=${source_runner_os} actual=${RUNNER_OS}."
+            exit 1
+          fi
+          if [ -n "${source_runner_arch}" ] && [ "${source_runner_arch}" != "${RUNNER_ARCH}" ]; then
+            echo "::error::Runner arch mismatch. expected=${source_runner_arch} actual=${RUNNER_ARCH}."
+            exit 1
+          fi
+          if [ -n "${source_node_version}" ] && [ "${source_node_version}" != "${local_node_version}" ]; then
+            echo "::error::Node version mismatch. expected=${source_node_version} actual=${local_node_version}."
+            exit 1
+          fi
+          if [ -n "${source_npm_version}" ] && [ "${source_npm_version}" != "${local_npm_version}" ]; then
+            echo "::error::npm version mismatch. expected=${source_npm_version} actual=${local_npm_version}."
+            exit 1
+          fi
+          if [ -n "${source_toolchain_fingerprint}" ] && [ "${source_toolchain_fingerprint}" != "${local_toolchain_fingerprint}" ]; then
+            echo "::error::Toolchain fingerprint mismatch. expected=${source_toolchain_fingerprint} actual=${local_toolchain_fingerprint}."
+            exit 1
+          fi
+          echo "LOCAL_REBUILD_SHA256=${local_sha256}" >> "$GITHUB_ENV"
 
       - name: Verify downloaded quality artifact attestation
         shell: bash
@@ -243,6 +445,22 @@ jobs:
             echo "::error::Quality package manifest commit mismatch. expected=${TARGET_SHA} source=${source_commit_sha:-<none>}."
             exit 1
           fi
+          source_workflow_path="$(jq -r '.workflow_path // empty' "${source_manifest}")"
+          if [ "${source_workflow_path}" != ".github/workflows/quality-gates.yml" ]; then
+            echo "::error::Quality package manifest workflow_path mismatch. expected=.github/workflows/quality-gates.yml source=${source_workflow_path:-<none>}."
+            exit 1
+          fi
+          source_workflow_ref="$(jq -r '.workflow_ref // empty' "${source_manifest}")"
+          if ! echo "${source_workflow_ref}" | grep -Eq "^${GITHUB_REPOSITORY}/\\.github/workflows/quality-gates\\.yml@"; then
+            echo "::error::Quality package manifest workflow_ref is invalid: ${source_workflow_ref:-<none>}."
+            exit 1
+          fi
+          source_workflow_sha256="$(jq -r '.workflow_sha256 // empty' "${source_manifest}")"
+          expected_workflow_sha256="$(sha256sum .github/workflows/quality-gates.yml | awk '{print $1}')"
+          if [ -z "${source_workflow_sha256}" ] || [ "${source_workflow_sha256}" != "${expected_workflow_sha256}" ]; then
+            echo "::error::Quality package manifest workflow sha256 mismatch. expected=${expected_workflow_sha256} source=${source_workflow_sha256:-<none>}."
+            exit 1
+          fi
           source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
           tarballs=(quality-build-source/sentinelayer-cli-*.tgz)
           if [ "${#tarballs[@]}" -ne 1 ]; then
@@ -262,15 +480,19 @@ jobs:
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
             --arg commit_sha "${TARGET_SHA}" \
+            --arg attestation_intent "${ATTESTATION_INTENT}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg workflow_name "${GITHUB_WORKFLOW}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg quality_run_id "${{ steps.quality_source.outputs.run_id }}" \
+            --arg rebuild_sha256 "${LOCAL_REBUILD_SHA256:-}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
+              rebuild_sha256: (if ($rebuild_sha256 | length) > 0 then $rebuild_sha256 else null end),
               commit_sha: $commit_sha,
+              attestation_intent: $attestation_intent,
               workflow_ref: $workflow_ref,
               workflow_name: $workflow_name,
               run_id: $run_id,
