@@ -6,6 +6,7 @@ import {
   CIRCUIT_BREAKER_THRESHOLD,
   SentinelayerApiError,
   requestJson,
+  requestJsonMutation,
 } from "../src/auth/http.js";
 
 function createResponse(status, payload, headers = {}) {
@@ -488,6 +489,30 @@ test("Unit auth http: allowNonIdempotent is blocked when CI is set", async () =>
     );
   } finally {
     process.env = previousEnv;
+    __resetRequestCircuitForTests();
+  }
+});
+
+test("Unit auth http: requestJsonMutation auto-derives idempotency key", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let capturedHeaders = null;
+  globalThis.fetch = async (_url, options) => {
+    capturedHeaders = options?.headers || null;
+    return createResponse(200, { ok: true });
+  };
+
+  try {
+    const response = await requestJsonMutation("https://api.example.com/test", {
+      method: "POST",
+      operationName: "unit-test",
+    });
+    assert.equal(response.ok, true);
+    const headerValue = capturedHeaders?.["Idempotency-Key"] || capturedHeaders?.["idempotency-key"];
+    assert.equal(Boolean(headerValue), true);
+    assert.match(String(headerValue), /^sl-cli-[a-z0-9-]+-/);
+  } finally {
+    globalThis.fetch = previousFetch;
     __resetRequestCircuitForTests();
   }
 });

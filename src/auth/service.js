@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import open from "open";
 
 import { loadConfig } from "../config/service.js";
-import { SentinelayerApiError, requestJson } from "./http.js";
+import { SentinelayerApiError, requestJson, requestJsonMutation } from "./http.js";
 import {
   clearStoredSession,
   readStoredSession,
@@ -108,6 +108,17 @@ async function requestAuthJson(flowRequestId, ...args) {
   }
 }
 
+async function requestAuthJsonMutation(flowRequestId, ...args) {
+  try {
+    return await requestJsonMutation(...args);
+  } catch (error) {
+    if (error instanceof SentinelayerApiError && !error.requestId && flowRequestId) {
+      error.requestId = flowRequestId;
+    }
+    throw error;
+  }
+}
+
 function defaultTokenLabel() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   return `sl-cli-session-${stamp}`;
@@ -182,13 +193,12 @@ export async function resolveApiUrl({
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
-  const idempotencyKey = createIdempotencyKey("sl-cli-auth-start");
-  return requestAuthJson(
+  return requestAuthJsonMutation(
     flowRequestId,
     buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/start"),
     {
       method: "POST",
-      idempotencyKey,
+      operationName: "auth-start",
       headers: withFlowRequestId(null, flowRequestId),
       body: {
         challenge,
@@ -264,13 +274,12 @@ async function pollCliAuthSession({
     }
     let payload;
     try {
-      const idempotencyKey = createIdempotencyKey("sl-cli-auth-poll");
-      payload = await requestAuthJson(
+      payload = await requestAuthJsonMutation(
         flowRequestId,
         buildApiPath(apiUrl, "/api/v1/auth/cli/sessions/poll"),
         {
           method: "POST",
-          idempotencyKey,
+          operationName: "auth-poll",
           headers: withFlowRequestId(null, flowRequestId),
           body: {
             session_id: sessionId,
@@ -384,16 +393,15 @@ async function issueApiToken({
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
   );
-  const idempotencyKey = createIdempotencyKey("sl-cli-issue-token");
-  return requestAuthJson(
+  return requestAuthJsonMutation(
     flowRequestId,
     buildApiPath(apiUrl, "/api/v1/auth/api-tokens"),
     {
       method: "POST",
+      operationName: "issue-token",
       headers: withFlowRequestId(
         {
           ...toAuthHeader(authToken),
-          "Idempotency-Key": idempotencyKey,
         },
         flowRequestId
       ),
@@ -412,12 +420,11 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   if (!normalizedTokenId) {
     return false;
   }
-  const idempotencyKey = createIdempotencyKey("sl-cli-revoke-token");
-  await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
+  await requestJsonMutation(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
     method: "DELETE",
+    operationName: "revoke-token",
     headers: {
       ...toAuthHeader(authToken),
-      "Idempotency-Key": idempotencyKey,
     },
   });
   return true;

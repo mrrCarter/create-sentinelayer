@@ -317,6 +317,32 @@ jobs:
           echo "run_id=${quality_run_id}" >> "${GITHUB_OUTPUT}"
           echo "run_url=$(echo "${quality_run_meta}" | jq -r '.url // empty')" >> "${GITHUB_OUTPUT}"
 
+      - name: Rebuild package locally for reproducibility comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_manifest="quality-build-source/quality-package-manifest.json"
+          if [ ! -f "${source_manifest}" ]; then
+            echo "::error::Missing quality package manifest in downloaded artifact."
+            exit 1
+          fi
+          source_sha256="$(jq -r '.sha256 // empty' "${source_manifest}")"
+          if [ -z "${source_sha256}" ]; then
+            echo "::error::Quality package manifest missing sha256."
+            exit 1
+          fi
+          npm ci --ignore-scripts
+          npm pack --ignore-scripts --json > local-pack.json
+          local_tarball="$(jq -r '.[0].filename' local-pack.json)"
+          test -n "${local_tarball}"
+          test -f "${local_tarball}"
+          local_sha256="$(sha256sum "${local_tarball}" | awk '{print $1}')"
+          echo "LOCAL_REBUILD_SHA256=${local_sha256}" >> "$GITHUB_ENV"
+          if [ "${local_sha256}" != "${source_sha256}" ]; then
+            echo "::error::Local rebuild digest mismatch. expected=${source_sha256} actual=${local_sha256}."
+            exit 1
+          fi
+
 
       - name: Verify downloaded quality artifact attestation
         shell: bash
@@ -403,9 +429,11 @@ jobs:
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg quality_run_id "${{ steps.quality_source.outputs.run_id }}" \
+            --arg rebuild_sha256 "${LOCAL_REBUILD_SHA256:-}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
+              rebuild_sha256: (if ($rebuild_sha256 | length) > 0 then $rebuild_sha256 else null end),
               commit_sha: $commit_sha,
               attestation_intent: $attestation_intent,
               workflow_ref: $workflow_ref,

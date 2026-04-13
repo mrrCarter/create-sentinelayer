@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import crypto from "node:crypto";
 
 /**
  * Default timeout applied to Sentinelayer API requests when no override is provided.
@@ -122,6 +123,23 @@ function validateIdempotencyKey(value) {
   }
 }
 
+function sanitizeOperationName(value) {
+  const normalized = String(value || "").toLowerCase();
+  const cleaned = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned.slice(0, 32) || "mutation";
+}
+
+function createIdempotencyKeyForOperation(operationName) {
+  const op = sanitizeOperationName(operationName);
+  let suffix;
+  try {
+    suffix = crypto.randomUUID();
+  } catch {
+    suffix = crypto.randomBytes(16).toString("hex");
+  }
+  return `sl-cli-${op}-${suffix}`;
+}
+
 function normalizeHeaderObject(headers) {
   if (!headers) {
     return {};
@@ -137,6 +155,16 @@ function normalizeHeaderObject(headers) {
     return {};
   }
   return { ...headers };
+}
+
+function isMutationVerb(method) {
+  const normalized = String(method || "").trim().toUpperCase();
+  return (
+    normalized === "POST" ||
+    normalized === "PUT" ||
+    normalized === "PATCH" ||
+    normalized === "DELETE"
+  );
 }
 
 function applyIdempotencyKey(headers, idempotencyKey) {
@@ -332,11 +360,7 @@ export async function requestJson(
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
   const explicitIdempotencyKey = String(idempotencyKey || "").trim() || null;
   const existingIdempotencyKey = explicitIdempotencyKey || resolveIdempotencyKey(headers);
-  const isMutationMethod =
-    normalizedMethod === "POST" ||
-    normalizedMethod === "PUT" ||
-    normalizedMethod === "PATCH" ||
-    normalizedMethod === "DELETE";
+  const isMutationMethod = isMutationVerb(normalizedMethod);
   const resolvedIdempotencyKey = existingIdempotencyKey;
   const requestHeaders = applyIdempotencyKey(headers, resolvedIdempotencyKey);
   const outgoingHeaders = { ...requestHeaders };
@@ -516,5 +540,64 @@ export async function requestJson(
   throw new SentinelayerApiError("Request failed without a terminal response.", {
     status: 503,
     code: "NETWORK_ERROR",
+  });
+}
+
+/**
+ * Execute an HTTP mutation request and auto-derive an idempotency key when missing.
+ *
+ * @param {string} url
+ * @param {{
+ *   method?: "POST" | "PUT" | "PATCH" | "DELETE",
+ *   headers?: Record<string, string>,
+ *   body?: unknown,
+ *   idempotencyKey?: string | null,
+ *   operationName: string,
+ *   timeoutMs?: number
+ *   maxRetries?: number,
+ *   retryDelayMs?: number
+ *   allowEmptyBody?: boolean
+ * }} options
+ * @returns {Promise<any>}
+ */
+export async function requestJsonMutation(
+  url,
+  {
+    method = "POST",
+    headers = {},
+    body,
+    idempotencyKey = null,
+    operationName,
+    timeoutMs,
+    maxRetries,
+    retryDelayMs,
+    allowEmptyBody = false,
+  } = {}
+) {
+  const normalizedMethod = String(method || "POST").trim().toUpperCase();
+  if (!isMutationVerb(normalizedMethod)) {
+    throw new SentinelayerApiError("requestJsonMutation requires a mutation HTTP method.", {
+      status: 400,
+      code: "INVALID_MUTATION_METHOD",
+    });
+  }
+  const resolvedOperation = String(operationName || "").trim();
+  if (!resolvedOperation) {
+    throw new SentinelayerApiError("requestJsonMutation requires an operationName.", {
+      status: 400,
+      code: "OPERATION_NAME_REQUIRED",
+    });
+  }
+  const resolvedIdempotencyKey =
+    String(idempotencyKey || "").trim() || createIdempotencyKeyForOperation(resolvedOperation);
+  return requestJson(url, {
+    method: normalizedMethod,
+    headers,
+    body,
+    idempotencyKey: resolvedIdempotencyKey,
+    timeoutMs,
+    maxRetries,
+    retryDelayMs,
+    allowEmptyBody,
   });
 }

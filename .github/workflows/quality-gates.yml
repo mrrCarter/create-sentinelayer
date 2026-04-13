@@ -754,8 +754,18 @@ jobs:
         shell: bash
         env:
           EVAL_RESOLUTION: ${{ needs.eval-enforce.outputs.eval_resolution }}
+          PROMOTE_RESULT: ${{ needs.promote-candidate.result }}
+          DEPLOY_RESULT: ${{ needs.deploy-candidate.result }}
         run: |
           set -euo pipefail
+          if [ -z "${PROMOTE_RESULT}" ]; then
+            echo "::error::Missing required job result for promote-candidate."
+            exit 1
+          fi
+          if [ -z "${DEPLOY_RESULT}" ]; then
+            echo "::error::Missing required job result for deploy-candidate."
+            exit 1
+          fi
           eval_resolution="$(echo "${EVAL_RESOLUTION}" | xargs || true)"
           if ! echo "${eval_resolution}" | grep -Eq '^(resolved|approved_skip)$'; then
             echo "::error::eval-enforce produced invalid resolution '${eval_resolution}'."
@@ -829,6 +839,8 @@ jobs:
           SECURITY_SCAN_PATH: ${{ needs.security-scan.outputs.scan_path }}
           SECURITY_SCAN_SHA256: ${{ needs.security-scan.outputs.scan_sha256 }}
           REPRODUCIBLE_SHA256: ${{ needs.reproducible-build.outputs.sha256 }}
+          PROMOTE_RESULT: ${{ needs.promote-candidate.result }}
+          DEPLOY_RESULT: ${{ needs.deploy-candidate.result }}
         run: |
           set -euo pipefail
           if [ -z "${TAR_BALL}" ] || [ -z "${SHA256}" ]; then
@@ -850,6 +862,8 @@ jobs:
             --arg reproducible_sha256 "${REPRODUCIBLE_SHA256}" \
             --arg security_scan_path "${SECURITY_SCAN_PATH}" \
             --arg security_scan_sha256 "${SECURITY_SCAN_SHA256}" \
+            --arg promote_result "${PROMOTE_RESULT}" \
+            --arg deploy_result "${DEPLOY_RESULT}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
@@ -860,6 +874,8 @@ jobs:
               reproducible_sha256: $reproducible_sha256,
               security_scan_path: $security_scan_path,
               security_scan_sha256: $security_scan_sha256,
+              promote_result: $promote_result,
+              deploy_result: $deploy_result,
               run_id: $run_id,
               run_attempt: $run_attempt,
               workflow_ref: $workflow_ref

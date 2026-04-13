@@ -100,6 +100,8 @@ jobs:
           OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || '' }}
           OMAR_TOKEN_EXCHANGE_ISSUER: ${{ vars.OMAR_TOKEN_EXCHANGE_ISSUER || '' }}
           OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '3600' }}
+          OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256: ${{ vars.OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256 || '' }}
+          OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF || 'true' }}
           OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
           OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/sentinelayer' }}
           OMAR_REQUIRE_OIDC_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_OIDC_ON_PROTECTED_REF || 'true' }}
@@ -113,6 +115,8 @@ jobs:
           exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
           event_name="${GITHUB_EVENT_NAME}"
           ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          require_pinned="$(echo "${OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
             allow_static="$(echo "${OMAR_ALLOW_STATIC_SECRETS:-false}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
             if [ "${ref_protected}" = "true" ]; then
@@ -161,6 +165,18 @@ jobs:
               echo "::error::OMAR_TOKEN_EXCHANGE_URL path '${exchange_path}' is not allowlisted. Allowed paths: ${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}."
               exit 1
             fi
+            if [ "${ref_protected}" = "true" ] && [ "${require_pinned}" != "false" ] && [ -z "${pinned_pubkey}" ]; then
+              echo "::error::Pinned public key is required for Omar token exchange on protected refs. Set OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256."
+              exit 1
+            fi
+            curl_pinned_arg=""
+            if [ -n "${pinned_pubkey}" ]; then
+              if echo "${pinned_pubkey}" | grep -q '^sha256//'; then
+                curl_pinned_arg="--pinnedpubkey ${pinned_pubkey}"
+              else
+                curl_pinned_arg="--pinnedpubkey sha256//${pinned_pubkey}"
+              fi
+            fi
             if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
               echo "::error::OIDC exchange is configured but GitHub OIDC request context is unavailable."
               exit 1
@@ -187,6 +203,7 @@ jobs:
               -D "${exchange_headers}" \
               -o "${exchange_body}" \
               -w "%{http_code}" \
+              ${curl_pinned_arg} \
               -H "Authorization: Bearer ${oidc_token}" \
               -H "Content-Type: application/json" \
               -d "${exchange_payload}" \

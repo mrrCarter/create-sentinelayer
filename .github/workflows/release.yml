@@ -765,7 +765,8 @@ jobs:
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
-  publish-release:
+  publish-candidate:
+    name: Publish Candidate
     needs: [pre-publish-gates, release-authorize]
     if: >-
       ${{
@@ -779,6 +780,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      package_name: ${{ steps.publish_guard.outputs.package_name }}
+      package_version: ${{ steps.publish_guard.outputs.package_version }}
+      already_published: ${{ steps.publish_guard.outputs.already_published }}
     concurrency:
       group: release-publish-prod
       cancel-in-progress: false
@@ -1164,13 +1169,65 @@ jobs:
             exit 1
           fi
 
-      - name: Promote canary to stable (`latest`) dist-tag
-        if: steps.publish_guard.outputs.already_published != 'true'
-        env:
-          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
-          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+      - name: Finalize npm auth session
+        if: always()
+        shell: bash
         run: |
           set -euo pipefail
+          npm config delete //registry.npmjs.org/:_authToken || true
+          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
+          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
+            echo "::error::Residual npm auth token detected after publish finalization."
+            exit 1
+          fi
+          echo "No residual npm auth token remains after publish."
+
+  promote-latest:
+    name: Promote Latest
+    needs: [publish-candidate]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.publish-candidate.result == 'success' &&
+        needs.publish-candidate.outputs.already_published != 'true'
+      }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment: package-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Enforce soak window before promotion
+        shell: bash
+        env:
+          NPM_PROMOTION_SOAK_SECONDS: ${{ vars.NPM_PROMOTION_SOAK_SECONDS || '300' }}
+        run: |
+          set -euo pipefail
+          soak_seconds="$(echo "${NPM_PROMOTION_SOAK_SECONDS}" | xargs || true)"
+          case "${soak_seconds}" in ''|*[!0-9]*) echo "::error::Invalid NPM_PROMOTION_SOAK_SECONDS value: ${soak_seconds}" ; exit 1 ;; esac
+          if [ "${soak_seconds}" -gt 0 ]; then
+            echo "Waiting ${soak_seconds}s before promoting to latest."
+            sleep "${soak_seconds}"
+          fi
+
+      - name: Promote canary to stable (`latest`) dist-tag
+        env:
+          PACKAGE_NAME: ${{ needs.publish-candidate.outputs.package_name }}
+          PACKAGE_VERSION: ${{ needs.publish-candidate.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PACKAGE_NAME}" ] || [ -z "${PACKAGE_VERSION}" ]; then
+            echo "::error::Missing package identity from publish-candidate outputs."
+            exit 1
+          fi
           npm dist-tag add "${PACKAGE_NAME}@${PACKAGE_VERSION}" latest
           latest_tag="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/tmp/npm-latest.err || true)"
           latest_tag="$(echo "${latest_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
@@ -1186,25 +1243,13 @@ jobs:
             echo "- promoted_version: \`${PACKAGE_VERSION}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Finalize npm auth session
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm config delete //registry.npmjs.org/:_authToken || true
-          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
-          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
-            echo "::error::Residual npm auth token detected after publish finalization."
-            exit 1
-          fi
-          echo "No residual npm auth token remains after publish."
-
   rollback-readiness:
-    needs: [publish-release]
+    needs: [publish-candidate, promote-latest]
     if: >-
       ${{
         startsWith(github.ref, 'refs/tags/v') &&
-        needs.publish-release.result == 'success'
+        needs.publish-candidate.result == 'success' &&
+        (needs.promote-latest.result == 'success' || needs.promote-latest.result == 'skipped')
       }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
