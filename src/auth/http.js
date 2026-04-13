@@ -286,6 +286,14 @@ function sanitizeApiErrorMessage(message, fallback = "Sentinelayer API error") {
   return `${sanitized.slice(0, MAX_API_ERROR_MESSAGE_LENGTH - 3)}...`;
 }
 
+function anonymizeRequestIdForDebug(requestId) {
+  const normalized = String(requestId || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 12);
+}
+
 function appendDebugContext(safeMessage, { code, status, requestId } = {}) {
   if (!shouldExposeApiErrorDetails()) {
     return safeMessage;
@@ -293,10 +301,10 @@ function appendDebugContext(safeMessage, { code, status, requestId } = {}) {
   const parts = [];
   const normalizedCode = String(code || "").trim();
   const normalizedStatus = Number.isFinite(Number(status)) ? Number(status) : null;
-  const normalizedRequestId = String(requestId || "").trim();
+  const requestIdHash = anonymizeRequestIdForDebug(requestId);
   if (normalizedCode) parts.push(`code=${normalizedCode}`);
   if (normalizedStatus) parts.push(`status=${normalizedStatus}`);
-  if (normalizedRequestId) parts.push(`request_id=${normalizedRequestId}`);
+  if (requestIdHash) parts.push(`request_id_hash=${requestIdHash}`);
   if (parts.length === 0) return safeMessage;
   return `${safeMessage} (${parts.join(", ")})`;
 }

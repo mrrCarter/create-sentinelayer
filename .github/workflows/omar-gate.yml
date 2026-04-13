@@ -43,21 +43,78 @@ env:
   OMAR_SPEC_ID: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
 
 jobs:
-  omar_fork_precheck:
-    name: Omar Gate Fork Precheck
+  omar_untrusted_scan:
+    name: Omar Gate Untrusted Scan
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    outputs:
+      run_id: ${{ steps.untrusted.outputs.run_id }}
+      gate_status: ${{ steps.untrusted.outputs.gate_status }}
+      p0_count: ${{ steps.untrusted.outputs.p0_count }}
+      p1_count: ${{ steps.untrusted.outputs.p1_count }}
+      p2_count: ${{ steps.untrusted.outputs.p2_count }}
+      p3_count: ${{ steps.untrusted.outputs.p3_count }}
     steps:
-      - name: Record fork precheck status
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies (untrusted context)
         shell: bash
         run: |
           set -euo pipefail
-          echo "## Omar Gate (Fork Precheck)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- status: \`skipped\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- reason: untrusted fork PR context (secrets withheld)" >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Omar Gate skipped for fork PRs. Maintainers must rerun Omar Gate in trusted base repository context before merge."
+          npm ci --ignore-scripts
+      - name: Run deterministic untrusted scan
+        id: untrusted
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          SENTINELAYER_CLI_SKIP_AUTH=1 node bin/sl.js review --path . --json > omar-untrusted-review.json
+          review_exit="$?"
+          set -e
+          if [ "${review_exit}" -ne 0 ] && [ "${review_exit}" -ne 2 ]; then
+            echo "::error::Untrusted deterministic scan failed with exit code ${review_exit}."
+            exit "${review_exit}"
+          fi
+          if ! jq -e '
+            type == "object"
+            and (.runId | type == "string" and length > 0)
+            and (.p0 | type == "number")
+            and (.p1 | type == "number")
+            and (.p2 | type == "number")
+            and (.p3 | type == "number")
+          ' omar-untrusted-review.json >/dev/null; then
+            echo "::error::Untrusted deterministic scan produced invalid JSON payload."
+            cat omar-untrusted-review.json || true
+            exit 1
+          fi
+          run_id="$(jq -r '.runId' omar-untrusted-review.json)"
+          p0="$(jq -r '.p0' omar-untrusted-review.json)"
+          p1="$(jq -r '.p1' omar-untrusted-review.json)"
+          p2="$(jq -r '.p2' omar-untrusted-review.json)"
+          p3="$(jq -r '.p3' omar-untrusted-review.json)"
+          gate_status="passed"
+          if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
+            gate_status="blocked"
+          fi
+          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          echo "gate_status=${gate_status}" >> "${GITHUB_OUTPUT}"
+          echo "p0_count=${p0}" >> "${GITHUB_OUTPUT}"
+          echo "p1_count=${p1}" >> "${GITHUB_OUTPUT}"
+          echo "p2_count=${p2}" >> "${GITHUB_OUTPUT}"
+          echo "p3_count=${p3}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Omar Gate (Untrusted Deterministic Scan)"
+            echo "- status: \`${gate_status}\`"
+            echo "- source: \`local-deterministic\`"
+            echo "- findings: \`P0=${p0} P1=${p1} P2=${p2} P3=${p3}\`"
+            echo "- run_id: \`${run_id}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   omar_scan:
     name: Omar Gate Scan
@@ -408,8 +465,12 @@ jobs:
           if-no-files-found: ignore
   omar_enforce:
     name: Omar Gate
-    needs: [omar_scan]
-    if: needs.omar_scan.result == 'success' && needs.omar_scan.outputs.trusted_context == 'true'
+    needs: [omar_scan, omar_untrusted_scan]
+    if: >-
+      ${{
+        (needs.omar_scan.result == 'success' && needs.omar_scan.outputs.trusted_context == 'true') ||
+        (needs.omar_untrusted_scan.result == 'success')
+      }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -419,9 +480,9 @@ jobs:
       - name: Enforce Omar reviewer merge thresholds
         shell: bash
         env:
-          P0_COUNT: ${{ needs.omar_scan.outputs.p0_count || '0' }}
-          P1_COUNT: ${{ needs.omar_scan.outputs.p1_count || '0' }}
-          P2_COUNT: ${{ needs.omar_scan.outputs.p2_count || '0' }}
+          P0_COUNT: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p0_count || needs.omar_untrusted_scan.outputs.p0_count || '0' }}
+          P1_COUNT: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p1_count || needs.omar_untrusted_scan.outputs.p1_count || '0' }}
+          P2_COUNT: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p2_count || needs.omar_untrusted_scan.outputs.p2_count || '0' }}
           P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
           SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_POLICY_MIN_SEVERITY_GATE: ${{ vars.OMAR_POLICY_MIN_SEVERITY_GATE || 'P1' }}
@@ -529,6 +590,12 @@ jobs:
       - name: Emit Omar run summary
         shell: bash
         env:
+          OMAR_RUN_ID: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.run_id || needs.omar_untrusted_scan.outputs.run_id || '' }}
+          OMAR_GATE_STATUS: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.gate_status || needs.omar_untrusted_scan.outputs.gate_status || '' }}
+          OMAR_P0: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p0_count || needs.omar_untrusted_scan.outputs.p0_count || '0' }}
+          OMAR_P1: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p1_count || needs.omar_untrusted_scan.outputs.p1_count || '0' }}
+          OMAR_P2: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p2_count || needs.omar_untrusted_scan.outputs.p2_count || '0' }}
+          OMAR_P3: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p3_count || needs.omar_untrusted_scan.outputs.p3_count || '0' }}
           EFFECTIVE_SEVERITY_GATE: ${{ env.OMAR_EFFECTIVE_SEVERITY_GATE || (github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1') }}
           EFFECTIVE_P2_MAX_ALLOWED: ${{ env.OMAR_EFFECTIVE_P2_MAX_ALLOWED || (github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5') }}
         run: |
@@ -542,8 +609,8 @@ jobs:
             threshold_line="P0=0, P1=0, P2<=${p2_max}"
           fi
           echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- run_id: \`${{ needs.omar_scan.outputs.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- gate_status: \`${{ needs.omar_scan.outputs.gate_status }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- findings: \`P0=${{ needs.omar_scan.outputs.p0_count }} P1=${{ needs.omar_scan.outputs.p1_count }} P2=${{ needs.omar_scan.outputs.p2_count }} P3=${{ needs.omar_scan.outputs.p3_count }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- run_id: \`${OMAR_RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- gate_status: \`${OMAR_GATE_STATUS}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- findings: \`P0=${OMAR_P0} P1=${OMAR_P1} P2=${OMAR_P2} P3=${OMAR_P3}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"

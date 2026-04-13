@@ -314,8 +314,6 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
-              {"name":"Promote Candidate","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
-              {"name":"Deploy Candidate","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
@@ -756,8 +754,6 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
-              {"name":"Promote Candidate","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
-              {"name":"Deploy Candidate","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]

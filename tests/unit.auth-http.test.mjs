@@ -217,6 +217,49 @@ test("Unit auth http: rejects ok responses with non-JSON content-type", async ()
   }
 });
 
+test("Unit auth http: debug context redacts request IDs via hashed metadata", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  const previousDebug = process.env.SENTINELAYER_DEBUG_ERRORS;
+  process.env.SENTINELAYER_DEBUG_ERRORS = "1";
+  globalThis.fetch = async () =>
+    createResponse(
+      401,
+      {
+        error: {
+          code: "INVALID_TOKEN",
+          message: "Unauthorized",
+          request_id: "req-sensitive-api-id",
+        },
+      },
+      {
+        "x-request-id": "req-sensitive-header-id",
+      }
+    );
+
+  try {
+    await assert.rejects(
+      () => requestJson("https://api.example.com/test"),
+      (error) => {
+        assert.equal(error instanceof SentinelayerApiError, true);
+        assert.equal(error.code, "INVALID_TOKEN");
+        assert.match(error.message, /request_id_hash=[a-f0-9]{12}/);
+        assert.equal(error.message.includes("req-sensitive-api-id"), false);
+        assert.equal(error.message.includes("req-sensitive-header-id"), false);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+    if (previousDebug === undefined) {
+      delete process.env.SENTINELAYER_DEBUG_ERRORS;
+    } else {
+      process.env.SENTINELAYER_DEBUG_ERRORS = previousDebug;
+    }
+  }
+});
+
 test("Unit auth http: does not retry non-retryable API status codes", async () => {
   __resetRequestCircuitForTests();
   const previousFetch = globalThis.fetch;
