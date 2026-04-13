@@ -280,7 +280,7 @@ function isValidSessionToken(session) {
     return false;
   }
   const tokenPrefix = String(session?.tokenPrefix || "").trim();
-  if (tokenPrefix && !token.startsWith(tokenPrefix)) {
+  if (tokenPrefix && !token.includes(tokenPrefix)) {
     return false;
   }
   return true;
