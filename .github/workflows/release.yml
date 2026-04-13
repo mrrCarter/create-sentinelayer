@@ -383,6 +383,23 @@ jobs:
           echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
           echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify attested tarball reproducibility
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json > pack.json
+          tarball="$(jq -r '.[0].filename' pack.json)"
+          if [ -z "${tarball}" ] || [ ! -f "${tarball}" ]; then
+            echo "::error::Deterministic rebuild tarball not found."
+            exit 1
+          fi
+          rebuilt_sha="$(sha256sum "${tarball}" | awk '{print $1}')"
+          expected_sha="${{ steps.artifact_manifest.outputs.sha256 }}"
+          if [ "${rebuilt_sha}" != "${expected_sha}" ]; then
+            echo "::error::Deterministic rebuild checksum mismatch (expected ${expected_sha}, got ${rebuilt_sha})."
+            exit 1
+          fi
+          rm -f "${tarball}" pack.json
+
       - name: Validate packaged CLI install
         run: |
           set -euo pipefail
@@ -530,7 +547,7 @@ jobs:
       - name: Enforce release attestation verification policy
         env:
           GH_TOKEN: ${{ github.token }}
-          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/attestations.yml
         run: |
           set -euo pipefail
           for attempt in 1 2 3 4 5; do

@@ -8,6 +8,20 @@ NON_BLOCKING_DIAGNOSTICS="${NON_BLOCKING_DIAGNOSTICS:-0}"
 NPM_VIEW_TIMEOUT_SECONDS="${NPM_VIEW_TIMEOUT_SECONDS:-15}"
 NPM_VIEW_MAX_ATTEMPTS="${NPM_VIEW_MAX_ATTEMPTS:-3}"
 NPM_VIEW_RETRY_DELAY_SECONDS="${NPM_VIEW_RETRY_DELAY_SECONDS:-2}"
+NPM_INSTALL_TIMEOUT_SECONDS="${NPM_INSTALL_TIMEOUT_SECONDS:-120}"
+
+run_npm_install() {
+  local target="$1"
+  local timeout_cmd="timeout"
+  if ! command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=""
+  fi
+  if [ -n "${timeout_cmd}" ]; then
+    ${timeout_cmd} "${NPM_INSTALL_TIMEOUT_SECONDS}s" npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${target}"
+  else
+    npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${target}"
+  fi
+}
 
 npm_view_json() {
   local package_spec="$1"
@@ -105,7 +119,7 @@ trap cleanup_rollback_smoke_dir EXIT
 
 run_rollback_smoke_check() {
   rollback_smoke_tmp_dir="$(mktemp -d)"
-  if ! npm install --prefix "${rollback_smoke_tmp_dir}" --ignore-scripts "${PACKAGE_NAME}@${rollback_target}" >/dev/null 2>&1; then
+  if ! run_npm_install "${PACKAGE_NAME}@${rollback_target}" >/dev/null 2>&1; then
     rollback_target_smoke_failure_reason="npm install failed for ${PACKAGE_NAME}@${rollback_target}"
     return 1
   fi
