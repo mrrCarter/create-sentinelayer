@@ -267,6 +267,10 @@ async function pollCliAuthSession({
   };
 
   while (Date.now() < deadline) {
+    const remainingBeforeRequestMs = deadline - Date.now();
+    if (remainingBeforeRequestMs <= 250) {
+      break;
+    }
     pollIterations += 1;
     if (pollIterations > maxPollAttempts) {
       throw new SentinelayerApiError("CLI authentication polling exceeded attempt budget.", {
@@ -288,7 +292,7 @@ async function pollCliAuthSession({
             session_id: sessionId,
             challenge,
           },
-          timeoutMs: pollRequestTimeoutMs,
+          timeoutMs: Math.max(250, Math.min(pollRequestTimeoutMs, remainingBeforeRequestMs)),
           maxRetries: pollRequestMaxRetries,
           retryDelayMs: pollRequestRetryDelayMs,
         }
@@ -317,16 +321,21 @@ async function pollCliAuthSession({
         }
         const retryAfterMs = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : null;
         const delayMs = computePollDelayMs(retryAfterMs);
-        if (cumulativeSleepMs + delayMs > maxSleepBudgetMs) {
+        const remainingBeforeSleepMs = deadline - Date.now();
+        if (remainingBeforeSleepMs <= 250) {
+          break;
+        }
+        const boundedDelayMs = Math.max(250, Math.min(delayMs, remainingBeforeSleepMs));
+        if (cumulativeSleepMs + boundedDelayMs > maxSleepBudgetMs) {
           throw new SentinelayerApiError("CLI authentication polling exceeded retry sleep budget.", {
             status: 503,
             code: "CLI_AUTH_SLEEP_BUDGET_EXHAUSTED",
             requestId: error.requestId || flowRequestId || null,
           });
         }
-        cumulativeSleepMs += delayMs;
+        cumulativeSleepMs += boundedDelayMs;
         pollAttempt += 1;
-        await sleep(delayMs);
+        await sleep(boundedDelayMs);
         continue;
       }
       throw error;
@@ -352,8 +361,13 @@ async function pollCliAuthSession({
     }
 
     const delayMs = computePollDelayMs();
+    const remainingBeforeSleepMs = deadline - Date.now();
+    if (remainingBeforeSleepMs <= 250) {
+      break;
+    }
+    const boundedDelayMs = Math.max(250, Math.min(delayMs, remainingBeforeSleepMs));
     pollAttempt += 1;
-    await sleep(delayMs);
+    await sleep(boundedDelayMs);
   }
 
   throw new SentinelayerApiError("CLI authentication timed out. Restart and try again.", {

@@ -31,7 +31,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: release-rollback-prod
+  group: release-state-prod
   cancel-in-progress: false
 
 jobs:

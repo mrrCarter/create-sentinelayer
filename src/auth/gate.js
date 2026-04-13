@@ -67,7 +67,7 @@ function readNonceEnvelope(nonce) {
       if (stats.uid !== process.getuid()) {
         return null;
       }
-      if (stats.mode & 0o002) {
+      if (stats.mode & 0o022) {
         return null;
       }
     }
