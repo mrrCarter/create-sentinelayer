@@ -46,9 +46,10 @@ function normalizeApiError(errorPayload = {}) {
   }
   const rawMessage = String(errorPayload.message || fallbackMessage);
   const safeMessage = sanitizeApiErrorMessage(rawMessage, fallbackMessage);
-  const message = shouldExposeApiErrorDetails()
-    ? appendDebugDetails(safeMessage, rawMessage)
-    : safeMessage;
+  const message = appendDebugContext(safeMessage, {
+    code: String(errorPayload.code || "UNKNOWN"),
+    requestId: errorPayload.request_id ? String(errorPayload.request_id) : null,
+  });
   return {
     code: String(errorPayload.code || "UNKNOWN"),
     message,
@@ -98,10 +99,7 @@ export class SentinelayerApiError extends Error {
    */
   constructor(message, { status = 500, code = "UNKNOWN", requestId = null } = {}) {
     const safeMessage = sanitizeApiErrorMessage(message, "Sentinelayer API error");
-    const resolvedMessage = shouldExposeApiErrorDetails()
-      ? appendDebugDetails(safeMessage, message)
-      : safeMessage;
-    super(resolvedMessage);
+    super(appendDebugContext(safeMessage, { code, status, requestId }));
     this.name = "SentinelayerApiError";
     this.status = Number(status || 500);
     this.code = String(code || "UNKNOWN");
@@ -196,12 +194,19 @@ function sanitizeApiErrorMessage(message, fallback = "Sentinelayer API error") {
   return `${sanitized.slice(0, MAX_API_ERROR_MESSAGE_LENGTH - 3)}...`;
 }
 
-function appendDebugDetails(safeMessage, rawMessage) {
-  const raw = String(rawMessage || "").trim();
-  if (!raw) return safeMessage;
-  const maxDetailLength = 240;
-  const trimmed = raw.length > maxDetailLength ? `${raw.slice(0, maxDetailLength - 3)}...` : raw;
-  return `${safeMessage} (debug: ${trimmed})`;
+function appendDebugContext(safeMessage, { code, status, requestId } = {}) {
+  if (!shouldExposeApiErrorDetails()) {
+    return safeMessage;
+  }
+  const parts = [];
+  const normalizedCode = String(code || "").trim();
+  const normalizedStatus = Number.isFinite(Number(status)) ? Number(status) : null;
+  const normalizedRequestId = String(requestId || "").trim();
+  if (normalizedCode) parts.push(`code=${normalizedCode}`);
+  if (normalizedStatus) parts.push(`status=${normalizedStatus}`);
+  if (normalizedRequestId) parts.push(`request_id=${normalizedRequestId}`);
+  if (parts.length === 0) return safeMessage;
+  return `${safeMessage} (${parts.join(", ")})`;
 }
 
 function recordSuccessForCircuit(scope) {

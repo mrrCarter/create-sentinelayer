@@ -287,6 +287,30 @@ jobs:
             mkdir -p omar-artifacts/logs
             cp -R .sentinelayer/logs/. omar-artifacts/logs/ 2>/dev/null || true
           fi
+      - name: Scan staged artifacts for secrets
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "omar-artifacts" ]; then
+            exit 0
+          fi
+          pattern='(bearer[[:space:]]+[A-Za-z0-9._~+/=-]{16,}|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|x-?api-?key|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)'
+          matches="$(grep -RInE "${pattern}" omar-artifacts || true)"
+          if [ -n "${matches}" ]; then
+            ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::Potential secret-like content detected in Omar artifacts on protected ref. Aborting upload."
+              echo "${matches}"
+              exit 1
+            fi
+            echo "::warning::Secret-like content detected in Omar artifacts; removing matching files before upload."
+            echo "${matches}" | cut -d: -f1 | sort -u | while read -r file; do
+              rm -f "${file}"
+            done
+          fi
       - name: Upload Omar artifacts
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0

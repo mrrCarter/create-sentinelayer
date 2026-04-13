@@ -258,6 +258,53 @@ jobs:
           POLL_INTERVAL_SECONDS: "10"
         run: .github/scripts/require-check-runs.sh
 
+      - name: Verify Quality Gates security scan job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/check-runs?per_page=100")"
+          quality_candidates="$(echo "${check_runs_json}" | jq -c '
+            [
+              (.check_runs // [])[]
+              | select(
+                  .name == "Quality Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                )
+              | {
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url,
+                  run_id: (.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id)
+                }
+            ]
+            | sort_by(.completed_at, (.run_id | tonumber))
+          ')"
+          candidate_count="$(echo "${quality_candidates}" | jq 'length')"
+          if [ "${candidate_count}" -lt 1 ]; then
+            echo "::error::No successful Quality Summary check-run found for ${TARGET_SHA}."
+            exit 1
+          fi
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
+          if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to resolve quality workflow run id."
+            exit 1
+          fi
+          jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${quality_run_id}/jobs?per_page=100")"
+          security_job="$(echo "${jobs_json}" | jq -r '.jobs[] | select(.name == "Deterministic Security Scan") | .conclusion' | head -n 1)"
+          if [ -z "${security_job}" ]; then
+            echo "::error::Deterministic Security Scan job missing from quality run ${quality_run_id}."
+            exit 1
+          fi
+          if [ "${security_job}" != "success" ]; then
+            echo "::error::Deterministic Security Scan job did not succeed (conclusion=${security_job})."
+            exit 1
+          fi
+
       - name: Emit preflight summary
         run: |
           set -euo pipefail
@@ -311,6 +358,54 @@ jobs:
       group: release-build-${{ github.ref }}
       cancel-in-progress: false
     steps:
+      - name: Resolve canonical quality manifest digest
+        id: quality_manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100")"
+          quality_candidates="$(echo "${check_runs_json}" | jq -c '
+            [
+              (.check_runs // [])[]
+              | select(
+                  .name == "Quality Summary"
+                  and .app.slug == "github-actions"
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and (.details_url // "" | test("/actions/runs/[0-9]+"))
+                )
+              | {
+                  completed_at: (.completed_at // ""),
+                  details_url: .details_url,
+                  run_id: (.details_url | capture("/actions/runs/(?<id>[0-9]+)") | .id)
+                }
+            ]
+            | sort_by(.completed_at, (.run_id | tonumber))
+          ')"
+          quality_run_id="$(echo "${quality_candidates}" | jq -r 'last.run_id // empty')"
+          if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to resolve quality workflow run id for ${GITHUB_SHA}."
+            exit 1
+          fi
+          rm -rf release-quality-source
+          mkdir -p release-quality-source
+          gh run download "${quality_run_id}" --name "quality-package-artifacts" --dir release-quality-source
+          manifest_path="release-quality-source/quality-package-manifest.json"
+          if [ ! -f "${manifest_path}" ]; then
+            echo "::error::Missing quality-package-manifest.json in quality artifacts."
+            exit 1
+          fi
+          quality_sha256="$(jq -r '.sha256 // empty' "${manifest_path}")"
+          quality_tarball="$(jq -r '.tarball // empty' "${manifest_path}")"
+          if [ -z "${quality_sha256}" ] || ! echo "${quality_sha256}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Invalid quality manifest sha256."
+            exit 1
+          fi
+          echo "sha256=${quality_sha256}" >> "${GITHUB_OUTPUT}"
+          echo "tarball=${quality_tarball}" >> "${GITHUB_OUTPUT}"
+
       - name: Resolve canonical attested artifact for release commit
         id: attested_source
         env:
@@ -406,6 +501,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           SOURCE_MANIFEST="attestation-source/attestation-manifest.json"
+          EXPECTED_SHA256="${{ steps.quality_manifest.outputs.sha256 }}"
           if [ ! -f "${SOURCE_MANIFEST}" ]; then
             echo "::error::Missing attestation manifest from canonical artifact source."
             exit 1
@@ -418,6 +514,15 @@ jobs:
           fi
           if [ "${SOURCE_INTENT}" != "release_candidate" ]; then
             echo "::error::Attestation intent mismatch. expected=release_candidate actual=${SOURCE_INTENT:-<none>}."
+            exit 1
+          fi
+          SOURCE_SHA256="$(jq -r '.sha256 // empty' "${SOURCE_MANIFEST}")"
+          if [ -z "${SOURCE_SHA256}" ] || ! echo "${SOURCE_SHA256}" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "::error::Attestation manifest missing or invalid sha256."
+            exit 1
+          fi
+          if [ -n "${EXPECTED_SHA256}" ] && [ "${SOURCE_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Attestation sha256 mismatch. expected=${EXPECTED_SHA256} source=${SOURCE_SHA256}."
             exit 1
           fi
           SOURCE_WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${SOURCE_MANIFEST}")"

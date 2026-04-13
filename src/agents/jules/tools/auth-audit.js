@@ -66,7 +66,7 @@ const AUTH_AUDIT_PROVIDER_BREAKER_ENTRY_TTL_MS = 15 * 60 * 1000;
 const AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT = "default";
 const AUTH_AUDIT_PROVIDER_BREAKERS = new Map();
 const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV = "SENTINELAYER_AUTH_AUDIT_BREAKER_STATE_FILE";
-const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT = ".sentinelayer/state/auth-audit-provider-breakers.json";
+const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT = "";
 const AUTH_AUDIT_PROVIDER_AIDENID = "aidenid";
 const AUTH_AUDIT_PROVIDER_PLAYWRIGHT_TARGET = "playwright-target";
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
@@ -420,10 +420,18 @@ function getProviderBreakerStatePath() {
   if (!configuredPath) {
     return "";
   }
-  if (path.isAbsolute(configuredPath)) {
-    return configuredPath;
-  }
-  return path.resolve(process.cwd(), configuredPath);
+  const repoScope = String(process.env.GITHUB_REPOSITORY || "local").trim() || "local";
+  const runScope = String(process.env.GITHUB_RUN_ID || process.pid || "0").trim();
+  const scopeSuffix = createHash("sha256")
+    .update(`${repoScope}:${runScope}`)
+    .digest("hex")
+    .slice(0, 12);
+  const resolvedPath = path.isAbsolute(configuredPath)
+    ? configuredPath
+    : path.resolve(process.cwd(), configuredPath);
+  const ext = path.extname(resolvedPath) || ".json";
+  const base = resolvedPath.endsWith(ext) ? resolvedPath.slice(0, -ext.length) : resolvedPath;
+  return `${base}.${scopeSuffix}${ext}`;
 }
 
 function hydrateProviderBreakerState() {
@@ -435,11 +443,20 @@ function hydrateProviderBreakerState() {
   if (!statePath || !fs.existsSync(statePath)) {
     return;
   }
+  const nowMs = Date.now();
   try {
     const raw = fs.readFileSync(statePath, "utf-8");
     const parsed = JSON.parse(raw);
     const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
     for (const entry of entries) {
+      const lastUpdatedAtMs = Number.isFinite(entry?.lastUpdatedAtMs)
+        ? Math.max(0, Math.trunc(entry.lastUpdatedAtMs))
+        : Number.isFinite(entry?.windowStartedAt)
+          ? Math.max(0, Math.trunc(entry.windowStartedAt))
+          : 0;
+      if (lastUpdatedAtMs > 0 && (nowMs - lastUpdatedAtMs) > AUTH_AUDIT_PROVIDER_BREAKER_ENTRY_TTL_MS) {
+        continue;
+      }
       const provider = String(entry?.provider || "").trim().toLowerCase();
       if (!provider) {
         continue;
@@ -454,7 +471,7 @@ function hydrateProviderBreakerState() {
         windowStartedAt: Number.isFinite(entry?.windowStartedAt) ? Math.max(0, Math.trunc(entry.windowStartedAt)) : 0,
         openUntilMs: Number.isFinite(entry?.openUntilMs) ? Math.max(0, Math.trunc(entry.openUntilMs)) : 0,
         lastFailureCode: String(entry?.lastFailureCode || "").trim().toUpperCase(),
-        lastUpdatedAtMs: Number.isFinite(entry?.lastUpdatedAtMs) ? Math.max(0, Math.trunc(entry.lastUpdatedAtMs)) : Date.now(),
+        lastUpdatedAtMs,
       });
     }
   } catch {
