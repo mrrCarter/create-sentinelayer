@@ -16,6 +16,7 @@ import { resolveCredentialsFilePath } from "../auth/session-store.js";
 import { CLI_VERSION } from "../legacy-cli.js";
 
 const AUTH_DEBUG_ENV = "SENTINELAYER_DEBUG_ERRORS";
+const AUTH_UNMASK_REQUEST_IDS_ENV = "SENTINELAYER_UNMASK_REQUEST_IDS";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -64,10 +65,13 @@ function formatApiError(error) {
 
 function shouldExposeSensitiveAuthInfo() {
   const normalized = String(process.env[AUTH_DEBUG_ENV] || "").trim().toLowerCase();
+  const unmask = String(process.env[AUTH_UNMASK_REQUEST_IDS_ENV] || "").trim().toLowerCase();
   const isTty = Boolean(process.stdout && process.stdout.isTTY);
   const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
   const isDev = nodeEnv === "development";
-  return (normalized === "true" || normalized === "1" || normalized === "yes") && isTty && isDev;
+  const debugEnabled = normalized === "true" || normalized === "1" || normalized === "yes";
+  const unmaskEnabled = unmask === "true" || unmask === "1" || unmask === "yes";
+  return debugEnabled && unmaskEnabled && isTty && isDev;
 }
 
 function shouldRevealTokenIdentifiers() {

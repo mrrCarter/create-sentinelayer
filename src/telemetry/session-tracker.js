@@ -18,6 +18,12 @@ const MAX_SESSIONS = 50;
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const VERBOSE_TELEMETRY_ENV = "SENTINELAYER_VERBOSE_TELEMETRY";
 const DEBUG_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
+const UNMASK_TRACE_ID_ENV = "SENTINELAYER_UNMASK_TRACE_ID";
+
+function isTruthyEnvFlag(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
 
 function normalizeNonNegativeNumber(value) {
   const normalized = Number(value);
@@ -50,9 +56,19 @@ function pruneSessions(now = Date.now()) {
 }
 
 function shouldExposeTraceId() {
-  const verbose = String(process.env[VERBOSE_TELEMETRY_ENV] || "").trim().toLowerCase();
-  const debug = String(process.env[DEBUG_ERRORS_ENV] || "").trim().toLowerCase();
-  return verbose === "true" || verbose === "1" || verbose === "yes" || debug === "true" || debug === "1" || debug === "yes";
+  const verbose = isTruthyEnvFlag(process.env[VERBOSE_TELEMETRY_ENV]);
+  const debug = isTruthyEnvFlag(process.env[DEBUG_ERRORS_ENV]);
+  if (!verbose && !debug) {
+    return false;
+  }
+  if (!isTruthyEnvFlag(process.env[UNMASK_TRACE_ID_ENV])) {
+    return false;
+  }
+  const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
+  if (nodeEnv !== "development" && nodeEnv !== "test") {
+    return false;
+  }
+  return Boolean(process.stderr && process.stderr.isTTY);
 }
 
 function maskTraceId(traceId) {

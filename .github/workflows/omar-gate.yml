@@ -468,8 +468,11 @@ jobs:
     needs: [omar_scan, omar_untrusted_scan]
     if: >-
       ${{
-        (needs.omar_scan.result == 'success' && needs.omar_scan.outputs.trusted_context == 'true') ||
-        (needs.omar_untrusted_scan.result == 'success')
+        always() &&
+        (
+          (needs.omar_scan.result == 'success' && needs.omar_scan.outputs.trusted_context == 'true') ||
+          (needs.omar_untrusted_scan.result == 'success')
+        )
       }}
     runs-on: ubuntu-22.04
     permissions:
