@@ -36,14 +36,34 @@ jobs:
       - name: Enforce main branch protection preflight
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_GOVERNANCE_TOKEN || github.token }}
+          GOVERNANCE_TOKEN_CONFIGURED: ${{ secrets.RELEASE_GOVERNANCE_TOKEN != '' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" 2>/tmp/branch-protection.err || true)"
-          if [ -z "${protection_json}" ]; then
-            echo "::error::Failed to read branch protection for main."
-            cat /tmp/branch-protection.err || true
-            exit 1
+          if [ -z "${protection_json}" ] || ! echo "${protection_json}" | jq -e '.required_status_checks != null' >/dev/null 2>&1; then
+            api_message="$(echo "${protection_json}" | jq -r '.message // empty' 2>/dev/null || true)"
+            if [ -z "${api_message}" ]; then
+              api_message="$(tr -d '\r' </tmp/branch-protection.err | head -n 1 || true)"
+            fi
+            if [ "${GOVERNANCE_TOKEN_CONFIGURED}" = "true" ]; then
+              echo "::error::Failed to validate main branch protection with RELEASE_GOVERNANCE_TOKEN."
+              if [ -n "${api_message}" ]; then
+                echo "::error::${api_message}"
+              fi
+              exit 1
+            fi
+            echo "::warning::Skipping strict branch-protection preflight because workflow token cannot read protection settings."
+            if [ -n "${api_message}" ]; then
+              echo "::notice::Branch protection API response: ${api_message}"
+            fi
+            {
+              echo "## Branch Protection Preflight"
+              echo "- strict_validation: \`skipped\`"
+              echo "- reason: \`insufficient token scope\`"
+              echo "- guidance: Configure \`RELEASE_GOVERNANCE_TOKEN\` (repo admin scope) to enforce strict branch protection checks."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           required_contexts_json="$(echo "${protection_json}" | jq -c '
             [

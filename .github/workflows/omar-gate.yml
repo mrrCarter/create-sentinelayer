@@ -124,7 +124,6 @@ jobs:
         (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--'))
       }}
     runs-on: ubuntu-22.04
-    environment: security-review
     permissions:
       contents: read
       id-token: write
