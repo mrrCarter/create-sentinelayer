@@ -193,7 +193,11 @@ jobs:
               "${exchange_url}")"
             if [ "${exchange_status}" != "200" ]; then
               echo "::error::OIDC exchange failed with status ${exchange_status}."
-              head -c 1024 "${exchange_body}" || true
+              exchange_error_code="$(jq -r '.error_code // .code // empty' "${exchange_body}" 2>/dev/null || true)"
+              exchange_request_id="$(jq -r '.request_id // .requestId // empty' "${exchange_body}" 2>/dev/null || true)"
+              if [ -n "${exchange_error_code}" ] || [ -n "${exchange_request_id}" ]; then
+                echo "::error::exchange_error_code=${exchange_error_code:-<none>} exchange_request_id=${exchange_request_id:-<none>}"
+              fi
               exit 1
             fi
             content_type="$(grep -i '^content-type:' "${exchange_headers}" | tail -n 1 | cut -d':' -f2- | xargs || true)"

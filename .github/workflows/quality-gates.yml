@@ -635,11 +635,12 @@ jobs:
     name: Promote Candidate
     runs-on: ubuntu-22.04
     timeout-minutes: 5
-    needs: [security-scan, build-package, deploy-readiness]
+    needs: [security-scan, unit-coverage, build-package, deploy-readiness]
     if: >-
       ${{
         always() &&
         needs.security-scan.result == 'success' &&
+        needs.unit-coverage.result == 'success' &&
         needs.build-package.result == 'success' &&
         needs.deploy-readiness.result == 'success'
       }}

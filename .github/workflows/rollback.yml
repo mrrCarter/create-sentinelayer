@@ -23,6 +23,9 @@ on:
         type: boolean
   schedule:
     - cron: "0 7 * * 1"
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   actions: write
@@ -586,7 +589,7 @@ jobs:
           retention-days: 14
 
   rollback-readiness-audit:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -606,7 +609,7 @@ jobs:
         env:
           PACKAGE_NAME: sentinelayer-cli
           ROLLBACK_MODE: diagnostic
-          NON_BLOCKING_DIAGNOSTICS: "1"
+          NON_BLOCKING_DIAGNOSTICS: "0"
         run: |
           set -euo pipefail
           bash .github/scripts/release-rollback-readiness.sh

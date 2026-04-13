@@ -233,6 +233,10 @@ function shouldExposeApiErrorDetails() {
   return normalized === "true" || normalized === "1" || normalized === "yes";
 }
 
+function isTestNonIdempotentAllowed() {
+  return process.env.NODE_ENV === "test" && process.env.SENTINELAYER_ALLOW_NON_IDEMPOTENT === "1";
+}
+
 function sanitizeApiErrorMessage(message, fallback = "Sentinelayer API error") {
   const fallbackMessage = String(fallback || "Sentinelayer API error");
   const normalized = String(message || "").trim();
@@ -335,7 +339,7 @@ export async function requestJson(
     outgoingHeaders["Content-Type"] = "application/json";
   }
   const isIdempotentMutation = Boolean(resolvedIdempotencyKey);
-  const allowUnsafeMutation = Boolean(allowNonIdempotent);
+  const allowUnsafeMutation = Boolean(allowNonIdempotent) && isTestNonIdempotentAllowed();
   if (isMutationMethod && !isIdempotentMutation && !allowUnsafeMutation) {
     throw new SentinelayerApiError("Idempotency-Key is required for mutation requests.", {
       status: 400,
