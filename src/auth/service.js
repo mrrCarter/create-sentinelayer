@@ -164,7 +164,9 @@ async function pollCliAuthSession({
   const timeout = normalizePositiveNumber(timeoutMs, "timeoutMs", DEFAULT_AUTH_TIMEOUT_MS);
   const pollIntervalMs = Math.max(250, Math.round(Number(pollIntervalSeconds || 2) * 1000));
   const maxPollIntervalMs = Math.max(pollIntervalMs, Math.min(5_000, Math.floor(timeout / 4)));
+  const maxTransientErrors = Math.max(5, Math.ceil(timeout / maxPollIntervalMs));
   let pollAttempt = 0;
+  let transientErrorCount = 0;
   const deadline = Date.now() + timeout;
   const isTransientPollError = (error) =>
     error instanceof SentinelayerApiError &&
@@ -172,7 +174,10 @@ async function pollCliAuthSession({
       error.code === "TIMEOUT" ||
       error.status === 429 ||
       error.status >= 500);
-  const computePollDelayMs = () => {
+  const computePollDelayMs = (retryAfterMs = null) => {
+    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      return Math.max(250, Math.min(maxPollIntervalMs, Math.round(retryAfterMs)));
+    }
     const exponent = Math.min(6, pollAttempt);
     const backoffMs = Math.min(maxPollIntervalMs, Math.round(pollIntervalMs * Math.pow(1.5, exponent)));
     const jitterFactor = computeDeterministicJitterFactor({ sessionId, attempt: pollAttempt });
@@ -191,7 +196,16 @@ async function pollCliAuthSession({
       });
     } catch (error) {
       if (isTransientPollError(error)) {
-        const delayMs = computePollDelayMs();
+        transientErrorCount += 1;
+        if (transientErrorCount > maxTransientErrors) {
+          throw new SentinelayerApiError("CLI authentication polling aborted after repeated transient failures.", {
+            status: 503,
+            code: "CLI_AUTH_TRANSIENT_EXHAUSTED",
+            requestId: error.requestId || null,
+          });
+        }
+        const retryAfterMs = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : null;
+        const delayMs = computePollDelayMs(retryAfterMs);
         pollAttempt += 1;
         await sleep(delayMs);
         continue;

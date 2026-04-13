@@ -301,13 +301,14 @@ jobs:
           matches="$(grep -RInE "${pattern}" omar-artifacts || true)"
           if [ -n "${matches}" ]; then
             ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+            match_files="$(echo "${matches}" | cut -d: -f1 | sort -u | tr '\n' ' ')"
             if [ "${ref_protected}" = "true" ]; then
               echo "::error::Potential secret-like content detected in Omar artifacts on protected ref. Aborting upload."
-              echo "${matches}"
+              echo "::error::Affected files: ${match_files}"
               exit 1
             fi
             echo "::warning::Secret-like content detected in Omar artifacts; removing matching files before upload."
-            echo "${matches}" | cut -d: -f1 | sort -u | while read -r file; do
+            echo "${match_files}" | tr ' ' '\n' | while read -r file; do
               rm -f "${file}"
             done
           fi

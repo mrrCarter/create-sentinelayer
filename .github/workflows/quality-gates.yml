@@ -20,7 +20,7 @@ concurrency:
       (github.ref == 'refs/heads/main' && 'quality-gates-main') ||
       format('quality-gates-ref-{0}', github.ref)
     }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   checks: read

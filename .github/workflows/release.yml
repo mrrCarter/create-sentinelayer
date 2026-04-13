@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 concurrency:
-  group: release-publish-prod
+  group: release-publish-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -153,29 +153,45 @@ jobs:
             echo "::error::Tag signer email '${signer_email:-<none>}' is not allowlisted. Allowed signer emails: ${signer_allowlist}."
             exit 1
           fi
-          release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100")"
-          release_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
-            [
-              (.workflow_runs // [])[]
-              | select(
-                  .conclusion == "success"
-                  and (.event // "") == "push"
-                  and (.head_branch // "") == "main"
-                  and (.head_sha // "") == $sha
-                  and (.path // "") == env.required_release_workflow_path
-                  and (.name // "") == env.required_release_workflow_name
-                  and (.actor.login // "") == env.required_release_workflow_actor
-                )
-              | {
-                  id: (.id | tostring),
-                  run_number: (.run_number // 0),
-                  run_attempt: (.run_attempt // 0),
-                  created_at: (.created_at // ""),
-                  updated_at: (.updated_at // "")
-                }
-            ]
-            | sort_by(.run_number, .run_attempt, .updated_at, .created_at)
-          ')"
+          release_candidates='[]'
+          page=1
+          while true; do
+            release_runs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-please.yml/runs?event=push&branch=main&status=completed&per_page=100&page=${page}")"
+            page_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
+              [
+                (.workflow_runs // [])[]
+                | select(
+                    .conclusion == "success"
+                    and (.event // "") == "push"
+                    and (.head_branch // "") == "main"
+                    and (.head_sha // "") == $sha
+                    and (.path // "") == env.required_release_workflow_path
+                    and (.name // "") == env.required_release_workflow_name
+                    and (.actor.login // "") == env.required_release_workflow_actor
+                  )
+                | {
+                    id: (.id | tostring),
+                    run_number: (.run_number // 0),
+                    run_attempt: (.run_attempt // 0),
+                    created_at: (.created_at // ""),
+                    updated_at: (.updated_at // "")
+                  }
+              ]
+            ')"
+            release_candidates="$(jq -s '.[0] + .[1]' \
+              <(printf '%s' "${release_candidates}") \
+              <(printf '%s' "${page_candidates}"))"
+            page_size="$(echo "${release_runs_json}" | jq '.workflow_runs | length')"
+            if [ "${page_size}" -lt 100 ]; then
+              break
+            fi
+            page="$((page + 1))"
+            if [ "${page}" -gt 50 ]; then
+              echo "::error::Pagination exceeded 50 pages while resolving release-please candidates."
+              exit 1
+            fi
+          done
+          release_candidates="$(echo "${release_candidates}" | jq -c 'sort_by(.run_number, .run_attempt, .updated_at, .created_at)')"
           release_candidate_count="$(echo "${release_candidates}" | jq 'length')"
           if [ "${release_candidate_count}" -lt 1 ]; then
             echo "::error::No successful release-please workflow run found on main for tagged commit ${GITHUB_SHA}."

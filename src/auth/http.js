@@ -352,11 +352,13 @@ export async function requestJson(
       const statusCode = Number(response.status || 500);
       const retryable = retryableMethod && shouldRetryStatus(statusCode);
       const shouldRecordCircuitFailure = shouldRecordFailureForStatus(statusCode);
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
       const error = new SentinelayerApiError(apiError.message, {
         status: statusCode,
         code: apiError.code,
         requestId,
       });
+      error.retryAfterMs = retryAfterMs;
 
       if (!retryable || attempt >= normalizedMaxRetries) {
         if (shouldRecordCircuitFailure) {
