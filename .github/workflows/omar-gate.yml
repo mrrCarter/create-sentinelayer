@@ -177,8 +177,8 @@ jobs:
           pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
             allow_static="$(echo "${OMAR_ALLOW_STATIC_SECRETS:-false}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-            if [ "${ref_protected}" = "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
+            if [ "${ref_protected}" = "true" ] && [ "${allow_static}" != "true" ]; then
+              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback)."
               exit 1
             fi
             if [ "${allow_static}" != "true" ]; then
