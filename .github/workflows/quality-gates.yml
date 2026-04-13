@@ -345,6 +345,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [unit-coverage, security-scan]
+    if: ${{ needs.security-scan.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -381,7 +382,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     needs: [unit-coverage, e2e-packaging, security-scan]
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref_protected == true }}
+    if: >-
+      ${{
+        (github.event_name != 'workflow_dispatch' || github.ref_protected == true) &&
+        needs.security-scan.result == 'success'
+      }}
     permissions:
       contents: read
       id-token: write

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /**
@@ -70,26 +71,62 @@ function resolveRequestId(headers) {
   return null;
 }
 
-function hasIdempotencyKey(headers) {
+function resolveIdempotencyKey(headers) {
   if (!headers) {
-    return false;
+    return null;
   }
   if (typeof headers.get === "function") {
     const value =
       headers.get("idempotency-key") ||
       headers.get("Idempotency-Key") ||
       headers.get("IDEMPOTENCY-KEY");
-    return Boolean(String(value || "").trim());
+    return String(value || "").trim() || null;
   }
   if (typeof headers !== "object") {
-    return false;
+    return null;
   }
   for (const [key, value] of Object.entries(headers)) {
-    if (String(key || "").toLowerCase() === "idempotency-key" && String(value || "").trim()) {
-      return true;
+    if (String(key || "").toLowerCase() === "idempotency-key") {
+      const normalized = String(value || "").trim();
+      return normalized || null;
     }
   }
-  return false;
+  return null;
+}
+
+function buildIdempotencyKey({ method, url, body }) {
+  const fingerprint = JSON.stringify({
+    method: String(method || "").toUpperCase(),
+    url: String(url || ""),
+    body: body === undefined ? null : body,
+  });
+  const digest = createHash("sha256").update(fingerprint).digest("hex");
+  return `sl-${digest.slice(0, 32)}`;
+}
+
+function normalizeHeaderObject(headers) {
+  if (!headers) {
+    return {};
+  }
+  if (typeof headers.get === "function") {
+    const normalized = {};
+    for (const [key, value] of headers.entries()) {
+      normalized[key] = value;
+    }
+    return normalized;
+  }
+  if (typeof headers !== "object") {
+    return {};
+  }
+  return { ...headers };
+}
+
+function applyIdempotencyKey(headers, idempotencyKey) {
+  const normalized = normalizeHeaderObject(headers);
+  if (idempotencyKey && !resolveIdempotencyKey(normalized)) {
+    normalized["Idempotency-Key"] = idempotencyKey;
+  }
+  return normalized;
 }
 
 export class SentinelayerApiError extends Error {
@@ -262,7 +299,17 @@ export async function requestJson(
   } = {}
 ) {
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
-  const isIdempotentMutation = hasIdempotencyKey(headers);
+  const existingIdempotencyKey = resolveIdempotencyKey(headers);
+  const isMutationMethod =
+    normalizedMethod === "POST" ||
+    normalizedMethod === "PUT" ||
+    normalizedMethod === "PATCH" ||
+    normalizedMethod === "DELETE";
+  const autoIdempotencyKey =
+    isMutationMethod && !existingIdempotencyKey ? buildIdempotencyKey({ method: normalizedMethod, url, body }) : null;
+  const idempotencyKey = existingIdempotencyKey || autoIdempotencyKey;
+  const requestHeaders = applyIdempotencyKey(headers, idempotencyKey);
+  const isIdempotentMutation = Boolean(idempotencyKey);
   const retryableMethod =
     normalizedMethod === "GET" ||
     normalizedMethod === "HEAD" ||
@@ -287,15 +334,19 @@ export async function requestJson(
   let lastRetryableError = null;
   for (let attempt = 0; attempt <= normalizedMaxRetries; attempt += 1) {
     const controller = new AbortController();
+    let timeoutTriggered = false;
     let timeoutHandle;
-    timeoutHandle = setTimeout(() => controller.abort(), normalizedTimeoutMs);
+    timeoutHandle = setTimeout(() => {
+      timeoutTriggered = true;
+      controller.abort();
+    }, normalizedTimeoutMs);
 
     try {
       const response = await fetch(String(url), {
         method: normalizedMethod,
         headers: {
           "Content-Type": "application/json",
-          ...headers,
+          ...requestHeaders,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         redirect: "error",
@@ -382,11 +433,18 @@ export async function requestJson(
       }
 
       const isAbortError = Boolean(error && typeof error === "object" && error.name === "AbortError");
+      const abortMessage = error instanceof Error ? error.message : String(error || "");
+      const abortReason =
+        isAbortError && !timeoutTriggered && /cancel/i.test(abortMessage) ? "CANCELLED" : "TIMEOUT";
+      const abortCode = isAbortError ? abortReason : "NETWORK_ERROR";
+      const abortStatus = isAbortError ? (abortReason === "CANCELLED" ? 499 : 408) : 503;
       const normalizedError = new SentinelayerApiError(
-        isAbortError ? "Request timed out." : (error instanceof Error ? error.message : String(error || "Request failed")),
+        isAbortError
+          ? (abortReason === "CANCELLED" ? "Request cancelled." : "Request timed out.")
+          : (error instanceof Error ? error.message : String(error || "Request failed")),
         {
-          status: isAbortError ? 408 : 503,
-          code: isAbortError ? "TIMEOUT" : "NETWORK_ERROR",
+          status: abortStatus,
+          code: abortCode,
         }
       );
 

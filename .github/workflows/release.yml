@@ -1082,6 +1082,27 @@ jobs:
           fi
           echo "No residual npm auth token remains after publish."
 
+  rollback-readiness:
+    needs: [publish-release]
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.publish-release.result == 'success'
+      }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
       - name: Run post-publish rollback readiness drill
         shell: bash
         env:
@@ -1093,4 +1114,13 @@ jobs:
           set -euo pipefail
           release_version="${RELEASE_VERSION#v}"
           RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
+          test -f release-rollback-readiness.json
+
+      - name: Upload rollback readiness report
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: release-rollback-readiness
+          path: release-rollback-readiness.json
+          if-no-files-found: error
+          retention-days: 7
 
