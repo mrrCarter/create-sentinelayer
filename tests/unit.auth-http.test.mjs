@@ -55,6 +55,39 @@ test("Unit auth http: retries retryable API statuses with bounded backoff", asyn
   }
 });
 
+test("Unit auth http: retries idempotent mutation when Idempotency-Key is present", async () => {
+  __resetRequestCircuitForTests();
+  const previousFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return createResponse(503, {
+        error: { code: "TEMP_UNAVAILABLE", message: "Retry" },
+      });
+    }
+    return createResponse(200, { ok: true, attempt: callCount });
+  };
+
+  try {
+    const response = await requestJson("https://api.example.com/test", {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": "idem-123",
+      },
+      maxRetries: 1,
+      retryDelayMs: 1,
+      timeoutMs: 1000,
+    });
+    assert.equal(callCount, 2);
+    assert.equal(response.ok, true);
+    assert.equal(response.attempt, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    __resetRequestCircuitForTests();
+  }
+});
+
 test("Unit auth http: does not retry non-retryable API status codes", async () => {
   __resetRequestCircuitForTests();
   const previousFetch = globalThis.fetch;

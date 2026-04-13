@@ -86,6 +86,14 @@ function createIdempotencyKey(prefix) {
   return `${normalizedPrefix}-${crypto.randomUUID()}`;
 }
 
+function computeDeterministicJitterFactor({ sessionId, attempt }) {
+  const seed = `${String(sessionId || "").trim()}|${Number(attempt) || 0}`;
+  const digest = crypto.createHash("sha256").update(seed).digest();
+  const raw = digest.readUInt32BE(0);
+  const ratio = raw / 0xffffffff;
+  return 0.85 + ratio * 0.3;
+}
+
 function isNearExpiry(tokenExpiresAt, thresholdDays) {
   const normalized = String(tokenExpiresAt || "").trim();
   if (!normalized) {
@@ -167,7 +175,7 @@ async function pollCliAuthSession({
   const computePollDelayMs = () => {
     const exponent = Math.min(6, pollAttempt);
     const backoffMs = Math.min(maxPollIntervalMs, Math.round(pollIntervalMs * Math.pow(1.5, exponent)));
-    const jitterFactor = 0.85 + Math.random() * 0.3;
+    const jitterFactor = computeDeterministicJitterFactor({ sessionId, attempt: pollAttempt });
     return Math.max(250, Math.round(backoffMs * jitterFactor));
   };
 

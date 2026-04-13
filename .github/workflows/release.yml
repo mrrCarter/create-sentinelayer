@@ -410,6 +410,9 @@ jobs:
           TARBALL="$(basename "${SOURCE_TARBALL_PATH}")"
           cp "${SOURCE_TARBALL_PATH}" "${TARBALL}"
           SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
+          PACKAGE_NAME="$(node -p \"require('./package.json').name\")"
+          PACKAGE_VERSION="$(node -p \"require('./package.json').version\")"
           if [ -n "${SOURCE_SHA256}" ] && [ "${SOURCE_SHA256}" != "${SHA256}" ]; then
             echo "::error::Canonical artifact digest mismatch. source=${SOURCE_SHA256} actual=${SHA256}."
             exit 1
@@ -417,12 +420,18 @@ jobs:
           jq -n \
             --arg tarball "${TARBALL}" \
             --arg sha256 "${SHA256}" \
+            --arg integrity "${INTEGRITY}" \
+            --arg package_name "${PACKAGE_NAME}" \
+            --arg package_version "${PACKAGE_VERSION}" \
             --arg commit_sha "${GITHUB_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
             --arg attestation_run_id "${{ steps.attested_source.outputs.run_id }}" \
             '{
+              package_name: $package_name,
+              package_version: $package_version,
               tarball: $tarball,
               sha256: $sha256,
+              integrity: $integrity,
               commit_sha: $commit_sha,
               workflow_ref: $workflow_ref,
               source_attestation_run_id: ($attestation_run_id | if length > 0 then . else null end)
@@ -649,8 +658,12 @@ jobs:
           test -f "${MANIFEST}"
           MANIFEST_TARBALL="$(jq -r '.tarball // empty' "${MANIFEST}")"
           EXPECTED_SHA256="$(jq -r '.sha256' "${MANIFEST}")"
+          MANIFEST_INTEGRITY="$(jq -r '.integrity // empty' "${MANIFEST}")"
+          MANIFEST_PACKAGE_NAME="$(jq -r '.package_name // empty' "${MANIFEST}")"
+          MANIFEST_PACKAGE_VERSION="$(jq -r '.package_version // empty' "${MANIFEST}")"
           MANIFEST_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${MANIFEST}")"
           ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
+          ACTUAL_INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
           if [ -z "${MANIFEST_TARBALL}" ]; then
             echo "::error::Manifest missing expected tarball name."
             exit 1
@@ -661,6 +674,18 @@ jobs:
           fi
           if [ -z "${EXPECTED_SHA256}" ] || [ "${EXPECTED_SHA256}" = "null" ]; then
             echo "::error::Manifest missing expected sha256."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_INTEGRITY}" ] || [ "${MANIFEST_INTEGRITY}" = "null" ]; then
+            echo "::error::Manifest missing expected integrity."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_PACKAGE_NAME}" ] || [ "${MANIFEST_PACKAGE_NAME}" = "null" ]; then
+            echo "::error::Manifest missing package_name."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_PACKAGE_VERSION}" ] || [ "${MANIFEST_PACKAGE_VERSION}" = "null" ]; then
+            echo "::error::Manifest missing package_version."
             exit 1
           fi
           if [ -z "${MANIFEST_COMMIT_SHA}" ] || [ "${MANIFEST_COMMIT_SHA}" = "null" ]; then
@@ -674,6 +699,11 @@ jobs:
           if [ "${EXPECTED_SHA256}" != "${ACTUAL_SHA256}" ]; then
             echo "::error::Release artifact checksum mismatch."
             echo "::error::Expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}."
+            exit 1
+          fi
+          if [ "${MANIFEST_INTEGRITY}" != "${ACTUAL_INTEGRITY}" ]; then
+            echo "::error::Release artifact integrity mismatch."
+            echo "::error::Expected ${MANIFEST_INTEGRITY}, got ${ACTUAL_INTEGRITY}."
             exit 1
           fi
           BUILD_ATTESTATION_FILE="release-artifact/release-attestation-verify.json"
@@ -697,6 +727,9 @@ jobs:
           fi
           echo "VERIFIED_TARBALL=${TARBALL}" >> "$GITHUB_ENV"
           echo "EXPECTED_SHA256=${EXPECTED_SHA256}" >> "$GITHUB_ENV"
+          echo "EXPECTED_INTEGRITY=${MANIFEST_INTEGRITY}" >> "$GITHUB_ENV"
+          echo "EXPECTED_PACKAGE_NAME=${MANIFEST_PACKAGE_NAME}" >> "$GITHUB_ENV"
+          echo "EXPECTED_PACKAGE_VERSION=${MANIFEST_PACKAGE_VERSION}" >> "$GITHUB_ENV"
 
       - name: Enforce release attestation verification policy
         env:
@@ -758,6 +791,14 @@ jobs:
             echo "::error::Failed to resolve package identity from package.json."
             exit 1
           fi
+          if [ -n "${EXPECTED_PACKAGE_NAME:-}" ] && [ "${package_name}" != "${EXPECTED_PACKAGE_NAME}" ]; then
+            echo "::error::Manifest package_name mismatch. expected=${EXPECTED_PACKAGE_NAME} actual=${package_name}."
+            exit 1
+          fi
+          if [ -n "${EXPECTED_PACKAGE_VERSION:-}" ] && [ "${package_version}" != "${EXPECTED_PACKAGE_VERSION}" ]; then
+            echo "::error::Manifest package_version mismatch. expected=${EXPECTED_PACKAGE_VERSION} actual=${package_version}."
+            exit 1
+          fi
           if [ "${package_version}" != "${tag_version}" ]; then
             echo "::error::Tag/version mismatch. tag=${tag_version} package=${package_version}."
             exit 1
@@ -778,12 +819,24 @@ jobs:
               echo "::error::Published tarball checksum mismatch for ${package_name}@${package_version}. expected=${expected_sha1} published=${published_sha1}."
               exit 1
             fi
+            if [ -n "${EXPECTED_INTEGRITY:-}" ]; then
+              published_integrity="$(npm view "${package_name}@${package_version}" dist.integrity --json 2>/tmp/npm-view.err || true)"
+              published_integrity="$(echo "${published_integrity}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+              if [ -n "${published_integrity}" ] && [ "${published_integrity}" != "${EXPECTED_INTEGRITY}" ]; then
+                echo "::error::Published integrity mismatch for ${package_name}@${package_version}. expected=${EXPECTED_INTEGRITY} published=${published_integrity}."
+                exit 1
+              fi
+            fi
             echo "already_published=true" >> "$GITHUB_OUTPUT"
             {
               echo "### npm publish idempotency guard"
               echo "- package: \`${package_name}@${package_version}\`"
               echo "- status: \`already published\`"
               echo "- published_sha1: \`${published_sha1:-<unavailable>}\`"
+              if [ -n "${EXPECTED_INTEGRITY:-}" ]; then
+                echo "- published_integrity: \`${published_integrity:-<unavailable>}\`"
+                echo "- expected_integrity: \`${EXPECTED_INTEGRITY}\`"
+              fi
               echo "- expected_sha1: \`${expected_sha1}\`"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -811,6 +864,14 @@ jobs:
             echo "::error::Canary publish verification failed. dist-tags.next=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
             cat /tmp/npm-next.err || true
             exit 1
+          fi
+          if [ -n "${EXPECTED_INTEGRITY:-}" ]; then
+            published_integrity="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" dist.integrity --json 2>/tmp/npm-view.err || true)"
+            published_integrity="$(echo "${published_integrity}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+            if [ -n "${published_integrity}" ] && [ "${published_integrity}" != "${EXPECTED_INTEGRITY}" ]; then
+              echo "::error::Canary publish integrity mismatch. expected=${EXPECTED_INTEGRITY} published=${published_integrity}."
+              exit 1
+            fi
           fi
 
       - name: Validate canary install from npm registry

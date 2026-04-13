@@ -262,6 +262,34 @@ jobs:
       - name: Run test suite
         run: npm test
 
+  security-scan:
+    name: Deterministic Security Scan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    needs: [eval-enforce, lint, syntax-matrix, test]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Run deterministic security scan
+        run: node bin/sl.js review scan --path . --json --refresh
+
   unit-coverage:
     name: Unit Coverage (>=80%, Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
@@ -342,7 +370,7 @@ jobs:
     name: Build Package Artifact
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    needs: [unit-coverage, e2e-packaging]
+    needs: [unit-coverage, e2e-packaging, security-scan]
     permissions:
       contents: read
       id-token: write
@@ -481,7 +509,7 @@ jobs:
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, unit-coverage, e2e-packaging, build-package, deploy-readiness]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, build-package, deploy-readiness]
     if: ${{ always() }}
     steps:
       - name: Confirm all quality gates passed
@@ -514,6 +542,10 @@ jobs:
           fi
           if [ "${{ needs.test.result }}" != "success" ]; then
             echo "::error::test failed."
+            failed=1
+          fi
+          if [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "::error::security-scan failed."
             failed=1
           fi
           if [ "${{ needs.unit-coverage.result }}" != "success" ]; then

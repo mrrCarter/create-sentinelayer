@@ -96,6 +96,18 @@ jobs:
           resolved_token="${SENTINELAYER_TOKEN}"
           exchange_url="$(echo "${OMAR_TOKEN_EXCHANGE_URL}" | xargs || true)"
           exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
+          event_name="${GITHUB_EVENT_NAME}"
+          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+          if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
+            if [ "${event_name}" != "workflow_dispatch" ]; then
+              echo "::error::OIDC exchange is required for Omar Gate on ${event_name} events. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
+              exit 1
+            fi
+            if [ "${ref_protected}" != "true" ]; then
+              echo "::error::Static-secret Omar mode is only allowed for workflow_dispatch on protected refs."
+              exit 1
+            fi
+          fi
           if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
             if ! echo "${exchange_url}" | grep -Eq '^https://'; then
               echo "::error::OMAR_TOKEN_EXCHANGE_URL must use https://."
@@ -165,7 +177,6 @@ jobs:
             fi
             mode="oidc-exchange"
           fi
-          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           require_oidc="$(echo "${OMAR_REQUIRE_OIDC_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           if [ "${mode}" = "static-secrets" ] && [ "${ref_protected}" = "true" ] && [ "${require_oidc}" != "false" ]; then
             echo "::error::Static-secret Omar mode is blocked on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."

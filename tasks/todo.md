@@ -1377,10 +1377,12 @@ Review:
 - [x] `npm run verify` (local): check + e2e + unit coverage + npm pack succeeded.
 - [x] `/omargate deep` (local, test bypass): P1=15, P2=85, blocking=true (deterministic baseline; report saved under `.sentinelayer/reports/`).
 - [x] `/audit` (local, test bypass): P1=0, P2=8, blocking=false.
-- [ ] Plan: harden Omar Gate gating (disallow weaker workflow_dispatch severity, reject non-PR check runs) in `omar-gate.yml` and `quality-gates.yml`.
-- [ ] Plan: align release provenance to use attested artifact from `attestations.yml` (no re-pack in release workflow).
-- [ ] Plan: enforce HTTPS API base URL normalization (allow localhost http only).
-- [ ] Implement the above fixes on `hardening/cli-omar-only-ci`.
+- [x] Plan: harden Omar Gate gating (disallow weaker workflow_dispatch severity, reject non-PR check runs) in `omar-gate.yml` and `quality-gates.yml`.
+- [x] Plan: align release provenance to use attested artifact from `attestations.yml` (no re-pack in release workflow).
+- [x] Plan: enforce HTTPS API base URL normalization (allow localhost http only).
+- [x] Implement the above fixes on `hardening/cli-omar-only-ci`.
+- [x] Omar Gate run `24320900087` (run_id `3c2e3208-c247-48ee-8d23-558ad0eff9ac`): P0=0, P1=0, P2=6.
+- [x] Apply P2 fixes: static-secret gating -> workflow_dispatch only, idempotent mutation retries, deterministic poll jitter, attestations require Omar Gate, quality-gates security scan, release manifest integrity checks.
 - [ ] Re-run Omar Gate on PR `hardening/cli-omar-only-ci` and fix any remaining P0-P2 findings.
 - [ ] Merge after Omar Gate passes; record run IDs and findings delta.
 ## 2026-04-09 - Workflow P2 Burn-Down (Batch P2-A34)

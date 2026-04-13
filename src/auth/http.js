@@ -61,6 +61,22 @@ function resolveRequestId(headers) {
   return null;
 }
 
+function hasIdempotencyKey(headers) {
+  if (!headers || typeof headers !== "object") {
+    return false;
+  }
+  const candidates = ["Idempotency-Key", "idempotency-key", "IDEMPOTENCY-KEY"];
+  for (const name of candidates) {
+    if (Object.prototype.hasOwnProperty.call(headers, name)) {
+      const value = String(headers[name] || "").trim();
+      if (value) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export class SentinelayerApiError extends Error {
   /**
    * @param {string} message
@@ -192,7 +208,16 @@ export async function requestJson(
   } = {}
 ) {
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
-  const retryableMethod = normalizedMethod === "GET" || normalizedMethod === "HEAD" || normalizedMethod === "OPTIONS";
+  const isIdempotentMutation = hasIdempotencyKey(headers);
+  const retryableMethod =
+    normalizedMethod === "GET" ||
+    normalizedMethod === "HEAD" ||
+    normalizedMethod === "OPTIONS" ||
+    (isIdempotentMutation &&
+      (normalizedMethod === "POST" ||
+        normalizedMethod === "PUT" ||
+        normalizedMethod === "PATCH" ||
+        normalizedMethod === "DELETE"));
   const circuitScope = resolveCircuitScope(url);
   if (isCircuitOpen(circuitScope)) {
     throw new SentinelayerApiError("Request circuit breaker is open after consecutive API failures.", {
