@@ -84,6 +84,10 @@ while true; do
     check_optional="$(echo "${check_spec}" | jq -r '.optional // false')"
     check_workflow_path="$(echo "${check_spec}" | jq -r '.workflow_path // empty')"
     check_workflow_name="$(echo "${check_spec}" | jq -r '.workflow_name // empty')"
+    require_actions_url="false"
+    if [ -n "${check_workflow_path}" ] || [ -n "${check_workflow_name}" ]; then
+      require_actions_url="true"
+    fi
 
     if [ -z "${check_name}" ] || [ "${check_name}" = "null" ]; then
       echo "::error::Invalid check spec: missing name."
@@ -96,10 +100,18 @@ while true; do
 
     latest_match="$(echo "${check_runs_json}" | jq -c \
       --arg name "${check_name}" \
-      --arg app "${check_app}" '
+      --arg app "${check_app}" \
+      --arg require_actions_url "${require_actions_url}" '
         [
           .[]
-          | select(.name == $name and .app.slug == $app)
+          | select(
+              .name == $name
+              and .app.slug == $app
+              and (
+                $require_actions_url != "true"
+                or ((.details_url // "") | test("/actions/runs/[0-9]+"))
+              )
+            )
           | {
               status: .status,
               conclusion: (.conclusion // ""),

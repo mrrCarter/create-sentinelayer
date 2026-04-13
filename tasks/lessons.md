@@ -174,3 +174,8 @@
 
 - When Omar Gate is the required security path, do not rely on multi-agent review workflows or substitute checks; ensure the Omar Gate workflow is the only enforcement path and is actually executed per PR.
 - If Omar LLM analysis is required, explicitly set `sentinelayer_managed_llm: "true"` (or equivalent action input) and verify the workflow is not running in a skipped/LLM-disabled mode before merging.
+
+## 2026-04-13
+
+- Workflow-bound required-check resolvers must filter check-runs to GitHub Actions URLs (`/actions/runs/<run_id>`) before provenance validation; otherwise non-workflow checks with the same name can cause false failures.
+- Any local deterministic CLI command used inside CI (for example `sl review scan`) must receive a deterministic auth context (`SENTINELAYER_TOKEN`) even when it does not call privileged APIs, or auth-gate will fail the workflow.

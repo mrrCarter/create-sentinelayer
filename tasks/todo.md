@@ -1530,3 +1530,11 @@ Review:
 - [ ] Open PR from `hardening/cli-omar-only-ci-v2`, run Omar Gate watch loop (`gh run watch`), and merge on green.
 - [ ] Stream admin/API errors from `sentinelayer-api` + dashboard surfaces, group reproducible issues by root cause.
 - [ ] Implement grouped fixes in batch PR(s) with Omar loop and merge only after Omar pass.
+
+## 2026-04-13 - PR-283 CI Unblock Batch 3
+- [x] Reproduce failing checks on `hardening/cli-omar-only-ci` and capture exact failing jobs/logs (`Quality Gates` deterministic security scan, `Build Attestation` required-check resolution).
+- [x] Fix quality-gates deterministic security scan auth context by injecting an ephemeral CI `SENTINELAYER_TOKEN` for local scan execution.
+- [x] Fix `.github/scripts/require-check-runs.sh` to require `/actions/runs/<id>` details URLs for workflow-bound checks so non-workflow check URLs do not break provenance resolution.
+- [x] Run local validation (`npm run verify` + workflow YAML parse) before push.
+- [ ] Push PR-283 update and watch `Omar Gate`, `Quality Gates`, and `Build Attestation` to completion (`gh run watch`).
+- [ ] Merge PR-283 once required checks are green.
