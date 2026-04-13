@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
 const BOOTSTRAP_VALUE_FROM_GENERATE = ["fixture", "boot", "gen", "value"].join("_");
 const BOOTSTRAP_VALUE_FROM_ENDPOINT = ["fixture", "boot", "fallback", "value"].join("_");
+const SPEC_ID_FROM_GENERATE = ["fixture", "spec", "id", "v1"].join("_");
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -36,6 +37,8 @@ async function startMockApi({
   includeBootstrapInGenerate = true,
   includeOmarWorkflowInGenerate = true,
   requiredSecretName = "SENTINELAYER_TOKEN",
+  generatedSpecId = SPEC_ID_FROM_GENERATE,
+  workflowSpecId = null,
 } = {}) {
   const state = {
     pollCalls: 0,
@@ -72,15 +75,28 @@ async function startMockApi({
       if (req.method === "POST" && req.url === "/api/v1/builder/generate") {
         state.generateAuthHeader = String(req.headers.authorization || "");
         state.generatePayload = await readJsonBody(req);
+        const resolvedSpecId = String(generatedSpecId || "").trim();
+        const resolvedWorkflowSpecId = String((workflowSpecId ?? generatedSpecId) || "").trim();
         const payload = {
           project_name: "demo-app",
+          spec_id: resolvedSpecId,
           spec_sheet: "# Spec\n\nShip it.",
           playbook: "# Build Guide\n\nDo this.",
           builder_prompt: "Follow the generated docs.",
         };
         if (includeOmarWorkflowInGenerate) {
           payload.omar_gate_yaml =
-            "name: Omar Gate\non:\n  pull_request:\n    types: [opened, synchronize, reopened]\n";
+            `name: Omar Gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  omar_gate:
+    steps:
+      - uses: mrrCarter/sentinelayer-v1-action@v1
+        with:
+          sentinelayer_spec_id: ${resolvedWorkflowSpecId}
+`;
         }
         if (includeBootstrapInGenerate) {
           payload.bootstrap_token = {
@@ -693,6 +709,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
       SENTINELAYER_CLI_NON_INTERACTIVE: "1",
       SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
       SENTINELAYER_SECRET_SINK_FILE: secretSinkPath,
+      OPENAI_API_KEY: "sk-test-openai-123",
       CURSOR_TRACE_ID: "cursor-trace-test",
       SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
         baseInterview({
@@ -714,6 +731,8 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
     const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
+    const workflowText = await readFile(path.join(projectDir, ".github", "workflows", "omar-gate.yml"), "utf-8");
+    const lockfile = JSON.parse(await readFile(path.join(projectDir, ".sentinelayer", "config.json"), "utf-8"));
     const secretSink = await readFile(secretSinkPath, "utf-8");
 
     assert.match(envText, new RegExp(`SENTINELAYER_TOKEN=${BOOTSTRAP_VALUE_FROM_GENERATE}`));
@@ -730,6 +749,12 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(handoffText, /sentinel \/omargate deep --path \./);
     assert.match(handoffText, /Workflow tuning options:/);
     assert.match(handoffText, /scan_mode: deep/);
+    assert.match(workflowText, new RegExp(`sentinelayer_spec_id:\\s*${SPEC_ID_FROM_GENERATE}`));
+    assert.equal(lockfile.spec_id, SPEC_ID_FROM_GENERATE);
+    assert.equal(lockfile.sentinelayer_token, BOOTSTRAP_VALUE_FROM_GENERATE);
+    assert.equal(lockfile.required_secret_name, "SENTINELAYER_TOKEN");
+    assert.match(String(lockfile.workflow_path || ""), /^\.github\/workflows\/omar-gate\.yml$/);
+    assert.equal(lockfile.repo_slug, "acme/demo-repo");
     assert.equal(packageJson.scripts["sentinel:start"].includes("Sentinelayer artifacts are ready"), true);
     assert.match(String(packageJson.scripts["sentinel:omargate"] || ""), /\/omargate deep --path \./);
     assert.match(String(packageJson.scripts["sentinel:omargate:json"] || ""), /\/omargate deep --path \. --json/);
@@ -741,6 +766,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
       secretSink,
       new RegExp(`acme\\/demo-repo\\|SENTINELAYER_TOKEN\\|${BOOTSTRAP_VALUE_FROM_GENERATE}`)
     );
+    assert.match(secretSink, /acme\/demo-repo\|OPENAI_API_KEY\|sk-test-openai-123/);
 
     assert.equal(mock.state.sessionStartPayload.ide, "cursor");
     assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
@@ -773,11 +799,44 @@ test("CLI fallback workflow binds dynamically to API-provided secret name", asyn
     const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
     assert.equal(result.code, 0, result.stderr || result.stdout);
 
+    const projectDir = path.join(tempRoot, "demo-app");
     const workflowText = await readFile(
-      path.join(tempRoot, "demo-app", ".github", "workflows", "omar-gate.yml"),
+      path.join(projectDir, ".github", "workflows", "omar-gate.yml"),
       "utf-8"
     );
+    const lockfile = JSON.parse(await readFile(path.join(projectDir, ".sentinelayer", "config.json"), "utf-8"));
     assert.match(workflowText, /sentinelayer_token:\s*\$\{\{\s*secrets\.SENTINELAYER_BETA_TOKEN\s*\}\}/);
+    assert.match(workflowText, new RegExp(`sentinelayer_spec_id:\\s*${SPEC_ID_FROM_GENERATE}`));
+    assert.equal(lockfile.spec_id, SPEC_ID_FROM_GENERATE);
+    assert.equal(lockfile.required_secret_name, "SENTINELAYER_BETA_TOKEN");
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI hard-fails when workflow spec binding mismatches generated spec id", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({
+    includeBootstrapInGenerate: true,
+    includeOmarWorkflowInGenerate: true,
+    generatedSpecId: "spec_expected_alpha",
+    workflowSpecId: "spec_wrong_beta",
+  });
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(baseInterview()),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+    assert.notEqual(result.code, 0);
+    assert.match(`${result.stderr}\n${result.stdout}`, /Workflow spec binding mismatch/);
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
