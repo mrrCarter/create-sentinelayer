@@ -14,17 +14,19 @@ concurrency:
 permissions:
   checks: read
   contents: read
-  id-token: write
-  attestations: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  attest-build:
-    name: Attest Build Artifact
+  attest-build-pr:
+    name: Attest Build Artifact (PR)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    permissions:
+      checks: read
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -32,25 +34,101 @@ jobs:
       - name: Ensure target commit passed required upstream gates
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+          REQUIRED_CHECKS_JSON: >-
+            [
+              {"name":"Quality Summary","app":"github-actions","optional":false},
+              {"name":"Omar Gate","app":"github-actions","optional":false}
+            ]
           MAX_WAIT_SECONDS: "1800"
           POLL_INTERVAL_SECONDS: "10"
         shell: bash
+        run: .github/scripts/require-check-runs.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify package before attestation build
+        run: npm run verify
+
+      - name: Build package tarball
+        id: pack
+        shell: bash
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            REQUIRED_CHECKS_JSON='[
+          npm pack --json > pack.json
+          tarball="$(jq -r '.[0].filename' pack.json)"
+          test -n "${tarball}"
+          test -f "${tarball}"
+          sha256="$(sha256sum "${tarball}" | awk '{print $1}')"
+          jq -n \
+            --arg tarball "${tarball}" \
+            --arg sha256 "${sha256}" \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              tarball: $tarball,
+              sha256: $sha256,
+              commit_sha: $commit_sha,
+              workflow_ref: $workflow_ref
+            }' > attestation-manifest.json
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload attestation build artifacts
+        if: always()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: attestation-build-artifacts
+          path: |
+            pack.json
+            attestation-manifest.json
+            ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Emit attestation summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- mode: \`pr-verification-only\` (provenance generation skipped for unmerged refs)" >> "$GITHUB_STEP_SUMMARY"
+
+  attest-build:
+    name: Attest Build Artifact (Trusted)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      checks: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Ensure target commit passed required upstream gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+          REQUIRED_CHECKS_JSON: >-
+            [
               {"name":"Quality Summary","app":"github-actions","optional":false},
               {"name":"Omar Gate","app":"github-actions","optional":false}
-            ]'
-          else
-            REQUIRED_CHECKS_JSON='[
-              {"name":"Quality Summary","app":"github-actions","optional":false},
-              {"name":"Omar Gate","app":"github-actions","optional":false}
-            ]'
-          fi
-          export REQUIRED_CHECKS_JSON
-          .github/scripts/require-check-runs.sh
+            ]
+          MAX_WAIT_SECONDS: "1800"
+          POLL_INTERVAL_SECONDS: "10"
+        shell: bash
+        run: .github/scripts/require-check-runs.sh
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -101,13 +179,11 @@ jobs:
           retention-days: 7
 
       - name: Generate build provenance attestation
-        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
 
       - name: Verify attestation policy
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -129,7 +205,7 @@ jobs:
           jq -e 'length > 0' attestation-verify.json > /dev/null
 
       - name: Upload verification artifacts
-        if: always() && github.event_name != 'pull_request'
+        if: always()
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: attestation-verification-artifacts
@@ -144,21 +220,17 @@ jobs:
           echo "## Build Attestation" >> "$GITHUB_STEP_SUMMARY"
           echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- sha256: \`${{ steps.pack.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            echo "- mode: \`pr-verification-only\` (provenance generation skipped for unmerged refs)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "- mode: \`trusted-provenance\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- signer_workflow: \`${{ github.repository }}/.github/workflows/attestations.yml\`" >> "$GITHUB_STEP_SUMMARY"
 
   attestation-summary:
     name: Attestation Summary
     runs-on: ubuntu-22.04
-    needs: [attest-build]
+    needs: [attest-build, attest-build-pr]
     if: >-
       ${{
         always() &&
-        needs.attest-build.result == 'success'
+        (needs.attest-build.result == 'success' || needs.attest-build-pr.result == 'success')
       }}
     steps:
       - name: Confirm attestation workflow passed

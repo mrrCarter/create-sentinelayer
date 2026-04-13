@@ -81,6 +81,11 @@ function defaultTokenLabel() {
   return `sl-cli-session-${stamp}`;
 }
 
+function createIdempotencyKey(prefix) {
+  const normalizedPrefix = String(prefix || "sl-cli").trim() || "sl-cli";
+  return `${normalizedPrefix}-${crypto.randomUUID()}`;
+}
+
 function isNearExpiry(tokenExpiresAt, thresholdDays) {
   const normalized = String(tokenExpiresAt || "").trim();
   if (!normalized) {
@@ -218,9 +223,13 @@ async function issueApiToken({
   const expiresInDays = Math.round(
     normalizePositiveNumber(tokenTtlDays, "apiTokenTtlDays", DEFAULT_API_TOKEN_TTL_DAYS)
   );
+  const idempotencyKey = createIdempotencyKey("sl-cli-issue-token");
   return requestJson(buildApiPath(apiUrl, "/api/v1/auth/api-tokens"), {
     method: "POST",
-    headers: toAuthHeader(authToken),
+    headers: {
+      ...toAuthHeader(authToken),
+      "Idempotency-Key": idempotencyKey,
+    },
     body: {
       label: String(tokenLabel || "").trim() || defaultTokenLabel(),
       scope: "github_app_bridge",
@@ -235,9 +244,13 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   if (!normalizedTokenId) {
     return false;
   }
+  const idempotencyKey = `sl-cli-revoke-token-${normalizedTokenId}`;
   await requestJson(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
     method: "DELETE",
-    headers: toAuthHeader(authToken),
+    headers: {
+      ...toAuthHeader(authToken),
+      "Idempotency-Key": idempotencyKey,
+    },
   });
   return true;
 }

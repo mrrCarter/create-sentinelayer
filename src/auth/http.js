@@ -14,6 +14,7 @@ export const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const CIRCUIT_TRACK_STATUS_CODES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 const circuitStateByScope = new Map();
+const REQUEST_ID_HEADERS = ["x-request-id", "request-id", "x-correlation-id"];
 
 function resolveCircuitScope(url) {
   try {
@@ -45,6 +46,19 @@ function normalizeApiError(errorPayload = {}) {
     message: String(errorPayload.message || "Unknown API error"),
     requestId: errorPayload.request_id ? String(errorPayload.request_id) : null,
   };
+}
+
+function resolveRequestId(headers) {
+  if (!headers || typeof headers.get !== "function") {
+    return null;
+  }
+  for (const headerName of REQUEST_ID_HEADERS) {
+    const value = headers.get(headerName);
+    if (value) {
+      return String(value);
+    }
+  }
+  return null;
 }
 
 export class SentinelayerApiError extends Error {
@@ -213,10 +227,12 @@ export async function requestJson(
         try {
           json = JSON.parse(rawBody);
         } catch {
+          const requestId = resolveRequestId(response.headers);
           if (response.ok) {
             throw new SentinelayerApiError("Invalid JSON returned by API.", {
               status: response.status,
               code: "INVALID_JSON",
+              requestId,
             });
           }
         }
@@ -228,13 +244,14 @@ export async function requestJson(
       }
 
       const apiError = normalizeApiError(json && typeof json === "object" ? json.error : {});
+      const requestId = apiError.requestId || resolveRequestId(response.headers);
       const statusCode = Number(response.status || 500);
       const retryable = retryableMethod && shouldRetryStatus(statusCode);
       const shouldRecordCircuitFailure = shouldRecordFailureForStatus(statusCode);
       const error = new SentinelayerApiError(apiError.message, {
         status: statusCode,
         code: apiError.code,
-        requestId: apiError.requestId,
+        requestId,
       });
 
       if (!retryable || attempt >= normalizedMaxRetries) {
