@@ -43,9 +43,29 @@ env:
   OMAR_SPEC_ID: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
 
 jobs:
+  omar_fork_precheck:
+    name: Omar Gate Fork Precheck
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Record fork precheck status
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## Omar Gate (Fork Precheck)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: \`skipped\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- reason: untrusted fork PR context (secrets withheld)" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Omar Gate skipped for fork PRs. Maintainers must rerun Omar Gate in trusted base repository context before merge."
+
   omar_scan:
     name: Omar Gate Scan
-    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--') }}
+    if: >-
+      ${{
+        (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+        (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--'))
+      }}
     runs-on: ubuntu-22.04
     environment: security-review
     permissions:
@@ -69,15 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trusted_context="true"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            pr_head_repo="${{ github.event.pull_request.head.repo.full_name }}"
-            if [ "${pr_head_repo}" != "${GITHUB_REPOSITORY}" ]; then
-              trusted_context="false"
-              echo "::notice::Fork PR context detected (${pr_head_repo}); Omar action is skipped to avoid exposing repository secrets."
-            fi
-          fi
-          echo "trusted_context=${trusted_context}" >> "${GITHUB_OUTPUT}"
+          echo "trusted_context=true" >> "${GITHUB_OUTPUT}"
       - name: Resolve Omar credential mode
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: resolve_omar_credentials
@@ -247,16 +259,6 @@ jobs:
             echo "## Security Review Environment"
             echo "- required_reviewers: \`${reviewer_count}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Block untrusted fork PR contexts
-        if: steps.trust_boundary.outputs.trusted_context != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- status: \`blocked\` (untrusted fork pull request context)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- remediation: \`maintainer must run Omar Gate in trusted base-repository context before merge\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Untrusted fork pull request context cannot receive Sentinelayer/OpenAI secrets. Omar Gate is blocked in this context."
-          exit 1
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
@@ -335,7 +337,7 @@ jobs:
   omar_enforce:
     name: Omar Gate
     needs: [omar_scan]
-    if: needs.omar_scan.outputs.trusted_context == 'true'
+    if: needs.omar_scan.result == 'success' && needs.omar_scan.outputs.trusted_context == 'true'
     runs-on: ubuntu-22.04
     permissions:
       contents: read

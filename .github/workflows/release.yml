@@ -306,6 +306,7 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Promote Candidate","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
@@ -746,6 +747,7 @@ jobs:
           REQUIRED_CHECKS_JSON: >-
             [
               {"name":"Quality Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
+              {"name":"Promote Candidate","app":"github-actions","optional":false,"workflow_path":".github/workflows/quality-gates.yml"},
               {"name":"Omar Gate","app":"github-actions","optional":false,"workflow_path":".github/workflows/omar-gate.yml"},
               {"name":"Attestation Summary","app":"github-actions","optional":false,"workflow_path":".github/workflows/attestations.yml"}
             ]
@@ -1126,6 +1128,22 @@ jobs:
           canary_version="$(tr -d '\r\n ' < /tmp/canary-version.out | sed 's/^v//')"
           if [ "${canary_version}" != "${PACKAGE_VERSION}" ]; then
             echo "::error::Canary runtime validation failed. CLI version=${canary_version:-<none>} expected=${PACKAGE_VERSION}."
+            exit 1
+          fi
+
+      - name: Run post-publish smoke checks
+        if: steps.publish_guard.outputs.already_published != 'true'
+        env:
+          PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          npm install --prefix "${smoke_dir}" --ignore-scripts "${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" --help > /tmp/canary-help.out
+          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" auth --help > /tmp/canary-auth-help.out
+          if ! grep -qi "sentinelayer" /tmp/canary-help.out; then
+            echo "::error::Canary smoke check failed: help output missing sentinelayer signature."
             exit 1
           fi
 

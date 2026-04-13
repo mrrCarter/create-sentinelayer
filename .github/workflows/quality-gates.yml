@@ -679,10 +679,69 @@ jobs:
           fi
           echo "deploy-ready tarball: ${TARBALL} (${SHA256})"
 
+  promote-candidate:
+    name: Promote Candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    needs: [security-scan, build-package, deploy-readiness]
+    if: >-
+      ${{
+        always() &&
+        needs.security-scan.result == 'success' &&
+        needs.build-package.result == 'success' &&
+        needs.deploy-readiness.result == 'success'
+      }}
+    steps:
+      - name: Generate promotion manifest
+        shell: bash
+        env:
+          TAR_BALL: ${{ needs.build-package.outputs.tarball }}
+          SHA256: ${{ needs.build-package.outputs.sha256 }}
+          SECURITY_SCAN_PATH: ${{ needs.security-scan.outputs.scan_path }}
+          SECURITY_SCAN_SHA256: ${{ needs.security-scan.outputs.scan_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAR_BALL}" ] || [ -z "${SHA256}" ]; then
+            echo "::error::Missing build-package outputs for promotion manifest."
+            exit 1
+          fi
+          if [ -z "${SECURITY_SCAN_PATH}" ] || [ -z "${SECURITY_SCAN_SHA256}" ]; then
+            echo "::error::Missing security scan outputs for promotion manifest."
+            exit 1
+          fi
+          jq -n \
+            --arg commit_sha "${GITHUB_SHA}" \
+            --arg tarball "${TAR_BALL}" \
+            --arg sha256 "${SHA256}" \
+            --arg security_scan_path "${SECURITY_SCAN_PATH}" \
+            --arg security_scan_sha256 "${SECURITY_SCAN_SHA256}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            '{
+              commit_sha: $commit_sha,
+              tarball: $tarball,
+              sha256: $sha256,
+              security_scan_path: $security_scan_path,
+              security_scan_sha256: $security_scan_sha256,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              workflow_ref: $workflow_ref
+            }' > promotion-manifest.json
+          echo "Promotion manifest generated."
+
+      - name: Upload promotion manifest
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: promotion-manifest
+          path: promotion-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
   quality-summary:
     name: Quality Summary
     runs-on: ubuntu-22.04
-    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness]
+    needs: [eval-enforce, action-pin-policy, lint, syntax-matrix, test, security-scan, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness, promote-candidate]
     if: ${{ always() }}
     steps:
       - name: Confirm all quality gates passed
@@ -739,6 +798,10 @@ jobs:
           fi
           if [ "${{ needs.deploy-readiness.result }}" != "success" ]; then
             echo "::error::deploy-readiness failed."
+            failed=1
+          fi
+          if [ "${{ needs.promote-candidate.result }}" != "success" ]; then
+            echo "::error::promote-candidate failed."
             failed=1
           fi
           if [ "${failed}" -ne 0 ]; then

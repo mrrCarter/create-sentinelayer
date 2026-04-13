@@ -21,6 +21,9 @@ export const DEFAULT_API_TOKEN_TTL_DAYS = 365;
 /** Default threshold at which stored tokens are rotated before expiry (days). */
 export const DEFAULT_TOKEN_ROTATE_THRESHOLD_DAYS = 7;
 const DEFAULT_IDE_NAME = "sl-cli";
+const MAX_AUTH_POLL_REQUESTS = 120;
+const MIN_TRANSIENT_POLL_DELAY_MS = 2_000;
+const TRANSIENT_DELAY_THRESHOLD = 3;
 
 function normalizeApiUrl(rawValue) {
   const candidate = String(rawValue || "").trim() || DEFAULT_API_URL;
@@ -215,7 +218,7 @@ async function pollCliAuthSession({
   const maxServerErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
   const maxNetworkErrors = Math.max(3, Math.ceil(timeout / maxPollIntervalMs));
   const maxSleepBudgetMs = Math.max(2_000, Math.floor(timeout * 0.8));
-  const maxPollAttempts = Math.max(1, Math.ceil(timeout / 250));
+  const maxPollAttempts = Math.min(MAX_AUTH_POLL_REQUESTS, Math.max(1, Math.ceil(timeout / 250)));
   let rateLimitErrorCount = 0;
   let serverErrorCount = 0;
   let networkErrorCount = 0;
@@ -238,13 +241,16 @@ async function pollCliAuthSession({
     return null;
   };
   const computePollDelayMs = (retryAfterMs = null) => {
+    const transientErrorCount = rateLimitErrorCount + serverErrorCount + networkErrorCount;
+    const minDelayMs =
+      transientErrorCount >= TRANSIENT_DELAY_THRESHOLD ? MIN_TRANSIENT_POLL_DELAY_MS : 250;
     if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-      return Math.max(250, Math.min(maxPollIntervalMs, Math.round(retryAfterMs)));
+      return Math.max(minDelayMs, Math.min(maxPollIntervalMs, Math.round(retryAfterMs)));
     }
     const exponent = Math.min(6, pollAttempt);
     const backoffMs = Math.min(maxPollIntervalMs, Math.round(pollIntervalMs * Math.pow(1.5, exponent)));
     const jitterFactor = computeDeterministicJitterFactor({ sessionId, attempt: pollAttempt });
-    return Math.max(250, Math.round(backoffMs * jitterFactor));
+    return Math.max(minDelayMs, Math.round(backoffMs * jitterFactor));
   };
 
   while (Date.now() < deadline) {

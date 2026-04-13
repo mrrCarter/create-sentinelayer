@@ -1,5 +1,8 @@
 import process from "node:process";
 import crypto from "node:crypto";
+import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
 
@@ -32,6 +35,7 @@ const NO_AUTH_REQUIRED = new Set([
 const TEST_BYPASS_NONCE_ENV = "SENTINELAYER_CLI_TEST_BYPASS_NONCE";
 const TEST_BYPASS_SECRET_ENV = "SENTINELAYER_CLI_TEST_BYPASS_SECRET";
 const TEST_BYPASS_TOKEN_ENV = "SENTINELAYER_CLI_TEST_BYPASS_TOKEN";
+const TEST_BYPASS_NONCE_FILENAME_PREFIX = "sentinelayer-cli-test-bypass";
 
 function isKnownTestRunner() {
   if (process.execArgv.includes("--test")) {
@@ -39,6 +43,43 @@ function isKnownTestRunner() {
   }
   const argv1 = String(process.argv[1] || "");
   return /node_modules[\\/](vitest|jest|mocha|ava|tap|cypress|playwright|@vitest)[\\/]/i.test(argv1);
+}
+
+function isPackagedBuild() {
+  if (process.pkg) {
+    return true;
+  }
+  const execPath = String(process.execPath || "");
+  const execBase = path.basename(execPath).toLowerCase();
+  return execBase !== "node" && execBase !== "node.exe";
+}
+
+function hasValidNonceFile(nonce) {
+  const normalizedNonce = String(nonce || "").trim();
+  if (!normalizedNonce) {
+    return false;
+  }
+  const nonceFile = path.join(os.tmpdir(), `${TEST_BYPASS_NONCE_FILENAME_PREFIX}-${normalizedNonce}.nonce`);
+  try {
+    const stats = fs.statSync(nonceFile);
+    if (!stats.isFile()) {
+      return false;
+    }
+    if (typeof process.getuid === "function") {
+      if (stats.uid !== process.getuid()) {
+        return false;
+      }
+      if (stats.mode & 0o002) {
+        return false;
+      }
+    }
+    if (stats.size <= 0 || stats.size > 1024) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isValidTestBypassToken({ nonce, secret, token }) {
@@ -65,11 +106,18 @@ function hasTrustedBypassContext() {
   if (process.env.NODE_ENV !== "test" || process.env.SENTINELAYER_CLI_TEST_MODE !== "1") {
     return false;
   }
+  if (isPackagedBuild()) {
+    return false;
+  }
   if (!isKnownTestRunner()) {
     return false;
   }
+  const nonce = process.env[TEST_BYPASS_NONCE_ENV];
+  if (!hasValidNonceFile(nonce)) {
+    return false;
+  }
   return isValidTestBypassToken({
-    nonce: process.env[TEST_BYPASS_NONCE_ENV],
+    nonce,
     secret: process.env[TEST_BYPASS_SECRET_ENV],
     token: process.env[TEST_BYPASS_TOKEN_ENV],
   });
