@@ -942,6 +942,113 @@ function formatFindingsMarkdown(findings) {
     .join("\n");
 }
 
+const OMAR_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const PERSONA_ICONS = {
+  security: "🛡️",
+  architecture: "🏗️",
+  testing: "🧪",
+  performance: "⚡",
+  compliance: "📋",
+  reliability: "🔄",
+  release: "🚀",
+  observability: "📊",
+  infrastructure: "☁️",
+  "supply-chain": "📦",
+  frontend: "🎨",
+  documentation: "📝",
+  "ai-governance": "🤖",
+};
+
+function buildOmarTerminalHandler() {
+  let spinIdx = 0;
+  let spinInterval = null;
+  let currentMessage = "";
+
+  function startSpinner(msg) {
+    currentMessage = msg;
+    if (spinInterval) clearInterval(spinInterval);
+    spinInterval = setInterval(() => {
+      const frame = OMAR_SPINNER[spinIdx % OMAR_SPINNER.length];
+      process.stderr.write(`\r${pc.cyan(frame)} ${currentMessage}`);
+      spinIdx++;
+    }, 80);
+  }
+
+  function stopSpinner() {
+    if (spinInterval) {
+      clearInterval(spinInterval);
+      spinInterval = null;
+    }
+    process.stderr.write("\r" + " ".repeat(80) + "\r");
+  }
+
+  return (evt) => {
+    const event = evt?.event || "";
+    const payload = evt?.payload || {};
+
+    switch (event) {
+      case "omargate_start": {
+        const mode = payload.mode || "deep";
+        const count = payload.personas?.length || 0;
+        console.error("");
+        console.error(pc.bold(pc.cyan(`  Omar Gate AI Analysis (${mode} — ${count} personas)`)));
+        console.error(pc.gray(`  Budget: $${(payload.maxCostUsd || 5).toFixed(2)} | Parallel: ${payload.maxParallel || 4}`));
+        console.error("");
+        startSpinner("Initializing personas...");
+        break;
+      }
+      case "persona_start": {
+        const icon = PERSONA_ICONS[payload.personaId] || "🔍";
+        startSpinner(`${icon}  ${payload.personaId} analyzing...`);
+        break;
+      }
+      case "persona_finding": {
+        stopSpinner();
+        const sev = payload.severity || "P3";
+        const color = sev === "P0" ? pc.red : sev === "P1" ? pc.red : sev === "P2" ? pc.yellow : pc.gray;
+        const icon = PERSONA_ICONS[payload.personaId] || "🔍";
+        console.error(`  ${icon}  ${color(`[${sev}]`)} ${pc.white(payload.title || payload.message || "finding")} ${pc.gray(`(${payload.file || "?"}:${payload.line || "?"})`)}`);
+        startSpinner(`${icon}  ${payload.personaId} analyzing...`);
+        break;
+      }
+      case "persona_complete": {
+        stopSpinner();
+        const icon = PERSONA_ICONS[payload.personaId] || "🔍";
+        const count = payload.findings || 0;
+        const cost = payload.costUsd || 0;
+        const dur = ((payload.durationMs || 0) / 1000).toFixed(1);
+        console.error(`  ${icon}  ${pc.green("✓")} ${payload.personaId} — ${count} finding${count === 1 ? "" : "s"} ${pc.gray(`($${cost.toFixed(4)}, ${dur}s)`)}`);
+        break;
+      }
+      case "persona_skipped": {
+        stopSpinner();
+        const icon = PERSONA_ICONS[payload.personaId] || "🔍";
+        console.error(`  ${icon}  ${pc.gray("○")} ${payload.personaId} — skipped (${payload.reason || "budget"})`);
+        break;
+      }
+      case "persona_error": {
+        stopSpinner();
+        const icon = PERSONA_ICONS[payload.personaId] || "🔍";
+        console.error(`  ${icon}  ${pc.red("✗")} ${payload.personaId} — error: ${payload.error || "unknown"}`);
+        break;
+      }
+      case "omargate_complete": {
+        stopSpinner();
+        const s = payload.summary || {};
+        const total = payload.findings || 0;
+        const cost = (payload.totalCostUsd || 0).toFixed(4);
+        const dur = ((payload.totalDurationMs || 0) / 1000).toFixed(1);
+        console.error("");
+        console.error(pc.bold(`  AI Analysis Complete`));
+        console.error(`  Findings: ${pc.red(`P0=${s.P0 || 0}`)} ${pc.red(`P1=${s.P1 || 0}`)} ${pc.yellow(`P2=${s.P2 || 0}`)} ${pc.gray(`P3=${s.P3 || 0}`)} (${total} total)`);
+        console.error(`  Cost: $${cost} | Duration: ${dur}s | Personas: ${payload.personaCount || 0}`);
+        console.error("");
+        break;
+      }
+    }
+  };
+}
+
 async function runLocalOmarGateCommand(args) {
   const mode = String(args[0] || "").trim().toLowerCase();
   if (mode && mode !== "deep") {
@@ -966,6 +1073,9 @@ async function runLocalOmarGateCommand(args) {
   if (!asJson) {
     printSection("Local Omar Gate Deep");
     printInfo(`Target: ${targetPath}`);
+    printInfo(`Scan mode: ${scanMode} | AI: ${aiEnabled ? "enabled" : "disabled"}`);
+    console.error("");
+    console.error(pc.gray("  Phase 1: Deterministic analysis (22 rules)..."));
   }
 
   // Phase 1: Full 22-rule deterministic pipeline (replaces legacy 5-rule credential scan)
@@ -980,6 +1090,14 @@ async function runLocalOmarGateCommand(args) {
   const detSummary = deterministic.summary || { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false };
   const scannedFiles = deterministic.metadata?.ingest?.filesScanned || deterministic.metadata?.scannedFiles || detFindings.length;
 
+  if (!asJson) {
+    console.error(`  ${pc.green("✓")} Deterministic: ${scannedFiles} files → P1=${detSummary.P1} P2=${detSummary.P2} findings`);
+    if (aiEnabled) {
+      console.error("");
+      console.error(pc.gray("  Phase 2: AI persona analysis via LLM..."));
+    }
+  }
+
   // Phase 2: AI review layer (optional, default enabled)
   let aiResult = null;
   let orchestratorResult = null;
@@ -987,9 +1105,12 @@ async function runLocalOmarGateCommand(args) {
     // Multi-persona orchestrator mode
     try {
       const { runOmarGateOrchestrator } = await import("./review/omargate-orchestrator.js");
+      const terminalHandler = (!asJson && !streamEnabled)
+        ? buildOmarTerminalHandler()
+        : null;
       const streamHandler = streamEnabled
         ? (evt) => console.log(JSON.stringify(evt))
-        : null;
+        : terminalHandler;
 
       orchestratorResult = await runOmarGateOrchestrator({
         targetPath,
