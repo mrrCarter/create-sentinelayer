@@ -133,6 +133,13 @@ jobs:
             echo "- max_minutes: \`${max_minutes}\`"
             echo "- cancel_command: \`gh run cancel ${GITHUB_RUN_ID}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          policy_file=".github/policies/release-tag-policy.json"
+          allowed_csv="$(jq -r '.allowed_tag_actors | join(",")' "${policy_file}")"
+          signer_allowlist="$(jq -r '.allowed_tag_signer_emails | join(",")' "${policy_file}")"
+          required_release_workflow_path="$(jq -r '.required_release_workflow_path' "${policy_file}")"
+          required_release_workflow_name="$(jq -r '.required_release_workflow_name' "${policy_file}")"
+          required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
+          export required_release_workflow_path required_release_workflow_name required_release_workflow_actor
           actor="${GITHUB_ACTOR}"
           if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
             echo "::error::allowed_tag_actors is empty in ${policy_file}."
