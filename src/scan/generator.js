@@ -161,7 +161,7 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
             required: false,
             default: profile.scanMode || "deep",
             type: "choice",
-            options: ["deep", "nightly"],
+            options: ["baseline", "deep", "audit", "full-depth"],
           },
           severity_gate: {
             description: "Severity threshold that blocks merge",

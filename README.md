@@ -787,6 +787,7 @@ Generate and validate a spec-aligned security workflow:
 - `scan_mode` + `severity_gate` from spec risk profile
 - `playwright_mode` from spec signals + optional E2E wizard/flags
 - `sbom_mode` from supply-chain/dependency signals in spec
+- Action bridge parity: generated `scan_mode` options align to `sentinelayer-v1-action` (`baseline`, `deep`, `audit`, `full-depth`) and use the pinned action ref.
 
 `scan validate` checks workflow drift against the current spec profile and exits non-zero when mismatched.
 
@@ -933,6 +934,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 
 - `sentinelayer-cli init <project-name>` runs scaffold/auth generation (legacy top-level invocation still works)
 - `sentinelayer-cli omargate deep --path <repo>` runs a local credential/policy scan and writes `.sentinelayer/reports/omargate-deep-*.md` (non-zero exit if P1 findings exist)
+- Local `/omargate` is a local preflight engine; GitHub PR gate execution runs through `sentinelayer-v1-action` -> Sentinelayer API (`/api/v1/github-app/trigger` + `/api/v1/github-app/runs/{id}/status`).
 - `sentinelayer-cli audit [--agents <ids>] [--max-parallel <n>]` runs orchestrated audit agents and writes `.sentinelayer/audits/<run-id>/AUDIT_REPORT.{md,json}`
 - `sentinelayer-cli audit registry` lists built-in/customized audit-agent registry records
 - `sentinelayer-cli audit security` runs the security specialist agent and writes a dedicated `SECURITY_AGENT_REPORT.md`
