@@ -79,8 +79,8 @@ jobs:
             echo "::error::allowed_tag_signer_emails contains invalid email entries."
             exit 1
           fi
-          allowed_csv="$(echo "${allowed_actors_json}" | jq -r 'join(\",\")')"
-          signer_allowlist="$(echo "${signer_allowlist_json}" | jq -r 'join(\",\")')"
+          allowed_csv="$(echo "${allowed_actors_json}" | jq -r 'join(",")')"
+          signer_allowlist="$(echo "${signer_allowlist_json}" | jq -r 'join(",")')"
           required_release_workflow_path="$(jq -r '.required_release_workflow_path' "${policy_file}")"
           required_release_workflow_name="$(jq -r '.required_release_workflow_name' "${policy_file}")"
           required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
