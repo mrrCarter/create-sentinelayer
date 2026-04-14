@@ -201,6 +201,7 @@ export class JulesSubAgent {
         costUsd: this.ctx.usage.costUsd,
         outputTokens: this.ctx.usage.outputTokens,
         durationMs: Date.now() - this.ctx.startedAt,
+        filesRead: [...(this.ctx.usage.filesRead || [])],
       },
     };
   }

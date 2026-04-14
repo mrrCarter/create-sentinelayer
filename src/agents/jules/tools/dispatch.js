@@ -147,6 +147,12 @@ export async function dispatchTool(toolName, input, ctx) {
   ctx.lastToolCallAt = Date.now();
   ctx.lastToolName = toolName;
 
+  // Track confirmed file reads for coverage accounting
+  if (!error && toolName === "FileRead") {
+    const readPath = input?.file_path || input?.filePath || input?.path || "";
+    if (readPath) ctx.usage.filesRead.add(readPath);
+  }
+
   // 5. Emit tool_result event
   const resultEvent = {
     eventType: "tool_call",
@@ -248,6 +254,7 @@ export function createAgentContext({
       outputTokens: 0,
       toolCalls: 0,
       runtimeMs: 0,
+      filesRead: new Set(),
     },
     sessionId: sessionId || randomUUID(),
     runId: runId || `jules-${Date.now()}-${randomUUID().slice(0, 8)}`,
@@ -265,6 +272,7 @@ function snapshotUsage(ctx) {
     outputTokens: ctx.usage.outputTokens,
     toolCalls: ctx.usage.toolCalls,
     durationMs: Date.now() - ctx.startedAt,
+    filesRead: [...(ctx.usage.filesRead || [])],
   };
 }
 
