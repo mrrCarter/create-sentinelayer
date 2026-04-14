@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.5.0)"
+        required: true
+        type: string
 
 concurrency:
   group: release-state-prod
@@ -19,10 +25,11 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   GLOBAL_MAX_SECONDS: "3600"
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   policy-precheck:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -282,7 +289,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   tag-preflight:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [policy-precheck]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -386,7 +393,7 @@ jobs:
           echo "- ref: \`${GITHUB_REF}\`" >> "$GITHUB_STEP_SUMMARY"
 
   release-authorize:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [tag-preflight]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -423,7 +430,7 @@ jobs:
           fi
 
   build-release-artifact:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [release-authorize]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -708,7 +715,7 @@ jobs:
           retention-days: 7
 
   rollback-readiness-tag:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [build-release-artifact]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -734,7 +741,7 @@ jobs:
           RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
 
   release-approval:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [build-release-artifact, rollback-readiness-tag]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -746,7 +753,7 @@ jobs:
           echo "Release approval gate satisfied for ${GITHUB_REF}."
 
   pre-publish-gates:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [build-release-artifact, rollback-readiness-tag, release-approval]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -775,7 +782,7 @@ jobs:
 
   publish-approval:
     name: Publish Approval
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [pre-publish-gates]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
