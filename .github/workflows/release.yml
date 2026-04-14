@@ -113,8 +113,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           STALE_RUN_MAX_MINUTES: ${{ vars.RELEASE_STALE_RUN_MAX_MINUTES || '90' }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          # Skip stale/policy checks for manual dispatch
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "::notice::Skipping stale-run and tag-policy checks for workflow_dispatch."
+            exit 0
+          fi
           max_minutes="$(echo "${STALE_RUN_MAX_MINUTES}" | xargs || true)"
           case "${max_minutes}" in ''|*[!0-9]*) echo "::error::Invalid RELEASE_STALE_RUN_MAX_MINUTES value: ${max_minutes}" ; exit 1 ;; esac
           run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
