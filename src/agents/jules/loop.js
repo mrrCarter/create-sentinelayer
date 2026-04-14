@@ -128,29 +128,15 @@ export async function* julesAuditLoop(config) {
 
   yield emit("progress", { phase: "deep_analysis", message: "Starting deep analysis..." });
 
-  // Build context for LLM
+  // Build context for LLM — BLIND-FIRST: no Omar baseline or swarm findings
+  // in the initial context. Only codebase metadata and memory recall (past runs,
+  // not current-run findings). Swarm/baseline reconciliation happens AFTER the
+  // independent deep analysis completes.
   const contextParts = [];
   contextParts.push(`Framework: ${framework.framework || "unknown"}`);
   contextParts.push(`Mode: ${mode}`);
   contextParts.push(`Components: ${framework.componentCount || "unknown"}`);
   contextParts.push(`Scope: ${(scopeMap.primary || []).length} primary files`);
-
-  if (swarmFindings.length > 0) {
-    contextParts.push(`\nSub-agent findings (${swarmFindings.length} total):`);
-    for (const f of swarmFindings.slice(0, 30)) {
-      contextParts.push(`- [${f.severity || "P3"}] ${f.file || ""}:${f.line || ""} ${f.title || f.type || ""}`);
-    }
-  }
-
-  if (omarBaseline) {
-    const baselineFindings = omarBaseline.findings || omarBaseline.summary || [];
-    if (Array.isArray(baselineFindings) && baselineFindings.length > 0) {
-      contextParts.push(`\nOmar baseline findings (${baselineFindings.length}):`);
-      for (const f of baselineFindings.slice(0, 20)) {
-        contextParts.push(`- [${f.severity || ""}] ${f.file || ""}:${f.line || ""} ${f.message || f.title || ""}`);
-      }
-    }
-  }
 
   if (memory) {
     try {
@@ -170,7 +156,7 @@ export async function* julesAuditLoop(config) {
   const messages = [
     { role: "user", content: contextParts.join("\n") +
       "\n\nPerform your deep analysis now. Use FileRead, Grep, Glob, and FrontendAnalyze tools as needed. " +
-      "Return your findings in a ```json code block as an array of { severity, file, line, title, evidence, rootCause, recommendedFix, trafficLight }." },
+      "Return your findings in a ```json code block as an array of { severity, file, line, title, evidence, rootCause, recommendedFix, trafficLight, reproduction, user_impact, confidence }." },
   ];
 
   const allFindings = [...swarmFindings];
@@ -288,6 +274,90 @@ export async function* julesAuditLoop(config) {
           : `Tool ${r.tool} result:\n${JSON.stringify(r.result).slice(0, 3000)}`,
       ).join("\n\n") + "\n\nContinue your analysis. If done, return findings in a ```json code block.",
     });
+  }
+
+  // ── Phase 2b: Reconciliation (post-blind-pass) ─────────────────────
+  // Now that the independent analysis is complete, cross-reference with
+  // swarm findings and Omar baseline. This preserves blind-first: the
+  // persona formed its own opinion before seeing prior conclusions.
+
+  const hasSwarmContext = swarmFindings.length > 0;
+  const baselineFindings = omarBaseline
+    ? (omarBaseline.findings || omarBaseline.summary || [])
+    : [];
+  const hasBaselineContext = Array.isArray(baselineFindings) && baselineFindings.length > 0;
+
+  if (hasSwarmContext || hasBaselineContext) {
+    yield emit("progress", { phase: "reconciliation", message: "Cross-referencing with sub-agent and baseline findings..." });
+
+    const reconcileParts = [];
+    reconcileParts.push("Your independent analysis is complete. Now cross-reference with the following prior findings.");
+    reconcileParts.push("For each prior finding: confirm if your analysis agrees, dispute with evidence if you disagree, or flag as missed if you did not cover it.");
+
+    if (hasSwarmContext) {
+      reconcileParts.push(`\nYour sub-agents found ${swarmFindings.length} findings:`);
+      for (const f of swarmFindings.slice(0, 30)) {
+        reconcileParts.push(`- [${f.severity || "P3"}] ${f.file || ""}:${f.line || ""} ${f.title || f.type || ""}`);
+      }
+    }
+
+    if (hasBaselineContext) {
+      reconcileParts.push(`\nOmar baseline reported ${baselineFindings.length} findings:`);
+      for (const f of baselineFindings.slice(0, 20)) {
+        reconcileParts.push(`- [${f.severity || ""}] ${f.file || ""}:${f.line || ""} ${f.message || f.title || ""}`);
+      }
+    }
+
+    reconcileParts.push("\nReturn any additional or revised findings as a JSON array in a ```json code block. If no changes, return an empty array [].");
+
+    messages.push({ role: "user", content: reconcileParts.join("\n") });
+
+    // Budget check before reconciliation turn
+    const reconcilePreCheck = evaluateBudget({
+      sessionSummary: {
+        costUsd: ctx.usage.costUsd,
+        outputTokens: ctx.usage.outputTokens,
+        durationMs: Date.now() - startedAt,
+        toolCalls: ctx.usage.toolCalls,
+      },
+      ...budget,
+    });
+
+    if (!reconcilePreCheck.blocking) {
+      try {
+        const reconcileResponse = await client.invoke({
+          systemPrompt,
+          messages,
+        });
+
+        const reconcileText = reconcileResponse.text || "";
+        ctx.usage.outputTokens += Math.ceil(reconcileText.length / 4);
+        ctx.usage.costUsd += (Math.ceil(reconcileText.length / 4) / 1_000_000) * 15;
+
+        yield emit("reasoning", { phase: "reconciliation", summary: reconcileText.slice(0, 200) });
+
+        const reconcileFindings = extractJsonFindings(reconcileText);
+        for (const finding of reconcileFindings) {
+          allFindings.push(finding);
+          yield emit("finding", { ...finding, source: "reconciliation" });
+          if (blackboard) {
+            try {
+              await blackboard.appendEntry({
+                agentId: JULES_DEFINITION.id,
+                source: "jules-reconciliation",
+                ...finding,
+              });
+            } catch { /* blackboard write failure non-blocking */ }
+          }
+        }
+
+        messages.push({ role: "assistant", content: reconcileText });
+      } catch (err) {
+        yield emit("llm_error", { error: err.message, phase: "reconciliation" });
+      }
+    } else {
+      yield emit("budget_stop", { reasons: reconcilePreCheck.reasons, phase: "reconciliation" });
+    }
   }
 
   // ── Phase 3: Build final report ───────────────────────────────────
