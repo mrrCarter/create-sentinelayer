@@ -71,7 +71,7 @@ jobs:
             echo "::error::allowed_tag_signer_emails contains duplicate or whitespace-equivalent entries."
             exit 1
           fi
-          if ! echo "${allowed_actors_json}" | jq -e 'all(.[]; test("^[A-Za-z0-9._-]{1,39}(\\[bot\\])?$"))' >/dev/null; then
+          if ! echo "${allowed_actors_json}" | jq -e 'all(.[]; test("^[A-Za-z0-9._-]{1,39}([[]bot[]])?$"))' >/dev/null; then
             echo "::error::allowed_tag_actors contains invalid GitHub actor names."
             exit 1
           fi
