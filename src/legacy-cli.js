@@ -1142,6 +1142,7 @@ async function runLocalOmarGateCommand(args) {
       if (!asJson) {
         console.log(pc.yellow(`Orchestrator skipped: ${aiError.message}`));
       }
+      aiResult = { skipped: true, reason: aiError.message, findings: [], summary: { P0: 0, P1: 0, P2: 0, P3: 0 } };
     }
   } else if (aiEnabled) {
     // Single AI review layer (legacy, no --scan-mode)
@@ -1168,6 +1169,7 @@ async function runLocalOmarGateCommand(args) {
       if (!asJson) {
         console.log(pc.yellow(`AI review layer skipped: ${aiError.message}`));
       }
+      aiResult = { skipped: true, reason: aiError.message, findings: [], summary: { P0: 0, P1: 0, P2: 0, P3: 0 } };
     }
   }
 
@@ -1907,8 +1909,10 @@ Start now and continue autonomously.
 `;
 }
 
-function fallbackWorkflow({ secretName = "SENTINELAYER_TOKEN", authMode = "sentinelayer" } = {}) {
+function fallbackWorkflow({ secretName = "SENTINELAYER_TOKEN", authMode = "sentinelayer", specId = "" } = {}) {
   const normalizedSecret = isValidSecretName(secretName) ? secretName : "SENTINELAYER_TOKEN";
+  const normalizedSpecId = String(specId || "").trim();
+  const specIdBindingLine = normalizedSpecId ? `\n          sentinelayer_spec_id: ${normalizedSpecId}` : "";
   const workflowName = authMode === "byok" ? "Omar Gate (BYOK Mode)" : "Omar Gate";
   return `name: ${workflowName}
 
@@ -1979,7 +1983,7 @@ jobs:
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@v1
         with:
-          sentinelayer_token: \${{ secrets.${normalizedSecret} }}
+          sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
       - name: Enforce Omar reviewer merge thresholds
@@ -2170,6 +2174,71 @@ function runGhSecretSet({ repoSlug, secretName, secretValue }) {
   }
 
   return { ok: true };
+}
+
+function extractWorkflowSpecId(workflowMarkdown) {
+  const normalized = String(workflowMarkdown || "");
+  const match = normalized.match(/sentinelayer_spec_id:\s*([^\s#]+)/);
+  return match ? String(match[1] || "").trim() : "";
+}
+
+function resolveGeneratedSpecId(generated) {
+  const candidates = [
+    generated?.spec_id,
+    generated?.specId,
+    generated?.spec_hash,
+    generated?.specHash,
+  ];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+async function writeInitConfigLockfile({
+  projectDir,
+  specId,
+  sentinelayerToken,
+  secretName,
+  repoSlug,
+  workflowPath,
+}) {
+  const lockDir = path.join(projectDir, ".sentinelayer");
+  const configPath = path.join(lockDir, "config.json");
+  const payload = {
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    spec_id: String(specId || "").trim(),
+    sentinelayer_token: String(sentinelayerToken || "").trim(),
+    required_secret_name: String(secretName || "SENTINELAYER_TOKEN").trim() || "SENTINELAYER_TOKEN",
+    repo_slug: normalizeRepoSlug(repoSlug || ""),
+    workflow_path: path.relative(projectDir, workflowPath).replace(/\\/g, "/"),
+  };
+
+  await fsp.mkdir(lockDir, { recursive: true });
+  await fsp.writeFile(configPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+  return configPath;
+}
+
+async function validateWorkflowSpecBinding({ workflowPath, expectedSpecId }) {
+  const expected = String(expectedSpecId || "").trim();
+  if (!expected) {
+    throw new Error("Missing spec_id/spec_hash in generated builder response. Cannot validate Omar spec binding.");
+  }
+  const workflowMarkdown = await fsp.readFile(workflowPath, "utf-8");
+  const workflowSpecId = extractWorkflowSpecId(workflowMarkdown);
+  if (!workflowSpecId) {
+    throw new Error(
+      `Generated workflow '${workflowPath}' is missing sentinelayer_spec_id. Regenerate the workflow before continuing.`
+    );
+  }
+  if (workflowSpecId !== expected) {
+    throw new Error(
+      `Workflow spec binding mismatch: expected '${expected}' but workflow has '${workflowSpecId}'.`
+    );
+  }
+  return workflowSpecId;
 }
 
 async function collectInterview({ initialProjectName, detectedRepo, detectedCodingAgent }) {
@@ -2672,6 +2741,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   const docsDir = path.join(projectDir, "docs");
   const promptsDir = path.join(projectDir, "prompts");
   const tasksDir = path.join(projectDir, "tasks");
+  const workflowPath = path.join(projectDir, ".github", "workflows", "omar-gate.yml");
 
   await writeTextFile(path.join(docsDir, "spec.md"), String(generated.spec_sheet || "").trim() + "\n");
   await writeTextFile(
@@ -2682,13 +2752,34 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     path.join(promptsDir, "execution-prompt.md"),
     String(generated.builder_prompt || "").trim() + "\n"
   );
-  await writeTextFile(
-    path.join(projectDir, ".github", "workflows", "omar-gate.yml"),
+  const generatedSpecId = resolveGeneratedSpecId(generated);
+  if (effectiveAuthMode === "sentinelayer" && !generatedSpecId) {
+    throw new Error("Builder response is missing spec_id/spec_hash. Cannot generate a validated Omar Gate workflow.");
+  }
+  const workflowMarkdown =
     (
       (effectiveAuthMode === "sentinelayer" ? String(generated.omar_gate_yaml || "").trim() : "") ||
-      fallbackWorkflow({ secretName, authMode: effectiveAuthMode })
-    ) + "\n"
-  );
+      fallbackWorkflow({ secretName, authMode: effectiveAuthMode, specId: generatedSpecId })
+    ) + "\n";
+  await writeTextFile(workflowPath, workflowMarkdown);
+
+  const workflowSpecIdFromTemplate = extractWorkflowSpecId(workflowMarkdown);
+  let workflowSpecId = "";
+  if (generatedSpecId || workflowSpecIdFromTemplate) {
+    workflowSpecId = await validateWorkflowSpecBinding({
+      workflowPath,
+      expectedSpecId: generatedSpecId || workflowSpecIdFromTemplate,
+    });
+  }
+  const configLockfilePath = await writeInitConfigLockfile({
+    projectDir,
+    specId: workflowSpecId || generatedSpecId || workflowSpecIdFromTemplate,
+    sentinelayerToken,
+    secretName,
+    repoSlug: interview.repoSlug || detectRepoSlug(projectDir) || "",
+    workflowPath,
+  });
+
   await writeTextFile(
     path.join(tasksDir, "todo.md"),
     buildTodoContent({
@@ -2764,17 +2855,59 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     repoSlug: interview.connectRepo ? interview.repoSlug : "",
   });
 
-  let secretInjection = { ok: false, reason: "Skipped." };
-  if (interview.connectRepo && interview.injectSecret && interview.repoSlug && sentinelayerToken) {
-    secretInjection = runGhSecretSet({
-      repoSlug: interview.repoSlug,
+  const repoSlugForSecrets = normalizeRepoSlug(interview.repoSlug || detectRepoSlug(projectDir) || "");
+  const openAiApiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  const secretTargets = [];
+  if (sentinelayerToken) {
+    secretTargets.push({
       secretName,
       secretValue: sentinelayerToken,
+      placeholder: "<sentinelayer-token>",
     });
+  }
+  secretTargets.push({
+    secretName: "OPENAI_API_KEY",
+    secretValue: openAiApiKey,
+    placeholder: "<your-openai-api-key>",
+  });
+
+  const githubSecretResults = [];
+  if (repoSlugForSecrets) {
+    for (const target of secretTargets) {
+      const value = String(target.secretValue || "").trim();
+      if (!value) {
+        githubSecretResults.push({
+          secretName: target.secretName,
+          ok: false,
+          skipped: true,
+          reason: `No value resolved for ${target.secretName} in current environment/config.`,
+          placeholder: target.placeholder,
+        });
+        continue;
+      }
+      const result = runGhSecretSet({
+        repoSlug: repoSlugForSecrets,
+        secretName: target.secretName,
+        secretValue: value,
+      });
+      githubSecretResults.push({
+        secretName: target.secretName,
+        ok: Boolean(result.ok),
+        skipped: false,
+        reason: String(result.reason || "").trim(),
+        placeholder: target.placeholder,
+      });
+    }
   }
 
   printSection("Complete");
   console.log(pc.green(`✔ Sentinelayer orchestration initialized in ${projectDir}`));
+  console.log(pc.green(`✔ Config lockfile written: ${configLockfilePath}`));
+  if (workflowSpecId) {
+    console.log(pc.green(`✔ Omar workflow spec binding validated: ${workflowSpecId}`));
+  } else {
+    console.log(pc.yellow("! Omar workflow did not expose sentinelayer_spec_id (BYOK/fallback mode)."));
+  }
   if (sentinelayerToken) {
     console.log(pc.green(`✔ ${secretName} injected into ${path.join(projectDir, ".env")}`));
   } else {
@@ -2785,14 +2918,30 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       pc.green(`✔ ${codingAgentConfig.agent.name} config scaffolded at ${codingAgentConfig.path}`)
     );
   }
-  if (interview.connectRepo && interview.injectSecret && sentinelayerToken) {
-    if (secretInjection.ok) {
-      console.log(pc.green(`✔ ${secretName} injected into GitHub repo secret (${interview.repoSlug})`));
-    } else {
-      console.log(pc.yellow(`! GitHub secret injection skipped/failed: ${secretInjection.reason}`));
+  if (repoSlugForSecrets) {
+    for (const result of githubSecretResults) {
+      if (result.ok) {
+        console.log(pc.green(`✔ ${result.secretName} injected into GitHub repo secret (${repoSlugForSecrets})`));
+        continue;
+      }
+      const stateLabel = result.skipped ? "skipped" : "failed";
+      console.log(pc.yellow(`! GitHub secret injection ${stateLabel} for ${result.secretName}: ${result.reason}`));
       console.log(
         pc.yellow(
-          `  Run manually: gh secret set ${secretName} --repo ${interview.repoSlug || "<owner/repo>"}`
+          `  Run manually: gh secret set ${result.secretName} --repo ${repoSlugForSecrets} --body ${result.placeholder}`
+        )
+      );
+    }
+  } else if (secretTargets.length > 0) {
+    console.log(
+      pc.yellow(
+        "! GitHub secret auto-injection skipped: no repo slug detected. Connect a repo or run manual secret commands."
+      )
+    );
+    for (const target of secretTargets) {
+      console.log(
+        pc.yellow(
+          `  Run manually: gh secret set ${target.secretName} --repo <owner/repo> --body ${target.placeholder}`
         )
       );
     }
