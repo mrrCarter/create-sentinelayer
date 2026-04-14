@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.5...v0.5.0) (2026-04-14)
+
+
+### Features
+
+* **ai:** add SentinelLayer LLM proxy provider for zero-config AI ([#276](https://github.com/mrrCarter/create-sentinelayer/issues/276)) ([6448279](https://github.com/mrrCarter/create-sentinelayer/commit/6448279a0b63b00dd1a9a548c0a2851671d3f4a0))
+* **init:** lock spec config and auto-inject required GitHub secrets ([#295](https://github.com/mrrCarter/create-sentinelayer/issues/295)) ([6bc9194](https://github.com/mrrCarter/create-sentinelayer/commit/6bc9194f0f2defdc8e72f8b61e661c238e76a40a))
+* **omargate:** add 13 domain-specific persona review prompts ([#277](https://github.com/mrrCarter/create-sentinelayer/issues/277)) ([2989d4f](https://github.com/mrrCarter/create-sentinelayer/commit/2989d4f93697bbd8f72f2d06679ee042f5990a8f))
+* **omargate:** interactive deep-dive + AIdenID email tool for agents ([#280](https://github.com/mrrCarter/create-sentinelayer/issues/280)) ([a02ce1e](https://github.com/mrrCarter/create-sentinelayer/commit/a02ce1edc4ad74f0a37d08ffa65f89d8e7a91016))
+* **omargate:** live terminal UI with spinner + persona progress [reopen] ([#297](https://github.com/mrrCarter/create-sentinelayer/issues/297)) ([01753c6](https://github.com/mrrCarter/create-sentinelayer/commit/01753c6108a5c4ff6f4ba4edf242749594f2a15e))
+* **omargate:** multi-persona orchestrator with scan modes and streaming ([#278](https://github.com/mrrCarter/create-sentinelayer/issues/278)) ([73c047a](https://github.com/mrrCarter/create-sentinelayer/commit/73c047a0fb8c3c6759819b5efedef6f6439eea0e))
+* **omargate:** telemetry sync + budget governance (PRs 7+9) ([#279](https://github.com/mrrCarter/create-sentinelayer/issues/279)) ([66e16d2](https://github.com/mrrCarter/create-sentinelayer/commit/66e16d2d0ba6db823d276b727b267ff5a0243031))
+* **omargate:** upgrade to 22-rule deterministic + AI review layer ([#275](https://github.com/mrrCarter/create-sentinelayer/issues/275)) ([2cf8efd](https://github.com/mrrCarter/create-sentinelayer/commit/2cf8efd7d0c4721ab320ee7c753a7159716ca025))
+
+
+### Bug Fixes
+
+* **auth:** issue cli-scoped api tokens ([#286](https://github.com/mrrCarter/create-sentinelayer/issues/286)) ([79c9da3](https://github.com/mrrCarter/create-sentinelayer/commit/79c9da33c6a8b6becbf83d1c1f501bdd9ca43cec))
+* **auth:** resolve active credentials across cli runtime paths ([#285](https://github.com/mrrCarter/create-sentinelayer/issues/285)) ([a0aabce](https://github.com/mrrCarter/create-sentinelayer/commit/a0aabce930d2d699ee84abf7138824aa38ca0800))
+* **auth:** token prefix validation breaks all non-auth commands ([#293](https://github.com/mrrCarter/create-sentinelayer/issues/293)) ([5869d6e](https://github.com/mrrCarter/create-sentinelayer/commit/5869d6e3d4db0812f84fc68d0e255558bc45489e))
+* **auth:** windows-safe auth command hints and CLI aliases ([#288](https://github.com/mrrCarter/create-sentinelayer/issues/288)) ([4a36b10](https://github.com/mrrCarter/create-sentinelayer/commit/4a36b103d01e90632e4dff91227cf4a76aeac1f9))
+* **ci:** enable managed LLM in Omar wrapper ([#287](https://github.com/mrrCarter/create-sentinelayer/issues/287)) ([e2163f3](https://github.com/mrrCarter/create-sentinelayer/commit/e2163f3d2f79197a0b2c5be51bc1404116146797))
+* **omargate:** default to --scan-mode deep and surface AI skip reason ([#294](https://github.com/mrrCarter/create-sentinelayer/issues/294)) ([9977dfa](https://github.com/mrrCarter/create-sentinelayer/commit/9977dfa1a98c0742dbdfe20c68d08b8dbb5f99e9))
+
 ## [0.4.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.4.4...v0.4.5) (2026-04-09)
 
 
