@@ -60,7 +60,8 @@ describe("sendAlert", () => {
   });
 
   it("webhook delivery uses explicit timeout wrapper", () => {
-    const source = fs.readFileSync(new URL("../src/agents/jules/pulse.js", import.meta.url), "utf-8");
+    // Pulse is now in daemon/ (canonical location) with re-export from jules/pulse.js
+    const source = fs.readFileSync(new URL("../src/daemon/pulse.js", import.meta.url), "utf-8");
     assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
     assert.ok(source.includes("fetchWithTimeout(webhookUrl, {"));
     assert.ok(source.includes("fetchWithTimeout(url, {"));
