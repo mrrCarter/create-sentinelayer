@@ -40,8 +40,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_CREATED: ${{ github.event.created }}
-          EVENT_DELETED: ${{ github.event.deleted }}
+          EVENT_CREATED: ${{ github.event.created || 'true' }}
+          EVENT_DELETED: ${{ github.event.deleted || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           policy_file=".github/policies/release-tag-policy.json"
@@ -148,6 +149,17 @@ jobs:
           required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
           export required_release_workflow_path required_release_workflow_name required_release_workflow_actor
           actor="${GITHUB_ACTOR}"
+          # Skip actor/signing checks for manual workflow_dispatch (explicit human action)
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "::notice::Skipping actor/signing policy checks for workflow_dispatch trigger (actor=${actor})."
+            {
+              echo "## Release Trigger Policy (workflow_dispatch bypass)"
+              echo "- actor: \`${actor}\`"
+              echo "- event: \`${EVENT_NAME}\`"
+              echo "- tag: \`${RELEASE_TAG}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
             echo "::error::allowed_tag_actors is empty in ${policy_file}."
             exit 1
