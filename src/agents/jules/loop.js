@@ -203,12 +203,12 @@ export async function* julesAuditLoop(config) {
       });
     }
 
-    // Call LLM
+    // Call LLM — format system prompt + messages into a single prompt
+    // for the MultiProviderApiClient which uses a completions-style API
     let response;
     try {
       response = await client.invoke({
-        systemPrompt,
-        messages,
+        prompt: formatPromptForClient(systemPrompt, messages),
       });
     } catch (err) {
       yield emit("llm_error", { error: err.message, turn: turnCount });
@@ -326,8 +326,7 @@ export async function* julesAuditLoop(config) {
     if (!reconcilePreCheck.blocking) {
       try {
         const reconcileResponse = await client.invoke({
-          systemPrompt,
-          messages,
+          prompt: formatPromptForClient(systemPrompt, messages),
         });
 
         const reconcileText = reconcileResponse.text || "";
@@ -434,4 +433,18 @@ function sanitizeForEvent(input) {
     sanitized.content = `[${sanitized.content.length} chars]`;
   }
   return sanitized;
+}
+
+/**
+ * Format system prompt + chat messages into a single prompt string
+ * for MultiProviderApiClient which uses a completions-style API.
+ */
+function formatPromptForClient(systemPrompt, messages) {
+  const parts = [];
+  if (systemPrompt) parts.push(systemPrompt);
+  for (const msg of messages) {
+    const role = msg.role === "assistant" ? "ASSISTANT" : "USER";
+    parts.push(`\n${role}:\n${msg.content}`);
+  }
+  return parts.join("\n");
 }
