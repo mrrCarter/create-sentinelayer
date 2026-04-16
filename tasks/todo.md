@@ -1,3 +1,24 @@
+# 2026-04-16 - Coverage Flake Stabilization (AIdenID/AuthAudit)
+
+## Plan
+- [x] Reproduce `npm run verify` failure under aggregate coverage run and isolate deterministic root causes.
+- [x] Prevent AIdenID unit tests from leaking into host auth/session state by adding explicit session auto-resolution control.
+- [x] Eliminate AuthAudit late-rejection async leakage in AIdenID retry timeout race path.
+- [x] Re-run targeted unit suites, full `npm run verify`, `/omargate deep`, and `/audit`.
+
+## Review
+- Completed.
+- Updated:
+  - `src/ai/aidenid.js`: added `autoResolveSession` control to credential/session context resolution.
+  - `tests/unit.ai-aidenid.test.mjs`: fixed determinism by setting `autoResolveSession: false` in env-only credential tests.
+  - `src/agents/jules/tools/auth-audit.js`: hardened timeout race cleanup to swallow `finally()` chain rejection and prevent post-test `unhandledRejection`.
+- Validation:
+  - `node --test tests/unit.ai-aidenid.test.mjs`
+  - `node --test tests/unit.jules-auth-audit.test.mjs`
+  - `npm run verify`
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-14 - Omar Gate Parity Alignment (CLI vs v1 Action)
 
 ## Plan

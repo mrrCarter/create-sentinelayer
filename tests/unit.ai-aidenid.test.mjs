@@ -71,6 +71,7 @@ test("Unit AIdenID helper: credential resolution validates required env", async 
       AIDENID_ORG_ID: "org_1",
       AIDENID_PROJECT_ID: "proj_1",
     },
+    autoResolveSession: false,
   });
   assert.equal(resolved.missing.length, 0);
   assert.equal(resolved.apiKey, "k_test");
@@ -82,6 +83,7 @@ test("Unit AIdenID helper: credential resolution validates required env", async 
       AIDENID_PROJECT_ID: "",
     },
     requireAll: false,
+    autoResolveSession: false,
   });
   assert.deepEqual(partial.missing.sort(), ["AIDENID_API_KEY", "AIDENID_PROJECT_ID"]);
 
@@ -90,6 +92,7 @@ test("Unit AIdenID helper: credential resolution validates required env", async 
       resolveAidenIdCredentials({
         env: {},
         requireAll: true,
+        autoResolveSession: false,
       }),
     /Missing AIdenID credentials/
   );
@@ -98,6 +101,7 @@ test("Unit AIdenID helper: credential resolution validates required env", async 
     env: {},
     session: { token: "sl_token_only" },
     requireAll: true,
+    autoResolveSession: false,
     fetchCredentials: async () => ({
       apiKey: "k_from_api",
       orgId: "org_from_api",
