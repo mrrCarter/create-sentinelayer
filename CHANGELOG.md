@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.6.1...v0.6.2) (2026-04-16)
+
+
+### Bug Fixes
+
+* **scanner:** exclude build output dirs + fix AI proxy detection + add session spec ([#312](https://github.com/mrrCarter/create-sentinelayer/issues/312)) ([5716eee](https://github.com/mrrCarter/create-sentinelayer/commit/5716eee1ccda5925723e68a35115c185075cfc9d))
+
 ## [0.6.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.6.0...v0.6.1) (2026-04-16)
 
 
