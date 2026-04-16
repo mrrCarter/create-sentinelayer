@@ -1,3 +1,26 @@
+# 2026-04-14 - Omar Gate Parity Alignment (CLI vs v1 Action)
+
+## Plan
+- [x] Compare `create-sentinelayer` local Omar/scan contracts with `sentinelayer-v1-action` bridge contract (`scan_mode`, action ref pinning, trigger/status path model).
+- [x] Align generated Omar workflow inputs/options to v1 action-supported scan modes.
+- [x] Align legacy fallback Omar workflow template to pinned v1 action ref and same scan mode contract.
+- [x] Add parity regression tests and rerun local checks/e2e slices.
+
+## Review
+- Completed.
+- Updated:
+  - `src/scan/generator.js`: `scan_mode` workflow-dispatch options now match v1 action (`baseline`, `deep`, `audit`, `full-depth`).
+  - `src/review/scan-modes.js`: local `audit` mode now aliases `full-depth` persona set for command parity.
+  - `src/legacy-cli.js`: handoff prompt workflow tuning text updated; fallback workflow now uses parity scan-mode options + pinned action ref `mrrCarter/sentinelayer-v1-action@55a2c158f637d7d92e26ab0ef3ba81db791da4be`.
+  - `README.md`: added explicit parity note + local-vs-managed Omar execution boundary clarification.
+  - `tests/unit.scan-parity.test.mjs`: added contract regression tests for scan-mode options/pinned action ref, exact baseline/deep/full-depth persona contracts, and `audit` alias equivalence.
+  - `tests/e2e.test.mjs`: updated handoff prompt assertion for revised scan_mode contract line.
+- Validation:
+  - `npm run check`
+  - `node --test tests/unit.scan-parity.test.mjs`
+  - `node --test --test-name-pattern "generates artifacts and injects secret via gh|scan init targets omar-gate workflow" tests/e2e.test.mjs`
+  - `node --test --test-name-pattern "scan validate detects workflow drift" tests/e2e.test.mjs`
+
 # 2026-04-13 - Windows Auth Command Compatibility + Hint Hardening
 
 ## Plan

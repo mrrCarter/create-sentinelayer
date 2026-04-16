@@ -164,8 +164,15 @@ Return findings as a JSON array in a \`\`\`json code block:
   "evidence": "dangerouslySetInnerHTML with user-controlled prop at line 42",
   "rootCause": "No DOMPurify sanitization before render",
   "recommendedFix": "Wrap input with DOMPurify.sanitize() before passing to dangerouslySetInnerHTML",
-  "trafficLight": "red"
+  "trafficLight": "red",
+  "reproduction": { "type": "manual_step", "steps": ["Open RichText component with untrusted HTML input", "Observe raw HTML rendered without sanitization"] },
+  "user_impact": "Attacker-controlled HTML renders in the user's browser, enabling XSS",
+  "confidence": 0.92
 }]
+
+reproduction: required for P0/P1, optional for P2+. Object with "type" (manual_step | shell | runtime_probe) and "steps" array.
+user_impact: required. One sentence: what the user or system experiences if this is exploited or triggered.
+confidence: required. Number 0.0-1.0. Your confidence this is a real issue with sufficient evidence. Below ${def.confidenceFloor} = flag as evidence_gap instead of confirmed.
 
 VOICE
 Sharp, skeptical, concrete, user-centric.

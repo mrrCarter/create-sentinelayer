@@ -748,7 +748,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(handoffText, /Terminal command options:/);
     assert.match(handoffText, /sentinel \/omargate deep --path \./);
     assert.match(handoffText, /Workflow tuning options:/);
-    assert.match(handoffText, /scan_mode: deep/);
+    assert.match(handoffText, /scan_mode: baseline \| deep \(default\) \| audit \| full-depth/);
     assert.match(workflowText, new RegExp(`sentinelayer_spec_id:\\s*${SPEC_ID_FROM_GENERATE}`));
     assert.equal(lockfile.spec_id, SPEC_ID_FROM_GENERATE);
     assert.equal(lockfile.sentinelayer_token, BOOTSTRAP_VALUE_FROM_GENERATE);

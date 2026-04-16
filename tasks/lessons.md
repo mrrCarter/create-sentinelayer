@@ -1,5 +1,12 @@
 # Lessons
 
+## 2026-04-14
+
+- Keep `create-sentinelayer` workflow-dispatch `scan_mode` options in lockstep with `sentinelayer-v1-action` accepted modes (`baseline`, `deep`, `audit`, `full-depth`); stale values like `nightly` create contract drift.
+- Treat action reference pinning as part of runtime contract parity: fallback/scaffold templates and primary generator should use the same pinned action ref.
+- Local `/omargate` and managed GitHub gate are intentionally different execution paths; document that boundary explicitly and keep mode naming aligned so operator intent does not drift between local and CI.
+- Parity tests should assert semantic contracts (exact baseline/deep/full-depth persona sets), not only string presence in generated YAML.
+
 ## 2026-04-13
 
 - PowerShell reserves `sl` for `Set-Location`; runtime auth hints and quickstart docs must resolve to a platform-safe command (`sentinelayer-cli`/`slc` on Windows) instead of hardcoding `sl`.

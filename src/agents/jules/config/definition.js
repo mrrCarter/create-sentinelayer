@@ -60,11 +60,13 @@ export const JULES_DEFINITION = Object.freeze({
     ],
   },
 
-  // Evidence requirements
+  // Evidence requirements (aligned with output contract in system-prompt.js)
   evidenceRequirements: [
-    "file_path_and_line",
-    "reproduction_steps",
-    "user_impact_statement",
+    "file_and_line",
+    "evidence",
+    "user_impact",
+    "reproduction_p0_p1",
+    "confidence",
   ],
   confidenceFloor: 0.75,
 

@@ -1856,8 +1856,8 @@ function buildHandoffPrompt({
 - If you later adopt Omar Gate GitHub Action, set secrets.${secretName} and wire sentinelayer_token accordingly.`;
   const workflowTuning =
     authMode === "sentinelayer"
-      ? `- scan_mode: deep (default) or quick
-- severity_gate: P1 (default) or P2`
+      ? `- scan_mode: baseline | deep (default) | audit | full-depth
+- severity_gate: P0 | P1 (default) | P2 | none`
       : `- BYOK workflow is guidance-only and does not call the Sentinelayer action.
 - To enable Omar Gate later, set ${secretName} and configure scan_mode/severity_gate in workflow inputs.`;
 
@@ -1930,8 +1930,10 @@ on:
         default: deep
         type: choice
         options:
+          - baseline
           - deep
-          - nightly
+          - audit
+          - full-depth
       severity_gate:
         description: Severity threshold that blocks merge
         required: false
@@ -1981,7 +1983,7 @@ jobs:
           fi
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@v1
+        uses: mrrCarter/sentinelayer-v1-action@55a2c158f637d7d92e26ab0ef3ba81db791da4be
         with:
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}

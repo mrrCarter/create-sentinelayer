@@ -3,27 +3,31 @@
  *
  * baseline: security only (~30s)
  * deep:     6 key personas (~2min)
+ * audit:    alias for full-depth
  * full-depth: all 13 personas (~5min)
  */
+
+const FULL_DEPTH_PERSONAS = [
+  "security",
+  "architecture",
+  "testing",
+  "performance",
+  "compliance",
+  "reliability",
+  "release",
+  "observability",
+  "infrastructure",
+  "supply-chain",
+  "frontend",
+  "documentation",
+  "ai-governance",
+];
 
 const SCAN_MODES = {
   baseline: ["security"],
   deep: ["security", "architecture", "testing", "performance", "compliance", "reliability"],
-  "full-depth": [
-    "security",
-    "architecture",
-    "testing",
-    "performance",
-    "compliance",
-    "reliability",
-    "release",
-    "observability",
-    "infrastructure",
-    "supply-chain",
-    "frontend",
-    "documentation",
-    "ai-governance",
-  ],
+  "full-depth": FULL_DEPTH_PERSONAS,
+  audit: FULL_DEPTH_PERSONAS,
 };
 
 export function resolveScanMode(mode = "deep") {
