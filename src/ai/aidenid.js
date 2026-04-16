@@ -159,9 +159,18 @@ export function buildChildIdentityPayload({
   };
 }
 
-async function resolveSessionCredentialContext({ env, session, fetchCredentials }) {
+async function resolveSessionCredentialContext({
+  env,
+  session,
+  fetchCredentials,
+  autoResolveSession = true,
+}) {
   let resolvedSession = session;
   let resolvedFetcher = typeof fetchCredentials === "function" ? fetchCredentials : null;
+
+  if (!autoResolveSession) {
+    return { session: resolvedSession, fetchCredentials: resolvedFetcher };
+  }
 
   try {
     const { resolveActiveAuthSession, fetchAidenIdCredentials } = await import("../auth/service.js");
@@ -198,6 +207,7 @@ async function resolveSessionCredentialContext({ env, session, fetchCredentials 
  * @param {object} options
  * @param {object} [options.session] - Stored session from readStoredSession(), may contain aidenid metadata
  * @param {Function} [options.fetchCredentials] - Async function to lazy-fetch secret from SL API
+ * @param {boolean} [options.autoResolveSession] - Auto-discover active SL auth session from local context
  */
 export async function resolveAidenIdCredentials(
   {
@@ -208,12 +218,14 @@ export async function resolveAidenIdCredentials(
     requireAll = true,
     session = null,
     fetchCredentials = null,
+    autoResolveSession = true,
   } = {}
 ) {
   const sessionContext = await resolveSessionCredentialContext({
     env,
     session,
     fetchCredentials,
+    autoResolveSession,
   });
   const activeSession = sessionContext.session;
   const activeFetchCredentials = sessionContext.fetchCredentials;

@@ -802,7 +802,11 @@ async function provisionEmailIdentityWithRetry(provisionEmailIdentity, options =
             timeoutError.retryable = true;
             reject(timeoutError);
           }, attemptTimeoutMs);
-          attemptPromise.finally(() => clearTimeout(timer));
+          // `finally()` returns a new promise. Swallow its rejection path so late
+          // attempt failures never escape as unhandledRejection after timeout wins.
+          void attemptPromise
+            .finally(() => clearTimeout(timer))
+            .catch(() => {});
         }),
       ]);
       attemptMetric.durationMs = Date.now() - attemptStartedAt;
