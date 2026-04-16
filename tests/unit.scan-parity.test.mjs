@@ -7,15 +7,6 @@ import {
 } from "../src/scan/generator.js";
 import { resolveScanMode } from "../src/review/scan-modes.js";
 
-const EXPECTED_DEEP_PERSONAS = [
-  "security",
-  "architecture",
-  "testing",
-  "performance",
-  "compliance",
-  "reliability",
-];
-
 const EXPECTED_FULL_DEPTH_PERSONAS = [
   "security",
   "architecture",
@@ -31,6 +22,8 @@ const EXPECTED_FULL_DEPTH_PERSONAS = [
   "documentation",
   "ai-governance",
 ];
+
+const EXPECTED_DEEP_PERSONAS = EXPECTED_FULL_DEPTH_PERSONAS;
 
 test("Unit scan parity: generated workflow uses v1-action contract modes and pinned ref", () => {
   const workflow = buildSecurityReviewWorkflow({
@@ -60,11 +53,13 @@ test("Unit scan parity: local baseline/deep/full-depth persona contracts are sta
 
   assert.equal(deep.mode, "deep");
   assert.deepEqual(deep.personas, EXPECTED_DEEP_PERSONAS);
-  assert.equal(deep.personas.length, 6);
+  assert.equal(deep.personas.length, 13);
 
   assert.equal(fullDepth.mode, "full-depth");
   assert.deepEqual(fullDepth.personas, EXPECTED_FULL_DEPTH_PERSONAS);
   assert.equal(fullDepth.personas.length, 13);
+
+  assert.deepEqual(deep.personas, fullDepth.personas, "deep must match full-depth from v0.7+");
 });
 
 test("Unit scan parity: local audit mode is alias of full-depth", () => {

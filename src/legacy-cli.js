@@ -946,6 +946,7 @@ const OMAR_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "�
 const PERSONA_ICONS = {
   security: "🛡️",
   architecture: "🏗️",
+  backend: "⚙️",
   testing: "🧪",
   performance: "⚡",
   compliance: "📋",
@@ -957,9 +958,26 @@ const PERSONA_ICONS = {
   frontend: "🎨",
   documentation: "📝",
   "ai-governance": "🤖",
+  "code-quality": "💎",
+  data: "🗄️",
 };
 
-function buildOmarTerminalHandler() {
+function formatElapsed(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  return `${minutes}m${String(rem).padStart(2, "0")}s`;
+}
+
+function labelForPersona(payload) {
+  const identity = payload?.identity || {};
+  const short = identity.shortName || identity.fullName || "";
+  const id = payload?.personaId || "persona";
+  return short ? `${short} (${id})` : id;
+}
+
+function buildOmarTerminalHandler({ startedAt = Date.now() } = {}) {
   let spinIdx = 0;
   let spinInterval = null;
   let currentMessage = "";
@@ -985,21 +1003,33 @@ function buildOmarTerminalHandler() {
   return (evt) => {
     const event = evt?.event || "";
     const payload = evt?.payload || {};
+    const elapsed = formatElapsed(Date.now() - startedAt);
 
     switch (event) {
       case "omargate_start": {
         const mode = payload.mode || "deep";
-        const count = payload.personas?.length || 0;
+        const roster = Array.isArray(payload.roster) ? payload.roster : [];
+        const count = roster.length || payload.personas?.length || 0;
         console.error("");
-        console.error(pc.bold(pc.cyan(`  Omar Gate AI Analysis (${mode} — ${count} personas)`)));
+        console.error(pc.bold(pc.cyan(`  Omar Gate AI Analysis (${mode} — ${count} personas) ${pc.gray(`[${elapsed}]`)}`)));
         console.error(pc.gray(`  Budget: $${(payload.maxCostUsd || 5).toFixed(2)} | Parallel: ${payload.maxParallel || 4}`));
+        if (roster.length) {
+          console.error("");
+          console.error(pc.bold("  Roster:"));
+          for (const member of roster) {
+            const icon = PERSONA_ICONS[member.id] || "🔍";
+            console.error(`    ${icon}  ${pc.white(member.fullName || member.id)} ${pc.gray(`— ${member.domain || member.id}`)}`);
+          }
+        }
         console.error("");
-        startSpinner("Initializing personas...");
+        startSpinner("Dispatching personas...");
         break;
       }
       case "persona_start": {
         const icon = PERSONA_ICONS[payload.personaId] || "🔍";
-        startSpinner(`${icon}  ${payload.personaId} analyzing...`);
+        const label = labelForPersona(payload);
+        console.error(`  ${icon}  ${pc.cyan("→")} Dispatching ${pc.bold(label)} ${pc.gray(`[${elapsed}]`)}`);
+        startSpinner(`${icon}  ${label} analyzing...`);
         break;
       }
       case "persona_finding": {
@@ -1008,7 +1038,7 @@ function buildOmarTerminalHandler() {
         const color = sev === "P0" ? pc.red : sev === "P1" ? pc.red : sev === "P2" ? pc.yellow : pc.gray;
         const icon = PERSONA_ICONS[payload.personaId] || "🔍";
         console.error(`  ${icon}  ${color(`[${sev}]`)} ${pc.white(payload.title || payload.message || "finding")} ${pc.gray(`(${payload.file || "?"}:${payload.line || "?"})`)}`);
-        startSpinner(`${icon}  ${payload.personaId} analyzing...`);
+        startSpinner(`${icon}  ${labelForPersona(payload)} analyzing...`);
         break;
       }
       case "persona_complete": {
@@ -1017,19 +1047,20 @@ function buildOmarTerminalHandler() {
         const count = payload.findings || 0;
         const cost = payload.costUsd || 0;
         const dur = ((payload.durationMs || 0) / 1000).toFixed(1);
-        console.error(`  ${icon}  ${pc.green("✓")} ${payload.personaId} — ${count} finding${count === 1 ? "" : "s"} ${pc.gray(`($${cost.toFixed(4)}, ${dur}s)`)}`);
+        const label = labelForPersona(payload);
+        console.error(`  ${icon}  ${pc.green("✓")} ${label} — ${count} finding${count === 1 ? "" : "s"} ${pc.gray(`($${cost.toFixed(4)}, ${dur}s, elapsed ${elapsed})`)}`);
         break;
       }
       case "persona_skipped": {
         stopSpinner();
         const icon = PERSONA_ICONS[payload.personaId] || "🔍";
-        console.error(`  ${icon}  ${pc.gray("○")} ${payload.personaId} — skipped (${payload.reason || "budget"})`);
+        console.error(`  ${icon}  ${pc.gray("○")} ${labelForPersona(payload)} — skipped (${payload.reason || "budget"})`);
         break;
       }
       case "persona_error": {
         stopSpinner();
         const icon = PERSONA_ICONS[payload.personaId] || "🔍";
-        console.error(`  ${icon}  ${pc.red("✗")} ${payload.personaId} — error: ${payload.error || "unknown"}`);
+        console.error(`  ${icon}  ${pc.red("✗")} ${labelForPersona(payload)} — error: ${payload.error || "unknown"}`);
         break;
       }
       case "omargate_complete": {
@@ -1038,9 +1069,13 @@ function buildOmarTerminalHandler() {
         const total = payload.findings || 0;
         const cost = (payload.totalCostUsd || 0).toFixed(4);
         const dur = ((payload.totalDurationMs || 0) / 1000).toFixed(1);
+        const rec = payload.reconciliation || {};
         console.error("");
-        console.error(pc.bold(`  AI Analysis Complete`));
+        console.error(pc.bold(`  AI Analysis Complete ${pc.gray(`[${elapsed}]`)}`));
         console.error(`  Findings: ${pc.red(`P0=${s.P0 || 0}`)} ${pc.red(`P1=${s.P1 || 0}`)} ${pc.yellow(`P2=${s.P2 || 0}`)} ${pc.gray(`P3=${s.P3 || 0}`)} (${total} total)`);
+        if (rec.deterministicFindings !== undefined) {
+          console.error(pc.gray(`  Reconciled: ${rec.deterministicFindings} deterministic + ${rec.aiFindings} AI → ${rec.reconciledFindings} unique (${rec.multiSourceFindings || 0} confirmed by multiple layers)`));
+        }
         console.error(`  Cost: $${cost} | Duration: ${dur}s | Personas: ${payload.personaCount || 0}`);
         console.error("");
         break;
@@ -1050,6 +1085,7 @@ function buildOmarTerminalHandler() {
 }
 
 async function runLocalOmarGateCommand(args) {
+  const commandStartedAt = Date.now();
   const mode = String(args[0] || "").trim().toLowerCase();
   if (mode && mode !== "deep") {
     throw new Error(`Unsupported /omargate mode '${mode}'. Use: /omargate deep`);
@@ -1075,7 +1111,7 @@ async function runLocalOmarGateCommand(args) {
     printInfo(`Target: ${targetPath}`);
     printInfo(`Scan mode: ${scanMode} | AI: ${aiEnabled ? "enabled" : "disabled"}`);
     console.error("");
-    console.error(pc.gray("  Phase 1: Deterministic analysis (22 rules)..."));
+    console.error(pc.gray(`  [${formatElapsed(Date.now() - commandStartedAt)}] Phase 1: Deterministic analysis (22 rules)...`));
   }
 
   // Phase 1: Full 22-rule deterministic pipeline (replaces legacy 5-rule credential scan)
@@ -1091,10 +1127,10 @@ async function runLocalOmarGateCommand(args) {
   const scannedFiles = deterministic.metadata?.ingest?.filesScanned || deterministic.metadata?.scannedFiles || detFindings.length;
 
   if (!asJson) {
-    console.error(`  ${pc.green("✓")} Deterministic: ${scannedFiles} files → P1=${detSummary.P1} P2=${detSummary.P2} findings`);
+    console.error(`  ${pc.green("✓")} [${formatElapsed(Date.now() - commandStartedAt)}] Deterministic: ${scannedFiles} files → P1=${detSummary.P1} P2=${detSummary.P2} findings`);
     if (aiEnabled) {
       console.error("");
-      console.error(pc.gray("  Phase 2: AI persona analysis via LLM..."));
+      console.error(pc.gray(`  [${formatElapsed(Date.now() - commandStartedAt)}] Phase 2: AI persona analysis via LLM...`));
     }
   }
 
@@ -1106,7 +1142,7 @@ async function runLocalOmarGateCommand(args) {
     try {
       const { runOmarGateOrchestrator } = await import("./review/omargate-orchestrator.js");
       const terminalHandler = (!asJson && !streamEnabled)
-        ? buildOmarTerminalHandler()
+        ? buildOmarTerminalHandler({ startedAt: commandStartedAt })
         : null;
       const streamHandler = streamEnabled
         ? (evt) => console.log(JSON.stringify(evt))
@@ -1129,20 +1165,32 @@ async function runLocalOmarGateCommand(args) {
         onEvent: streamHandler,
       });
 
-      // Use orchestrator results as the AI layer
+      // Use orchestrator results as the AI layer. aiResult represents ONLY
+      // the AI contribution — reconciliation is a separate top-level view.
       const personaErrors = (orchestratorResult.personas || []).filter((p) => p.status === "error" || p.error);
+      const aiOnlyFindings = (orchestratorResult.findings || []).filter(
+        (f) => Array.isArray(f.sources) && f.sources.includes("ai")
+      );
+      const aiOnlySummary = {
+        P0: aiOnlyFindings.filter((f) => f.severity === "P0").length,
+        P1: aiOnlyFindings.filter((f) => f.severity === "P1").length,
+        P2: aiOnlyFindings.filter((f) => f.severity === "P2").length,
+        P3: aiOnlyFindings.filter((f) => f.severity === "P3").length,
+      };
       aiResult = {
-        findings: orchestratorResult.findings || [],
-        summary: orchestratorResult.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
+        findings: aiOnlyFindings,
+        summary: aiOnlySummary,
         costUsd: orchestratorResult.totalCostUsd || 0,
         model: modelOverride || "multi-persona",
         provider: providerOverride || "sentinelayer",
         dryRun: aiDryRun,
         personas: (orchestratorResult.personas || []).map((p) => ({
           id: p.id || p.personaId,
+          identity: p.identity || null,
           status: p.status,
           findings: p.findings || 0,
           costUsd: p.costUsd || 0,
+          durationMs: p.durationMs || 0,
           error: p.error || null,
         })),
         errors: personaErrors.length > 0
@@ -1184,24 +1232,82 @@ async function runLocalOmarGateCommand(args) {
     }
   }
 
-  // Merge findings
+  // Reconciled findings: orchestrator already merges+dedupes deterministic+AI
+  // via reconcileReviewFindings. Use its output directly to avoid double-counting.
+  // Fallback path (legacy single ai-review): union of det + AI findings.
   const aiFindings = aiResult?.findings || [];
-  const allFindings = [...detFindings, ...aiFindings];
-  const combinedP0 = detSummary.P0 + (aiResult?.summary?.P0 || 0);
-  const combinedP1 = detSummary.P1 + (aiResult?.summary?.P1 || 0);
-  const combinedP2 = detSummary.P2 + (aiResult?.summary?.P2 || 0);
-  const combinedP3 = (detSummary.P3 || 0) + (aiResult?.summary?.P3 || 0);
+  const reconciledFromOrchestrator = orchestratorResult?.findings;
+  const allFindings = reconciledFromOrchestrator && reconciledFromOrchestrator.length >= 0
+    ? reconciledFromOrchestrator
+    : [...detFindings, ...aiFindings];
+  const combinedSummary = orchestratorResult?.summary || {
+    P0: detSummary.P0 + (aiResult?.summary?.P0 || 0),
+    P1: detSummary.P1 + (aiResult?.summary?.P1 || 0),
+    P2: detSummary.P2 + (aiResult?.summary?.P2 || 0),
+    P3: (detSummary.P3 || 0) + (aiResult?.summary?.P3 || 0),
+    blocking: (detSummary.P0 + (aiResult?.summary?.P0 || 0)) > 0 ||
+              (detSummary.P1 + (aiResult?.summary?.P1 || 0)) > 0,
+  };
+  const combinedP0 = combinedSummary.P0 || 0;
+  const combinedP1 = combinedSummary.P1 || 0;
+  const combinedP2 = combinedSummary.P2 || 0;
+  const combinedP3 = combinedSummary.P3 || 0;
+
+  // Write per-phase artifacts alongside REVIEW_DETERMINISTIC so post-mortems
+  // can inspect exactly what each layer contributed.
+  const reviewDir = deterministic?.artifacts?.runDirectory || "";
+  const writeJsonArtifact = async (name, payload) => {
+    if (!reviewDir) return null;
+    try {
+      const fp = path.join(reviewDir, name);
+      await fsp.writeFile(fp, JSON.stringify(payload, null, 2), "utf-8");
+      return fp;
+    } catch {
+      return null;
+    }
+  };
+  const artifactPaths = {};
+  if (orchestratorResult) {
+    artifactPaths.ai = await writeJsonArtifact("REVIEW_AI.json", {
+      runId: orchestratorResult.runId,
+      mode: orchestratorResult.mode,
+      roster: orchestratorResult.roster,
+      findings: (orchestratorResult.personas || []).flatMap((p) => []),
+      aiFindings: aiFindings,
+      personaCount: (orchestratorResult.personas || []).length,
+      totalCostUsd: orchestratorResult.totalCostUsd,
+      totalDurationMs: orchestratorResult.totalDurationMs,
+    });
+    artifactPaths.personas = await writeJsonArtifact("REVIEW_PERSONAS.json", {
+      runId: orchestratorResult.runId,
+      personas: orchestratorResult.personas || [],
+    });
+    artifactPaths.reconciled = await writeJsonArtifact("REVIEW_RECONCILED.json", {
+      runId: orchestratorResult.runId,
+      findings: orchestratorResult.findings || [],
+      summary: orchestratorResult.summary,
+      reconciliation: orchestratorResult.reconciliation,
+      findingsBySource: orchestratorResult.findingsBySource,
+    });
+  }
+
+  const totalElapsedMs = Date.now() - commandStartedAt;
+  const totalElapsed = formatElapsed(totalElapsedMs);
 
   const report = `# Local Omar Gate Deep Scan
 
 Generated: ${nowIso()}
 Target: ${targetPath}
+Elapsed: ${totalElapsed}
 
 Summary:
 - Files scanned: ${scannedFiles}
 - Deterministic findings: P0=${detSummary.P0} P1=${detSummary.P1} P2=${detSummary.P2} P3=${detSummary.P3 || 0}
-- AI findings: ${aiResult ? `P0=${aiResult.summary?.P0 || 0} P1=${aiResult.summary?.P1 || 0} P2=${aiResult.summary?.P2 || 0} P3=${aiResult.summary?.P3 || 0}` : "skipped"}
-- Combined: P0=${combinedP0} P1=${combinedP1} P2=${combinedP2} P3=${combinedP3}
+- AI findings (raw, pre-reconciliation): ${aiResult ? `P0=${aiResult.summary?.P0 || 0} P1=${aiResult.summary?.P1 || 0} P2=${aiResult.summary?.P2 || 0} P3=${aiResult.summary?.P3 || 0}` : "skipped"}
+- Reconciled (deduped + confidence-boosted): P0=${combinedP0} P1=${combinedP1} P2=${combinedP2} P3=${combinedP3}
+${orchestratorResult?.reconciliation
+    ? `- Reconciliation: ${orchestratorResult.reconciliation.deterministicFindings} deterministic + ${orchestratorResult.reconciliation.aiFindings} AI → ${orchestratorResult.reconciliation.reconciledFindings} unique (${orchestratorResult.reconciliation.multiSourceFindings} multi-source confirmed, ${orchestratorResult.reconciliation.dedupedCount} deduped)`
+    : ""}
 
 Findings:
 ${formatFindingsMarkdown(allFindings)}
@@ -1223,6 +1329,8 @@ ${formatFindingsMarkdown(allFindings)}
           p2: combinedP2,
           p3: combinedP3,
           blocking: combinedP0 > 0 || combinedP1 > 0,
+          elapsedMs: totalElapsedMs,
+          artifacts: artifactPaths,
           deterministic: {
             findings: detFindings.length,
             summary: detSummary,
@@ -1235,8 +1343,11 @@ ${formatFindingsMarkdown(allFindings)}
                 provider: aiResult.provider || null,
                 costUsd: aiResult.costUsd || 0,
                 dryRun: aiDryRun,
+                personas: aiResult.personas || [],
               }
             : null,
+          reconciliation: orchestratorResult?.reconciliation || null,
+          roster: orchestratorResult?.roster || [],
         },
         null,
         2
@@ -1250,12 +1361,13 @@ ${formatFindingsMarkdown(allFindings)}
     } else if (aiEnabled) {
       console.log(pc.gray("AI layer: skipped (no credentials or --no-ai)"));
     }
-    console.log(pc.bold(`Combined: P0=${combinedP0} P1=${combinedP1} P2=${combinedP2}`));
+    console.log(pc.bold(`Reconciled: P0=${combinedP0} P1=${combinedP1} P2=${combinedP2} P3=${combinedP3}`));
+    console.log(pc.gray(`Elapsed: ${totalElapsed}`));
   }
 
   if (combinedP0 > 0 || combinedP1 > 0) {
     if (!asJson) {
-      console.log(pc.red(`Blocking findings detected (P0=${combinedP0}, P1=${combinedP1}).`));
+      console.log(pc.red(`Blocking findings detected (P0=${combinedP0}, P1=${combinedP1}) after reconciliation.`));
     }
     return 2;
   }

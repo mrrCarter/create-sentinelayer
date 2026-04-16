@@ -81,8 +81,10 @@ describe("JULES_DEFINITION", () => {
 });
 
 describe("PERSONA_VISUALS", () => {
-  it("has all 13 personas", () => {
-    assert.equal(Object.keys(PERSONA_VISUALS).length, 13);
+  it("has at least 13 personas (13 canonical + scan-mode aliases)", () => {
+    // v0.7: added architecture/performance/compliance visuals so every
+    // persona ID used by scan-modes.js has a visual identity.
+    assert.ok(Object.keys(PERSONA_VISUALS).length >= 13);
   });
 
   it("each persona has color, avatar, shortName, fullName", () => {
@@ -133,12 +135,16 @@ describe("resolvePersonaVisual", () => {
 });
 
 describe("listPersonaIds", () => {
-  it("returns all 13 persona IDs", () => {
+  it("returns all 13+ persona IDs (13 canonical + scan-mode aliases)", () => {
     const ids = listPersonaIds();
-    assert.equal(ids.length, 13);
+    assert.ok(ids.length >= 13);
     assert.ok(ids.includes("frontend"));
     assert.ok(ids.includes("security"));
     assert.ok(ids.includes("backend"));
+    // scan-mode aliases added in v0.7 so every dispatched persona has visual identity
+    assert.ok(ids.includes("architecture"));
+    assert.ok(ids.includes("performance"));
+    assert.ok(ids.includes("compliance"));
   });
 });
 
@@ -148,6 +154,6 @@ describe("listPersonaNames", () => {
     assert.ok(names.includes("frontend"));
     assert.ok(names.includes("jules"));
     assert.ok(names.includes("jules tanaka"));
-    assert.ok(names.length >= 39); // 13 IDs + 13 short + 13 full
+    assert.ok(names.length >= 39);
   });
 });

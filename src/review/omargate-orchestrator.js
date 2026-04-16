@@ -10,6 +10,8 @@ import { randomUUID } from "node:crypto";
 import { runAiReviewLayer } from "./ai-review.js";
 import { buildPersonaReviewPrompt, PERSONA_IDS } from "./persona-prompts.js";
 import { resolveScanMode } from "./scan-modes.js";
+import { reconcileReviewFindings } from "./report.js";
+import { resolvePersonaVisual } from "../agents/persona-visuals.js";
 import { syncRunToDashboard } from "../telemetry/sync.js";
 
 /**
@@ -40,18 +42,23 @@ async function runWithConcurrency(items, maxConcurrent, fn) {
 }
 
 /**
- * Deduplicate findings by file:line:title key.
+ * Annotate persona result with visual identity so stream consumers
+ * and downstream reports never see faceless persona IDs.
  */
-function deduplicateFindings(allFindings) {
-  const seen = new Set();
-  const unique = [];
-  for (const finding of allFindings) {
-    const key = `${finding.file || ""}:${finding.line || 0}:${String(finding.title || finding.message || "").toLowerCase().slice(0, 80)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(finding);
-  }
-  return unique;
+function decoratePersonaResult(personaId, baseResult) {
+  const visual = resolvePersonaVisual(personaId) || {};
+  return {
+    ...baseResult,
+    personaId,
+    persona: {
+      id: personaId,
+      shortName: visual.shortName || personaId,
+      fullName: visual.fullName || personaId,
+      avatar: visual.avatar || "",
+      color: visual.color || "gray",
+      domain: visual.domain || personaId,
+    },
+  };
 }
 
 /**
@@ -87,11 +94,23 @@ export async function runOmarGateOrchestrator({
 
   const { mode, personas } = resolveScanMode(scanMode);
 
+  const roster = personas.map((personaId) => {
+    const visual = resolvePersonaVisual(personaId) || {};
+    return {
+      id: personaId,
+      shortName: visual.shortName || personaId,
+      fullName: visual.fullName || personaId,
+      avatar: visual.avatar || "",
+      color: visual.color || "gray",
+      domain: visual.domain || personaId,
+    };
+  });
+
   if (onEvent) {
     onEvent({
       stream: "sl_event",
       event: "omargate_start",
-      payload: { runId, mode, personas, maxParallel, maxCostUsd, dryRun },
+      payload: { runId, mode, personas, roster, maxParallel, maxCostUsd, dryRun },
     });
   }
 
@@ -103,13 +122,23 @@ export async function runOmarGateOrchestrator({
   let runningCostUsd = 0;
 
   const personaResults = await runWithConcurrency(personas, maxParallel, async (personaId) => {
+    const visual = resolvePersonaVisual(personaId) || {};
+    const identity = {
+      id: personaId,
+      shortName: visual.shortName || personaId,
+      fullName: visual.fullName || personaId,
+      avatar: visual.avatar || "",
+      color: visual.color || "gray",
+      domain: visual.domain || personaId,
+    };
+
     // Global budget check — skip remaining personas if exhausted
     if (runningCostUsd >= maxCostUsd) {
       if (onEvent) {
         onEvent({
           stream: "sl_event",
           event: "persona_skipped",
-          payload: { personaId, reason: "global_budget_exhausted", runningCostUsd, maxCostUsd },
+          payload: { personaId, identity, reason: "global_budget_exhausted", runningCostUsd, maxCostUsd },
         });
       }
       return {
@@ -129,7 +158,7 @@ export async function runOmarGateOrchestrator({
       onEvent({
         stream: "sl_event",
         event: "persona_start",
-        payload: { personaId, mode, runId },
+        payload: { personaId, identity, mode, runId },
       });
     }
 
@@ -169,7 +198,7 @@ export async function runOmarGateOrchestrator({
           onEvent({
             stream: "sl_event",
             event: "persona_finding",
-            payload: { personaId, ...finding },
+            payload: { personaId, identity, ...finding },
           });
         }
         onEvent({
@@ -177,6 +206,7 @@ export async function runOmarGateOrchestrator({
           event: "persona_complete",
           payload: {
             personaId,
+            identity,
             findings: findings.length,
             summary: result?.summary || {},
             costUsd: result?.costUsd || 0,
@@ -202,7 +232,7 @@ export async function runOmarGateOrchestrator({
         onEvent({
           stream: "sl_event",
           event: "persona_error",
-          payload: { personaId, error: err.message },
+          payload: { personaId, identity, error: err.message },
         });
       }
       return {
@@ -219,42 +249,65 @@ export async function runOmarGateOrchestrator({
 
   // Collect results (handle settled promises)
   const settled = personaResults.map((r) =>
-    r.status === "fulfilled" ? r.value : { personaId: "unknown", status: "error", findings: [], summary: { P0: 0, P1: 0, P2: 0, P3: 0 }, costUsd: 0, error: r.reason?.message || "unknown" }
+    r.status === "fulfilled"
+      ? decoratePersonaResult(r.value.personaId, r.value)
+      : decoratePersonaResult("unknown", {
+          status: "error",
+          findings: [],
+          summary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+          costUsd: 0,
+          error: r.reason?.message || "unknown",
+          durationMs: 0,
+        })
   );
 
-  // Merge and deduplicate findings
+  // Reconcile AI findings with deterministic findings — canonical single list.
+  // Confidence boost when multiple layers agree; deterministic findings get
+  // confidence 1.0; AI findings keep their self-reported confidence.
   const allAiFindings = settled.flatMap((r) => r.findings);
-  const uniqueFindings = deduplicateFindings(allAiFindings);
+  const reconciled = reconcileReviewFindings({
+    deterministicFindings: detFindings,
+    aiFindings: allAiFindings,
+  });
+  const reconciledFindings = reconciled.findings;
+  const reconciledSummary = reconciled.summary;
 
-  // Compute combined summary
-  const combinedP0 = uniqueFindings.filter((f) => f.severity === "P0").length;
-  const combinedP1 = uniqueFindings.filter((f) => f.severity === "P1").length;
-  const combinedP2 = uniqueFindings.filter((f) => f.severity === "P2").length;
-  const combinedP3 = uniqueFindings.filter((f) => f.severity === "P3").length;
   const totalCost = settled.reduce((sum, r) => sum + (r.costUsd || 0), 0);
   const totalDuration = Date.now() - startTime;
 
   const result = {
     runId,
     mode,
+    roster,
     personas: settled.map((r) => ({
       id: r.personaId,
+      identity: r.persona,
       status: r.status,
-      findings: r.findings.length,
+      findings: (r.findings || []).length,
+      summary: r.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
       costUsd: r.costUsd,
       durationMs: r.durationMs,
+      model: r.model || null,
       error: r.error || null,
     })),
-    findings: uniqueFindings,
-    summary: {
-      P0: combinedP0,
-      P1: combinedP1,
-      P2: combinedP2,
-      P3: combinedP3,
-      blocking: combinedP0 > 0 || combinedP1 > 0,
+    findings: reconciledFindings,
+    findingsBySource: {
+      deterministic: detFindings.length,
+      ai: allAiFindings.length,
+      reconciled: reconciledFindings.length,
     },
+    summary: reconciledSummary,
     totalCostUsd: totalCost,
     totalDurationMs: totalDuration,
+    reconciliation: {
+      deterministicFindings: detFindings.length,
+      aiFindings: allAiFindings.length,
+      reconciledFindings: reconciledFindings.length,
+      dedupedCount: detFindings.length + allAiFindings.length - reconciledFindings.length,
+      multiSourceFindings: reconciledFindings.filter(
+        (f) => Array.isArray(f.sources) && f.sources.length > 1
+      ).length,
+    },
     dryRun,
   };
 
@@ -266,8 +319,9 @@ export async function runOmarGateOrchestrator({
         runId,
         mode,
         personaCount: settled.length,
-        findings: uniqueFindings.length,
+        findings: reconciledFindings.length,
         summary: result.summary,
+        reconciliation: result.reconciliation,
         totalCostUsd: totalCost,
         totalDurationMs: totalDuration,
       },
@@ -286,9 +340,11 @@ export async function runOmarGateOrchestrator({
       toolCalls: personas.length,
     },
     summary: result.summary,
+    reconciliation: result.reconciliation,
     stopReason: result.summary.blocking ? "blocked" : "passed",
     personaBreakdown: settled.map((r) => ({
       personaId: r.personaId,
+      fullName: r.persona?.fullName || r.personaId,
       findings: r.findings?.length || 0,
       costUsd: r.costUsd || 0,
       durationMs: r.durationMs || 0,
