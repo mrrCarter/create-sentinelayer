@@ -456,10 +456,17 @@ jobs:
       group: release-build-${{ github.ref }}
       cancel-in-progress: false
     steps:
+      - name: Checkout release ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Resolve canonical quality manifest digest
         id: quality_manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
