@@ -809,7 +809,7 @@ function hasCommandOption(args, optionName) {
 async function collectScanFiles(rootPath) {
   const files = [];
   const stack = [rootPath];
-  const ignoredDirs = new Set([".git", "node_modules", ".venv", ".next", "dist", "build", ".sentinelayer"]);
+  const ignoredDirs = new Set([".git", "node_modules", ".venv", ".next", "dist", "build", "out", "coverage", "__pycache__", ".turbo", ".cache", ".parcel-cache", ".svelte-kit", ".nuxt", ".output", ".vercel", ".sentinelayer"]);
   const maxFileSizeBytes = 512 * 1024;
 
   while (stack.length > 0) {
@@ -1130,6 +1130,7 @@ async function runLocalOmarGateCommand(args) {
       });
 
       // Use orchestrator results as the AI layer
+      const personaErrors = (orchestratorResult.personas || []).filter((p) => p.status === "error" || p.error);
       aiResult = {
         findings: orchestratorResult.findings || [],
         summary: orchestratorResult.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
@@ -1137,6 +1138,16 @@ async function runLocalOmarGateCommand(args) {
         model: modelOverride || "multi-persona",
         provider: providerOverride || "sentinelayer",
         dryRun: aiDryRun,
+        personas: (orchestratorResult.personas || []).map((p) => ({
+          id: p.id || p.personaId,
+          status: p.status,
+          findings: p.findings || 0,
+          costUsd: p.costUsd || 0,
+          error: p.error || null,
+        })),
+        errors: personaErrors.length > 0
+          ? personaErrors.map((p) => `${p.id || p.personaId}: ${p.error}`).join("; ")
+          : null,
       };
     } catch (aiError) {
       if (!asJson) {

@@ -14,6 +14,16 @@ const IGNORED_DIRS = new Set([
   ".next",
   "dist",
   "build",
+  "out",
+  "coverage",
+  "__pycache__",
+  ".turbo",
+  ".cache",
+  ".parcel-cache",
+  ".svelte-kit",
+  ".nuxt",
+  ".output",
+  ".vercel",
   ".sentinelayer",
 ]);
 const MAX_FILE_SIZE_BYTES = 512 * 1024;

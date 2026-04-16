@@ -413,11 +413,21 @@ export async function runAiReviewLayer({
   const normalizedRunId = normalizeString(runId) || "review-ai";
 
   const config = await loadConfig({ cwd: normalizedTargetPath, env });
-  const resolvedProvider = resolveProvider({
+  let resolvedProvider = resolveProvider({
     provider,
     configProvider: config.resolved.defaultModelProvider,
     env,
   });
+  // If no explicit provider and default fell through to openai,
+  // check for stored sentinelayer session (async fallback)
+  if (resolvedProvider === "openai" && !provider && !config.resolved.defaultModelProvider) {
+    try {
+      const { resolveProviderAsync } = await import("../ai/client.js");
+      resolvedProvider = await resolveProviderAsync({ env });
+    } catch {
+      // keep sync result
+    }
+  }
   const resolvedModel = resolveModel({
     provider: resolvedProvider,
     model,
