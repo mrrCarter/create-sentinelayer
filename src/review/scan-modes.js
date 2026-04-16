@@ -1,10 +1,16 @@
 /**
  * Scan mode → persona list resolution for Omar Gate.
  *
- * baseline: security only (~30s)
- * deep:     6 key personas (~2min)
- * audit:    alias for full-depth
- * full-depth: all 13 personas (~5min)
+ * baseline:   security only (~30s)
+ * deep:       all 13 personas (~3-5min) — alias of full-depth from v0.7+
+ * audit:      alias for full-depth
+ * full-depth: all 13 personas (~3-5min)
+ *
+ * v0.7 change (2026-04-16): `deep` was a 6-persona subset and missed
+ * domain specialists (Maya/backend, Jules/frontend, Nora/supply-chain,
+ * Samir/documentation, etc.). Users running `sl /omargate deep` expected
+ * a full dispatch. Deep now matches full-depth to prevent silent coverage
+ * gaps; run `baseline` when you only need security.
  */
 
 const FULL_DEPTH_PERSONAS = [
@@ -25,7 +31,7 @@ const FULL_DEPTH_PERSONAS = [
 
 const SCAN_MODES = {
   baseline: ["security"],
-  deep: ["security", "architecture", "testing", "performance", "compliance", "reliability"],
+  deep: FULL_DEPTH_PERSONAS,
   "full-depth": FULL_DEPTH_PERSONAS,
   audit: FULL_DEPTH_PERSONAS,
 };
