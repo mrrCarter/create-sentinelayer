@@ -25,7 +25,23 @@ const IGNORED_DIRS = new Set([
   ".output",
   ".vercel",
   ".sentinelayer",
+  // v0.7 (2026-04-16): exclude generated demo/e2e folders that create massive
+  // self-scan noise. These are fixtures produced by the CLI itself and
+  // contain intentionally-naive demo code that pollutes reviewer signal.
+  "demo-e2e-cli-todo",
+  "demo-playground",
+  "e2e-demo-2026-04-10",
+  ".worktree-runtime",
 ]);
+
+// Paths that are always "test-like" — rules with high false-positive rates
+// in tests (hardcoded localhost, HTTP literals, example credentials) should
+// suppress or demote findings here. Keep narrow; do not suppress P0/P1.
+const TEST_LIKE_PATH_PATTERN = /(?:^|[\\/])(?:tests?|__tests__|fixtures?|e2e|demo|demo-[^\\/]*|examples?|samples?|docs?[\\/]examples?)(?:[\\/]|$)/i;
+
+function isTestLikePath(relPath) {
+  return TEST_LIKE_PATH_PATTERN.test(String(relPath || ""));
+}
 const MAX_FILE_SIZE_BYTES = 512 * 1024;
 const MAX_FINDINGS = 250;
 const STATIC_CHECK_TIMEOUT_MS = 120_000;
@@ -194,8 +210,12 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     severity: "P2",
     message: "Plain HTTP endpoint literal found.",
     suggestedFix: "Prefer HTTPS endpoints in production paths.",
-    regex: /\bhttp:\/\/[^\s'"]+/i,
+    // Skip localhost/127.0.0.1/0.0.0.0 and common local-dev host patterns —
+    // those are dev-time fixtures and do not warrant P2. Plain http://example.com,
+    // cdn URLs, and external hosts still fire.
+    regex: /\bhttp:\/\/(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0|::1|\[::1\]))[^\s'"]+/i,
     sourceOnly: true,
+    excludePathPattern: TEST_LIKE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-014",
@@ -213,6 +233,7 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     suggestedFix: "Replace eval with explicit parser or safe handlers.",
     regex: /\beval\s*\(/,
     sourceOnly: true,
+    excludePathPattern: TEST_LIKE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-016",
@@ -229,6 +250,9 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     suggestedFix: "Use parameterized queries and prepared statements.",
     regex: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^;\n]{0,140}\+/i,
     sourceOnly: true,
+    // Self-scan dampener: the local-review source itself contains SQL-like
+    // regex literals and must not flag itself.
+    excludePathPattern: LOCAL_REVIEW_SOURCE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-018",
@@ -251,8 +275,12 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     severity: "P2",
     message: "Potentially sensitive value logged directly.",
     suggestedFix: "Redact secrets/tokens before logging.",
-    regex: /console\.(?:log|debug|info)\([^)]*(token|secret|password|api[_-]?key)/i,
+    // Tighter regex: require the secret-like identifier to be a variable
+    // reference, not just appear inside any string/template. Excludes
+    // error-message text like "invalid token" and doc examples.
+    regex: /console\.(?:log|debug|info)\(\s*(?:[`"'][^`"']*\$\{)?\s*[A-Za-z_$][A-Za-z0-9_$]*\.?(token|secret|password|api[_-]?key)/i,
     sourceOnly: true,
+    excludePathPattern: TEST_LIKE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-021",
@@ -270,6 +298,7 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     suggestedFix: "Externalize callback URLs to environment config.",
     regex: /https?:\/\/localhost:\d{2,5}\//i,
     sourceOnly: true,
+    excludePathPattern: TEST_LIKE_PATH_PATTERN,
   },
 ]);
 
@@ -661,21 +690,33 @@ async function runPatternChecks({ rootPath, filePaths, maxFindings = MAX_FINDING
         continue;
       }
 
-      if (/dangerouslySetInnerHTML/.test(line) || /innerHTML\s*=/.test(line)) {
-        tryPushFinding(
-          findings,
-          createFinding({
-            severity: "P1",
-            file: relativePath,
-            line: index + 1,
-            message: "Direct HTML sink detected; validate/sanitize untrusted content.",
-            excerpt: sanitizeLineForExcerpt(line),
-            ruleId: "SL-PAT-002",
-            suggestedFix: "Apply strict sanitization and avoid raw HTML sinks.",
-            layer: "pattern",
-          }),
-          maxFindings
-        );
+      // Require actual JSX attribute usage OR DOM property assignment, not
+      // bare mentions in strings/docstrings (common in prompt templates and
+      // detector files that search for the pattern as a label).
+      const realJsxUsage = /dangerouslySetInnerHTML\s*=\s*\{\s*\{/.test(line);
+      const realDomAssign = /(?:^|[.\s])innerHTML\s*=\s*(?!=)/.test(line);
+      if (realJsxUsage || realDomAssign) {
+        const isPromptOrConfig =
+          /(?:^|[\\/])(?:config|prompts?|templates?|system-prompt|swarm|agents)[\\/]/i.test(relativePath) ||
+          /-prompts?\.(?:m?js|tsx?)$/i.test(relativePath) ||
+          /system-prompt\.(?:m?js|tsx?)$/i.test(relativePath) ||
+          /(?:file-scanner|pattern-hunter|-scanner|-hunter)\.(?:m?js|tsx?)$/i.test(relativePath);
+        if (!isTestLikePath(relativePath) && !isPromptOrConfig) {
+          tryPushFinding(
+            findings,
+            createFinding({
+              severity: "P1",
+              file: relativePath,
+              line: index + 1,
+              message: "Direct HTML sink detected; validate/sanitize untrusted content.",
+              excerpt: sanitizeLineForExcerpt(line),
+              ruleId: "SL-PAT-002",
+              suggestedFix: "Apply strict sanitization and avoid raw HTML sinks.",
+              layer: "pattern",
+            }),
+            maxFindings
+          );
+        }
       }
 
       if (/useEffect\s*\(/.test(line)) {
@@ -700,7 +741,7 @@ async function runPatternChecks({ rootPath, filePaths, maxFindings = MAX_FINDING
 
       if (/(for|while)\s*\([^)]*\)/.test(line)) {
         const window = lines.slice(index, Math.min(lines.length, index + 10)).join("\n");
-        if (/findMany\(|query\(|SELECT\b|fetch\(/i.test(window)) {
+        if (/findMany\(|query\(|SELECT\b|fetch\(/i.test(window) && !isTestLikePath(relativePath)) {
           tryPushFinding(
             findings,
             createFinding({
@@ -720,7 +761,12 @@ async function runPatternChecks({ rootPath, filePaths, maxFindings = MAX_FINDING
     }
 
     const sqlConcat = /\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^\n]{0,160}\+/i.exec(text);
-    if (sqlConcat && findings.length < maxFindings) {
+    if (
+      sqlConcat &&
+      findings.length < maxFindings &&
+      !isTestLikePath(relativePath) &&
+      !LOCAL_REVIEW_SOURCE_PATH_PATTERN.test(relativePath)
+    ) {
       const lineNumber = resolveLineNumberFromIndex(text, sqlConcat.index);
       tryPushFinding(
         findings,
