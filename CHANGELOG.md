@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.6.0...v0.6.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **ci:** add EVENT_NAME to stale-run step and bypass for dispatch ([#307](https://github.com/mrrCarter/create-sentinelayer/issues/307)) ([b9223ee](https://github.com/mrrCarter/create-sentinelayer/commit/b9223ee645801cea4dd173e3001be3ca46205969))
+* **ci:** bypass tag policy for workflow_dispatch releases ([#306](https://github.com/mrrCarter/create-sentinelayer/issues/306)) ([b01ac87](https://github.com/mrrCarter/create-sentinelayer/commit/b01ac87823e157e9893e5c1e72dd9bb4e2b3910e))
+
 ## [0.6.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.5.0...v0.6.0) (2026-04-14)
 
 
