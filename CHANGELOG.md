@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.6.2...v0.7.0) (2026-04-16)
+
+
+### Features
+
+* **omargate:** deep=13 personas + reconciliation + per-persona artifacts ([#315](https://github.com/mrrCarter/create-sentinelayer/issues/315)) ([91cf790](https://github.com/mrrCarter/create-sentinelayer/commit/91cf790484f52da8a1d285dfcce5b87ae1fa0f4f))
+* **review:** reduce deterministic scan noise (~88% fewer findings) ([#316](https://github.com/mrrCarter/create-sentinelayer/issues/316)) ([818abaa](https://github.com/mrrCarter/create-sentinelayer/commit/818abaa607d2d0dfffa5881dedb81b4896eabbeb))
+
 ## [0.6.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.6.1...v0.6.2) (2026-04-16)
 
 
