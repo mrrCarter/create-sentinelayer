@@ -32,6 +32,10 @@ import {
   listFileLocks,
   releaseFileLocksForAgent,
 } from "../session/file-locks.js";
+import {
+  injectSessionGuides,
+  setupSessionGuides,
+} from "../session/setup-guides.js";
 import { listSessionTasks } from "../session/tasks.js";
 import {
   createSession,
@@ -493,6 +497,76 @@ export function registerSessionCommand(program) {
           `${item.sessionId} status=${item.status} created_at=${item.createdAt} expires_at=${item.expiresAt}`
         );
       }
+    });
+
+  session
+    .command("setup-guides <sessionId>")
+    .description("Generate or update AGENTS.md and CLAUDE.md with session coordination rules")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await setupSessionGuides(normalizedSessionId, {
+        targetPath,
+      });
+      const payload = {
+        command: "session setup-guides",
+        targetPath,
+        sessionId: normalizedSessionId,
+        sectionHeading: result.sectionHeading,
+        agents: result.agents,
+        claude: result.claude,
+        sessionGuide: result.sessionGuide,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold(`Session guide sync complete for ${normalizedSessionId}`));
+      console.log(pc.gray(`AGENTS.md: changed=${result.agents.changed} path=${result.agents.path}`));
+      console.log(pc.gray(`CLAUDE.md: changed=${result.claude.changed} path=${result.claude.path}`));
+      console.log(
+        pc.gray(
+          `.sentinelayer/AGENTS_SESSION_GUIDE.md: changed=${result.sessionGuide.changed} path=${result.sessionGuide.path}`
+        )
+      );
+    });
+
+  session
+    .command("inject-guide <sessionId>")
+    .description("Append coordination section to existing AGENTS.md and CLAUDE.md files")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await injectSessionGuides(normalizedSessionId, {
+        targetPath,
+      });
+      const payload = {
+        command: "session inject-guide",
+        targetPath,
+        sessionId: normalizedSessionId,
+        sectionHeading: result.sectionHeading,
+        agents: result.agents,
+        claude: result.claude,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold(`Session guide section injected for ${normalizedSessionId}`));
+      console.log(pc.gray(`AGENTS.md: existed=${result.agents.existed} changed=${result.agents.changed}`));
+      console.log(pc.gray(`CLAUDE.md: existed=${result.claude.existed} changed=${result.claude.changed}`));
     });
 
   session
