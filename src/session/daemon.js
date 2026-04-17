@@ -1,7 +1,20 @@
 import path from "node:path";
 import process from "node:process";
+import fsp from "node:fs/promises";
 
+import { invokeViaProxy } from "../ai/proxy.js";
 import { createAgentEvent } from "../events/schema.js";
+import {
+  buildDocumentsFromBlackboardEntries,
+  buildLocalHybridIndex,
+  buildSharedMemoryCorpus,
+  queryLocalHybridIndex,
+} from "../memory/retrieval.js";
+import {
+  endSession as endTelemetrySession,
+  recordLlmUsage,
+  startSession as startTelemetrySession,
+} from "../telemetry/session-tracker.js";
 import {
   detectStaleAgents,
   heartbeatAgent,
@@ -15,7 +28,11 @@ import { getSession, renewSession } from "./store.js";
 import { appendToStream, readStream, tailStream } from "./stream.js";
 
 const DAEMON_TICK_INTERVAL_MS = 30_000;
-const HELP_REQUEST_TIMEOUT_MS = 30_000;
+const HELP_REQUEST_TIMEOUT_MS = 1_200;
+const HELP_MODEL_TIMEOUT_MS = 3_000;
+const HELP_CONTEXT_EVENT_TAIL = 50;
+const HELP_CONTEXT_RESULT_LIMIT = 6;
+const HELP_BLACKBOARD_ENTRY_LIMIT = 40;
 const FILE_CONFLICT_WINDOW_MS = 60_000;
 const RENEWAL_WINDOW_MS = 60 * 60 * 1000;
 const RENEWAL_THRESHOLD_EVENTS = 10;
@@ -137,6 +154,8 @@ function createSentiState({
   helpRequestTimeoutMs,
   tickIntervalMs,
   helpResponder,
+  llmInvoker,
+  telemetrySessionId,
 }) {
   return {
     daemonKey,
@@ -148,6 +167,8 @@ function createSentiState({
     helpRequestTimeoutMs,
     tickIntervalMs,
     helpResponder,
+    llmInvoker,
+    telemetrySessionId,
     running: true,
     tickTimer: null,
     helpAbortController: new AbortController(),
@@ -188,6 +209,105 @@ async function hasHelpResponseFromPeer(
   });
 }
 
+function normalizeUsageNumber(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return 0;
+  }
+  return normalized;
+}
+
+function buildStreamContextDocuments(events = []) {
+  return (events || [])
+    .map((event, index) => {
+      const payload = event && typeof event.payload === "object" ? event.payload : {};
+      const text = [
+        normalizeString(event.event),
+        normalizeString(event.agent?.id || event.agentId),
+        normalizeString(payload.message),
+        normalizeString(payload.response),
+        normalizeString(payload.alert),
+        normalizeString(payload.reason),
+        normalizeString(payload.file),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      if (!text) {
+        return null;
+      }
+      return {
+        documentId: `stream:${index + 1}:${normalizeIsoTimestamp(event.ts, new Date().toISOString())}`,
+        sourceType: "session-stream",
+        sourcePath: "",
+        severity: "P3",
+        updatedAt: normalizeIsoTimestamp(event.ts, new Date().toISOString()),
+        text,
+        metadata: {
+          category: "session-stream",
+          event: normalizeString(event.event),
+          agentId: normalizeString(event.agent?.id || event.agentId),
+        },
+      };
+    })
+    .filter(Boolean);
+}
+
+async function loadLatestBlackboardEntries(targetPath, { limit = HELP_BLACKBOARD_ENTRY_LIMIT } = {}) {
+  const memoryDirectory = path.join(targetPath, ".sentinelayer", "memory");
+  let entries = [];
+  try {
+    entries = await fsp.readdir(memoryDirectory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.startsWith("blackboard-") && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort((left, right) => right.localeCompare(left));
+  for (const fileName of files) {
+    const filePath = path.join(memoryDirectory, fileName);
+    try {
+      const payload = JSON.parse(await fsp.readFile(filePath, "utf-8"));
+      if (!Array.isArray(payload.entries)) {
+        continue;
+      }
+      return payload.entries.slice(-Math.max(1, Math.floor(Number(limit) || HELP_BLACKBOARD_ENTRY_LIMIT)));
+    } catch {
+      // Ignore malformed artifacts and continue searching older files.
+    }
+  }
+  return [];
+}
+
+function buildFallbackHelpResponse({ requestMessage = "", synopsis = "context unavailable", contextHints = [] } = {}) {
+  const topHints = contextHints.slice(0, 2).join(" | ");
+  if (topHints) {
+    return `I saw your help_request ("${requestMessage}"). Quick context: ${synopsis}. Top hints: ${topHints}. Share the failing file or stack frame and I can route next steps.`;
+  }
+  return `I saw your help_request ("${requestMessage}"). Quick context: ${synopsis}. Share the failing file or stack frame and I can route next steps.`;
+}
+
+async function runWithTimeout(promise, timeoutMs, timeoutMessage) {
+  let timeoutHandle = null;
+  try {
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(timeoutMessage));
+      }, timeoutMs);
+      if (typeof timeoutHandle.unref === "function") {
+        timeoutHandle.unref();
+      }
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 async function buildHelpResponseMessage(
   daemonState,
   requestEvent,
@@ -195,6 +315,11 @@ async function buildHelpResponseMessage(
     targetPath = process.cwd(),
   } = {}
 ) {
+  const requestMessage =
+    normalizeString(requestEvent?.payload?.message) ||
+    normalizeString(requestEvent?.payload?.request) ||
+    "help request received";
+
   if (typeof daemonState.helpResponder === "function") {
     const custom = await daemonState.helpResponder({
       daemonState,
@@ -203,19 +328,170 @@ async function buildHelpResponseMessage(
     });
     const normalizedCustom = normalizeString(custom);
     if (normalizedCustom) {
-      return normalizedCustom;
+      return {
+        message: normalizedCustom,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          model: daemonState.model,
+          provider: "custom-responder",
+          latencyMs: 0,
+        },
+        fallbackPath: false,
+        fallbackReason: "",
+        contextSignals: {
+          documentCount: 0,
+          memoryHits: 0,
+          blackboardEntries: 0,
+          recentEvents: 0,
+        },
+      };
     }
   }
 
-  const session = await getSession(daemonState.sessionId, {
-    targetPath,
-  });
+  const session = await getSession(daemonState.sessionId, { targetPath });
   const synopsis = session ? formatCodebaseSynopsis(session) : "codebase context unavailable";
-  const requestMessage =
-    normalizeString(requestEvent?.payload?.message) ||
-    normalizeString(requestEvent?.payload?.request) ||
-    "help request received";
-  return `I saw your help_request ("${requestMessage}"). Quick context: ${synopsis}. Share the failing file or stack frame and I can route next steps.`;
+  const outputRoot = path.join(targetPath, ".sentinelayer");
+
+  const [recentEvents, blackboardEntries, sharedMemory] = await Promise.all([
+    readStream(daemonState.sessionId, {
+      targetPath,
+      tail: HELP_CONTEXT_EVENT_TAIL,
+    }).catch(() => []),
+    loadLatestBlackboardEntries(targetPath, {
+      limit: HELP_BLACKBOARD_ENTRY_LIMIT,
+    }),
+    buildSharedMemoryCorpus({
+      outputRoot,
+      targetPath,
+      ingest: session?.codebaseContext || {},
+      maxAuditRuns: 2,
+    }).catch(() => ({
+      documents: [],
+      sourceCounts: {},
+    })),
+  ]);
+
+  const documents = [
+    ...(sharedMemory.documents || []),
+    ...buildStreamContextDocuments(recentEvents),
+    ...buildDocumentsFromBlackboardEntries(blackboardEntries),
+  ];
+  const localIndex = buildLocalHybridIndex(documents);
+  const memoryQuery = queryLocalHybridIndex(localIndex, {
+    query: requestMessage,
+    limit: HELP_CONTEXT_RESULT_LIMIT,
+    minScore: 0.05,
+  });
+  const memoryHits = memoryQuery.results || [];
+  const contextHints = memoryHits
+    .slice(0, HELP_CONTEXT_RESULT_LIMIT)
+    .map((result) => {
+      const source = normalizeString(result.sourceType) || "memory";
+      const snippet = normalizeString(result.snippet || "").replace(/\s+/g, " ").trim();
+      if (!snippet) {
+        return "";
+      }
+      return `${source}: ${snippet}`;
+    })
+    .filter(Boolean);
+
+  const systemPrompt = [
+    "You are Senti, SentinelLayer's session daemon.",
+    "Answer the requesting agent with concise, actionable engineering guidance.",
+    "Prioritize concrete next steps and reference available context snippets.",
+    "Never invent repository files or runtime behavior.",
+  ].join(" ");
+  const userPrompt = [
+    `Agent request: ${requestMessage}`,
+    `Codebase synopsis: ${synopsis}`,
+    "Context snippets:",
+    contextHints.length > 0 ? contextHints.map((line, index) => `${index + 1}. ${line}`).join("\n") : "none",
+    "Respond in 2-4 short sentences.",
+  ].join("\n");
+
+  const startedAt = Date.now();
+  let llmText = "";
+  let fallbackPath = false;
+  let fallbackReason = "";
+  let usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    model: daemonState.model,
+    provider: "local-fallback",
+    latencyMs: 0,
+  };
+
+  const llmTimeoutMs = Math.max(
+    80,
+    Math.min(
+      HELP_MODEL_TIMEOUT_MS,
+      normalizePositiveInteger(daemonState.helpRequestTimeoutMs, HELP_REQUEST_TIMEOUT_MS) * 2
+    )
+  );
+
+  try {
+    const llmResult = await runWithTimeout(
+      Promise.resolve(
+        daemonState.llmInvoker({
+          model: daemonState.model,
+          systemPrompt,
+          prompt: userPrompt,
+          maxTokens: 320,
+          temperature: 0.1,
+        })
+      ),
+      llmTimeoutMs,
+      "Senti model response timeout."
+    );
+    llmText = normalizeString(llmResult?.text);
+    usage = {
+      inputTokens: normalizeUsageNumber(llmResult?.usage?.inputTokens),
+      outputTokens: normalizeUsageNumber(llmResult?.usage?.outputTokens),
+      costUsd: normalizeUsageNumber(llmResult?.usage?.costUsd),
+      model: normalizeString(llmResult?.usage?.model) || daemonState.model,
+      provider: normalizeString(llmResult?.usage?.provider) || "sentinelayer",
+      latencyMs: normalizeUsageNumber(llmResult?.usage?.latencyMs),
+    };
+    if (!llmText) {
+      fallbackPath = true;
+      fallbackReason = "Senti model returned an empty response.";
+    }
+  } catch (error) {
+    fallbackPath = true;
+    fallbackReason = normalizeString(error?.message || error) || "Senti model invocation failed.";
+  }
+
+  if (!usage.latencyMs) {
+    usage.latencyMs = Math.max(1, Date.now() - startedAt);
+  }
+  recordLlmUsage({
+    sessionId: daemonState.telemetrySessionId,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    costUsd: usage.costUsd,
+  });
+
+  const message = llmText ||
+    buildFallbackHelpResponse({
+      requestMessage,
+      synopsis,
+      contextHints,
+    });
+  return {
+    message,
+    usage,
+    fallbackPath,
+    fallbackReason,
+    contextSignals: {
+      documentCount: documents.length,
+      memoryHits: memoryHits.length,
+      blackboardEntries: blackboardEntries.length,
+      recentEvents: recentEvents.length,
+    },
+  };
 }
 
 async function maybeRespondToHelpRequest(
@@ -238,23 +514,47 @@ async function maybeRespondToHelpRequest(
   if (hasPeerResponse) {
     return null;
   }
-  const responseMessage = await buildHelpResponseMessage(daemonState, requestEvent, {
+  const response = await buildHelpResponseMessage(daemonState, requestEvent, {
     targetPath,
   });
-  return emitSentiEvent(
+  const nowIso = new Date().toISOString();
+  const responseEvent = await emitSentiEvent(
     daemonState.sessionId,
     "help_response",
     {
       requestId,
       targetAgentId: normalizeString(requestEvent.agent?.id) || null,
-      response: responseMessage,
+      response: response.message,
       sourceEvent: "help_request",
+      contextSignals: response.contextSignals,
     },
     {
       targetPath,
-      nowIso: new Date().toISOString(),
+      nowIso,
     }
   );
+  await emitSentiEvent(
+    daemonState.sessionId,
+    "model_span",
+    {
+      sourceEvent: "help_request",
+      requestId,
+      model: response.usage.model || daemonState.model,
+      provider: response.usage.provider || "sentinelayer",
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      costUsd: response.usage.costUsd,
+      latencyMs: response.usage.latencyMs,
+      fallbackPath: Boolean(response.fallbackPath),
+      fallbackReason: response.fallbackReason || null,
+      contextSignals: response.contextSignals,
+    },
+    {
+      targetPath,
+      nowIso,
+    }
+  );
+  return responseEvent;
 }
 
 function queueHelpResponse(daemonState, requestEvent) {
@@ -523,6 +823,8 @@ export async function runSentiHealthTick(
       helpRequestTimeoutMs: HELP_REQUEST_TIMEOUT_MS,
       tickIntervalMs: DAEMON_TICK_INTERVAL_MS,
       helpResponder: null,
+      llmInvoker: invokeViaProxy,
+      telemetrySessionId: null,
     });
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
   const activeAgents = await listAgents(normalizedSessionId, {
@@ -555,6 +857,7 @@ export async function startSenti(
     staleAgentSeconds = DEFAULT_STALE_AGENT_SECONDS,
     helpRequestTimeoutMs = HELP_REQUEST_TIMEOUT_MS,
     helpResponder = null,
+    llmInvoker = invokeViaProxy,
   } = {}
 ) {
   const normalizedSessionId = normalizeString(sessionId);
@@ -585,6 +888,7 @@ export async function startSenti(
     DEFAULT_STALE_AGENT_SECONDS
   );
   const nowIso = new Date().toISOString();
+  const telemetrySession = startTelemetrySession(`session daemon ${normalizedSessionId}`);
   const daemonState = createSentiState({
     daemonKey,
     sessionId: normalizedSessionId,
@@ -595,6 +899,8 @@ export async function startSenti(
     helpRequestTimeoutMs: normalizedHelpTimeoutMs,
     tickIntervalMs: normalizedTickIntervalMs,
     helpResponder,
+    llmInvoker: typeof llmInvoker === "function" ? llmInvoker : invokeViaProxy,
+    telemetrySessionId: telemetrySession?.id || null,
   });
 
   await upsertSentiAgent(normalizedSessionId, {
@@ -700,6 +1006,9 @@ export async function startSenti(
       }
     );
     ACTIVE_SENTI_DAEMONS.delete(daemonKey);
+    if (daemonState.telemetrySessionId) {
+      endTelemetrySession({ sessionId: daemonState.telemetrySessionId });
+    }
     return {
       stopped: true,
       daemonKey,

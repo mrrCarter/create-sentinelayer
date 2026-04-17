@@ -139,7 +139,7 @@ test("Unit session daemon: unanswered help_request gets auto-response within tim
         targetPath: tempRoot,
       }
     );
-    await sleep(160);
+    await sleep(350);
 
     const stream = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
     const response = stream.find((event) => event.event === "help_response");

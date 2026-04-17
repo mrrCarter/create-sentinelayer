@@ -1,8 +1,19 @@
 import path from "node:path";
 import process from "node:process";
+import { randomUUID } from "node:crypto";
 
 import pc from "picocolors";
 
+import {
+  buildProvisionEmailPayload,
+  normalizeAidenIdApiUrl,
+  provisionEmailIdentity,
+  resolveAidenIdCredentials,
+} from "../ai/aidenid.js";
+import { recordProvisionedIdentity } from "../ai/identity-store.js";
+import { readStoredSession } from "../auth/session-store.js";
+import { fetchAidenIdCredentials } from "../auth/service.js";
+import { resolveOutputRoot } from "../config/service.js";
 import {
   listAssignments,
   releaseLease,
@@ -22,8 +33,10 @@ import {
   DEFAULT_TTL_SECONDS,
   getSession,
   listActiveSessions,
+  recordSessionProvisionedIdentities,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
+import { parseCsvTokens } from "./ai/shared.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -53,6 +66,29 @@ function normalizeAgentId(value, fallbackValue = "cli-user") {
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return normalized || fallbackValue;
+}
+
+async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
+  const normalizedItems = Array.isArray(items) ? items : [];
+  const normalizedConcurrency = Math.max(
+    1,
+    Math.min(
+      normalizedItems.length || 1,
+      Number.isFinite(Number(concurrency)) ? Math.floor(Number(concurrency)) : 1
+    )
+  );
+  const results = new Array(normalizedItems.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: normalizedConcurrency }, async () => {
+    while (cursor < normalizedItems.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(normalizedItems[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 function resolveSessionIdOption(options = {}) {
@@ -441,6 +477,206 @@ export function registerSessionCommand(program) {
           `${item.sessionId} status=${item.status} created_at=${item.createdAt} expires_at=${item.expiresAt}`
         );
       }
+    });
+
+  session
+    .command("provision-emails <sessionId>")
+    .description("Provision ephemeral AIdenID emails for swarm testing")
+    .option("--count <n>", "Number of emails to provision", "5")
+    .option("--tags <csv>", "Tags for provisioned identities", "session,swarm")
+    .option("--ttl-hours <hours>", "Identity TTL in hours", "24")
+    .option("--alias-template <value>", "Optional alias template override")
+    .option("--concurrency <n>", "Parallel provision requests (max 10)", "10")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--api-url <url>", "AIdenID API base URL", "https://api.aidenid.com")
+    .option("--api-key <key>", "AIdenID API key (or use AIDENID_API_KEY env)")
+    .option("--org-id <id>", "AIdenID org id (or use AIDENID_ORG_ID env)")
+    .option("--project-id <id>", "AIdenID project id (or use AIDENID_PROJECT_ID env)")
+    .option("--dry-run", "Plan provisioning without executing remote API calls")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const sessionPayload = await getSession(normalizedSessionId, { targetPath });
+      if (!sessionPayload) {
+        throw new Error(`Session '${normalizedSessionId}' was not found.`);
+      }
+
+      const count = parsePositiveInteger(options.count, "count", 5);
+      if (count > 50) {
+        throw new Error("count must be <= 50 for a single provisioning batch.");
+      }
+      const ttlHours = parsePositiveInteger(options.ttlHours, "ttl-hours", 24);
+      if (ttlHours > 24 * 30) {
+        throw new Error("ttl-hours must be between 1 and 720.");
+      }
+      const requestedConcurrency = parsePositiveInteger(options.concurrency, "concurrency", 10);
+      const concurrency = Math.max(1, Math.min(10, requestedConcurrency, count));
+      const tags = parseCsvTokens(options.tags, ["session", "swarm"]);
+      const apiUrl = normalizeAidenIdApiUrl(options.apiUrl);
+      const outputRoot = await resolveOutputRoot({
+        cwd: targetPath,
+        outputDirOverride: options.outputDir,
+        env: process.env,
+      });
+
+      const aliasBase =
+        normalizeString(options.aliasTemplate) ||
+        `session-${normalizedSessionId.slice(0, 8)}-identity`;
+
+      if (Boolean(options.dryRun)) {
+        const planned = Array.from({ length: count }, (_, index) => ({
+          index: index + 1,
+          aliasTemplate: `${aliasBase}-${index + 1}`,
+          tags,
+          ttlHours,
+        }));
+        const payload = {
+          command: "session provision-emails",
+          execute: false,
+          sessionId: normalizedSessionId,
+          targetPath,
+          apiUrl,
+          requestedCount: count,
+          concurrency,
+          tags,
+          planned,
+        };
+        if (shouldEmitJson(options, command)) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        console.log(pc.bold(`Provision plan ready for session ${normalizedSessionId}`));
+        console.log(pc.gray(`count=${count} concurrency=${concurrency} api=${apiUrl}`));
+        return;
+      }
+
+      let storedSession = null;
+      try {
+        storedSession = await readStoredSession();
+      } catch {
+        storedSession = null;
+      }
+
+      const fetchCredentials =
+        storedSession && storedSession.token
+          ? () =>
+              fetchAidenIdCredentials({
+                apiUrl: storedSession.apiUrl,
+                token: storedSession.token,
+              })
+          : null;
+      const credentials = await resolveAidenIdCredentials({
+        apiKey: options.apiKey,
+        orgId: options.orgId,
+        projectId: options.projectId,
+        env: process.env,
+        requireAll: true,
+        session: storedSession,
+        fetchCredentials,
+      });
+
+      const startedAt = Date.now();
+      const indices = Array.from({ length: count }, (_, index) => index);
+      const provisioned = await runWithConcurrency(indices, concurrency, async (index) => {
+        const idempotencyKey = `session-${normalizedSessionId}-${index + 1}-${randomUUID()}`;
+        const payload = buildProvisionEmailPayload({
+          aliasTemplate: `${aliasBase}-${index + 1}`,
+          ttlHours,
+          tags,
+        });
+        const execution = await provisionEmailIdentity({
+          apiUrl,
+          apiKey: credentials.apiKey,
+          orgId: credentials.orgId,
+          projectId: credentials.projectId,
+          idempotencyKey,
+          payload,
+        });
+
+        const responseIdentity = execution.response || {};
+        return {
+          index: index + 1,
+          idempotencyKey,
+          identityId: normalizeString(responseIdentity.id) || null,
+          emailAddress: normalizeString(responseIdentity.emailAddress) || null,
+          status: normalizeString(responseIdentity.status) || null,
+          expiresAt: responseIdentity.expiresAt || null,
+          response: responseIdentity,
+        };
+      });
+
+      for (const identity of provisioned) {
+        await recordProvisionedIdentity({
+          outputRoot,
+          response: identity.response || {},
+          context: {
+            source: "session-provision-emails",
+            apiUrl,
+            orgId: credentials.orgId,
+            projectId: credentials.projectId,
+            idempotencyKey: identity.idempotencyKey,
+            tags,
+          },
+        });
+      }
+
+      const identityIds = provisioned
+        .map((identity) => normalizeString(identity.identityId))
+        .filter(Boolean);
+      const updatedSession = await recordSessionProvisionedIdentities(normalizedSessionId, {
+        targetPath,
+        identityIds,
+        tags,
+      });
+      const streamEvent = await appendToStream(
+        normalizedSessionId,
+        createAgentEvent({
+          event: "session_provision_emails",
+          agentId: "senti",
+          agentModel: "gpt-5.4-mini",
+          sessionId: normalizedSessionId,
+          payload: {
+            requestedCount: count,
+            provisionedCount: provisioned.length,
+            identityIds,
+            tags,
+            ttlHours,
+            concurrency,
+          },
+        }),
+        { targetPath }
+      );
+
+      const durationMs = Date.now() - startedAt;
+      const payload = {
+        command: "session provision-emails",
+        execute: true,
+        targetPath,
+        outputRoot,
+        durationMs,
+        sessionId: normalizedSessionId,
+        apiUrl,
+        requestedCount: count,
+        provisionedCount: provisioned.length,
+        concurrency,
+        tags,
+        ttlHours,
+        identities: provisioned,
+        sharedResources: updatedSession.sharedResources,
+        event: streamEvent,
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold(`Provisioned ${provisioned.length} identities for session ${normalizedSessionId}`));
+      console.log(pc.gray(`concurrency=${concurrency} duration_ms=${durationMs}`));
     });
 
   session

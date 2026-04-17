@@ -30,6 +30,17 @@ function normalizePositiveInteger(value, fallbackValue) {
   return Math.floor(normalized);
 }
 
+function normalizeNonNegativeInteger(value, fallbackValue = 0) {
+  if (value === undefined || value === null || normalizeString(value) === "") {
+    return fallbackValue;
+  }
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return fallbackValue;
+  }
+  return Math.floor(normalized);
+}
+
 function normalizeIsoTimestamp(value, fallbackIso = new Date().toISOString()) {
   const normalized = normalizeString(value);
   if (!normalized) {
@@ -109,6 +120,32 @@ function normalizeCodebaseContext(ingest = {}) {
   };
 }
 
+function normalizeStringList(values = []) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      values
+        .map((value) => normalizeString(value))
+        .filter(Boolean)
+    )
+  );
+}
+
+function normalizeSharedResources(raw = {}, { nowIso = new Date().toISOString() } = {}) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    provisionedIdentityIds: normalizeStringList(source.provisionedIdentityIds),
+    provisioningTags: normalizeStringList(source.provisioningTags),
+    provisionCount: normalizeNonNegativeInteger(source.provisionCount, 0),
+    lastProvisionedAt: source.lastProvisionedAt
+      ? normalizeIsoTimestamp(source.lastProvisionedAt, nowIso)
+      : null,
+    updatedAt: normalizeIsoTimestamp(source.updatedAt, nowIso),
+  };
+}
+
 async function collectSessionCodebaseContext(targetPath) {
   const cachedIngestPath = path.join(targetPath, ".sentinelayer", "CODEBASE_INGEST.json");
   const cachedIngest = await readJsonFile(cachedIngestPath, { allowMissing: true });
@@ -147,6 +184,7 @@ function normalizeMetadata(raw = {}, { sessionId, targetPath, nowIso } = {}) {
     s3Path: normalizeString(raw.s3Path) || null,
     archiveStatus: normalizeString(raw.archiveStatus) || "pending",
     codebaseContext: normalizeCodebaseContext(raw.codebaseContext || {}),
+    sharedResources: normalizeSharedResources(raw.sharedResources || {}, { nowIso }),
   };
 }
 
@@ -176,6 +214,7 @@ function buildSessionPayload(metadata, paths, nowIso = new Date().toISOString())
     archivedAt: metadata.archivedAt,
     s3Path: metadata.s3Path,
     codebaseContext: metadata.codebaseContext,
+    sharedResources: metadata.sharedResources,
   };
 }
 
@@ -234,6 +273,7 @@ export async function createSession({
       s3Path: null,
       archiveStatus: "pending",
       codebaseContext,
+      sharedResources: normalizeSharedResources({}, { nowIso }),
     },
     {
       sessionId,
@@ -378,6 +418,54 @@ export async function archiveSession(
     files: ["metadata.json", "stream.ndjson", "stream.1.ndjson", "agents/"],
   });
 
+  return buildSessionPayload(saved, loaded.paths, nowIso);
+}
+
+export async function recordSessionProvisionedIdentities(
+  sessionId,
+  { targetPath = process.cwd(), identityIds = [], tags = [] } = {}
+) {
+  const loaded = await loadMetadata(sessionId, { targetPath });
+  if (!loaded) {
+    throw new Error(`Session '${sessionId}' was not found.`);
+  }
+
+  const nowIso = new Date().toISOString();
+  const normalizedIdentityIds = normalizeStringList(identityIds);
+  if (normalizedIdentityIds.length === 0) {
+    return buildSessionPayload(loaded.metadata, loaded.paths, nowIso);
+  }
+
+  const existingSharedResources = normalizeSharedResources(loaded.metadata.sharedResources || {}, {
+    nowIso,
+  });
+  const mergedIdentityIds = normalizeStringList([
+    ...existingSharedResources.provisionedIdentityIds,
+    ...normalizedIdentityIds,
+  ]);
+  const mergedTags = normalizeStringList([
+    ...existingSharedResources.provisioningTags,
+    ...normalizeStringList(tags),
+  ]);
+
+  loaded.metadata.sharedResources = normalizeSharedResources(
+    {
+      ...existingSharedResources,
+      provisionedIdentityIds: mergedIdentityIds,
+      provisioningTags: mergedTags,
+      provisionCount:
+        normalizeNonNegativeInteger(existingSharedResources.provisionCount, 0) +
+        normalizedIdentityIds.length,
+      lastProvisionedAt: nowIso,
+      updatedAt: nowIso,
+    },
+    { nowIso }
+  );
+  loaded.metadata.updatedAt = nowIso;
+  loaded.metadata.lastInteractionAt = nowIso;
+  loaded.metadata.status = SESSION_STATUS_ACTIVE;
+
+  const saved = await saveMetadata(loaded.metadata, loaded.paths);
   return buildSessionPayload(saved, loaded.paths, nowIso);
 }
 

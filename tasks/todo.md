@@ -1,3 +1,33 @@
+# 2026-04-17 - PR 6 Daemon Context Relay + AIdenID Bulk Provision (`roadmap/pr-182-daemon-relay-aidenid`)
+
+## Plan
+- [x] Create fresh PR6 worktree/branch from `origin/main` after PR5 merge.
+- [x] Extend session metadata/storage for shared resource relay and provisioned identity persistence.
+- [x] Implement Senti daemon context relay for `help_request` using session stream, shared memory corpus, and blackboard artifacts.
+- [x] Add bounded LLM invocation with fallback path and canonical `model_span` stream telemetry.
+- [x] Add session command `provision-emails` with bounded concurrency and AIdenID provisioning integration.
+- [x] Persist provisioned identity metadata into session shared resources and emit canonical `session_provision_emails` event.
+- [x] Add unit coverage for context relay + model fallback and session provisioning flow.
+- [x] Run local verification and pass-one handshake (`review`), then deep `/omargate` at PR-ready.
+- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0` and `P1=0`, merge, and move to PR7.
+
+## Review
+- Completed implementation and local gate verification for PR6 scope.
+- Updated:
+  - `src/session/store.js`
+  - `src/session/daemon.js`
+  - `src/commands/session.js`
+  - `src/legacy-cli.js`
+  - `tests/unit.session-daemon.test.mjs`
+  - `tests/unit.session-daemon-context.test.mjs`
+  - `tests/unit.session-provision.test.mjs`
+- Validation evidence:
+  - `node --test tests/unit.session-daemon.test.mjs tests/unit.session-daemon-context.test.mjs tests/unit.session-provision.test.mjs` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review --json` (`p0=0`, `p1=0`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-17 - PR 4 Session Commands + Assignment Registry Extension (`roadmap/pr-180-session-commands`)
 
 ## Plan
