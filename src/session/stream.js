@@ -108,7 +108,10 @@ async function acquireLock(lockPath, {
       await fsp.mkdir(lockPath);
       return;
     } catch (error) {
-      if (!(error && typeof error === "object" && error.code === "EEXIST")) {
+      const code = error && typeof error === "object" ? error.code : "";
+      // Windows can raise EPERM/EACCES during lock contention when another writer
+      // is creating/removing the lock directory at the same time.
+      if (!(code === "EEXIST" || code === "EPERM" || code === "EACCES")) {
         throw error;
       }
 

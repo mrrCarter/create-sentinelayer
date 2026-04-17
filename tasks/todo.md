@@ -1,3 +1,27 @@
+# 2026-04-17 - PR 2.5 Error Event Daemon (`roadmap/pr-178b-error-event-daemon`)
+
+## Plan
+- [x] Complete `src/daemon/error-worker.js` daemon APIs for ODCP `error_event_daemon` (`startErrorEventDaemon`, dedup-key persistence, scheduled sweep rollups, kill helper).
+- [x] Persist per-work-item intake artifacts at `observability/<date>/<work_item_id>/intake_event.json` with dedup/occurrence fields.
+- [x] Emit canonical `createAgentEvent()` envelopes (`agent_intake`, `agent_killed`) for session-linked daemon activity.
+- [x] Add dedicated PR2.5 tests in `tests/unit.error-event-daemon.test.mjs`.
+- [x] Harden Windows stream lock contention handling in `src/session/stream.js` (`EPERM`/`EACCES` contention retry) to stabilize existing concurrency tests.
+- [x] Run full verification and local handshake (`review scan` then deep `/omargate`).
+- [ ] Open PR, wait pass-two GitHub checks with Omar `P0=0`, `P1=0`, then merge.
+
+## Review
+- Completed implementation and local gate verification.
+- Updated:
+  - `src/daemon/error-worker.js`
+  - `src/session/stream.js`
+  - `tests/unit.error-event-daemon.test.mjs`
+- Validation evidence:
+  - `node --test tests/unit.error-event-daemon.test.mjs tests/unit.daemon-error-worker.test.mjs tests/unit.session-stream.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+- `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
+- `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+
 # 2026-04-17 - PR 2 Agent Registry + Jira Lifecycle Hook (`roadmap/pr-178-agent-registry`)
 
 ## Plan
@@ -7,7 +31,7 @@
 - [x] Extend syntax check coverage for new module in `package.json` `check` script.
 - [x] Run local verification (`npm run verify`) and targeted daemon/session tests.
 - [x] Execute handshake pass-one in order: `review scan` then deep `/omargate`.
-- [ ] Open PR, wait pass-two GitHub runs (`P0=0`, `P1=0`), then merge.
+- [x] Open PR, wait pass-two GitHub runs (`P0=0`, `P1=0`), then merge.
 
 ## Review
 - Completed implementation and local gate verification.
@@ -18,12 +42,17 @@
   - `tests/unit.session-jira-hook.test.mjs`
   - `package.json`
 - Validation evidence:
-  - `node --test tests/unit.session-agent-registry.test.mjs tests/unit.session-jira-hook.test.mjs` (pass)
-  - `node --test tests/unit.daemon-jira-lifecycle.test.mjs tests/unit.daemon-artifact-lineage.test.mjs tests/unit.daemon-operator-control.test.mjs` (pass)
-  - `npm run check` (pass)
-  - `npm run verify` (pass)
+- `node --test tests/unit.session-agent-registry.test.mjs tests/unit.session-jira-hook.test.mjs` (pass)
+- `node --test tests/unit.daemon-jira-lifecycle.test.mjs tests/unit.daemon-artifact-lineage.test.mjs tests/unit.daemon-operator-control.test.mjs` (pass)
+- `npm run check` (pass)
+- `npm run verify` (pass)
 - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
 - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+- Pass-two (GitHub):
+  - PR `#327` merged (`c7d3b0c6bbd79fb904f1e92afbac7fe70442106a`)
+  - Omar Gate run `24545665008` passed (`OMAR_P0=0`, `OMAR_P1=0`, `OMAR_P2=6`)
+  - Quality Gates run `24545665003` passed
+  - Build Attestation run `24545665013` passed
 
 # 2026-04-17 - PR 1 Session Store + NDJSON Stream (`roadmap/pr-177-session-store`)
 
@@ -1697,4 +1726,5 @@ Review:
 - [x] Fix quality-summary manifest commit identity on PR runs to use head SHA (not merge SHA) so attestation target validation remains deterministic.
 - [ ] Push PR-283 update and watch `Omar Gate`, `Quality Gates`, and `Build Attestation` to completion (`gh run watch`).
 - [ ] Merge PR-283 once required checks are green.
+
 
