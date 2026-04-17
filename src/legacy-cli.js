@@ -206,6 +206,8 @@ function printUsage() {
   console.log("");
   console.log("Session Coordination:");
   console.log("  sl session start --json            Create an agent coordination session");
+  console.log("  sl session start --template code-review  Start from quick-start preset + launch plan");
+  console.log("  sl session templates --json        List available session quick-start templates");
   console.log("  sl session join <id> --name <n>    Join a session as an agent");
   console.log("  sl session say <id> \"msg\" --json  Append a message event to session stream");
   console.log("  sl session say <id> \"lock: <file> - <intent>\"  Request an exclusive file lock via Senti");

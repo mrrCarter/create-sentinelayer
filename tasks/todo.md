@@ -1,3 +1,38 @@
+# 2026-04-17 - PR 14 Session Templates + Quick-Start Presets (`roadmap/pr-190-session-templates`)
+
+## Plan
+- [x] Add versioned template registry in `src/session/templates.js` with `code-review`, `security-audit`, `e2e-test`, `incident-response`, and `standup`.
+- [x] Wire `session start --template <name>` to apply template defaults and persist template metadata in session store.
+- [x] Emit role-specific launch commands and dashboard URL for template starts.
+- [x] Add `session templates` command for machine-readable template registry output.
+- [x] Add `tests/unit.session-templates.test.mjs` for registry versioning, unknown template error, and start command behavior.
+- [x] Update syntax check coverage (`package.json`) and session docs (`docs/sessions.md`).
+- [x] Run targeted tests for template/session flows.
+- [x] Run `npm run verify`.
+- [x] Run pass-one gate: `node bin/create-sentinelayer.js review scan --path . --json`.
+- [x] Run local PR-ready gate: `node bin/create-sentinelayer.js /omargate deep --path . --json`.
+- [x] Run local audit parity gate: `node bin/create-sentinelayer.js /audit --path . --json`.
+- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, move to PR15.
+
+## Review
+- Completed implementation and local gate verification.
+- Updated:
+  - `src/session/templates.js`
+  - `src/session/store.js`
+  - `src/commands/session.js`
+  - `src/legacy-cli.js`
+  - `tests/unit.session-templates.test.mjs`
+  - `docs/sessions.md`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-templates.test.mjs tests/unit.session-store.test.mjs tests/unit.session-setup-guides.test.mjs` (pass)
+  - `node --test --test-name-pattern "CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation" tests/e2e.test.mjs` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-17 - PR 11 Auto-Recap + Context Briefing (`roadmap/pr-187-session-recap`)
 
 ## Plan
@@ -180,7 +215,7 @@
 - [x] Add dedicated unit suite `tests/unit.session-sync.test.mjs`.
 - [x] Extend `package.json` check coverage for `src/session/sync.js`.
 - [x] Run local verification + Omar handshake (`review scan`, `/omargate deep`) and clear blocking findings.
-- [ ] Open PR, monitor pass-two, confirm Omar `P0=0/P1=0`, merge, then move to PR14.
+- [x] Open PR, monitor pass-two, confirm Omar `P0=0/P1=0`, merge, then move to PR14.
 
 ## Review
 - Completed implementation and local gate verification.
@@ -197,6 +232,11 @@
   - `npm run verify` (pass)
   - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+  - GitHub pass-two:
+    - PR `#353` merged (`e68f74eb4426886a58ad581a17ce62de176593c4`)
+    - Omar Gate run `24568831949` passed (`OMAR_P0=0`, `OMAR_P1=0`, `OMAR_P2=6`)
+    - Quality Gates run `24568831983` passed
+    - Build Attestation run `24568831988` passed
 
 # 2026-04-17 - PR 12 Documentation + llms.txt + Blog Insight (`roadmap/pr-188-session-docs`)
 
@@ -209,7 +249,7 @@
 - [x] Update `README.md` with explicit multi-agent session workflow section and docs links.
 - [x] Add executable docs gate (`npm run docs:build`) and wire it into `npm run verify`.
 - [x] Run local verification + Omar handshake (`review scan`, `/omargate deep`).
-- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, and move to PR13.
+- [x] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, and move to PR13.
 
 ## Review
 - Completed implementation and local validation.
@@ -227,6 +267,11 @@
   - `npm run verify` (pass)
   - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+  - GitHub pass-two:
+    - PR `#352` merged (`ff29f1f9fc656353627b198494a86bf592d4b345`)
+    - Omar Gate run `24567932349` passed (`OMAR_P0=0`, `OMAR_P1=0`, `OMAR_P2=6`)
+    - Quality Gates run `24567932345` passed
+    - Build Attestation run `24567932374` passed
 
 # 2026-04-17 - PR 4 Session Commands + Assignment Registry Extension (`roadmap/pr-180-session-commands`)
 

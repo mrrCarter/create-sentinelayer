@@ -45,6 +45,12 @@ import {
   recordSessionProvisionedIdentities,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
+import {
+  buildDashboardUrl,
+  buildTemplateLaunchPlan,
+  getTemplateRegistry,
+  resolveSessionTemplate,
+} from "../session/templates.js";
 import { parseCsvTokens } from "./ai/shared.js";
 
 function shouldEmitJson(options, command) {
@@ -120,6 +126,13 @@ function formatEventLine(event = {}) {
   return `${ts} ${agentId} ${type}`;
 }
 
+function formatTemplateLaunchLine(slot = {}) {
+  const terminal = Number(slot.terminal || 0);
+  const role = normalizeString(slot.role) || "agent";
+  const command = normalizeString(slot.command);
+  return `Terminal ${terminal} (${role}): ${command}`;
+}
+
 async function revokeAgentLeases(sessionId, agentId, { targetPath, reason } = {}) {
   const active = await listAssignments({
     targetPath,
@@ -173,20 +186,35 @@ export function registerSessionCommand(program) {
     .description("Create a new persistent session with metadata + NDJSON stream")
     .option("--path <path>", "Workspace path for the session", ".")
     .option(
+      "--template <name>",
+      "Optional quick-start template (code-review, security-audit, e2e-test, incident-response, standup)"
+    )
+    .option(
       "--ttl-seconds <seconds>",
-      `Session time-to-live in seconds (default ${DEFAULT_TTL_SECONDS})`,
-      String(DEFAULT_TTL_SECONDS)
+      `Session time-to-live in seconds (default ${DEFAULT_TTL_SECONDS}; template defaults override when omitted)`
     )
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const ttlSeconds = parsePositiveInteger(options.ttlSeconds, "ttl-seconds", DEFAULT_TTL_SECONDS);
+      const template = resolveSessionTemplate(options.template);
+      const templateDefaultTtlSeconds =
+        template && Number.isFinite(Number(template.ttlHours))
+          ? Math.max(1, Math.floor(Number(template.ttlHours))) * 60 * 60
+          : DEFAULT_TTL_SECONDS;
+      const ttlSeconds = parsePositiveInteger(
+        options.ttlSeconds,
+        "ttl-seconds",
+        templateDefaultTtlSeconds
+      );
       const startedAt = Date.now();
       const created = await createSession({
         targetPath,
         ttlSeconds,
+        template,
       });
       const durationMs = Date.now() - startedAt;
+      const launchPlan = template ? buildTemplateLaunchPlan(created.sessionId, template) : [];
+      const dashboardUrl = buildDashboardUrl(created.sessionId);
 
       const payload = {
         command: "session start",
@@ -198,13 +226,31 @@ export function registerSessionCommand(program) {
         streamPath: created.streamPath,
         createdAt: created.createdAt,
         expiresAt: created.expiresAt,
+        ttlSeconds,
         elapsedTimer: created.elapsedTimer,
         renewalCount: created.renewalCount,
         status: created.status,
+        template: created.template,
+        launchPlan,
+        dashboardUrl,
       };
 
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      if (template) {
+        console.log(`Session ${created.sessionId} created (template: ${template.id})`);
+        if (launchPlan.length > 0) {
+          console.log("");
+          console.log("Launch your agents:");
+          for (const slot of launchPlan) {
+            console.log(formatTemplateLaunchLine(slot));
+          }
+        }
+        console.log("");
+        console.log(`Dashboard: ${dashboardUrl}`);
         return;
       }
 
@@ -215,6 +261,26 @@ export function registerSessionCommand(program) {
       console.log(
         `status=${created.status} created_at=${created.createdAt} expires_at=${created.expiresAt} ttl_seconds=${ttlSeconds}`
       );
+    });
+
+  session
+    .command("templates")
+    .description("List available session quick-start templates")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const registry = getTemplateRegistry();
+      const payload = {
+        command: "session templates",
+        ...registry,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(`Session templates (registry ${registry.registryVersion}):`);
+      for (const template of registry.templates) {
+        console.log(`- ${template.id}: ${template.description}`);
+      }
     });
 
   session
