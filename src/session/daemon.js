@@ -31,6 +31,7 @@ import { resolveSessionPaths } from "./paths.js";
 import { stopRuntimeRunsForSession } from "./runtime-bridge.js";
 import { getSession, renewSession } from "./store.js";
 import { appendToStream, readStream, tailStream } from "./stream.js";
+import { handleTaskDirective } from "./tasks.js";
 
 const DAEMON_TICK_INTERVAL_MS = 30_000;
 const HELP_REQUEST_TIMEOUT_MS = 1_200;
@@ -666,75 +667,96 @@ async function maybeHandleSessionDirective(daemonState, event) {
   if (!agentId || agentId === SENTI_IDENTITY.id) {
     return null;
   }
-  const directive = parseSessionDirective(event);
-  if (!directive) {
+  const nowIso = normalizeIsoTimestamp(event.ts, new Date().toISOString());
+  const fileDirective = parseSessionDirective(event);
+  if (fileDirective) {
+    if (fileDirective.action === "lock") {
+      const result = await lockFile(
+        daemonState.sessionId,
+        agentId,
+        fileDirective.filePath,
+        {
+          intent: fileDirective.intent,
+          ttlSeconds: DEFAULT_FILE_LOCK_TTL_SECONDS,
+          targetPath: daemonState.targetPath,
+          nowIso,
+        }
+      );
+      if (!result.locked) {
+        await emitSentiEvent(
+          daemonState.sessionId,
+          "daemon_alert",
+          {
+            alert: "file_lock_denied",
+            file: result.file || fileDirective.filePath,
+            requestedBy: agentId,
+            heldBy: result.heldBy || null,
+            since: result.since || null,
+            suggestion: `${fileDirective.filePath} is locked by ${result.heldBy || "another agent"} (${result.since || "recently"}). Coordinate before editing.`,
+          },
+          {
+            targetPath: daemonState.targetPath,
+            nowIso,
+          }
+        );
+      }
+      return result;
+    }
+    if (fileDirective.action === "unlock") {
+      const result = await unlockFile(
+        daemonState.sessionId,
+        agentId,
+        fileDirective.filePath,
+        {
+          reason: "session_message_unlock",
+          targetPath: daemonState.targetPath,
+          nowIso,
+        }
+      );
+      if (!result.unlocked && result.reason === "held_by_other_agent") {
+        await emitSentiEvent(
+          daemonState.sessionId,
+          "daemon_alert",
+          {
+            alert: "file_unlock_denied",
+            file: result.file || fileDirective.filePath,
+            requestedBy: agentId,
+            heldBy: result.heldBy || null,
+            since: result.since || null,
+            suggestion: `${fileDirective.filePath} is locked by ${result.heldBy || "another agent"}. Only the lock holder can release it.`,
+          },
+          {
+            targetPath: daemonState.targetPath,
+            nowIso,
+          }
+        );
+      }
+      return result;
+    }
+  }
+
+  try {
+    return await handleTaskDirective(daemonState.sessionId, event, {
+      targetPath: daemonState.targetPath,
+      nowIso,
+    });
+  } catch (error) {
+    await emitSentiEvent(
+      daemonState.sessionId,
+      "daemon_alert",
+      {
+        alert: "task_directive_error",
+        requestedBy: agentId,
+        reason: normalizeString(error?.message) || "Task directive failed.",
+        message: normalizeString(event.payload?.message) || null,
+      },
+      {
+        targetPath: daemonState.targetPath,
+        nowIso,
+      }
+    );
     return null;
   }
-  const nowIso = normalizeIsoTimestamp(event.ts, new Date().toISOString());
-  if (directive.action === "lock") {
-    const result = await lockFile(
-      daemonState.sessionId,
-      agentId,
-      directive.filePath,
-      {
-        intent: directive.intent,
-        ttlSeconds: DEFAULT_FILE_LOCK_TTL_SECONDS,
-        targetPath: daemonState.targetPath,
-        nowIso,
-      }
-    );
-    if (!result.locked) {
-      await emitSentiEvent(
-        daemonState.sessionId,
-        "daemon_alert",
-        {
-          alert: "file_lock_denied",
-          file: result.file || directive.filePath,
-          requestedBy: agentId,
-          heldBy: result.heldBy || null,
-          since: result.since || null,
-          suggestion: `${directive.filePath} is locked by ${result.heldBy || "another agent"} (${result.since || "recently"}). Coordinate before editing.`,
-        },
-        {
-          targetPath: daemonState.targetPath,
-          nowIso,
-        }
-      );
-    }
-    return result;
-  }
-  if (directive.action === "unlock") {
-    const result = await unlockFile(
-      daemonState.sessionId,
-      agentId,
-      directive.filePath,
-      {
-        reason: "session_message_unlock",
-        targetPath: daemonState.targetPath,
-        nowIso,
-      }
-    );
-    if (!result.unlocked && result.reason === "held_by_other_agent") {
-      await emitSentiEvent(
-        daemonState.sessionId,
-        "daemon_alert",
-        {
-          alert: "file_unlock_denied",
-          file: result.file || directive.filePath,
-          requestedBy: agentId,
-          heldBy: result.heldBy || null,
-          since: result.since || null,
-          suggestion: `${directive.filePath} is locked by ${result.heldBy || "another agent"}. Only the lock holder can release it.`,
-        },
-        {
-          targetPath: daemonState.targetPath,
-          nowIso,
-        }
-      );
-    }
-    return result;
-  }
-  return null;
 }
 
 async function runSessionDirectiveWatcher(daemonState) {

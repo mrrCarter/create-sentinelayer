@@ -1,3 +1,37 @@
+# 2026-04-17 - PR 8 Task Assignment + Delegation (`roadmap/pr-184-task-assignment`)
+
+## Plan
+- [x] Add `src/session/tasks.js` with assignment/accept/complete/list APIs and canonical `task_*` stream events.
+- [x] Extend daemon session-message directive handling to process `assign:`, `accepted:`, and `done:` chat protocol messages.
+- [x] Implement wildcard routing (`assign: @*` and `assign: @*:role`) to least-busy active agent with optional role filter.
+- [x] Link each session task to daemon assignment ledger leases (`workItemId` + `leaseWorkItem`/`heartbeatLease`/`releaseLease`).
+- [x] Add queue bootstrap support in assignment ledger so session tasks can be leased without pre-seeded error intake records.
+- [x] Surface active session tasks in `sl session status`.
+- [x] Add `tests/unit.session-tasks.test.mjs` covering round-trip, wildcard routing, and ledger linkage.
+- [x] Run local verification (`npm run verify`) and pass-one handshake in order (`review scan` then `/omargate deep`).
+- [ ] Open PR, watch pass-two GitHub checks, merge only after Omar confirms `P0=0` and `P1=0`.
+
+## Review
+- Completed implementation and local gate verification for PR8 scope.
+- Updated:
+  - `src/session/tasks.js`
+  - `src/session/daemon.js`
+  - `src/session/paths.js`
+  - `src/daemon/assignment-ledger.js`
+  - `src/commands/session.js`
+  - `src/legacy-cli.js`
+  - `tests/unit.session-tasks.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-tasks.test.mjs` (pass)
+  - `node --test tests/unit.session-daemon.test.mjs` (pass)
+  - `node --test tests/unit.daemon-assignment-ledger.test.mjs` (pass)
+  - `node --test --test-name-pattern "CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation" tests/e2e.test.mjs` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+
 # 2026-04-17 - PR 7 File Lock Protocol + Conflict Prevention (`roadmap/pr-183-file-lock-conflict-prevention`)
 
 ## Plan
