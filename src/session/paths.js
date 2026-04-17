@@ -28,6 +28,8 @@ export function resolveSessionPaths(sessionId, { targetPath = process.cwd() } = 
     lockPath: path.join(sessionDir, ".stream.lock"),
     fileLocksPath: path.join(sessionDir, "file-locks.json"),
     fileLocksLockPath: path.join(sessionDir, ".file-locks.lock"),
+    tasksPath: path.join(sessionDir, "tasks.json"),
+    tasksLockPath: path.join(sessionDir, ".tasks.lock"),
     agentsDir: path.join(sessionDir, "agents"),
     runtimeRunsDir: path.join(sessionDir, "runtime-runs"),
     sentiDir: path.join(sessionDir, "senti"),

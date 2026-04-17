@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
@@ -53,6 +54,14 @@ function normalizeMetadata(value) {
     return {};
   }
   return { ...value };
+}
+
+function normalizeSeverity(value, fallbackValue = "P2") {
+  const normalized = normalizeString(value).toUpperCase();
+  if (normalized === "P0" || normalized === "P1" || normalized === "P2" || normalized === "P3") {
+    return normalized;
+  }
+  return fallbackValue;
 }
 
 function normalizeAssignmentStatus(value, fallbackValue = "QUEUED") {
@@ -963,4 +972,112 @@ export async function reassignLease({
     homeDir,
     nowIso,
   });
+}
+
+function buildQueueFingerprint(seed = "") {
+  return createHash("sha256").update(normalizeString(seed) || "session-task").digest("hex");
+}
+
+export async function ensureWorkItemQueued({
+  targetPath = ".",
+  outputDir = "",
+  workItemId,
+  sessionId = "",
+  status = "QUEUED",
+  severity = "P2",
+  service = "session",
+  endpoint = "",
+  errorCode = "SESSION_TASK_ASSIGNMENT",
+  source = "session_task",
+  message = "",
+  dedupKey = "",
+  metadata = {},
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const normalizedWorkItemId = normalizeString(workItemId);
+  if (!normalizedWorkItemId) {
+    throw new Error("workItemId is required.");
+  }
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedStatus = normalizeWorkItemStatus(status, "QUEUED");
+  const normalizedService = normalizeString(service) || "session";
+  const normalizedEndpoint =
+    normalizeString(endpoint) ||
+    (normalizedSessionId
+      ? `/sessions/${normalizedSessionId}/tasks`
+      : "/sessions/global/tasks");
+  const normalizedErrorCode = normalizeString(errorCode) || "SESSION_TASK_ASSIGNMENT";
+  const normalizedSource = normalizeString(source) || "session_task";
+  const normalizedMessage = normalizeString(message) || "Session task assignment";
+  const normalizedDedupKey =
+    normalizeString(dedupKey) ||
+    `session|${normalizedSessionId || "none"}|${normalizedWorkItemId}`;
+  const normalizedMetadata = {
+    ...normalizeMetadata(metadata),
+    sessionId: normalizedSessionId,
+    source: normalizedSource,
+    workItemType: "session_task",
+  };
+
+  const storage = await resolveAssignmentLedgerStorage({
+    targetPath,
+    outputDir,
+    env,
+    homeDir,
+  });
+  const queue = await loadQueue(storage.queuePath, normalizedNow);
+  const existingIndex = queue.items.findIndex(
+    (item) => normalizeString(item.workItemId) === normalizedWorkItemId
+  );
+  const existing = existingIndex >= 0 ? queue.items[existingIndex] : null;
+  const fingerprintSeed = `${normalizedDedupKey}|${normalizedService}|${normalizedEndpoint}|${normalizedErrorCode}`;
+  const normalizedItem = normalizeQueueItem(
+    {
+      ...existing,
+      workItemId: normalizedWorkItemId,
+      fingerprint:
+        normalizeString(existing?.fingerprint) || buildQueueFingerprint(fingerprintSeed),
+      source: normalizedSource,
+      service: normalizedService,
+      endpoint: normalizedEndpoint,
+      errorCode: normalizedErrorCode,
+      severity: normalizeSeverity(existing?.severity || severity, "P2"),
+      status: normalizedStatus,
+      message: normalizedMessage,
+      stackFingerprint:
+        normalizeString(existing?.stackFingerprint) ||
+        buildQueueFingerprint(`${normalizedWorkItemId}|stack`).slice(0, 64),
+      commitSha: existing?.commitSha || null,
+      dedupKey: normalizedDedupKey,
+      firstSeenAt: normalizeIsoTimestamp(existing?.firstSeenAt, normalizedNow),
+      lastSeenAt: normalizedNow,
+      latestEventId: normalizeString(existing?.latestEventId) || null,
+      occurrenceCount: Math.max(1, Number(existing?.occurrenceCount || 1)),
+      requestIds: Array.isArray(existing?.requestIds) ? [...existing.requestIds] : [],
+      createdAt: normalizeIsoTimestamp(existing?.createdAt, normalizedNow),
+      updatedAt: normalizedNow,
+      metadata: {
+        ...normalizeMetadata(existing?.metadata),
+        ...normalizedMetadata,
+      },
+    },
+    normalizedNow
+  );
+
+  if (existingIndex >= 0) {
+    queue.items[existingIndex] = normalizedItem;
+  } else {
+    queue.items.push(normalizedItem);
+  }
+
+  const savedQueue = await writeQueue(storage.queuePath, queue, normalizedNow);
+  const queueItem = savedQueue.items.find((item) => item.workItemId === normalizedWorkItemId) || normalizedItem;
+  return {
+    ...storage,
+    queue: savedQueue,
+    queueItem,
+  };
 }

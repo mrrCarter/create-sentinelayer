@@ -32,6 +32,7 @@ import {
   listFileLocks,
   releaseFileLocksForAgent,
 } from "../session/file-locks.js";
+import { listSessionTasks } from "../session/tasks.js";
 import {
   createSession,
   DEFAULT_TTL_SECONDS,
@@ -365,7 +366,7 @@ export function registerSessionCommand(program) {
         throw new Error(`Session '${normalizedSessionId}' was not found.`);
       }
 
-      const [agents, runtimeRuns, leases, fileLocks, recentEvents] = await Promise.all([
+      const [agents, runtimeRuns, leases, fileLocks, activeTasks, recentEvents] = await Promise.all([
         listAgents(normalizedSessionId, {
           targetPath,
           includeInactive: false,
@@ -388,6 +389,11 @@ export function registerSessionCommand(program) {
           targetPath,
           emitExpiredEvents: false,
         }),
+        listSessionTasks(normalizedSessionId, {
+          targetPath,
+          statuses: ["PENDING", "ACCEPTED"],
+          limit: 100,
+        }),
         readStream(normalizedSessionId, {
           targetPath,
           tail: 10,
@@ -405,6 +411,7 @@ export function registerSessionCommand(program) {
         runtimeRuns,
         activeLeases: leases.assignments,
         activeFileLocks: fileLocks,
+        activeTasks: activeTasks.tasks,
         recentEvents,
       };
       if (shouldEmitJson(options, command)) {
@@ -415,7 +422,7 @@ export function registerSessionCommand(program) {
       console.log(pc.bold(`Session ${normalizedSessionId}`));
       console.log(
         pc.gray(
-          `status=${sessionPayload.status} agents=${agents.length} stale=${staleAgents.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length}`
+          `status=${sessionPayload.status} agents=${agents.length} stale=${staleAgents.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
         )
       );
       for (const event of recentEvents) {

@@ -8,6 +8,7 @@
 - Any PR that touches eval-impact files (for example `src/prompt/generator.js`) must include a same-PR eval evidence artifact under `tasks/evals/` before opening or updating the PR.
 - In session/AIdenID provisioning flows, do network provisioning work in parallel but serialize JSON registry writes to avoid race-driven lost updates.
 - For lock/unlock chat directives, split `file - intent` only on spaced separators; splitting on raw `-` corrupts hyphenated file paths (`my-file.js`).
+- Slash command aliases and structured commands have different option surfaces; use `review scan --path . --json` for deterministic pass-one output instead of assuming `/review` accepts command-level flags.
 
 ## 2026-04-14
 
