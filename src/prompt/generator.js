@@ -34,6 +34,12 @@ const TARGET_GUIDANCE = Object.freeze({
   ],
 });
 
+const SESSION_COORDINATION_GUIDANCE = Object.freeze([
+  "Multi-agent coordination: use `sl session` commands to communicate with other agents.",
+  "Always update the session chat room with your current activity so joining agents have context.",
+  "Never break your autonomous loop on unexpected file changes; ask in the session first.",
+]);
+
 function normalizeTarget(target) {
   const normalized = String(target || "generic").trim().toLowerCase();
   if (!SUPPORTED_PROMPT_TARGETS.includes(normalized)) {
@@ -53,6 +59,14 @@ function buildAgentHeader(target) {
     generic: "Generic execution prompt",
   };
   return headers[target] || headers.generic;
+}
+
+function shouldAppendSessionGuidance(specMarkdown) {
+  const normalized = String(specMarkdown || "").toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalized.includes("coordination protocol") || normalized.includes("session");
 }
 
 export function resolvePromptTarget(target) {
@@ -81,7 +95,11 @@ export function generateExecutionPrompt({
     throw new Error("Spec content is empty. Generate or provide a spec before creating a prompt.");
   }
 
-  const guidanceMarkdown = guidance.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  const operatingRules = [...guidance];
+  if (shouldAppendSessionGuidance(specText)) {
+    operatingRules.push(...SESSION_COORDINATION_GUIDANCE);
+  }
+  const guidanceMarkdown = operatingRules.map((item, index) => `${index + 1}. ${item}`).join("\n");
 
   const hasAidenId = specText.toLowerCase().includes("aidenid");
   const aidenidGuidance = hasAidenId

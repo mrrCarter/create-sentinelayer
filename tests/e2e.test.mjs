@@ -759,6 +759,10 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     const cursorRulesText = await readFile(path.join(projectDir, ".cursorrules"), "utf-8");
     const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
     const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
+    const sessionGuideText = await readFile(
+      path.join(projectDir, ".sentinelayer", "AGENTS_SESSION_GUIDE.md"),
+      "utf-8"
+    );
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
     const workflowText = await readFile(path.join(projectDir, ".github", "workflows", "omar-gate.yml"), "utf-8");
     const lockfile = JSON.parse(await readFile(path.join(projectDir, ".sentinelayer", "config.json"), "utf-8"));
@@ -771,6 +775,8 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(result.stdout, /Cursor config scaffolded at/);
     assert.match(todoText, /Repo: `acme\/demo-repo`/);
     assert.match(todoText, /Coding agent: `Cursor \(cursor\)`/);
+    assert.match(todoText, /If working with other agents, join the SentinelLayer session and emit status updates/);
+    assert.match(todoText, /Update tasks\/lessons\.md with coordination patterns learned during this session/);
     assert.match(handoffText, /Required secret name: SENTINELAYER_TOKEN/);
     assert.match(handoffText, /Selected agent: Cursor \(cursor\)/);
     assert.match(handoffText, /Prompt target: cursor/);
@@ -778,6 +784,11 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(handoffText, /sentinel \/omargate deep --path \./);
     assert.match(handoffText, /Workflow tuning options:/);
     assert.match(handoffText, /scan_mode: baseline \| deep \(default\) \| audit \| full-depth/);
+    assert.match(handoffText, /## Multi-Agent Coordination \(if session active\)/);
+    assert.match(handoffText, /sl session join <id> --name <your-name> --role coder/);
+    assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
+    assert.match(sessionGuideText, /sl session list/);
+    assert.match(sessionGuideText, /sl session leave <id>/);
     assert.match(workflowText, new RegExp(`sentinelayer_spec_id:\\s*${SPEC_ID_FROM_GENERATE}`));
     assert.equal(lockfile.spec_id, SPEC_ID_FROM_GENERATE);
     assert.equal(lockfile.sentinelayer_token, BOOTSTRAP_VALUE_FROM_GENERATE);
@@ -1106,6 +1117,10 @@ test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", 
     const workflowText = await readFile(path.join(projectDir, ".github", "workflows", "omar-gate.yml"), "utf-8");
     const todoText = await readFile(path.join(projectDir, "tasks", "todo.md"), "utf-8");
     const handoffText = await readFile(path.join(projectDir, "AGENT_HANDOFF_PROMPT.md"), "utf-8");
+    const sessionGuideText = await readFile(
+      path.join(projectDir, ".sentinelayer", "AGENTS_SESSION_GUIDE.md"),
+      "utf-8"
+    );
     const specText = await readFile(path.join(projectDir, "docs", "spec.md"), "utf-8");
 
     assert.match(workflowText, /Omar Gate \(BYOK Mode\)/);
@@ -1113,6 +1128,8 @@ test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", 
     assert.match(handoffText, /Sentinelayer token: not configured \(BYOK mode\)/);
     assert.match(handoffText, /sentinel \/apply --plan tasks\/todo\.md --path \./);
     assert.match(handoffText, /BYOK workflow is guidance-only/);
+    assert.match(handoffText, /## Multi-Agent Coordination \(if session active\)/);
+    assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
     assert.match(specText, /## Goal/);
     assert.match(specText, /autonomous secure code review orchestrator/i);
 

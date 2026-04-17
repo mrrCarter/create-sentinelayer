@@ -1880,7 +1880,7 @@ async function ensureCodingAgentConfigFile({ projectDir, projectName, codingAgen
   };
 }
 
-function buildTodoContent({
+export function buildTodoContent({
   projectName,
   aiProvider,
   codingAgent,
@@ -1920,6 +1920,8 @@ Project: ${projectName}
 - [ ] PR 10: scale/performance tuning and caching strategy
 - [ ] PR 11: observability, retries, timeout policies, and structured logs
 - [ ] PR 12: docs, release, rollout safety checks, and production readiness
+- [ ] If working with other agents, join the SentinelLayer session and emit status updates
+- [ ] Update tasks/lessons.md with coordination patterns learned during this session
 
 ## Omar Loop Contract (Per PR)
 - [ ] Run Omar Gate for the PR.
@@ -1970,7 +1972,7 @@ function buildAgentPromptGuidance(promptTarget) {
 - Document assumptions and unresolved risks clearly.`;
 }
 
-function buildHandoffPrompt({
+export function buildHandoffPrompt({
   projectName,
   repoSlug,
   secretName,
@@ -2040,7 +2042,44 @@ Repo context:
 - Target repo: ${repoSlug || "not provided"}
 - Workspace mode: ${buildFromExistingRepo ? "existing codebase" : "new scaffold"}
 
+## Multi-Agent Coordination (if session active)
+
+If a SentinelLayer session is active (check \`sl session list\`):
+
+1. **On start:** Run \`sl session join <id> --name <your-name> --role coder\`
+2. **Periodically:** Run \`sl session say <id> "status: working on <file>"\` so others know what you're doing
+3. **On unexpected file change:** Instead of stopping, run:
+   \`sl session say <id> "help: unexpected change in <file> - who modified this?"\`
+   Then check \`sl session read <id> --tail 5\` for the answer and continue.
+4. **On findings:** Run \`sl session say <id> "finding: [P2] <title> in <file>:<line>"\`
+5. **On completion:** Run \`sl session leave <id>\`
+6. **Before modifying a file:** Check \`sl session read <id> --tail 10\` for recent activity on that file
+
 Start now and continue autonomously.
+`;
+}
+
+export function buildAgentsSessionGuideContent() {
+  return `# SentinelLayer Session Guide for AI Agents
+
+## Quick Start
+1. Check: \`sl session list\` - is there an active session?
+2. Join: \`sl session join <id> --name <your-short-name> --role <coder|reviewer|tester>\`
+3. Read context: \`sl session read <id> --tail 20\` — see what others are doing
+4. Work: emit status every 5 min, post findings, ask for help instead of stopping
+5. Leave: \`sl session leave <id>\` when done
+
+## Why This Matters
+- Other agents can see what you're working on and avoid file conflicts
+- If you see an unexpected file change, ask in the session first
+- Findings are shared immediately so other agents can act quickly
+- The daemon can monitor health and alert when agents appear stuck
+
+## What to Emit
+- Status: \`sl session say <id> "status: implementing JWT middleware in src/middleware/auth.js"\`
+- Finding: \`sl session say <id> "finding: [P2] missing rate limit on POST /api/auth/login"\`
+- Help: \`sl session say <id> "help: unexpected change in package.json - who modified it?"\`
+- Done: \`sl session say <id> "done: PR merged, auth hardening complete"\`
 `;
 }
 
@@ -2941,6 +2980,10 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       authMode: effectiveAuthMode,
       codingAgent: interview.codingAgent,
     })
+  );
+  await writeTextFile(
+    path.join(projectDir, ".sentinelayer", "AGENTS_SESSION_GUIDE.md"),
+    buildAgentsSessionGuideContent()
   );
   const codingAgentConfig = await ensureCodingAgentConfigFile({
     projectDir,

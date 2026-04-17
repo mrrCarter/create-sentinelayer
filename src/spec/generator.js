@@ -439,12 +439,102 @@ function deriveGlobalAcceptanceCriteria(projectType) {
   ];
 }
 
+function countAgentInstructions(agentsMarkdown) {
+  const markdown = String(agentsMarkdown || "");
+  if (!markdown) {
+    return 0;
+  }
+
+  const lines = markdown.split(/\r?\n/);
+  let inAgentsSection = false;
+  let sectionCount = 0;
+  let globalCount = 0;
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (/^#{1,6}\s+.*\bagents?\b/i.test(trimmed)) {
+      inAgentsSection = true;
+      continue;
+    }
+    if (inAgentsSection && /^#{1,6}\s+/.test(trimmed)) {
+      inAgentsSection = false;
+    }
+
+    if (!/^\s*[-*]\s+/.test(line)) {
+      continue;
+    }
+
+    if (/\b(agent|coder|reviewer|tester|observer|persona|daemon)\b/i.test(trimmed)) {
+      globalCount += 1;
+      if (inAgentsSection) {
+        sectionCount += 1;
+      }
+    }
+  }
+
+  if (sectionCount >= 2) {
+    return sectionCount;
+  }
+  return globalCount;
+}
+
+function hasCollaborationSignals(description) {
+  const normalized = String(description || "").toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return /\b(team|pair|paired|multi-agent|multi agent|swarm|collaborat)\b/.test(normalized);
+}
+
+function shouldIncludeCoordinationPhase({
+  description = "",
+  agentsMarkdown = "",
+  sessionActive = false,
+} = {}) {
+  if (sessionActive === true) {
+    return true;
+  }
+  if (hasCollaborationSignals(description)) {
+    return true;
+  }
+  return countAgentInstructions(agentsMarkdown) >= 2;
+}
+
+function buildCoordinationPhase(phaseNumber, previousPhaseTitle = "") {
+  return {
+    title: `Phase ${phaseNumber}: Multi-Agent Coordination Protocol`,
+    items: [
+      "Check for active sessions: `sl session list`.",
+      "If a session exists, join it: `sl session join <id> --name <your-name> --role coder`.",
+      "Emit status updates every 5 minutes: `sl session say <id> \"status: <what you're doing>\"`.",
+      "Before modifying a shared file, check recent session activity for that file.",
+      "On unexpected file changes, ask in-session instead of stopping: `sl session say <id> \"help: <question>\"`.",
+      "Post findings in-session: `sl session say <id> \"finding: [P2] <title> in <file>:<line>\"`.",
+      "On completion, update `tasks/todo.md` and emit completion status in-session.",
+      "Leave the session when done: `sl session leave <id>`.",
+    ],
+    dependencies: previousPhaseTitle ? [previousPhaseTitle] : [],
+    effort: "4-8 hours",
+    acceptanceCriteria: [
+      "Session participation path is explicit for all collaborating agents.",
+      "Unexpected file-change handling favors in-session coordination over stop-and-wait behavior.",
+      "Status and finding updates are emitted with actionable file-level context.",
+    ],
+  };
+}
+
 export function generateSpecMarkdown({
   template,
   description,
   ingest,
   projectPath,
   projectType,
+  agentsMarkdown = "",
+  sessionActive = false,
   generatedAt = new Date().toISOString(),
 } = {}) {
   const resolvedTemplate = template || getDefaultTemplate();
@@ -470,6 +560,16 @@ export function generateSpecMarkdown({
     projectType: resolvedProjectType,
     description,
   });
+
+  if (
+    shouldIncludeCoordinationPhase({
+      description,
+      agentsMarkdown,
+      sessionActive,
+    })
+  ) {
+    phases.push(buildCoordinationPhase(phases.length + 1, phases[phases.length - 1]?.title || ""));
+  }
 
   const phaseMarkdown = phases
     .map(
