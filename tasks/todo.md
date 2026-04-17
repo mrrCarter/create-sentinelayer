@@ -1,3 +1,56 @@
+# 2026-04-17 - PR 16 API Telemetry + Admin Dashboard + Kill Switches + HITL Verdict (`roadmap/pr-192-session-telemetry-admin`)
+
+## Plan
+- [x] Implement API session telemetry surface in `sentinelayer-api`:
+  - models + migration (`sessions`, `session_agents`, `session_errors`, `session_findings_verdicts`)
+  - `SessionTelemetryService` aggregation/list/detail/kill/verdict flows
+  - admin routes under `/api/v1/admin/sessions/*`
+- [x] Wire request-id parity for session endpoints (`X-Request-Id` response header alias).
+- [x] Add API regression suite `tests/test_session_telemetry.py` for stats/list/search/kill/kill-all/verdict.
+- [x] Implement CLI admin controls in `create-sentinelayer`:
+  - `sl session admin-kill <sessionId>`
+  - `sl session admin-kill-all --confirm`
+  - best-effort local stream mirror events + metadata sync helper extension
+- [x] Add CLI unit coverage `tests/unit.session-admin.test.mjs` and sync helper tests.
+- [x] Implement web admin sessions page in `sentinelayer-web`:
+  - route `/admin/sessions`
+  - sidebar/nav integration
+  - stat cards, search/filter list, per-session kill, global kill, verdict rendering
+- [x] Add web component tests for sessions page.
+- [ ] Run Omar pass-one (`review scan`, `/omargate deep`) on `create-sentinelayer` PR16 branch.
+- [ ] Open PR(s), watch pass-two checks (`gh run watch`), merge only after Omar `P0=0` and `P1=0`.
+
+## Review (In Progress)
+- `sentinelayer-api` updates:
+  - Added: `src/models/session.py`
+  - Added: `src/services/session_telemetry_service.py`
+  - Added: `src/routes/session_admin.py`
+  - Added migration: `alembic/versions/047_sessions.py`
+  - Updated: `src/main.py`, `src/middleware/request_id.py`, `src/models/__init__.py`, `alembic/env.py`
+  - Added tests: `tests/test_session_telemetry.py`
+- `create-sentinelayer` updates:
+  - Updated: `src/commands/session.js`
+  - Updated: `src/session/sync.js`
+  - Updated docs/help: `src/legacy-cli.js`, `docs/sessions.md`
+  - Added tests: `tests/unit.session-admin.test.mjs`
+  - Updated tests: `tests/unit.session-sync.test.mjs`
+- `sentinelayer-web` updates:
+  - Added: `src/pages/admin/Sessions.tsx`
+  - Updated: `src/App.tsx`, `src/pages/admin/Layout.tsx`, `src/lib/api.ts`, `src/types/admin.ts`
+  - Added tests: `src/__tests__/AdminSessions.test.tsx`
+- Validation evidence (local):
+  - API:
+    - `$env:PYTHONPATH='.'; pytest tests/test_session_telemetry.py -q` (7 passed)
+    - `$env:PYTHONPATH='.'; pytest tests/test_admin_routes.py -q` (11 passed)
+    - `$env:PYTHONPATH='.'; python -m compileall src` (pass)
+  - CLI:
+    - `npm run check` (pass)
+    - `node --test tests/unit.session-admin.test.mjs tests/unit.session-sync.test.mjs tests/unit.session-templates.test.mjs tests/unit.session-file-locks.test.mjs` (pass)
+    - `node --test --test-name-pattern "CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation" tests/e2e.test.mjs` (pass)
+  - Web:
+    - `npx vitest run src/__tests__/AdminSessions.test.tsx` (pass)
+    - `npm run build` (pass)
+
 # 2026-04-17 - PR 15 Agent Performance Scoring + Smart Routing (`roadmap/pr-191-agent-scoring`)
 
 ## Plan

@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import {
   pollHumanMessages,
   resetSessionSyncStateForTests,
+  syncSessionErrorToApi,
   syncSessionEventToApi,
+  syncSessionMetadataToApi,
 } from "../src/session/sync.js";
 
 test("Unit session sync: syncSessionEventToApi posts canonical event payload", async () => {
@@ -73,6 +75,65 @@ test("Unit session sync: relay events from API are not re-synced outbound", asyn
   assert.equal(result.synced, false);
   assert.equal(result.reason, "relay_event_skip");
   assert.equal(called, false);
+});
+
+test("Unit session sync: syncSessionMetadataToApi posts metadata payload", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await syncSessionMetadataToApi(
+    "sess-meta-1",
+    {
+      sessionId: "sess-meta-1",
+      status: "active",
+    },
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_123",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options, timeoutMs) => {
+        calls.push({ url, options, timeoutMs });
+        return { ok: true, status: 202 };
+      },
+      nowMs: () => 1_700_000_000_100,
+    }
+  );
+  assert.equal(result.synced, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.sentinelayer.com/api/v1/sessions/sess-meta-1/metadata");
+  const payload = JSON.parse(calls[0].options.body);
+  assert.equal(payload.source, "cli");
+  assert.equal(payload.metadata.sessionId, "sess-meta-1");
+});
+
+test("Unit session sync: syncSessionErrorToApi posts structured error payload", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await syncSessionErrorToApi(
+    "sess-error-1",
+    {
+      requestId: "req-123",
+      errorCode: "E_TIMEOUT",
+      error: "tool timeout",
+    },
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_123",
+        apiUrl: "https://api.sentinelayer.com/",
+      }),
+      fetchImpl: async (url, options, timeoutMs) => {
+        calls.push({ url, options, timeoutMs });
+        return { ok: true, status: 202 };
+      },
+      nowMs: () => 1_700_000_000_200,
+    }
+  );
+  assert.equal(result.synced, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.sentinelayer.com/api/v1/sessions/sess-error-1/errors");
+  const payload = JSON.parse(calls[0].options.body);
+  assert.equal(payload.source, "cli");
+  assert.equal(payload.error.requestId, "req-123");
 });
 
 test("Unit session sync: outbound circuit breaker opens after consecutive failures", async () => {

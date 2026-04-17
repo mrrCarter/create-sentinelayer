@@ -10,6 +10,7 @@
 - In session/AIdenID provisioning flows, do network provisioning work in parallel but serialize JSON registry writes to avoid race-driven lost updates.
 - For lock/unlock chat directives, split `file - intent` only on spaced separators; splitting on raw `-` corrupts hyphenated file paths (`my-file.js`).
 - Slash command aliases and structured commands have different option surfaces; use `review scan --path . --json` for deterministic pass-one output instead of assuming `/review` accepts command-level flags.
+- Multi-PR Omar execution must stay sequenced: do `/review` locally while iterating, run `/omargate deep` only once branch is PR-ready, then wait for pass-two (`gh run watch`) and merge before starting the next PR in the chain.
 
 ## 2026-04-14
 
