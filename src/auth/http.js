@@ -1,5 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /**
  * Default timeout applied to Sentinelayer API requests when no override is provided.
@@ -15,6 +18,62 @@ export const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const CIRCUIT_TRACK_STATUS_CODES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
 const circuitStateByScope = new Map();
+
+// File-backed cache. Lets cooldown + failure counts survive across CLI
+// invocations — without it, each new process hammers a degraded upstream
+// until it hits the threshold again. Best-effort: if file ops fail, we
+// silently fall back to in-memory behavior (no hard dependency).
+const CIRCUIT_STATE_FILE = (() => {
+  const base = process.env.SENTINELAYER_CIRCUIT_STATE_DIR ||
+    path.join(os.homedir() || os.tmpdir(), ".sentinelayer");
+  try {
+    fs.mkdirSync(base, { recursive: true });
+  } catch {
+    /* noop */
+  }
+  return path.join(base, "circuit-state.json");
+})();
+let circuitStateLoaded = false;
+
+function loadCircuitStateFromDisk() {
+  if (circuitStateLoaded) return;
+  circuitStateLoaded = true;
+  try {
+    const raw = fs.readFileSync(CIRCUIT_STATE_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    const now = Date.now();
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const consecutiveFailures = Number(value.consecutiveFailures) || 0;
+      const openedAtMs = Number(value.openedAtMs) || 0;
+      // TTL: only carry over entries within the cooldown window — older
+      // entries are stale and should reset naturally on this process.
+      if (openedAtMs > 0 && now - openedAtMs < CIRCUIT_BREAKER_COOLDOWN_MS) {
+        circuitStateByScope.set(String(key), { consecutiveFailures, openedAtMs });
+      }
+    }
+  } catch {
+    /* noop: missing, corrupt, or unreadable — start fresh */
+  }
+}
+
+function persistCircuitState() {
+  try {
+    const snapshot = {};
+    for (const [key, value] of circuitStateByScope.entries()) {
+      snapshot[key] = {
+        consecutiveFailures: value.consecutiveFailures || 0,
+        openedAtMs: value.openedAtMs || 0,
+      };
+    }
+    const tmp = `${CIRCUIT_STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(snapshot), "utf-8");
+    fs.renameSync(tmp, CIRCUIT_STATE_FILE);
+  } catch {
+    /* noop */
+  }
+}
 const REQUEST_ID_HEADERS = ["x-request-id", "request-id", "x-correlation-id"];
 const DEBUG_API_ERRORS_ENV = "SENTINELAYER_DEBUG_ERRORS";
 const MAX_API_ERROR_MESSAGE_LENGTH = 512;
@@ -32,6 +91,7 @@ function resolveCircuitScope(url) {
 }
 
 function getCircuitState(scope) {
+  loadCircuitStateFromDisk();
   const key = String(scope || "unknown");
   if (!circuitStateByScope.has(key)) {
     circuitStateByScope.set(key, { consecutiveFailures: 0, openedAtMs: 0 });
@@ -243,6 +303,7 @@ function isCircuitOpen(scope) {
   if (Date.now() - circuitState.openedAtMs >= CIRCUIT_BREAKER_COOLDOWN_MS) {
     circuitState.openedAtMs = 0;
     circuitState.consecutiveFailures = 0;
+    persistCircuitState();
     return false;
   }
   return true;
@@ -254,6 +315,7 @@ function recordFailureForCircuit(scope) {
   if (circuitState.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
     circuitState.openedAtMs = Date.now();
   }
+  persistCircuitState();
 }
 
 function shouldExposeApiErrorDetails() {
@@ -313,6 +375,7 @@ function recordSuccessForCircuit(scope) {
   const circuitState = getCircuitState(scope);
   circuitState.consecutiveFailures = 0;
   circuitState.openedAtMs = 0;
+  persistCircuitState();
 }
 
 function shouldRetryStatus(statusCode) {
@@ -328,9 +391,16 @@ export function __resetRequestCircuitForTests(scope) {
     const circuitState = getCircuitState(scope);
     circuitState.consecutiveFailures = 0;
     circuitState.openedAtMs = 0;
+    persistCircuitState();
     return;
   }
   circuitStateByScope.clear();
+  circuitStateLoaded = true; // block disk reload after manual reset
+  try {
+    fs.rmSync(CIRCUIT_STATE_FILE, { force: true });
+  } catch {
+    /* noop */
+  }
 }
 
 /**
