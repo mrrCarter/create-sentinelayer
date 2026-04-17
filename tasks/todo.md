@@ -170,6 +170,34 @@
     - Quality Gates run `24562462249` passed
     - Build Attestation run `24562462220` passed
 
+# 2026-04-17 - PR 13 Live Dashboard Stream + HITL (CLI Session Relay Slice) (`roadmap/pr-189-dashboard-live-session`)
+
+## Plan
+- [x] Add `src/session/sync.js` for non-blocking session-event API sync with circuit breaker + rate guards.
+- [x] Wire `appendToStream()` to fire-and-forget `syncSessionEventToApi()` after local durability write.
+- [x] Add human-message polling (`pollHumanMessages`) with sanitization, truncation, secret-pattern rejection, and relay-event shaping (`source=human`, `priority=high`).
+- [x] Integrate daemon health ticks with human-message relay path (poll + append to stream + Senti alert).
+- [x] Add dedicated unit suite `tests/unit.session-sync.test.mjs`.
+- [x] Extend `package.json` check coverage for `src/session/sync.js`.
+- [x] Run local verification + Omar handshake (`review scan`, `/omargate deep`) and clear blocking findings.
+- [ ] Open PR, monitor pass-two, confirm Omar `P0=0/P1=0`, merge, then move to PR14.
+
+## Review
+- Completed implementation and local gate verification.
+- Updated:
+  - `src/session/sync.js`
+  - `src/session/stream.js`
+  - `src/session/daemon.js`
+  - `tests/unit.session-sync.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-sync.test.mjs tests/unit.session-stream.test.mjs tests/unit.session-daemon.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+
 # 2026-04-17 - PR 12 Documentation + llms.txt + Blog Insight (`roadmap/pr-188-session-docs`)
 
 ## Plan

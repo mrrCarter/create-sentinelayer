@@ -34,6 +34,7 @@ import {
   emitPeriodicRecap,
 } from "./recap.js";
 import { stopRuntimeRunsForSession } from "./runtime-bridge.js";
+import { pollHumanMessages } from "./sync.js";
 import { getSession, renewSession } from "./store.js";
 import { appendToStream, readStream, tailStream } from "./stream.js";
 import { handleTaskDirective } from "./tasks.js";
@@ -196,6 +197,8 @@ function createSentiState({
     lastTickAt: null,
     lastTickSummary: null,
     recapEmitter: null,
+    humanMessageCursor: null,
+    humanMessagePollInFlight: false,
   };
 }
 
@@ -815,6 +818,12 @@ function createHealthSummaryBase(nowIso, session, agents) {
     staleAgents: [],
     conflictAlerts: [],
     renewed: null,
+    humanMessages: {
+      relayed: 0,
+      dropped: 0,
+      cursor: null,
+      reason: "",
+    },
   };
 }
 
@@ -978,6 +987,66 @@ async function maybeRenewActiveSession(
   };
 }
 
+async function pollAndRelayHumanMessages(
+  daemonState,
+  summary,
+  nowIso = new Date().toISOString()
+) {
+  if (daemonState.humanMessagePollInFlight) {
+    summary.humanMessages.reason = "poll_in_flight";
+    return;
+  }
+
+  daemonState.humanMessagePollInFlight = true;
+  try {
+    const polled = await pollHumanMessages(daemonState.sessionId, {
+      targetPath: daemonState.targetPath,
+      since: daemonState.humanMessageCursor,
+    });
+    if (!polled.ok) {
+      summary.humanMessages.reason = normalizeString(polled.reason) || "poll_failed";
+      summary.humanMessages.cursor = daemonState.humanMessageCursor;
+      return;
+    }
+
+    const relayedEvents = [];
+    for (const event of polled.events || []) {
+      const persisted = await appendToStream(daemonState.sessionId, event, {
+        targetPath: daemonState.targetPath,
+      });
+      relayedEvents.push(persisted);
+    }
+    daemonState.humanMessageCursor = normalizeString(polled.cursor) || daemonState.humanMessageCursor;
+
+    summary.humanMessages.relayed = relayedEvents.length;
+    summary.humanMessages.dropped = Array.isArray(polled.dropped) ? polled.dropped.length : 0;
+    summary.humanMessages.cursor = daemonState.humanMessageCursor;
+    summary.humanMessages.reason = "";
+
+    if (relayedEvents.length > 0) {
+      await emitSentiEvent(
+        daemonState.sessionId,
+        "daemon_alert",
+        {
+          alert: "human_directive_received",
+          relayedCount: relayedEvents.length,
+          droppedCount: summary.humanMessages.dropped,
+        },
+        {
+          targetPath: daemonState.targetPath,
+          nowIso,
+        }
+      );
+    }
+  } catch (error) {
+    summary.humanMessages.reason =
+      normalizeString(error?.message) || "poll_relay_failed";
+    summary.humanMessages.cursor = daemonState.humanMessageCursor;
+  } finally {
+    daemonState.humanMessagePollInFlight = false;
+  }
+}
+
 export async function runSentiHealthTick(
   sessionId,
   {
@@ -1034,6 +1103,7 @@ export async function runSentiHealthTick(
   await emitStaleAndRecoveryAlerts(resolvedDaemonState, summary, staleAgents, normalizedNow);
   await emitConflictAlerts(resolvedDaemonState, summary, filteredAgents, normalizedNow);
   await maybeRenewActiveSession(resolvedDaemonState, summary, session, normalizedNow);
+  await pollAndRelayHumanMessages(resolvedDaemonState, summary, normalizedNow);
   return summary;
 }
 
@@ -1245,6 +1315,7 @@ export async function startSenti(
       staleAlertedAgents: [...daemonState.staleAlertedAgents],
       pendingHelpRequests: daemonState.pendingHelpTimers.size,
       recapRunning: Boolean(daemonState.recapEmitter?.isRunning?.()),
+      humanMessageCursor: daemonState.humanMessageCursor,
     }),
   };
 
