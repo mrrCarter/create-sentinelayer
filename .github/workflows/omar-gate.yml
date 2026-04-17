@@ -119,10 +119,7 @@ jobs:
   omar_scan:
     name: Omar Gate Scan
     if: >-
-      ${{
-        (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
-        (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-please--'))
-      }}
+      ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
