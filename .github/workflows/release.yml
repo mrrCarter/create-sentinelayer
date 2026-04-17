@@ -1147,8 +1147,16 @@ jobs:
           echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
           echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
           expected_sha1="$(sha1sum "${VERIFIED_TARBALL}" | awk '{print $1}')"
-          published_version="$(npm view "${package_name}@${package_version}" version --json 2>/tmp/npm-view.err || true)"
-          published_version="$(echo "${published_version}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          # npm view with --json writes {"error":{"code":"E404",...}} to stdout
+          # when the package/version is absent (exit 0, not an error). Treat
+          # E404 as "not published yet" and fall through to the publish step.
+          published_raw="$(npm view "${package_name}@${package_version}" version --json 2>/tmp/npm-view.err || true)"
+          published_raw_compact="$(echo "${published_raw}" | tr -d '[:space:]')"
+          if [ -z "${published_raw_compact}" ] || echo "${published_raw_compact}" | grep -q 'E404\|"error"'; then
+            published_version=""
+          else
+            published_version="$(echo "${published_raw}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          fi
           if [ -n "${published_version}" ]; then
             if [ "${published_version}" != "${package_version}" ]; then
               echo "::error::Unexpected published version response for ${package_name}@${package_version}: ${published_version}"
