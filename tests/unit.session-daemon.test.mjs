@@ -156,6 +156,95 @@ test("Unit session daemon: unanswered help_request gets auto-response within tim
   }
 });
 
+test("Unit session daemon: lock/unlock directives from session messages enforce exclusive file ownership", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-lock-directives-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    await registerAgent(session.sessionId, {
+      agentId: "codex-c3d4",
+      model: "gpt-5.4",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    await registerAgent(session.sessionId, {
+      agentId: "claude-a1b2",
+      model: "Claude 3.7 Sonnet",
+      role: "reviewer",
+      targetPath: tempRoot,
+    });
+    await startSenti(session.sessionId, {
+      targetPath: tempRoot,
+      autoStart: false,
+    });
+
+    await appendToStream(
+      session.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex-c3d4",
+        sessionId: session.sessionId,
+        payload: {
+          message: "lock: src/routes/auth.js — implementing JWT middleware",
+        },
+      }),
+      { targetPath: tempRoot }
+    );
+    await appendToStream(
+      session.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "claude-a1b2",
+        sessionId: session.sessionId,
+        payload: {
+          message: "lock: src/routes/auth.js — reviewing auth route",
+        },
+      }),
+      { targetPath: tempRoot }
+    );
+    await sleep(250);
+
+    const interimStream = await readStream(session.sessionId, { tail: 40, targetPath: tempRoot });
+    const lockEvent = interimStream.find((event) => event.event === "file_lock");
+    assert.ok(lockEvent);
+    assert.equal(lockEvent.agent.id, "codex-c3d4");
+    assert.equal(lockEvent.payload.file, "src/routes/auth.js");
+
+    const denied = interimStream.find(
+      (event) => event.event === "daemon_alert" && event.payload.alert === "file_lock_denied"
+    );
+    assert.ok(denied);
+    assert.equal(denied.payload.file, "src/routes/auth.js");
+    assert.equal(denied.payload.heldBy, "codex-c3d4");
+
+    await appendToStream(
+      session.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex-c3d4",
+        sessionId: session.sessionId,
+        payload: {
+          message: "unlock: src/routes/auth.js — done",
+        },
+      }),
+      { targetPath: tempRoot }
+    );
+    await sleep(200);
+
+    const stream = await readStream(session.sessionId, { tail: 50, targetPath: tempRoot });
+    const unlockEvent = stream.find((event) => event.event === "file_unlock");
+    assert.ok(unlockEvent);
+    assert.equal(unlockEvent.payload.file, "src/routes/auth.js");
+  } finally {
+    if (sessionId) {
+      await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session daemon: auto-renews session when expiry is near and activity is high", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-renew-"));
   let sessionId = "";

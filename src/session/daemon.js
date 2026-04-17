@@ -22,6 +22,11 @@ import {
   registerAgent,
   unregisterAgent,
 } from "./agent-registry.js";
+import {
+  DEFAULT_FILE_LOCK_TTL_SECONDS,
+  lockFile,
+  unlockFile,
+} from "./file-locks.js";
 import { resolveSessionPaths } from "./paths.js";
 import { stopRuntimeRunsForSession } from "./runtime-bridge.js";
 import { getSession, renewSession } from "./store.js";
@@ -609,6 +614,155 @@ async function runHelpWatcher(daemonState) {
   }
 }
 
+function splitFileAndIntent(raw = "") {
+  const normalized = normalizeString(raw);
+  if (!normalized) {
+    return {
+      filePath: "",
+      intent: "",
+    };
+  }
+  const separatorMatch = /\s(?:—|–|-)\s/.exec(normalized);
+  if (!separatorMatch) {
+    return {
+      filePath: normalizeString(normalized),
+      intent: "",
+    };
+  }
+  const separatorIndex = Number(separatorMatch.index || 0);
+  return {
+    filePath: normalizeString(normalized.slice(0, separatorIndex)),
+    intent: normalizeString(normalized.slice(separatorIndex + separatorMatch[0].length)),
+  };
+}
+
+function parseSessionDirective(event = {}) {
+  if (normalizeString(event.event) !== "session_message") {
+    return null;
+  }
+  const message = normalizeString(event.payload?.message);
+  if (!message) {
+    return null;
+  }
+  const directive = /^(lock|unlock)\s*:\s*(.+)$/i.exec(message);
+  if (!directive) {
+    return null;
+  }
+  const action = normalizeString(directive[1]).toLowerCase();
+  const body = normalizeString(directive[2]);
+  const parsed = splitFileAndIntent(body);
+  if (!parsed.filePath) {
+    return null;
+  }
+  return {
+    action,
+    filePath: parsed.filePath,
+    intent: parsed.intent,
+  };
+}
+
+async function maybeHandleSessionDirective(daemonState, event) {
+  const agentId = normalizeString(event.agent?.id);
+  if (!agentId || agentId === SENTI_IDENTITY.id) {
+    return null;
+  }
+  const directive = parseSessionDirective(event);
+  if (!directive) {
+    return null;
+  }
+  const nowIso = normalizeIsoTimestamp(event.ts, new Date().toISOString());
+  if (directive.action === "lock") {
+    const result = await lockFile(
+      daemonState.sessionId,
+      agentId,
+      directive.filePath,
+      {
+        intent: directive.intent,
+        ttlSeconds: DEFAULT_FILE_LOCK_TTL_SECONDS,
+        targetPath: daemonState.targetPath,
+        nowIso,
+      }
+    );
+    if (!result.locked) {
+      await emitSentiEvent(
+        daemonState.sessionId,
+        "daemon_alert",
+        {
+          alert: "file_lock_denied",
+          file: result.file || directive.filePath,
+          requestedBy: agentId,
+          heldBy: result.heldBy || null,
+          since: result.since || null,
+          suggestion: `${directive.filePath} is locked by ${result.heldBy || "another agent"} (${result.since || "recently"}). Coordinate before editing.`,
+        },
+        {
+          targetPath: daemonState.targetPath,
+          nowIso,
+        }
+      );
+    }
+    return result;
+  }
+  if (directive.action === "unlock") {
+    const result = await unlockFile(
+      daemonState.sessionId,
+      agentId,
+      directive.filePath,
+      {
+        reason: "session_message_unlock",
+        targetPath: daemonState.targetPath,
+        nowIso,
+      }
+    );
+    if (!result.unlocked && result.reason === "held_by_other_agent") {
+      await emitSentiEvent(
+        daemonState.sessionId,
+        "daemon_alert",
+        {
+          alert: "file_unlock_denied",
+          file: result.file || directive.filePath,
+          requestedBy: agentId,
+          heldBy: result.heldBy || null,
+          since: result.since || null,
+          suggestion: `${directive.filePath} is locked by ${result.heldBy || "another agent"}. Only the lock holder can release it.`,
+        },
+        {
+          targetPath: daemonState.targetPath,
+          nowIso,
+        }
+      );
+    }
+    return result;
+  }
+  return null;
+}
+
+async function runSessionDirectiveWatcher(daemonState) {
+  const signal = daemonState.helpAbortController.signal;
+  try {
+    for await (const event of tailStream(daemonState.sessionId, {
+      targetPath: daemonState.targetPath,
+      signal,
+      since: daemonState.startedAt,
+      replayTail: 0,
+      pollMs: 100,
+    })) {
+      if (!daemonState.running) {
+        return;
+      }
+      if (normalizeString(event.event) !== "session_message") {
+        continue;
+      }
+      await maybeHandleSessionDirective(daemonState, event);
+    }
+  } catch (error) {
+    if (error && typeof error === "object" && error.name === "AbortError") {
+      return;
+    }
+    throw error;
+  }
+}
+
 function buildConflictSignature(agentA, agentB, filePath) {
   const pair = [normalizeString(agentA), normalizeString(agentB)].filter(Boolean).sort().join("|");
   return `${pair}::${normalizeString(filePath).replace(/\\/g, "/")}`;
@@ -1045,6 +1199,7 @@ export async function startSenti(
   ACTIVE_SENTI_DAEMONS.set(daemonKey, daemonState);
 
   void runHelpWatcher(daemonState).catch(() => {});
+  void runSessionDirectiveWatcher(daemonState).catch(() => {});
 
   if (autoStart) {
     await runTick(nowIso);

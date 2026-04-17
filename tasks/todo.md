@@ -1,3 +1,36 @@
+# 2026-04-17 - PR 7 File Lock Protocol + Conflict Prevention (`roadmap/pr-183-file-lock-conflict-prevention`)
+
+## Plan
+- [x] Create fresh PR7 worktree/branch from latest `origin/main` after PR6 merge.
+- [x] Add `src/session/file-locks.js` with exclusive lock/unlock/check/list APIs, TTL expiration handling, and canonical stream events.
+- [x] Extend session path resolution for lock registry and lockfile paths.
+- [x] Wire daemon `session_message` directive parsing (`lock:` / `unlock:`) to file-lock APIs with conflict warnings.
+- [x] Ensure `session kill` releases any locks held by killed agents (no dangling locks).
+- [x] Surface active file locks in `session status`.
+- [x] Add `tests/unit.session-file-locks.test.mjs` coverage for exclusivity, TTL expiry event, unlock event, and kill-triggered lock release.
+- [x] Run targeted tests + full `npm run verify`.
+- [ ] Run Omar handshake: local `review` then local `/omargate deep`, open PR, watch pass-two, merge only after `P0=0` and `P1=0`.
+
+## Review
+- Completed implementation and local gate verification for PR7 scope.
+- Updated:
+  - `src/session/file-locks.js`
+  - `src/session/paths.js`
+  - `src/session/daemon.js`
+  - `src/commands/session.js`
+  - `src/legacy-cli.js`
+  - `tests/unit.session-file-locks.test.mjs`
+  - `tests/unit.session-daemon.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-file-locks.test.mjs tests/unit.session-daemon.test.mjs tests/unit.session-daemon-context.test.mjs` (pass)
+  - `node --test --test-name-pattern "CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation" tests/e2e.test.mjs` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review --json` (`p0=0`, `p1=0`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-17 - PR 6 Daemon Context Relay + AIdenID Bulk Provision (`roadmap/pr-182-daemon-relay-aidenid`)
 
 ## Plan
@@ -9,7 +42,7 @@
 - [x] Persist provisioned identity metadata into session shared resources and emit canonical `session_provision_emails` event.
 - [x] Add unit coverage for context relay + model fallback and session provisioning flow.
 - [x] Run local verification and pass-one handshake (`review`), then deep `/omargate` at PR-ready.
-- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0` and `P1=0`, merge, and move to PR7.
+- [x] Open PR, watch pass-two checks, confirm Omar `P0=0` and `P1=0`, merge, and move to PR7.
 
 ## Review
 - Completed implementation and local gate verification for PR6 scope.
@@ -27,6 +60,11 @@
   - `node bin/create-sentinelayer.js review --json` (`p0=0`, `p1=0`, `blocking=false`)
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+  - GitHub pass-two:
+    - PR `#346` merged (`ff0b15256212c054b7077724d2a51c3b079294ec`)
+    - Omar Gate run `24562462253` passed (`OMAR_P0=0`, `OMAR_P1=0`, `OMAR_P2=6`)
+    - Quality Gates run `24562462249` passed
+    - Build Attestation run `24562462220` passed
 
 # 2026-04-17 - PR 4 Session Commands + Assignment Registry Extension (`roadmap/pr-180-session-commands`)
 
