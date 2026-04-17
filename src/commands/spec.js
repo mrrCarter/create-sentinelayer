@@ -91,6 +91,60 @@ function resolveSpecArtifactPath(targetPath, explicitPath) {
   throw new Error("No spec artifact found. Generate one with 'spec generate' or pass --file.");
 }
 
+async function readAgentsMarkdown(targetPath) {
+  const agentsPath = path.join(targetPath, "AGENTS.md");
+  try {
+    return await fsp.readFile(agentsPath, "utf-8");
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  }
+}
+
+function isSessionMetadataActive(metadata = {}, nowEpoch = Date.now()) {
+  const status = String(metadata.status || "").trim().toLowerCase();
+  if (status === "expired" || status === "archived") {
+    return false;
+  }
+  const expiryEpoch = Date.parse(String(metadata.expiresAt || ""));
+  if (!Number.isFinite(expiryEpoch)) {
+    return false;
+  }
+  return expiryEpoch > nowEpoch;
+}
+
+async function detectSessionActive(targetPath) {
+  const sessionsRoot = path.join(targetPath, ".sentinelayer", "sessions");
+  let entries = [];
+  try {
+    entries = await fsp.readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+  const nowEpoch = Date.now();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const metadataPath = path.join(sessionsRoot, entry.name, "metadata.json");
+    try {
+      const raw = await fsp.readFile(metadataPath, "utf-8");
+      const metadata = JSON.parse(raw);
+      if (isSessionMetadataActive(metadata, nowEpoch)) {
+        return true;
+      }
+    } catch {
+      // Ignore malformed or missing metadata for one session and continue scanning.
+    }
+  }
+  return false;
+}
+
 function estimateTokenCount(text) {
   const normalized = String(text || "");
   if (!normalized) {
@@ -466,6 +520,8 @@ export function registerSpecCommand(program) {
           refresh: Boolean(options.refresh),
         });
         const ingest = ingestResolution.ingest;
+        const agentsMarkdown = await readAgentsMarkdown(targetPath);
+        const sessionActive = await detectSessionActive(targetPath);
         const explicitProjectType = parseProjectTypeOption(options.projectType);
         const resolvedProjectType = resolveProjectType({
           projectType: explicitProjectType,
@@ -479,6 +535,8 @@ export function registerSpecCommand(program) {
           ingest,
           projectPath: targetPath,
           projectType: resolvedProjectType,
+          agentsMarkdown,
+          sessionActive,
         });
 
         progress.update(65, "spec generate: optional AI refinement");
@@ -579,6 +637,8 @@ export function registerSpecCommand(program) {
           refresh: Boolean(options.refresh),
         });
         const ingest = ingestResolution.ingest;
+        const agentsMarkdown = await readAgentsMarkdown(targetPath);
+        const sessionActive = await detectSessionActive(targetPath);
         const explicitProjectType = parseProjectTypeOption(options.projectType);
         const inferredProjectType = inferProjectTypeFromSpecMarkdown(existingMarkdown);
         const resolvedProjectType = resolveProjectType({
@@ -592,6 +652,8 @@ export function registerSpecCommand(program) {
           ingest,
           projectPath: targetPath,
           projectType: resolvedProjectType,
+          agentsMarkdown,
+          sessionActive,
         });
 
         progress.update(55, "spec regenerate: preserving manual sections");
