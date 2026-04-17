@@ -6,9 +6,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 
 import {
   claimAssignment,
+  heartbeatLease,
   heartbeatAssignment,
+  leaseWorkItem,
   listAssignments,
+  reassignLease,
   reassignAssignment,
+  releaseLease,
   releaseAssignment,
 } from "../src/daemon/assignment-ledger.js";
 import {
@@ -137,6 +141,91 @@ test("Unit daemon assignment ledger: claim rejects active lease collisions", asy
           leaseTtlSeconds: 1200,
         }),
       /currently leased/
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon assignment ledger: session-scoped leaseWorkItem and reassignLease round-trip", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-assignment-session-"));
+  try {
+    const workItemId = await seedWorkItem(tempRoot, "/v1/sessions/stream", "STREAM_BACKPRESSURE");
+
+    const leased = await leaseWorkItem({
+      targetPath: tempRoot,
+      sessionId: "session-alpha",
+      workItemId,
+      agentIdentity: "agent.alpha@sentinelayer.local",
+      leaseTtlMs: 180_000,
+      stage: "triage",
+      runId: "run_session_1",
+    });
+    assert.equal(leased.assignment.sessionId, "session-alpha");
+    assert.equal(leased.assignment.status, "CLAIMED");
+
+    const heartbeat = await heartbeatLease({
+      targetPath: tempRoot,
+      sessionId: "session-alpha",
+      workItemId,
+      agentIdentity: "agent.alpha@sentinelayer.local",
+      leaseTtlMs: 180_000,
+      stage: "analysis",
+      runId: "run_session_2",
+    });
+    assert.equal(heartbeat.assignment.status, "IN_PROGRESS");
+    assert.equal(heartbeat.assignment.stage, "analysis");
+
+    const reassigned = await reassignLease({
+      targetPath: tempRoot,
+      sessionId: "session-alpha",
+      workItemId,
+      from: "agent.alpha@sentinelayer.local",
+      to: "agent.beta@sentinelayer.local",
+      leaseTtlMs: 120_000,
+      stage: "fix",
+      runId: "run_session_3",
+    });
+    assert.equal(reassigned.assignment.assignedAgentIdentity, "agent.beta@sentinelayer.local");
+    assert.equal(reassigned.assignment.sessionId, "session-alpha");
+    assert.equal(reassigned.assignment.status, "CLAIMED");
+
+    const released = await releaseLease({
+      targetPath: tempRoot,
+      sessionId: "session-alpha",
+      workItemId,
+      agentIdentity: "agent.beta@sentinelayer.local",
+      status: "DONE",
+      reason: "session complete",
+    });
+    assert.equal(released.assignment.status, "DONE");
+    assert.equal(released.assignment.sessionId, "session-alpha");
+
+    const sessionMatches = await listAssignments({
+      targetPath: tempRoot,
+      sessionId: "session-alpha",
+      statuses: ["DONE"],
+      limit: 10,
+    });
+    assert.equal(sessionMatches.visibleCount, 1);
+    assert.equal(sessionMatches.assignments[0].workItemId, workItemId);
+
+    const wrongSessionMatches = await listAssignments({
+      targetPath: tempRoot,
+      sessionId: "session-beta",
+      limit: 10,
+    });
+    assert.equal(wrongSessionMatches.visibleCount, 0);
+
+    await assert.rejects(
+      () =>
+        heartbeatLease({
+          targetPath: tempRoot,
+          sessionId: "session-beta",
+          workItemId,
+          agentIdentity: "agent.beta@sentinelayer.local",
+        }),
+      /bound to session/
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

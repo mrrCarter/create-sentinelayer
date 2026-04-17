@@ -8,6 +8,9 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { leaseWorkItem, listAssignments } from "../src/daemon/assignment-ledger.js";
+import { appendAdminErrorEvent, listErrorQueue, runErrorDaemonWorker } from "../src/daemon/error-worker.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
 const BOOTSTRAP_VALUE_FROM_GENERATE = ["fixture", "boot", "gen", "value"].join("_");
@@ -694,6 +697,32 @@ function baseInterview(overrides = {}) {
     injectSecret: false,
     ...overrides,
   };
+}
+
+async function seedDaemonWorkItem(targetPath, endpoint, errorCode) {
+  await appendAdminErrorEvent({
+    targetPath,
+    event: {
+      service: "sentinelayer-api",
+      endpoint,
+      errorCode,
+      severity: "P2",
+      message: "session e2e seed error",
+    },
+  });
+  await runErrorDaemonWorker({
+    targetPath,
+    maxEvents: 20,
+  });
+  const queued = await listErrorQueue({
+    targetPath,
+    limit: 10,
+  });
+  const match = queued.items.find((item) => item.endpoint === endpoint);
+  if (!match) {
+    throw new Error(`Expected queued work item for endpoint '${endpoint}'.`);
+  }
+  return match.workItemId;
 }
 
 test("CLI end-to-end: generates artifacts and injects secret via gh", async () => {
@@ -6365,6 +6394,152 @@ test("CLI local command: /apply --json emits machine-readable summary", async ()
     assert.equal(payload.command, "/apply");
     assert.equal(payload.taskCount, 1);
     assert.match(String(payload.reportPath || ""), /[\\/]\.sentinelayer[\\/]reports[\\/]apply-plan-/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-e2e-"));
+  try {
+    await writeFile(path.join(tempRoot, "package.json"), '{"name":"session-e2e","version":"1.0.0"}\n', "utf-8");
+
+    const startResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "start", "--path", tempRoot, "--json"],
+    });
+    assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
+    const startPayload = JSON.parse(String(startResult.stdout || "").trim());
+    const sessionId = String(startPayload.sessionId || "").trim();
+    assert.ok(sessionId);
+
+    const listResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "list", "--path", tempRoot, "--json"],
+    });
+    assert.equal(listResult.code, 0, listResult.stderr || listResult.stdout);
+    const listPayload = JSON.parse(String(listResult.stdout || "").trim());
+    assert.equal(listPayload.command, "session list");
+    assert.equal(listPayload.sessions.some((entry) => entry.sessionId === sessionId), true);
+
+    const joinResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "join", sessionId, "--name", "agent-alpha", "--role", "coder", "--path", tempRoot, "--json"],
+    });
+    assert.equal(joinResult.code, 0, joinResult.stderr || joinResult.stdout);
+    const joinPayload = JSON.parse(String(joinResult.stdout || "").trim());
+    assert.equal(joinPayload.command, "session join");
+    assert.equal(joinPayload.agentId, "agent-alpha");
+
+    const sayResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "say", sessionId, "test message", "--agent", "agent-alpha", "--path", tempRoot, "--json"],
+    });
+    assert.equal(sayResult.code, 0, sayResult.stderr || sayResult.stdout);
+    const sayPayload = JSON.parse(String(sayResult.stdout || "").trim());
+    assert.equal(sayPayload.command, "session say");
+    assert.equal(sayPayload.event.event, "session_message");
+    assert.equal(sayPayload.event.payload.message, "test message");
+
+    const readResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "read", sessionId, "--tail", "5", "--path", tempRoot, "--json"],
+    });
+    assert.equal(readResult.code, 0, readResult.stderr || readResult.stdout);
+    const readPayload = JSON.parse(String(readResult.stdout || "").trim());
+    assert.equal(readPayload.command, "session read");
+    assert.equal(readPayload.events.some((event) => event.event === "session_message"), true);
+
+    const statusResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "status", sessionId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(statusResult.code, 0, statusResult.stderr || statusResult.stdout);
+    const statusPayload = JSON.parse(String(statusResult.stdout || "").trim());
+    assert.equal(statusPayload.command, "session status");
+    assert.equal(statusPayload.session.sessionId, sessionId);
+    assert.equal(statusPayload.activeAgents.some((agent) => agent.agentId === "agent-alpha"), true);
+
+    const workItemId = await seedDaemonWorkItem(tempRoot, "/v1/session/lease", "SESSION_LEASE_E2E");
+    const leased = await leaseWorkItem({
+      targetPath: tempRoot,
+      sessionId,
+      workItemId,
+      agentIdentity: "agent-alpha",
+      leaseTtlMs: 120_000,
+      stage: "triage",
+    });
+    assert.equal(leased.assignment.status, "CLAIMED");
+    assert.equal(leased.assignment.sessionId, sessionId);
+
+    const killResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "session",
+        "kill",
+        "--session",
+        sessionId,
+        "--agent",
+        "agent-alpha",
+        "--path",
+        tempRoot,
+        "--json",
+      ],
+    });
+    assert.equal(killResult.code, 0, killResult.stderr || killResult.stdout);
+    const killPayload = JSON.parse(String(killResult.stdout || "").trim());
+    assert.equal(killPayload.command, "session kill");
+    assert.equal(killPayload.agentId, "agent-alpha");
+    assert.equal(killPayload.stopped, true);
+    assert.equal(Number(killPayload.leaseRevocations || 0) >= 1, true);
+
+    const postKillLeases = await listAssignments({
+      targetPath: tempRoot,
+      sessionId,
+      agentIdentity: "agent-alpha",
+      statuses: ["QUEUED"],
+      limit: 10,
+    });
+    assert.equal(postKillLeases.visibleCount, 1);
+    assert.equal(postKillLeases.assignments[0].workItemId, workItemId);
+
+    const postKillReadResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "read", sessionId, "--tail", "30", "--path", tempRoot, "--json"],
+    });
+    assert.equal(postKillReadResult.code, 0, postKillReadResult.stderr || postKillReadResult.stdout);
+    const postKillReadPayload = JSON.parse(String(postKillReadResult.stdout || "").trim());
+    assert.equal(
+      postKillReadPayload.events.some(
+        (event) => event.event === "agent_killed" && event.agent?.id === "agent-alpha"
+      ),
+      true
+    );
+
+    const joinBetaResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "join", sessionId, "--name", "agent-beta", "--role", "tester", "--path", tempRoot, "--json"],
+    });
+    assert.equal(joinBetaResult.code, 0, joinBetaResult.stderr || joinBetaResult.stdout);
+
+    const leaveResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["session", "leave", sessionId, "--agent", "agent-beta", "--path", tempRoot, "--json"],
+    });
+    assert.equal(leaveResult.code, 0, leaveResult.stderr || leaveResult.stdout);
+    const leavePayload = JSON.parse(String(leaveResult.stdout || "").trim());
+    assert.equal(leavePayload.command, "session leave");
+    assert.equal(leavePayload.agentId, "agent-beta");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

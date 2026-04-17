@@ -4,6 +4,7 @@
 
 - Follow the Omar handshake loop in strict order for each PR: local `review scan` first, local `/omargate deep` only when PR-ready, then open PR, `gh run watch`, and merge only after pass-two confirms `P0=0` and `P1=0`.
 - Treat local Omar runs as pass-one evidence and GitHub Omar checks as pass-two authority for merge decisions.
+- For pass-one, run only local review gate (`sl review` / `review scan`); do not run deep/full Omar locally until the branch is PR-ready.
 
 ## 2026-04-14
 

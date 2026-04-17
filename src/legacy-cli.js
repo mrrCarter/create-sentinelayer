@@ -204,6 +204,16 @@ function printUsage() {
   console.log("  sl auth sessions                   List stored session metadata");
   console.log("  sl auth logout                     Clear local session");
   console.log("");
+  console.log("Session Coordination:");
+  console.log("  sl session start --json            Create an agent coordination session");
+  console.log("  sl session join <id> --name <n>    Join a session as an agent");
+  console.log("  sl session say <id> \"msg\" --json  Append a message event to session stream");
+  console.log("  sl session read <id> --tail 20     Read session stream events");
+  console.log("  sl session status <id> --json      Show session health, agents, runs, leases");
+  console.log("  sl session leave <id>              Leave a session");
+  console.log("  sl session list --json             List active sessions");
+  console.log("  sl session kill --session <id> --agent <id>  Kill agent + revoke active leases");
+  console.log("");
   console.log("Security & Review:");
   console.log("  sl review scan --path . --json     Deterministic code review (full or --mode diff)");
   console.log("  sl /omargate deep --path . --json  Local Omar Gate security scan (P0/P1/P2 findings)");
