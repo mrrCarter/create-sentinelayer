@@ -1,3 +1,34 @@
+# 2026-04-17 - PR 3.5 Triage & Scope Engine (`roadmap/pr-179b-triage-scope-engine`)
+
+## Plan
+- [x] Create fresh PR3.5 worktree/branch from latest `origin/main` after PR3 merge.
+- [x] Implement `src/daemon/scope-engine.js` to build versioned `IssueScopeEnvelope` (`scope-envelope/v1`) from intake events using deterministic ingest first.
+- [x] Add on-demand semantic overlay that calls `ast-parser-layer` + `callgraph-overlay` only when signal exceeds threshold and candidate scope stays bounded.
+- [x] Persist scope artifacts to `observability/<date>/<workItemId>/scope_envelope.json`.
+- [x] Emit canonical stream event envelopes (`scope_envelope_built`) and add active-run kill support for `scope-engine`.
+- [x] Extend `sl session kill` to support `--agent scope-engine`.
+- [x] Add PR3.5 unit suite (`tests/unit.triage-scope-engine.test.mjs`) including kill-switch exercise through `session kill`.
+- [x] Extend `package.json` syntax check coverage for `src/daemon/scope-engine.js`.
+- [x] Run local verification and pass-one handshake (`review scan` first).
+- [ ] Run local `/omargate deep` only at PR-ready, open PR, wait pass-two Omar `P0=0/P1=0`, merge, and move to next sequenced PR.
+
+## Review
+- Completed implementation and local verification up to pass-one.
+- Updated:
+  - `src/daemon/scope-engine.js`
+  - `src/commands/session.js`
+  - `tests/unit.triage-scope-engine.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.triage-scope-engine.test.mjs` (pass)
+  - `node --test tests/unit.session-daemon.test.mjs tests/unit.session-runtime-bridge.test.mjs tests/unit.commands-contracts.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-17 - PR 3 Session Daemon + Runtime Executor Bridge (`roadmap/pr-179-session-daemon`)
 
 ## Plan
