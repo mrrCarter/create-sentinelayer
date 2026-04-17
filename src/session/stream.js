@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent, normalizeAgentEvent } from "../events/schema.js";
 import { resolveSessionPaths } from "./paths.js";
+import { syncSessionEventToApi } from "./sync.js";
 
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
@@ -248,6 +249,11 @@ export async function appendToStream(
   } finally {
     await releaseLock(paths.lockPath);
   }
+
+  // Best-effort dashboard sync. Never block local stream durability on API state.
+  void syncSessionEventToApi(paths.sessionId, canonicalEvent, {
+    targetPath,
+  }).catch(() => {});
 
   return canonicalEvent;
 }
