@@ -1,3 +1,36 @@
+# 2026-04-17 - PR 15 Agent Performance Scoring + Smart Routing (`roadmap/pr-191-agent-scoring`)
+
+## Plan
+- [x] Add `src/session/scoring.js` with agent analytics snapshot, score computation, and ranked routing helpers.
+- [x] Include HITL adjudication truth signals in score inputs (`reviewAccuracy` from verdict events).
+- [x] Update wildcard task routing to select highest-scoring active agent (with deterministic tie-breaks).
+- [x] Extend task assignment events with routing telemetry (`routingStrategy`, `selectedScore`, score model version, ranked candidates).
+- [x] Add `tests/unit.session-scoring.test.mjs` and update session task wildcard assertions for score routing.
+- [x] Update `package.json` check coverage for `src/session/scoring.js`.
+- [x] Run targeted tests for scoring + task routing.
+- [x] Run `npm run verify`.
+- [x] Run pass-one gate: `node bin/create-sentinelayer.js review scan --path . --json`.
+- [x] Run local PR-ready gate: `node bin/create-sentinelayer.js /omargate deep --path . --json`.
+- [x] Run local audit parity gate: `node bin/create-sentinelayer.js /audit --path . --json`.
+- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, move to PR16.
+
+## Review
+- Completed implementation and local gate verification.
+- Updated:
+  - `src/session/scoring.js`
+  - `src/session/tasks.js`
+  - `tests/unit.session-scoring.test.mjs`
+  - `tests/unit.session-tasks.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-scoring.test.mjs tests/unit.session-tasks.test.mjs` (pass)
+  - `node --test tests/unit.session-daemon.test.mjs tests/unit.session-analytics.test.mjs` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-17 - PR 14 Session Templates + Quick-Start Presets (`roadmap/pr-190-session-templates`)
 
 ## Plan
@@ -12,7 +45,7 @@
 - [x] Run pass-one gate: `node bin/create-sentinelayer.js review scan --path . --json`.
 - [x] Run local PR-ready gate: `node bin/create-sentinelayer.js /omargate deep --path . --json`.
 - [x] Run local audit parity gate: `node bin/create-sentinelayer.js /audit --path . --json`.
-- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, move to PR15.
+- [x] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, move to PR15.
 
 ## Review
 - Completed implementation and local gate verification.
@@ -32,6 +65,11 @@
   - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
   - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
   - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+  - GitHub pass-two:
+    - PR `#354` merged (`f616d1a375aaeebe50b40d81f3fb7f1de02ba996`)
+    - Omar Gate run `24569892094` passed (`OMAR_P0=0`, `OMAR_P1=0`, `OMAR_P2=7`)
+    - Quality Gates run `24569892020` passed
+    - Build Attestation run `24569892021` passed
 
 # 2026-04-17 - PR 11 Auto-Recap + Context Briefing (`roadmap/pr-187-session-recap`)
 

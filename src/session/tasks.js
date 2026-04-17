@@ -14,7 +14,8 @@ import {
 import { createAgentEvent } from "../events/schema.js";
 import { listAgents } from "./agent-registry.js";
 import { resolveSessionPaths } from "./paths.js";
-import { appendToStream } from "./stream.js";
+import { buildAgentAnalyticsSnapshot, rankAgentsByScore } from "./scoring.js";
+import { appendToStream, readStream } from "./stream.js";
 
 const TASK_REGISTRY_SCHEMA_VERSION = "1.0.0";
 const DEFAULT_TASK_LEASE_TTL_MS = 30 * 60 * 1000;
@@ -22,6 +23,7 @@ const DEFAULT_TASK_LIST_LIMIT = 200;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const DEFAULT_LOCK_STALE_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 25;
+const SCORING_EVENT_WINDOW = 2_000;
 
 const TASK_STATUSES = Object.freeze(["PENDING", "ACCEPTED", "COMPLETED", "BLOCKED"]);
 const TASK_STATUS_SET = new Set(TASK_STATUSES);
@@ -326,19 +328,6 @@ function statusWeight(status = "") {
   return 2;
 }
 
-function compareAgentLoad(left, right) {
-  if (left.assignmentCount !== right.assignmentCount) {
-    return left.assignmentCount - right.assignmentCount;
-  }
-  if (left.statusWeight !== right.statusWeight) {
-    return left.statusWeight - right.statusWeight;
-  }
-  if (left.activityEpoch !== right.activityEpoch) {
-    return left.activityEpoch - right.activityEpoch;
-  }
-  return left.agentId.localeCompare(right.agentId);
-}
-
 async function resolveExplicitAgent(sessionId, requestedAgentId, { targetPath = process.cwd(), roleFilter = null } = {}) {
   const agents = await listAgents(sessionId, {
     targetPath,
@@ -362,7 +351,7 @@ async function resolveExplicitAgent(sessionId, requestedAgentId, { targetPath = 
   };
 }
 
-async function resolveLeastBusyAgent(
+async function resolveHighestScoringAgent(
   sessionId,
   {
     targetPath = process.cwd(),
@@ -370,7 +359,8 @@ async function resolveLeastBusyAgent(
     nowIso = new Date().toISOString(),
   } = {}
 ) {
-  const [agents, activeAssignments] = await Promise.all([
+  const paths = resolveSessionPaths(sessionId, { targetPath });
+  const [agents, activeAssignments, events, rawTaskRegistry] = await Promise.all([
     listAgents(sessionId, {
       targetPath,
       includeInactive: false,
@@ -383,8 +373,17 @@ async function resolveLeastBusyAgent(
       limit: 500,
       nowIso,
     }),
+    readStream(sessionId, {
+      targetPath,
+      tail: SCORING_EVENT_WINDOW,
+    }),
+    readJsonFile(paths.tasksPath, { allowMissing: true }),
   ]);
 
+  const taskRegistry = normalizeTaskRegistry(rawTaskRegistry || {}, {
+    sessionId,
+    nowIso,
+  });
   const counts = new Map();
   for (const assignment of activeAssignments.assignments) {
     const agentId = normalizeString(assignment.assignedAgentIdentity);
@@ -402,8 +401,7 @@ async function resolveLeastBusyAgent(
       assignmentCount: Number(counts.get(normalizeString(agent.agentId)) || 0),
       statusWeight: statusWeight(agent.status),
       activityEpoch: parseEpoch(agent.lastActivityAt, nowIso),
-    }))
-    .sort(compareAgentLoad);
+    }));
 
   if (candidates.length === 0) {
     if (roleFilter) {
@@ -411,7 +409,25 @@ async function resolveLeastBusyAgent(
     }
     throw new Error(`No active agents available for wildcard task routing in session '${sessionId}'.`);
   }
-  return candidates[0];
+
+  const analyticsByAgent = buildAgentAnalyticsSnapshot({
+    events: Array.isArray(events) ? events : [],
+    tasks: taskRegistry.tasks,
+    activeAssignments: activeAssignments.assignments,
+    nowIso,
+  });
+  const rankedCandidates = rankAgentsByScore(candidates, analyticsByAgent);
+  return {
+    ...rankedCandidates[0],
+    rankedCandidates: rankedCandidates.slice(0, 5).map((candidate) => ({
+      agentId: candidate.agentId,
+      role: candidate.role,
+      overallScore: candidate.score.overallScore,
+      taskCompletionRate: candidate.score.taskCompletionRate,
+      reviewAccuracy: candidate.score.reviewAccuracy,
+      assignmentCount: candidate.assignmentCount,
+    })),
+  };
 }
 
 async function resolveTaskAssignee(
@@ -426,7 +442,7 @@ async function resolveTaskAssignee(
   const parsedTarget = parseAssignmentTargetToken(toAgentId);
   const resolvedRoleFilter = normalizeRoleFilter(roleFilter || parsedTarget.roleFilter);
   if (parsedTarget.wildcard) {
-    const agent = await resolveLeastBusyAgent(sessionId, {
+    const agent = await resolveHighestScoringAgent(sessionId, {
       targetPath,
       roleFilter: resolvedRoleFilter,
       nowIso,
@@ -435,7 +451,9 @@ async function resolveTaskAssignee(
       wildcard: true,
       requestedToAgentId: "*",
       roleFilter: resolvedRoleFilter,
+      strategy: "score",
       routedAgent: agent,
+      rankedCandidates: Array.isArray(agent.rankedCandidates) ? agent.rankedCandidates : [],
     };
   }
   const agent = await resolveExplicitAgent(sessionId, parsedTarget.requestedToAgentId, {
@@ -446,7 +464,9 @@ async function resolveTaskAssignee(
     wildcard: false,
     requestedToAgentId: parsedTarget.requestedToAgentId,
     roleFilter: resolvedRoleFilter,
+    strategy: "explicit",
     routedAgent: agent,
+    rankedCandidates: [],
   };
 }
 
@@ -533,6 +553,22 @@ function buildTaskAssignPayload(taskRecord, routing = {}) {
     task: taskRecord.task,
     priority: taskRecord.priority,
     context: taskRecord.context,
+    routingStrategy: normalizeString(routing.strategy) || (routing.wildcard ? "score" : "explicit"),
+    selectedScore:
+      routing &&
+      routing.routedAgent &&
+      routing.routedAgent.score &&
+      Number.isFinite(Number(routing.routedAgent.score.overallScore))
+        ? Number(routing.routedAgent.score.overallScore)
+        : null,
+    scoreModelVersion:
+      routing && routing.routedAgent && routing.routedAgent.score
+        ? normalizeString(routing.routedAgent.score.scoreModelVersion) || null
+        : null,
+    rankedCandidates:
+      Array.isArray(routing.rankedCandidates) && routing.rankedCandidates.length > 0
+        ? routing.rankedCandidates
+        : [],
   };
 }
 
@@ -658,10 +694,20 @@ export async function assignTask(
     event,
     routing: {
       wildcard: routing.wildcard,
+      strategy: routing.strategy || (routing.wildcard ? "score" : "explicit"),
       roleFilter: routing.roleFilter,
       selectedAgentId: routing.routedAgent.agentId,
       selectedAgentRole: routing.routedAgent.role,
       assignmentCount: routing.routedAgent.assignmentCount,
+      selectedScore:
+        routing.routedAgent && routing.routedAgent.score
+          ? Number(routing.routedAgent.score.overallScore)
+          : null,
+      scoreModelVersion:
+        routing.routedAgent && routing.routedAgent.score
+          ? normalizeString(routing.routedAgent.score.scoreModelVersion) || null
+          : null,
+      rankedCandidates: Array.isArray(routing.rankedCandidates) ? routing.rankedCandidates : [],
     },
   };
 }

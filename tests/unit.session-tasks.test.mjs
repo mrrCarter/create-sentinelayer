@@ -170,7 +170,7 @@ test("Unit session tasks: assign -> accepted -> completed round-trip emits canon
   }
 });
 
-test("Unit session tasks: wildcard assign routes to least-busy agent matching role filter", async () => {
+test("Unit session tasks: wildcard assign routes to highest-scoring agent matching role filter", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-tasks-wildcard-"));
   let sessionId = "";
   try {
@@ -250,6 +250,9 @@ test("Unit session tasks: wildcard assign routes to least-busy agent matching ro
     assert.equal(wildcardEvent.payload.to, "codex-c3d4");
     assert.equal(wildcardEvent.payload.roleFilter, "coder");
     assert.equal(wildcardEvent.payload.wildcardRouted, true);
+    assert.equal(wildcardEvent.payload.routingStrategy, "score");
+    assert.equal(typeof wildcardEvent.payload.selectedScore, "number");
+    assert.equal(String(wildcardEvent.payload.scoreModelVersion || "").length > 0, true);
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
