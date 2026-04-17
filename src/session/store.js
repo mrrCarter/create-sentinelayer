@@ -168,6 +168,44 @@ function normalizeSharedResources(raw = {}, { nowIso = new Date().toISOString() 
   };
 }
 
+function normalizeTemplateAgent(raw = {}) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    role: normalizeString(source.role) || "agent",
+    instructions: normalizeString(source.instructions) || "Follow session guidance.",
+  };
+}
+
+function normalizeSessionTemplate(raw = null) {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const source = raw;
+  const id = normalizeString(source.id || source.name);
+  if (!id) {
+    return null;
+  }
+  const suggestedAgents = Array.isArray(source.suggestedAgents)
+    ? source.suggestedAgents.map((agent) => normalizeTemplateAgent(agent))
+    : [];
+  const ttlHours = normalizePositiveInteger(source.ttlHours, 1);
+  const normalizedAutoProvision =
+    source.autoProvisionEmails === undefined || source.autoProvisionEmails === null
+      ? null
+      : normalizePositiveInteger(source.autoProvisionEmails, 1);
+
+  return {
+    id,
+    version: normalizeString(source.version) || "1.0.0",
+    registryVersion: normalizeString(source.registryVersion) || "1.0.0",
+    description: normalizeString(source.description),
+    daemonModel: normalizeString(source.daemonModel),
+    ttlHours,
+    autoProvisionEmails: normalizedAutoProvision,
+    suggestedAgents,
+  };
+}
+
 async function collectSessionCodebaseContext(targetPath) {
   const cachedIngestPath = path.join(targetPath, ".sentinelayer", "CODEBASE_INGEST.json");
   const cachedIngest = await readJsonFile(cachedIngestPath, { allowMissing: true });
@@ -303,6 +341,7 @@ function normalizeMetadata(raw = {}, { sessionId, targetPath, nowIso } = {}) {
     archiveStatus: normalizeString(raw.archiveStatus) || "pending",
     codebaseContext: normalizeCodebaseContext(raw.codebaseContext || {}),
     sharedResources: normalizeSharedResources(raw.sharedResources || {}, { nowIso }),
+    template: normalizeSessionTemplate(raw.template || null),
   };
 }
 
@@ -333,6 +372,7 @@ function buildSessionPayload(metadata, paths, nowIso = new Date().toISOString())
     s3Path: metadata.s3Path,
     codebaseContext: metadata.codebaseContext,
     sharedResources: metadata.sharedResources,
+    template: metadata.template,
   };
 }
 
@@ -365,6 +405,7 @@ async function saveMetadata(metadata, paths) {
 export async function createSession({
   targetPath = process.cwd(),
   ttlSeconds = DEFAULT_TTL_SECONDS,
+  template = null,
 } = {}) {
   const resolvedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedTtlSeconds = normalizePositiveInteger(ttlSeconds, DEFAULT_TTL_SECONDS);
@@ -392,6 +433,7 @@ export async function createSession({
       archiveStatus: "pending",
       codebaseContext,
       sharedResources: normalizeSharedResources({}, { nowIso }),
+      template: normalizeSessionTemplate(template),
     },
     {
       sessionId,

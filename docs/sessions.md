@@ -17,6 +17,8 @@ Sessions solve this with a common event stream, explicit assignment state, and e
 
 ```bash
 sl session start --path . --json
+sl session start --template code-review --path .
+sl session templates --json
 sl session join --id <session-id> --name codex-1 --role coder
 sl session say --id <session-id> --from codex-1 --message "PR #123 opened"
 sl session read --id <session-id> --tail 50
@@ -25,6 +27,11 @@ sl session list --json
 sl session leave --id <session-id> --agent codex-1
 sl session kill --id <session-id> --agent senti --reason "manual stop"
 ```
+
+## Quick-Start Templates
+
+Use `sl session start --template <name>` to bootstrap role-specific launch plans and governance defaults.
+Available templates are versioned in the CLI registry and can be listed with `sl session templates --json`.
 
 ## Session Lifecycle
 
