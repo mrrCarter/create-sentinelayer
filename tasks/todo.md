@@ -1,3 +1,34 @@
+# 2026-04-17 - PR 1 Session Store + NDJSON Stream (`roadmap/pr-177-session-store`)
+
+## Plan
+- [x] Create isolated PR1 worktree/branch from `origin/main`.
+- [x] Add persistent session modules (`src/session/store.js`, `src/session/stream.js`, `src/session/paths.js`).
+- [x] Add `sl session start --json` command surface and CLI registration.
+- [x] Add unit coverage for store/stream behavior (`tests/unit.session-store.test.mjs`, `tests/unit.session-stream.test.mjs`).
+- [x] Run local verification gates in sequence: `review scan` -> `/omargate deep` -> `/audit`.
+- [ ] Open PR, watch GitHub runs to pass-two confirmation (`P0=0/P1=0`), and merge.
+
+## Review
+- Completed implementation and local gate verification.
+- Updated:
+  - `src/session/paths.js`
+  - `src/session/store.js`
+  - `src/session/stream.js`
+  - `src/commands/session.js`
+  - `src/cli.js`
+  - `package.json` (`check` script includes new session modules/command)
+  - `tests/unit.session-store.test.mjs`
+  - `tests/unit.session-stream.test.mjs`
+  - `tasks/evals/2026-04-17-pr-324-session-store.md`
+- Validation evidence:
+  - `node --test tests/unit.session-store.test.mjs tests/unit.session-stream.test.mjs` (pass)
+  - `node bin/sl.js session start --path . --json` (`durationMs=209`)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`)
+
 # 2026-04-16 - PR 0 Standardized Agent Event Schema (`roadmap/pr-176-standardized-events`)
 
 ## Plan
