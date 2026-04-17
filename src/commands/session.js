@@ -29,6 +29,10 @@ import {
 import { stopSenti } from "../session/daemon.js";
 import { listRuntimeRuns } from "../session/runtime-bridge.js";
 import {
+  listFileLocks,
+  releaseFileLocksForAgent,
+} from "../session/file-locks.js";
+import {
   createSession,
   DEFAULT_TTL_SECONDS,
   getSession,
@@ -361,7 +365,7 @@ export function registerSessionCommand(program) {
         throw new Error(`Session '${normalizedSessionId}' was not found.`);
       }
 
-      const [agents, runtimeRuns, leases, recentEvents] = await Promise.all([
+      const [agents, runtimeRuns, leases, fileLocks, recentEvents] = await Promise.all([
         listAgents(normalizedSessionId, {
           targetPath,
           includeInactive: false,
@@ -380,6 +384,10 @@ export function registerSessionCommand(program) {
           includeExpired: true,
           limit: 100,
         }),
+        listFileLocks(normalizedSessionId, {
+          targetPath,
+          emitExpiredEvents: false,
+        }),
         readStream(normalizedSessionId, {
           targetPath,
           tail: 10,
@@ -396,6 +404,7 @@ export function registerSessionCommand(program) {
         staleAgents,
         runtimeRuns,
         activeLeases: leases.assignments,
+        activeFileLocks: fileLocks,
         recentEvents,
       };
       if (shouldEmitJson(options, command)) {
@@ -406,7 +415,7 @@ export function registerSessionCommand(program) {
       console.log(pc.bold(`Session ${normalizedSessionId}`));
       console.log(
         pc.gray(
-          `status=${sessionPayload.status} agents=${agents.length} stale=${staleAgents.length} runs=${runtimeRuns.length} leases=${leases.assignments.length}`
+          `status=${sessionPayload.status} agents=${agents.length} stale=${staleAgents.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length}`
         )
       );
       for (const event of recentEvents) {
@@ -722,6 +731,7 @@ export function registerSessionCommand(program) {
       let runtimeStops = 0;
       let scopeStops = 0;
       let leaseRevocations = 0;
+      let lockRevocations = 0;
       let anyStopped = false;
 
       for (const agentId of agentsToKill) {
@@ -778,6 +788,13 @@ export function registerSessionCommand(program) {
           reason: `agent_killed:${reason}`,
         });
         leaseRevocations += releasedCount;
+
+        const releasedLocks = await releaseFileLocksForAgent(sessionId, agentId, {
+          targetPath,
+          reason: `agent_killed:${reason}`,
+          actorAgentId: "senti",
+        });
+        lockRevocations += Number(releasedLocks.releasedCount || 0);
         anyStopped = anyStopped || stopped;
 
         results.push({
@@ -786,6 +803,7 @@ export function registerSessionCommand(program) {
           runtimeStops: stopDetails.runtimeStops,
           scopeStops: stopDetails.scopeStops,
           leaseRevocations: releasedCount,
+          lockRevocations: Number(releasedLocks.releasedCount || 0),
         });
       }
 
@@ -803,6 +821,7 @@ export function registerSessionCommand(program) {
         runtimeStops,
         scopeStops,
         leaseRevocations,
+        lockRevocations,
         results,
       };
 
@@ -818,7 +837,7 @@ export function registerSessionCommand(program) {
       }
       console.log(
         pc.gray(
-          `session=${sessionId} runtime_stops=${runtimeStops} scope_stops=${scopeStops} lease_revocations=${leaseRevocations}`
+          `session=${sessionId} runtime_stops=${runtimeStops} scope_stops=${scopeStops} lease_revocations=${leaseRevocations} lock_revocations=${lockRevocations}`
         )
       );
       console.log(`stopped=${payload.stopped} reason=${reason} duration_ms=${durationMs}`);

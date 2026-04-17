@@ -208,6 +208,7 @@ function printUsage() {
   console.log("  sl session start --json            Create an agent coordination session");
   console.log("  sl session join <id> --name <n>    Join a session as an agent");
   console.log("  sl session say <id> \"msg\" --json  Append a message event to session stream");
+  console.log("  sl session say <id> \"lock: <file> - <intent>\"  Request an exclusive file lock via Senti");
   console.log("  sl session read <id> --tail 20     Read session stream events");
   console.log("  sl session status <id> --json      Show session health, agents, runs, leases");
   console.log("  sl session leave <id>              Leave a session");
