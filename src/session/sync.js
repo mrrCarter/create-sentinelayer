@@ -52,9 +52,50 @@ function normalizePositiveInteger(value, fallbackValue) {
   return Math.floor(normalized);
 }
 
+// Session-apiUrl allowlist. A session file is an untrusted input: if an
+// attacker can write to .sentinelayer/sessions/<id>/meta.json (or trick a user
+// into joining a crafted session), they can redirect every outbound fetch.
+// Hard-coded list + override via SENTINELAYER_API_ALLOWED_HOSTS.
+const BUILTIN_API_ALLOWED_HOSTS = new Set([
+  "api.sentinelayer.com",
+  "api.staging.sentinelayer.com",
+  "localhost",
+  "127.0.0.1",
+]);
+
+function resolveAllowedApiHosts() {
+  const extras = normalizeString(process.env.SENTINELAYER_API_ALLOWED_HOSTS || "");
+  const set = new Set(BUILTIN_API_ALLOWED_HOSTS);
+  if (extras) {
+    for (const host of extras.split(",")) {
+      const trimmed = host.trim().toLowerCase();
+      if (trimmed) set.add(trimmed);
+    }
+  }
+  return set;
+}
+
+function isApiHostAllowed(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+      return false;
+    }
+    return resolveAllowedApiHosts().has(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 function resolveApiBaseUrl(session = {}) {
   const apiUrl = normalizeString(session.apiUrl) || DEFAULT_API_BASE_URL;
-  return apiUrl.replace(/\/+$/, "");
+  const normalized = apiUrl.replace(/\/+$/, "");
+  if (!isApiHostAllowed(normalized)) {
+    // Reject tampered session.apiUrl and fall back to the default.
+    // Caller will see API calls land on the canonical host, not an attacker's.
+    return DEFAULT_API_BASE_URL;
+  }
+  return normalized;
 }
 
 function isCircuitOpen(circuit, nowMs) {

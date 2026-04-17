@@ -609,6 +609,46 @@ export async function archiveSession(
   return buildSessionPayload(saved, loaded.paths, nowIso);
 }
 
+// Emit analytics.json + artifact-chain.json for a live session without archiving.
+// Callers should invoke this on a timer (spec §PR 10 line 1451: "S3 archive
+// carries analytics.json sidecar" + line 1452-1453: closeout.json observability
+// invariant — mid-flight observability requires the sidecar on disk too).
+// Safe to call frequently; the payload is idempotent per (sessionId, nowIso).
+export async function persistSessionSidecarsSnapshot(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    outputDir = "",
+    env = process.env,
+    homeDir,
+    nowIso = new Date().toISOString(),
+  } = {}
+) {
+  const loaded = await loadMetadata(sessionId, { targetPath });
+  if (!loaded) {
+    throw new Error(`Session '${sessionId}' was not found.`);
+  }
+  const sidecars = await buildArchiveSidecars(loaded.paths.sessionId, {
+    targetPath: loaded.targetPath,
+    outputDir,
+    env,
+    homeDir,
+    nowIso,
+  });
+  await Promise.all([
+    writeJsonFile(path.join(loaded.paths.sessionDir, "analytics.json"), sidecars.analyticsSidecar),
+    writeJsonFile(
+      path.join(loaded.paths.sessionDir, "artifact-chain.json"),
+      sidecars.artifactChainSidecar
+    ),
+  ]);
+  return {
+    sessionId: loaded.paths.sessionId,
+    analyticsSidecar: sidecars.analyticsSidecar,
+    artifactChainSidecar: sidecars.artifactChainSidecar,
+  };
+}
+
 export async function recordSessionProvisionedIdentities(
   sessionId,
   { targetPath = process.cwd(), identityIds = [], tags = [] } = {}
