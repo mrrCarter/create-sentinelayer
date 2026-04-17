@@ -659,8 +659,8 @@ jobs:
           cp "${SOURCE_TARBALL_PATH}" "${TARBALL}"
           SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
           INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
-          PACKAGE_NAME="$(node -p \"require('./package.json').name\")"
-          PACKAGE_VERSION="$(node -p \"require('./package.json').version\")"
+          PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
           if [ -n "${SOURCE_SHA256}" ] && [ "${SOURCE_SHA256}" != "${SHA256}" ]; then
             echo "::error::Canonical artifact digest mismatch. source=${SOURCE_SHA256} actual=${SHA256}."
             exit 1
