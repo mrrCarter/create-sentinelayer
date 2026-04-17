@@ -559,12 +559,14 @@ jobs:
             echo "::error::Unable to resolve canonical attestation workflow run id."
             exit 1
           fi
-          run_meta_json="$(gh run view "${attestation_run_id}" --json databaseId,name,path,conclusion,event,headSha,url)"
+          # Fetch via REST API: gh run view --json does not expose `path` in
+          # newer CLI versions. Workflow runs API returns all fields we need.
+          run_meta_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${attestation_run_id}")"
           run_name="$(echo "${run_meta_json}" | jq -r '.name // empty')"
           run_path="$(echo "${run_meta_json}" | jq -r '.path // empty')"
           run_conclusion="$(echo "${run_meta_json}" | jq -r '.conclusion // empty')"
           run_event="$(echo "${run_meta_json}" | jq -r '.event // empty')"
-          run_head_sha="$(echo "${run_meta_json}" | jq -r '.headSha // empty')"
+          run_head_sha="$(echo "${run_meta_json}" | jq -r '.head_sha // empty')"
           if [ "${run_conclusion}" != "success" ]; then
             echo "::error::Resolved attestation run ${attestation_run_id} is not successful (conclusion=${run_conclusion})."
             exit 1
