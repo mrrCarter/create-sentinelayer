@@ -25,6 +25,8 @@ sl session read --id <session-id> --tail 50
 sl session status --id <session-id> --json
 sl session list --json
 sl session leave --id <session-id> --agent codex-1
+sl session admin-kill <session-id> --reason "admin_kill"
+sl session admin-kill-all --confirm --reason "admin_global_kill"
 sl session kill --id <session-id> --agent senti --reason "manual stop"
 ```
 

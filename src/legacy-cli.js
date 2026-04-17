@@ -221,6 +221,8 @@ function printUsage() {
   console.log("  sl session setup-guides <id> --json  Upsert AGENTS.md/CLAUDE.md coordination section");
   console.log("  sl session inject-guide <id> --json  Inject section into existing AGENTS.md/CLAUDE.md files");
   console.log("  sl session provision-emails <id> --count 5  Provision AIdenID emails for swarm testing");
+  console.log("  sl session admin-kill <id> --reason <reason>  Admin kill one remote session");
+  console.log("  sl session admin-kill-all --confirm  Admin kill ALL remote sessions");
   console.log("  sl session kill --session <id> --agent <id>  Kill agent + revoke active leases");
   console.log("");
   console.log("Security & Review:");

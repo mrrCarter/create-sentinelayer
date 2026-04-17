@@ -340,6 +340,115 @@ export async function syncSessionEventToApi(
   }
 }
 
+async function syncSessionAuxPayload(
+  sessionId,
+  pathSuffix,
+  payload,
+  {
+    targetPath = process.cwd(),
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId || !pathSuffix || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { synced: false, reason: "invalid_input" };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(outboundCircuit, normalizedNowMs)) {
+    return { synced: false, reason: "circuit_breaker_open" };
+  }
+
+  const rateLimit = enforceRollingLimit(sessionIngestWindowBySessionId, normalizedSessionId, {
+    nowMs: normalizedNowMs,
+    limit: SESSION_INGEST_LIMIT_PER_MINUTE,
+  });
+  if (!rateLimit.allowed) {
+    return {
+      synced: false,
+      reason: "local_ingest_rate_limited",
+      limit: SESSION_INGEST_LIMIT_PER_MINUTE,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { synced: false, reason: "no_session" };
+  }
+  if (!session || !session.token) {
+    return { synced: false, reason: "not_authenticated" };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}${pathSuffix}`;
+  try {
+    const response = await fetchImpl(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({
+          ...payload,
+          source: "cli",
+        }),
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      return {
+        synced: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+      };
+    }
+    recordCircuitSuccess(outboundCircuit);
+    return {
+      synced: true,
+      status: response.status,
+    };
+  } catch (error) {
+    recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    return {
+      synced: false,
+      reason: normalizeString(error?.message) || "sync_failed",
+    };
+  }
+}
+
+/**
+ * Sync local session metadata to sentinelayer-api for admin visibility.
+ * This function is best-effort and never throws.
+ */
+export async function syncSessionMetadataToApi(sessionId, metadata, options = {}) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return { synced: false, reason: "invalid_input" };
+  }
+  return syncSessionAuxPayload(sessionId, "/metadata", { metadata }, options);
+}
+
+/**
+ * Sync local session error envelopes to sentinelayer-api for admin visibility.
+ * This function is best-effort and never throws.
+ */
+export async function syncSessionErrorToApi(sessionId, error, options = {}) {
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return { synced: false, reason: "invalid_input" };
+  }
+  return syncSessionAuxPayload(sessionId, "/errors", { error }, options);
+}
+
 /**
  * Poll human messages for a session from sentinelayer-api and map them into
  * canonical high-priority session events for local relay.
