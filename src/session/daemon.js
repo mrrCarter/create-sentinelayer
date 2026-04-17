@@ -28,6 +28,11 @@ import {
   unlockFile,
 } from "./file-locks.js";
 import { resolveSessionPaths } from "./paths.js";
+import {
+  DEFAULT_RECAP_INACTIVITY_MS,
+  DEFAULT_RECAP_INTERVAL_MS,
+  emitPeriodicRecap,
+} from "./recap.js";
 import { stopRuntimeRunsForSession } from "./runtime-bridge.js";
 import { getSession, renewSession } from "./store.js";
 import { appendToStream, readStream, tailStream } from "./stream.js";
@@ -44,6 +49,8 @@ const RENEWAL_WINDOW_MS = 60 * 60 * 1000;
 const RENEWAL_THRESHOLD_EVENTS = 10;
 const RENEWAL_LEAD_MS = 60 * 60 * 1000;
 const DEFAULT_STALE_AGENT_SECONDS = 90;
+const DEFAULT_RECAP_INTERVAL_MS_OVERRIDE = DEFAULT_RECAP_INTERVAL_MS;
+const DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE = DEFAULT_RECAP_INACTIVITY_MS;
 
 const SENTI_MODEL = "gpt-5.4-mini";
 const SENTI_IDENTITY = Object.freeze({
@@ -159,6 +166,8 @@ function createSentiState({
   staleAgentSeconds,
   helpRequestTimeoutMs,
   tickIntervalMs,
+  recapIntervalMs,
+  recapInactivityMs,
   helpResponder,
   llmInvoker,
   telemetrySessionId,
@@ -172,6 +181,8 @@ function createSentiState({
     staleAgentSeconds,
     helpRequestTimeoutMs,
     tickIntervalMs,
+    recapIntervalMs,
+    recapInactivityMs,
     helpResponder,
     llmInvoker,
     telemetrySessionId,
@@ -184,6 +195,7 @@ function createSentiState({
     conflictAlertAt: new Map(),
     lastTickAt: null,
     lastTickSummary: null,
+    recapEmitter: null,
   };
 }
 
@@ -998,6 +1010,8 @@ export async function runSentiHealthTick(
       staleAgentSeconds,
       helpRequestTimeoutMs: HELP_REQUEST_TIMEOUT_MS,
       tickIntervalMs: DAEMON_TICK_INTERVAL_MS,
+      recapIntervalMs: DEFAULT_RECAP_INTERVAL_MS_OVERRIDE,
+      recapInactivityMs: DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE,
       helpResponder: null,
       llmInvoker: invokeViaProxy,
       telemetrySessionId: null,
@@ -1032,6 +1046,8 @@ export async function startSenti(
     tickIntervalMs = DAEMON_TICK_INTERVAL_MS,
     staleAgentSeconds = DEFAULT_STALE_AGENT_SECONDS,
     helpRequestTimeoutMs = HELP_REQUEST_TIMEOUT_MS,
+    recapIntervalMs = DEFAULT_RECAP_INTERVAL_MS_OVERRIDE,
+    recapInactivityMs = DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE,
     helpResponder = null,
     llmInvoker = invokeViaProxy,
   } = {}
@@ -1063,6 +1079,14 @@ export async function startSenti(
     staleAgentSeconds,
     DEFAULT_STALE_AGENT_SECONDS
   );
+  const normalizedRecapIntervalMs = normalizePositiveInteger(
+    recapIntervalMs,
+    DEFAULT_RECAP_INTERVAL_MS_OVERRIDE
+  );
+  const normalizedRecapInactivityMs = normalizePositiveInteger(
+    recapInactivityMs,
+    DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE
+  );
   const nowIso = new Date().toISOString();
   const telemetrySession = startTelemetrySession(`session daemon ${normalizedSessionId}`);
   const daemonState = createSentiState({
@@ -1074,6 +1098,8 @@ export async function startSenti(
     staleAgentSeconds: normalizedStaleSeconds,
     helpRequestTimeoutMs: normalizedHelpTimeoutMs,
     tickIntervalMs: normalizedTickIntervalMs,
+    recapIntervalMs: normalizedRecapIntervalMs,
+    recapInactivityMs: normalizedRecapInactivityMs,
     helpResponder,
     llmInvoker: typeof llmInvoker === "function" ? llmInvoker : invokeViaProxy,
     telemetrySessionId: telemetrySession?.id || null,
@@ -1143,6 +1169,10 @@ export async function startSenti(
       clearTimeout(timer);
     }
     daemonState.pendingHelpTimers.clear();
+    if (daemonState.recapEmitter && daemonState.recapEmitter.isRunning()) {
+      daemonState.recapEmitter.stop("daemon_stop");
+      daemonState.recapEmitter = null;
+    }
 
     let runtimeStopSummary = null;
     try {
@@ -1214,6 +1244,7 @@ export async function startSenti(
       lastTickAt: daemonState.lastTickAt,
       staleAlertedAgents: [...daemonState.staleAlertedAgents],
       pendingHelpRequests: daemonState.pendingHelpTimers.size,
+      recapRunning: Boolean(daemonState.recapEmitter?.isRunning?.()),
     }),
   };
 
@@ -1222,6 +1253,11 @@ export async function startSenti(
 
   void runHelpWatcher(daemonState).catch(() => {});
   void runSessionDirectiveWatcher(daemonState).catch(() => {});
+  daemonState.recapEmitter = emitPeriodicRecap(normalizedSessionId, {
+    targetPath: normalizedTargetPath,
+    intervalMs: daemonState.recapIntervalMs,
+    inactivityMs: daemonState.recapInactivityMs,
+  });
 
   if (autoStart) {
     await runTick(nowIso);
@@ -1276,6 +1312,8 @@ export function getSentiDaemon(
 export {
   ACTIVE_SENTI_DAEMONS,
   DAEMON_TICK_INTERVAL_MS,
+  DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE,
+  DEFAULT_RECAP_INTERVAL_MS_OVERRIDE,
   DEFAULT_STALE_AGENT_SECONDS,
   FILE_CONFLICT_WINDOW_MS,
   HELP_REQUEST_TIMEOUT_MS,
