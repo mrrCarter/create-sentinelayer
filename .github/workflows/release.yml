@@ -1231,20 +1231,23 @@ jobs:
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
-          # Use classic NPM_TOKEN auth. npm self-upgrade for OIDC trusted
-          # publishing auto-exchange is unreliable on the runner (MODULE_
-          # NOT_FOUND promise-retry during `npm install -g npm@latest`).
-          # The package trusted publisher config on npmjs.org still needs
-          # to be loosened to ALSO accept classic tokens — if user has
-          # "trusted publisher only" selected, npm rejects classic token
-          # auth. In that case, disable --provenance and the publish will
-          # work on classic token alone.
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN secret not configured; cannot authenticate."
+            exit 1
+          fi
+          # Write token directly into .npmrc. Prior attempt used heredoc
+          # with \${NODE_AUTH_TOKEN} placeholder but npm didn't interpolate
+          # it; got ENEEDAUTH. Direct write eliminates any escaping doubt.
           rm -f "${HOME}/.npmrc" 2>/dev/null || true
-          cat > "${HOME}/.npmrc" <<NPMRC
-          registry=https://registry.npmjs.org/
-          //registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}
-          NPMRC
+          {
+            echo "registry=https://registry.npmjs.org/"
+            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}"
+          } > "${HOME}/.npmrc"
+          chmod 600 "${HOME}/.npmrc"
           echo "npm version: $(npm --version)"
+          echo "npmrc present: $(test -f ${HOME}/.npmrc && echo yes || echo no)"
+          echo "authToken line present: $(grep -c _authToken= ${HOME}/.npmrc)"
+          npm whoami --registry=https://registry.npmjs.org/ || echo "(whoami failed — continuing anyway)"
           npm publish "./${VERIFIED_TARBALL}" --access public --tag next
           next_tag="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
           next_tag="$(echo "${next_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
