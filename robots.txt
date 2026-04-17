@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+Allow: /README.md
+Allow: /docs/
+Allow: /docs/sessions.md
+Allow: /llms.txt
+
+Disallow: /.git/
+Disallow: /.sentinelayer/
+Disallow: /dashboard/
+Disallow: /admin/
+
+Sitemap: https://sentinelayer.com/sitemap.xml
