@@ -66,7 +66,11 @@ const AUTH_AUDIT_PROVIDER_BREAKER_ENTRY_TTL_MS = 15 * 60 * 1000;
 const AUTH_AUDIT_PROVIDER_SCOPE_DEFAULT = "default";
 const AUTH_AUDIT_PROVIDER_BREAKERS = new Map();
 const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV = "SENTINELAYER_AUTH_AUDIT_BREAKER_STATE_FILE";
-const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT = "";
+// Default to persisting in the user's sentinelayer state dir. Prior default
+// (empty string) disabled persistence, letting provider failures recur
+// across CLI invocations. Opt-out via SENTINELAYER_AUTH_AUDIT_BREAKER_
+// STATE_FILE=off if needed.
+const AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT = ".sentinelayer/auth-audit-breaker.json";
 const AUTH_AUDIT_PROVIDER_AIDENID = "aidenid";
 const AUTH_AUDIT_PROVIDER_PLAYWRIGHT_TARGET = "playwright-target";
 const AUTH_MUTATION_ALLOWED_ENV = "SENTINELAYER_ALLOW_AUTH_MUTATION";
@@ -417,7 +421,7 @@ function getProviderBreakerStatePath() {
   const configuredPath = String(
     process.env[AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_ENV] || AUTH_AUDIT_PROVIDER_BREAKER_STATE_FILE_DEFAULT
   ).trim();
-  if (!configuredPath) {
+  if (!configuredPath || configuredPath.toLowerCase() === "off" || configuredPath.toLowerCase() === "false") {
     return "";
   }
   const repoScope = String(process.env.GITHUB_REPOSITORY || "local").trim() || "local";

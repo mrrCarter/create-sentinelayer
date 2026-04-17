@@ -63,9 +63,14 @@ npm_view_json() {
       exit_code=$?
     fi
     if [ "${attempt}" -lt "${max_attempts}" ]; then
-      sleep_seconds=$(( attempt * backoff_base ))
-      echo "::warning::npm query failed for ${label} (attempt ${attempt}/${max_attempts}, exit=${exit_code}); retrying in ${sleep_seconds}s."
-      sleep "${sleep_seconds}"
+      # Exponential backoff with jitter (0-999ms). Linear + no jitter syncs
+      # concurrent incident responses into a thundering herd against npm.
+      base_ms=$(( attempt * backoff_base * 1000 ))
+      jitter_ms=$(( RANDOM % 1000 ))
+      sleep_ms=$(( base_ms + jitter_ms ))
+      sleep_seconds_formatted="$(printf '%d.%03d' "$(( sleep_ms / 1000 ))" "$(( sleep_ms % 1000 ))")"
+      echo "::warning::npm query failed for ${label} (attempt ${attempt}/${max_attempts}, exit=${exit_code}); retrying in ${sleep_seconds_formatted}s (with jitter)."
+      sleep "${sleep_seconds_formatted}"
     fi
   done
 
