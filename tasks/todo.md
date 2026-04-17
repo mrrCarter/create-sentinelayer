@@ -1,3 +1,30 @@
+# 2026-04-17 - PR 2 Agent Registry + Jira Lifecycle Hook (`roadmap/pr-178-agent-registry`)
+
+## Plan
+- [x] Finish `src/session/agent-registry.js` with register/heartbeat/list/unregister/stale detection APIs.
+- [x] Wire `src/daemon/jira-lifecycle.js` session stream hook with canonical `createAgentEvent()` envelopes for lifecycle phases.
+- [x] Add PR2 unit suites (`tests/unit.session-agent-registry.test.mjs`, `tests/unit.session-jira-hook.test.mjs`).
+- [x] Extend syntax check coverage for new module in `package.json` `check` script.
+- [x] Run local verification (`npm run verify`) and targeted daemon/session tests.
+- [x] Execute handshake pass-one in order: `review scan` then deep `/omargate`.
+- [ ] Open PR, wait pass-two GitHub runs (`P0=0`, `P1=0`), then merge.
+
+## Review
+- Completed implementation and local gate verification.
+- Updated:
+  - `src/session/agent-registry.js`
+  - `src/daemon/jira-lifecycle.js`
+  - `tests/unit.session-agent-registry.test.mjs`
+  - `tests/unit.session-jira-hook.test.mjs`
+  - `package.json`
+- Validation evidence:
+  - `node --test tests/unit.session-agent-registry.test.mjs tests/unit.session-jira-hook.test.mjs` (pass)
+  - `node --test tests/unit.daemon-jira-lifecycle.test.mjs tests/unit.daemon-artifact-lineage.test.mjs tests/unit.daemon-operator-control.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+- `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
+- `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+
 # 2026-04-17 - PR 1 Session Store + NDJSON Stream (`roadmap/pr-177-session-store`)
 
 ## Plan
@@ -1670,3 +1697,4 @@ Review:
 - [x] Fix quality-summary manifest commit identity on PR runs to use head SHA (not merge SHA) so attestation target validation remains deterministic.
 - [ ] Push PR-283 update and watch `Omar Gate`, `Quality Gates`, and `Build Attestation` to completion (`gh run watch`).
 - [ ] Merge PR-283 once required checks are green.
+
