@@ -325,9 +325,15 @@ jobs:
               echo "::error::OIDC exchange token TTL ${ttl_seconds}s exceeds maximum ${max_ttl}s."
               exit 1
             fi
-            if [ "${ref_protected}" = "true" ] && [ "${require_response_binding_on_protected}" != "false" ]; then
+            # Enforce response binding checks on ALL refs, not only
+            # protected. Unprotected contexts are still subject to token
+            # forgery / replay if the binding isn't validated. Opt-out via
+            # OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF=false remains as
+            # an emergency escape hatch but applies globally now, and is
+            # deprecated — remove in a future release.
+            if [ "${require_response_binding_on_protected}" != "false" ]; then
               if [ -z "${response_repository}" ] || [ -z "${response_run_id}" ] || [ -z "${response_sha}" ] || [ -z "${response_nonce}" ]; then
-                echo "::error::OIDC exchange response binding fields are required on protected refs (repository, run_id, sha, exchange_nonce)."
+                echo "::error::OIDC exchange response binding fields are required (repository, run_id, sha, exchange_nonce)."
                 exit 1
               fi
               if [ "${response_repository}" != "${GITHUB_REPOSITORY}" ]; then

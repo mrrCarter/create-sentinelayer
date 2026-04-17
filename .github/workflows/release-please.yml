@@ -38,6 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GOVERNANCE_TOKEN || github.token }}
           GOVERNANCE_TOKEN_CONFIGURED: ${{ secrets.RELEASE_GOVERNANCE_TOKEN != '' && 'true' || 'false' }}
+          ALLOW_PREFLIGHT_BYPASS: ${{ vars.ALLOW_RELEASE_PREFLIGHT_BYPASS || 'false' }}
         run: |
           set -euo pipefail
           protection_json="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" 2>/tmp/branch-protection.err || true)"
@@ -46,6 +47,9 @@ jobs:
             if [ -z "${api_message}" ]; then
               api_message="$(tr -d '\r' </tmp/branch-protection.err | head -n 1 || true)"
             fi
+            # Fail-closed by default. Bypass only when explicitly authorized
+            # via ALLOW_RELEASE_PREFLIGHT_BYPASS repo variable — emit audit
+            # metadata so the bypass is auditable in step summary.
             if [ "${GOVERNANCE_TOKEN_CONFIGURED}" = "true" ]; then
               echo "::error::Failed to validate main branch protection with RELEASE_GOVERNANCE_TOKEN."
               if [ -n "${api_message}" ]; then
@@ -53,15 +57,26 @@ jobs:
               fi
               exit 1
             fi
-            echo "::warning::Skipping strict branch-protection preflight because workflow token cannot read protection settings."
+            bypass_requested="$(echo "${ALLOW_PREFLIGHT_BYPASS}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
+            if [ "${bypass_requested}" != "true" ]; then
+              echo "::error::Cannot validate main branch protection and no bypass authorized."
+              echo "::error::Configure RELEASE_GOVERNANCE_TOKEN (repo admin) or set repo var ALLOW_RELEASE_PREFLIGHT_BYPASS=true to proceed without strict validation."
+              if [ -n "${api_message}" ]; then
+                echo "::error::API response: ${api_message}"
+              fi
+              exit 1
+            fi
+            echo "::warning::ALLOW_RELEASE_PREFLIGHT_BYPASS=true — proceeding without branch-protection enforcement. This is an auditable bypass."
             if [ -n "${api_message}" ]; then
               echo "::notice::Branch protection API response: ${api_message}"
             fi
             {
-              echo "## Branch Protection Preflight"
-              echo "- strict_validation: \`skipped\`"
-              echo "- reason: \`insufficient token scope\`"
-              echo "- guidance: Configure \`RELEASE_GOVERNANCE_TOKEN\` (repo admin scope) to enforce strict branch protection checks."
+              echo "## Branch Protection Preflight — BYPASS"
+              echo "- strict_validation: \`bypassed\`"
+              echo "- bypass_actor: \`${GITHUB_ACTOR:-<unknown>}\`"
+              echo "- bypass_ts: \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`"
+              echo "- reason: \`insufficient token scope + explicit bypass var set\`"
+              echo "- remediation: Configure RELEASE_GOVERNANCE_TOKEN and unset ALLOW_RELEASE_PREFLIGHT_BYPASS."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi

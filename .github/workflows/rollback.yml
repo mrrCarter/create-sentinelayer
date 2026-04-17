@@ -23,7 +23,6 @@ on:
         type: boolean
 
 permissions:
-  actions: write
   contents: read
   id-token: write
 
@@ -31,7 +30,12 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: release-state-prod
+  # Dedicated rollback group so rollback doesn't queue behind an in-flight
+  # release. Release workflow uses `release-state-prod`; rollback operates
+  # above it and must not be blocked by a stuck release publish. Release
+  # listens to a separate concurrency signal and yields when a rollback is
+  # dispatched (via cancel-in-progress on the release side).
+  group: release-rollback-prod
   cancel-in-progress: false
 
 jobs:
@@ -41,6 +45,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     environment: package-release
+    permissions:
+      # Least-privilege scope: actions:write only on this job for the
+      # single cancellation step that signals release.yml to preempt.
+      actions: write
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
