@@ -1,3 +1,26 @@
+# 2026-04-17 - PR 11 Auto-Recap + Context Briefing (`roadmap/pr-187-session-recap`)
+
+## Plan
+- [x] Add `src/session/recap.js` with `buildSessionRecap`, `emitPeriodicRecap`, and `shouldEmitRecap`.
+- [x] Emit `context_briefing` automatically on agent join (`registerAgent`) with `ephemeral: true`.
+- [x] Wire periodic recap emitter into Senti daemon lifecycle and stop it on daemon shutdown.
+- [x] Add `tests/unit.session-recap.test.mjs` to verify join-triggered briefing and periodic recap inactivity behavior.
+- [x] Update `package.json` `check` script to include `src/session/recap.js`.
+- [x] Run targeted recap/session tests.
+- [x] Run `npm run verify`.
+- [x] Run pass-one gate: `node bin/create-sentinelayer.js review scan --path . --json`.
+- [x] Run local PR-ready gate: `node bin/create-sentinelayer.js /omargate deep --path . --json`.
+- [ ] Open PR, watch GitHub checks + Omar pass-two, merge only after `P0=0` and `P1=0`.
+
+## Review
+- Completed implementation and local gating for PR11 scope.
+- Validation evidence:
+  - `node --test tests/unit.session-recap.test.mjs tests/unit.session-agent-registry.test.mjs tests/unit.session-daemon.test.mjs`
+  - `node --test --test-name-pattern "CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation" tests/e2e.test.mjs`
+  - `npm run verify`
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+
 # 2026-04-17 - PR 10 Session Analytics + Artifact Lineage (`roadmap/pr-186-session-analytics`)
 
 ## Plan

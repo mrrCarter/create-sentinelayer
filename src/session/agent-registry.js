@@ -6,6 +6,7 @@ import process from "node:process";
 import { STUCK_THRESHOLDS } from "../agents/jules/pulse.js";
 import { createAgentEvent } from "../events/schema.js";
 import { resolveSessionPaths } from "./paths.js";
+import { emitContextBriefing } from "./recap.js";
 import { appendToStream } from "./stream.js";
 
 const AGENT_SNAPSHOT_SCHEMA_VERSION = "1.0.0";
@@ -209,6 +210,12 @@ export async function registerAgent(
     role: snapshot.role,
     status: snapshot.status,
   }, { targetPath });
+  if (normalizeString(snapshot.agentId).toLowerCase() !== "senti") {
+    await emitContextBriefing(paths.sessionId, {
+      forAgentId: snapshot.agentId,
+      targetPath,
+    }).catch(() => {});
+  }
 
   return {
     ...snapshot,
