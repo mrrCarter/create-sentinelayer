@@ -3,6 +3,7 @@ import process from "node:process";
 
 import pc from "picocolors";
 
+import { stopScopeEngine } from "../daemon/scope-engine.js";
 import { stopSenti } from "../session/daemon.js";
 import { createSession, DEFAULT_TTL_SECONDS } from "../session/store.js";
 
@@ -93,17 +94,30 @@ export function registerSessionCommand(program) {
       if (!sessionId) {
         throw new Error("session id is required.");
       }
-      if (agentId !== "senti") {
-        throw new Error("session kill currently supports only --agent senti.");
-      }
 
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const startedAt = Date.now();
-      const stopped = await stopSenti(sessionId, {
-        targetPath,
-        reason,
-      });
+      let stopResult;
+      if (agentId === "senti") {
+        stopResult = await stopSenti(sessionId, {
+          targetPath,
+          reason,
+        });
+      } else if (agentId === "scope-engine") {
+        stopResult = await stopScopeEngine({
+          targetPath,
+          sessionId,
+          reason,
+        });
+      } else {
+        throw new Error(
+          "session kill currently supports --agent senti or --agent scope-engine."
+        );
+      }
+
       const durationMs = Date.now() - startedAt;
+      const runtimeStops = Number(stopResult?.runtimeStopSummary?.stoppedCount || 0);
+      const scopeStops = Number(stopResult?.count || 0);
       const payload = {
         command: "session kill",
         targetPath,
@@ -111,8 +125,9 @@ export function registerSessionCommand(program) {
         sessionId,
         agentId,
         reason,
-        stopped: Boolean(stopped.stopped),
-        runtimeStops: Number(stopped.runtimeStopSummary?.stoppedCount || 0),
+        stopped: Boolean(stopResult?.stopped),
+        runtimeStops,
+        scopeStops,
       };
 
       if (shouldEmitJson(options, command)) {
@@ -120,9 +135,13 @@ export function registerSessionCommand(program) {
         return;
       }
 
-      if (stopped.stopped) {
+      if (payload.stopped) {
         console.log(pc.bold(`Killed ${agentId}`));
-        console.log(pc.gray(`session=${sessionId} runtime_stops=${payload.runtimeStops}`));
+        console.log(
+          pc.gray(
+            `session=${sessionId} runtime_stops=${payload.runtimeStops} scope_stops=${payload.scopeStops}`
+          )
+        );
       } else {
         console.log(pc.yellow(`No active ${agentId} daemon found for session ${sessionId}.`));
       }
