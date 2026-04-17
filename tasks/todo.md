@@ -1,3 +1,32 @@
+# 2026-04-17 - PR 4 Session Commands + Assignment Registry Extension (`roadmap/pr-180-session-commands`)
+
+## Plan
+- [x] Finish `src/daemon/assignment-ledger.js` session-scoped lease APIs and wrappers (`leaseWorkItem`, `heartbeatLease`, `releaseLease`, `reassignLease`).
+- [x] Expand `src/commands/session.js` command surface (`start`, `join`, `say`, `read`, `status`, `leave`, `list`, `kill`) with canonical stream events.
+- [x] Ensure `session kill` revokes active session leases and emits `agent_killed` events.
+- [x] Update auth gate bypass for `session read/list/status`.
+- [x] Update `sl help` usage text for session commands in `src/legacy-cli.js`.
+- [x] Add/extend tests for session command flow and session lease round-trip.
+- [x] Run local verification and handshake pass-one (`review`).
+- [x] Run local PR-ready gate (`/omargate deep`).
+- [ ] Open PR, watch GitHub pass-two checks, merge only after Omar `P0=0` and `P1=0`.
+
+## Review
+- Completed implementation and local gate verification for PR4 scope.
+- Updated:
+  - `src/daemon/assignment-ledger.js`
+  - `src/commands/session.js`
+  - `src/auth/gate.js`
+  - `src/legacy-cli.js`
+  - `tests/unit.daemon-assignment-ledger.test.mjs`
+  - `tests/e2e.test.mjs`
+- Validation evidence:
+  - `node --test tests/unit.daemon-assignment-ledger.test.mjs tests/unit.triage-scope-engine.test.mjs` (pass)
+  - `node --test tests/e2e.test.mjs --grep session` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review --json` (`p0=0`, `p1=0`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `blocking=false`)
+
 # 2026-04-17 - PR 3.5 Triage & Scope Engine (`roadmap/pr-179b-triage-scope-engine`)
 
 ## Plan

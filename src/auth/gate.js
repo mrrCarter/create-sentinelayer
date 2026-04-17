@@ -32,6 +32,11 @@ const AUTH_BYPASS_COMMANDS = new Set([
 const NO_AUTH_REQUIRED = new Set([
   "config",    // local config inspection
 ]);
+const SESSION_NO_AUTH_SUBCOMMANDS = new Set([
+  "read",
+  "list",
+  "status",
+]);
 
 const TEST_BYPASS_NONCE_ENV = "SENTINELAYER_CLI_TEST_BYPASS_NONCE";
 const TEST_BYPASS_SECRET_ENV = "SENTINELAYER_CLI_TEST_BYPASS_SECRET";
@@ -217,6 +222,26 @@ function isBypassCommandAllowed(args = []) {
   return true;
 }
 
+function firstPositionalArg(args = [], startIndex = 0) {
+  for (const rawArg of args.slice(startIndex)) {
+    const normalized = String(rawArg || "").trim().toLowerCase();
+    if (!normalized || normalized.startsWith("-")) {
+      continue;
+    }
+    return normalized;
+  }
+  return "";
+}
+
+function isSessionNoAuthCommand(args = []) {
+  const first = String(args[0] || "").trim().toLowerCase();
+  if (first !== "session") {
+    return false;
+  }
+  const subcommand = firstPositionalArg(args, 1);
+  return SESSION_NO_AUTH_SUBCOMMANDS.has(subcommand);
+}
+
 function hasTrustedBypassExecutableContext() {
   const argvPath = String(process.argv[1] || "").trim();
   if (!argvPath) {
@@ -327,6 +352,10 @@ export async function checkAuthGate(args) {
 
   if (NO_AUTH_REQUIRED.has(first)) {
     return { authenticated: true, session: null, bypassReason: "no_auth_required" };
+  }
+
+  if (isSessionNoAuthCommand(args)) {
+    return { authenticated: true, session: null, bypassReason: "session_no_auth_required" };
   }
 
   if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" && hasTrustedBypassContext(args)) {

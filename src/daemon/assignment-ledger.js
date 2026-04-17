@@ -109,6 +109,7 @@ function createInitialQueue(nowIso = new Date().toISOString()) {
 function normalizeAssignmentRecord(record = {}, nowIso = new Date().toISOString()) {
   const updatedAt = normalizeIsoTimestamp(record.updatedAt, nowIso);
   return {
+    sessionId: normalizeString(record.sessionId) || null,
     workItemId: normalizeString(record.workItemId),
     assignedAgentIdentity: normalizeString(record.assignedAgentIdentity) || null,
     leasedAt: record.leasedAt ? normalizeIsoTimestamp(record.leasedAt, updatedAt) : null,
@@ -285,6 +286,33 @@ function requireAgentIdentity(value, fieldName = "agentIdentity") {
   return normalized;
 }
 
+function normalizeSessionId(value) {
+  const normalized = normalizeString(value);
+  return normalized || null;
+}
+
+function requireSessionId(value, fieldName = "sessionId") {
+  const normalized = normalizeString(value);
+  if (!normalized) {
+    throw new Error(`${fieldName} is required.`);
+  }
+  return normalized;
+}
+
+function assertSessionBinding(existingAssignment, expectedSessionId, workItemId) {
+  const normalizedExpected = normalizeSessionId(expectedSessionId);
+  if (!normalizedExpected) {
+    return;
+  }
+  const normalizedExisting = normalizeSessionId(existingAssignment?.sessionId);
+  if (!normalizedExisting || normalizedExisting === normalizedExpected) {
+    return;
+  }
+  throw new Error(
+    `Work item '${normalizeString(workItemId)}' is bound to session '${normalizedExisting}', not '${normalizedExpected}'.`
+  );
+}
+
 function normalizeReleaseTargetStatus(value) {
   const normalized = normalizeString(value).toUpperCase();
   if (!RELEASE_TARGET_STATUSES.has(normalized)) {
@@ -313,6 +341,7 @@ export async function resolveAssignmentLedgerStorage({
 export async function claimAssignment({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId,
   agentIdentity,
   leaseTtlSeconds = 1800,
@@ -329,6 +358,7 @@ export async function claimAssignment({
   if (!normalizedWorkItemId) {
     throw new Error("workItemId is required.");
   }
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentIdentity = requireAgentIdentity(agentIdentity);
   const normalizedTtl = normalizePositiveInteger(leaseTtlSeconds, 1800);
   const storage = await resolveAssignmentLedgerStorage({
@@ -346,6 +376,7 @@ export async function claimAssignment({
 
   const assignmentIndex = findAssignmentIndex(ledger, normalizedWorkItemId);
   const existingAssignment = assignmentIndex >= 0 ? ledger.assignments[assignmentIndex] : null;
+  assertSessionBinding(existingAssignment, normalizedSessionId, normalizedWorkItemId);
   if (
     existingAssignment &&
     ACTIVE_ASSIGNMENT_STATUSES.has(existingAssignment.status) &&
@@ -361,6 +392,7 @@ export async function claimAssignment({
   const nextRecord = normalizeAssignmentRecord(
     {
       workItemId: normalizedWorkItemId,
+      sessionId: normalizedSessionId || normalizeSessionId(existingAssignment?.sessionId),
       assignedAgentIdentity: normalizedAgentIdentity,
       leasedAt: normalizedNow,
       leaseTtlSeconds: normalizedTtl,
@@ -402,6 +434,7 @@ export async function claimAssignment({
   await appendEvent(storage.eventsPath, {
     timestamp: normalizedNow,
     eventType: "claim",
+    sessionId: nextRecord.sessionId,
     workItemId: normalizedWorkItemId,
     agentIdentity: normalizedAgentIdentity,
     leaseTtlSeconds: normalizedTtl,
@@ -422,6 +455,7 @@ export async function claimAssignment({
 export async function heartbeatAssignment({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId,
   agentIdentity,
   leaseTtlSeconds = 1800,
@@ -438,6 +472,7 @@ export async function heartbeatAssignment({
   if (!normalizedWorkItemId) {
     throw new Error("workItemId is required.");
   }
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentIdentity = requireAgentIdentity(agentIdentity);
   const normalizedTtl = normalizePositiveInteger(leaseTtlSeconds, 1800);
   const storage = await resolveAssignmentLedgerStorage({
@@ -458,11 +493,13 @@ export async function heartbeatAssignment({
       `Work item '${normalizedWorkItemId}' is assigned to '${existing.assignedAgentIdentity}', not '${normalizedAgentIdentity}'.`
     );
   }
+  assertSessionBinding(existing, normalizedSessionId, normalizedWorkItemId);
 
   const leaseExpiresAt = toIsoAfterSeconds(normalizedNow, normalizedTtl);
   const next = normalizeAssignmentRecord(
     {
       ...existing,
+      sessionId: normalizedSessionId || normalizeSessionId(existing.sessionId),
       status: "IN_PROGRESS",
       leaseTtlSeconds: normalizedTtl,
       leaseExpiresAt,
@@ -498,6 +535,7 @@ export async function heartbeatAssignment({
   await appendEvent(storage.eventsPath, {
     timestamp: normalizedNow,
     eventType: "heartbeat",
+    sessionId: next.sessionId,
     workItemId: normalizedWorkItemId,
     agentIdentity: normalizedAgentIdentity,
     stage: next.stage,
@@ -515,6 +553,7 @@ export async function heartbeatAssignment({
 export async function releaseAssignment({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId,
   agentIdentity = "",
   status = "QUEUED",
@@ -534,6 +573,7 @@ export async function releaseAssignment({
   }
   const normalizedStatus = normalizeReleaseTargetStatus(status);
   const normalizedAgentIdentity = normalizeString(agentIdentity) || null;
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const storage = await resolveAssignmentLedgerStorage({
     targetPath,
     outputDir,
@@ -547,6 +587,7 @@ export async function releaseAssignment({
     throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
   }
   const existing = ledger.assignments[assignmentIndex];
+  assertSessionBinding(existing, normalizedSessionId, normalizedWorkItemId);
   if (
     normalizedAgentIdentity &&
     normalizeString(existing.assignedAgentIdentity) &&
@@ -560,6 +601,7 @@ export async function releaseAssignment({
   const next = normalizeAssignmentRecord(
     {
       ...existing,
+      sessionId: normalizedSessionId || normalizeSessionId(existing.sessionId),
       status: normalizedStatus,
       stage: normalizeString(stage) || existing.stage,
       runId: normalizeString(runId) || existing.runId,
@@ -594,6 +636,7 @@ export async function releaseAssignment({
   await appendEvent(storage.eventsPath, {
     timestamp: normalizedNow,
     eventType: "release",
+    sessionId: next.sessionId,
     workItemId: normalizedWorkItemId,
     agentIdentity: next.assignedAgentIdentity,
     status: normalizedStatus,
@@ -611,6 +654,7 @@ export async function releaseAssignment({
 export async function reassignAssignment({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId,
   fromAgentIdentity = "",
   toAgentIdentity,
@@ -628,6 +672,7 @@ export async function reassignAssignment({
   if (!normalizedWorkItemId) {
     throw new Error("workItemId is required.");
   }
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedToAgent = requireAgentIdentity(toAgentIdentity, "toAgentIdentity");
   const normalizedFromAgent = normalizeString(fromAgentIdentity) || null;
   const normalizedTtl = normalizePositiveInteger(leaseTtlSeconds, 1800);
@@ -644,6 +689,7 @@ export async function reassignAssignment({
     throw new Error(`No assignment exists for work item '${normalizedWorkItemId}'.`);
   }
   const existing = ledger.assignments[assignmentIndex];
+  assertSessionBinding(existing, normalizedSessionId, normalizedWorkItemId);
   if (
     normalizedFromAgent &&
     normalizeString(existing.assignedAgentIdentity) &&
@@ -658,6 +704,7 @@ export async function reassignAssignment({
   const next = normalizeAssignmentRecord(
     {
       ...existing,
+      sessionId: normalizedSessionId || normalizeSessionId(existing.sessionId),
       assignedAgentIdentity: normalizedToAgent,
       leasedAt: normalizedNow,
       leaseTtlSeconds: normalizedTtl,
@@ -697,6 +744,7 @@ export async function reassignAssignment({
   await appendEvent(storage.eventsPath, {
     timestamp: normalizedNow,
     eventType: "reassign",
+    sessionId: next.sessionId,
     workItemId: normalizedWorkItemId,
     fromAgentIdentity: existing.assignedAgentIdentity,
     toAgentIdentity: normalizedToAgent,
@@ -716,6 +764,7 @@ export async function reassignAssignment({
 export async function listAssignments({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   statuses = [],
   agentIdentity = "",
   includeExpired = true,
@@ -727,6 +776,7 @@ export async function listAssignments({
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
   const normalizedLimit = normalizePositiveInteger(limit, 50);
   const normalizedAgent = normalizeString(agentIdentity);
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const statusFilter = parseStatusList(statuses);
   const storage = await resolveAssignmentLedgerStorage({
     targetPath,
@@ -750,6 +800,9 @@ export async function listAssignments({
       if (normalizedAgent && record.assignedAgentIdentity !== normalizedAgent) {
         return false;
       }
+      if (normalizedSessionId && record.sessionId !== normalizedSessionId) {
+        return false;
+      }
       if (!includeExpired && record.expired) {
         return false;
       }
@@ -767,4 +820,147 @@ export async function listAssignments({
     visibleCount: records.length,
     assignments: records.slice(0, normalizedLimit),
   };
+}
+
+function normalizeLeaseTtlMs(value, fallbackValue = 1_800_000) {
+  return normalizePositiveInteger(value, fallbackValue);
+}
+
+export async function leaseWorkItem({
+  targetPath = ".",
+  outputDir = "",
+  sessionId,
+  workItemId,
+  agentIdentity,
+  leaseTtlMs = 1_800_000,
+  stage = "triage",
+  runId = "",
+  jiraIssueKey = "",
+  budgetSnapshot = {},
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedSessionId = requireSessionId(sessionId);
+  const leaseTtlSeconds = Math.max(1, Math.ceil(normalizeLeaseTtlMs(leaseTtlMs) / 1000));
+  return claimAssignment({
+    targetPath,
+    outputDir,
+    sessionId: normalizedSessionId,
+    workItemId,
+    agentIdentity,
+    leaseTtlSeconds,
+    stage,
+    runId,
+    jiraIssueKey,
+    budgetSnapshot,
+    env,
+    homeDir,
+    nowIso,
+  });
+}
+
+export async function heartbeatLease({
+  targetPath = ".",
+  outputDir = "",
+  sessionId,
+  workItemId,
+  agentIdentity,
+  leaseTtlMs = 1_800_000,
+  stage = "",
+  runId = "",
+  jiraIssueKey = "",
+  budgetSnapshot = {},
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedSessionId = requireSessionId(sessionId);
+  const leaseTtlSeconds = Math.max(1, Math.ceil(normalizeLeaseTtlMs(leaseTtlMs) / 1000));
+  return heartbeatAssignment({
+    targetPath,
+    outputDir,
+    sessionId: normalizedSessionId,
+    workItemId,
+    agentIdentity,
+    leaseTtlSeconds,
+    stage,
+    runId,
+    jiraIssueKey,
+    budgetSnapshot,
+    env,
+    homeDir,
+    nowIso,
+  });
+}
+
+export async function releaseLease({
+  targetPath = ".",
+  outputDir = "",
+  sessionId,
+  workItemId,
+  agentIdentity = "",
+  status = "QUEUED",
+  stage = "",
+  runId = "",
+  jiraIssueKey = "",
+  reason = "",
+  budgetSnapshot = {},
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedSessionId = requireSessionId(sessionId);
+  return releaseAssignment({
+    targetPath,
+    outputDir,
+    sessionId: normalizedSessionId,
+    workItemId,
+    agentIdentity,
+    status,
+    stage,
+    runId,
+    jiraIssueKey,
+    reason,
+    budgetSnapshot,
+    env,
+    homeDir,
+    nowIso,
+  });
+}
+
+export async function reassignLease({
+  targetPath = ".",
+  outputDir = "",
+  sessionId,
+  workItemId,
+  from = "",
+  to,
+  leaseTtlMs = 1_800_000,
+  stage = "triage",
+  runId = "",
+  jiraIssueKey = "",
+  budgetSnapshot = {},
+  env,
+  homeDir,
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const normalizedSessionId = requireSessionId(sessionId);
+  const leaseTtlSeconds = Math.max(1, Math.ceil(normalizeLeaseTtlMs(leaseTtlMs) / 1000));
+  return reassignAssignment({
+    targetPath,
+    outputDir,
+    sessionId: normalizedSessionId,
+    workItemId,
+    fromAgentIdentity: from,
+    toAgentIdentity: to,
+    leaseTtlSeconds,
+    stage,
+    runId,
+    jiraIssueKey,
+    budgetSnapshot,
+    env,
+    homeDir,
+    nowIso,
+  });
 }
