@@ -1222,33 +1222,36 @@ jobs:
             echo "- expected_sha1: \`${expected_sha1}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Install isolated npm 11.5.1 for OIDC trusted publishing
+        if: steps.publish_guard.outputs.already_published != 'true'
+        run: |
+          set -euo pipefail
+          # Install npm in an isolated location to avoid corrupting the
+          # hosted-tools npm installation (prior self-upgrade attempt hit
+          # MODULE_NOT_FOUND on promise-retry).
+          mkdir -p "${HOME}/.npm-isolated"
+          /usr/bin/env npm install --prefix "${HOME}/.npm-isolated" --no-save --no-package-lock --ignore-scripts npm@11.5.1
+          echo "ISOLATED_NPM=${HOME}/.npm-isolated/node_modules/.bin/npm" >> "$GITHUB_ENV"
+          "${HOME}/.npm-isolated/node_modules/.bin/npm" --version
+
       - name: Publish canary release to npm (`next`)
         if: steps.publish_guard.outputs.already_published != 'true'
         env:
           PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
           PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN secret not configured; cannot authenticate."
-            exit 1
-          fi
-          # Write token directly into .npmrc. Prior attempt used heredoc
-          # with \${NODE_AUTH_TOKEN} placeholder but npm didn't interpolate
-          # it; got ENEEDAUTH. Direct write eliminates any escaping doubt.
+          # Pure OIDC trusted publishing via isolated npm 11.5.1.
+          # The trusted publisher on npmjs.org is configured for this
+          # repo/workflow/env; npm 11.5.1+ auto-exchanges the GitHub OIDC
+          # token for a short-lived npm publish token at publish time.
+          # Clear any stale authToken so the OIDC flow takes over cleanly.
           rm -f "${HOME}/.npmrc" 2>/dev/null || true
-          {
-            echo "registry=https://registry.npmjs.org/"
-            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}"
-          } > "${HOME}/.npmrc"
-          chmod 600 "${HOME}/.npmrc"
-          echo "npm version: $(npm --version)"
-          echo "npmrc present: $(test -f ${HOME}/.npmrc && echo yes || echo no)"
-          echo "authToken line present: $(grep -c _authToken= ${HOME}/.npmrc)"
-          npm whoami --registry=https://registry.npmjs.org/ || echo "(whoami failed — continuing anyway)"
-          npm publish "./${VERIFIED_TARBALL}" --access public --tag next
+          printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "${HOME}/.npmrc"
+          echo "Using npm at: ${ISOLATED_NPM}"
+          "${ISOLATED_NPM}" --version
+          "${ISOLATED_NPM}" publish "./${VERIFIED_TARBALL}" --provenance --access public --tag next
           next_tag="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
           next_tag="$(echo "${next_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
           if [ "${next_tag}" != "${PACKAGE_VERSION}" ]; then
