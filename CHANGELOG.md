@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.7.0...v0.8.0) (2026-04-17)
+
+
+### Features
+
+* **spec:** integrate multi-agent session coordination artifacts ([12f0671](https://github.com/mrrCarter/create-sentinelayer/commit/12f0671c539cd18ab4d4418342f33b230a0bb3f9))
+* **spec:** integrate session coordination into spec + prompts ([28dc232](https://github.com/mrrCarter/create-sentinelayer/commit/28dc2323b1fb91e12ba0912b79d2945246d5dad7))
+
+
+### Bug Fixes
+
+* **p2:** address all 5 Omar Gate P2 findings from PR [#331](https://github.com/mrrCarter/create-sentinelayer/issues/331) ([#334](https://github.com/mrrCarter/create-sentinelayer/issues/334)) ([fba2a69](https://github.com/mrrCarter/create-sentinelayer/commit/fba2a69fb437929084b2daa21c81e7256ed33b62))
+
 ## [0.7.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.6.2...v0.7.0) (2026-04-16)
 
 
