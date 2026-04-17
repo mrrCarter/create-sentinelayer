@@ -1,3 +1,38 @@
+# 2026-04-16 - PR 0 Standardized Agent Event Schema (`roadmap/pr-176-standardized-events`)
+
+## Plan
+- [x] Isolate PR scope in dedicated worktree/branch from `origin/main`.
+- [x] Add canonical `src/events/schema.js` with `createAgentEvent`, `validateAgentEvent`, and legacy compatibility shim.
+- [x] Migrate all existing `sl_event` emitters to `createAgentEvent` while preserving stream id and event names.
+- [x] Update `buildOmarTerminalHandler` event consumption to accept canonical + legacy shapes.
+- [x] Add `tests/unit.events-schema.test.mjs` covering required fields, malformed input, legacy compatibility, and correlation IDs.
+- [x] Run local `/review` first, then run `/omargate deep` at PR-ready.
+- [ ] Open PR and run `gh run watch` to pass-two confirmation (`P0=0/P1=0`) before merge.
+
+## Review
+- Completed implementation + local verification.
+- Updated:
+  - `src/events/schema.js` (canonical event envelope + validator + compatibility normalizer).
+  - `src/agents/jules/stream.js` (buildStreamEvent now delegates to `createAgentEvent`).
+  - `src/agents/jules/loop.js`
+  - `src/agents/jules/tools/dispatch.js`
+  - `src/agents/shared-tools/dispatch-core.js`
+  - `src/review/omargate-orchestrator.js`
+  - `src/daemon/fix-cycle.js`
+  - `src/daemon/ingest-refresh.js`
+  - `src/commands/audit.js`
+  - `src/agents/jules/swarm/orchestrator.js`
+  - `src/agents/jules/swarm/sub-agent.js`
+  - `src/legacy-cli.js` (event consumption now normalizes canonical + legacy shapes)
+  - `tests/unit.events-schema.test.mjs`
+- Validation evidence:
+  - `rg -n 'stream:\\s*"sl_event"' src` (no inline emitter envelopes remain)
+  - `node --test tests/unit.events-schema.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+
 # 2026-04-16 - Coverage Flake Stabilization (AIdenID/AuthAudit)
 
 ## Plan

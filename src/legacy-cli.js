@@ -21,6 +21,7 @@ import {
   resolveCodingAgent,
 } from "./config/agent-dictionary.js";
 import { resolveOutputRoot } from "./config/service.js";
+import { normalizeAgentEvent } from "./events/schema.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
 import { getExpressTemplate, getPackageJsonTemplate, buildReadmeContent } from "./scaffold/templates.js";
 import { generateScaffold } from "./scaffold/generator.js";
@@ -1001,8 +1002,9 @@ function buildOmarTerminalHandler({ startedAt = Date.now() } = {}) {
   }
 
   return (evt) => {
-    const event = evt?.event || "";
-    const payload = evt?.payload || {};
+    const normalizedEvent = normalizeAgentEvent(evt);
+    const event = normalizedEvent?.event || evt?.event || "";
+    const payload = normalizedEvent?.payload || evt?.payload || {};
     const elapsed = formatElapsed(Date.now() - startedAt);
 
     switch (event) {

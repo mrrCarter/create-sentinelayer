@@ -1,4 +1,5 @@
 import { PERSONA_VISUALS, resolvePersonaVisual } from "./config/definition.js";
+import { createAgentEvent } from "../../events/schema.js";
 
 /**
  * Jules Tanaka — Streaming Event Formatter
@@ -22,20 +23,20 @@ const SCHEMA_VERSION = 1;
 export function buildStreamEvent(event, agentIdentity, payload, usage, runId) {
   const visual = resolvePersonaVisual(agentIdentity?.id) || {};
   return {
-    stream: "sl_event",
+    ...createAgentEvent({
+      event,
+      agent: {
+        id: agentIdentity?.id || "unknown",
+        persona: agentIdentity?.persona || visual.fullName || "unknown",
+        color: agentIdentity?.color || visual.color || "white",
+        avatar: agentIdentity?.avatar || visual.avatar || "",
+      },
+      payload: payload || {},
+      usage: usage || {},
+      runId: runId || undefined,
+    }),
     version: SCHEMA_VERSION,
     command: "audit.deep",
-    runId: runId || null,
-    timestamp: new Date().toISOString(),
-    agent: {
-      id: agentIdentity?.id || "unknown",
-      persona: agentIdentity?.persona || visual.fullName || "unknown",
-      color: agentIdentity?.color || visual.color || "white",
-      avatar: agentIdentity?.avatar || visual.avatar || "",
-    },
-    event,
-    payload: payload || {},
-    usage: usage || {},
   };
 }
 

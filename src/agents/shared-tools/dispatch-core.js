@@ -4,6 +4,7 @@ import {
   normalizeRunEvent,
   appendRunEvent,
 } from "../../telemetry/ledger.js";
+import { createAgentEvent } from "../../events/schema.js";
 
 /**
  * Shared tool dispatch infrastructure.
@@ -65,8 +66,7 @@ export function createToolDispatcher(toolMap, readOnlyTools) {
       await safeAppendEvent(ctx, stopEvent);
 
       if (ctx.onEvent) {
-        ctx.onEvent({
-          stream: "sl_event",
+        ctx.onEvent(createAgentEvent({
           event: "budget_stop",
           agent: ctx.agentIdentity,
           payload: {
@@ -74,7 +74,9 @@ export function createToolDispatcher(toolMap, readOnlyTools) {
             reasons: budgetCheck.reasons,
           },
           usage: snapshotUsage(ctx),
-        });
+          sessionId: ctx.sessionId,
+          runId: ctx.runId,
+        }));
       }
 
       throw new BudgetExhaustedError(budgetCheck);
@@ -82,13 +84,14 @@ export function createToolDispatcher(toolMap, readOnlyTools) {
 
     // Emit budget warnings
     if (budgetCheck.warnings.length > 0 && ctx.onEvent) {
-      ctx.onEvent({
-        stream: "sl_event",
+      ctx.onEvent(createAgentEvent({
         event: "budget_warning",
         agent: ctx.agentIdentity,
         payload: { warnings: budgetCheck.warnings },
         usage: snapshotUsage(ctx),
-      });
+        sessionId: ctx.sessionId,
+        runId: ctx.runId,
+      }));
     }
 
     // 2. Emit tool_call event
@@ -108,13 +111,14 @@ export function createToolDispatcher(toolMap, readOnlyTools) {
     await safeAppendEvent(ctx, callEvent);
 
     if (ctx.onEvent) {
-      ctx.onEvent({
-        stream: "sl_event",
+      ctx.onEvent(createAgentEvent({
         event: "tool_call",
         agent: ctx.agentIdentity,
         payload: { tool: toolName, input: sanitizeInput(toolName, input) },
         usage: snapshotUsage(ctx),
-      });
+        sessionId: ctx.sessionId,
+        runId: ctx.runId,
+      }));
     }
 
     // 3. Execute
@@ -161,8 +165,7 @@ export function createToolDispatcher(toolMap, readOnlyTools) {
     await safeAppendEvent(ctx, resultEvent);
 
     if (ctx.onEvent) {
-      ctx.onEvent({
-        stream: "sl_event",
+      ctx.onEvent(createAgentEvent({
         event: "tool_result",
         agent: ctx.agentIdentity,
         payload: {
@@ -172,7 +175,9 @@ export function createToolDispatcher(toolMap, readOnlyTools) {
           error: error?.message,
         },
         usage: snapshotUsage(ctx),
-      });
+        sessionId: ctx.sessionId,
+        runId: ctx.runId,
+      }));
     }
 
     if (error) throw error;

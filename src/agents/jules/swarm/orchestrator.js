@@ -7,6 +7,7 @@ import { createPatternHunter, HUNT_TYPES } from "./pattern-hunter.js";
 import { runSubAgentBatch } from "./sub-agent.js";
 import { frontendAnalyze } from "../tools/frontend-analyze.js";
 import { createAgentContext } from "../tools/dispatch.js";
+import { createAgentEvent } from "../../../events/schema.js";
 
 /**
  * Jules Swarm Orchestrator
@@ -352,11 +353,10 @@ function collectDiscoveredDeps(scanResults) {
 
 function emit(onEvent, event, payload) {
   if (onEvent) {
-    onEvent({
-      stream: "sl_event",
+    onEvent(createAgentEvent({
       event,
       agent: { id: "frontend", persona: "Jules Tanaka", color: "cyan", avatar: "\u{1F3AF}" },
       payload,
-    });
+    }));
   }
 }

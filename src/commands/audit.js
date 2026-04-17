@@ -8,6 +8,7 @@ import { loadAuditRunReport, resolveAuditRunDirectory, writeDdPackage } from "..
 import { writeAuditComparisonArtifact } from "../audit/replay.js";
 import { loadAuditRegistry, selectAuditAgents } from "../audit/registry.js";
 import { resolveOutputRoot } from "../config/service.js";
+import { createAgentEvent } from "../events/schema.js";
 import { buildLegacyArgs } from "./legacy-args.js";
 
 function shouldEmitJson(options, command) {
@@ -939,12 +940,16 @@ export function registerAuditCommand(program, invokeLegacy) {
       const reconciliation = reconcileWithBaseline(julesFindings, omarBaseline);
 
       if (onEvent && reconciliation.summary) {
-        onEvent({
-          stream: "sl_event", event: "reconciliation_complete",
-          agent: { id: JULES_DEFINITION.id, persona: JULES_DEFINITION.persona,
-            color: JULES_DEFINITION.color, avatar: JULES_DEFINITION.avatar },
+        onEvent(createAgentEvent({
+          event: "reconciliation_complete",
+          agent: {
+            id: JULES_DEFINITION.id,
+            persona: JULES_DEFINITION.persona,
+            color: JULES_DEFINITION.color,
+            avatar: JULES_DEFINITION.avatar,
+          },
           payload: reconciliation.summary,
-        });
+        }));
       }
 
       // ── [9] FINAL REPORT ──────────────────────────────────────────
@@ -1157,10 +1162,10 @@ function buildEventHandler(emitStream, emitJson, def) {
 
 function emitProgress(onEvent, def, message) {
   if (onEvent) {
-    onEvent({
-      stream: "sl_event", event: "progress",
+    onEvent(createAgentEvent({
+      event: "progress",
       agent: { id: def.id, persona: def.persona, color: def.color, avatar: def.avatar },
       payload: { phase: "setup", message },
-    });
+    }));
   }
 }
