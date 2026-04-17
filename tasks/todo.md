@@ -1,3 +1,32 @@
+# 2026-04-17 - PR 9 Slash Commands for AGENTS.md / CLAUDE.md Management (`roadmap/pr-185-slash-commands-agentsmd`)
+
+## Plan
+- [x] Implement `src/session/setup-guides.js` to upsert the coordination section in `AGENTS.md` and `CLAUDE.md` without overwriting unrelated content.
+- [x] Ensure `.sentinelayer/AGENTS_SESSION_GUIDE.md` regeneration is idempotent.
+- [x] Add `session setup-guides <sessionId>` command integration and CLI usage help text.
+- [x] Add `session inject-guide <sessionId>` command for existing repos (append-only to existing AGENTS/CLAUDE files).
+- [x] Add `tests/unit.session-setup-guides.test.mjs` coverage for idempotency, content preservation, and command JSON contracts.
+- [x] Run targeted tests plus full `npm run verify`.
+- [x] Run handshake pass-one (`review scan --path . --json`) then pass-two local readiness (`/omargate deep --path . --json`).
+- [ ] Open PR, watch pass-two GitHub Omar Gate, merge only after `P0=0` and `P1=0`.
+
+## Review
+- Completed implementation and local gate verification for PR9 scope.
+- Updated:
+  - `src/session/setup-guides.js`
+  - `src/commands/session.js`
+  - `src/legacy-cli.js`
+  - `tests/unit.session-setup-guides.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-setup-guides.test.mjs` (pass)
+  - `node --test tests/unit.session-file-locks.test.mjs tests/unit.session-provision.test.mjs tests/unit.session-tasks.test.mjs` (pass)
+  - `node --test --test-name-pattern "CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation" tests/e2e.test.mjs` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=11`, `blocking=false`)
+
 # 2026-04-17 - PR 8 Task Assignment + Delegation (`roadmap/pr-184-task-assignment`)
 
 ## Plan
