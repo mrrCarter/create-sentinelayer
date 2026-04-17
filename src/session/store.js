@@ -3,7 +3,9 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { buildArtifactLineageIndex, verifyArtifactChain } from "../daemon/artifact-lineage.js";
 import { collectCodebaseIngest } from "../ingest/engine.js";
+import { computeSessionAnalytics } from "./analytics.js";
 import { resolveSessionPaths, resolveSessionsRoot } from "./paths.js";
 import { appendToStream } from "./stream.js";
 
@@ -133,6 +135,26 @@ function normalizeStringList(values = []) {
   );
 }
 
+function toPosixPath(value = "") {
+  return String(value || "").replace(/\\/g, "/");
+}
+
+function toRelativePosix(baseDir, absolutePath) {
+  if (!absolutePath) {
+    return "";
+  }
+  return toPosixPath(path.relative(baseDir, absolutePath));
+}
+
+function normalizeDateKeyFromCloseoutPath(closeoutPath = "", fallbackIso = new Date().toISOString()) {
+  const normalized = toPosixPath(closeoutPath);
+  const match = /\/observability\/(\d{4}-\d{2}-\d{2})\//.exec(`/${normalized}`);
+  if (match) {
+    return match[1];
+  }
+  return normalizeIsoTimestamp(fallbackIso).slice(0, 10);
+}
+
 function normalizeSharedResources(raw = {}, { nowIso = new Date().toISOString() } = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
@@ -154,6 +176,102 @@ async function collectSessionCodebaseContext(targetPath) {
   }
   const ingest = await collectCodebaseIngest({ rootPath: targetPath });
   return normalizeCodebaseContext(ingest);
+}
+
+async function buildArchiveSidecars(
+  sessionId,
+  {
+    targetPath,
+    outputDir = "",
+    env,
+    homeDir,
+    nowIso = new Date().toISOString(),
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const normalizedTargetPath = path.resolve(String(targetPath || "."));
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+
+  const analytics = await computeSessionAnalytics(normalizedSessionId, {
+    targetPath: normalizedTargetPath,
+    outputDir,
+    env,
+    homeDir,
+    nowIso: normalizedNow,
+  });
+  const lineage = await buildArtifactLineageIndex({
+    targetPath: normalizedTargetPath,
+    outputDir,
+    env,
+    homeDir,
+    nowIso: normalizedNow,
+  });
+
+  const sessionWorkItems = Array.isArray(lineage.workItems)
+    ? lineage.workItems.filter(
+        (item) => normalizeString(item?.links?.sessionId) === normalizedSessionId
+      )
+    : [];
+  const verification = [];
+
+  for (const workItem of sessionWorkItems) {
+    const workItemId = normalizeString(workItem.workItemId);
+    if (!workItemId) {
+      continue;
+    }
+    const closeoutPath = normalizeString(workItem?.artifacts?.closeoutPath);
+    const dateKey = normalizeDateKeyFromCloseoutPath(closeoutPath, normalizedNow);
+    const chain = await verifyArtifactChain({
+      workItemId,
+      date: dateKey,
+      targetPath: normalizedTargetPath,
+      outputDir,
+      env,
+      homeDir,
+    });
+    verification.push({
+      workItemId,
+      date: chain.date,
+      closeoutPath: closeoutPath || null,
+      closeoutAnchorSha256: normalizeString(workItem?.artifacts?.closeoutAnchorSha256) || null,
+      valid: chain.valid,
+      mismatchCount: Array.isArray(chain.mismatches) ? chain.mismatches.length : 0,
+      mismatches: Array.isArray(chain.mismatches) ? chain.mismatches : [],
+    });
+    if (!chain.valid) {
+      throw new Error(
+        `Artifact chain verification failed for work item '${workItemId}' (${dateKey}).`
+      );
+    }
+  }
+
+  const analyticsSidecar = {
+    schemaVersion: "1.0.0",
+    generatedAt: normalizedNow,
+    sessionId: normalizedSessionId,
+    metrics: analytics,
+  };
+  const artifactChainSidecar = {
+    schemaVersion: "1.0.0",
+    generatedAt: normalizedNow,
+    sessionId: normalizedSessionId,
+    lineageRunId: normalizeString(lineage.lineageRunId) || null,
+    lineageIndexPath: toRelativePosix(
+      normalizedTargetPath,
+      normalizeString(lineage.indexPath)
+    ) || null,
+    summary: {
+      totalWorkItemsIndexed: Number(lineage?.summary?.totalWorkItemsIndexed || 0),
+      sessionWorkItems: sessionWorkItems.length,
+      verifiedWorkItems: verification.filter((item) => item.valid).length,
+    },
+    workItems: verification,
+  };
+
+  return {
+    analyticsSidecar,
+    artifactChainSidecar,
+  };
 }
 
 function normalizeSessionStatus(value) {
@@ -389,7 +507,14 @@ export async function expireSession(sessionId, { targetPath = process.cwd() } = 
 
 export async function archiveSession(
   sessionId,
-  { s3Bucket, s3Prefix = "", targetPath = process.cwd() } = {}
+  {
+    s3Bucket,
+    s3Prefix = "",
+    targetPath = process.cwd(),
+    outputDir = "",
+    env,
+    homeDir,
+  } = {}
 ) {
   const loaded = await loadMetadata(sessionId, { targetPath });
   if (!loaded) {
@@ -403,6 +528,13 @@ export async function archiveSession(
   const prefixSegment = normalizedPrefix ? `${normalizedPrefix}/` : "";
   const s3Path = `s3://${normalizedBucket}/${prefixSegment}sessions/${loaded.paths.sessionId}/`;
   const nowIso = new Date().toISOString();
+  const sidecars = await buildArchiveSidecars(loaded.paths.sessionId, {
+    targetPath: loaded.targetPath,
+    outputDir,
+    env,
+    homeDir,
+    nowIso,
+  });
 
   loaded.metadata.status = SESSION_STATUS_ARCHIVED;
   loaded.metadata.archivedAt = nowIso;
@@ -411,11 +543,25 @@ export async function archiveSession(
   loaded.metadata.s3Path = s3Path;
   const saved = await saveMetadata(loaded.metadata, loaded.paths);
 
+  await Promise.all([
+    writeJsonFile(path.join(loaded.paths.sessionDir, "analytics.json"), sidecars.analyticsSidecar),
+    writeJsonFile(
+      path.join(loaded.paths.sessionDir, "artifact-chain.json"),
+      sidecars.artifactChainSidecar
+    ),
+  ]);
   await writeJsonFile(path.join(loaded.paths.sessionDir, "archive-manifest.json"), {
     sessionId: loaded.paths.sessionId,
     archivedAt: nowIso,
     s3Path,
-    files: ["metadata.json", "stream.ndjson", "stream.1.ndjson", "agents/"],
+    files: [
+      "metadata.json",
+      "stream.ndjson",
+      "stream.1.ndjson",
+      "agents/",
+      "analytics.json",
+      "artifact-chain.json",
+    ],
   });
 
   return buildSessionPayload(saved, loaded.paths, nowIso);

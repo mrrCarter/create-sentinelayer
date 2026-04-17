@@ -1,3 +1,21 @@
+# 2026-04-17 - PR 10 Session Analytics + Artifact Lineage (`roadmap/pr-186-session-analytics`)
+
+## Plan
+- [ ] Finish `src/session/analytics.js` bundle contract and deterministic metric derivation.
+- [ ] Extend `archiveSession` flow in `src/session/store.js` to emit `analytics.json` and `artifact-chain.json` sidecars.
+- [ ] Finalize `src/daemon/artifact-lineage.js` closeout chain helpers and verify path for session-linked artifacts.
+- [ ] Add `tests/unit.session-analytics.test.mjs` to validate the full analytics metric bundle.
+- [ ] Add `tests/unit.artifact-lineage.test.mjs` to validate closeout SHA chain verification and tamper detection.
+- [ ] Update `package.json` `check` script to include `src/session/analytics.js`.
+- [ ] Run targeted tests (`unit.session-analytics`, `unit.artifact-lineage`, `unit.session-store`, existing lineage tests).
+- [ ] Run `npm run verify`.
+- [ ] Run pass-one gate: `node bin/create-sentinelayer.js review scan --path . --json`.
+- [ ] Run local PR-ready gate: `node bin/create-sentinelayer.js /omargate deep --path . --json`.
+- [ ] Open PR, run `gh run watch`, parse Omar pass-two logs, merge only after `P0=0` and `P1=0`.
+
+## Review
+- In progress.
+
 # 2026-04-17 - PR 9 Slash Commands for AGENTS.md / CLAUDE.md Management (`roadmap/pr-185-slash-commands-agentsmd`)
 
 ## Plan
