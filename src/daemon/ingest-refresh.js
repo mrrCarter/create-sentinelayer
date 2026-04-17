@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { collectCodebaseIngest, generateCodebaseIngest } from "../ingest/engine.js";
+import { createAgentEvent } from "../events/schema.js";
 
 /**
  * Pulse Ingest Refresh — periodic codebase re-index.
@@ -69,11 +70,11 @@ export async function refreshIngestIfNeeded(targetPath, options = {}) {
   }
 
   if (options.onEvent) {
-    options.onEvent({
-      stream: "sl_event",
+    options.onEvent(createAgentEvent({
       event: "ingest_refresh_start",
+      agentId: "daemon-ingest-refresh",
       payload: { delta: drift.delta, currentFiles: drift.currentFileCount, lastFiles: drift.lastFileCount },
-    });
+    }));
   }
 
   const startMs = Date.now();
@@ -81,11 +82,11 @@ export async function refreshIngestIfNeeded(targetPath, options = {}) {
   // Budget gate: abort if taking too long
   const timeout = setTimeout(() => {
     if (options.onEvent) {
-      options.onEvent({
-        stream: "sl_event",
+      options.onEvent(createAgentEvent({
         event: "ingest_refresh_timeout",
+        agentId: "daemon-ingest-refresh",
         payload: { maxDurationMs, elapsed: Date.now() - startMs },
-      });
+      }));
     }
   }, maxDurationMs);
 
@@ -104,15 +105,15 @@ export async function refreshIngestIfNeeded(targetPath, options = {}) {
     const durationMs = Date.now() - startMs;
 
     if (options.onEvent) {
-      options.onEvent({
-        stream: "sl_event",
+      options.onEvent(createAgentEvent({
         event: "ingest_refresh_complete",
+        agentId: "daemon-ingest-refresh",
         payload: {
           durationMs,
           filesScanned: ingest?.summary?.filesScanned || 0,
           delta: drift.delta,
         },
-      });
+      }));
     }
 
     return {

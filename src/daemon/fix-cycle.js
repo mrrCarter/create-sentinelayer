@@ -3,6 +3,7 @@ import path from "node:path";
 import fsp from "node:fs/promises";
 import { startJiraLifecycle, commentJiraIssue, transitionJiraIssue } from "./jira-lifecycle.js";
 import { claimAssignment, heartbeatAssignment, releaseAssignment } from "./assignment-ledger.js";
+import { createAgentEvent } from "../events/schema.js";
 
 /**
  * Jules Tanaka — Autonomous Fix Cycle
@@ -25,11 +26,17 @@ const OMAR_POLL_MAX_ATTEMPTS = 40; // 10 minutes max wait
 export async function runFixCycle({ workItemId, workItem, rootPath, scopeMap, findings, onEvent, agentIdentity }) {
   const agentDef = agentIdentity || { id: "unknown", persona: "Unknown Agent", color: "white", avatar: "", signature: "" };
   const emit = (ev, pl) => {
-    if (onEvent) onEvent({
-      stream: "sl_event", event: ev,
-      agent: { id: agentDef.id, persona: agentDef.persona, color: agentDef.color, avatar: agentDef.avatar },
+    if (onEvent) onEvent(createAgentEvent({
+      event: ev,
+      agent: {
+        id: agentDef.id,
+        persona: agentDef.persona,
+        color: agentDef.color,
+        avatar: agentDef.avatar,
+      },
       payload: { workItemId, ...pl },
-    });
+      workItemId,
+    }));
   };
 
   const artDir = path.join(rootPath, ".sentinelayer", "observability", "fixes", workItemId);

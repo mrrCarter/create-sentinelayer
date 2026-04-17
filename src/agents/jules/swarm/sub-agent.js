@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createAgentContext, dispatchTool, isReadOnlyTool, BudgetExhaustedError } from "../tools/dispatch.js";
 import { createMultiProviderApiClient } from "../../../ai/client.js";
+import { createAgentEvent } from "../../../events/schema.js";
 
 /**
  * JulesSubAgent — lightweight isolated agent for parallel audit work.
@@ -208,8 +209,7 @@ export class JulesSubAgent {
 
   emitEvent(event, payload) {
     if (this.onEvent) {
-      this.onEvent({
-        stream: "sl_event",
+      this.onEvent(createAgentEvent({
         event,
         agent: { id: this.id, persona: `Jules Sub-Agent (${this.role})`, parentId: "frontend" },
         payload,
@@ -218,7 +218,9 @@ export class JulesSubAgent {
           toolCalls: this.ctx.usage.toolCalls,
           durationMs: Date.now() - this.ctx.startedAt,
         },
-      });
+        sessionId: this.ctx.sessionId,
+        runId: this.ctx.runId,
+      }));
     }
   }
 }

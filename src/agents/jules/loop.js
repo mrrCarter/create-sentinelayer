@@ -5,6 +5,7 @@ import { dispatchTool, createAgentContext, BudgetExhaustedError } from "./tools/
 import { JULES_DEFINITION } from "./config/definition.js";
 import { shouldSpawnSubAgents, runJulesSwarm } from "./swarm/orchestrator.js";
 import { frontendAnalyze } from "./tools/frontend-analyze.js";
+import { createAgentEvent } from "../../events/schema.js";
 
 /**
  * Jules Tanaka — Agentic Loop
@@ -66,10 +67,14 @@ export async function* julesAuditLoop(config) {
   });
 
   const emit = (event, payload) => {
-    const evt = {
-      stream: "sl_event",
+    const evt = createAgentEvent({
       event,
-      agent: { id: JULES_DEFINITION.id, persona: JULES_DEFINITION.persona, color: JULES_DEFINITION.color, avatar: JULES_DEFINITION.avatar },
+      agent: {
+        id: JULES_DEFINITION.id,
+        persona: JULES_DEFINITION.persona,
+        color: JULES_DEFINITION.color,
+        avatar: JULES_DEFINITION.avatar,
+      },
       payload,
       usage: {
         costUsd: ctx.usage.costUsd,
@@ -77,7 +82,9 @@ export async function* julesAuditLoop(config) {
         toolCalls: ctx.usage.toolCalls,
         durationMs: Date.now() - startedAt,
       },
-    };
+      runId,
+      sessionId: ctx.sessionId,
+    });
     if (onEvent) onEvent(evt);
     return evt;
   };

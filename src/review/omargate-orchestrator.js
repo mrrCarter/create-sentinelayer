@@ -13,6 +13,12 @@ import { resolveScanMode } from "./scan-modes.js";
 import { reconcileReviewFindings } from "./report.js";
 import { resolvePersonaVisual } from "../agents/persona-visuals.js";
 import { syncRunToDashboard } from "../telemetry/sync.js";
+import { createAgentEvent } from "../events/schema.js";
+
+const OMAR_ORCHESTRATOR_AGENT = Object.freeze({
+  id: "omar-orchestrator",
+  persona: "Omar Gate Orchestrator",
+});
 
 /**
  * Run bounded-concurrency parallel execution.
@@ -107,11 +113,12 @@ export async function runOmarGateOrchestrator({
   });
 
   if (onEvent) {
-    onEvent({
-      stream: "sl_event",
+    onEvent(createAgentEvent({
       event: "omargate_start",
+      agent: OMAR_ORCHESTRATOR_AGENT,
       payload: { runId, mode, personas, roster, maxParallel, maxCostUsd, dryRun },
-    });
+      runId,
+    }));
   }
 
   const detSummary = deterministic?.summary || { P0: 0, P1: 0, P2: 0, P3: 0 };
@@ -135,11 +142,19 @@ export async function runOmarGateOrchestrator({
     // Global budget check — skip remaining personas if exhausted
     if (runningCostUsd >= maxCostUsd) {
       if (onEvent) {
-        onEvent({
-          stream: "sl_event",
+        onEvent(createAgentEvent({
           event: "persona_skipped",
+          agent: {
+            id: identity.id,
+            persona: identity.fullName,
+            shortName: identity.shortName,
+            color: identity.color,
+            avatar: identity.avatar,
+            domain: identity.domain,
+          },
           payload: { personaId, identity, reason: "global_budget_exhausted", runningCostUsd, maxCostUsd },
-        });
+          runId,
+        }));
       }
       return {
         personaId,
@@ -155,11 +170,19 @@ export async function runOmarGateOrchestrator({
     const personaStart = Date.now();
 
     if (onEvent) {
-      onEvent({
-        stream: "sl_event",
+      onEvent(createAgentEvent({
         event: "persona_start",
+        agent: {
+          id: identity.id,
+          persona: identity.fullName,
+          shortName: identity.shortName,
+          color: identity.color,
+          avatar: identity.avatar,
+          domain: identity.domain,
+        },
         payload: { personaId, identity, mode, runId },
-      });
+        runId,
+      }));
     }
 
     try {
@@ -195,15 +218,30 @@ export async function runOmarGateOrchestrator({
 
       if (onEvent) {
         for (const finding of findings) {
-          onEvent({
-            stream: "sl_event",
+          onEvent(createAgentEvent({
             event: "persona_finding",
+            agent: {
+              id: identity.id,
+              persona: identity.fullName,
+              shortName: identity.shortName,
+              color: identity.color,
+              avatar: identity.avatar,
+              domain: identity.domain,
+            },
             payload: { personaId, identity, ...finding },
-          });
+            runId,
+          }));
         }
-        onEvent({
-          stream: "sl_event",
+        onEvent(createAgentEvent({
           event: "persona_complete",
+          agent: {
+            id: identity.id,
+            persona: identity.fullName,
+            shortName: identity.shortName,
+            color: identity.color,
+            avatar: identity.avatar,
+            domain: identity.domain,
+          },
           payload: {
             personaId,
             identity,
@@ -212,7 +250,8 @@ export async function runOmarGateOrchestrator({
             costUsd: result?.costUsd || 0,
             durationMs: Date.now() - personaStart,
           },
-        });
+          runId,
+        }));
       }
 
       const personaCost = result?.costUsd || 0;
@@ -229,11 +268,19 @@ export async function runOmarGateOrchestrator({
       };
     } catch (err) {
       if (onEvent) {
-        onEvent({
-          stream: "sl_event",
+        onEvent(createAgentEvent({
           event: "persona_error",
+          agent: {
+            id: identity.id,
+            persona: identity.fullName,
+            shortName: identity.shortName,
+            color: identity.color,
+            avatar: identity.avatar,
+            domain: identity.domain,
+          },
           payload: { personaId, identity, error: err.message },
-        });
+          runId,
+        }));
       }
       return {
         personaId,
@@ -312,9 +359,9 @@ export async function runOmarGateOrchestrator({
   };
 
   if (onEvent) {
-    onEvent({
-      stream: "sl_event",
+    onEvent(createAgentEvent({
       event: "omargate_complete",
+      agent: OMAR_ORCHESTRATOR_AGENT,
       payload: {
         runId,
         mode,
@@ -325,7 +372,8 @@ export async function runOmarGateOrchestrator({
         totalCostUsd: totalCost,
         totalDurationMs: totalDuration,
       },
-    });
+      runId,
+    }));
   }
 
   // Fire-and-forget telemetry sync to dashboard
