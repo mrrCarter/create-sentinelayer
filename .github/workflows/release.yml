@@ -1222,6 +1222,10 @@ jobs:
             echo "- expected_sha1: \`${expected_sha1}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Upgrade npm to latest (OIDC trusted publishing requires >=11.5.1)
+        if: steps.publish_guard.outputs.already_published != 'true'
+        run: npm install -g npm@latest
+
       - name: Publish canary release to npm (`next`)
         if: steps.publish_guard.outputs.already_published != 'true'
         env:
@@ -1230,15 +1234,15 @@ jobs:
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
-          # Remove any residual _authToken so npm CLI performs OIDC trusted
-          # publishing exchange cleanly. The earlier setup-node placeholder
-          # `${NODE_AUTH_TOKEN}` in .npmrc would cause npm to try classic
-          # token auth first and get a 404 if the stale NPM_TOKEN no longer
-          # has publish rights (which is the case now that trusted publishing
-          # owns the package).
+          # Pure OIDC trusted publishing: clear any residual _authToken and
+          # let npm CLI auto-exchange the GitHub OIDC token for a short-lived
+          # npm publish token. Requires npm >=11.5.1 (hence the upgrade step
+          # above) AND a trusted publisher configured on npmjs.org for this
+          # package/repo/workflow/environment (configured 2026-04-17).
           npm config delete //registry.npmjs.org/:_authToken || true
           rm -f "${HOME}/.npmrc" 2>/dev/null || true
           printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "${HOME}/.npmrc"
+          echo "npm version: $(npm --version)"
           npm publish "./${VERIFIED_TARBALL}" --provenance --access public --tag next
           next_tag="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
           next_tag="$(echo "${next_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
