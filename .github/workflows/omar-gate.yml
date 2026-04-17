@@ -177,10 +177,16 @@ jobs:
           require_response_binding_on_protected="$(echo "${OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
-            if [ "${ref_protected}" = "true" ] && [ "${allow_static}" != "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback)."
+            # Protected refs: hard-fail regardless of OMAR_ALLOW_STATIC_SECRETS.
+            # Static long-lived secrets are not an acceptable credential
+            # source on protected refs (strict OIDC-only posture).
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
+              echo "::error::OMAR_ALLOW_STATIC_SECRETS is NOT honored on protected refs. Promote your credential pipeline to OIDC."
               exit 1
             fi
+            # Non-protected refs: static fallback permitted only via explicit
+            # OMAR_ALLOW_STATIC_SECRETS=true.
             if [ "${allow_static}" != "true" ]; then
               echo "::error::OIDC exchange is required for Omar Gate on ${event_name} events. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback on non-protected refs)."
               exit 1
