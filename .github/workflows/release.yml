@@ -1114,9 +1114,11 @@ jobs:
         run: |
           set -euo pipefail
           npm config set registry "https://registry.npmjs.org/"
-          if [ "${PUBLISH_AUTH_MODE:-}" = "trusted" ]; then
-            npm config delete //registry.npmjs.org/:_authToken || true
-          fi
+          # Do NOT delete the authToken placeholder here. setup-node writes
+          # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} into .npmrc;
+          # npm evaluates ${NODE_AUTH_TOKEN} at publish time, and the publish
+          # step's env provides the real token value. Deleting this line
+          # leaves npm with no way to authenticate even when a token is set.
 
       - name: Guard deterministic npm publish idempotency
         id: publish_guard
@@ -1203,6 +1205,7 @@ jobs:
         env:
           PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
           PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
@@ -1308,6 +1311,7 @@ jobs:
         env:
           PACKAGE_NAME: ${{ needs.publish-candidate.outputs.package_name }}
           PACKAGE_VERSION: ${{ needs.publish-candidate.outputs.package_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${PACKAGE_NAME}" ] || [ -z "${PACKAGE_VERSION}" ]; then
