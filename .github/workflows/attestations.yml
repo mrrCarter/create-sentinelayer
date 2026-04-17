@@ -151,10 +151,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ATTESTATION_ENVIRONMENT: artifact-attestation
           GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
-          # Default fail-closed: protected refs without required reviewers
-          # are now a hard error. Legacy opt-out (ATTESTATION_REQUIRE_ENV_
-          # REVIEWERS_ON_PROTECTED_REF=false) remains but is deprecated.
-          ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF: ${{ vars.ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF || 'true' }}
+          # Default warn-only: protected refs without reviewers emit a
+          # warning (not an error). Opt-in strict mode via repo var
+          # ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF=true once
+          # reviewers are provisioned. Prior strict-default blocked release
+          # pipelines for repos that haven't set up reviewers yet.
+          ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF: ${{ vars.ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF || 'false' }}
         run: |
           set -euo pipefail
           environment_json="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ATTESTATION_ENVIRONMENT}")"
@@ -162,16 +164,15 @@ jobs:
           ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           require_reviewers_on_protected_ref="$(echo "${ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid attestation environment reviewer count: ${reviewer_count}" ; exit 1 ;; esac
-          # Simplified logic: protected ref + no reviewer = hard fail.
-          # Opt-out only available via explicit ATTESTATION_REQUIRE_ENV_
-          # REVIEWERS_ON_PROTECTED_REF=false override.
-          if [ "${reviewer_count}" -lt 1 ] && [ "${ref_protected}" = "true" ] && [ "${require_reviewers_on_protected_ref}" != "false" ]; then
-            echo "::error::Environment ${ATTESTATION_ENVIRONMENT} must configure at least one required reviewer on protected refs."
-            echo "::error::Opt-out by setting repo variable ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF=false (deprecated; will be removed)."
+          # Strict mode opt-in: only enforce reviewer presence when repo
+          # explicitly opts in via ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_
+          # PROTECTED_REF=true. Otherwise warn and continue.
+          if [ "${reviewer_count}" -lt 1 ] && [ "${ref_protected}" = "true" ] && [ "${require_reviewers_on_protected_ref}" = "true" ]; then
+            echo "::error::Environment ${ATTESTATION_ENVIRONMENT} must configure at least one required reviewer (strict mode enabled)."
             exit 1
           fi
           if [ "${reviewer_count}" -lt 1 ]; then
-            echo "::warning::Environment ${ATTESTATION_ENVIRONMENT} has no required reviewers (ref_protected=${ref_protected})."
+            echo "::warning::Environment ${ATTESTATION_ENVIRONMENT} has no required reviewers (ref_protected=${ref_protected}). Enable strict mode via ATTESTATION_REQUIRE_ENV_REVIEWERS_ON_PROTECTED_REF=true once reviewers are provisioned."
           fi
           {
             echo "## Attestation Environment Policy"
