@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent, normalizeAgentEvent } from "../events/schema.js";
 import { resolveSessionPaths } from "./paths.js";
+import { redactEventPayload } from "./redact.js";
 import { syncSessionEventToApi } from "./sync.js";
 
 const DEFAULT_POLL_MS = 500;
@@ -233,7 +234,8 @@ export async function appendToStream(
     throw new Error(`Session '${paths.sessionId}' is expired and does not accept new events.`);
   }
 
-  const canonicalEvent = materializeCanonicalEvent(paths.sessionId, event);
+  const rawEvent = materializeCanonicalEvent(paths.sessionId, event);
+  const canonicalEvent = redactEventPayload(rawEvent);
   const nowIso = new Date().toISOString();
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_MAX_STREAM_EVENTS);
 
