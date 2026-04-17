@@ -119,6 +119,23 @@ test("Unit session store: expire marks session non-active and archive writes s3 
     assert.equal(archived.status, "archived");
     assert.ok(String(archived.s3Path).startsWith("s3://sentinelayer-audit-artifacts/training/sessions/"));
     assert.ok(archived.archivedAt);
+
+    const analyticsSidecar = JSON.parse(
+      await readFile(path.join(created.sessionDir, "analytics.json"), "utf-8")
+    );
+    const artifactChainSidecar = JSON.parse(
+      await readFile(path.join(created.sessionDir, "artifact-chain.json"), "utf-8")
+    );
+    const archiveManifest = JSON.parse(
+      await readFile(path.join(created.sessionDir, "archive-manifest.json"), "utf-8")
+    );
+    assert.equal(analyticsSidecar.sessionId, created.sessionId);
+    assert.equal(typeof analyticsSidecar.metrics, "object");
+    assert.equal(artifactChainSidecar.sessionId, created.sessionId);
+    assert.equal(Array.isArray(artifactChainSidecar.workItems), true);
+    assert.equal(Array.isArray(archiveManifest.files), true);
+    assert.equal(archiveManifest.files.includes("analytics.json"), true);
+    assert.equal(archiveManifest.files.includes("artifact-chain.json"), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
