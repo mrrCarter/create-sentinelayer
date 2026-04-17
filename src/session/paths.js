@@ -27,5 +27,7 @@ export function resolveSessionPaths(sessionId, { targetPath = process.cwd() } = 
     rotatedStreamPath: path.join(sessionDir, "stream.1.ndjson"),
     lockPath: path.join(sessionDir, ".stream.lock"),
     agentsDir: path.join(sessionDir, "agents"),
+    runtimeRunsDir: path.join(sessionDir, "runtime-runs"),
+    sentiDir: path.join(sessionDir, "senti"),
   };
 }

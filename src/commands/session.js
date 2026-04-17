@@ -3,6 +3,7 @@ import process from "node:process";
 
 import pc from "picocolors";
 
+import { stopSenti } from "../session/daemon.js";
 import { createSession, DEFAULT_TTL_SECONDS } from "../session/store.js";
 
 function shouldEmitJson(options, command) {
@@ -75,5 +76,56 @@ export function registerSessionCommand(program) {
       console.log(
         `status=${created.status} created_at=${created.createdAt} expires_at=${created.expiresAt} ttl_seconds=${ttlSeconds}`
       );
+    });
+
+  session
+    .command("kill")
+    .description("Kill a running session daemon agent")
+    .requiredOption("--id <sessionId>", "Session identifier")
+    .requiredOption("--agent <agentId>", "Agent id to kill (currently: senti)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--reason <reason>", "Kill reason code", "manual_stop")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const sessionId = String(options.id || "").trim();
+      const agentId = String(options.agent || "").trim().toLowerCase();
+      const reason = String(options.reason || "").trim() || "manual_stop";
+      if (!sessionId) {
+        throw new Error("session id is required.");
+      }
+      if (agentId !== "senti") {
+        throw new Error("session kill currently supports only --agent senti.");
+      }
+
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const startedAt = Date.now();
+      const stopped = await stopSenti(sessionId, {
+        targetPath,
+        reason,
+      });
+      const durationMs = Date.now() - startedAt;
+      const payload = {
+        command: "session kill",
+        targetPath,
+        durationMs,
+        sessionId,
+        agentId,
+        reason,
+        stopped: Boolean(stopped.stopped),
+        runtimeStops: Number(stopped.runtimeStopSummary?.stoppedCount || 0),
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      if (stopped.stopped) {
+        console.log(pc.bold(`Killed ${agentId}`));
+        console.log(pc.gray(`session=${sessionId} runtime_stops=${payload.runtimeStops}`));
+      } else {
+        console.log(pc.yellow(`No active ${agentId} daemon found for session ${sessionId}.`));
+      }
+      console.log(`stopped=${payload.stopped} reason=${reason} duration_ms=${durationMs}`);
     });
 }
