@@ -212,6 +212,7 @@ function printUsage() {
   console.log("  sl session status <id> --json      Show session health, agents, runs, leases");
   console.log("  sl session leave <id>              Leave a session");
   console.log("  sl session list --json             List active sessions");
+  console.log("  sl session provision-emails <id> --count 5  Provision AIdenID emails for swarm testing");
   console.log("  sl session kill --session <id> --agent <id>  Kill agent + revoke active leases");
   console.log("");
   console.log("Security & Review:");

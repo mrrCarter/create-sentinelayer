@@ -6,6 +6,7 @@
 - Treat local Omar runs as pass-one evidence and GitHub Omar checks as pass-two authority for merge decisions.
 - For pass-one, run only local review gate (`sl review` / `review scan`); do not run deep/full Omar locally until the branch is PR-ready.
 - Any PR that touches eval-impact files (for example `src/prompt/generator.js`) must include a same-PR eval evidence artifact under `tasks/evals/` before opening or updating the PR.
+- In session/AIdenID provisioning flows, do network provisioning work in parallel but serialize JSON registry writes to avoid race-driven lost updates.
 
 ## 2026-04-14
 
