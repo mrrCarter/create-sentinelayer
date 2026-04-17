@@ -232,11 +232,34 @@ function isDomainAllowed(candidateDomain, budgetEnvelope = {}) {
   if (!normalizedDomain) {
     return true;
   }
+  // SSRF hardening (Phase G, 2026-04-17): empty allowlist is default-DENY,
+  // not default-allow. A runtime caller that forgot to set the allowlist
+  // should hit a block, not silently let all egress through. Private/
+  // loopback/metadata ranges are ALWAYS blocked regardless of allowlist.
+  const PRIVATE_OR_METADATA = [
+    /^localhost$/,
+    /^127\./,
+    /^0\./,
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^169\.254\./,     // link-local + cloud metadata
+    /^::1$/,
+    /^fe80:/i,
+    /^fc00:/i,
+    /^fd00:/i,
+  ];
+  if (PRIVATE_OR_METADATA.some((re) => re.test(normalizedDomain))) {
+    return false;
+  }
   if (
     !Array.isArray(budgetEnvelope.networkDomainAllowlist) ||
     budgetEnvelope.networkDomainAllowlist.length === 0
   ) {
-    return true;
+    // Default-deny on empty allowlist. Callers MUST set a non-empty list
+    // to authorize egress. Opt-out via explicit `allowAllDomains: true`
+    // on the budget envelope (callers should be visible in code review).
+    return budgetEnvelope.allowAllDomains === true;
   }
   return budgetEnvelope.networkDomainAllowlist.some((allowedPattern) => {
     const normalizedPattern = normalizeString(allowedPattern).toLowerCase();

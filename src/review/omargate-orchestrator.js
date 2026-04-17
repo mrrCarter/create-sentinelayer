@@ -322,6 +322,45 @@ export async function runOmarGateOrchestrator({
   const totalCost = settled.reduce((sum, r) => sum + (r.costUsd || 0), 0);
   const totalDuration = Date.now() - startTime;
 
+  // Silent-failure detection: if >=50% of personas errored OR total cost is
+  // zero with non-zero personas dispatched, treat as a LOUD orchestrator
+  // warning. Prior behavior silently returned zero AI findings, masking
+  // auth failures or LLM proxy outages as "clean scan".
+  const personaErrorCount = settled.filter((r) => r.status === "error").length;
+  const personaSkippedCount = settled.filter((r) => r.status === "skipped").length;
+  const personaOkCount = settled.filter((r) => r.status === "ok").length;
+  const totalPersonas = settled.length;
+  const errorRatio = totalPersonas > 0 ? personaErrorCount / totalPersonas : 0;
+  const aiCoverageHealthy =
+    totalPersonas === 0 ||
+    (personaOkCount > 0 && totalCost > 0 && errorRatio < 0.5 && !dryRun);
+
+  const personaHealth = {
+    ok: personaOkCount,
+    error: personaErrorCount,
+    skipped: personaSkippedCount,
+    total: totalPersonas,
+    errorRatio,
+    healthy: aiCoverageHealthy || dryRun,
+    warnings: [],
+  };
+  if (!dryRun && totalPersonas > 0) {
+    if (personaOkCount === 0 && personaErrorCount > 0) {
+      personaHealth.warnings.push(
+        `ALL ${totalPersonas} personas errored. AI coverage is ZERO. Re-check auth (sl auth login) or LLM proxy config.`
+      );
+    } else if (errorRatio >= 0.5) {
+      personaHealth.warnings.push(
+        `${personaErrorCount}/${totalPersonas} personas errored (${Math.round(errorRatio * 100)}%). AI coverage is degraded.`
+      );
+    }
+    if (personaOkCount > 0 && totalCost <= 0) {
+      personaHealth.warnings.push(
+        `Personas reported ok status but totalCost=$0.00 — likely silently returned empty findings without making LLM calls.`
+      );
+    }
+  }
+
   const result = {
     runId,
     mode,
@@ -337,6 +376,7 @@ export async function runOmarGateOrchestrator({
       model: r.model || null,
       error: r.error || null,
     })),
+    personaHealth,
     findings: reconciledFindings,
     findingsBySource: {
       deterministic: detFindings.length,
@@ -357,6 +397,22 @@ export async function runOmarGateOrchestrator({
     },
     dryRun,
   };
+
+  // Emit warnings to the event stream so terminal handler can render them.
+  if (onEvent && personaHealth.warnings.length > 0) {
+    onEvent(createAgentEvent({
+      event: "persona_health_warning",
+      agent: { id: "orchestrator", persona: "Omar Orchestrator" },
+      payload: {
+        ok: personaOkCount,
+        error: personaErrorCount,
+        total: totalPersonas,
+        errorRatio,
+        warnings: personaHealth.warnings,
+      },
+      runId,
+    }));
+  }
 
   if (onEvent) {
     onEvent(createAgentEvent({
