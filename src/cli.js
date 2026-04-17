@@ -119,6 +119,11 @@ const COMMAND_REGISTRARS = {
     exportName: "registerDaemonCommand",
     needsLegacy: false,
   },
+  session: {
+    loader: () => import("./commands/session.js"),
+    exportName: "registerSessionCommand",
+    needsLegacy: false,
+  },
 };
 
 const COMMAND_SET = new Set(Object.keys(COMMAND_REGISTRARS));

@@ -1,5 +1,10 @@
 # Lessons
 
+## 2026-04-17
+
+- Follow the Omar handshake loop in strict order for each PR: local `review scan` first, local `/omargate deep` only when PR-ready, then open PR, `gh run watch`, and merge only after pass-two confirms `P0=0` and `P1=0`.
+- Treat local Omar runs as pass-one evidence and GitHub Omar checks as pass-two authority for merge decisions.
+
 ## 2026-04-14
 
 - Keep `create-sentinelayer` workflow-dispatch `scan_mode` options in lockstep with `sentinelayer-v1-action` accepted modes (`baseline`, `deep`, `audit`, `full-depth`); stale values like `nightly` create contract drift.
