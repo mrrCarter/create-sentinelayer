@@ -170,6 +170,36 @@
     - Quality Gates run `24562462249` passed
     - Build Attestation run `24562462220` passed
 
+# 2026-04-17 - PR 12 Documentation + llms.txt + Blog Insight (`roadmap/pr-188-session-docs`)
+
+## Plan
+- [x] Create dedicated PR12 worktree/branch from latest `origin/main`.
+- [x] Add `docs/sessions.md` with command flow, Omar handshake loop, kill/rollback governance, and artifact conventions.
+- [x] Add root `llms.txt` for LLM discoverability and retrieval ordering.
+- [x] Add root `robots.txt` index/disallow policy for docs/session surfaces.
+- [x] Add blog insight draft at `docs/blog/slack-for-ai-coding-agents.md`.
+- [x] Update `README.md` with explicit multi-agent session workflow section and docs links.
+- [x] Add executable docs gate (`npm run docs:build`) and wire it into `npm run verify`.
+- [x] Run local verification + Omar handshake (`review scan`, `/omargate deep`).
+- [ ] Open PR, watch pass-two checks, confirm Omar `P0=0/P1=0`, merge, and move to PR13.
+
+## Review
+- Completed implementation and local validation.
+- Updated:
+  - `README.md`
+  - `package.json`
+  - `docs/sessions.md`
+  - `docs/blog/slack-for-ai-coding-agents.md`
+  - `llms.txt`
+  - `robots.txt`
+  - `scripts/docs-build.mjs`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `npm run docs:build` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=13`, `blocking=false`)
+
 # 2026-04-17 - PR 4 Session Commands + Assignment Registry Extension (`roadmap/pr-180-session-commands`)
 
 ## Plan

@@ -99,6 +99,19 @@ Inputs for non-interactive mode:
 - `package.json` (adds `sentinel:start`, `sentinel:omargate`, `sentinel:omargate:json`, `sentinel:audit`, `sentinel:audit:json`, `sentinel:persona:*`, `sentinel:apply` when missing)
 - `.env` with `SENTINELAYER_TOKEN` (or API-provided secret name) in managed auth mode
 
+## Multi-Agent Session Workflow
+
+Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
+
+- session event stream and replay (`start`, `join`, `say`, `read`, `status`, `leave`, `list`, `kill`)
+- agent lifecycle controls (join/heartbeat/leave/kill)
+- recap and context briefing for late-joining agents
+- analytics + lineage artifacts at session closeout
+
+Read the full guide: [docs/sessions.md](docs/sessions.md)
+
+For strategy context, see the long-form blog draft: [docs/blog/slack-for-ai-coding-agents.md](docs/blog/slack-for-ai-coding-agents.md)
+
 ## Advanced options
 
 When `Advanced options?` is enabled:

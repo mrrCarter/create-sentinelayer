@@ -1,0 +1,27 @@
+# Sentinelayer CLI (LLM Index)
+
+## Project
+- Name: sentinelayer-cli
+- Purpose: deterministic CLI for secure AI engineering workflows, Omar gating, and multi-agent session coordination.
+- Repository: https://github.com/mrrCarter/create-sentinelayer
+
+## Retrieval Order
+1. README.md
+2. docs/sessions.md
+3. docs/MULTI_AGENT_SESSION_SPEC.md
+4. AGENTS.md
+5. tasks/omar_daemon_hitl_architecture.md
+
+## Session Surface
+- Commands: `sl session start|join|say|read|status|leave|list|kill`
+- Session stream: NDJSON event log with canonical agent event schema
+- Governance: Omar pass-two requires `P0=0` and `P1=0` before merge
+
+## Guardrails
+- Fail closed on P0/P1.
+- Preserve artifact lineage and reproducibility evidence.
+- Keep rollback and kill-switch controls available per session.
+
+## Docs
+- Session guide: docs/sessions.md
+- Architecture spec: docs/MULTI_AGENT_SESSION_SPEC.md
