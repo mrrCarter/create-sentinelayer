@@ -1,6 +1,8 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { createAgentEvent } from "../events/schema.js";
+import { appendToStream } from "../session/stream.js";
 import { resolveAssignmentLedgerStorage } from "./assignment-ledger.js";
 import { resolveErrorDaemonStorage } from "./error-worker.js";
 
@@ -16,6 +18,14 @@ export const JIRA_STATUSES = Object.freeze([
 ]);
 
 const JIRA_STATUS_SET = new Set(JIRA_STATUSES);
+const JIRA_LIFECYCLE_PHASES = new Set([
+  "create",
+  "plan_comment",
+  "in_progress",
+  "checkpoint",
+  "blocked",
+  "resolved",
+]);
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -39,6 +49,22 @@ function normalizeStatus(value, fallbackValue = "OPEN") {
     return normalized;
   }
   return fallbackValue;
+}
+
+function normalizeJiraLifecyclePhase(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (!JIRA_LIFECYCLE_PHASES.has(normalized)) {
+    throw new Error(`phase must be one of: ${[...JIRA_LIFECYCLE_PHASES].join(", ")}.`);
+  }
+  return normalized;
+}
+
+function resolveTransitionPhase(status) {
+  const normalized = normalizeStatus(status, "OPEN");
+  if (normalized === "IN_PROGRESS") return "in_progress";
+  if (normalized === "BLOCKED") return "blocked";
+  if (normalized === "DONE" || normalized === "CANCELLED") return "resolved";
+  return "checkpoint";
 }
 
 function normalizeLabels(labels = []) {
@@ -280,9 +306,54 @@ export async function resolveJiraLifecycleStorage({
   };
 }
 
+export async function emitJiraLifecycleEvent(
+  sessionId,
+  {
+    phase,
+    ticketKey,
+    workItemId,
+    payload = {},
+    targetPath = ".",
+    nowIso = new Date().toISOString(),
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    throw new Error("sessionId is required.");
+  }
+
+  const normalizedPayload =
+    payload && typeof payload === "object" && !Array.isArray(payload) ? { ...payload } : {};
+  const normalizedWorkItemId = normalizeString(workItemId);
+  const normalizedTicketKey = normalizeString(ticketKey);
+  const normalizedPhase = normalizeJiraLifecyclePhase(phase);
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const resolvedTargetPath = path.resolve(String(targetPath || "."));
+
+  const event = createAgentEvent({
+    event: "jira_lifecycle",
+    agentId: "omar-orchestrator",
+    sessionId: normalizedSessionId,
+    workItemId: normalizedWorkItemId || undefined,
+    ts: normalizedNow,
+    payload: {
+      phase: normalizedPhase,
+      ticketKey: normalizedTicketKey || null,
+      workItemId: normalizedWorkItemId || null,
+      ...normalizedPayload,
+    },
+  });
+
+  await appendToStream(normalizedSessionId, event, {
+    targetPath: resolvedTargetPath,
+  });
+  return event;
+}
+
 export async function openJiraIssue({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId,
   summary = "",
   description = "",
@@ -297,6 +368,7 @@ export async function openJiraIssue({
 } = {}) {
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
   const normalizedWorkItemId = normalizeString(workItemId);
+  const normalizedSessionId = normalizeString(sessionId);
   if (!normalizedWorkItemId) {
     throw new Error("workItemId is required.");
   }
@@ -318,6 +390,19 @@ export async function openJiraIssue({
   const existingIndex = findIssueIndex(lifecycle, { workItemId: normalizedWorkItemId });
   if (existingIndex >= 0) {
     const existing = lifecycle.issues[existingIndex];
+    if (normalizedSessionId) {
+      await emitJiraLifecycleEvent(normalizedSessionId, {
+        phase: "checkpoint",
+        ticketKey: existing.issueKey,
+        workItemId: normalizedWorkItemId,
+        payload: {
+          status: existing.status,
+          reused: true,
+        },
+        targetPath,
+        nowIso: normalizedNow,
+      });
+    }
     await syncIssueKeyToAssignment({
       targetPath,
       outputDir,
@@ -386,6 +471,19 @@ export async function openJiraIssue({
     env,
     homeDir,
   });
+  if (normalizedSessionId) {
+    await emitJiraLifecycleEvent(normalizedSessionId, {
+      phase: "create",
+      ticketKey: normalizedIssueKey,
+      workItemId: normalizedWorkItemId,
+      payload: {
+        status: issue.status,
+        summary: issue.summary,
+      },
+      targetPath,
+      nowIso: normalizedNow,
+    });
+  }
   return {
     ...storage,
     lifecycle: savedLifecycle,
@@ -397,6 +495,7 @@ export async function openJiraIssue({
 export async function commentJiraIssue({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId = "",
   issueKey = "",
   actor = "omar-daemon",
@@ -408,6 +507,7 @@ export async function commentJiraIssue({
 } = {}) {
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
   const normalizedMessage = normalizeString(message);
+  const normalizedSessionId = normalizeString(sessionId);
   if (!normalizedMessage) {
     throw new Error("message is required.");
   }
@@ -446,6 +546,20 @@ export async function commentJiraIssue({
     type: comment.type,
     message: comment.message,
   });
+  if (normalizedSessionId) {
+    await emitJiraLifecycleEvent(normalizedSessionId, {
+      phase: comment.type === "plan" ? "plan_comment" : "checkpoint",
+      ticketKey: existing.issueKey,
+      workItemId: existing.workItemId,
+      payload: {
+        commentType: comment.type,
+        status: lifecycle.issues[issueIndex].status,
+        message: comment.message,
+      },
+      targetPath,
+      nowIso: normalizedNow,
+    });
+  }
   return {
     ...storage,
     lifecycle: savedLifecycle,
@@ -457,6 +571,7 @@ export async function commentJiraIssue({
 export async function transitionJiraIssue({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId = "",
   issueKey = "",
   toStatus,
@@ -468,6 +583,7 @@ export async function transitionJiraIssue({
 } = {}) {
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
   const nextStatus = normalizeStatus(toStatus, "");
+  const normalizedSessionId = normalizeString(sessionId);
   if (!nextStatus) {
     throw new Error(`toStatus must be one of: ${JIRA_STATUSES.join(", ")}.`);
   }
@@ -508,6 +624,21 @@ export async function transitionJiraIssue({
     to: transition.to,
     reason: transition.reason,
   });
+  if (normalizedSessionId) {
+    await emitJiraLifecycleEvent(normalizedSessionId, {
+      phase: resolveTransitionPhase(nextStatus),
+      ticketKey: existing.issueKey,
+      workItemId: existing.workItemId,
+      payload: {
+        from: transition.from,
+        to: transition.to,
+        reason: transition.reason,
+        status: lifecycle.issues[issueIndex].status,
+      },
+      targetPath,
+      nowIso: normalizedNow,
+    });
+  }
   return {
     ...storage,
     lifecycle: savedLifecycle,
@@ -519,6 +650,7 @@ export async function transitionJiraIssue({
 export async function startJiraLifecycle({
   targetPath = ".",
   outputDir = "",
+  sessionId = "",
   workItemId,
   actor = "omar-daemon",
   assignee = "",
@@ -535,6 +667,7 @@ export async function startJiraLifecycle({
   const opened = await openJiraIssue({
     targetPath,
     outputDir,
+    sessionId,
     workItemId,
     actor,
     assignee,
@@ -553,6 +686,7 @@ export async function startJiraLifecycle({
     const commented = await commentJiraIssue({
       targetPath,
       outputDir,
+      sessionId,
       workItemId,
       issueKey: opened.issue.issueKey,
       actor,
@@ -567,6 +701,7 @@ export async function startJiraLifecycle({
   const transitioned = await transitionJiraIssue({
     targetPath,
     outputDir,
+    sessionId,
     workItemId,
     issueKey: opened.issue.issueKey,
     toStatus: "IN_PROGRESS",
