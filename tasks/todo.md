@@ -1,3 +1,32 @@
+# 2026-04-17 - PR 3 Session Daemon + Runtime Executor Bridge (`roadmap/pr-179-session-daemon`)
+
+## Plan
+- [x] Create fresh PR3 worktree/branch from `origin/main` after PR2.5 merge.
+- [x] Implement `src/session/daemon.js` with Senti lifecycle (`startSenti`, health tick, help-request watcher, auto-renew, stop/kill path).
+- [x] Implement `src/session/runtime-bridge.js` with scope/budget envelope validation, heartbeat events, stop predicates, and manual stop taxonomy.
+- [x] Add session kill command path (`sl session kill --id <session> --agent senti`) that terminates Senti and cascades `manual_stop` to active runtime runs.
+- [x] Add PR3 test suites (`tests/unit.session-daemon.test.mjs`, `tests/unit.session-runtime-bridge.test.mjs`).
+- [x] Extend `package.json` check coverage for new session modules.
+- [x] Run local verification and pass-one handshake in corrected order (`review scan` before deep gate).
+- [ ] Run local `/omargate deep` only at PR-ready, open PR, wait pass-two checks for Omar `P0=0`/`P1=0`, merge.
+
+## Review
+- Completed implementation and local verification up to pass-one.
+- Updated:
+  - `src/session/paths.js`
+  - `src/session/daemon.js`
+  - `src/session/runtime-bridge.js`
+  - `src/commands/session.js`
+  - `tests/unit.session-daemon.test.mjs`
+  - `tests/unit.session-runtime-bridge.test.mjs`
+  - `package.json`
+  - `tasks/todo.md`
+- Validation evidence:
+  - `node --test tests/unit.session-daemon.test.mjs tests/unit.session-runtime-bridge.test.mjs` (pass)
+  - `npm run check` (pass)
+  - `npm run verify` (pass)
+  - `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=2`, `blocking=false`)
+
 # 2026-04-17 - PR 2.5 Error Event Daemon (`roadmap/pr-178b-error-event-daemon`)
 
 ## Plan
