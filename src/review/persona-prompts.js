@@ -368,16 +368,14 @@ const SWE_FRAMEWORK_CHECKLIST = {
     "Cross-cutting concerns consolidated (logging, telemetry, retry) not scattered",
     "Domain boundaries: session/daemon/review modules don't directly import each other's internals",
   ],
-  backend: [
-    "Request handling: every handler validates inputs and handles unbounded work",
-    "Runtime crashes: unhandled rejections, thrown errors in async paths",
-    "Validation gaps: route params and bodies validated against schemas",
-    "Database: transactions wrap multi-statement writes; migrations idempotent",
-    "Query safety: no string concatenation; parameterized or query builder only",
-    "Worker / job processing: timeout, retry with backoff+jitter, dead-letter queue",
-    "External service: circuit breakers, fallbacks, bulkhead isolation",
-    "Server-side trust boundary: client never told to trust server state without re-verification",
-  ],
+  // Note: `backend` (Maya Volkov/backend_runtime) is intentionally folded
+  // into `architecture` for Omar Gate deep dispatch. Maya's backend_runtime
+  // concerns (handler validation, runtime crashes, DB transaction safety,
+  // worker retry patterns, circuit breakers) are covered by the
+  // `architecture` persona prompt + its `reliability` sibling. Keeping a
+  // separate `backend` checklist created a dispatched-vs-checklist mismatch
+  // (backend was present here but not in FULL_DEPTH_PERSONAS). See
+  // src/review/scan-modes.js for the authoritative dispatch list.
   testing: [
     "Critical paths have test coverage (auth, payment, data mutation, kill switches)",
     "Kill-switch tests exercise the CLI surface, not just programmatic API (SWE §O.1, spec §5.7)",
