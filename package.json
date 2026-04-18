@@ -1,6 +1,6 @@
 {
   "name": "sentinelayer-cli",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
   "scripts": {
@@ -62,4 +62,3 @@
     "license-checker-rseidelsohn": "4.4.2"
   }
 }
-

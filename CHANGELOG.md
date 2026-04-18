@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.0...v0.8.1) (2026-04-18)
+
+
+### Bug Fixes
+
+* **auth-gate:** drop over-strict token check that locked users out ([#358](https://github.com/mrrCarter/create-sentinelayer/pull/358)) ([18dae35](https://github.com/mrrCarter/create-sentinelayer/commit/18dae3508d36b624b7b21ab14187491dcfc35f7b))
+
 ## [0.8.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.7.0...v0.8.0) (2026-04-17)
 
 

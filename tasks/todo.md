@@ -1,3 +1,28 @@
+# PR13 Cross-Repo Closure + CLI 0.8.1 Patch (2026-04-18)
+
+## Plan
+- [x] Reconcile PR13 cross-repo closure status:
+  - API session relay endpoints + tests (`sentinelayer-api-pr391`)
+  - Web live session dashboard page + tests (`sentinelayer-web-pr221`)
+- [x] Prepare CLI patch release artifacts in `create-sentinelayer`:
+  - bump `package.json` + `package-lock.json` from `0.8.0` to `0.8.1`
+  - add `CHANGELOG.md` entry for auth-gate fix from PR `#358`
+- [x] Run CLI validation for release readiness (`npm run check` minimum, expand if required by gate context).
+- [x] Execute Omar handshake locally for this CLI branch (`review scan` pass-one, `/omargate deep` pre-PR readiness).
+
+## Review
+- Completed.
+- Versioning artifacts updated:
+  - `package.json` -> `0.8.1`
+  - `package-lock.json` -> `0.8.1`
+  - `CHANGELOG.md` -> `0.8.1` entry for PR `#358` (`18dae3508d36b624b7b21ab14187491dcfc35f7b`)
+- Validation evidence:
+  - `npm run check` (pass)
+  - `node bin/create-sentinelayer.js auth status --json` (no active local session; env token also returned `INVALID_TOKEN`)
+  - pass-one (trusted test-bypass): `node bin/create-sentinelayer.js review scan --path . --json` (`p1=0`, `p2=3`, `blocking=false`)
+  - `/audit` parity (trusted test-bypass): `node bin/create-sentinelayer.js /audit --path . --json` (`overallStatus=PASS`, `p1=0`, `p2=3`)
+  - `/omargate deep` execution (legacy local path): `node src/legacy-cli.js /omargate deep --path . --json` (`p0=0`, `p1=0`, `p2=14`, `blocking=false`)
+
 # 2026-04-17 - PR 16 API Telemetry + Admin Dashboard + Kill Switches + HITL Verdict (`roadmap/pr-192-session-telemetry-admin`)
 
 ## Plan
