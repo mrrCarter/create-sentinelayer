@@ -13,6 +13,19 @@
  * gaps; run `baseline` when you only need security.
  */
 
+// AUTHORITATIVE dispatch list. Anything not in this array does not run,
+// regardless of whether it has a persona prompt or visual identity elsewhere.
+//
+// Cross-reference (keep in sync):
+// - src/review/persona-prompts.js PERSONA_PROMPTS keys → must match this list
+// - src/review/persona-prompts.js SWE_FRAMEWORK_CHECKLIST keys → must match this list
+// - src/agents/persona-visuals.js → may define SUPERSET (visuals for sub-specialties
+//   are allowed, e.g. Maya Volkov has both "architecture" and "backend" visuals
+//   because both roles fold into her architecture dispatch).
+//
+// Visuals-only (defined but NOT dispatched) today: "backend" (Maya, folded into
+// "architecture"), "code-quality" (Ethan Park, no current dispatch path),
+// "data" (Linh Tran, no current dispatch path). These are future-roadmap slots.
 const FULL_DEPTH_PERSONAS = [
   "security",
   "architecture",
