@@ -504,7 +504,16 @@ function persistProviderBreakerState(nowMs = Date.now()) {
       })),
     };
     const tmpPath = `${statePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(payload), "utf-8");
+    // Write with 0600 so the breaker state file (which can log provider
+    // identifiers and failure modes) is not world-readable on multi-user
+    // machines. renameSync preserves mode.
+    fs.writeFileSync(tmpPath, JSON.stringify(payload), { encoding: "utf-8", mode: 0o600 });
+    try {
+      fs.chmodSync(tmpPath, 0o600);
+    } catch {
+      // Windows FAT volumes may not honor chmod; mode from writeFileSync
+      // still applies on POSIX.
+    }
     fs.renameSync(tmpPath, statePath);
   } catch {
     // Persistence is best-effort; in-memory safeguards remain active.
