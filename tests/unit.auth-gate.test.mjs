@@ -273,7 +273,13 @@ test("Unit auth gate: unsafe override flag does not bypass outside test contexts
   }
 });
 
-test("Unit auth gate: rejects stored session when token prefix does not match token", async () => {
+test("Unit auth gate: accepts stored session regardless of prefix metadata drift (downstream API gates bad tokens)", async () => {
+  // The gate is a "is there a token?" check, not a "is the token
+  // cryptographically well-formed?" check. tokenPrefix is observability
+  // metadata; it can drift between storage layers (e.g. keyring holds the
+  // fresh token, credentials.json caches an old prefix) and forcing a strict
+  // inclusion check locked users out without fixing any real security issue.
+  // The API per-call /auth/me check is the real gate.
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-gate-"));
   const previousHome = process.env.HOME;
   const previousUserProfile = process.env.USERPROFILE;
@@ -292,8 +298,8 @@ test("Unit auth gate: rejects stored session when token prefix does not match to
     }, { homeDir: tempHome });
 
     const result = await checkAuthGate(["audit"]);
-    assert.equal(result.authenticated, false);
-    assert.equal(result.bypassReason, null);
+    assert.equal(result.authenticated, true);
+    assert.equal(result.failureReason, null);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

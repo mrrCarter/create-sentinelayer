@@ -292,25 +292,6 @@ function hasTrustedBypassContext(args = []) {
   return consumeNonceEnvelope(nonceEnvelope.nonceFile);
 }
 
-function isValidSessionToken(session) {
-  const token = String(session?.token || "");
-  if (!token || token !== token.trim()) {
-    return false;
-  }
-  if (/\s/.test(token)) {
-    return false;
-  }
-  // Require printable ASCII only for bearer token material in local metadata.
-  if (/[^\x21-\x7E]/.test(token)) {
-    return false;
-  }
-  const tokenPrefix = String(session?.tokenPrefix || "").trim();
-  if (tokenPrefix && !token.includes(tokenPrefix)) {
-    return false;
-  }
-  return true;
-}
-
 function isSessionUnexpired(tokenExpiresAt) {
   const normalized = String(tokenExpiresAt || "").trim();
   if (!normalized) {
@@ -323,13 +304,25 @@ function isSessionUnexpired(tokenExpiresAt) {
   return expiresAt >= Date.now();
 }
 
+// Gate-level session validation.
+//
+// Design principle: the gate is a "do they have a token?" check, not a
+// "is the token cryptographically well-formed?" check. Server-side /auth/me
+// and per-call bearer validation are the authoritative gate on the token
+// material itself. Over-strict client-side checks (ASCII-only, exact-prefix
+// inclusion, etc.) surface as "Authentication required" even when the user
+// has a perfectly valid keyring entry, forcing them to logout/login repeatedly
+// without fixing anything.
+//
+// So the gate checks:
+//   - session.token is present and non-empty
+//   - for source === "session", expiry is in the future
+//   - for source === "env" or "config", the downstream API call is the gate
 function isAuthenticatedSessionValid(session) {
-  if (!isValidSessionToken(session)) {
+  const token = String(session?.token || "").trim();
+  if (!token) {
     return false;
   }
-
-  // Persisted sessions must include a valid expiry bound. Env/config tokens
-  // are accepted as active auth sources and validated downstream by API calls.
   if (String(session?.source || "").trim() === "session") {
     return isSessionUnexpired(session?.tokenExpiresAt);
   }
@@ -341,28 +334,29 @@ function isAuthenticatedSessionValid(session) {
  * Returns true if auth is required but user is not logged in.
  *
  * @param {string[]} args - CLI arguments (after normalization)
- * @returns {Promise<{ authenticated: boolean, session: object|null, bypassReason: string|null }>}
+ * @returns {Promise<{ authenticated: boolean, session: object|null, bypassReason: string|null, failureReason: string|null }>}
  */
 export async function checkAuthGate(args) {
   const first = String(args[0] || "").trim().toLowerCase();
 
   if (!first || AUTH_BYPASS_COMMANDS.has(first)) {
-    return { authenticated: true, session: null, bypassReason: "auth_bypass_command" };
+    return { authenticated: true, session: null, bypassReason: "auth_bypass_command", failureReason: null };
   }
 
   if (NO_AUTH_REQUIRED.has(first)) {
-    return { authenticated: true, session: null, bypassReason: "no_auth_required" };
+    return { authenticated: true, session: null, bypassReason: "no_auth_required", failureReason: null };
   }
 
   if (isSessionNoAuthCommand(args)) {
-    return { authenticated: true, session: null, bypassReason: "session_no_auth_required" };
+    return { authenticated: true, session: null, bypassReason: "session_no_auth_required", failureReason: null };
   }
 
   if (process.env.SENTINELAYER_CLI_SKIP_AUTH === "1" && hasTrustedBypassContext(args)) {
-    return { authenticated: true, session: null, bypassReason: "env_bypass_guarded" };
+    return { authenticated: true, session: null, bypassReason: "env_bypass_guarded", failureReason: null };
   }
 
   // Check for active auth session across env -> config -> stored session.
+  let resolveError = null;
   try {
     const session = await resolveActiveAuthSession({
       cwd: process.cwd(),
@@ -370,31 +364,65 @@ export async function checkAuthGate(args) {
       autoRotate: false,
     });
     if (session && isAuthenticatedSessionValid(session)) {
-      return { authenticated: true, session, bypassReason: null };
+      return { authenticated: true, session, bypassReason: null, failureReason: null };
     }
-  } catch {
-    // Session read failed — treat as not authenticated
+    if (session) {
+      // Session resolved but failed validation (empty token or expired).
+      const tokenPresent = Boolean(String(session?.token || "").trim());
+      if (!tokenPresent) {
+        resolveError = "session_token_missing";
+      } else if (String(session?.source || "").trim() === "session" && !isSessionUnexpired(session?.tokenExpiresAt)) {
+        resolveError = "session_expired";
+      } else {
+        resolveError = "session_invalid";
+      }
+    } else {
+      resolveError = "no_session";
+    }
+  } catch (error) {
+    resolveError = error instanceof Error ? `session_read_error: ${error.message}` : "session_read_error";
   }
 
-  return { authenticated: false, session: null, bypassReason: null };
+  return { authenticated: false, session: null, bypassReason: null, failureReason: resolveError };
 }
 
 /**
- * Print auth required message and exit.
+ * Print auth required message and exit. Optional failureReason surfaces the
+ * specific reason so users can diagnose stale sessions, expired tokens, and
+ * keyring failures without a round trip.
  */
-export function printAuthRequired() {
+export function printAuthRequired(failureReason = null) {
+  const reason = String(failureReason || "").trim();
   console.error("");
   console.error(pc.bold(pc.red("Authentication required.")));
   console.error("");
-  console.error("  Log in to SentinelLayer to use CLI commands:");
+  if (reason === "session_expired") {
+    console.error("  Your stored session has expired. Log in again:");
+  } else if (reason === "session_token_missing") {
+    console.error("  Your session metadata is present but the token is missing");
+    console.error("  (likely a keyring read failure or mismatched storage).");
+    console.error("");
+    console.error("  " + pc.yellow("Fix:") + " log out to clear the stale metadata, then log in:");
+    console.error("    " + pc.cyan("sentinelayer-cli auth logout"));
+  } else if (reason && reason.startsWith("session_read_error")) {
+    console.error("  Session read failed: " + pc.yellow(reason.replace(/^session_read_error:\s*/, "")));
+    console.error("  Log out and back in to reset local state:");
+    console.error("    " + pc.cyan("sentinelayer-cli auth logout"));
+  } else {
+    console.error("  Log in to SentinelLayer to use CLI commands:");
+  }
   console.error("");
   console.error("    " + pc.cyan(authLoginHint()));
   console.error("");
   console.error("  This opens your browser to authenticate via GitHub or Google.");
   console.error("  Your session is encrypted and stored locally.");
   console.error("");
-  console.error("  " + pc.gray("Why? All CLI operations sync to your SentinelLayer account —"));
-  console.error("  " + pc.gray("audit reports, findings, cost tracking, and run history."));
+  if (!reason || reason === "no_session") {
+    console.error("  " + pc.gray("Why? All CLI operations sync to your SentinelLayer account —"));
+    console.error("  " + pc.gray("audit reports, findings, cost tracking, and run history."));
+  } else {
+    console.error("  " + pc.gray(`Diagnostic: ${reason}`));
+  }
   console.error("");
   process.exitCode = 1;
 }
