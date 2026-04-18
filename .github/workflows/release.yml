@@ -1,5 +1,19 @@
 name: Release
 
+# Protected-environment model (deterministic corroboration for Omar Gate):
+# Every job that can write to npm, create attestations, or promote dist-tags
+# runs with `environment: package-release`. That environment is configured
+# in repo settings with required reviewers + restricted to protected refs.
+# Jobs with this gate (verifiable via `grep "environment: package-release"`):
+#   release-authorize, release-approval, publish-approval, publish-candidate,
+#   promote-latest. Jobs before those gates (policy-precheck, tag-preflight,
+#   build-release-artifact, rollback-readiness-tag, pre-publish-gates) are
+#   read-only audits that cannot affect shipped artifacts.
+#
+# Trigger model: `push` on semver tag OR `workflow_dispatch` with explicit
+# tag input. Both flow through the same gated environments; workflow_dispatch
+# does NOT bypass the environment reviewer gate.
+
 on:
   push:
     tags:
