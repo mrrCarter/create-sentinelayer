@@ -239,7 +239,7 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
   const { checkAuthGate, printAuthRequired } = await import("./auth/gate.js");
   const authResult = await checkAuthGate(normalizedArgs);
   if (!authResult.authenticated) {
-    printAuthRequired();
+    printAuthRequired(authResult.failureReason);
     return;
   }
 
