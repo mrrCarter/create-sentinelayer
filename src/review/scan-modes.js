@@ -23,15 +23,23 @@
 //   are allowed, e.g. Maya Volkov has both "architecture" and "backend" visuals
 //   because both roles fold into her architecture dispatch).
 //
-// Visuals-only (defined but NOT dispatched) today: "backend" (Maya, folded into
-// "architecture"), "code-quality" (Ethan Park, no current dispatch path),
-// "data" (Linh Tran, no current dispatch path). These are future-roadmap slots.
+// Canon update (2026-04-18): "backend" (Maya Volkov, ex-AWS Platform),
+// "code-quality" (Ethan Park, ex-Meta Code Health), and "data-layer"
+// (Dr. Linh Tran, ex-Netflix Data Platforms) are now dispatched personas
+// per Carter's canonical 13.
+// Removed:
+// - "architecture" — structural concerns fold into code-quality; runtime
+//   concerns fold into backend.
+// - "performance" — concerns distributed across backend / data-layer /
+//   frontend / observability / reliability.
+// - "compliance" — cross-cutting; distributed across security / ai-governance /
+//   supply-chain / infrastructure / documentation via subagent dispatch.
 const FULL_DEPTH_PERSONAS = [
   "security",
-  "architecture",
+  "backend",
+  "code-quality",
   "testing",
-  "performance",
-  "compliance",
+  "data-layer",
   "reliability",
   "release",
   "observability",
