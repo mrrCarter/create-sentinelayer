@@ -67,3 +67,81 @@ export function resolveScanMode(mode = "deep") {
 }
 
 export const AVAILABLE_SCAN_MODES = Object.keys(SCAN_MODES);
+
+/**
+ * Parse a comma-separated persona ID list from CLI input.
+ *
+ * Trims whitespace, lowercases, drops empty entries, deduplicates.
+ *
+ * @param {string | string[] | null | undefined} value
+ * @returns {string[]} Cleaned persona ID list.
+ */
+export function parsePersonaCsv(value) {
+  if (value == null) return [];
+  const raw = Array.isArray(value) ? value.join(",") : String(value);
+  const cleaned = raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+  return [...new Set(cleaned)];
+}
+
+/**
+ * Resolve a scan mode and then filter the persona list by opt-in / opt-out lists.
+ *
+ * Precedence:
+ *   1. Start with the base persona list for `mode`.
+ *   2. If `includeOnly` is a non-empty array, restrict to those IDs (in the
+ *      order they appear in the base list, for deterministic dispatch).
+ *   3. Remove any IDs in `skipPersonas`.
+ *
+ * If a caller passes `includeOnly` IDs that aren't in the base list, they
+ * are silently dropped (not errored) so typos don't block a run. The caller
+ * can check `result.unknown` to surface warnings in the UI.
+ *
+ * @param {string} [mode="deep"]
+ * @param {object} [options]
+ * @param {string[]} [options.includeOnly]  Only run these personas.
+ * @param {string[]} [options.skipPersonas] Skip these personas.
+ * @returns {{mode: string, personas: string[], dropped: string[], unknown: string[]}}
+ */
+export function resolveFilteredPersonas(mode = "deep", options = {}) {
+  const { includeOnly = null, skipPersonas = [] } = options || {};
+  const { mode: normalized, personas: base } = resolveScanMode(mode);
+
+  const basePersonas = [...base];
+  let filtered = basePersonas;
+  const unknown = [];
+
+  if (Array.isArray(includeOnly) && includeOnly.length > 0) {
+    const normalizedInclude = new Set(
+      includeOnly.map((p) => String(p).trim().toLowerCase()).filter(Boolean),
+    );
+    // Surface any include entries that aren't in the base mode list.
+    for (const id of normalizedInclude) {
+      if (!basePersonas.includes(id)) unknown.push(id);
+    }
+    filtered = basePersonas.filter((id) => normalizedInclude.has(id));
+  }
+
+  const dropped = [];
+  if (Array.isArray(skipPersonas) && skipPersonas.length > 0) {
+    const normalizedSkip = new Set(
+      skipPersonas.map((p) => String(p).trim().toLowerCase()).filter(Boolean),
+    );
+    filtered = filtered.filter((id) => {
+      if (normalizedSkip.has(id)) {
+        dropped.push(id);
+        return false;
+      }
+      return true;
+    });
+  }
+
+  return {
+    mode: normalized,
+    personas: filtered,
+    dropped,
+    unknown,
+  };
+}
