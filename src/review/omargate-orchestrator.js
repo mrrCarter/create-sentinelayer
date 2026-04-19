@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 
 import { runAiReviewLayer } from "./ai-review.js";
 import { buildPersonaReviewPrompt, PERSONA_IDS } from "./persona-prompts.js";
-import { resolveScanMode } from "./scan-modes.js";
+import { resolveFilteredPersonas, resolveScanMode } from "./scan-modes.js";
 import { reconcileReviewFindings } from "./report.js";
 import { resolvePersonaVisual } from "../agents/persona-visuals.js";
 import { syncRunToDashboard } from "../telemetry/sync.js";
@@ -81,6 +81,8 @@ function decoratePersonaResult(personaId, baseResult) {
  * @param {string} [options.outputDir] - Output directory override
  * @param {object} [options.deterministic] - Deterministic scan results
  * @param {Function} [options.onEvent] - Event callback for streaming
+ * @param {string[] | null} [options.includeOnly] - Only run these persona IDs (filters scan-mode roster).
+ * @param {string[] | null} [options.skipPersonas] - Skip these persona IDs (filters scan-mode roster).
  * @returns {Promise<object>} Orchestrated results
  */
 export async function runOmarGateOrchestrator({
@@ -94,11 +96,41 @@ export async function runOmarGateOrchestrator({
   outputDir = "",
   deterministic = null,
   onEvent = null,
+  includeOnly = null,
+  skipPersonas = null,
 } = {}) {
   const runId = `omargate-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const startTime = Date.now();
 
-  const { mode, personas } = resolveScanMode(scanMode);
+  const filterRequested =
+    (Array.isArray(includeOnly) && includeOnly.length > 0)
+    || (Array.isArray(skipPersonas) && skipPersonas.length > 0);
+
+  const resolved = filterRequested
+    ? resolveFilteredPersonas(scanMode, {
+        includeOnly: Array.isArray(includeOnly) ? includeOnly : undefined,
+        skipPersonas: Array.isArray(skipPersonas) ? skipPersonas : undefined,
+      })
+    : { ...resolveScanMode(scanMode), dropped: [], unknown: [] };
+
+  const { mode, personas } = resolved;
+  const droppedPersonas = resolved.dropped || [];
+  const unknownPersonas = resolved.unknown || [];
+
+  if (onEvent && (droppedPersonas.length > 0 || unknownPersonas.length > 0)) {
+    onEvent(createAgentEvent({
+      event: "omargate_persona_filter",
+      agent: OMAR_ORCHESTRATOR_AGENT,
+      payload: {
+        runId,
+        mode,
+        dropped: droppedPersonas,
+        unknown: unknownPersonas,
+        effective: personas,
+      },
+      runId,
+    }));
+  }
 
   const roster = personas.map((personaId) => {
     const visual = resolvePersonaVisual(personaId) || {};
