@@ -26,6 +26,44 @@ export const PERSONA_VISUALS = Object.freeze({
 });
 
 /**
+ * Visual identity for the orchestrator tier (Dr. Kai Chen / Senti).
+ *
+ * Kept SEPARATE from PERSONA_VISUALS so the dispatch-invariant test
+ * (FULL_DEPTH_PERSONAS ⊆ PERSONA_VISUALS keys) isn't polluted by
+ * non-review entries. Consumers that need the orchestrator visual
+ * import ORCHESTRATOR_VISUALS or call resolveOrchestratorVisual().
+ */
+export const ORCHESTRATOR_VISUALS = Object.freeze({
+  "kai-chen": {
+    color: "gold",
+    avatar: "\u{1F3AD}",
+    shortName: "Kai",
+    fullName: "Dr. Kai Chen",
+    domain: "orchestration",
+    specialty: "Global orchestrator — picks personas, deduplicates across domains, ranks by severity × confidence × blast radius, demands reproduction steps",
+    bias: "performance budgets; operational simplicity; correctness over cleverness",
+    role: "Global Orchestrator / Senti",
+  },
+});
+
+export function resolveOrchestratorVisual(idOrName) {
+  if (!idOrName) return null;
+  const lower = String(idOrName).toLowerCase();
+  if (ORCHESTRATOR_VISUALS[lower]) {
+    return { id: lower, ...ORCHESTRATOR_VISUALS[lower] };
+  }
+  for (const [id, visual] of Object.entries(ORCHESTRATOR_VISUALS)) {
+    if (
+      visual.shortName.toLowerCase() === lower
+      || visual.fullName.toLowerCase() === lower
+    ) {
+      return { id, ...visual };
+    }
+  }
+  return null;
+}
+
+/**
  * Resolve persona visual identity by agent ID or persona name.
  */
 export function resolvePersonaVisual(idOrName) {
