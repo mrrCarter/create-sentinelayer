@@ -1,4 +1,5 @@
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -407,6 +408,11 @@ export async function lockFile(
         lockedAt,
         expiresAt,
         ttlSeconds: normalizedTtlSeconds,
+        // Forensic holder metadata. Not used for correctness (TTL-based
+        // reclaim handles liveness), but lets operators see which process
+        // on which host took a lock when debugging stale-lock incidents.
+        holderPid: process.pid,
+        holderHostname: os.hostname(),
       };
       registry.locks[normalizedFilePath] = lockRecord;
       return {
