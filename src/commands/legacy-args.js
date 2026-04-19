@@ -19,6 +19,13 @@ function appendOutputDirFlag(args, maybeOutputDir) {
   }
 }
 
+function appendPassthroughFlag(args, flagName, maybeValue) {
+  const value = String(maybeValue || "").trim();
+  if (value) {
+    args.push(flagName, value);
+  }
+}
+
 export function buildLegacyArgs(baseArgs, { commandOptions = {}, command } = {}) {
   const args = [...baseArgs];
   appendPathFlag(args, commandOptions.path);
@@ -26,5 +33,8 @@ export function buildLegacyArgs(baseArgs, { commandOptions = {}, command } = {})
   if (wantsJsonOutput(commandOptions, command)) {
     args.push("--json");
   }
+  // Omar Gate per-persona filter flags (A-CLI-1).
+  appendPassthroughFlag(args, "--persona", commandOptions.persona);
+  appendPassthroughFlag(args, "--skip-persona", commandOptions.skipPersona);
   return args;
 }

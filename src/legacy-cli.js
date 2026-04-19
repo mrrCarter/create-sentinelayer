@@ -1124,6 +1124,14 @@ async function runLocalOmarGateCommand(args) {
   const scanMode = getCommandOptionValue(args, "--scan-mode") || "deep";
   const maxParallel = parseInt(getCommandOptionValue(args, "--max-parallel") || "4", 10) || 4;
   const streamEnabled = hasCommandOption(args, "--stream");
+  // Per-persona filter flags (A-CLI-1). --persona <csv> narrows the dispatch
+  // roster to the listed IDs; --skip-persona <csv> removes listed IDs from
+  // whatever the mode's baseline roster is. Both can be combined.
+  const personaCsvFlag = getCommandOptionValue(args, "--persona") || "";
+  const skipPersonaCsvFlag = getCommandOptionValue(args, "--skip-persona") || "";
+  const { parsePersonaCsv } = await import("./review/scan-modes.js");
+  const includeOnly = parsePersonaCsv(personaCsvFlag);
+  const skipPersonas = parsePersonaCsv(skipPersonaCsvFlag);
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -1186,6 +1194,8 @@ async function runLocalOmarGateCommand(args) {
           metadata: deterministic.metadata || {},
         },
         onEvent: streamHandler,
+        includeOnly: includeOnly.length > 0 ? includeOnly : null,
+        skipPersonas: skipPersonas.length > 0 ? skipPersonas : null,
       });
 
       // Use orchestrator results as the AI layer. aiResult represents ONLY
