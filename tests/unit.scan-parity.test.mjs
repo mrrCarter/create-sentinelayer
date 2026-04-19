@@ -9,10 +9,10 @@ import { resolveScanMode } from "../src/review/scan-modes.js";
 
 const EXPECTED_FULL_DEPTH_PERSONAS = [
   "security",
-  "architecture",
+  "backend",
+  "code-quality",
   "testing",
-  "performance",
-  "compliance",
+  "data-layer",
   "reliability",
   "release",
   "observability",
