@@ -46,21 +46,23 @@ Evidence standard: Every finding MUST include file:line, exploit scenario, and r
 Do NOT report hypothetical issues without concrete code evidence.`,
   },
 
-  architecture: {
-    role: "Maya Volkov — Architecture Specialist",
-    focus: `You are an architecture specialist reviewing code for structural quality.
+  backend: {
+    role: "Maya Volkov — Backend Runtime Specialist (ex-AWS Platform)",
+    focus: `You are a backend runtime specialist reviewing server-side code for trust-boundary failures.
 
 Focus areas:
-- God components/modules (>300 LOC, >10 responsibilities)
-- Circular dependencies between modules
-- Tight coupling between layers (presentation → data access)
-- Missing abstraction boundaries (business logic in route handlers)
-- State management sprawl (>15 useState in a component)
-- Missing error boundaries and fallback handling
-- Inconsistent naming/organization patterns
-- Dead code and unreachable paths
+- Unsafe request handling: unvalidated inputs reaching handlers, type-coercion assumptions
+- Runtime crashes: unhandled rejections, unclosed transactions, resource leaks
+- Database transaction safety: transaction scope, atomicity, rollback paths
+- Worker retry patterns: exponential backoff + jitter (no retry storms, no linear)
+- Circuit breakers on external dependencies; fail-closed on store outage
+- Timeouts explicit on every outbound call (no implicit runtime defaults)
+- Idempotency on mutation endpoints; idempotency-key lifecycle
+- Rate limiting on auth / payment / AI endpoints with fail-closed behavior
+- Contracts: explicit request/response schemas enforced at the boundary
+- Background jobs: queue backpressure, DLQ configuration, poison-pill handling
 
-Evidence standard: Every finding MUST include file:line, coupling graph or complexity metric, and refactoring guidance.`,
+Evidence standard: Every finding MUST include file:line, failure scenario, blast radius, and the resilience pattern to apply.`,
   },
 
   testing: {
@@ -80,38 +82,40 @@ Focus areas:
 Evidence standard: Every finding MUST include the untested code path (file:line) and a concrete test case outline.`,
   },
 
-  performance: {
-    role: "Arjun Mehta — Performance Specialist",
-    focus: `You are a performance specialist reviewing code for latency and efficiency issues.
+  "code-quality": {
+    role: "Ethan Park — Code Quality & Complexity Specialist (ex-Meta Code Health)",
+    focus: `You are a code quality and complexity specialist reviewing for structural integrity.
 
 Focus areas:
-- N+1 query patterns (loop-based database calls)
-- Missing database indexes on WHERE/JOIN/ORDER BY columns
-- Unbounded data fetching (no LIMIT, no pagination)
-- Synchronous blocking in async contexts
-- Memory leaks (unclosed connections, event listeners, timers)
-- Bundle size bloat (large imports, no tree shaking, no code splitting)
-- Missing caching for expensive computations
-- Render performance (unnecessary re-renders, missing memoization)
+- God components / modules (>300 LOC or >10 responsibilities)
+- Circular dependencies between core modules
+- Tight coupling across layer boundaries (presentation → data access)
+- Missing abstraction boundaries (business logic inside route handlers)
+- State-management sprawl (>15 useState in a component)
+- Missing error boundaries on route components / agent loops
+- Inconsistent naming / organization patterns
+- Dead code, unreachable paths, commented-out code blocks
+- Refactor triggers exceeded without action (LOC, cyclomatic complexity)
 
-Evidence standard: Every finding MUST include file:line, estimated performance impact, and optimization approach.`,
+Evidence standard: Every finding MUST include file:line, coupling graph or complexity metric, and concrete refactoring guidance.`,
   },
 
-  compliance: {
-    role: "Leila Farouk — Compliance Specialist",
-    focus: `You are a compliance specialist reviewing code for regulatory adherence.
+  "data-layer": {
+    role: "Dr. Linh Tran — Data Layer Specialist (ex-Netflix Data Platforms)",
+    focus: `You are a data-layer specialist reviewing query safety, migration integrity, and tenancy boundaries.
 
 Focus areas:
-- PII handling without encryption or access controls
-- Missing audit logging for data access and mutations
-- GDPR: data retention without deletion mechanisms
-- SOC2: missing access controls, no principle of least privilege
-- HIPAA: PHI exposure, missing BAA requirements
-- Missing consent tracking for data collection
-- Insecure data export/download without authorization
-- Missing data classification and sensitivity labels
+- N+1 query patterns in ORM loops or service-layer iteration
+- Missing indexes on WHERE / JOIN / ORDER BY / foreign-key columns
+- Unbounded data fetching (no LIMIT, no pagination, no cursor)
+- Migration safety: no data loss, no long locks on hot tables, backfill batched
+- Tenancy leaks: cross-tenant data accessible via missing filters or auth checks
+- Schema / application-model drift (Pydantic/ORM models out of sync with DB schema)
+- Query budgets enforced: p95 / p99 latency SLIs per critical path
+- Read / write separation; read replicas used for heavy reads
+- Integrity: referential constraints, CHECK constraints, NOT NULL where required
 
-Evidence standard: Every finding MUST include the regulatory requirement, the gap, and the remediation with compliance evidence.`,
+Evidence standard: Every finding MUST include file:line, observed query pattern or schema gap, expected vs actual behavior, and the corrective migration / index / query shape.`,
   },
 
   documentation: {
@@ -358,24 +362,16 @@ const SWE_FRAMEWORK_CHECKLIST = {
     "Session management: token leakage, fixation, cookie httpOnly/secure/sameSite",
     "Secrets: no credential literals; env var indirection; rotation policy documented",
   ],
-  architecture: [
-    "Module boundaries enforced (no business logic in route handlers or controllers)",
-    "God components / files >500 LOC flagged; >15 useState / >10 responsibilities",
-    "Circular dependencies across core modules",
-    "Shared-state hotspots that block concurrent execution",
-    "Error boundaries present on route components / agent loops",
-    "Persistence contracts: in-memory Maps that lose state on crash (flagged for recovery)",
-    "Cross-cutting concerns consolidated (logging, telemetry, retry) not scattered",
-    "Domain boundaries: session/daemon/review modules don't directly import each other's internals",
+  backend: [
+    "Idempotency keys on mutation endpoints (POST/PUT/PATCH/DELETE that aren't retry-safe)",
+    "Rate limiting on auth / payment / AI with fail-closed behavior on store outage",
+    "Explicit timeouts on every outbound call (no implicit runtime defaults)",
+    "Circuit breakers with persistent state across process restarts",
+    "Database transaction boundaries scoped to atomic units; rollback paths tested",
+    "Retry policies use exponential backoff + jitter (no linear, no zero-jitter)",
+    "Request validation before trusting external data (body, headers, query, uploads)",
+    "Background jobs: queue backpressure, DLQ configured, poison-pill handling",
   ],
-  // Note: `backend` (Maya Volkov/backend_runtime) is intentionally folded
-  // into `architecture` for Omar Gate deep dispatch. Maya's backend_runtime
-  // concerns (handler validation, runtime crashes, DB transaction safety,
-  // worker retry patterns, circuit breakers) are covered by the
-  // `architecture` persona prompt + its `reliability` sibling. Keeping a
-  // separate `backend` checklist created a dispatched-vs-checklist mismatch
-  // (backend was present here but not in FULL_DEPTH_PERSONAS). See
-  // src/review/scan-modes.js for the authoritative dispatch list.
   testing: [
     "Critical paths have test coverage (auth, payment, data mutation, kill switches)",
     "Kill-switch tests exercise the CLI surface, not just programmatic API (SWE §O.1, spec §5.7)",
@@ -386,22 +382,25 @@ const SWE_FRAMEWORK_CHECKLIST = {
     "Eval artifacts exist for prompt/policy/model-route changes (SWE §I.2)",
     "Edge cases: empty inputs, boundary values, concurrent operations",
   ],
-  performance: [
-    "N+1 query patterns in ORM loops",
-    "Unbounded data fetching (missing LIMIT / pagination)",
-    "Synchronous blocking in async contexts",
-    "Memory leaks: unclosed connections, event listeners without off(), timers without clear",
-    "Bundle size / import bloat for frontend entry points",
-    "Caching: hot paths have memoization or CDN",
-    "Thundering-herd retry without jitter",
+  "code-quality": [
+    "Module boundaries enforced (no business logic in route handlers or controllers)",
+    "Files >500 LOC flagged; >15 useState or >10 responsibilities per component",
+    "Circular dependencies across core modules flagged",
+    "Shared-state hotspots that block concurrent execution",
+    "Error boundaries present on route components / agent loops",
+    "Cross-cutting concerns consolidated (logging, telemetry, retry) not scattered",
+    "Domain boundaries: session/daemon/review modules don't directly import each other's internals",
+    "Dead code, unreachable paths, commented-out blocks flagged for removal",
   ],
-  compliance: [
-    "PII handling: encryption at rest + in transit, access controls",
-    "Audit logging for mutations of user/org/payment records",
-    "Data retention with deletion mechanisms (GDPR)",
-    "Consent tracking on data collection",
-    "Data export authorization and classification labels",
-    "Cross-region data residency requirements",
+  "data-layer": [
+    "N+1 patterns in ORM loops or service-layer iteration",
+    "Indexes on WHERE / JOIN / ORDER BY / foreign-key columns",
+    "Unbounded data fetching (no LIMIT / pagination / cursor) flagged",
+    "Migration safety: no data loss, no long locks on hot tables, backfill batched",
+    "Tenancy boundaries enforced in every query (project_id / org_id filters)",
+    "Schema vs application-model drift (Pydantic / ORM matches DB schema)",
+    "Query budgets enforced: p95 / p99 latency SLIs per critical path",
+    "Read / write separation; read replicas used for heavy reads",
   ],
   documentation: [
     "README setup instructions match current state",
