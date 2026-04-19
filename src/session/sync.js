@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 
 import { resolveActiveAuthSession } from "../auth/service.js";
@@ -12,14 +15,89 @@ const HUMAN_MESSAGE_LIMIT_PER_MINUTE = 10;
 const HUMAN_MESSAGE_MAX_LENGTH = 2_000;
 const HUMAN_MESSAGE_FETCH_LIMIT = 50;
 
+// Audit §2.9: crash-recovery contract for in-memory circuit state.
+// Persist outbound/inbound circuit state to disk so a process restart
+// doesn't drop an open circuit, causing thundering-herd retries against a
+// still-degraded API. The on-disk envelope carries acquiredAt so that the
+// hydrator can reject entries older than CIRCUIT_RESET_MS — after the
+// reset window the circuit is considered closed regardless of persisted
+// state. Write-through is best-effort; failure never blocks local CLI.
+const CIRCUIT_STATE_FILE_DIR = ".sentinelayer";
+const CIRCUIT_STATE_FILE_NAME = "circuit-state.json";
+const CIRCUIT_STATE_SCHEMA_VERSION = "1.0.0";
+
+function resolveCircuitStateFilePath(homeDir) {
+  const resolvedHome = path.resolve(String(homeDir || os.homedir()));
+  return path.join(resolvedHome, CIRCUIT_STATE_FILE_DIR, CIRCUIT_STATE_FILE_NAME);
+}
+
+function hydrateCircuitFromDisk(homeDir) {
+  try {
+    const filePath = resolveCircuitStateFilePath(homeDir);
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return { outbound: null, inbound: null };
+    }
+    if (String(parsed.schemaVersion || "") !== CIRCUIT_STATE_SCHEMA_VERSION) {
+      return { outbound: null, inbound: null };
+    }
+    const nowMs = Date.now();
+    const reviveEntry = (entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const failures = Number(entry.consecutiveFailures || 0);
+      const openedAtMs = Number(entry.openedAtMs || 0);
+      if (!Number.isFinite(failures) || !Number.isFinite(openedAtMs)) return null;
+      if (failures < MAX_CONSECUTIVE_FAILURES) return null;
+      if (openedAtMs <= 0) return null;
+      if (nowMs - openedAtMs >= CIRCUIT_RESET_MS) return null;
+      return { consecutiveFailures: failures, openedAtMs };
+    };
+    return {
+      outbound: reviveEntry(parsed.outbound),
+      inbound: reviveEntry(parsed.inbound),
+    };
+  } catch {
+    return { outbound: null, inbound: null };
+  }
+}
+
+function persistCircuitState(homeDir) {
+  try {
+    const filePath = resolveCircuitStateFilePath(homeDir);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const payload = {
+      schemaVersion: CIRCUIT_STATE_SCHEMA_VERSION,
+      writtenAtMs: Date.now(),
+      writerPid: process.pid,
+      writerHostname: os.hostname(),
+      outbound: {
+        consecutiveFailures: outboundCircuit.consecutiveFailures,
+        openedAtMs: outboundCircuit.openedAtMs,
+      },
+      inbound: {
+        consecutiveFailures: inboundCircuit.consecutiveFailures,
+        openedAtMs: inboundCircuit.openedAtMs,
+      },
+    };
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload), { encoding: "utf-8", mode: 0o600 });
+    fs.renameSync(tmpPath, filePath);
+  } catch {
+    // Best-effort only; local CLI must not crash on telemetry persistence.
+  }
+}
+
+const _hydrated = hydrateCircuitFromDisk();
+
 const outboundCircuit = {
-  consecutiveFailures: 0,
-  openedAtMs: 0,
+  consecutiveFailures: _hydrated.outbound?.consecutiveFailures ?? 0,
+  openedAtMs: _hydrated.outbound?.openedAtMs ?? 0,
 };
 
 const inboundCircuit = {
-  consecutiveFailures: 0,
-  openedAtMs: 0,
+  consecutiveFailures: _hydrated.inbound?.consecutiveFailures ?? 0,
+  openedAtMs: _hydrated.inbound?.openedAtMs ?? 0,
 };
 
 const sessionIngestWindowBySessionId = new Map();
@@ -122,6 +200,7 @@ function recordCircuitFailure(circuit, nowMs) {
   if (circuit.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
     circuit.openedAtMs = nowMs;
   }
+  persistCircuitState();
 }
 
 function recordCircuitSuccess(circuit) {
@@ -130,6 +209,30 @@ function recordCircuitSuccess(circuit) {
   }
   circuit.consecutiveFailures = 0;
   circuit.openedAtMs = 0;
+  persistCircuitState();
+}
+
+// Test-only helper. Resets both circuits in memory AND on disk so unit
+// tests that exercise hydration don't leak state across runs.
+export function __resetCircuitStateForTests(homeDir) {
+  outboundCircuit.consecutiveFailures = 0;
+  outboundCircuit.openedAtMs = 0;
+  inboundCircuit.consecutiveFailures = 0;
+  inboundCircuit.openedAtMs = 0;
+  try {
+    const filePath = resolveCircuitStateFilePath(homeDir);
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // ignore
+  }
+}
+
+export function __hydrateCircuitStateFromDiskForTests(homeDir) {
+  const hydrated = hydrateCircuitFromDisk(homeDir);
+  outboundCircuit.consecutiveFailures = hydrated.outbound?.consecutiveFailures ?? 0;
+  outboundCircuit.openedAtMs = hydrated.outbound?.openedAtMs ?? 0;
+  inboundCircuit.consecutiveFailures = hydrated.inbound?.consecutiveFailures ?? 0;
+  inboundCircuit.openedAtMs = hydrated.inbound?.openedAtMs ?? 0;
 }
 
 function enforceRollingLimit(windowByKey, key, {
