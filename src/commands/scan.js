@@ -15,6 +15,7 @@ import { loadConfig, resolveOutputRoot } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
+import { estimateTokens } from "../cost/tokenizer.js";
 import {
   applyPolicyPackToScanProfile,
   resolveActivePolicyPack,
@@ -166,14 +167,6 @@ function parsePercent(rawValue, field) {
     throw new Error(`${field} must be between 0 and 100.`);
   }
   return normalized;
-}
-
-function estimateTokenCount(text) {
-  const normalized = String(text || "");
-  if (!normalized) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
 }
 
 function resolveConfiguredApiKey(provider, resolvedConfig = {}) {
@@ -622,8 +615,8 @@ export function registerScanCommand(program) {
       await fsp.mkdir(path.dirname(reportPath), { recursive: true });
       await fsp.writeFile(reportPath, reportMarkdown, "utf-8");
 
-      const inputTokens = estimateTokenCount(prompt);
-      const outputTokens = estimateTokenCount(aiMarkdown);
+      const inputTokens = estimateTokens(prompt, { model: response.model });
+      const outputTokens = estimateTokens(aiMarkdown, { model: response.model });
       const modelCost = maybeEstimateModelCost({
         modelId: response.model,
         inputTokens,

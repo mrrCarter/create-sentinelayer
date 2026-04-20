@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createMultiProviderApiClient } from "../../ai/client.js";
 import { evaluateBudget } from "../../cost/budget.js";
+import { estimateTokens } from "../../cost/tokenizer.js";
 import { dispatchTool, createAgentContext, BudgetExhaustedError } from "./tools/dispatch.js";
 import { JULES_DEFINITION } from "./config/definition.js";
 import { shouldSpawnSubAgents, runJulesSwarm } from "./swarm/orchestrator.js";
@@ -223,8 +224,9 @@ export async function* julesAuditLoop(config) {
     }
 
     const responseText = response.text || "";
-    ctx.usage.outputTokens += Math.ceil(responseText.length / 4);
-    ctx.usage.costUsd += (Math.ceil(responseText.length / 4) / 1_000_000) * 15;
+    const responseTokens = estimateTokens(responseText, { provider: "anthropic" });
+    ctx.usage.outputTokens += responseTokens;
+    ctx.usage.costUsd += (responseTokens / 1_000_000) * 15;
 
     yield emit("reasoning", {
       phase: "deep_analysis",
@@ -337,8 +339,9 @@ export async function* julesAuditLoop(config) {
         });
 
         const reconcileText = reconcileResponse.text || "";
-        ctx.usage.outputTokens += Math.ceil(reconcileText.length / 4);
-        ctx.usage.costUsd += (Math.ceil(reconcileText.length / 4) / 1_000_000) * 15;
+        const reconcileTokens = estimateTokens(reconcileText, { provider: "anthropic" });
+        ctx.usage.outputTokens += reconcileTokens;
+        ctx.usage.costUsd += (reconcileTokens / 1_000_000) * 15;
 
         yield emit("reasoning", { phase: "reconciliation", summary: reconcileText.slice(0, 200) });
 
