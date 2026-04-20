@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createAgentContext, dispatchTool, isReadOnlyTool, BudgetExhaustedError } from "../tools/dispatch.js";
 import { createMultiProviderApiClient } from "../../../ai/client.js";
 import { createAgentEvent } from "../../../events/schema.js";
+import { estimateTokens as estimateTokensProviderAware } from "../../../cost/tokenizer.js";
 
 /**
  * JulesSubAgent — lightweight isolated agent for parallel audit work.
@@ -294,7 +295,10 @@ function formatToolResults(results) {
 }
 
 function estimateTokens(text) {
-  return Math.ceil((text || "").length / 4);
+  // Provider-aware heuristic (#A12). Jules defaults to Claude Sonnet so we
+  // bias toward the Anthropic tokenizer ratios; callers outside Jules pay
+  // the same cost since the routing goes through tracker.js anyway.
+  return estimateTokensProviderAware(text, { provider: "anthropic" });
 }
 
 function estimateCost(text) {

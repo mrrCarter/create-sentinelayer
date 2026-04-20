@@ -10,6 +10,7 @@ import { loadConfig } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
+import { estimateTokens } from "../cost/tokenizer.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 
 const AI_SEVERITIES = new Set(["P0", "P1", "P2", "P3"]);
@@ -34,14 +35,6 @@ function parsePercent(rawValue, field) {
     throw new Error(`${field} must be between 0 and 100.`);
   }
   return normalized;
-}
-
-function estimateTokenCount(text) {
-  const normalized = String(text || "");
-  if (!normalized) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
 }
 
 function resolveConfiguredApiKey(provider, resolvedConfig = {}) {
@@ -479,8 +472,8 @@ export async function runAiReviewLayer({
   };
   combinedSummary.blocking = combinedSummary.P0 > 0 || combinedSummary.P1 > 0;
 
-  const inputTokens = estimateTokenCount(prompt);
-  const outputTokens = estimateTokenCount(responseText);
+  const inputTokens = estimateTokens(prompt, { model: resolvedModel });
+  const outputTokens = estimateTokens(responseText, { model: resolvedModel });
   const modelCost = maybeEstimateModelCost({
     modelId: resolvedModel,
     inputTokens,
