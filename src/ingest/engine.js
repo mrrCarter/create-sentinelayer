@@ -916,3 +916,18 @@ export async function generateCodebaseIngest({
     outputPath,
   };
 }
+
+// File → persona ownership routing (#A10, spec §5.7). Implementation lives
+// in ./ownership.js to keep this 918-LOC module from ballooning; re-exported
+// here so existing callers that already import from ingest/engine.js can
+// reach the new API without extra plumbing.
+export {
+  buildOwnershipMap,
+  computeRoutingStats,
+  loadScaffoldConfig,
+  parseScaffoldYaml,
+  routeFileHeuristic,
+  routeFindingsToPersonas,
+  DEFAULT_HEURISTIC_FALLBACK,
+  SCAFFOLD_RELATIVE_PATH,
+} from "./ownership.js";
