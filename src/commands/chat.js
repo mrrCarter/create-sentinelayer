@@ -10,6 +10,7 @@ import {
   resolveProvider,
 } from "../ai/client.js";
 import { resolveOutputRoot } from "../config/service.js";
+import { estimateTokens } from "../cost/tokenizer.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -22,14 +23,6 @@ function createSessionId() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   const random = Math.random().toString(36).slice(2, 8);
   return `${stamp}-${random}`;
-}
-
-function estimateTokens(text) {
-  const normalized = String(text || "");
-  if (!normalized) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
 }
 
 async function readPromptFromStdin() {
@@ -132,8 +125,8 @@ export function registerChatCommand(program) {
 
       const durationMs = Date.now() - startedAt;
       const generatedAt = new Date().toISOString();
-      const inputTokens = estimateTokens(prompt);
-      const outputTokens = estimateTokens(responseText);
+      const inputTokens = estimateTokens(prompt, { model });
+      const outputTokens = estimateTokens(responseText, { model });
 
       await appendTranscriptEntries({
         transcriptPath,

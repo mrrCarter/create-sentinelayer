@@ -1,3 +1,5 @@
+import { estimateTokens } from "./tokenizer.js";
+
 const DEFAULT_MODEL_PRICING = Object.freeze({
   "gpt-4o": Object.freeze({
     inputPerMillionUsd: 2.5,
@@ -14,6 +16,18 @@ const DEFAULT_MODEL_PRICING = Object.freeze({
   "claude-sonnet-4.5": Object.freeze({
     inputPerMillionUsd: 3.0,
     outputPerMillionUsd: 15.0,
+  }),
+  "claude-sonnet-4-6": Object.freeze({
+    inputPerMillionUsd: 3.0,
+    outputPerMillionUsd: 15.0,
+  }),
+  "claude-opus-4-6": Object.freeze({
+    inputPerMillionUsd: 15.0,
+    outputPerMillionUsd: 75.0,
+  }),
+  "claude-opus-4-7": Object.freeze({
+    inputPerMillionUsd: 15.0,
+    outputPerMillionUsd: 75.0,
   }),
   "gemini-2.5-pro": Object.freeze({
     inputPerMillionUsd: 2.5,
@@ -154,6 +168,53 @@ export function enforceCostBudget({ totalCostUsd = 0, budgetUsd = 0 } = {}) {
     remainingUsd,
     exceeded: normalizedTotal > normalizedBudget,
   };
+}
+
+/**
+ * Estimate token counts + cost from raw text via the provider-aware tokenizer
+ * (#A12). Combines the tokenizer from ./tokenizer.js with the pricing table
+ * so callers don't have to thread both.
+ *
+ * @param {{
+ *   modelId: string,
+ *   inputText?: string,
+ *   outputText?: string,
+ *   pricingTable?: Record<string, { inputPerMillionUsd: number, outputPerMillionUsd: number }>,
+ *   tokenizerBackend?: (text: string) => number
+ * }} [options]
+ * @returns {{
+ *   modelId: string,
+ *   inputTokens: number,
+ *   outputTokens: number,
+ *   costUsd: number
+ * }}
+ */
+export function estimateCostForText({
+  modelId,
+  inputText = "",
+  outputText = "",
+  pricingTable = DEFAULT_MODEL_PRICING,
+  tokenizerBackend = null,
+} = {}) {
+  const normalizedModelId = String(modelId || "").trim();
+  if (!normalizedModelId) {
+    throw new Error("modelId is required for text-based cost estimation.");
+  }
+  const inputTokens = estimateTokens(inputText, {
+    model: normalizedModelId,
+    backend: tokenizerBackend,
+  });
+  const outputTokens = estimateTokens(outputText, {
+    model: normalizedModelId,
+    backend: tokenizerBackend,
+  });
+  const costUsd = estimateModelCost({
+    modelId: normalizedModelId,
+    inputTokens,
+    outputTokens,
+    pricingTable,
+  });
+  return { modelId: normalizedModelId, inputTokens, outputTokens, costUsd };
 }
 
 /**

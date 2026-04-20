@@ -2,6 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { collectCodebaseIngest, generateCodebaseIngest } from "../ingest/engine.js";
 import { createAgentEvent } from "../events/schema.js";
+import {
+  buildAstSnapshot,
+  detectAstDrift,
+  writeAstSnapshot,
+} from "./ast-drift.js";
 
 /**
  * Pulse Ingest Refresh — periodic codebase re-index.
@@ -55,18 +60,56 @@ export function detectIngestDrift(targetPath) {
  * Run a budget-gated ingest refresh.
  * Aborts if refresh takes longer than maxDurationMs.
  *
+ * Drift detection (#A11, spec §5.7): when `driftMode` is "ast" we use the
+ * AST signature diff (new exports / imports, removed files, renamed
+ * signatures); otherwise we fall back to the quick file-count heuristic for
+ * backward compatibility. AST mode writes a snapshot after every refresh so
+ * subsequent runs can diff against it.
+ *
  * @param {string} targetPath
  * @param {object} [options]
  * @param {number} [options.maxDurationMs] - Max refresh time (default 30s)
+ * @param {"file-count"|"ast"} [options.driftMode="file-count"]
  * @param {function} [options.onEvent] - Event callback
  * @returns {Promise<{ refreshed: boolean, reason: string, durationMs: number }>}
  */
 export async function refreshIngestIfNeeded(targetPath, options = {}) {
   const maxDurationMs = options.maxDurationMs || DEFAULT_MAX_DURATION_MS;
-  const drift = detectIngestDrift(targetPath);
+  const driftMode = options.driftMode === "ast" ? "ast" : "file-count";
+  let astOutcome = null;
+
+  if (driftMode === "ast") {
+    astOutcome = await detectAstDrift({ rootPath: targetPath });
+    if (!astOutcome.driftDetected) {
+      return {
+        refreshed: false,
+        reason: "no_drift",
+        durationMs: 0,
+        driftMode,
+        astReason: astOutcome.reason || null,
+      };
+    }
+  }
+
+  const drift =
+    driftMode === "file-count"
+      ? detectIngestDrift(targetPath)
+      : {
+          changed: true,
+          currentFileCount: 0,
+          lastFileCount: 0,
+          delta: 0,
+          astReason: astOutcome?.reason || null,
+        };
 
   if (!drift.changed) {
-    return { refreshed: false, reason: "no_drift", durationMs: 0, ...drift };
+    return {
+      refreshed: false,
+      reason: "no_drift",
+      durationMs: 0,
+      driftMode,
+      ...drift,
+    };
   }
 
   if (options.onEvent) {
@@ -104,6 +147,19 @@ export async function refreshIngestIfNeeded(targetPath, options = {}) {
 
     const durationMs = Date.now() - startMs;
 
+    // On AST mode, persist the new snapshot so the next run diffs against
+    // what we just observed, not against a stale baseline.
+    if (driftMode === "ast" && astOutcome?.currentSnapshot) {
+      try {
+        await writeAstSnapshot({
+          rootPath: targetPath,
+          snapshot: astOutcome.currentSnapshot,
+        });
+      } catch {
+        // Snapshot write is best-effort — the refresh itself succeeded.
+      }
+    }
+
     if (options.onEvent) {
       options.onEvent(createAgentEvent({
         event: "ingest_refresh_complete",
@@ -112,6 +168,7 @@ export async function refreshIngestIfNeeded(targetPath, options = {}) {
           durationMs,
           filesScanned: ingest?.summary?.filesScanned || 0,
           delta: drift.delta,
+          driftMode,
         },
       }));
     }
@@ -120,6 +177,7 @@ export async function refreshIngestIfNeeded(targetPath, options = {}) {
       refreshed: true,
       reason: "drift_detected",
       durationMs,
+      driftMode,
       filesScanned: ingest?.summary?.filesScanned || 0,
       ...drift,
     };
@@ -194,3 +252,12 @@ function countFilesQuick(rootPath) {
   walk(rootPath);
   return count;
 }
+
+// AST-based drift detection surface (#A11). Re-exported here so callers that
+// already import from daemon/ingest-refresh.js can opt in without reaching
+// into the ast-drift module directly.
+export {
+  buildAstSnapshot,
+  detectAstDrift,
+  writeAstSnapshot,
+} from "./ast-drift.js";
