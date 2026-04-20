@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { resolveOutputRoot } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
+import { estimateTokens } from "../cost/tokenizer.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -23,14 +24,6 @@ function createRuntimeRunId() {
 
 function toPosixPath(value) {
   return String(value || "").replace(/\\/g, "/");
-}
-
-function estimateTokens(text) {
-  const normalized = normalizeString(text);
-  if (!normalized) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
 }
 
 function normalizeEngine(value) {

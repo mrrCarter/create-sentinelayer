@@ -13,6 +13,7 @@ import { loadConfig } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
+import { estimateTokens } from "../cost/tokenizer.js";
 import { formatIngestResolutionNotice, resolveCodebaseIngest } from "../ingest/engine.js";
 import {
   buildLineDiff,
@@ -143,14 +144,6 @@ async function detectSessionActive(targetPath) {
     }
   }
   return false;
-}
-
-function estimateTokenCount(text) {
-  const normalized = String(text || "");
-  if (!normalized) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
 }
 
 function resolveConfiguredApiKey(provider, resolvedConfig = {}) {
@@ -295,8 +288,8 @@ async function maybeEnhanceSpecWithAi({
   const normalizedText = String(result.text || "").trim();
   const enhancedMarkdown = normalizedText || baseSpecMarkdown;
 
-  const inputTokens = estimateTokenCount(prompt);
-  const outputTokens = estimateTokenCount(enhancedMarkdown);
+  const inputTokens = estimateTokens(prompt, { model: result.model });
+  const outputTokens = estimateTokens(enhancedMarkdown, { model: result.model });
   const modelCost = maybeEstimateModelCost({
     modelId: result.model,
     inputTokens,
