@@ -146,3 +146,98 @@ test("runInvestorDd: stream.ndjson is line-delimited JSON", async () => {
 test("runInvestorDd: rejects missing rootPath", async () => {
   await assert.rejects(() => runInvestorDd({}), /rootPath/);
 });
+
+test("runInvestorDd: writes compliance.json when not dryRun", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "LICENSE", "MIT\n");
+    await writeFile(root, "package.json", '{"name":"t","license":"MIT"}');
+    await writeFile(root, "src/app.js", "// ok\n");
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      compliancePacks: ["license"],
+    });
+    const compliance = await readJson(path.join(result.artifactDir, "compliance.json"));
+    assert.ok(compliance.packs.license);
+    assert.ok(result.summary.compliance);
+    assert.ok(typeof result.summary.compliance.totalGaps === "number");
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: runs live validator + reconciliation when clients supplied", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(
+      root,
+      "src/components/App.tsx",
+      `<button data-testid="submit">Submit</button>\n`,
+    );
+
+    const devTestBot = {
+      interact: async () => ({
+        interactionId: "i1",
+        statusCodeObserved: 200,
+        consoleErrors: [],
+      }),
+    };
+    const aidenid = {
+      provisionEphemeralIdentity: async () => ({ identityId: "aid-1", email: "x@y" }),
+      release: async () => {},
+    };
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      liveValidator: { devTestBot, aidenid, maxInteractions: 5 },
+    });
+
+    const liveObs = await readJson(path.join(result.artifactDir, "live-observations.json"));
+    assert.ok(Array.isArray(liveObs.observations));
+    assert.equal(result.summary.reconciliation, true);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: calls notification clients when supplied", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "// ok\n");
+    let emailSent = null;
+    let dashboardSent = null;
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      notification: {
+        notifyEmail: "ops@example.com",
+        emailClient: {
+          sendMarkdown: async (msg) => {
+            emailSent = msg;
+            return { id: "mid-1" };
+          },
+        },
+        dashboardClient: {
+          upload: async (card) => {
+            dashboardSent = card;
+            return { cardId: "c-1" };
+          },
+        },
+      },
+    });
+
+    assert.ok(emailSent);
+    assert.equal(emailSent.to, "ops@example.com");
+    assert.ok(dashboardSent);
+    assert.equal(dashboardSent.runId, result.runId);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
