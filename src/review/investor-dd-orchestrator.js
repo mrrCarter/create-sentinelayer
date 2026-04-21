@@ -35,6 +35,8 @@ import {
   createFindingObservationPair,
 } from "./live-validator.js";
 import { notifyRunCompleted } from "./investor-dd-notification.js";
+import { attachReproducibilityChain } from "./reproducibility-chain.js";
+import { renderInvestorDdHtml } from "./investor-dd-html-report.js";
 
 const INVESTOR_DD_PERSONAS = Object.freeze([
   "security",
@@ -313,6 +315,14 @@ export async function runInvestorDd({
       });
     }
 
+    // Reproducibility chain — attach a per-finding replay block + file
+    // SHA at finding time so each line in the report is re-verifiable.
+    findings = await attachReproducibilityChain({
+      findings,
+      rootPath,
+      runId,
+    });
+
     await writeJson(path.join(artifactBase, "findings.json"), findings);
     for (const [personaId, record] of Object.entries(byPersona)) {
       await writeJson(path.join(artifactBase, `persona-${personaId}.json`), record);
@@ -342,6 +352,16 @@ export async function runInvestorDd({
   const markdown = buildSummaryMarkdown({ runId, summary, routing, byPersona });
   const reportPath = path.join(artifactBase, "report.md");
   await fsp.writeFile(reportPath, markdown, "utf-8");
+
+  const htmlReport = renderInvestorDdHtml({
+    runId,
+    summary,
+    routing,
+    byPersona,
+    findings,
+    compliance: compliance ? compliance.packs : null,
+  });
+  await fsp.writeFile(path.join(artifactBase, "report.html"), htmlReport, "utf-8");
 
   emit({
     type: "investor_dd_complete",

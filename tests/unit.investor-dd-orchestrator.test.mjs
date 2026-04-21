@@ -205,6 +205,48 @@ test("runInvestorDd: runs live validator + reconciliation when clients supplied"
   }
 });
 
+test("runInvestorDd: writes report.html alongside report.md", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "const run = (x) => eval(x);\n");
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+    });
+    const files = await fsp.readdir(result.artifactDir);
+    assert.ok(files.includes("report.html"));
+    assert.ok(files.includes("report.md"));
+    const html = await fsp.readFile(path.join(result.artifactDir, "report.html"), "utf-8");
+    assert.ok(html.startsWith("<!doctype html>"));
+    assert.ok(html.includes(result.runId));
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: findings carry reproducibility metadata", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "const run = (x) => eval(x);\n");
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+    });
+    const findings = await readJson(path.join(result.artifactDir, "findings.json"));
+    assert.ok(findings.length > 0, "expected eval finding");
+    for (const f of findings) {
+      assert.ok(f.reproducibility, `finding missing reproducibility: ${f.kind}`);
+      assert.ok(f.reproducibility.replayCommand);
+      assert.ok(f.reproducibility.runId);
+      assert.ok(f.reproducibility.filesAtTime);
+    }
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runInvestorDd: calls notification clients when supplied", async () => {
   const root = await makeTempRepo();
   try {
