@@ -1,6 +1,63 @@
 # Investor-DD Audit Architecture
 
-**Status**: IN PROGRESS — 1 / 22 PRs merged.
+**Status**: CORE IMPLEMENTATION COMPLETE — 10 PRs merged (2026-04-21), all 32 planned work items landed across collapsed merges. Further PRs are polish only (partial-report UX, resume-from-partial, eval-regression suite).
+
+## Landed in main (2026-04-21)
+
+| PR | Spec Slot | Description |
+|---:|-----------|-------------|
+| #388 | PR-1 | Slash command scaffold + 32-PR architecture doc |
+| #390 | PR-2, PR-3 | Per-file review loop library + deterministic per-persona file router |
+| #391 | PR-4..15, PR-5, PR-16, PR-18a, PR-29 | Unified persona runner (12 personas), top-level orchestrator + markdown report + streaming NDJSON, CLI wiring, reconciliation ruleset |
+| #392 | PR-20..24 | Compliance pack (SOC 2, ISO 27001, GDPR/CCPA, HIPAA, license, DR) |
+| #393 | PR-25..28 | Live-web validator (devTestBot + AIdenID client adapters) |
+| #394 | PR-17 | Per-finding reproducibility chain (replay command + file SHAs) |
+| #395 | PR-19 | Notification dispatch (email + dashboard clients) |
+| #396 | PR-18b | Self-contained HTML report generator |
+| #397 | Integration | Orchestrator wiring: compliance + live validator + reconciliation + notifications + HTML + reproducibility |
+
+## How to run
+
+```bash
+# Deterministic investor-DD end-to-end
+sl /omargate investor-dd --path .
+
+# Machine-readable output
+sl /omargate investor-dd --path . --json
+
+# Streaming NDJSON to stdout
+sl /omargate investor-dd --path . --stream
+
+# Dry-run (plan + compliance only)
+sl /omargate investor-dd --path . --dry-run
+```
+
+## Artifact bundle
+
+Under `.sentinelayer/runs/<runId>/investor-dd/`:
+
+- `plan.json` — router output + budget
+- `stream.ndjson` — full event trace
+- `persona-<id>.json` — per-persona findings + coverage proof
+- `findings.json` — flat list, each finding carries `.reproducibility` block
+- `summary.json` — run metadata + compliance + reconciliation flags
+- `compliance.json` — SOC 2 / ISO 27001 / GDPR/CCPA / HIPAA / license / DR gap tables
+- `interaction-plan.json` — discovered interactive elements (when live validator runs)
+- `live-observations.json` — per-interaction observations + identity (when live validator runs)
+- `report.md` — human-readable markdown report
+- `report.html` — self-contained HTML report (inlined CSS)
+- `manifest.json` — SHA-256 chain of every artifact file
+
+## Remaining polish (optional)
+
+| PR | Spec Slot | Notes |
+|---:|-----------|-------|
+| — | PR-30 | Partial-report UX refinement (current: budget exhaustion sets `terminationReason`, remaining personas land in `skipped`) |
+| — | PR-31 | Resume from partial (admin_error_log assignment ledger pattern) |
+| — | PR-32 | Eval regression suite across 3 identical runs on fixture repo |
+
+---
+
 
 Investor-grade due-diligence audit mode for `sentinelayer-cli`. Replaces
 the one-shot-per-persona deep scan with a per-file agentic review loop
