@@ -26,6 +26,17 @@ import { routeFilesToPersonas, summarizeRouting } from "./investor-dd-file-route
 import { runAllPersonas } from "./investor-dd-persona-runner.js";
 import { createBudgetState } from "./investor-dd-file-loop.js";
 import { resolveInvestorDdBudget, INVESTOR_DD_ARTIFACT_SUBDIR } from "./investor-dd-config.js";
+import { runFullCompliancePack, COMPLIANCE_PACK_CATALOG } from "./compliance-pack.js";
+import { reconcileFindings, applyReportPolicy } from "./reconciliation-rules.js";
+import {
+  discoverInteractiveElements,
+  runLiveValidator,
+  buildObservationIndex,
+  createFindingObservationPair,
+} from "./live-validator.js";
+import { notifyRunCompleted } from "./investor-dd-notification.js";
+import { attachReproducibilityChain } from "./reproducibility-chain.js";
+import { renderInvestorDdHtml } from "./investor-dd-html-report.js";
 
 const INVESTOR_DD_PERSONAS = Object.freeze([
   "security",
@@ -162,11 +173,20 @@ function buildSummaryMarkdown({ runId, summary, routing, byPersona }) {
  *
  * @param {object} params
  * @param {string} params.rootPath
- * @param {string} [params.outputDir]        - Defaults to `<rootPath>/.sentinelayer/runs/<runId>`.
- * @param {object} [params.budgetOptions]    - Overrides from CLI: { maxUsd, maxRuntimeMinutes, maxParallel }.
- * @param {string[]} [params.personas]       - Override persona list; defaults to all 12.
- * @param {Function} [params.onEvent]        - Extra event sink (NDJSON stream is always written).
- * @param {boolean} [params.dryRun]          - If true, skip tool execution, emit plan.json + stub report only.
+ * @param {string} [params.outputDir]            - Defaults to `<rootPath>/.sentinelayer/runs/<runId>`.
+ * @param {object} [params.budgetOptions]        - Overrides from CLI: { maxUsd, maxRuntimeMinutes, maxParallel }.
+ * @param {string[]} [params.personas]           - Override persona list; defaults to all 12.
+ * @param {Function} [params.onEvent]            - Extra event sink (NDJSON stream is always written).
+ * @param {boolean} [params.dryRun]              - If true, skip tool execution, emit plan.json + stub report only.
+ * @param {string[]|null} [params.compliancePacks]  - Compliance pack IDs to run (default: all seven).
+ * @param {object} [params.liveValidator]        - Optional live-web validator config.
+ * @param {object} [params.liveValidator.devTestBot]    - DevTestBot client.
+ * @param {object} [params.liveValidator.aidenid]       - AIdenID client.
+ * @param {number} [params.liveValidator.maxInteractions]
+ * @param {object} [params.notification]         - Optional notification config.
+ * @param {string} [params.notification.notifyEmail]
+ * @param {object} [params.notification.emailClient]
+ * @param {object} [params.notification.dashboardClient]
  * @returns {Promise<{runId: string, artifactDir: string, summary: object}>}
  */
 export async function runInvestorDd({
@@ -176,6 +196,9 @@ export async function runInvestorDd({
   personas = INVESTOR_DD_PERSONAS,
   onEvent = () => {},
   dryRun = false,
+  compliancePacks = COMPLIANCE_PACK_CATALOG,
+  liveValidator = null,
+  notification = null,
 } = {}) {
   if (!rootPath) throw new TypeError("runInvestorDd requires rootPath");
 
@@ -219,6 +242,8 @@ export async function runInvestorDd({
   let byPersona = {};
   let findings = [];
   let terminationReason = "ok";
+  let reconciliationAvailable = false;
+  let compliance = null;
 
   if (!dryRun) {
     const budgetState = createBudgetState({
@@ -234,6 +259,69 @@ export async function runInvestorDd({
     byPersona = runResult.byPersona;
     findings = runResult.findings;
     terminationReason = runResult.terminationReason;
+
+    // Compliance pack (Leila Farouk persona-adjacent dispatch). Deterministic,
+    // no LLM — an acquirer's auditor can re-run and get the same gap table.
+    emit({ type: "investor_dd_compliance_start" });
+    compliance = await runFullCompliancePack({
+      rootPath,
+      packs: Array.isArray(compliancePacks) ? compliancePacks : COMPLIANCE_PACK_CATALOG,
+    });
+    await writeJson(path.join(artifactBase, "compliance.json"), compliance);
+    emit({
+      type: "investor_dd_compliance_complete",
+      totalCovered: compliance.totalCovered,
+      totalGaps: compliance.totalGaps,
+    });
+
+    // Live-web validation (Jules): optional; only runs when both
+    // devTestBot + aidenid clients are supplied (pluggable contracts).
+    if (
+      liveValidator &&
+      liveValidator.devTestBot &&
+      liveValidator.aidenid
+    ) {
+      emit({ type: "investor_dd_live_start" });
+      const elements = await discoverInteractiveElements(rootPath);
+      await writeJson(path.join(artifactBase, "interaction-plan.json"), elements);
+      const live = await runLiveValidator({
+        runId,
+        elements,
+        devTestBot: liveValidator.devTestBot,
+        aidenid: liveValidator.aidenid,
+        maxInteractions: liveValidator.maxInteractions,
+        onEvent: emit,
+      });
+      await writeJson(path.join(artifactBase, "live-observations.json"), live);
+
+      // Reconciliation — pair each finding with a live observation and emit
+      // a verdict per finding. FALSE_POSITIVE findings are suppressed in
+      // the final finding list unless the caller keeps them for HITL.
+      const observationIndex = buildObservationIndex(live.observations);
+      const pairFn = createFindingObservationPair(observationIndex);
+      findings = reconcileFindings(findings, pairFn);
+      findings = findings.filter(
+        (f) => applyReportPolicy(f) !== "suppress",
+      );
+      reconciliationAvailable = true;
+      emit({
+        type: "investor_dd_live_complete",
+        observations: live.observations.length,
+        verdicts: findings.reduce((acc, f) => {
+          const v = f.reconciliation?.verdict || "UNVERIFIABLE";
+          acc[v] = (acc[v] || 0) + 1;
+          return acc;
+        }, {}),
+      });
+    }
+
+    // Reproducibility chain — attach a per-finding replay block + file
+    // SHA at finding time so each line in the report is re-verifiable.
+    findings = await attachReproducibilityChain({
+      findings,
+      rootPath,
+      runId,
+    });
 
     await writeJson(path.join(artifactBase, "findings.json"), findings);
     for (const [personaId, record] of Object.entries(byPersona)) {
@@ -254,12 +342,26 @@ export async function runInvestorDd({
     personas,
     budget: resolvedBudget,
     dryRun,
+    compliance: compliance
+      ? { totalCovered: compliance.totalCovered, totalGaps: compliance.totalGaps }
+      : null,
+    reconciliation: reconciliationAvailable,
   };
   await writeJson(path.join(artifactBase, "summary.json"), summary);
 
   const markdown = buildSummaryMarkdown({ runId, summary, routing, byPersona });
   const reportPath = path.join(artifactBase, "report.md");
   await fsp.writeFile(reportPath, markdown, "utf-8");
+
+  const htmlReport = renderInvestorDdHtml({
+    runId,
+    summary,
+    routing,
+    byPersona,
+    findings,
+    compliance: compliance ? compliance.packs : null,
+  });
+  await fsp.writeFile(path.join(artifactBase, "report.html"), htmlReport, "utf-8");
 
   emit({
     type: "investor_dd_complete",
@@ -283,5 +385,21 @@ export async function runInvestorDd({
   }
   await writeJson(path.join(artifactBase, "manifest.json"), manifest);
 
-  return { runId, artifactDir: artifactBase, summary };
+  const runResult = { runId, artifactDir: artifactBase, summary, findings };
+
+  // Fire-and-forget notification dispatch (email + dashboard). Failures
+  // are non-fatal — the report is already persisted to disk + manifest.
+  if (notification && (notification.emailClient || notification.dashboardClient)) {
+    await notifyRunCompleted({
+      run: runResult,
+      notifyEmail: notification.notifyEmail,
+      emailClient: notification.emailClient,
+      dashboardClient: notification.dashboardClient,
+      emailEnabled: notification.emailEnabled !== false,
+      dashboardEnabled: notification.dashboardEnabled !== false,
+      onEvent: emit,
+    });
+  }
+
+  return runResult;
 }
