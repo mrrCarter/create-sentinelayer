@@ -124,13 +124,17 @@ test("secrets-scan: entropy filter drops low-entropy placeholders", async () => 
 });
 
 test("secrets-scan: flags a PEM private key block", async () => {
+  // Construct the PEM block at runtime so the literal pattern never
+  // appears in this source file — otherwise self-scan flags this
+  // fixture as a real P1 and breaks Quality Gates (pre-existing main
+  // breakage from PR #375 fixed here). Same pattern established in
+  // tests/unit.session-redact.test.mjs per .gitleaksignore policy.
+  const pemHeader = ["-----BEGIN ", "RSA PRIVATE KEY", "-----"].join("");
+  const pemFooter = ["-----END ", "RSA PRIVATE KEY", "-----"].join("");
+  const pemBlock = `${pemHeader}\nabcdef\n${pemFooter}\n`;
   const root = await makeTempRepo();
   try {
-    await writeFile(
-      root,
-      "keys/id_rsa",
-      "-----BEGIN RSA PRIVATE KEY-----\nabcdef\n-----END RSA PRIVATE KEY-----\n"
-    );
+    await writeFile(root, "keys/id_rsa", pemBlock);
     const findings = await runSecretsScan({ rootPath: root });
     const hit = findings.find((f) => f.kind === "secret.private-key-block");
     assert.ok(hit);
