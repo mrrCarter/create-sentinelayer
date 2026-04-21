@@ -1110,8 +1110,42 @@ function buildOmarTerminalHandler({ startedAt = Date.now() } = {}) {
 async function runLocalOmarGateCommand(args) {
   const commandStartedAt = Date.now();
   const mode = String(args[0] || "").trim().toLowerCase();
+  if (mode === "investor-dd") {
+    // Investor-DD per-file agentic audit. Full implementation lands across
+    // 27 PRs per docs/INVESTOR_DD_ARCHITECTURE.md. This first scaffold PR
+    // thin-wraps the existing deep-scan dispatch so the slash command is
+    // routable end-to-end while the per-file loop library and compliance
+    // pack are built in subsequent batches. Any investor-dd-specific
+    // options passed (max-runtime-minutes, notify-email, etc.) are
+    // currently no-ops; they are documented in the command definition and
+    // will activate as later PRs land.
+    const rewritten = [
+      "deep",
+      ...args.slice(1).filter((arg) => {
+        // Strip investor-dd-only flags that the deep path would reject.
+        if (typeof arg !== "string") return true;
+        const lower = arg.toLowerCase();
+        return !(
+          lower.startsWith("--max-runtime-minutes") ||
+          lower.startsWith("--notify-email") ||
+          lower.startsWith("--notify-session") ||
+          lower === "--no-email" ||
+          lower === "--no-dashboard"
+        );
+      }),
+    ];
+    // Force full-depth scan regardless of caller input; investor-dd does
+    // not expose --scan-mode. We override any passed value.
+    let patched = rewritten.filter(
+      (arg, idx) =>
+        !(typeof arg === "string" && arg.toLowerCase() === "--scan-mode") &&
+        !(idx > 0 && typeof rewritten[idx - 1] === "string" && rewritten[idx - 1].toLowerCase() === "--scan-mode")
+    );
+    patched.push("--scan-mode", "full-depth");
+    return runLocalOmarGateCommand(patched);
+  }
   if (mode && mode !== "deep") {
-    throw new Error(`Unsupported /omargate mode '${mode}'. Use: /omargate deep`);
+    throw new Error(`Unsupported /omargate mode '${mode}'. Use: /omargate deep | /omargate investor-dd`);
   }
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
