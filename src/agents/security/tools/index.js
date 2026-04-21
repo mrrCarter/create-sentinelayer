@@ -55,7 +55,7 @@ export const SECURITY_TOOLS = Object.freeze({
   "crypto-review": {
     id: "crypto-review",
     description:
-      "Flag MD5/SHA-1 for security use, Math.random in token/secret/nonce contexts, TLS verification disabled (rejectUnauthorized=false / verify=False / InsecureSkipVerify=true), and hardcoded cipher IVs.",
+      "Flag MD5/SHA-1 for security use, Math.random in token/secret/nonce contexts, TLS certificate verification opt-outs (Node / Python / Go cert-bypass toggles), and hardcoded cipher IVs.",
     schema: {
       type: "object",
       properties: {
