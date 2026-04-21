@@ -1111,38 +1111,50 @@ async function runLocalOmarGateCommand(args) {
   const commandStartedAt = Date.now();
   const mode = String(args[0] || "").trim().toLowerCase();
   if (mode === "investor-dd") {
-    // Investor-DD per-file agentic audit. Full implementation lands across
-    // 27 PRs per docs/INVESTOR_DD_ARCHITECTURE.md. This first scaffold PR
-    // thin-wraps the existing deep-scan dispatch so the slash command is
-    // routable end-to-end while the per-file loop library and compliance
-    // pack are built in subsequent batches. Any investor-dd-specific
-    // options passed (max-runtime-minutes, notify-email, etc.) are
-    // currently no-ops; they are documented in the command definition and
-    // will activate as later PRs land.
-    const rewritten = [
-      "deep",
-      ...args.slice(1).filter((arg) => {
-        // Strip investor-dd-only flags that the deep path would reject.
-        if (typeof arg !== "string") return true;
-        const lower = arg.toLowerCase();
-        return !(
-          lower.startsWith("--max-runtime-minutes") ||
-          lower.startsWith("--notify-email") ||
-          lower.startsWith("--notify-session") ||
-          lower === "--no-email" ||
-          lower === "--no-dashboard"
-        );
-      }),
-    ];
-    // Force full-depth scan regardless of caller input; investor-dd does
-    // not expose --scan-mode. We override any passed value.
-    let patched = rewritten.filter(
-      (arg, idx) =>
-        !(typeof arg === "string" && arg.toLowerCase() === "--scan-mode") &&
-        !(idx > 0 && typeof rewritten[idx - 1] === "string" && rewritten[idx - 1].toLowerCase() === "--scan-mode")
-    );
-    patched.push("--scan-mode", "full-depth");
-    return runLocalOmarGateCommand(patched);
+    const pathArg = getCommandOptionValue(args, "--path") || ".";
+    const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
+    const asJson = hasCommandOption(args, "--json");
+    const dryRun = hasCommandOption(args, "--dry-run");
+    const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "25.0") || 25.0;
+    const maxRuntimeMinutes =
+      parseInt(getCommandOptionValue(args, "--max-runtime-minutes") || "45", 10) || 45;
+    const maxParallel =
+      parseInt(getCommandOptionValue(args, "--max-parallel") || "3", 10) || 3;
+    const streamEnabled = hasCommandOption(args, "--stream");
+
+    const targetPath = path.resolve(process.cwd(), pathArg);
+    if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+      throw new Error(`Invalid --path target: ${targetPath}`);
+    }
+
+    const { runInvestorDd } = await import("./review/investor-dd-orchestrator.js");
+    if (!asJson) {
+      printSection("Investor-DD Audit");
+      printInfo(`Target: ${targetPath}`);
+      printInfo(
+        `Budget: $${maxCostUsd.toFixed(2)} / ${maxRuntimeMinutes}min / ${maxParallel} parallel`,
+      );
+      if (dryRun) printInfo("Mode: dry-run (plan + stub report only)");
+    }
+    const result = await runInvestorDd({
+      rootPath: targetPath,
+      outputDir: outputDirArg,
+      budgetOptions: { maxCostUsd, maxRuntimeMinutes, maxParallel },
+      dryRun,
+      onEvent: streamEnabled
+        ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`)
+        : () => {},
+    });
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      printInfo(`Report: ${path.join(result.artifactDir, "report.md")}`);
+      printInfo(`Artifacts: ${result.artifactDir}`);
+      printInfo(`Status: ${result.summary.terminationReason}`);
+      printInfo(`Findings: ${result.summary.totalFindings}`);
+      printInfo(`Elapsed: ${result.summary.durationSeconds.toFixed(1)}s`);
+    }
+    return;
   }
   if (mode && mode !== "deep") {
     throw new Error(`Unsupported /omargate mode '${mode}'. Use: /omargate deep | /omargate investor-dd`);
