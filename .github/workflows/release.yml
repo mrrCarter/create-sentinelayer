@@ -1357,6 +1357,15 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Checkout is required for setup-node's `cache: npm` to locate
+      # package-lock.json. Without it the step fails before we can reach
+      # the dist-tag promotion. The job only needs read-only access to
+      # the tagged tree, so a shallow fetch at the target tag is enough.
+      - name: Checkout release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
