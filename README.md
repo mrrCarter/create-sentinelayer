@@ -660,9 +660,17 @@ The CLI now includes policy-pack selection commands:
 Built-in packs: `community` (default), `strict`, `compliance-soc2`, `compliance-hipaa`.
 Policy selection is stored in config (`defaultPolicyPack`) and applied during `scan init` / `scan validate` / `scan precheck` profile resolution.
 
-## AIdenID CLI foundation (Phase 11 foundation slice)
+## AIdenID CLI surface — Clearance Layer for Agentic Access
 
-The CLI now includes an `sl ai` surface for AIdenID identity provisioning:
+AIdenID is the **clearance layer for agentic access** — the site-owned,
+per-request decision layer for AI-agent traffic (`allow | throttle |
+queue | sandbox | deny | price_required`). The `sl ai` CLI surface in
+Sentinelayer drives the **identity-issuance side** of that layer:
+scoped agent identities, intent-bound delegation, verification
+interception, and lifecycle control. Sites that want to decide per
+request consume the identities this CLI provisions.
+
+The CLI includes an `sl ai` surface for AIdenID identity provisioning:
 
 - `sl ai provision-email --json` (dry-run artifact generation)
 - `sl ai provision-email --execute --api-key <key> --org-id <id> --project-id <id>` (live API call)
