@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.1...v0.8.2) (2026-04-24)
+
+
+### Release Plumbing
+
+* **release:** version bump to promote the investor-DD build to the `latest` dist-tag on npm. No functional change from 0.8.1 — the 0.8.1 publish succeeded to `next` but a post-publish registry-replication false-negative caused the idempotent re-run to skip `Promote Latest`. This patch bump carries a fresh publish so `latest` points at the investor-DD build (PRs [#388](https://github.com/mrrCarter/create-sentinelayer/pull/388)-[#398](https://github.com/mrrCarter/create-sentinelayer/pull/398) + [#400](https://github.com/mrrCarter/create-sentinelayer/pull/400)).
+
 ## [0.8.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.0...v0.8.1) (2026-04-18)
 
 
