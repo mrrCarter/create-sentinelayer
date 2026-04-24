@@ -1362,7 +1362,7 @@ jobs:
       # the dist-tag promotion. The job only needs read-only access to
       # the tagged tree, so a shallow fetch at the target tag is enough.
       - name: Checkout release tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.ref }}
           fetch-depth: 1
