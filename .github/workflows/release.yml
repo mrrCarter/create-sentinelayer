@@ -1266,10 +1266,24 @@ jobs:
           echo "Using npm at: ${ISOLATED_NPM}"
           "${ISOLATED_NPM}" --version
           "${ISOLATED_NPM}" publish "./${VERIFIED_TARBALL}" --provenance --access public --tag next
-          next_tag="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
-          next_tag="$(echo "${next_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+          # Registry replication is eventually-consistent; the read-back
+          # can briefly return the prior dist-tag value for up to ~60s
+          # after a successful publish. Retry with backoff so we observe
+          # the freshly-published version before failing the step.
+          next_tag=""
+          for attempt in 1 2 3 4 5 6 7 8; do
+            sleep_seconds="$(( attempt * 10 ))"
+            raw="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
+            next_tag="$(echo "${raw}" | tr -d '\r\n\"[:space:]' | xargs || true)"
+            if [ "${next_tag}" = "${PACKAGE_VERSION}" ]; then
+              echo "Canary dist-tag observed as ${PACKAGE_VERSION} on attempt ${attempt}."
+              break
+            fi
+            echo "::notice::Canary dist-tag not yet propagated (observed=${next_tag:-<none>}, expected=${PACKAGE_VERSION}); attempt ${attempt} waiting ${sleep_seconds}s."
+            sleep "${sleep_seconds}"
+          done
           if [ "${next_tag}" != "${PACKAGE_VERSION}" ]; then
-            echo "::error::Canary publish verification failed. dist-tags.next=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
+            echo "::error::Canary publish verification failed after 8 attempts. dist-tags.next=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
             cat /tmp/npm-next.err || true
             exit 1
           fi
