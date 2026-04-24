@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.2...v0.8.3) (2026-04-24)
+
+
+### Release Plumbing
+
+* **release:** fresh publish through the patched workflow ([#403](https://github.com/mrrCarter/create-sentinelayer/pull/403) added dist-tag verification retry-with-backoff) so the canary → promote pipeline finally flips `latest` to the investor-DD build. No functional change from 0.8.2.
+
 ## [0.8.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.1...v0.8.2) (2026-04-24)
 
 
