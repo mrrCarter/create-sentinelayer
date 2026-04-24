@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.3...v0.8.4) (2026-04-24)
+
+
+### Release Plumbing
+
+* **release:** fresh publish so the Promote Latest job (fixed in [#405](https://github.com/mrrCarter/create-sentinelayer/pull/405) — added checkout before setup-node) can finally flip `latest` to the investor-DD build. No functional change from 0.8.3.
+
 ## [0.8.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.2...v0.8.3) (2026-04-24)
 
 
