@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.6...v0.8.7) (2026-04-25)
+
+
+### Features
+
+* **session:** `slc session read --live` wires the SSE + fs.watch composed source from #413 into a CLI command ([#415](https://github.com/mrrCarter/create-sentinelayer/pull/415)). Source-tagged inline (`[fs]` / `[sse]`), id-deduped, SIGINT-aware. Replaces the old `--follow` polling for active sessions.
+
 ## [0.8.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.5...v0.8.6) (2026-04-25)
 
 
