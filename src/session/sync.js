@@ -736,6 +736,143 @@ export async function pollHumanMessages(
 }
 
 /**
+ * Poll the durable session-events endpoint for ALL events (not just
+ * human-posted ones). Fixes the cross-agent blind spot Carter caught
+ * in the standup session: agents polling via `pollHumanMessages` only
+ * saw web-posted human messages, never each other's `session_message`
+ * / `agent_response` events. The result was codex and claude talking
+ * past each other ("Apologies — I missed your 5 updates").
+ *
+ * Endpoint contract: `GET /api/v1/sessions/{id}/events?after=<cursor>&limit=N`.
+ * The API returns events in chronological order with cursor-based
+ * pagination. We map each row to the local NDJSON envelope shape so
+ * `appendToStream` accepts it without modification.
+ *
+ * @param {string} sessionId
+ * @param {object} [options]
+ * @param {string} [options.targetPath]
+ * @param {string|null} [options.since] - cursor to start after; null = full history
+ * @param {number} [options.limit]      - default 200 (max from API)
+ * @param {number} [options.timeoutMs]  - per-request deadline
+ * @returns {Promise<{ok: boolean, reason: string, events: Array<object>, cursor: string|null}>}
+ */
+export async function pollSessionEvents(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    since = null,
+    limit = 200,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return {
+      ok: false,
+      reason: "invalid_session_id",
+      events: [],
+      cursor: normalizeString(since) || null,
+    };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      events: [],
+      cursor: normalizeString(since) || null,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "no_session",
+      events: [],
+      cursor: normalizeString(since) || null,
+    };
+  }
+  if (!session || !session.token) {
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      events: [],
+      cursor: normalizeString(since) || null,
+    };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const query = new URLSearchParams();
+  const normalizedSince = normalizeString(since);
+  if (normalizedSince) {
+    query.set("after", normalizedSince);
+  }
+  query.set("limit", String(Math.max(1, Math.min(200, normalizePositiveInteger(limit, 200)))));
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events?${query.toString()}`;
+
+  try {
+    const response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        events: [],
+        cursor: normalizedSince || null,
+      };
+    }
+    const payload = await response.json().catch(() => ({}));
+    recordCircuitSuccess(inboundCircuit);
+
+    const items = Array.isArray(payload?.events) ? payload.events : [];
+    const acceptedEvents = [];
+    let lastCursor = normalizedSince || null;
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const cursor = normalizeString(item.cursor);
+      if (cursor) lastCursor = cursor;
+      // Pass through verbatim — the API already returns the NDJSON
+      // envelope shape that appendToStream expects.
+      acceptedEvents.push(item);
+    }
+
+    return {
+      ok: true,
+      reason: "",
+      events: acceptedEvents,
+      cursor: lastCursor,
+    };
+  } catch (error) {
+    recordCircuitFailure(inboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "poll_failed",
+      events: [],
+      cursor: normalizedSince || null,
+    };
+  }
+}
+
+
+/**
  * List sessions owned by the active user via `GET /api/v1/sessions`.
  *
  * Mirrors the failure shape of `pollHumanMessages` so callers can render

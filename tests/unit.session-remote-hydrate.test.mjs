@@ -172,3 +172,119 @@ test("writeSyncCursor: round-trips an iso timestamp", async () => {
     await fsp.rm(root, { recursive: true, force: true });
   }
 });
+
+test("hydrateSessionFromRemote: merges human + agent events from both pollers (codex/claude blind-spot fix)", async () => {
+  const root = await makeTempRepo();
+  try {
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "blind-spot-fix",
+      targetPath: root,
+      _poll: async () => ({
+        ok: true,
+        reason: "",
+        events: [
+          { event: "human_relay", cursor: "h-1", payload: { message: "carter says hi" } },
+        ],
+        cursor: "h-1",
+        dropped: [],
+      }),
+      _pollEvents: async () => ({
+        ok: true,
+        reason: "",
+        events: [
+          { event: "session_message", cursor: "e-1", agent: { id: "claude-1" }, payload: { message: "claude posts an update" } },
+          { event: "agent_response", cursor: "e-2", agent: { id: "codex-1" }, payload: { response: "codex replies" } },
+        ],
+        cursor: "e-2",
+      }),
+      _append: async (sessionId, event) => {
+        appended.push(event);
+        return event;
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 3, "all 3 events should be relayed (1 human + 2 agent)");
+    assert.equal(result.humanRelayed, 1);
+    assert.equal(result.eventsRelayed, 2);
+    assert.equal(appended[0].event, "human_relay");
+    assert.equal(appended[1].event, "session_message");
+    assert.equal(appended[2].event, "agent_response");
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: dedups events that appear in both pollers", async () => {
+  const root = await makeTempRepo();
+  try {
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "dedup",
+      targetPath: root,
+      _poll: async () => ({
+        ok: true,
+        events: [{ event: "human_relay", cursor: "shared-1", payload: { message: "x" } }],
+        cursor: "shared-1",
+      }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          { event: "human_relay", cursor: "shared-1", payload: { message: "x" } },
+          { event: "session_message", cursor: "agent-2", agent: { id: "claude-1" }, payload: { message: "y" } },
+        ],
+        cursor: "agent-2",
+      }),
+      _append: async (_, event) => { appended.push(event); return event; },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 2, "shared cursor relayed once, plus the unique agent event");
+    assert.equal(appended.length, 2);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: persists separate cursors for human vs events sources", async () => {
+  const root = await makeTempRepo();
+  try {
+    await hydrateSessionFromRemote({
+      sessionId: "two-cursors",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: "human-cur" }),
+      _pollEvents: async () => ({ ok: true, events: [], cursor: "events-cur" }),
+      _append: async () => null,
+    });
+    assert.equal(await readSyncCursor("two-cursors", { targetPath: root }), "human-cur");
+    assert.equal(
+      await readSyncCursor("two-cursors", { targetPath: root, suffix: "events" }),
+      "events-cur",
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: events poll failure doesn't block human relay (partial success)", async () => {
+  const root = await makeTempRepo();
+  try {
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "partial",
+      targetPath: root,
+      _poll: async () => ({
+        ok: true,
+        events: [{ event: "human_relay", cursor: "h-only", payload: { message: "human went through" } }],
+        cursor: "h-only",
+      }),
+      _pollEvents: async () => ({ ok: false, reason: "circuit_breaker_open", events: [], cursor: null }),
+      _append: async (_, event) => { appended.push(event); return event; },
+    });
+    assert.equal(result.ok, true, "should still succeed when only one poller works");
+    assert.equal(result.relayed, 1);
+    assert.equal(result.humanRelayed, 1);
+    assert.equal(result.eventsRelayed, 0);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
