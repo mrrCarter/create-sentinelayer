@@ -189,28 +189,34 @@ export async function registerAgent(
   const requestedAgentId = normalizeString(agentId);
   const requestedModel = normalizeString(model);
 
-  // Senti-driven naming: if the caller didn't supply a real id + model,
-  // promote them to a friendly sequential name (`claude-3`, `guest-1`,
-  // …) instead of leaving them as a hex-suffixed anonymous handle.
+  // Senti-driven naming applies ONLY when the caller didn't supply a
+  // real agentId. If a caller passed an explicit id (e.g.
+  // "codex-task-holder-1") we respect it verbatim even if `model` is
+  // empty — silently rewriting a caller-supplied identifier breaks
+  // every downstream assertion that relies on it (PR 348/351 tests).
   let resolvedAgentId = requestedAgentId;
   let wasAnonymous = false;
   if (
+    !requestedAgentId ||
     isAnonymousAgent({ agentId: requestedAgentId, model: requestedModel })
   ) {
-    wasAnonymous = true;
-    const existingAgents = await listAgents(sessionId, {
-      targetPath,
-      includeInactive: true,
-    });
-    resolvedAgentId =
-      assignFriendlyName({
-        model: requestedModel,
-        existingAgents,
-      }) || requestedAgentId || generateAgentId(model);
-  } else if (!resolvedAgentId) {
-    // Defensive: shouldn't happen given the anonymous check above, but
-    // keep the fallback so registration never fails on a missing id.
-    resolvedAgentId = generateAgentId(model);
+    if (!requestedAgentId) {
+      wasAnonymous = true;
+      const existingAgents = await listAgents(sessionId, {
+        targetPath,
+        includeInactive: true,
+      });
+      resolvedAgentId =
+        assignFriendlyName({
+          model: requestedModel,
+          existingAgents,
+        }) || generateAgentId(model);
+    } else {
+      // Caller passed a generic placeholder id (`cli-user`, `guest-…`)
+      // — keep it but flag wasAnonymous so Senti still emits its
+      // identification welcome with rename instructions.
+      wasAnonymous = true;
+    }
   }
   const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
 
