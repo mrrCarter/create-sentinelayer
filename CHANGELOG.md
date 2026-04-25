@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.4...v0.8.5) (2026-04-25)
+
+
+### Features
+
+* **session:** on-demand remote hydrate via `slc session sync <id>` and `slc session read --remote` ([#407](https://github.com/mrrCarter/create-sentinelayer/pull/407)) — closes the propagation gap where web-posted human messages weren't reaching the local NDJSON unless the background daemon was running.
+* **session:** past-conversation listing via `slc session list --include-archived` and `slc session history` ([#408](https://github.com/mrrCarter/create-sentinelayer/pull/408)) — adds a ChatGPT-style local history surface with explicit `archiveStatus`.
+* **session:** full-bundle export via `slc session export <id>` (json or ndjson, optional `--out`) ([#409](https://github.com/mrrCarter/create-sentinelayer/pull/409)) — compliance / context-handoff in one command.
+
+
+### Documentation
+
+* **enterprise audit:** new `docs/CLI_ENTERPRISE_AUDIT.md` ranks 12 confirmed gaps + a standalone-product readiness checklist for the next 8 PRs.
+
 ## [0.8.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.3...v0.8.4) (2026-04-24)
 
 
