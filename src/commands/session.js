@@ -49,6 +49,7 @@ import {
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import { syncSessionMetadataToApi } from "../session/sync.js";
+import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import {
   buildDashboardUrl,
   buildTemplateLaunchPlan,
@@ -451,6 +452,10 @@ export function registerSessionCommand(program) {
     .description("Read recent session messages")
     .option("--tail <n>", "Number of recent events", "20")
     .option("--follow", "Continuously follow new events")
+    .option(
+      "--remote",
+      "Hydrate from the SentinelLayer API before reading (pulls web-posted messages into the local NDJSON)",
+    )
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -461,6 +466,29 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const tail = parsePositiveInteger(options.tail, "tail", 20);
       const emitJson = shouldEmitJson(options, command);
+
+      let hydration = null;
+      if (options.remote) {
+        hydration = await hydrateSessionFromRemote({
+          sessionId: normalizedSessionId,
+          targetPath,
+        });
+        if (!emitJson) {
+          if (hydration.ok) {
+            console.log(
+              pc.gray(
+                `Hydrated from remote: relayed=${hydration.relayed} dropped=${hydration.dropped}.`,
+              ),
+            );
+          } else {
+            console.log(
+              pc.yellow(
+                `Remote hydrate skipped (${hydration.reason}); showing local stream only.`,
+              ),
+            );
+          }
+        }
+      }
 
       if (!options.follow) {
         const events = await readStream(normalizedSessionId, {
@@ -474,6 +502,7 @@ export function registerSessionCommand(program) {
           tail,
           count: events.length,
           events,
+          remote: hydration,
         };
         if (emitJson) {
           console.log(JSON.stringify(payload, null, 2));
@@ -497,6 +526,59 @@ export function registerSessionCommand(program) {
         } else {
           console.log(formatEventLine(event));
         }
+      }
+    });
+
+  session
+    .command("sync <sessionId>")
+    .description(
+      "Pull human messages from the SentinelLayer API into the local NDJSON stream",
+    )
+    .option(
+      "--since <iso>",
+      "Override the persisted cursor and start from this ISO timestamp",
+    )
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const sinceArg = options.since == null ? undefined : String(options.since);
+
+      const result = await hydrateSessionFromRemote({
+        sessionId: normalizedSessionId,
+        targetPath,
+        since: sinceArg,
+      });
+
+      const payload = {
+        command: "session sync",
+        targetPath,
+        sessionId: normalizedSessionId,
+        ok: result.ok,
+        reason: result.reason || "",
+        relayed: result.relayed,
+        dropped: result.dropped,
+        cursor: result.cursor,
+        persistedCursor: result.persistedCursor,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      if (result.ok) {
+        console.log(
+          `Hydrated session ${normalizedSessionId}: relayed=${result.relayed} dropped=${result.dropped}.`,
+        );
+      } else {
+        console.log(
+          pc.yellow(
+            `Hydrate skipped (${result.reason}). Local stream is unchanged; cursor=${result.cursor || "<none>"}.`,
+          ),
+        );
       }
     });
 
