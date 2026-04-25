@@ -839,6 +839,122 @@ export function registerSessionCommand(program) {
     });
 
   session
+    .command("download <sessionId>")
+    .description(
+      "Download an iMessage-style Markdown transcript: deterministic timestamps, per-agent active duration, known persona/orchestrator/family avatars, and human avatars from your auth profile",
+    )
+    .option("--out <file>", "Output path (default: <sessionId>.md in cwd)")
+    .option(
+      "--no-system-events",
+      "Suppress join/leave/identified/daemon-alert lines (keeps only user + agent messages)",
+    )
+    .option(
+      "--remote",
+      "Hydrate from the SentinelLayer API before rendering (pulls web-posted messages into the local NDJSON)",
+    )
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const emitJson = shouldEmitJson(options, command);
+
+      let hydration = null;
+      if (options.remote) {
+        hydration = await hydrateSessionFromRemote({
+          sessionId: normalizedSessionId,
+          targetPath,
+        }).catch((error) => ({ ok: false, reason: error?.message || "hydrate_failed" }));
+      }
+
+      const sessionPayload = await getSession(normalizedSessionId, { targetPath });
+      if (!sessionPayload) {
+        throw new Error(`Session '${normalizedSessionId}' was not found.`);
+      }
+
+      const [agents, events] = await Promise.all([
+        listAgents(normalizedSessionId, { targetPath, includeInactive: true }),
+        readStream(normalizedSessionId, { targetPath, tail: 0 }),
+      ]);
+
+      // Pull GitHub/Google avatar + display name from the active auth
+      // session so any human-id seen in the stream renders with the
+      // user's real photo instead of the generic 🧑 fallback.
+      const speakerProfiles = new Map();
+      const auth = await resolveActiveAuthSession({
+        cwd: targetPath,
+        env: process.env,
+        autoRotate: false,
+      }).catch(() => null);
+      const userAvatarUrl = normalizeString(auth?.user?.avatarUrl);
+      const userDisplay =
+        normalizeString(auth?.user?.githubUsername) ||
+        normalizeString(auth?.user?.email);
+      if (userAvatarUrl || userDisplay) {
+        const profile = {
+          displayName: userDisplay || "You",
+          avatarUrl: userAvatarUrl || null,
+          family: "human",
+        };
+        for (const id of ["cli-user", "human", "you", "user"]) {
+          speakerProfiles.set(id, profile);
+        }
+        if (userDisplay) speakerProfiles.set(userDisplay, profile);
+      }
+
+      const { buildTranscriptMarkdown } = await import(
+        "../session/transcript.js"
+      );
+      const { markdown, stats } = buildTranscriptMarkdown({
+        sessionMeta: {
+          sessionId: normalizedSessionId,
+          createdAt: sessionPayload.createdAt,
+          status: sessionPayload.status,
+        },
+        events,
+        agents,
+        speakerProfiles,
+        options: {
+          // commander maps --no-system-events to systemEvents: false
+          includeSystemEvents: options.systemEvents !== false,
+        },
+      });
+
+      const outArg = normalizeString(options.out);
+      const outPath = outArg
+        ? path.resolve(process.cwd(), outArg)
+        : path.resolve(process.cwd(), `${normalizedSessionId}.md`);
+      await fsp.mkdir(path.dirname(outPath), { recursive: true });
+      await fsp.writeFile(outPath, markdown, "utf-8");
+
+      const payload = {
+        command: "session download",
+        sessionId: normalizedSessionId,
+        outPath,
+        bytes: Buffer.byteLength(markdown, "utf-8"),
+        eventCount: events.length,
+        agentCount: agents.length,
+        sessionLiveSeconds: stats.sessionLiveSeconds,
+        sentiActions: stats.sentiActions,
+        totals: stats.totals,
+        remote: hydration,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold(`Downloaded session ${normalizedSessionId} → ${outPath}`));
+      console.log(
+        pc.gray(
+          `${events.length} events · ${agents.length} agents · live ${stats.sessionLiveSeconds}s · senti=${stats.sentiActions} · tokens=${stats.totals.tokenTotal} · cost=$${stats.totals.costTotalUsd.toFixed(4)}`,
+        ),
+      );
+    });
+
+  session
     .command("leave <sessionId>")
     .description("Leave a session")
     .option("--agent <id>", "Agent id to unregister", "cli-user")
