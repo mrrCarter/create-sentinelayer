@@ -52,6 +52,7 @@ import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import { readSessionPreview } from "../session/preview.js";
 import { syncSessionMetadataToApi } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
+import { mergeLiveSources } from "../session/live-source.js";
 import {
   buildDashboardUrl,
   buildTemplateLaunchPlan,
@@ -453,7 +454,11 @@ export function registerSessionCommand(program) {
     .command("read <sessionId>")
     .description("Read recent session messages")
     .option("--tail <n>", "Number of recent events", "20")
-    .option("--follow", "Continuously follow new events")
+    .option("--follow", "Continuously follow new events (local fs poll)")
+    .option(
+      "--live",
+      "Subscribe to SSE + fs.watch combined source (replaces --follow). Same-machine peers via fs.watch, remote peers via SSE; events deduped by id.",
+    )
     .option(
       "--remote",
       "Hydrate from the SentinelLayer API before reading (pulls web-posted messages into the local NDJSON)",
@@ -512,6 +517,49 @@ export function registerSessionCommand(program) {
         }
         for (const event of events) {
           console.log(formatEventLine(event));
+        }
+        return;
+      }
+
+      if (options.live) {
+        if (!emitJson) {
+          console.log(
+            pc.gray(
+              `Live-tailing ${normalizedSessionId} (SSE + fs.watch)… Ctrl+C to stop.`,
+            ),
+          );
+        }
+        const ac = new AbortController();
+        const onSigint = () => ac.abort();
+        process.on("SIGINT", onSigint);
+        const session = await resolveActiveAuthSession({
+          cwd: targetPath,
+          env: process.env,
+          autoRotate: false,
+        }).catch(() => null);
+        const apiBaseUrl = session?.apiUrl || "";
+        const token = session?.token || "";
+        try {
+          for await (const item of mergeLiveSources({
+            sessionId: normalizedSessionId,
+            targetPath,
+            apiBaseUrl: apiBaseUrl || undefined,
+            token: token || undefined,
+            signal: ac.signal,
+          })) {
+            if (item.event) {
+              if (emitJson) {
+                console.log(JSON.stringify({ source: item.source, event: item.event }));
+              } else {
+                const sourceTag = item.source === "sse" ? pc.cyan("[sse]") : pc.gray("[fs] ");
+                console.log(`${sourceTag} ${formatEventLine(item.event)}`);
+              }
+            } else if (item.error && !emitJson) {
+              console.log(pc.yellow(`(${item.source} stream: ${item.error})`));
+            }
+          }
+        } finally {
+          process.removeListener("SIGINT", onSigint);
         }
         return;
       }
