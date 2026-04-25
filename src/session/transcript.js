@@ -41,6 +41,7 @@ const TRANSCRIPT_EVENT_KINDS = new Set([
   "session_message",
   "session_say",
   "agent_response",
+  "session_usage",
   "human_relay",
   "agent_join",
   "agent_left",
@@ -153,9 +154,14 @@ function eventTimestamp(event) {
 
 function eventBody(event) {
   const payload = event && typeof event.payload === "object" ? event.payload : {};
+  // session_usage carries the response inside payload.response.text
+  const responseText =
+    typeof payload.response === "object" && payload.response
+      ? payload.response.text
+      : payload.response;
   const text =
     payload.message ||
-    payload.response ||
+    responseText ||
     payload.text ||
     payload.alert ||
     payload.reason ||
