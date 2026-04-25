@@ -735,6 +735,161 @@ export async function pollHumanMessages(
   }
 }
 
+/**
+ * List sessions owned by the active user via `GET /api/v1/sessions`.
+ *
+ * Mirrors the failure shape of `pollHumanMessages` so callers can render
+ * a single error path: `{ ok, reason, sessions, count }`. Sessions are
+ * returned in API order (newest-first per the server's contract); the
+ * caller is responsible for any further sort or filter.
+ *
+ * @param {object} [options]
+ * @param {string} [options.targetPath]
+ * @param {boolean} [options.includeArchived]
+ * @param {number} [options.limit]
+ * @param {Function} [options.resolveAuthSession]
+ * @param {Function} [options.fetchImpl]
+ * @returns {Promise<{ok: boolean, reason: string, sessions: Array<object>, count: number}>}
+ */
+export async function listSessionsFromApi({
+  targetPath = process.cwd(),
+  includeArchived = false,
+  limit = 50,
+  resolveAuthSession = resolveActiveAuthSession,
+  fetchImpl = fetchWithTimeout,
+  timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+} = {}) {
+  let session;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", sessions: [], count: 0 };
+  }
+  if (!session || !session.token) {
+    return { ok: false, reason: "not_authenticated", sessions: [], count: 0 };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const query = new URLSearchParams();
+  if (includeArchived) query.set("include_archived", "true");
+  const normalizedLimit = Math.max(1, Math.min(200, normalizePositiveInteger(limit, 50)));
+  query.set("limit", String(normalizedLimit));
+  const endpoint = `${apiBaseUrl}/api/v1/sessions?${query.toString()}`;
+
+  let response;
+  try {
+    response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      reason: normalizeString(err?.message) || "list_failed",
+      sessions: [],
+      count: 0,
+    };
+  }
+  if (!response || !response.ok) {
+    return {
+      ok: false,
+      reason: `api_${response ? response.status : "no_response"}`,
+      sessions: [],
+      count: 0,
+    };
+  }
+  const payload = await response.json().catch(() => ({}));
+  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+  return {
+    ok: true,
+    reason: "",
+    sessions,
+    count: typeof payload?.count === "number" ? payload.count : sessions.length,
+  };
+}
+
+/**
+ * Probe whether a single session is visible to the active user.
+ *
+ * Used by `session sync` to discriminate between "owned but empty" and
+ * "not a member / wrong session id" — the former is a quiet success,
+ * the latter deserves a loud hint.
+ *
+ * @returns {Promise<{accessible: boolean, reason: string, status?: number}>}
+ */
+export async function probeSessionAccess(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return { accessible: false, reason: "invalid_session_id" };
+  }
+
+  let session;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { accessible: false, reason: "no_session" };
+  }
+  if (!session || !session.token) {
+    return { accessible: false, reason: "not_authenticated" };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(
+    normalizedSessionId,
+  )}/events?limit=1`;
+
+  let response;
+  try {
+    response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+    );
+  } catch (err) {
+    return {
+      accessible: false,
+      reason: normalizeString(err?.message) || "probe_failed",
+    };
+  }
+
+  if (response && response.ok) {
+    return { accessible: true, reason: "", status: response.status };
+  }
+  if (!response) {
+    return { accessible: false, reason: "no_response" };
+  }
+  if (response.status === 403) {
+    return { accessible: false, reason: "not_a_member", status: 403 };
+  }
+  if (response.status === 404) {
+    return { accessible: false, reason: "session_not_found", status: 404 };
+  }
+  return { accessible: false, reason: `api_${response.status}`, status: response.status };
+}
+
 export function resetSessionSyncStateForTests() {
   outboundCircuit.consecutiveFailures = 0;
   outboundCircuit.openedAtMs = 0;

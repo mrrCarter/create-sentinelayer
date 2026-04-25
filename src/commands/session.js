@@ -50,7 +50,11 @@ import {
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import { readSessionPreview } from "../session/preview.js";
-import { syncSessionMetadataToApi } from "../session/sync.js";
+import {
+  listSessionsFromApi,
+  probeSessionAccess,
+  syncSessionMetadataToApi,
+} from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import {
@@ -604,6 +608,16 @@ export function registerSessionCommand(program) {
         since: sinceArg,
       });
 
+      // Discriminate "owned-but-no-human-messages" from "not a member /
+      // wrong session id". The hydrate path returns ok:true with
+      // relayed=0 + cursor=null in both cases, which Carter just hit
+      // on session d34f03ba — the user couldn't tell whether they
+      // typed the wrong id or it was just genuinely empty.
+      let access = null;
+      if (result.ok && result.relayed === 0 && !result.cursor) {
+        access = await probeSessionAccess(normalizedSessionId, { targetPath });
+      }
+
       const payload = {
         command: "session sync",
         targetPath,
@@ -614,6 +628,7 @@ export function registerSessionCommand(program) {
         dropped: result.dropped,
         cursor: result.cursor,
         persistedCursor: result.persistedCursor,
+        access: access || undefined,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -623,6 +638,27 @@ export function registerSessionCommand(program) {
         console.log(
           `Hydrated session ${normalizedSessionId}: relayed=${result.relayed} dropped=${result.dropped}.`,
         );
+        if (access && !access.accessible) {
+          if (access.reason === "session_not_found") {
+            console.log(
+              pc.yellow(
+                `Heads up: that session id isn't in your account. Verify with \`sl session list --remote\`.`,
+              ),
+            );
+          } else if (access.reason === "not_a_member") {
+            console.log(
+              pc.yellow(
+                `Heads up: you aren't a member of session ${normalizedSessionId} — sync silently no-ops. Ask the owner to add you, or list your own with \`sl session list --remote\`.`,
+              ),
+            );
+          } else if (access.reason !== "" && access.reason !== "no_session") {
+            console.log(
+              pc.gray(
+                `(probe: ${access.reason}; if you expected messages, check \`sl session list --remote\`.)`,
+              ),
+            );
+          }
+        }
       } else {
         console.log(
           pc.yellow(
@@ -838,7 +874,13 @@ export function registerSessionCommand(program) {
 
   session
     .command("list")
-    .description("List sessions in the local workspace cache")
+    .description(
+      "List sessions. Defaults to local cache; pass --remote to query the SentinelLayer API for every session on your account.",
+    )
+    .option(
+      "--remote",
+      "Query the API for sessions on the authenticated account (covers sessions created from any workspace or the web dashboard)",
+    )
     .option(
       "--include-archived",
       "Include archived/expired sessions (past conversations)",
@@ -854,18 +896,80 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const includeArchived = Boolean(options.includeArchived);
       const limit = parsePositiveInteger(options.limit, "limit", 50);
+      const emitJson = shouldEmitJson(options, command);
+
+      if (options.remote) {
+        const remote = await listSessionsFromApi({
+          targetPath,
+          includeArchived,
+          limit,
+        });
+        const trimmed = emitJson ? remote.sessions : remote.sessions.slice(0, limit);
+        const payload = {
+          command: "session list",
+          source: "remote",
+          targetPath,
+          includeArchived,
+          ok: remote.ok,
+          reason: remote.reason || "",
+          count: remote.count,
+          sessions: trimmed,
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        if (!remote.ok) {
+          console.log(
+            pc.yellow(
+              `Remote list unavailable (${remote.reason}). Try \`sl auth login\` or run without --remote for local cache.`,
+            ),
+          );
+          return;
+        }
+        if (remote.sessions.length === 0) {
+          console.log(
+            pc.yellow(
+              includeArchived
+                ? "No sessions on your account."
+                : "No active sessions on your account. Re-run with --include-archived to see history.",
+            ),
+          );
+          return;
+        }
+        for (const item of trimmed) {
+          const archive = item.archiveStatus ? ` archive=${item.archiveStatus}` : "";
+          const created = item.createdAt || "?";
+          const lastActivity = item.lastActivityAt
+            ? ` last=${item.lastActivityAt}`
+            : "";
+          console.log(
+            `${item.sessionId} status=${item.status}${archive} created=${created}${lastActivity}`,
+          );
+        }
+        if (remote.count > trimmed.length) {
+          console.log(
+            pc.gray(
+              `… ${remote.count - trimmed.length} more (raise --limit or use --json).`,
+            ),
+          );
+        }
+        return;
+      }
+
       const sessions = includeArchived
         ? await listAllSessions({ targetPath })
         : await listActiveSessions({ targetPath });
-      const trimmed = shouldEmitJson(options, command) ? sessions : sessions.slice(0, limit);
+      const trimmed = emitJson ? sessions : sessions.slice(0, limit);
       const payload = {
         command: "session list",
+        source: "local",
         targetPath,
         includeArchived,
         count: sessions.length,
         sessions: trimmed,
       };
-      if (shouldEmitJson(options, command)) {
+      if (emitJson) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
@@ -873,8 +977,8 @@ export function registerSessionCommand(program) {
         console.log(
           pc.yellow(
             includeArchived
-              ? "No sessions in cache."
-              : "No active sessions. Run with --include-archived to see history.",
+              ? "No sessions in local cache. Run with --remote to fetch from the API."
+              : "No active sessions in local cache. Run with --remote to see sessions from other workspaces or the web.",
           ),
         );
         return;
