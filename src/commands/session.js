@@ -1,3 +1,4 @@
+import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { randomUUID } from "node:crypto";
@@ -661,6 +662,94 @@ export function registerSessionCommand(program) {
       );
       for (const event of recentEvents) {
         console.log(formatEventLine(event));
+      }
+    });
+
+  session
+    .command("export <sessionId>")
+    .description(
+      "Export full transcript + metadata + agents + tasks as JSON (compliance / portability / context handoff)",
+    )
+    .option(
+      "--format <fmt>",
+      "Output format: json (single object) or ndjson (one event per line)",
+      "json",
+    )
+    .option("--out <file>", "Write to file instead of stdout")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .action(async (sessionId, options) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const format = String(options.format || "json").trim().toLowerCase();
+      if (format !== "json" && format !== "ndjson") {
+        throw new Error(`--format must be 'json' or 'ndjson' (received '${format}').`);
+      }
+
+      const sessionPayload = await getSession(normalizedSessionId, { targetPath });
+      if (!sessionPayload) {
+        throw new Error(`Session '${normalizedSessionId}' was not found.`);
+      }
+
+      const [agents, events, tasks] = await Promise.all([
+        listAgents(normalizedSessionId, {
+          targetPath,
+          includeInactive: true,
+        }),
+        readStream(normalizedSessionId, {
+          targetPath,
+          tail: 0,
+        }),
+        listSessionTasks(normalizedSessionId, {
+          targetPath,
+          limit: 5_000,
+        }),
+      ]);
+
+      let output;
+      if (format === "ndjson") {
+        const lines = [];
+        lines.push(JSON.stringify({ kind: "session", value: sessionPayload }));
+        for (const agent of agents) lines.push(JSON.stringify({ kind: "agent", value: agent }));
+        for (const event of events) lines.push(JSON.stringify({ kind: "event", value: event }));
+        for (const task of tasks.tasks || []) lines.push(JSON.stringify({ kind: "task", value: task }));
+        output = `${lines.join("\n")}\n`;
+      } else {
+        output = `${JSON.stringify(
+          {
+            command: "session export",
+            exportedAt: new Date().toISOString(),
+            session: sessionPayload,
+            agents,
+            events,
+            tasks: tasks.tasks || [],
+            counts: {
+              agents: agents.length,
+              events: events.length,
+              tasks: (tasks.tasks || []).length,
+            },
+          },
+          null,
+          2,
+        )}\n`;
+      }
+
+      const outArg = normalizeString(options.out);
+      if (outArg) {
+        const outPath = path.resolve(process.cwd(), outArg);
+        await fsp.mkdir(path.dirname(outPath), { recursive: true });
+        await fsp.writeFile(outPath, output, "utf-8");
+        console.log(
+          pc.gray(
+            `Exported ${events.length} events / ${agents.length} agents / ${
+              (tasks.tasks || []).length
+            } tasks → ${outPath}`,
+          ),
+        );
+      } else {
+        process.stdout.write(output);
       }
     });
 
