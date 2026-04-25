@@ -13,8 +13,14 @@ import path from "node:path";
 
 import { resolveSessionDir } from "./paths.js";
 
-function cursorPath(sessionId, { targetPath } = {}) {
-  return path.join(resolveSessionDir(sessionId, { targetPath }), "remote-sync-cursor.json");
+function cursorPath(sessionId, { targetPath, suffix = "" } = {}) {
+  // Multiple cursors per session — the legacy file is human-messages,
+  // and `suffix="events"` tracks the agent-events poller separately
+  // so a stuck or skewed read on one source doesn't block the other.
+  const slug = typeof suffix === "string" && suffix.trim()
+    ? `remote-sync-cursor-${suffix.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-")}.json`
+    : "remote-sync-cursor.json";
+  return path.join(resolveSessionDir(sessionId, { targetPath }), slug);
 }
 
 /**
@@ -26,9 +32,9 @@ function cursorPath(sessionId, { targetPath } = {}) {
  * @param {{targetPath?: string}} [options]
  * @returns {Promise<string|null>}
  */
-export async function readSyncCursor(sessionId, { targetPath } = {}) {
+export async function readSyncCursor(sessionId, { targetPath, suffix = "" } = {}) {
   if (!sessionId) return null;
-  const filePath = cursorPath(sessionId, { targetPath });
+  const filePath = cursorPath(sessionId, { targetPath, suffix });
   try {
     const raw = await fsp.readFile(filePath, "utf-8");
     const parsed = JSON.parse(raw);
@@ -49,8 +55,8 @@ export async function readSyncCursor(sessionId, { targetPath } = {}) {
  * @param {{targetPath?: string}} [options]
  * @returns {Promise<{written: boolean, path: string}>}
  */
-export async function writeSyncCursor(sessionId, cursor, { targetPath } = {}) {
-  const filePath = cursorPath(sessionId, { targetPath });
+export async function writeSyncCursor(sessionId, cursor, { targetPath, suffix = "" } = {}) {
+  const filePath = cursorPath(sessionId, { targetPath, suffix });
   const normalized = typeof cursor === "string" ? cursor.trim() : "";
   if (!sessionId || !normalized) {
     return { written: false, path: filePath };
