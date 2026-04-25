@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.10](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.9...v0.8.10) (2026-04-25)
+
+
+### Features
+
+* **session:** auto-resume + `--title` + `slc session continue/set-title/cleanup` ([#423](https://github.com/mrrCarter/create-sentinelayer/pull/423)) — `slc session start` now reuses the most recent active session for the workspace if one exists in the last hour. Pass `--force-new` for the legacy mint-fresh-uuid behavior. New `--title <name>` labels the session for the web sidebar; `slc session set-title <id> <name>` updates it later; `slc session cleanup --apply` bulk-archives empty stale sessions. Kills the orphan-creation pattern (49→clean).
+* **session:** hydrate also pulls agent events ([#424](https://github.com/mrrCarter/create-sentinelayer/pull/424)) — `slc session sync` and `slc session read --remote` now poll BOTH `/sessions/{id}/human-messages` AND `/sessions/{id}/events` in parallel and merge with cursor-based dedup. Fixes the codex/claude blind spot where agents in different workspaces couldn't see each other's posts ("Apologies — I missed your 5 updates"). Per-source cursors persisted separately so a stuck read on one source doesn't block the other.
+
+### Notes
+
+* Depends on the API endpoints landed in mrrCarter/sentinelayer-api#467 (now deployed). Older API versions return 404 on the new routes; CLI degrades gracefully via partial-success path.
+
 ## [0.8.9](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.8...v0.8.9) (2026-04-25)
 
 
