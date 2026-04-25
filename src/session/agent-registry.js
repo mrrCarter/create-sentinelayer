@@ -7,11 +7,6 @@ import { STUCK_THRESHOLDS } from "../agents/jules/pulse.js";
 import { createAgentEvent } from "../events/schema.js";
 import { resolveSessionPaths } from "./paths.js";
 import { emitContextBriefing } from "./recap.js";
-import {
-  assignFriendlyName,
-  buildSentiWelcome,
-  isAnonymousAgent,
-} from "./senti-naming.js";
 import { appendToStream } from "./stream.js";
 
 const AGENT_SNAPSHOT_SCHEMA_VERSION = "1.0.0";
@@ -186,38 +181,7 @@ export async function registerAgent(
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
   const nowIso = new Date().toISOString();
-  const requestedAgentId = normalizeString(agentId);
-  const requestedModel = normalizeString(model);
-
-  // Senti-driven naming applies ONLY when the caller didn't supply a
-  // real agentId. If a caller passed an explicit id (e.g.
-  // "codex-task-holder-1") we respect it verbatim even if `model` is
-  // empty — silently rewriting a caller-supplied identifier breaks
-  // every downstream assertion that relies on it (PR 348/351 tests).
-  let resolvedAgentId = requestedAgentId;
-  let wasAnonymous = false;
-  if (
-    !requestedAgentId ||
-    isAnonymousAgent({ agentId: requestedAgentId, model: requestedModel })
-  ) {
-    if (!requestedAgentId) {
-      wasAnonymous = true;
-      const existingAgents = await listAgents(sessionId, {
-        targetPath,
-        includeInactive: true,
-      });
-      resolvedAgentId =
-        assignFriendlyName({
-          model: requestedModel,
-          existingAgents,
-        }) || generateAgentId(model);
-    } else {
-      // Caller passed a generic placeholder id (`cli-user`, `guest-…`)
-      // — keep it but flag wasAnonymous so Senti still emits its
-      // identification welcome with rename instructions.
-      wasAnonymous = true;
-    }
-  }
+  const resolvedAgentId = normalizeString(agentId) || generateAgentId(model);
   const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
 
   const snapshot = normalizeAgentSnapshot(
@@ -246,30 +210,7 @@ export async function registerAgent(
     role: snapshot.role,
     status: snapshot.status,
   }, { targetPath });
-
-  // Senti welcomes anonymous registrants explicitly so the rest of the
-  // session sees the auto-assigned name and the rename instructions.
-  // Skip Senti's own registration to avoid a recursive welcome event.
-  const isSenti =
-    normalizeString(snapshot.agentId).toLowerCase() === "senti";
-  if (wasAnonymous && !isSenti) {
-    const welcomePayload = buildSentiWelcome({
-      agentId: snapshot.agentId,
-      model: snapshot.model,
-      role: snapshot.role,
-      wasAnonymous: true,
-      originalAgentId: requestedAgentId,
-    });
-    const sentiEnvelope = createAgentEvent({
-      event: "agent_identified",
-      agentId: "senti",
-      sessionId: paths.sessionId,
-      payload: welcomePayload,
-    });
-    await appendToStream(paths.sessionId, sentiEnvelope, { targetPath });
-  }
-
-  if (!isSenti) {
+  if (normalizeString(snapshot.agentId).toLowerCase() !== "senti") {
     await emitContextBriefing(paths.sessionId, {
       forAgentId: snapshot.agentId,
       targetPath,
@@ -279,7 +220,6 @@ export async function registerAgent(
   return {
     ...snapshot,
     snapshotPath,
-    wasAnonymous,
   };
 }
 
