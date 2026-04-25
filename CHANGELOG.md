@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.8](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.7...v0.8.8) (2026-04-25)
+
+
+### Features
+
+* **session:** `slc session download <sessionId>` exports any session as an iMessage-style Markdown transcript ([#419](https://github.com/mrrCarter/create-sentinelayer/pull/419)) — deterministic timestamps, per-agent active duration, persona/orchestrator/family avatars (Senti = shield, Claude = purple, Codex/GPT = green, Gemini = cyan, Grok = black), GitHub/Google photo for the human user when an auth session is active. Senti orchestrator events sign with the Kai Chen avatar + timestamp. Tested up to 20 distinct speakers. Flags: `--out`, `--no-system-events`, `--remote`, `--json`.
+* **session:** `slc session list --remote` queries the SentinelLayer API ([#417](https://github.com/mrrCarter/create-sentinelayer/pull/417)) and the sync command now probes membership when a session id returns no events, so users can tell "you aren't a member" from "session id wrong" instead of getting a silent ok=true relayed=0 cursor=null.
+
 ## [0.8.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.6...v0.8.7) (2026-04-25)
 
 
