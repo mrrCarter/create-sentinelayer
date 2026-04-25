@@ -261,8 +261,11 @@ export function registerSessionCommand(program) {
 
   session
     .command("start")
-    .description("Create a new persistent session with metadata + NDJSON stream")
+    .description(
+      "Start (or resume) a persistent session. By default reuses the most recent active session for this workspace; pass --force-new to always mint a fresh id.",
+    )
     .option("--path <path>", "Workspace path for the session", ".")
+    .option("--title <title>", "Human-readable label (shown in web sidebar + transcript)")
     .option(
       "--template <name>",
       "Optional quick-start template (code-review, security-audit, e2e-test, incident-response, standup)"
@@ -270,6 +273,15 @@ export function registerSessionCommand(program) {
     .option(
       "--ttl-seconds <seconds>",
       `Session time-to-live in seconds (default ${DEFAULT_TTL_SECONDS}; template defaults override when omitted)`
+    )
+    .option(
+      "--force-new",
+      "Always create a new session even if a recent active one exists for this workspace",
+    )
+    .option(
+      "--reuse-window-seconds <seconds>",
+      "Window in which an existing active session for this workspace will be reused (default 3600 = 1h)",
+      "3600",
     )
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -284,15 +296,96 @@ export function registerSessionCommand(program) {
         "ttl-seconds",
         templateDefaultTtlSeconds
       );
+      const reuseWindowSeconds = parsePositiveInteger(
+        options.reuseWindowSeconds,
+        "reuse-window-seconds",
+        3600,
+      );
+
+      // Auto-resume: if there's an active local session for this same
+      // workspace path created in the last `reuseWindowSeconds`, reuse
+      // it instead of minting a new id. Kills the orphan-creation
+      // pattern where every CLI invocation produced a fresh empty
+      // session. `--force-new` opts back into the old behavior.
+      let resumed = null;
+      if (!options.forceNew) {
+        try {
+          const active = await listActiveSessions({ targetPath });
+          const cutoffMs = Date.now() - reuseWindowSeconds * 1000;
+          const candidates = active.filter((entry) => {
+            const createdMs = Date.parse(entry.createdAt || "");
+            return Number.isFinite(createdMs) && createdMs >= cutoffMs;
+          });
+          candidates.sort((a, b) =>
+            String(b.lastActivityAt || b.createdAt || "").localeCompare(
+              String(a.lastActivityAt || a.createdAt || ""),
+            ),
+          );
+          if (candidates.length > 0) {
+            resumed = candidates[0];
+          }
+        } catch (error) {
+          // listActiveSessions failure is non-fatal; fall through to fresh create.
+        }
+      }
+
       const startedAt = Date.now();
-      const created = await createSession({
-        targetPath,
-        ttlSeconds,
-        template,
-      });
+      let created;
+      if (resumed) {
+        // Surface the resumed session's metadata in the same shape
+        // createSession returns so downstream code stays unchanged.
+        created = {
+          sessionId: resumed.sessionId,
+          sessionDir: resumed.sessionDir || null,
+          metadataPath: resumed.metadataPath || null,
+          streamPath: resumed.streamPath || null,
+          createdAt: resumed.createdAt,
+          expiresAt: resumed.expiresAt,
+          elapsedTimer: 0,
+          renewalCount: resumed.renewalCount || 0,
+          status: resumed.status || "active",
+          template: resumed.template || null,
+          codebaseContext: resumed.codebaseContext || null,
+          resumed: true,
+        };
+      } else {
+        created = await createSession({
+          targetPath,
+          ttlSeconds,
+          template,
+        });
+      }
       const durationMs = Date.now() - startedAt;
       const launchPlan = template ? buildTemplateLaunchPlan(created.sessionId, template) : [];
       const dashboardUrl = buildDashboardUrl(created.sessionId);
+      const titleArg = normalizeString(options.title);
+
+      // If the caller passed --title, push it to the API so the web
+      // sidebar shows the label (best-effort, non-blocking).
+      if (titleArg) {
+        void (async () => {
+          try {
+            const session = await resolveActiveAuthSession({
+              cwd: targetPath,
+              env: process.env,
+              autoRotate: false,
+            });
+            if (!session?.token || !session?.apiUrl) return;
+            const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
+            await requestJsonMutation(
+              `${apiUrl}/api/v1/sessions/${encodeURIComponent(created.sessionId)}/title`,
+              {
+                method: "POST",
+                operationName: "session.set_title",
+                headers: { Authorization: `Bearer ${session.token}` },
+                body: { title: titleArg },
+              },
+            );
+          } catch (_error) {
+            /* best-effort */
+          }
+        })();
+      }
 
       const payload = {
         command: "session start",
@@ -311,6 +404,8 @@ export function registerSessionCommand(program) {
         template: created.template,
         launchPlan,
         dashboardUrl,
+        resumed: Boolean(resumed),
+        title: titleArg || null,
       };
 
       // Best-effort admin visibility sync. Session creation remains local-first.
@@ -331,8 +426,12 @@ export function registerSessionCommand(program) {
       }
 
       if (template) {
-        console.log(`Session ${created.sessionId} created (template: ${template.id})`);
-        if (launchPlan.length > 0) {
+        console.log(
+          resumed
+            ? `Resumed session ${created.sessionId} (template: ${template.id})`
+            : `Session ${created.sessionId} created (template: ${template.id})`,
+        );
+        if (launchPlan.length > 0 && !resumed) {
           console.log("");
           console.log("Launch your agents:");
           for (const slot of launchPlan) {
@@ -344,13 +443,136 @@ export function registerSessionCommand(program) {
         return;
       }
 
-      console.log(pc.bold("Session created"));
+      console.log(pc.bold(resumed ? "Session resumed" : "Session created"));
       console.log(pc.gray(`Session: ${created.sessionId}`));
-      console.log(pc.gray(`Stream: ${created.streamPath}`));
-      console.log(pc.gray(`Created in ${durationMs}ms`));
+      if (titleArg) console.log(pc.gray(`Title: ${titleArg}`));
+      if (created.streamPath) console.log(pc.gray(`Stream: ${created.streamPath}`));
+      console.log(pc.gray(`${resumed ? "Resumed" : "Created"} in ${durationMs}ms`));
       console.log(
-        `status=${created.status} created_at=${created.createdAt} expires_at=${created.expiresAt} ttl_seconds=${ttlSeconds}`
+        `status=${created.status} created_at=${created.createdAt} expires_at=${created.expiresAt} ttl_seconds=${ttlSeconds}`,
       );
+      if (!resumed) {
+        console.log(
+          pc.gray(
+            "Tip: subsequent `slc session start` in this workspace within an hour will resume this session. Pass --force-new to override.",
+          ),
+        );
+      }
+    });
+
+  session
+    .command("continue")
+    .description("Alias for `session start --resume` — resume the most recent active session for this workspace, or create one if none exists.")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--title <title>", "Title applied if a new session is created")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      // Delegate to session start without --force-new. Commander parses
+      // the args for us via the parent action; here we just shell out.
+      const args = ["session", "start", "--path", String(options.path || ".")];
+      if (options.title) args.push("--title", String(options.title));
+      if (shouldEmitJson(options, command)) args.push("--json");
+      await program.parseAsync(args, { from: "user" });
+    });
+
+  session
+    .command("set-title <sessionId> <title>")
+    .description("Set the human-readable title on a session (visible in web sidebar + transcript).")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, title, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) throw new Error("session id is required.");
+      const normalizedTitle = normalizeString(title);
+      if (!normalizedTitle) throw new Error("title is required.");
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const session = await resolveActiveAuthSession({
+        cwd: targetPath,
+        env: process.env,
+        autoRotate: false,
+      });
+      if (!session?.token || !session?.apiUrl) {
+        throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
+      }
+      const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
+      const result = await requestJsonMutation(
+        `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/title`,
+        {
+          method: "POST",
+          operationName: "session.set_title",
+          headers: { Authorization: `Bearer ${session.token}` },
+          body: { title: normalizedTitle },
+        },
+      );
+      const payload = {
+        command: "session set-title",
+        sessionId: normalizedSessionId,
+        title: normalizedTitle,
+        result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold(`Title set on ${normalizedSessionId}`));
+      console.log(pc.gray(`title=${normalizedTitle}`));
+    });
+
+  session
+    .command("cleanup")
+    .description("Bulk-archive empty stale sessions on the SentinelLayer dashboard. Targets sessions with ≤1 events older than --cutoff-minutes.")
+    .option("--cutoff-minutes <n>", "Age threshold in minutes (default 60)", "60")
+    .option("--max-events <n>", "Max events to still treat as empty (default 1)", "1")
+    .option("--apply", "Actually archive (default is dry-run)")
+    .option("--path <path>", "Workspace path", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const cutoffMinutes = parsePositiveInteger(options.cutoffMinutes, "cutoff-minutes", 60);
+      const maxEvents = parsePositiveInteger(options.maxEvents, "max-events", 1);
+      const dryRun = !options.apply;
+      const session = await resolveActiveAuthSession({
+        cwd: targetPath,
+        env: process.env,
+        autoRotate: false,
+      });
+      if (!session?.token || !session?.apiUrl) {
+        throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
+      }
+      const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
+      const result = await requestJsonMutation(
+        `${apiUrl}/api/v1/sessions/sweep`,
+        {
+          method: "POST",
+          operationName: "session.sweep_empty",
+          headers: { Authorization: `Bearer ${session.token}` },
+          body: {
+            cutoffMinutes,
+            maxEvents,
+            dryRun,
+          },
+        },
+      );
+      const payload = {
+        command: "session cleanup",
+        dryRun,
+        cutoffMinutes,
+        maxEvents,
+        result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      const scanned = result?.scanned || 0;
+      const archived = result?.archived || 0;
+      console.log(pc.bold(dryRun ? "Cleanup dry-run" : "Cleanup applied"));
+      console.log(
+        pc.gray(`scanned=${scanned} archived=${archived} cutoff=${cutoffMinutes}m max-events=${maxEvents}`),
+      );
+      if (dryRun && scanned > 0) {
+        console.log(pc.gray(`Re-run with --apply to archive these ${scanned} sessions.`));
+      }
     });
 
   session
