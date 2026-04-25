@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.5...v0.8.6) (2026-04-25)
+
+
+### Features
+
+* **session:** SSE + fs.watch composed live-event source ([#413](https://github.com/mrrCarter/create-sentinelayer/pull/413)) — same-machine peers see each other's writes through fs.watch instantly; remote peers receive via SSE the moment the API persists. Single async iterator, dedups by event id.
+* **session:** one-line message preview per row in `slc session history` ([#412](https://github.com/mrrCarter/create-sentinelayer/pull/412)) — ChatGPT-style left-rail snippets.
+
+
+### Release Plumbing
+
+* **release:** publish straight to `latest` via OIDC trusted publisher when `canary=false` (default) ([#411](https://github.com/mrrCarter/create-sentinelayer/pull/411)) — unblocks `latest` dist-tag promotion without needing a classic NPM_TOKEN secret. Canary path still available with `workflow_dispatch -f canary=true`.
+
 ## [0.8.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.4...v0.8.5) (2026-04-25)
 
 
