@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.9](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.8...v0.8.9) (2026-04-25)
+
+
+### Features
+
+* **senti:** Senti orchestrator auto-names anonymous participants ([#418](https://github.com/mrrCarter/create-sentinelayer/pull/418)) — `registerAgent` now hands empty / `cli-user` registrations a friendly sequential id like `claude-1` / `codex-2` / `guest-3` based on the model family, and emits an `agent_identified` welcome event in the stream so participants see the auto-naming step + how to override. Strict guard `shouldAutoRenameInRegistry` only fires on empty caller id OR literal `cli-user` — caller-supplied real ids like `agent-alpha` and `codex-task-holder-1` round-trip verbatim.
+* **session:** live LLM-interaction usage events ([#421](https://github.com/mrrCarter/create-sentinelayer/pull/421)) — new `emitLLMInteraction()` writes a `session_usage` event with both flat fields (totalTokens / costUsd / durationMs / response.text) and a mirrored `payload.usage` block, so transcript download + telemetry sync pick it up automatically. New `aggregateSessionUsage()` helper produces per-agent + global tallies for live counters.
+
 ## [0.8.8](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.7...v0.8.8) (2026-04-25)
 
 
