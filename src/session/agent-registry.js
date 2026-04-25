@@ -7,6 +7,11 @@ import { STUCK_THRESHOLDS } from "../agents/jules/pulse.js";
 import { createAgentEvent } from "../events/schema.js";
 import { resolveSessionPaths } from "./paths.js";
 import { emitContextBriefing } from "./recap.js";
+import {
+  assignFriendlyName,
+  buildSentiWelcome,
+  shouldAutoRenameInRegistry,
+} from "./senti-naming.js";
 import { appendToStream } from "./stream.js";
 
 const AGENT_SNAPSHOT_SCHEMA_VERSION = "1.0.0";
@@ -181,7 +186,26 @@ export async function registerAgent(
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
   const nowIso = new Date().toISOString();
-  const resolvedAgentId = normalizeString(agentId) || generateAgentId(model);
+  const originalCallerAgentId = normalizeString(agentId);
+  let resolvedAgentId = originalCallerAgentId || generateAgentId(model);
+  let renamedFrom = "";
+
+  // Senti orchestrator hook: when the caller didn't supply an id, or
+  // supplied an explicit placeholder (`cli-user`, `agent-…`, `guest-…`),
+  // pick a friendly sequential name like `claude-3` / `codex-2` /
+  // `guest-1` so participants have a "face" in the transcript instead of
+  // a random hex blob. Caller-supplied real ids are NEVER renamed
+  // (kill tests like PR 348/351 register `codex-task-holder-1` with
+  // model="" and need the id to round-trip verbatim).
+  if (shouldAutoRenameInRegistry({ originalCallerAgentId })) {
+    const existingAgents = await listAgentsInternal(paths);
+    const friendly = assignFriendlyName({ model, existingAgents });
+    if (friendly && friendly !== resolvedAgentId.toLowerCase()) {
+      renamedFrom = resolvedAgentId;
+      resolvedAgentId = friendly;
+    }
+  }
+
   const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
 
   const snapshot = normalizeAgentSnapshot(
@@ -210,6 +234,21 @@ export async function registerAgent(
     role: snapshot.role,
     status: snapshot.status,
   }, { targetPath });
+
+  if (renamedFrom) {
+    const welcome = buildSentiWelcome({
+      agentId: snapshot.agentId,
+      model: snapshot.model,
+      role: snapshot.role,
+      wasAnonymous: true,
+      originalAgentId: renamedFrom,
+    });
+    await emitAgentEvent(paths.sessionId, "agent_identified", {
+      ...welcome,
+      sessionId: paths.sessionId,
+    }, { targetPath });
+  }
+
   if (normalizeString(snapshot.agentId).toLowerCase() !== "senti") {
     await emitContextBriefing(paths.sessionId, {
       forAgentId: snapshot.agentId,
@@ -221,6 +260,26 @@ export async function registerAgent(
     ...snapshot,
     snapshotPath,
   };
+}
+
+async function listAgentsInternal(paths) {
+  try {
+    const entries = await fsp.readdir(paths.agentsDir, { withFileTypes: true });
+    const out = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const raw = await readAgentSnapshot(path.join(paths.agentsDir, entry.name));
+      if (raw && typeof raw === "object" && raw.agentId) {
+        out.push({ agentId: raw.agentId, model: raw.model || "" });
+      }
+    }
+    return out;
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function heartbeatAgent(
