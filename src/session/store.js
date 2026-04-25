@@ -484,6 +484,52 @@ export async function listActiveSessions({ targetPath = process.cwd() } = {}) {
   return sessions;
 }
 
+/**
+ * List every session known to the local cache. Unlike
+ * `listActiveSessions`, this includes archived AND expired sessions so
+ * the CLI can surface past conversations the way ChatGPT exposes its
+ * left-rail history.
+ *
+ * Each entry carries `archiveStatus` (`"active"` | `"archived"` |
+ * `"expired"`) so the consumer can group/filter without re-deriving
+ * lifecycle from the raw timestamps.
+ *
+ * @param {{targetPath?: string}} [options]
+ * @returns {Promise<Array<object>>}
+ */
+export async function listAllSessions({ targetPath = process.cwd() } = {}) {
+  const resolvedTargetPath = path.resolve(String(targetPath || "."));
+  const sessionsRoot = resolveSessionsRoot({ targetPath: resolvedTargetPath });
+  let entries = [];
+  try {
+    entries = await fsp.readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const sessions = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const loaded = await loadMetadata(entry.name, { targetPath: resolvedTargetPath });
+    if (!loaded) continue;
+
+    const payload = buildSessionPayload(loaded.metadata, loaded.paths);
+    let archiveStatus = "active";
+    if (loaded.metadata.status === SESSION_STATUS_ARCHIVED) {
+      archiveStatus = "archived";
+    } else if (isExpired(loaded.metadata)) {
+      archiveStatus = "expired";
+    }
+    sessions.push({ ...payload, archiveStatus });
+  }
+
+  sessions.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return sessions;
+}
+
 export async function renewSession(sessionId, { targetPath = process.cwd() } = {}) {
   const loaded = await loadMetadata(sessionId, { targetPath });
   if (!loaded) {

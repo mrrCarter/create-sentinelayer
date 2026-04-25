@@ -44,6 +44,7 @@ import {
   DEFAULT_TTL_SECONDS,
   getSession,
   listActiveSessions,
+  listAllSessions,
   recordSessionProvisionedIdentities,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -617,31 +618,99 @@ export function registerSessionCommand(program) {
 
   session
     .command("list")
-    .description("List active sessions")
+    .description("List sessions in the local workspace cache")
+    .option(
+      "--include-archived",
+      "Include archived/expired sessions (past conversations)",
+    )
+    .option(
+      "--limit <n>",
+      "Maximum sessions to return (default 50; ignored on --json)",
+      "50",
+    )
     .option("--path <path>", "Workspace path for sessions", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const sessions = await listActiveSessions({
-        targetPath,
-      });
+      const includeArchived = Boolean(options.includeArchived);
+      const limit = parsePositiveInteger(options.limit, "limit", 50);
+      const sessions = includeArchived
+        ? await listAllSessions({ targetPath })
+        : await listActiveSessions({ targetPath });
+      const trimmed = shouldEmitJson(options, command) ? sessions : sessions.slice(0, limit);
       const payload = {
         command: "session list",
         targetPath,
+        includeArchived,
         count: sessions.length,
-        sessions,
+        sessions: trimmed,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
       if (sessions.length === 0) {
-        console.log(pc.yellow("No active sessions."));
+        console.log(
+          pc.yellow(
+            includeArchived
+              ? "No sessions in cache."
+              : "No active sessions. Run with --include-archived to see history.",
+          ),
+        );
         return;
       }
-      for (const item of sessions) {
+      for (const item of trimmed) {
+        const archive = item.archiveStatus ? ` archive=${item.archiveStatus}` : "";
         console.log(
-          `${item.sessionId} status=${item.status} created_at=${item.createdAt} expires_at=${item.expiresAt}`
+          `${item.sessionId} status=${item.status}${archive} created=${item.createdAt} expires=${item.expiresAt}`,
+        );
+      }
+      if (sessions.length > trimmed.length) {
+        console.log(
+          pc.gray(
+            `… ${sessions.length - trimmed.length} more (raise --limit or use --json).`,
+          ),
+        );
+      }
+    });
+
+  session
+    .command("history")
+    .description("Past conversations — alias for `session list --include-archived`")
+    .option("--limit <n>", "Maximum sessions to return", "50")
+    .option("--path <path>", "Workspace path for sessions", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const limit = parsePositiveInteger(options.limit, "limit", 50);
+      const sessions = await listAllSessions({ targetPath });
+      const trimmed = shouldEmitJson(options, command) ? sessions : sessions.slice(0, limit);
+      const payload = {
+        command: "session history",
+        targetPath,
+        count: sessions.length,
+        sessions: trimmed,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      if (sessions.length === 0) {
+        console.log(pc.yellow("No sessions in cache."));
+        return;
+      }
+      for (const item of trimmed) {
+        console.log(
+          `${item.archiveStatus.padEnd(8)} ${item.sessionId} created=${item.createdAt}${
+            item.archivedAt ? ` archived=${item.archivedAt}` : ""
+          }`,
+        );
+      }
+      if (sessions.length > trimmed.length) {
+        console.log(
+          pc.gray(
+            `… ${sessions.length - trimmed.length} more (raise --limit or use --json).`,
+          ),
         );
       }
     });
