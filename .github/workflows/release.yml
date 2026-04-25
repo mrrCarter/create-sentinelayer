@@ -24,6 +24,14 @@ on:
         description: "Release tag (e.g. v0.5.0)"
         required: true
         type: string
+      canary:
+        description: "Publish to `next` first and require Promote Latest (legacy behavior). Default false → publish directly to `latest`."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: release-state-prod
@@ -1248,11 +1256,12 @@ jobs:
           echo "ISOLATED_NPM=${HOME}/.npm-isolated/node_modules/.bin/npm" >> "$GITHUB_ENV"
           "${HOME}/.npm-isolated/node_modules/.bin/npm" --version
 
-      - name: Publish canary release to npm (`next`)
+      - name: Publish release to npm (latest by default, next when canary=true)
         if: steps.publish_guard.outputs.already_published != 'true'
         env:
           PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
           PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
+          RELEASE_CANARY_MODE: ${{ github.event.inputs.canary || 'false' }}
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
@@ -1265,7 +1274,17 @@ jobs:
           printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "${HOME}/.npmrc"
           echo "Using npm at: ${ISOLATED_NPM}"
           "${ISOLATED_NPM}" --version
-          "${ISOLATED_NPM}" publish "./${VERIFIED_TARBALL}" --provenance --access public --tag next
+          # Default: publish directly to `latest` so OIDC trusted publishing
+          # carries the whole flow with no separate Promote Latest step
+          # (which currently needs a classic NPM_TOKEN that lives outside
+          # OIDC). Pass `canary=true` on workflow_dispatch to opt back into
+          # the canary→soak→promote pattern.
+          PUBLISH_TAG="latest"
+          if [ "${RELEASE_CANARY_MODE:-false}" = "true" ]; then
+            PUBLISH_TAG="next"
+          fi
+          echo "Publishing to dist-tag: ${PUBLISH_TAG}"
+          "${ISOLATED_NPM}" publish "./${VERIFIED_TARBALL}" --provenance --access public --tag "${PUBLISH_TAG}"
           # Registry replication is eventually-consistent; the read-back
           # can briefly return the prior dist-tag value for up to ~60s
           # after a successful publish. Retry with backoff so we observe
@@ -1273,17 +1292,17 @@ jobs:
           next_tag=""
           for attempt in 1 2 3 4 5 6 7 8; do
             sleep_seconds="$(( attempt * 10 ))"
-            raw="$(npm view "${PACKAGE_NAME}" dist-tags.next --json 2>/tmp/npm-next.err || true)"
+            raw="$(npm view "${PACKAGE_NAME}" "dist-tags.${PUBLISH_TAG}" --json 2>/tmp/npm-next.err || true)"
             next_tag="$(echo "${raw}" | tr -d '\r\n\"[:space:]' | xargs || true)"
             if [ "${next_tag}" = "${PACKAGE_VERSION}" ]; then
-              echo "Canary dist-tag observed as ${PACKAGE_VERSION} on attempt ${attempt}."
+              echo "Dist-tag '${PUBLISH_TAG}' observed as ${PACKAGE_VERSION} on attempt ${attempt}."
               break
             fi
-            echo "::notice::Canary dist-tag not yet propagated (observed=${next_tag:-<none>}, expected=${PACKAGE_VERSION}); attempt ${attempt} waiting ${sleep_seconds}s."
+            echo "::notice::dist-tag '${PUBLISH_TAG}' not yet propagated (observed=${next_tag:-<none>}, expected=${PACKAGE_VERSION}); attempt ${attempt} waiting ${sleep_seconds}s."
             sleep "${sleep_seconds}"
           done
           if [ "${next_tag}" != "${PACKAGE_VERSION}" ]; then
-            echo "::error::Canary publish verification failed after 8 attempts. dist-tags.next=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
+            echo "::error::Publish verification failed after 8 attempts. dist-tags.${PUBLISH_TAG}=${next_tag:-<none>} expected=${PACKAGE_VERSION}."
             cat /tmp/npm-next.err || true
             exit 1
           fi
@@ -1291,7 +1310,7 @@ jobs:
             published_integrity="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" dist.integrity --json 2>/tmp/npm-view.err || true)"
             published_integrity="$(echo "${published_integrity}" | tr -d '\r\n\"[:space:]' | xargs || true)"
             if [ -n "${published_integrity}" ] && [ "${published_integrity}" != "${EXPECTED_INTEGRITY}" ]; then
-              echo "::error::Canary publish integrity mismatch. expected=${EXPECTED_INTEGRITY} published=${published_integrity}."
+              echo "::error::Publish integrity mismatch. expected=${EXPECTED_INTEGRITY} published=${published_integrity}."
               exit 1
             fi
           fi
@@ -1348,7 +1367,8 @@ jobs:
       ${{
         startsWith(github.ref, 'refs/tags/v') &&
         needs.publish-candidate.result == 'success' &&
-        needs.publish-candidate.outputs.already_published != 'true'
+        needs.publish-candidate.outputs.already_published != 'true' &&
+        github.event.inputs.canary == 'true'
       }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
