@@ -49,6 +49,7 @@ import {
   recordSessionProvisionedIdentities,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
+import { readSessionPreview } from "../session/preview.js";
 import { syncSessionMetadataToApi } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import {
@@ -847,35 +848,65 @@ export function registerSessionCommand(program) {
 
   session
     .command("history")
-    .description("Past conversations — alias for `session list --include-archived`")
+    .description(
+      "Past conversations with a one-line preview of the most recent message (alias for `session list --include-archived` + previews)",
+    )
     .option("--limit <n>", "Maximum sessions to return", "50")
+    .option("--no-preview", "Skip the per-session preview lookup")
     .option("--path <path>", "Workspace path for sessions", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const limit = parsePositiveInteger(options.limit, "limit", 50);
+      const wantPreview = options.preview !== false;
       const sessions = await listAllSessions({ targetPath });
       const trimmed = shouldEmitJson(options, command) ? sessions : sessions.slice(0, limit);
-      const payload = {
-        command: "session history",
-        targetPath,
-        count: sessions.length,
-        sessions: trimmed,
-      };
+
+      let previews = new Map();
+      if (wantPreview && trimmed.length > 0) {
+        const entries = await Promise.all(
+          trimmed.map(async (item) => [
+            item.sessionId,
+            await readSessionPreview(item.sessionId, { targetPath }),
+          ]),
+        );
+        previews = new Map(entries);
+      }
+
       if (shouldEmitJson(options, command)) {
+        const payload = {
+          command: "session history",
+          targetPath,
+          count: sessions.length,
+          sessions: trimmed.map((item) => ({
+            ...item,
+            preview: previews.get(item.sessionId) || null,
+          })),
+        };
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
+
       if (sessions.length === 0) {
         console.log(pc.yellow("No sessions in cache."));
         return;
       }
       for (const item of trimmed) {
-        console.log(
-          `${item.archiveStatus.padEnd(8)} ${item.sessionId} created=${item.createdAt}${
-            item.archivedAt ? ` archived=${item.archivedAt}` : ""
-          }`,
-        );
+        const archive = item.archiveStatus.padEnd(8);
+        const head =
+          `${archive} ${item.sessionId} created=${item.createdAt}` +
+          (item.archivedAt ? ` archived=${item.archivedAt}` : "");
+        if (!wantPreview) {
+          console.log(head);
+          continue;
+        }
+        const preview = previews.get(item.sessionId);
+        if (preview && preview.message) {
+          const speaker = preview.agentId ? `${preview.agentId}: ` : "";
+          console.log(`${head}\n  ${pc.gray(`${speaker}${preview.message}`)}`);
+        } else {
+          console.log(`${head}\n  ${pc.gray("(no messages yet)")}`);
+        }
       }
       if (sessions.length > trimmed.length) {
         console.log(
