@@ -29,24 +29,22 @@ const ANONYMOUS_MODELS = Object.freeze(["", "unknown", "cli", "anonymous"]);
 /**
  * Strict: should the agent-registry auto-rename this registration?
  *
- * `isAnonymousAgent` is permissive (model alone can flag a registration
- * as anonymous), which is correct for downstream callers that want to
- * decide whether to *welcome* a participant. The registry hook needs a
- * stricter rule: NEVER rename a caller-supplied id that looks intentional,
- * because callers like `codex-task-holder-1` rely on the id round-tripping
- * verbatim. The registry only renames when the caller either:
+ * The hook's contract is "if a name is already there, leave it alone; if
+ * not, give them one." So we ONLY auto-rename when the caller gave us
+ * nothing OR the literal default placeholder `cli-user`. Any other
+ * caller-supplied id — even ones that *look* generic like `agent-alpha`,
+ * `guest-team`, or `codex-task-holder-1` — was an intentional choice and
+ * round-trips verbatim.
  *
- *  - passed an empty agentId (we'll generate one), or
- *  - passed an explicit anon-prefix placeholder (`agent-…`, `cli-user`,
- *    `guest-…`).
- *
- * Any other non-empty caller-supplied id is treated as authoritative and
- * preserved as-is, regardless of model.
- *
- * Why so strict: PR 348/351 kill tests register agents like
- * `codex-task-holder-1` with model="" and assert the id round-trips
- * verbatim. A model-based rename here was the real reason the previous
- * registry hook had to be reverted.
+ * Why so strict:
+ *  - e2e test #91 (CLI session commands flow) does `session join
+ *    --name agent-alpha` and asserts the id round-trips. The previous
+ *    rule (`agent-` prefix => rename) clobbered it.
+ *  - PR 348/351 kill tests register `codex-task-holder-1` with model=""
+ *    and need verbatim round-trip.
+ *  - `isAnonymousAgent` is intentionally separate and stays permissive
+ *    (model can flag) for downstream callers that decide whether to
+ *    *welcome* a participant; the registry hook is stricter.
  *
  * @param {{originalCallerAgentId: string}} params
  * @returns {boolean}
@@ -54,7 +52,7 @@ const ANONYMOUS_MODELS = Object.freeze(["", "unknown", "cli", "anonymous"]);
 export function shouldAutoRenameInRegistry({ originalCallerAgentId = "" } = {}) {
   const id = normalize(originalCallerAgentId).toLowerCase();
   if (!id) return true;
-  return ANONYMOUS_AGENT_PREFIXES.some((prefix) => id.startsWith(prefix));
+  return id === "cli-user";
 }
 
 /**

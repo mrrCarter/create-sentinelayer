@@ -115,21 +115,40 @@ test("shouldAutoRenameInRegistry: empty caller id => rename", () => {
   assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "" }), true);
 });
 
-test("shouldAutoRenameInRegistry: explicit anon prefix => rename", () => {
+test("shouldAutoRenameInRegistry: literal cli-user placeholder => rename", () => {
   assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "cli-user" }), true);
-  assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "agent-abcd" }), true);
-  assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "guest-1" }), true);
 });
 
-test("shouldAutoRenameInRegistry: caller-supplied real id => preserve (kill-test guard)", () => {
-  // PR 348/351 kill tests register agents like `codex-task-holder-1`
-  // with model="" and expect the id to round-trip verbatim. Anything
-  // not matching the explicit anon prefixes must be authoritative,
-  // model unknown or otherwise.
+test("shouldAutoRenameInRegistry: caller-supplied real id => preserve (kill-test + e2e guard)", () => {
+  // PR 348/351 kill tests register `codex-task-holder-1` with model=""
+  // and expect verbatim round-trip. e2e test #91 does
+  // `session join --name agent-alpha` and asserts agent-alpha round-trips.
+  // Anything but empty or literal `cli-user` is caller-authoritative.
   assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "codex-task-holder-1" }), false);
+  assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "agent-alpha" }), false);
+  assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "agent-abcd" }), false);
+  assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "guest-1" }), false);
   assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "claude-1" }), false);
   assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "human-mrrcarter" }), false);
   assert.equal(shouldAutoRenameInRegistry({ originalCallerAgentId: "senti" }), false);
+});
+
+test("registerAgent: agent-alpha round-trips verbatim (e2e #91 regression)", async () => {
+  const root = await makeRoot();
+  try {
+    const created = await createSession({ targetPath: root });
+    const result = await registerAgent(created.sessionId, {
+      agentId: "agent-alpha",
+      model: "",
+      role: "coder",
+      targetPath: root,
+    });
+    assert.equal(result.agentId, "agent-alpha");
+    const list = await listAgents(created.sessionId, { targetPath: root });
+    assert.deepEqual(list.map((a) => a.agentId), ["agent-alpha"]);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("registerAgent: caller-supplied real id round-trips verbatim (codex-task-holder regression)", async () => {
