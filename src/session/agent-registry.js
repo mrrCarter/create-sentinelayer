@@ -180,6 +180,62 @@ export function generateAgentId(modelName) {
   return `${prefix}-${suffix}`;
 }
 
+// In-process registry of agents registered by *this* CLI process. The
+// dashboard treats any participant without a terminal agent_leave /
+// agent_killed / session_killed event as "active". When a CLI exits via
+// SIGINT/SIGTERM/crash without explicitly leaving, the dashboard shows
+// "Last activity: 15h ago — active" indefinitely. This registry lets a
+// single process-wide exit hook flush leave events for every agent it
+// owns so the participant roster stays honest.
+const _localAgents = new Map(); // key: `${sessionId}::${agentId}` -> { sessionId, agentId, targetPath }
+let _exitHooksInstalled = false;
+
+function _agentKey(sessionId, agentId) {
+  return `${sessionId}::${agentId}`;
+}
+
+function _trackLocalAgent(sessionId, agentId, targetPath) {
+  _localAgents.set(_agentKey(sessionId, agentId), { sessionId, agentId, targetPath });
+  _ensureExitHooksInstalled();
+}
+
+function _untrackLocalAgent(sessionId, agentId) {
+  _localAgents.delete(_agentKey(sessionId, agentId));
+}
+
+async function _emitLeaveForAllLocalAgents(reason) {
+  const entries = [..._localAgents.values()];
+  _localAgents.clear();
+  for (const entry of entries) {
+    try {
+      await emitAgentEvent(
+        entry.sessionId,
+        "agent_leave",
+        { agentId: entry.agentId, reason, model: "unknown", role: "participant" },
+        { targetPath: entry.targetPath },
+      );
+    } catch {
+      // Best-effort: a stuck filesystem or network shouldn't block exit.
+    }
+  }
+}
+
+function _ensureExitHooksInstalled() {
+  if (_exitHooksInstalled) return;
+  _exitHooksInstalled = true;
+  const onSignal = (signal) => {
+    void _emitLeaveForAllLocalAgents("manual").finally(() => {
+      process.removeListener(signal, onSignal);
+      process.kill(process.pid, signal);
+    });
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.on("beforeExit", () => {
+    void _emitLeaveForAllLocalAgents("manual");
+  });
+}
+
 export async function registerAgent(
   sessionId,
   { agentId = "", model = "", role = "observer", targetPath = process.cwd() } = {}
@@ -234,6 +290,7 @@ export async function registerAgent(
     role: snapshot.role,
     status: snapshot.status,
   }, { targetPath });
+  _trackLocalAgent(paths.sessionId, snapshot.agentId, targetPath);
 
   if (renamedFrom) {
     const welcome = buildSentiWelcome({
@@ -347,6 +404,8 @@ export async function unregisterAgent(
     role: snapshot.role,
     model: snapshot.model,
   }, { targetPath });
+  // Already left explicitly — don't double-emit on process exit.
+  _untrackLocalAgent(paths.sessionId, snapshot.agentId);
 
   return {
     ...snapshot,
