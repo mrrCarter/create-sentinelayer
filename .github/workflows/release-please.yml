@@ -179,6 +179,7 @@ jobs:
           token: ${{ github.token }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-release: true
 
       - name: Track Release workflow triggered by generated release tag
         if: steps.release_please.outputs.release_created == 'true' || steps.release_please.outputs.releases_created == 'true'

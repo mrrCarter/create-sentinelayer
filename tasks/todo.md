@@ -1,3 +1,22 @@
+# 2026-04-26 - Release Please PR-Only Mode (`ci/release-please-skip-github-release`)
+
+## Plan
+- [x] Reproduce the post-PR #429 Release Please failure on main.
+- [x] Confirm Release Please still attempts to backfill merged PR #320 by creating the missing `v0.8.0` GitHub release.
+- [x] Configure Release Please to skip GitHub release creation so release artifacts remain owned by the current tag-driven release flow.
+- [x] Run local validation and review diff.
+- [ ] Open PR, watch Omar/Quality/Attestation, merge after green.
+- [ ] Confirm post-merge Release Please succeeds.
+
+## Review
+- Root cause:
+  - Release Please keeps selecting merged PR #320 and trying to create the missing historical `v0.8.0` GitHub release.
+  - Current release artifacts are already owned by tag-driven/manual release PRs through `v0.8.11`, so backfilling `v0.8.0` is not part of the active flow.
+- Validation evidence:
+  - release-please workflow YAML parse (pass)
+  - `npm run check` (pass; 293 files)
+  - `node bin/create-sentinelayer.js review --diff --json` (pass; `p0=0`, `p1=0`, `p2=0`, `blocking=false`)
+
 # 2026-04-26 - Release Please Manifest Sync (`ci/release-please-manifest-sync`)
 
 ## Plan
