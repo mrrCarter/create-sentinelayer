@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.11](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.10...v0.8.11) (2026-04-26)
+
+
+### Bug Fixes
+
+* **session:** emit `agent_leave` on CLI process exit ([#426](https://github.com/mrrCarter/create-sentinelayer/pull/426)) — CLIs that exit via SIGINT/SIGTERM/crash never sent `agent_leave`, so the dashboard's Agents sidebar showed every prior participant as "active" indefinitely with stale "Last activity: 15h ago" labels. Each registered agent is now tracked in a process-local map; one-time SIGINT/SIGTERM/beforeExit handlers flush leave events for everything this process owns. Explicit `unregisterAgent()` removes from the map so we don't double-emit. Pairs with the dashboard's new 10-min idle-rollover for sessions where this fix can't help retroactively.
+
 ## [0.8.10](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.9...v0.8.10) (2026-04-25)
 
 
