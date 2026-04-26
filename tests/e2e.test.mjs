@@ -4557,6 +4557,41 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
   }
 });
 
+test("CLI audit stream emits non-Jules persona tool events", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-stream-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({ name: "audit-stream-fixture", version: "1.0.0" }, null, 2),
+      "utf-8"
+    );
+    await writeFile(path.join(tempRoot, "src", "index.js"), "export const status = 'ok';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["audit", "--path", tempRoot, "--agents", "security", "--stream"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const events = String(result.stdout || "")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+    assert.equal(events.some((event) => event.event === "agent_start" && event.agent?.id === "security"), true);
+    assert.equal(events.some((event) => event.event === "tool_call" && event.payload?.tool === "Glob"), true);
+    assert.equal(events.some((event) => event.event === "tool_result" && event.payload?.tool === "Glob"), true);
+    const complete = events.find((event) => event.event === "agent_complete" && event.agent?.id === "security");
+    assert.ok(complete);
+    assert.equal(Number(complete.usage?.outputTokens || 0) > 0, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit package rebuilds DD package from run id", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-package-cmd-"));
   try {
