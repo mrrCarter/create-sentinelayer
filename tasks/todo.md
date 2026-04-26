@@ -1,3 +1,47 @@
+# 2026-04-26 - DD Build Spec PR-A1 Persona Jules-Parity Tool Grant (`dd/pr-a1-persona-jules-tools`)
+
+## Plan
+- [x] Read `tasks/dd-build-spec-2026-04-26.md`, `AGENTS.md`, `CLAUDE.md`, and relevant lessons before implementation.
+- [x] Branch from current `main` as `dd/pr-a1-persona-jules-tools`.
+- [x] Start Senti coordination session `create-sentinelayer-2026-04-26`.
+- [x] Post PR-A1 plan and file claims into the Senti session.
+- [x] Map existing `/audit` persona execution, Jules loop/tool dispatch, stream schema, and current tests.
+- [x] Add per-persona tool grants in `src/audit/registry.js`.
+- [x] Add `src/audit/persona-loop.js` with isolated non-Jules agentic execution, bounded turns, tool events, and token usage.
+- [x] Wire `src/audit/orchestrator.js` to use the new loop for non-Jules personas while preserving Jules.
+- [x] Add focused tests proving non-Jules personas emit tool calls, findings, and output token usage.
+- [x] Run targeted tests, `npm run verify`, `/omargate deep`, and `/audit`.
+
+## File Claims
+- `src/audit/registry.js`
+- `src/audit/orchestrator.js`
+- `src/audit/persona-loop.js`
+- `tests/*audit*`
+- `tasks/todo.md`
+
+## Review
+- Completed PR-A1 local implementation on branch `dd/pr-a1-persona-jules-tools`.
+- Changed:
+  - `src/audit/registry.js`: canonical default audit persona tool grants (`FileRead`, `Grep`, `Glob`, `Shell`, `FileEdit`) plus alias normalization.
+  - `src/audit/persona-loop.js`: audit-owned non-Jules agentic loop with bounded turns, shared tool dispatch, `agent_start`/`tool_call`/`tool_result`/`agent_complete` events, and output token accounting.
+  - `src/audit/orchestrator.js`: non-frontend personas now run through the agentic loop while preserving existing specialist report artifacts as seed/fallback evidence.
+  - `src/commands/audit.js`: `audit --stream` emits NDJSON persona events.
+  - Tests for registry grants, persona-loop tool/findings/token behavior, and `audit --stream`.
+- Validation evidence:
+  - `node --test tests/unit.audit-persona-loop.test.mjs tests/unit.audit-registry.test.mjs` (pass)
+  - `node --test tests/unit.audit*.test.mjs` (22 passed)
+  - `node --test --test-name-pattern "CLI audit" tests/e2e.test.mjs` (11 passed)
+  - `npm run check` (293 files passed)
+  - `npm run verify` (pass: check, docs build, 92 e2e tests, 1100 unit coverage tests, pack dry-run)
+  - `node bin/create-sentinelayer.js audit --path . --agents security --stream` (pass; emitted `agent_start`, `tool_call`, `tool_result`, `agent_complete`, `usage.outputTokens=64`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (pass; `p0=0`, `p1=0`, `p2=32`, `blocking=false`; AI persona proxy calls were non-blocking 401s under the trusted local test token)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (pass; `overallStatus=PASS`, `p1Total=0`, `p2Total=3`, `blocking=false`)
+  - `node bin/create-sentinelayer.js review --diff --json` (pass; `p0=0`, `p1=0`, `p2=0`, `blocking=false`)
+- Senti coordination:
+  - Session: `fd788f1a-2460-4e43-8014-780794bee329`
+  - Dashboard: `https://sentinelayer.com/dashboard/sessions/fd788f1a-2460-4e43-8014-780794bee329`
+  - Posted plan, file claims, and progress updates.
+
 # PR13 Cross-Repo Closure + CLI 0.8.1 Patch (2026-04-18)
 
 ## Plan

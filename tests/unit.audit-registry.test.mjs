@@ -5,8 +5,10 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
+  DEFAULT_AUDIT_AGENT_TOOLS,
   listBuiltinAuditAgents,
   loadAuditRegistry,
+  normalizeAuditAgentTools,
   selectAuditAgents,
 } from "../src/audit/registry.js";
 
@@ -19,6 +21,17 @@ test("Unit audit registry: built-in agent registry includes expected orchestrato
   assert.equal(agents.some((agent) => agent.id === "performance"), true);
   assert.equal(agents.some((agent) => agent.id === "compliance"), true);
   assert.equal(agents.some((agent) => agent.id === "testing"), true);
+  assert.equal(
+    agents.every((agent) => DEFAULT_AUDIT_AGENT_TOOLS.every((tool) => agent.tools.includes(tool))),
+    true
+  );
+});
+
+test("Unit audit registry: tool aliases normalize to canonical persona-loop tool names", () => {
+  assert.deepEqual(
+    normalizeAuditAgentTools(["read", "grep", "glob", "shell", "file_edit"]),
+    ["FileRead", "Grep", "Glob", "Shell", "FileEdit"]
+  );
 });
 
 test("Unit audit registry: agent selection handles explicit filters and missing ids", () => {
@@ -70,6 +83,11 @@ test("Unit audit registry: custom registry file merges with built-in agents", as
     assert.ok(security);
     assert.equal(security.maxTurns, 12);
     assert.equal(security.confidenceFloor, 0.92);
+    assert.deepEqual(security.tools, [...DEFAULT_AUDIT_AGENT_TOOLS]);
+
+    const custom = registry.agents.find((agent) => agent.id === "custom-domain");
+    assert.ok(custom);
+    assert.deepEqual(custom.tools, ["FileRead"]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

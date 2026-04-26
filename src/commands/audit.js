@@ -51,6 +51,15 @@ function printAuditSummary(result) {
   console.log(`Agents: ${result.agentResults.length}, max_parallel=${result.maxParallel}`);
 }
 
+function buildAuditOrchestratorEventHandler(emitStream) {
+  if (!emitStream) {
+    return null;
+  }
+  return (evt) => {
+    console.log(JSON.stringify(evt));
+  };
+}
+
 export function registerAuditCommand(program, invokeLegacy) {
   const audit = program
     .command("audit")
@@ -63,9 +72,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--refresh", "Refresh CODEBASE_INGEST before running audit")
     .option("--dry-run", "Skip deterministic baseline and run orchestration planning only")
+    .option("--stream", "Emit NDJSON agent events to stdout")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
       const emitJson = shouldEmitJson(options, command);
+      const emitStream = Boolean(options.stream);
       const targetPath = path.resolve(process.cwd(), String(options.path || targetPathArg || "."));
       const registry = await loadAuditRegistry({
         registryFile: options.registryFile,
@@ -85,6 +96,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
         refreshIngest: Boolean(options.refresh),
+        onEvent: buildAuditOrchestratorEventHandler(emitStream),
       });
 
       const payload = {
@@ -112,7 +124,7 @@ export function registerAuditCommand(program, invokeLegacy) {
 
       if (emitJson) {
         console.log(JSON.stringify(payload, null, 2));
-      } else {
+      } else if (!emitStream) {
         printAuditSummary(result);
       }
 

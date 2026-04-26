@@ -42,6 +42,7 @@ import {
   buildSharedMemoryCorpus,
   queryHybridRetriever,
 } from "../memory/retrieval.js";
+import { runPersonaAgenticLoop } from "./persona-loop.js";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -216,6 +217,110 @@ ${agentLines || "- none"}
 `;
 }
 
+async function buildSpecialistSeed({
+  agent,
+  deterministicBaseline,
+  ingest,
+  agentsDirectory,
+}) {
+  let findings = [];
+  let summary = severitySummary(findings);
+  let confidence = computeConfidenceFloor(agent.confidenceFloor, findings.length);
+  let specialistReportPath = "";
+
+  if (agent.id === "security") {
+    const securitySpecialist = runSecuritySpecialist({
+      findings: deterministicBaseline.findings,
+    });
+    findings = securitySpecialist.findings;
+    summary = securitySpecialist.summary;
+    confidence = securitySpecialist.confidence;
+    specialistReportPath = path.join(agentsDirectory, "SECURITY_AGENT_REPORT.md");
+    await fsp.writeFile(
+      specialistReportPath,
+      `${renderSecuritySpecialistMarkdown(securitySpecialist).trim()}\n`,
+      "utf-8"
+    );
+  } else if (agent.id === "architecture") {
+    const architectureSpecialist = runArchitectureSpecialist({
+      findings: deterministicBaseline.findings,
+      ingest,
+    });
+    findings = architectureSpecialist.findings;
+    summary = architectureSpecialist.summary;
+    confidence = architectureSpecialist.confidence;
+    specialistReportPath = path.join(agentsDirectory, "ARCHITECTURE_AGENT_REPORT.md");
+    await fsp.writeFile(
+      specialistReportPath,
+      `${renderArchitectureSpecialistMarkdown(architectureSpecialist).trim()}\n`,
+      "utf-8"
+    );
+  } else if (agent.id === "testing") {
+    const testingSpecialist = runTestingSpecialist({
+      findings: deterministicBaseline.findings,
+      ingest,
+    });
+    findings = testingSpecialist.findings;
+    summary = testingSpecialist.summary;
+    confidence = testingSpecialist.confidence;
+    specialistReportPath = path.join(agentsDirectory, "TESTING_AGENT_REPORT.md");
+    await fsp.writeFile(
+      specialistReportPath,
+      `${renderTestingSpecialistMarkdown(testingSpecialist).trim()}\n`,
+      "utf-8"
+    );
+  } else if (agent.id === "performance") {
+    const performanceSpecialist = runPerformanceSpecialist({
+      findings: deterministicBaseline.findings,
+      ingest,
+    });
+    findings = performanceSpecialist.findings;
+    summary = performanceSpecialist.summary;
+    confidence = performanceSpecialist.confidence;
+    specialistReportPath = path.join(agentsDirectory, "PERFORMANCE_AGENT_REPORT.md");
+    await fsp.writeFile(
+      specialistReportPath,
+      `${renderPerformanceSpecialistMarkdown(performanceSpecialist).trim()}\n`,
+      "utf-8"
+    );
+  } else if (agent.id === "compliance") {
+    const complianceSpecialist = runComplianceSpecialist({
+      findings: deterministicBaseline.findings,
+      ingest,
+    });
+    findings = complianceSpecialist.findings;
+    summary = complianceSpecialist.summary;
+    confidence = complianceSpecialist.confidence;
+    specialistReportPath = path.join(agentsDirectory, "COMPLIANCE_AGENT_REPORT.md");
+    await fsp.writeFile(
+      specialistReportPath,
+      `${renderComplianceSpecialistMarkdown(complianceSpecialist).trim()}\n`,
+      "utf-8"
+    );
+  } else if (agent.id === "documentation") {
+    const documentationSpecialist = runDocumentationSpecialist({
+      findings: deterministicBaseline.findings,
+      ingest,
+    });
+    findings = documentationSpecialist.findings;
+    summary = documentationSpecialist.summary;
+    confidence = documentationSpecialist.confidence;
+    specialistReportPath = path.join(agentsDirectory, "DOCUMENTATION_AGENT_REPORT.md");
+    await fsp.writeFile(
+      specialistReportPath,
+      `${renderDocumentationSpecialistMarkdown(documentationSpecialist).trim()}\n`,
+      "utf-8"
+    );
+  }
+
+  return {
+    findings,
+    summary,
+    confidence,
+    specialistReportPath,
+  };
+}
+
 export async function runAuditOrchestrator({
   targetPath,
   agents = [],
@@ -223,6 +328,9 @@ export async function runAuditOrchestrator({
   outputDir = "",
   dryRun = false,
   refreshIngest = false,
+  provider = null,
+  onEvent = null,
+  clientFactory = null,
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const outputRoot = await resolveOutputRoot({
@@ -321,95 +429,48 @@ export async function runAuditOrchestrator({
       resultCount: Array.isArray(hybridContext.results) ? hybridContext.results.length : 0,
       apiError: hybridContext.apiError || "",
     });
-    let findings = routeBuckets.get(agent.id) || [];
-    let summary = severitySummary(findings);
-    let confidence = computeConfidenceFloor(agent.confidenceFloor, findings.length);
-    let specialistReportPath = "";
+    const routedFindings = routeBuckets.get(agent.id) || [];
+    const specialistSeed = await buildSpecialistSeed({
+      agent,
+      deterministicBaseline,
+      ingest,
+      agentsDirectory,
+    });
+    let findings = specialistSeed.findings.length > 0 ? specialistSeed.findings : routedFindings;
+    let summary = specialistSeed.findings.length > 0
+      ? specialistSeed.summary
+      : severitySummary(findings);
+    let confidence = specialistSeed.findings.length > 0
+      ? specialistSeed.confidence
+      : computeConfidenceFloor(agent.confidenceFloor, findings.length);
+    let specialistReportPath = specialistSeed.specialistReportPath;
+    let agenticReport = null;
 
-    if (agent.id === "security") {
-      const securitySpecialist = runSecuritySpecialist({
-        findings: deterministicBaseline.findings,
-      });
-      findings = securitySpecialist.findings;
-      summary = securitySpecialist.summary;
-      confidence = securitySpecialist.confidence;
-      specialistReportPath = path.join(agentsDirectory, "SECURITY_AGENT_REPORT.md");
-      await fsp.writeFile(
-        specialistReportPath,
-        `${renderSecuritySpecialistMarkdown(securitySpecialist).trim()}\n`,
-        "utf-8"
-      );
-    } else if (agent.id === "architecture") {
-      const architectureSpecialist = runArchitectureSpecialist({
-        findings: deterministicBaseline.findings,
+    if (agent.id !== "frontend") {
+      agenticReport = await runPersonaAgenticLoop({
+        agent,
+        rootPath: normalizedTargetPath,
         ingest,
+        deterministicBaseline,
+        seedFindings: findings,
+        sharedContext,
+        hybridContext,
+        artifactDir: agentsDirectory,
+        provider,
+        onEvent,
+        clientFactory,
+        dryRun: Boolean(dryRun),
       });
-      findings = architectureSpecialist.findings;
-      summary = architectureSpecialist.summary;
-      confidence = architectureSpecialist.confidence;
-      specialistReportPath = path.join(agentsDirectory, "ARCHITECTURE_AGENT_REPORT.md");
-      await fsp.writeFile(
-        specialistReportPath,
-        `${renderArchitectureSpecialistMarkdown(architectureSpecialist).trim()}\n`,
-        "utf-8"
-      );
-    } else if (agent.id === "testing") {
-      const testingSpecialist = runTestingSpecialist({
-        findings: deterministicBaseline.findings,
-        ingest,
-      });
-      findings = testingSpecialist.findings;
-      summary = testingSpecialist.summary;
-      confidence = testingSpecialist.confidence;
-      specialistReportPath = path.join(agentsDirectory, "TESTING_AGENT_REPORT.md");
-      await fsp.writeFile(
-        specialistReportPath,
-        `${renderTestingSpecialistMarkdown(testingSpecialist).trim()}\n`,
-        "utf-8"
-      );
-    } else if (agent.id === "performance") {
-      const performanceSpecialist = runPerformanceSpecialist({
-        findings: deterministicBaseline.findings,
-        ingest,
-      });
-      findings = performanceSpecialist.findings;
-      summary = performanceSpecialist.summary;
-      confidence = performanceSpecialist.confidence;
-      specialistReportPath = path.join(agentsDirectory, "PERFORMANCE_AGENT_REPORT.md");
-      await fsp.writeFile(
-        specialistReportPath,
-        `${renderPerformanceSpecialistMarkdown(performanceSpecialist).trim()}\n`,
-        "utf-8"
-      );
-    } else if (agent.id === "compliance") {
-      const complianceSpecialist = runComplianceSpecialist({
-        findings: deterministicBaseline.findings,
-        ingest,
-      });
-      findings = complianceSpecialist.findings;
-      summary = complianceSpecialist.summary;
-      confidence = complianceSpecialist.confidence;
-      specialistReportPath = path.join(agentsDirectory, "COMPLIANCE_AGENT_REPORT.md");
-      await fsp.writeFile(
-        specialistReportPath,
-        `${renderComplianceSpecialistMarkdown(complianceSpecialist).trim()}\n`,
-        "utf-8"
-      );
-    } else if (agent.id === "documentation") {
-      const documentationSpecialist = runDocumentationSpecialist({
-        findings: deterministicBaseline.findings,
-        ingest,
-      });
-      findings = documentationSpecialist.findings;
-      summary = documentationSpecialist.summary;
-      confidence = documentationSpecialist.confidence;
-      specialistReportPath = path.join(agentsDirectory, "DOCUMENTATION_AGENT_REPORT.md");
-      await fsp.writeFile(
-        specialistReportPath,
-        `${renderDocumentationSpecialistMarkdown(documentationSpecialist).trim()}\n`,
-        "utf-8"
-      );
+      findings = agenticReport.findings;
+      summary = agenticReport.summary;
+      confidence = agenticReport.confidence;
     }
+
+    const agentStatus = summary.blocking
+      ? "escalate"
+      : agenticReport && !["completed", "dry_run"].includes(agenticReport.status)
+        ? agenticReport.status
+        : "ok";
 
     const result = {
       agentId: agent.id,
@@ -422,13 +483,24 @@ export async function runAuditOrchestrator({
       findingCount: findings.length,
       summary,
       findings: findings.slice(0, 120),
-      status: summary.blocking ? "escalate" : "ok",
+      status: agentStatus,
       startedAt: new Date(agentStart).toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: Math.max(0, Date.now() - agentStart),
       escalationTargets: agent.escalationTargets || [],
       evidenceRequirements: agent.evidenceRequirements || [],
       specialistReportPath,
+      agenticRunId: agenticReport?.runId || "",
+      agenticStatus: agenticReport?.status || (agent.id === "frontend" ? "preserved-frontend-flow" : ""),
+      usage: agenticReport?.usage || {
+        costUsd: 0,
+        outputTokens: 0,
+        toolCalls: 0,
+        durationMs: Math.max(0, Date.now() - agentStart),
+        filesRead: [],
+      },
+      grantedTools: agenticReport?.grantedTools || agent.tools || [],
+      availableTools: agenticReport?.availableTools || [],
       sharedContextEntryCount: sharedContext.entries.length,
       sharedContextPreview: sharedContext.entries.slice(0, 5).map((entry) => ({
         entryId: entry.entryId,
@@ -451,8 +523,8 @@ export async function runAuditOrchestrator({
     appendBlackboardFindings(blackboard, {
       agentId: agent.id,
       findings,
-      source: "specialist-agent",
-      note: `${agent.id} specialist finding`,
+      source: agenticReport ? "persona-agentic-loop" : "specialist-agent",
+      note: `${agent.id} persona finding`,
       confidence,
     });
     const agentPath = path.join(agentsDirectory, `${agent.id}.json`);

@@ -1,6 +1,28 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+export const DEFAULT_AUDIT_AGENT_TOOLS = Object.freeze([
+  "FileRead",
+  "Grep",
+  "Glob",
+  "Shell",
+  "FileEdit",
+]);
+
+const TOOL_NAME_ALIASES = Object.freeze({
+  read: "FileRead",
+  file_read: "FileRead",
+  "file-read": "FileRead",
+  fileread: "FileRead",
+  grep: "Grep",
+  glob: "Glob",
+  shell: "Shell",
+  file_edit: "FileEdit",
+  "file-edit": "FileEdit",
+  fileedit: "FileEdit",
+  dispatch: "Dispatch",
+});
+
 const BUILTIN_AUDIT_AGENTS = Object.freeze([
   {
     id: "security",
@@ -173,16 +195,40 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
+function normalizeToolName(value) {
+  const raw = normalizeString(value);
+  if (!raw) {
+    return "";
+  }
+  const alias = TOOL_NAME_ALIASES[raw.toLowerCase()];
+  if (alias) {
+    return alias;
+  }
+  return raw;
+}
+
+export function normalizeAuditAgentTools(tools = [], { useDefaultWhenEmpty = false } = {}) {
+  const normalized = Array.isArray(tools)
+    ? tools.map((item) => normalizeToolName(item)).filter(Boolean)
+    : [];
+  const unique = [...new Set(normalized)];
+  if (unique.length > 0) {
+    return unique;
+  }
+  return useDefaultWhenEmpty ? [...DEFAULT_AUDIT_AGENT_TOOLS] : [];
+}
+
 function normalizeAgentId(value) {
   return normalizeString(value).toLowerCase();
 }
 
 function normalizeAgentRecord(record = {}) {
+  const hasToolOverride = Object.prototype.hasOwnProperty.call(record, "tools");
   return {
     id: normalizeAgentId(record.id),
     persona: normalizeString(record.persona),
     domain: normalizeString(record.domain),
-    tools: Array.isArray(record.tools) ? record.tools.map((item) => normalizeString(item)).filter(Boolean) : [],
+    tools: normalizeAuditAgentTools(record.tools, { useDefaultWhenEmpty: !hasToolOverride }),
     permissionMode: normalizeString(record.permissionMode || "plan") || "plan",
     maxTurns: Math.max(1, Math.floor(Number(record.maxTurns || 1))),
     confidenceFloor: Math.max(0, Math.min(1, Number(record.confidenceFloor || 0))),
@@ -206,6 +252,11 @@ function mergeRegistry(builtinAgents = [], overrideAgents = []) {
       continue;
     }
     const existing = byId.get(normalized.id) || {};
+    if (!Object.prototype.hasOwnProperty.call(override, "tools")) {
+      normalized.tools = Array.isArray(existing.tools) && existing.tools.length > 0
+        ? [...existing.tools]
+        : [...DEFAULT_AUDIT_AGENT_TOOLS];
+    }
     byId.set(normalized.id, {
       ...existing,
       ...normalized,
@@ -223,7 +274,12 @@ function parseAgentFilter(rawValue) {
 }
 
 export function listBuiltinAuditAgents() {
-  return BUILTIN_AUDIT_AGENTS.map((agent) => ({ ...agent }));
+  return BUILTIN_AUDIT_AGENTS.map((agent) =>
+    normalizeAgentRecord({
+      ...agent,
+      tools: DEFAULT_AUDIT_AGENT_TOOLS,
+    })
+  );
 }
 
 export async function loadAuditRegistry({ registryFile = "" } = {}) {
