@@ -1,3 +1,22 @@
+# 2026-04-26 - Release Please Manifest Sync (`ci/release-please-manifest-sync`)
+
+## Plan
+- [x] Reproduce the post-merge Release Please failure on main after PR-A1 merge.
+- [x] Identify why Release Please attempted the stale `v0.8.0` release.
+- [x] Sync `.release-please-manifest.json` and `package-lock.json` with current package/tag version `0.8.11`.
+- [x] Run local validation and review diff.
+- [ ] Open PR, watch Omar/Quality/Attestation, merge after green.
+- [ ] Confirm post-merge Release Please no longer attempts the stale release.
+
+## Review
+- Release Please failure root cause:
+  - `.release-please-manifest.json` stayed at `0.8.0`, while `package.json`, git tags, and latest GitHub release are at `0.8.11`.
+  - `package-lock.json` also lagged at `0.8.7`; synced both lockfile version fields to `0.8.11`.
+- Validation evidence:
+  - `node -e` metadata alignment check (pass; package, package-lock root, package-lock package root, and manifest all `0.8.11`)
+  - `npm run check` (pass; 293 files)
+  - `node bin/create-sentinelayer.js review --diff --json` (pass; `p0=0`, `p1=0`, `p2=0`, `blocking=false`)
+
 # 2026-04-26 - DD Build Spec PR-A1 Persona Jules-Parity Tool Grant (`dd/pr-a1-persona-jules-tools`)
 
 ## Plan
