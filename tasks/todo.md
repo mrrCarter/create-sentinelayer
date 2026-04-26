@@ -41,6 +41,8 @@
   - Session: `fd788f1a-2460-4e43-8014-780794bee329`
   - Dashboard: `https://sentinelayer.com/dashboard/sessions/fd788f1a-2460-4e43-8014-780794bee329`
   - Posted plan, file claims, and progress updates.
+- CI follow-up:
+  - Added `tasks/evals/2026-04-26-pr-a1-persona-jules-tools.md` after GitHub Quality Gates required eval evidence for the AI-impacting `src/commands/audit.js` stream change.
 
 # PR13 Cross-Repo Closure + CLI 0.8.1 Patch (2026-04-18)
 
