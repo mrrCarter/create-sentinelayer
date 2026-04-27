@@ -4525,6 +4525,8 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     const payload = JSON.parse(String(result.stdout || "").trim());
     assert.equal(payload.command, "audit");
     assert.equal(payload.dryRun, true);
+    assert.equal(payload.isolation, "strict");
+    assert.equal(payload.seedFromDeterministic, true);
     assert.deepEqual(payload.selectedAgents.sort(), ["architecture", "security", "testing"]);
     assert.match(String(payload.reportPath || ""), /[\\/]AUDIT_REPORT\.md$/);
     assert.match(String(payload.reportJsonPath || ""), /[\\/]AUDIT_REPORT\.json$/);
@@ -4538,6 +4540,8 @@ test("CLI audit dry-run orchestrates selected agents and writes report artifacts
     const report = JSON.parse(await readFile(payload.reportJsonPath, "utf-8"));
     assert.equal(report.runId, payload.runId);
     assert.equal(report.dryRun, true);
+    assert.equal(report.isolation, "strict");
+    assert.equal(report.seedFromDeterministic, true);
     assert.equal(Array.isArray(report.agentResults), true);
     assert.equal(report.agentResults.length, 3);
     assert.equal(report.selectedAgents.includes("security"), true);
@@ -4571,7 +4575,17 @@ test("CLI audit stream emits non-Jules persona tool events", async () => {
     const result = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
-      args: ["audit", "--path", tempRoot, "--agents", "security", "--stream"],
+      args: [
+        "audit",
+        "--path",
+        tempRoot,
+        "--agents",
+        "security",
+        "--isolation",
+        "strict",
+        "--no-seed-from-deterministic",
+        "--stream",
+      ],
     });
     assert.equal(result.code, 0, result.stderr || result.stdout);
 
@@ -4581,7 +4595,11 @@ test("CLI audit stream emits non-Jules persona tool events", async () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
 
-    assert.equal(events.some((event) => event.event === "agent_start" && event.agent?.id === "security"), true);
+    const start = events.find((event) => event.event === "agent_start" && event.agent?.id === "security");
+    assert.ok(start);
+    assert.equal(start.payload?.isolation, "strict");
+    assert.equal(start.payload?.seedFindingCount, 0);
+    assert.equal(start.payload?.deterministicBaselineFindingCount, 0);
     assert.equal(events.some((event) => event.event === "tool_call" && event.payload?.tool === "Glob"), true);
     assert.equal(events.some((event) => event.event === "tool_result" && event.payload?.tool === "Glob"), true);
     const complete = events.find((event) => event.event === "agent_complete" && event.agent?.id === "security");

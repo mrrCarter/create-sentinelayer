@@ -16,6 +16,7 @@ import {
   DEFAULT_AUDIT_AGENT_TOOLS,
   normalizeAuditAgentTools,
 } from "./registry.js";
+import { createBlackboard } from "../memory/blackboard.js";
 
 const DEFAULT_MAX_TURNS = 6;
 const HEARTBEAT_INTERVAL_TURNS = 3;
@@ -28,6 +29,7 @@ const DEFAULT_PERSONA_BUDGET = Object.freeze({
 });
 
 const MUTATING_TOOLS = new Set(["FileEdit"]);
+const DEFAULT_ISOLATION_MODE = "strict";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -160,6 +162,91 @@ function normalizeToolInput(toolName, input = {}, rootPath) {
     normalized.cwd = normalizePathWithinRoot(normalized.cwd || ".", rootPath);
   }
   return normalized;
+}
+
+function normalizeIsolationMode(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  return normalized === "relaxed" ? "relaxed" : DEFAULT_ISOLATION_MODE;
+}
+
+function normalizeAuditPersona(agent = {}) {
+  return {
+    id: normalizeString(agent?.id) || "audit-persona",
+    persona: normalizeString(agent?.persona || agent?.id || "Audit Persona"),
+    domain: normalizeString(agent?.domain || "Audit"),
+    permissionMode: normalizeString(agent?.permissionMode || "plan") || "plan",
+    maxTurns: Math.max(1, Math.floor(normalizeNumber(agent?.maxTurns, DEFAULT_MAX_TURNS))),
+    confidenceFloor: Math.max(0, Math.min(1, normalizeNumber(agent?.confidenceFloor, 0.7))),
+    tools: resolveGrantedTools(agent || {}),
+  };
+}
+
+export function createIsolatedPersonaContext({
+  agent,
+  runId = "",
+  rootPath = ".",
+  artifactDir = "",
+  provider = null,
+  budget = {},
+  onEvent = null,
+  clientFactory = null,
+  env = process.env,
+  isolation = DEFAULT_ISOLATION_MODE,
+} = {}) {
+  const normalizedAgent = normalizeAuditPersona(agent || {});
+  const resolvedRootPath = path.resolve(String(rootPath || "."));
+  const resolvedRunId =
+    normalizeString(runId) ||
+    `audit-persona-${normalizedAgent.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const isolationMode = normalizeIsolationMode(isolation);
+  const grantedTools = resolveGrantedTools(normalizedAgent);
+  const availableTools = resolveAvailableTools(normalizedAgent);
+  const agentIdentity = buildAgentIdentity(normalizedAgent);
+  const loopBudget = { ...DEFAULT_PERSONA_BUDGET, ...budget };
+  const ctx = createAgentContext({
+    agentIdentity,
+    budget: loopBudget,
+    runId: resolvedRunId,
+    artifactDir,
+    onEvent,
+  });
+  const emitter = (event, payload = {}) => {
+    const evt = createAgentEvent({
+      event,
+      agent: agentIdentity,
+      payload,
+      usage: snapshotUsage(ctx),
+      sessionId: ctx.sessionId,
+      runId: resolvedRunId,
+    });
+    if (onEvent) {
+      onEvent(evt);
+    }
+    return evt;
+  };
+
+  return {
+    agent: normalizedAgent,
+    runId: resolvedRunId,
+    rootPath: resolvedRootPath,
+    isolation: isolationMode,
+    client: resolveClient({ clientFactory, provider, env }),
+    blackboard: createBlackboard({
+      runId: resolvedRunId,
+      scope: `audit-persona:${normalizedAgent.id}`,
+    }),
+    emitter,
+    ctx,
+    agentIdentity,
+    messageHistory: [],
+    tools: {
+      grantedTools,
+      availableTools,
+      dispatcher: createAuditToolDispatcher(availableTools),
+    },
+    budget: loopBudget,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 function buildPersonaSystemPrompt({
@@ -416,46 +503,35 @@ export async function runPersonaAgenticLoop({
   clientFactory = null,
   env = process.env,
   dryRun = false,
+  isolation = DEFAULT_ISOLATION_MODE,
 } = {}) {
   const resolvedRootPath = path.resolve(String(rootPath || "."));
-  const normalizedAgent = {
-    id: normalizeString(agent?.id) || "audit-persona",
-    persona: normalizeString(agent?.persona || agent?.id || "Audit Persona"),
-    domain: normalizeString(agent?.domain || "Audit"),
-    permissionMode: normalizeString(agent?.permissionMode || "plan") || "plan",
-    maxTurns: Math.max(1, Math.floor(normalizeNumber(agent?.maxTurns, DEFAULT_MAX_TURNS))),
-    confidenceFloor: Math.max(0, Math.min(1, normalizeNumber(agent?.confidenceFloor, 0.7))),
-    tools: resolveGrantedTools(agent || {}),
-  };
-  const grantedTools = resolveGrantedTools(normalizedAgent);
-  const availableTools = resolveAvailableTools(normalizedAgent);
-  const toolDispatcher = createAuditToolDispatcher(availableTools);
+  const normalizedAgent = normalizeAuditPersona(agent || {});
   const startedAt = Date.now();
-  const runId = `audit-persona-${normalizedAgent.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const agentIdentity = buildAgentIdentity(normalizedAgent);
-  const loopBudget = { ...DEFAULT_PERSONA_BUDGET, ...budget };
-  const ctx = createAgentContext({
-    agentIdentity,
-    budget: loopBudget,
-    runId,
+  const isolatedContext = createIsolatedPersonaContext({
+    agent: normalizedAgent,
+    rootPath: resolvedRootPath,
     artifactDir,
+    provider,
+    budget,
     onEvent,
+    clientFactory,
+    env,
+    isolation,
   });
-
-  const emit = (event, payload = {}) => {
-    const evt = createAgentEvent({
-      event,
-      agent: agentIdentity,
-      payload,
-      usage: snapshotUsage(ctx),
-      sessionId: ctx.sessionId,
-      runId,
-    });
-    if (onEvent) {
-      onEvent(evt);
-    }
-    return evt;
-  };
+  const {
+    runId,
+    client,
+    ctx,
+    emitter: emit,
+    messageHistory: messages,
+    tools,
+    budget: resolvedBudget,
+    isolation: isolationMode,
+  } = isolatedContext;
+  const grantedTools = tools.grantedTools;
+  const availableTools = tools.availableTools;
+  const toolDispatcher = tools.dispatcher;
 
   const allFindings = (Array.isArray(seedFindings) ? seedFindings : []).map((finding) =>
     normalizeFinding(finding, normalizedAgent, "legacy-seed")
@@ -469,11 +545,16 @@ export async function runPersonaAgenticLoop({
     runId,
     mode: "audit",
     maxTurns: loopMaxTurns,
-    budget: loopBudget,
+    budget: resolvedBudget,
     grantedTools,
     availableTools,
+    isolation: isolationMode,
     permissionMode: normalizedAgent.permissionMode,
     dryRun: Boolean(dryRun),
+    seedFindingCount: allFindings.length,
+    deterministicBaselineFindingCount: Array.isArray(deterministicBaseline?.findings)
+      ? deterministicBaseline.findings.length
+      : 0,
   });
 
   if (dryRun) {
@@ -501,10 +582,10 @@ export async function runPersonaAgenticLoop({
       usage: snapshotUsage(ctx),
       grantedTools,
       availableTools,
+      isolation: isolationMode,
     };
   }
 
-  const client = resolveClient({ clientFactory, provider, env });
   const systemPrompt = buildPersonaSystemPrompt({
     agent: normalizedAgent,
     rootPath: resolvedRootPath,
@@ -514,18 +595,16 @@ export async function runPersonaAgenticLoop({
     sharedContext,
     hybridContext,
   });
-  const messages = [
-    {
-      role: "user",
-      content: buildInitialUserPrompt({
-        agent: normalizedAgent,
-        deterministicBaseline,
-        seedFindings: allFindings,
-        sharedContext,
-        hybridContext,
-      }),
-    },
-  ];
+  messages.push({
+    role: "user",
+    content: buildInitialUserPrompt({
+      agent: normalizedAgent,
+      deterministicBaseline,
+      seedFindings: allFindings,
+      sharedContext,
+      hybridContext,
+    }),
+  });
 
   let turnCount = 0;
   let status = "completed";
@@ -545,7 +624,7 @@ export async function runPersonaAgenticLoop({
         toolCalls: ctx.usage.toolCalls,
         noProgressStreak: 0,
       },
-      ...loopBudget,
+      ...resolvedBudget,
     });
     if (preCheck.blocking) {
       status = "budget_stop";
@@ -683,6 +762,8 @@ export async function runPersonaAgenticLoop({
     usage,
     grantedTools,
     availableTools,
+    isolation: isolationMode,
+    messageHistoryLength: messages.length,
     turns: turnCount,
   };
 }

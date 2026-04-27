@@ -89,11 +89,11 @@ test("Unit session recap: periodic recap emits while active and stops after inac
 
     emitter = emitPeriodicRecap(session.sessionId, {
       targetPath: tempRoot,
-      intervalMs: 40,
+      intervalMs: 10_000,
       inactivityMs: 140,
       maxEvents: 50,
     });
-    await sleep(130);
+    await emitter.tickNow();
 
     const firstPass = await readStream(session.sessionId, {
       tail: 50,
@@ -105,6 +105,7 @@ test("Unit session recap: periodic recap emits while active and stops after inac
     assert.equal(recaps[0].payload.style, "italic-grey");
 
     await sleep(220);
+    await emitter.tickNow();
     assert.equal(emitter.isRunning(), false);
 
     const secondPass = await readStream(session.sessionId, {
@@ -140,13 +141,21 @@ test("Unit session recap: shouldEmitRecap triggers on >5 new events or inactivit
     });
 
     const lastReadAt = new Date().toISOString();
-    for (let index = 0; index < 6; index += 1) {
+    const statusMessages = [
+      "status update one",
+      "status update two",
+      "status update three",
+      "status update four",
+      "status update five",
+      "status update six",
+    ];
+    for (const message of statusMessages) {
       await appendToStream(
         session.sessionId,
         {
           event: "session_message",
           agentId: "agent-beta",
-          payload: { message: `status update ${index + 1}` },
+          payload: { message },
         },
         { targetPath: tempRoot }
       );
