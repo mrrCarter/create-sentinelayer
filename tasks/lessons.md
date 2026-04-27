@@ -1,5 +1,10 @@
 # Lessons
 
+## 2026-04-26
+
+- When asked to poll a Senti session, run `session sync <sessionId> --json` before `session read`; local `session read` alone can miss dashboard/API-originated messages or make them easy to overlook.
+- During Senti coordination, explicitly scan and summarize non-self messages (`agent.id != cli-user`) before finalizing so verifier notes, help requests, and soft gaps are carried into the handoff.
+
 ## 2026-04-17
 
 - In this CLI, `/review` invokes interactive scaffold flow; for autonomous non-interactive pass-one gates, use `review scan --path . --json`.

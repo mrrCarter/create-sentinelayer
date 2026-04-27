@@ -26,6 +26,14 @@ function parseMaxParallel(rawValue) {
   return Math.floor(normalized);
 }
 
+function parseIsolationMode(rawValue) {
+  const normalized = String(rawValue || "strict").trim().toLowerCase();
+  if (normalized === "strict" || normalized === "relaxed") {
+    return normalized;
+  }
+  throw new Error("isolation must be one of: strict, relaxed.");
+}
+
 function printAuditSummary(result) {
   console.log(pc.bold("Audit orchestrator complete"));
   console.log(pc.gray(`Run: ${result.runId}`));
@@ -72,6 +80,8 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--refresh", "Refresh CODEBASE_INGEST before running audit")
     .option("--dry-run", "Skip deterministic baseline and run orchestration planning only")
+    .option("--isolation <mode>", "Persona isolation mode: strict | relaxed", "strict")
+    .option("--no-seed-from-deterministic", "Run personas without deterministic baseline or specialist seed findings")
     .option("--stream", "Emit NDJSON agent events to stdout")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
@@ -96,6 +106,8 @@ export function registerAuditCommand(program, invokeLegacy) {
         outputDir: options.outputDir,
         dryRun: Boolean(options.dryRun),
         refreshIngest: Boolean(options.refresh),
+        isolation: parseIsolationMode(options.isolation),
+        seedFromDeterministic: options.seedFromDeterministic !== false,
         onEvent: buildAuditOrchestratorEventHandler(emitStream),
       });
 
@@ -111,6 +123,8 @@ export function registerAuditCommand(program, invokeLegacy) {
         registryFile: registry.registryFile,
         selectedAgents: result.selectedAgents,
         maxParallel: result.maxParallel,
+        isolation: result.isolation,
+        seedFromDeterministic: result.seedFromDeterministic !== false,
         summary: result.summary,
         agentCount: result.agentResults.length,
         sharedMemoryPath: result.sharedMemory?.artifactPath || "",
@@ -223,6 +237,8 @@ export function registerAuditCommand(program, invokeLegacy) {
         outputDir: options.outputDir,
         dryRun: Boolean(baseReport.dryRun),
         refreshIngest: Boolean(options.refresh),
+        isolation: baseReport.isolation || "strict",
+        seedFromDeterministic: baseReport.seedFromDeterministic !== false,
       });
 
       const comparison = await writeAuditComparisonArtifact({
@@ -243,6 +259,8 @@ export function registerAuditCommand(program, invokeLegacy) {
         deterministicEquivalent: comparison.comparison.deterministicEquivalent,
         addedCount: comparison.comparison.addedCount,
         removedCount: comparison.comparison.removedCount,
+        isolation: replayResult.isolation,
+        seedFromDeterministic: replayResult.seedFromDeterministic !== false,
         ingestRefresh: replayResult.ingest?.refresh || null,
       };
 

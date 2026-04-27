@@ -1,3 +1,21 @@
+# 2026-04-27 - DD PR-A2 Persona Isolation Hardening (`dd/pr-a2-persona-isolation`)
+
+## Plan
+- [x] Sync Senti before starting and read Claude's audit notes.
+- [x] Branch from current `main` as `dd/pr-a2-persona-isolation`.
+- [x] Review PR-A2 requirements and current `/audit` persona loop/orchestrator wiring.
+- [x] Add explicit isolated persona context construction in `src/audit/persona-loop.js`.
+- [x] Add `audit --isolation strict|relaxed` and deterministic seed controls so strict isolation tests can opt out of seed bias.
+- [x] Add focused tests proving message-history/context references are not shared and seed controls work.
+- [x] Run local validation: targeted audit tests, `npm run check`, `/review --diff`, and PR gates as applicable.
+
+## Review
+- Implemented `createIsolatedPersonaContext()` and refactored the persona loop to use fresh per-persona message history, client, blackboard, event emitter, agent context, and tool dispatcher.
+- Added `/audit --isolation strict|relaxed` with default `strict`, plus `--no-seed-from-deterministic` to prevent deterministic baseline/specialist findings from seeding persona prompts or shared blackboard context during isolation checks.
+- Added unit/e2e coverage for non-shared message histories, isolation/seed metadata, and strict no-seed stream mode.
+- Stabilized the unrelated session recap unit fixture after full `npm run verify` exposed a coverage-timeout interval race.
+- Validation: syntax checks pass; `node --test tests/unit.audit-persona-loop.test.mjs` pass (5 tests); `node --test tests/unit.session-recap.test.mjs` pass (3 tests); `node --test --test-name-pattern "CLI audit" tests/e2e.test.mjs` pass (11 tests); `npm run verify` pass; `review --diff --json` pass with P0/P1/P2/P3 all zero; `git diff --check` pass.
+
 # 2026-04-26 - Release Please PR-Only Mode (`ci/release-please-skip-github-release`)
 
 ## Plan

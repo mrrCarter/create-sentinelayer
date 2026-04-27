@@ -143,6 +143,11 @@ function computeConfidenceFloor(base, findingCount) {
   return Math.max(0.5, Math.min(0.99, normalizedFloor - damping));
 }
 
+function normalizeIsolationMode(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  return normalized === "relaxed" ? "relaxed" : "strict";
+}
+
 async function runWithConcurrency(items, maxParallel, worker) {
   const results = [];
   const queue = [...items];
@@ -183,6 +188,8 @@ Run ID: ${report.runId}
 Target: ${report.targetPath}
 Max parallel: ${report.maxParallel}
 Dry run: ${report.dryRun ? "yes" : "no"}
+Persona isolation: ${report.isolation || "strict"}
+Seed from deterministic: ${report.seedFromDeterministic === false ? "no" : "yes"}
 
 Summary:
 - Findings: P0=${report.summary.P0} P1=${report.summary.P1} P2=${report.summary.P2} P3=${report.summary.P3}
@@ -331,8 +338,12 @@ export async function runAuditOrchestrator({
   provider = null,
   onEvent = null,
   clientFactory = null,
+  isolation = "strict",
+  seedFromDeterministic = true,
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
+  const isolationMode = normalizeIsolationMode(isolation);
+  const useDeterministicSeed = seedFromDeterministic !== false;
   const outputRoot = await resolveOutputRoot({
     cwd: normalizedTargetPath,
     outputDirOverride: outputDir,
@@ -375,11 +386,13 @@ export async function runAuditOrchestrator({
       findings: deterministic.findings,
     };
   }
-  appendBlackboardFindings(blackboard, {
-    agentId: "omar",
-    findings: deterministicBaseline.findings,
-    source: "deterministic-baseline",
-  });
+  if (useDeterministicSeed) {
+    appendBlackboardFindings(blackboard, {
+      agentId: "omar",
+      findings: deterministicBaseline.findings,
+      source: "deterministic-baseline",
+    });
+  }
   const memoryProvider = resolveMemoryProvider(process.env);
   const memoryApiEndpoint = normalizeString(process.env.SENTINELAYER_MEMORY_API_ENDPOINT);
   const memoryApiKey = normalizeString(
@@ -396,11 +409,13 @@ export async function runAuditOrchestrator({
   const sharedMemoryQueries = [];
 
   const routeBuckets = new Map();
-  for (const finding of deterministicBaseline.findings) {
-    const bucketId = routeFindingToAgentId(finding);
-    const existing = routeBuckets.get(bucketId) || [];
-    existing.push(finding);
-    routeBuckets.set(bucketId, existing);
+  if (useDeterministicSeed) {
+    for (const finding of deterministicBaseline.findings) {
+      const bucketId = routeFindingToAgentId(finding);
+      const existing = routeBuckets.get(bucketId) || [];
+      existing.push(finding);
+      routeBuckets.set(bucketId, existing);
+    }
   }
 
   const startedAt = Date.now();
@@ -429,13 +444,23 @@ export async function runAuditOrchestrator({
       resultCount: Array.isArray(hybridContext.results) ? hybridContext.results.length : 0,
       apiError: hybridContext.apiError || "",
     });
-    const routedFindings = routeBuckets.get(agent.id) || [];
-    const specialistSeed = await buildSpecialistSeed({
-      agent,
-      deterministicBaseline,
-      ingest,
-      agentsDirectory,
-    });
+    const personaDeterministicBaseline = useDeterministicSeed
+      ? deterministicBaseline
+      : { ...deterministicBaseline, findings: [] };
+    const routedFindings = useDeterministicSeed ? routeBuckets.get(agent.id) || [] : [];
+    const specialistSeed = useDeterministicSeed
+      ? await buildSpecialistSeed({
+          agent,
+          deterministicBaseline,
+          ingest,
+          agentsDirectory,
+        })
+      : {
+          findings: [],
+          summary: severitySummary([]),
+          confidence: computeConfidenceFloor(agent.confidenceFloor, 0),
+          specialistReportPath: "",
+        };
     let findings = specialistSeed.findings.length > 0 ? specialistSeed.findings : routedFindings;
     let summary = specialistSeed.findings.length > 0
       ? specialistSeed.summary
@@ -451,7 +476,7 @@ export async function runAuditOrchestrator({
         agent,
         rootPath: normalizedTargetPath,
         ingest,
-        deterministicBaseline,
+        deterministicBaseline: personaDeterministicBaseline,
         seedFindings: findings,
         sharedContext,
         hybridContext,
@@ -460,6 +485,7 @@ export async function runAuditOrchestrator({
         onEvent,
         clientFactory,
         dryRun: Boolean(dryRun),
+        isolation: isolationMode,
       });
       findings = agenticReport.findings;
       summary = agenticReport.summary;
@@ -479,6 +505,10 @@ export async function runAuditOrchestrator({
       permissionMode: agent.permissionMode,
       maxTurns: agent.maxTurns,
       confidenceFloor: agent.confidenceFloor,
+      isolation: isolationMode,
+      seedFromDeterministic: useDeterministicSeed,
+      routedSeedFindingCount: routedFindings.length,
+      specialistSeedFindingCount: specialistSeed.findings.length,
       confidence,
       findingCount: findings.length,
       summary,
@@ -492,6 +522,7 @@ export async function runAuditOrchestrator({
       specialistReportPath,
       agenticRunId: agenticReport?.runId || "",
       agenticStatus: agenticReport?.status || (agent.id === "frontend" ? "preserved-frontend-flow" : ""),
+      agenticMessageHistoryLength: Number(agenticReport?.messageHistoryLength || 0),
       usage: agenticReport?.usage || {
         costUsd: 0,
         outputTokens: 0,
@@ -567,6 +598,8 @@ export async function runAuditOrchestrator({
     runDirectory,
     dryRun: Boolean(dryRun),
     maxParallel: Math.max(1, Math.floor(Number(maxParallel || 1))),
+    isolation: isolationMode,
+    seedFromDeterministic: useDeterministicSeed,
     durationMs: Math.max(0, Date.now() - startedAt),
     ingest: {
       summary: ingest.summary,
