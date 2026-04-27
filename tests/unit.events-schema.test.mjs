@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   AGENT_EVENT_STREAM,
+  AGENT_EVENT_TYPES,
   createAgentEvent,
   normalizeAgentEvent,
   validateAgentEvent,
@@ -125,5 +126,21 @@ describe("validateAgentEvent", () => {
     };
     assert.equal(validateAgentEvent(legacyDaemonAlert), true);
     assert.equal(validateAgentEvent(legacyDaemonAlert, { allowLegacy: false }), false);
+  });
+});
+
+describe("AGENT_EVENT_TYPES", () => {
+  it("includes typed audit orchestrator lifecycle events", () => {
+    for (const eventType of [
+      "orchestrator_start",
+      "phase_start",
+      "phase_complete",
+      "dispatch",
+      "reconcile_start",
+      "reconcile_complete",
+      "orchestrator_complete",
+    ]) {
+      assert.equal(AGENT_EVENT_TYPES.includes(eventType), true, `${eventType} should be listed`);
+    }
   });
 });

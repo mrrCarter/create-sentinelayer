@@ -1,5 +1,10 @@
 # Lessons
 
+## 2026-04-27
+
+- When the user asks for a full autonomous multi-PR run, keep the execution board active and immediately advance to the next branch after post-merge gates instead of stopping after a single PR summary.
+- If a Senti session rejects writes as expired, create a fresh session immediately, post the dashboard link, and continue polling both the old readable session and the new writable session for coordination.
+
 ## 2026-04-26
 
 - When asked to poll a Senti session, run `session sync <sessionId> --json` before `session read`; local `session read` alone can miss dashboard/API-originated messages or make them easy to overlook.

@@ -1,5 +1,31 @@
 const AGENT_EVENT_STREAM = "sl_event";
 const LEGACY_AGENT_ID = "legacy-emitter";
+const AGENT_EVENT_TYPES = Object.freeze([
+  "agent_start",
+  "agent_complete",
+  "agent_abort",
+  "agent_error",
+  "progress",
+  "heartbeat",
+  "tool_call",
+  "tool_result",
+  "finding",
+  "reasoning",
+  "budget_warning",
+  "budget_stop",
+  "swarm_start",
+  "swarm_complete",
+  "phase_start",
+  "phase_complete",
+  "orchestrator_start",
+  "dispatch",
+  "reconcile_start",
+  "reconcile_complete",
+  "orchestrator_complete",
+  "convergence_expansion",
+  "coverage_gap",
+  "llm_error",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -187,4 +213,4 @@ export function validateAgentEvent(evt, options = {}) {
   return Boolean(normalizeAgentEvent(evt, options));
 }
 
-export { AGENT_EVENT_STREAM };
+export { AGENT_EVENT_STREAM, AGENT_EVENT_TYPES };

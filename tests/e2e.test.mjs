@@ -4595,6 +4595,30 @@ test("CLI audit stream emits non-Jules persona tool events", async () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
 
+    assert.equal(
+      events.some((event) => event.event === "orchestrator_start" && event.agent?.id === "audit-orchestrator"),
+      true
+    );
+    assert.equal(
+      events.some((event) => event.event === "phase_start" && event.payload?.phase === "ingest"),
+      true
+    );
+    assert.equal(
+      events.some((event) => event.event === "phase_complete" && event.payload?.phase === "ingest"),
+      true
+    );
+    assert.equal(
+      events.some((event) => event.event === "dispatch" && event.payload?.agentId === "security"),
+      true
+    );
+    assert.equal(events.some((event) => event.event === "reconcile_start"), true);
+    assert.equal(events.some((event) => event.event === "reconcile_complete"), true);
+    assert.equal(events.some((event) => event.event === "orchestrator_complete"), true);
+    assert.equal(
+      events.some((event) => event.event === "progress" && event.payload?.shadowFor === "reconcile_complete"),
+      true
+    );
+
     const start = events.find((event) => event.event === "agent_start" && event.agent?.id === "security");
     assert.ok(start);
     assert.equal(start.payload?.isolation, "strict");
