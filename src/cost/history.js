@@ -7,6 +7,7 @@ import { rollupUsage } from "./tracker.js";
 
 const HISTORY_VERSION = 1;
 const HISTORY_FILE_NAME = "cost-history.json";
+const costHistoryWriteQueues = new Map();
 
 function normalizeNumber(value, field) {
   const normalized = Number(value || 0);
@@ -76,6 +77,14 @@ export async function resolveCostHistoryPath({
 
 export async function loadCostHistory(options = {}) {
   const filePath = await resolveCostHistoryPath(options);
+  const history = await readCostHistoryFile(filePath);
+  return {
+    filePath,
+    history,
+  };
+}
+
+async function readCostHistoryFile(filePath) {
   try {
     const raw = await fsp.readFile(filePath, "utf-8");
     const parsed = JSON.parse(raw);
@@ -83,20 +92,14 @@ export async function loadCostHistory(options = {}) {
       throw new Error("Invalid cost history payload.");
     }
     return {
-      filePath,
-      history: {
-        version: Number(parsed.version || HISTORY_VERSION),
-        entries: parsed.entries,
-      },
+      version: Number(parsed.version || HISTORY_VERSION),
+      entries: parsed.entries,
     };
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
       return {
-        filePath,
-        history: {
-          version: HISTORY_VERSION,
-          entries: [],
-        },
+        version: HISTORY_VERSION,
+        entries: [],
       };
     }
     throw error;
@@ -114,17 +117,34 @@ export async function saveCostHistory({ filePath, history }) {
 
 export async function appendCostEntry(options = {}, entry = {}) {
   const normalizedEntry = normalizeEntry(entry);
-  const { filePath, history } = await loadCostHistory(options);
-  const nextHistory = {
-    version: HISTORY_VERSION,
-    entries: [...history.entries, normalizedEntry],
-  };
-  await saveCostHistory({ filePath, history: nextHistory });
-  return {
-    filePath,
-    entry: normalizedEntry,
-    history: nextHistory,
-  };
+  const filePath = await resolveCostHistoryPath(options);
+  return withCostHistoryWriteQueue(filePath, async () => {
+    const history = await readCostHistoryFile(filePath);
+    const nextHistory = {
+      version: HISTORY_VERSION,
+      entries: [...history.entries, normalizedEntry],
+    };
+    await saveCostHistory({ filePath, history: nextHistory });
+    return {
+      filePath,
+      entry: normalizedEntry,
+      history: nextHistory,
+    };
+  });
+}
+
+async function withCostHistoryWriteQueue(filePath, fn) {
+  const previous = costHistoryWriteQueues.get(filePath) || Promise.resolve();
+  const next = previous.catch(() => {}).then(fn);
+  const queued = next.catch(() => {});
+  costHistoryWriteQueues.set(filePath, queued);
+  try {
+    return await next;
+  } finally {
+    if (costHistoryWriteQueues.get(filePath) === queued) {
+      costHistoryWriteQueues.delete(filePath);
+    }
+  }
 }
 
 function summarizeSessionEntries(entries) {

@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import { runAiReviewLayer } from "./ai-review.js";
 import { buildPersonaReviewPrompt, PERSONA_IDS } from "./persona-prompts.js";
@@ -20,6 +21,14 @@ const OMAR_ORCHESTRATOR_AGENT = Object.freeze({
   persona: "Omar Gate Orchestrator",
 });
 
+const OMAR_SWARM_THRESHOLDS = Object.freeze({
+  minFilesForSwarm: 15,
+  minRouteGroupsForSwarm: 3,
+  minLocForSwarm: 5000,
+  maxFilesPerScanner: 12,
+  maxConcurrentAgents: 4,
+});
+
 /**
  * Run bounded-concurrency parallel execution.
  * @param {Array} items
@@ -32,9 +41,8 @@ async function runWithConcurrency(items, maxConcurrent, fn) {
   const executing = new Set();
 
   for (const item of items) {
-    const p = fn(item).then((result) => {
+    const p = Promise.resolve().then(() => fn(item)).finally(() => {
       executing.delete(p);
-      return result;
     });
     executing.add(p);
     results.push(p);
@@ -45,6 +53,192 @@ async function runWithConcurrency(items, maxConcurrent, fn) {
   }
 
   return Promise.allSettled(results);
+}
+
+function normalizeString(value) {
+  return String(value || "").trim();
+}
+
+function normalizeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function toPosixPath(value) {
+  return normalizeString(value).replace(/\\/g, "/");
+}
+
+function uniqueScopeFiles(files = []) {
+  const seen = new Set();
+  const normalized = [];
+  for (const item of Array.isArray(files) ? files : []) {
+    const rawPath =
+      typeof item === "string"
+        ? item
+        : item?.path || item?.file || item?.relativePath || "";
+    const filePath = toPosixPath(rawPath);
+    if (!filePath || seen.has(filePath)) {
+      continue;
+    }
+    seen.add(filePath);
+    const loc =
+      typeof item === "object" && item
+        ? Math.max(0, Math.floor(normalizeNumber(item.loc ?? item.lines ?? item.lineCount, 0)))
+        : 0;
+    normalized.push({ path: filePath, loc });
+  }
+  return normalized;
+}
+
+function filesFromScope(scope = {}) {
+  if (Array.isArray(scope.files)) {
+    return uniqueScopeFiles(scope.files);
+  }
+  if (Array.isArray(scope.primary)) {
+    return uniqueScopeFiles(scope.primary);
+  }
+  if (Array.isArray(scope.scannedRelativeFiles)) {
+    return uniqueScopeFiles(scope.scannedRelativeFiles);
+  }
+  return [];
+}
+
+function estimateScopeLoc(scope = {}, files = []) {
+  const explicit =
+    normalizeNumber(scope.totalLoc, 0) ||
+    normalizeNumber(scope.estimatedLoc, 0) ||
+    normalizeNumber(scope.summary?.totalLoc, 0);
+  if (explicit > 0) {
+    return Math.floor(explicit);
+  }
+  return files.reduce((sum, file) => sum + (file.loc > 0 ? file.loc : 80), 0);
+}
+
+function detectRouteGroups(files = []) {
+  const routeGroups = new Set();
+  for (const file of files) {
+    const filePath = toPosixPath(file.path || file);
+    const match = filePath.match(/(?:^|\/)(?:app|pages|routes)\/([^/]+)/);
+    if (match?.[1]) {
+      routeGroups.add(match[1]);
+    }
+  }
+  return [...routeGroups].sort();
+}
+
+/**
+ * Build the OmarGate persona file scope from deterministic review output.
+ */
+export function buildPersonaFileScope({ deterministic = {} } = {}) {
+  const rawScope = deterministic?.scope || {};
+  const ingestSummary = deterministic?.layers?.ingest?.summary || {};
+  const files = filesFromScope(rawScope);
+  const totalLoc =
+    normalizeNumber(rawScope.totalLoc, 0) ||
+    normalizeNumber(rawScope.estimatedLoc, 0) ||
+    normalizeNumber(ingestSummary.totalLoc, 0) ||
+    estimateScopeLoc(rawScope, files);
+
+  return {
+    files,
+    scannedFiles: files.length,
+    scannedRelativeFiles: files.map((file) => file.path),
+    totalLoc: Math.floor(totalLoc),
+  };
+}
+
+/**
+ * Decide whether an OmarGate persona should fan out into scoped subagents.
+ */
+export function decideSwarm({ scope = {} } = {}) {
+  const files = filesFromScope(scope);
+  const routeGroups = detectRouteGroups(files);
+  const estimatedLoc = estimateScopeLoc(scope, files);
+  const spawn =
+    files.length > OMAR_SWARM_THRESHOLDS.minFilesForSwarm ||
+    routeGroups.length >= OMAR_SWARM_THRESHOLDS.minRouteGroupsForSwarm ||
+    estimatedLoc > OMAR_SWARM_THRESHOLDS.minLocForSwarm;
+
+  let reason = "below all thresholds";
+  if (files.length > OMAR_SWARM_THRESHOLDS.minFilesForSwarm) {
+    reason = `${files.length} files exceeds threshold (${OMAR_SWARM_THRESHOLDS.minFilesForSwarm})`;
+  } else if (routeGroups.length >= OMAR_SWARM_THRESHOLDS.minRouteGroupsForSwarm) {
+    reason = `${routeGroups.length} route groups exceeds threshold (${OMAR_SWARM_THRESHOLDS.minRouteGroupsForSwarm})`;
+  } else if (estimatedLoc > OMAR_SWARM_THRESHOLDS.minLocForSwarm) {
+    reason = `${estimatedLoc} LOC exceeds threshold (${OMAR_SWARM_THRESHOLDS.minLocForSwarm})`;
+  }
+
+  return {
+    spawn,
+    fileCount: files.length,
+    routeGroups: routeGroups.length,
+    routeGroupNames: routeGroups,
+    estimatedLoc,
+    reason,
+    thresholds: { ...OMAR_SWARM_THRESHOLDS },
+    maxConcurrent: OMAR_SWARM_THRESHOLDS.maxConcurrentAgents,
+  };
+}
+
+export function partitionFiles(files = [], maxPerPartition = OMAR_SWARM_THRESHOLDS.maxFilesPerScanner) {
+  const normalizedFiles = uniqueScopeFiles(files);
+  const partitionSize = Math.max(1, Math.floor(normalizeNumber(maxPerPartition, OMAR_SWARM_THRESHOLDS.maxFilesPerScanner)));
+  const partitions = [];
+  for (let index = 0; index < normalizedFiles.length; index += partitionSize) {
+    partitions.push(normalizedFiles.slice(index, index + partitionSize));
+  }
+  return partitions;
+}
+
+export function divideSwarmBudget(perPersonaCost, subagentCount) {
+  const count = Math.max(1, Math.floor(normalizeNumber(subagentCount, 1)));
+  const maxCostUsd = Math.max(0, normalizeNumber(perPersonaCost, 0)) / count;
+  return {
+    maxCostUsd,
+    subagentCount: count,
+  };
+}
+
+function summarizeFindings(findings = []) {
+  const summary = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  for (const finding of findings) {
+    const severity = normalizeString(finding.severity).toUpperCase();
+    if (summary[severity] !== undefined) {
+      summary[severity] += 1;
+    } else {
+      summary.P3 += 1;
+    }
+  }
+  return {
+    ...summary,
+    blocking: summary.P0 > 0 || summary.P1 > 0,
+  };
+}
+
+function personaAgentFromIdentity(identity = {}) {
+  return {
+    id: identity.id,
+    persona: identity.fullName,
+    shortName: identity.shortName,
+    color: identity.color,
+    avatar: identity.avatar,
+    domain: identity.domain,
+  };
+}
+
+function buildSubagentIdentity(identity, subagentIndex) {
+  return {
+    id: `${identity.id}-subagent-${subagentIndex}`,
+    persona: `${identity.fullName} Subagent ${subagentIndex}`,
+    shortName: `${identity.shortName || identity.id} #${subagentIndex}`,
+    color: identity.color,
+    avatar: identity.avatar,
+    domain: identity.domain,
+    parentId: identity.id,
+  };
 }
 
 /**
@@ -63,6 +257,302 @@ function decoratePersonaResult(personaId, baseResult) {
       avatar: visual.avatar || "",
       color: visual.color || "gray",
       domain: visual.domain || personaId,
+    },
+  };
+}
+
+async function runOmarPersonaSwarm({
+  personaId,
+  identity,
+  targetPath,
+  mode,
+  runId,
+  deterministic,
+  outputDir,
+  provider,
+  model,
+  perPersonaCost,
+  dryRun,
+  onEvent,
+} = {}) {
+  const scope = buildPersonaFileScope({ deterministic });
+  const decision = decideSwarm({ scope });
+  if (!decision.spawn || scope.files.length === 0) {
+    return null;
+  }
+
+  const partitions = partitionFiles(scope.files, OMAR_SWARM_THRESHOLDS.maxFilesPerScanner);
+  const budget = divideSwarmBudget(perPersonaCost, partitions.length);
+  const maxConcurrent = Math.min(OMAR_SWARM_THRESHOLDS.maxConcurrentAgents, partitions.length);
+  const swarmRunId = `${runId}-${personaId}-swarm`;
+  const startedAt = Date.now();
+  const blackboard = [];
+
+  if (onEvent) {
+    onEvent(createAgentEvent({
+      event: "swarm_start",
+      agent: personaAgentFromIdentity(identity),
+      payload: {
+        runId,
+        swarmRunId,
+        personaId,
+        identity,
+        mode,
+        reason: decision.reason,
+        fileCount: decision.fileCount,
+        estimatedLoc: decision.estimatedLoc,
+        routeGroups: decision.routeGroups,
+        partitionCount: partitions.length,
+        maxFilesPerSubagent: OMAR_SWARM_THRESHOLDS.maxFilesPerScanner,
+        maxConcurrent,
+        perPersonaCost,
+        subagentMaxCostUsd: budget.maxCostUsd,
+      },
+      runId,
+    }));
+  }
+
+  const parentRunDirectory = deterministic?.artifacts?.runDirectory || targetPath;
+  const subagentResults = await runWithConcurrency(
+    partitions.map((files, index) => ({ files, subagentIndex: index + 1 })),
+    maxConcurrent,
+    async ({ files, subagentIndex }) => {
+      const subagentStart = Date.now();
+      const subagentIdentity = buildSubagentIdentity(identity, subagentIndex);
+      const scopedFiles = files.map((file) => file.path);
+      const subagentRunId = `${swarmRunId}-${subagentIndex}`;
+
+      if (onEvent) {
+        onEvent(createAgentEvent({
+          event: "agent_start",
+          agent: subagentIdentity,
+          payload: {
+            runId,
+            swarmRunId,
+            subagentRunId,
+            personaId,
+            identity,
+            subagentIndex,
+            partitionCount: partitions.length,
+            files: scopedFiles,
+            fileCount: scopedFiles.length,
+            maxCostUsd: budget.maxCostUsd,
+          },
+          runId,
+        }));
+      }
+
+      try {
+        const result = await runAiReviewLayer({
+          targetPath,
+          mode: "full",
+          runId: subagentRunId,
+          runDirectory: path.join(parentRunDirectory, "swarm", personaId, `subagent-${subagentIndex}`),
+          deterministic: {
+            ...deterministic,
+            scope: {
+              ...(deterministic?.scope || {}),
+              scannedFiles: scopedFiles.length,
+              scannedRelativeFiles: scopedFiles,
+            },
+            metadata: {
+              ...(deterministic?.metadata || {}),
+              omarSwarm: {
+                personaId,
+                subagentIndex,
+                partitionCount: partitions.length,
+                parentRunId: runId,
+                swarmRunId,
+              },
+            },
+          },
+          outputDir,
+          provider: provider || undefined,
+          model: model || undefined,
+          sessionId: `${subagentRunId}-ai`,
+          maxCostUsd: budget.maxCostUsd,
+          dryRun,
+          env: process.env,
+        });
+
+        const findings = (result?.findings || []).map((finding) => {
+          const normalized = {
+            ...finding,
+            persona: personaId,
+            layer: personaId,
+            swarm: {
+              personaId,
+              subagentIndex,
+              partitionCount: partitions.length,
+              files: scopedFiles,
+            },
+          };
+          blackboard.push({
+            agentId: subagentIdentity.id,
+            source: personaId,
+            ...normalized,
+          });
+          return normalized;
+        });
+
+        if (onEvent) {
+          for (const finding of findings) {
+            onEvent(createAgentEvent({
+              event: "persona_finding",
+              agent: personaAgentFromIdentity(identity),
+              payload: { personaId, identity, subagentIndex, ...finding },
+              runId,
+            }));
+          }
+          onEvent(createAgentEvent({
+            event: "agent_complete",
+            agent: subagentIdentity,
+            payload: {
+              runId,
+              swarmRunId,
+              subagentRunId,
+              personaId,
+              subagentIndex,
+              partitionCount: partitions.length,
+              fileCount: scopedFiles.length,
+              findings: findings.length,
+              summary: result?.summary || summarizeFindings(findings),
+              costUsd: result?.usage?.costUsd || 0,
+              durationMs: Date.now() - subagentStart,
+            },
+            usage: {
+              costUsd: result?.usage?.costUsd || 0,
+              durationMs: Date.now() - subagentStart,
+              toolCalls: result?.usage?.toolCalls || 0,
+            },
+            runId,
+          }));
+        }
+
+        return {
+          status: "ok",
+          subagentIndex,
+          agentId: subagentIdentity.id,
+          files: scopedFiles,
+          findings,
+          summary: result?.summary || summarizeFindings(findings),
+          costUsd: result?.usage?.costUsd || 0,
+          model: result?.model || model || null,
+          durationMs: Date.now() - subagentStart,
+        };
+      } catch (err) {
+        if (onEvent) {
+          onEvent(createAgentEvent({
+            event: "agent_error",
+            agent: subagentIdentity,
+            payload: {
+              runId,
+              swarmRunId,
+              subagentRunId,
+              personaId,
+              subagentIndex,
+              partitionCount: partitions.length,
+              error: err.message,
+              durationMs: Date.now() - subagentStart,
+            },
+            usage: {
+              costUsd: 0,
+              durationMs: Date.now() - subagentStart,
+              toolCalls: 0,
+            },
+            runId,
+          }));
+        }
+        return {
+          status: "error",
+          subagentIndex,
+          agentId: subagentIdentity.id,
+          files: scopedFiles,
+          findings: [],
+          summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+          costUsd: 0,
+          error: err.message,
+          durationMs: Date.now() - subagentStart,
+        };
+      }
+    }
+  );
+
+  const settledSubagents = subagentResults.map((result) =>
+    result.status === "fulfilled"
+      ? result.value
+      : {
+          status: "error",
+          subagentIndex: 0,
+          agentId: "unknown",
+          files: [],
+          findings: [],
+          summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+          costUsd: 0,
+          error: result.reason?.message || "unknown",
+          durationMs: 0,
+        }
+  );
+  const findings = settledSubagents.flatMap((result) => result.findings || []);
+  const totalCostUsd = settledSubagents.reduce((sum, result) => sum + (result.costUsd || 0), 0);
+  const summary = summarizeFindings(findings);
+  const okCount = settledSubagents.filter((result) => result.status === "ok").length;
+  const errorCount = settledSubagents.filter((result) => result.status === "error").length;
+
+  if (onEvent) {
+    onEvent(createAgentEvent({
+      event: "swarm_complete",
+      agent: personaAgentFromIdentity(identity),
+      payload: {
+        runId,
+        swarmRunId,
+        personaId,
+        identity,
+        subagentCount: settledSubagents.length,
+        ok: okCount,
+        error: errorCount,
+        findings: findings.length,
+        summary,
+        totalCostUsd,
+        durationMs: Date.now() - startedAt,
+        blackboardEntries: blackboard.length,
+      },
+      usage: {
+        costUsd: totalCostUsd,
+        durationMs: Date.now() - startedAt,
+        toolCalls: settledSubagents.length,
+      },
+      runId,
+    }));
+  }
+
+  return {
+    personaId,
+    status: okCount > 0 ? "ok" : "error",
+    findings,
+    summary,
+    costUsd: totalCostUsd,
+    model: model || null,
+    durationMs: Date.now() - startedAt,
+    error: okCount > 0 ? null : settledSubagents.find((result) => result.error)?.error || null,
+    swarm: {
+      runId: swarmRunId,
+      decision,
+      subagentCount: settledSubagents.length,
+      ok: okCount,
+      error: errorCount,
+      partitionSizes: partitions.map((files) => files.length),
+      blackboardEntries: blackboard.length,
+      subagents: settledSubagents.map((result) => ({
+        id: result.agentId,
+        index: result.subagentIndex,
+        status: result.status,
+        files: result.files,
+        findings: (result.findings || []).length,
+        costUsd: result.costUsd || 0,
+        durationMs: result.durationMs || 0,
+        error: result.error || null,
+      })),
     },
   };
 }
@@ -218,6 +708,62 @@ export async function runOmarGateOrchestrator({
     }
 
     try {
+      const swarmResult = await runOmarPersonaSwarm({
+        personaId,
+        identity,
+        targetPath,
+        mode,
+        runId,
+        deterministic,
+        outputDir,
+        provider,
+        model,
+        perPersonaCost,
+        dryRun,
+        onEvent,
+      });
+
+      if (swarmResult) {
+        const personaCost = swarmResult.costUsd || 0;
+        runningCostUsd += personaCost;
+
+        if (onEvent) {
+          if (swarmResult.status === "error") {
+            onEvent(createAgentEvent({
+              event: "persona_error",
+              agent: personaAgentFromIdentity(identity),
+              payload: {
+                personaId,
+                identity,
+                error: swarmResult.error || "all subagents failed",
+                swarm: swarmResult.swarm,
+              },
+              runId,
+            }));
+          } else {
+            onEvent(createAgentEvent({
+              event: "persona_complete",
+              agent: personaAgentFromIdentity(identity),
+              payload: {
+                personaId,
+                identity,
+                findings: swarmResult.findings.length,
+                summary: swarmResult.summary,
+                costUsd: personaCost,
+                durationMs: Date.now() - personaStart,
+                swarm: swarmResult.swarm,
+              },
+              runId,
+            }));
+          }
+        }
+
+        return {
+          ...swarmResult,
+          durationMs: Date.now() - personaStart,
+        };
+      }
+
       const systemPrompt = buildPersonaReviewPrompt({
         personaId,
         targetPath,
@@ -407,6 +953,7 @@ export async function runOmarGateOrchestrator({
       durationMs: r.durationMs,
       model: r.model || null,
       error: r.error || null,
+      swarm: r.swarm || null,
     })),
     personaHealth,
     findings: reconciledFindings,
@@ -485,6 +1032,13 @@ export async function runOmarGateOrchestrator({
       costUsd: r.costUsd || 0,
       durationMs: r.durationMs || 0,
       status: r.status,
+      swarm: r.swarm
+        ? {
+            subagentCount: r.swarm.subagentCount || 0,
+            ok: r.swarm.ok || 0,
+            error: r.swarm.error || 0,
+          }
+        : null,
     })),
   }).catch(() => {});
 

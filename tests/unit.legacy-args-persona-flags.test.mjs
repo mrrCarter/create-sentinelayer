@@ -65,3 +65,72 @@ test("buildLegacyArgs: --path and --persona coexist in correct order", () => {
   assert.ok(pathIdx >= 0);
   assert.ok(personaIdx > pathIdx);
 });
+
+test("buildLegacyArgs: OmarGate runtime flags pass through to legacy implementation", () => {
+  const args = buildLegacyArgs(["/omargate", "deep"], {
+    commandOptions: {
+      path: ".",
+      aiDryRun: true,
+      stream: true,
+      scanMode: "deep",
+      maxParallel: "3",
+      maxCost: "1.25",
+      model: "gpt-test",
+      provider: "sentinelayer",
+    },
+  });
+
+  for (const flag of ["--ai-dry-run", "--stream"]) {
+    assert.ok(args.includes(flag), `expected ${flag}`);
+  }
+  for (const [flag, value] of [
+    ["--scan-mode", "deep"],
+    ["--max-parallel", "3"],
+    ["--max-cost", "1.25"],
+    ["--model", "gpt-test"],
+    ["--provider", "sentinelayer"],
+  ]) {
+    const idx = args.indexOf(flag);
+    assert.ok(idx >= 0, `expected ${flag}`);
+    assert.equal(args[idx + 1], value);
+  }
+});
+
+test("buildLegacyArgs: negated and dry-run flags pass through", () => {
+  const args = buildLegacyArgs(["/omargate", "investor-dd"], {
+    commandOptions: {
+      ai: false,
+      dryRun: true,
+      email: false,
+      dashboard: false,
+      maxRuntimeMinutes: "45",
+      notifyEmail: "ops@example.com",
+      notifySession: "session-123",
+    },
+  });
+
+  for (const flag of ["--no-ai", "--dry-run", "--no-email", "--no-dashboard"]) {
+    assert.ok(args.includes(flag), `expected ${flag}`);
+  }
+  for (const [flag, value] of [
+    ["--max-runtime-minutes", "45"],
+    ["--notify-email", "ops@example.com"],
+    ["--notify-session", "session-123"],
+  ]) {
+    const idx = args.indexOf(flag);
+    assert.ok(idx >= 0, `expected ${flag}`);
+    assert.equal(args[idx + 1], value);
+  }
+});
+
+test("buildLegacyArgs: numeric zero passthrough values are preserved", () => {
+  const args = buildLegacyArgs(["/omargate", "deep"], {
+    commandOptions: {
+      maxCost: 0,
+    },
+  });
+
+  const idx = args.indexOf("--max-cost");
+  assert.ok(idx >= 0);
+  assert.equal(args[idx + 1], "0");
+});

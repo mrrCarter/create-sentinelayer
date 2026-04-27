@@ -88,6 +88,38 @@ test("Unit cost history: appends entries and summarizes per-session totals", asy
   }
 });
 
+test("Unit cost history: concurrent appends preserve valid JSON and all entries", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cost-concurrent-"));
+  try {
+    await Promise.all(
+      Array.from({ length: 24 }, (_, index) =>
+        appendCostEntry(
+          { targetPath: tempRoot },
+          {
+            sessionId: `session-${index}`,
+            provider: "openai",
+            model: "gpt-5.3-codex",
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            durationMs: 1,
+            toolCalls: 1,
+            costUsd: 0.001,
+            progressScore: 1,
+          }
+        )
+      )
+    );
+
+    const loaded = await loadCostHistory({ targetPath: tempRoot });
+    assert.equal(loaded.history.entries.length, 24);
+    assert.equal(summarizeCostHistory(loaded.history).invocationCount, 24);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit cost budget: triggers deterministic reasons and warning thresholds", () => {
   const result = evaluateBudget({
     sessionSummary: {
