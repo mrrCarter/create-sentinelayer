@@ -1,5 +1,5 @@
 import { PERSONA_VISUALS, resolvePersonaVisual } from "./config/definition.js";
-import { createAgentEvent } from "../../events/schema.js";
+import { AGENT_EVENT_TYPES, createAgentEvent } from "../../events/schema.js";
 
 /**
  * Jules Tanaka — Streaming Event Formatter
@@ -174,14 +174,4 @@ function formatToolInput(input) {
 /**
  * List all valid event types.
  */
-export const EVENT_TYPES = Object.freeze([
-  "agent_start", "agent_complete", "agent_abort", "agent_error",
-  "progress", "heartbeat",
-  "tool_call", "tool_result",
-  "finding", "reasoning",
-  "budget_warning", "budget_stop",
-  "swarm_start", "swarm_complete",
-  "phase_start", "phase_complete",
-  "convergence_expansion", "coverage_gap",
-  "llm_error",
-]);
+export const EVENT_TYPES = AGENT_EVENT_TYPES;

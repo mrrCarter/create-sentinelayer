@@ -156,6 +156,8 @@ describe("EVENT_TYPES", () => {
     assert.ok(EVENT_TYPES.includes("tool_call"));
     assert.ok(EVENT_TYPES.includes("budget_stop"));
     assert.ok(EVENT_TYPES.includes("swarm_complete"));
+    assert.ok(EVENT_TYPES.includes("orchestrator_start"));
+    assert.ok(EVENT_TYPES.includes("reconcile_complete"));
     assert.ok(EVENT_TYPES.length >= 16);
   });
 });

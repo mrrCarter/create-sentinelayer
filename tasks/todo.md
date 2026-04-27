@@ -1,3 +1,30 @@
+# 2026-04-27 - DD PR-A3 Reconciliation Typed Events (`dd/pr-a3-reconcile-events`)
+
+## Plan
+- [x] Sync `main`, create branch, and read the DD spec plus current audit event surfaces.
+- [x] Post the active Senti coordination link and web hotfix status.
+- [x] Add first-class audit lifecycle event names to the canonical event schema/list without breaking legacy event compatibility.
+- [x] Emit typed `orchestrator_*`, `phase_*`, `dispatch`, and `reconcile_*` events from the modern audit orchestrator while keeping `progress` shadow events for one release.
+- [x] Update stream tests to assert the typed lifecycle contract and backward-compatible progress shadows.
+- [x] Run targeted tests, `npm run verify`, local review, local Omar, and live stream proof before opening PR.
+- [ ] Open PR, watch GitHub Omar/Quality/Attestation checks, merge after green, and post results to Senti.
+
+## Review
+- Added `AGENT_EVENT_TYPES` to `src/events/schema.js` and reused it from `src/agents/jules/stream.js` so lifecycle event names are first-class without making legacy/unknown event normalization breaking.
+- Updated `runAuditOrchestrator()` to emit typed lifecycle events for orchestrator start, ingest phase, deterministic baseline phase, persona dispatch, reconciliation, and orchestrator completion.
+- Preserved backward compatibility by emitting `progress` shadow events with `payload.shadowFor` for every new typed lifecycle event.
+- Added e2e stream assertions for the typed audit lifecycle and unit assertions for the schema/stream event type list.
+- Validation:
+  - `node --check src/audit/orchestrator.js` (pass)
+  - `node --test tests/unit.events-schema.test.mjs tests/unit.jules-stream.test.mjs` (20 tests pass)
+  - `node --test --test-name-pattern "CLI audit stream emits" tests/e2e.test.mjs` (pass)
+  - `npm run check` (293 files pass)
+  - `node bin/create-sentinelayer.js review --diff --spec tasks/dd-build-spec-2026-04-26.md --json` (P0=0 P1=0 P2=0 P3=0; run `review-20260427-231019-40ffa868`)
+  - `npm run verify` (pass: check, docs build, 92 e2e, 1104 unit coverage tests, pack dry-run)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json` (P0=0 P1=0, blocking=false; P2=31 deterministic advisories, AI proxy 401s nonblocking under local token)
+  - `git diff --check` (pass)
+  - `node bin/create-sentinelayer.js audit --path . --agents security --dry-run --stream` (pass; emitted typed lifecycle events and `progress` shadows)
+
 # 2026-04-27 - DD PR-A2 Persona Isolation Hardening (`dd/pr-a2-persona-isolation`)
 
 ## Plan

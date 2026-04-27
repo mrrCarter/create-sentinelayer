@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { resolveOutputRoot } from "../config/service.js";
+import { createAgentEvent } from "../events/schema.js";
 import { resolveCodebaseIngest } from "../ingest/engine.js";
 import { runDeterministicReviewPipeline } from "../review/local-review.js";
 import {
@@ -44,6 +45,14 @@ import {
 } from "../memory/retrieval.js";
 import { runPersonaAgenticLoop } from "./persona-loop.js";
 
+const AUDIT_ORCHESTRATOR_AGENT = Object.freeze({
+  id: "audit-orchestrator",
+  persona: "Audit Orchestrator",
+  shortName: "Audit",
+  color: "cyan",
+  avatar: "A",
+});
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -83,6 +92,34 @@ function severitySummary(findings = []) {
   }
   summary.blocking = summary.P0 > 0 || summary.P1 > 0;
   return summary;
+}
+
+function emitAuditEvent(onEvent, runId, event, payload = {}) {
+  if (!onEvent) return;
+  onEvent(createAgentEvent({
+    event,
+    agent: AUDIT_ORCHESTRATOR_AGENT,
+    payload,
+    runId,
+  }));
+}
+
+function emitProgressShadow(onEvent, runId, phase, message, extra = {}) {
+  emitAuditEvent(onEvent, runId, "progress", {
+    phase,
+    message,
+    shadowFor: extra.shadowFor || phase,
+    ...extra,
+  });
+}
+
+function emitAuditLifecycleEvent(onEvent, runId, event, payload = {}, shadowMessage = "") {
+  emitAuditEvent(onEvent, runId, event, payload);
+  if (shadowMessage) {
+    emitProgressShadow(onEvent, runId, payload.phase || event, shadowMessage, {
+      shadowFor: event,
+    });
+  }
 }
 
 function routeFindingToAgentId(finding = {}) {
@@ -350,6 +387,7 @@ export async function runAuditOrchestrator({
     env: process.env,
   });
   const runId = `audit-${formatTimestampToken()}-${randomUUID().slice(0, 8)}`;
+  const startedAt = Date.now();
   const runDirectory = path.join(outputRoot, "audits", runId);
   const agentsDirectory = path.join(runDirectory, "agents");
   await fsp.mkdir(agentsDirectory, { recursive: true });
@@ -357,13 +395,54 @@ export async function runAuditOrchestrator({
     runId,
     scope: "audit-orchestrator",
   });
+  const selectedAgentIds = agents.map((agent) => agent.id);
+  const normalizedMaxParallel = Math.max(1, Math.floor(Number(maxParallel || 1)));
 
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "orchestrator_start",
+    {
+      runId,
+      targetPath: normalizedTargetPath,
+      selectedAgents: selectedAgentIds,
+      agentCount: selectedAgentIds.length,
+      maxParallel: normalizedMaxParallel,
+      dryRun: Boolean(dryRun),
+      isolation: isolationMode,
+      seedFromDeterministic: useDeterministicSeed,
+    },
+    `Audit orchestrator starting with ${selectedAgentIds.length} agent(s).`
+  );
+
+  const ingestStartedAt = Date.now();
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "phase_start",
+    { phase: "ingest", targetPath: normalizedTargetPath, refresh: Boolean(refreshIngest) },
+    "Starting codebase ingest."
+  );
   const ingestResolution = await resolveCodebaseIngest({
     rootPath: normalizedTargetPath,
     outputDir,
     refresh: Boolean(refreshIngest),
   });
   const ingest = ingestResolution.ingest;
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "phase_complete",
+    {
+      phase: "ingest",
+      durationMs: Math.max(0, Date.now() - ingestStartedAt),
+      filesScanned: Number(ingest?.summary?.filesScanned || 0),
+      totalLoc: Number(ingest?.summary?.totalLoc || 0),
+      refreshed: Boolean(ingestResolution.refreshed),
+      stale: Boolean(ingestResolution.stale),
+    },
+    `Ingest complete: ${Number(ingest?.summary?.filesScanned || 0)} files.`
+  );
 
   let deterministicBaseline = {
     runId: "",
@@ -372,6 +451,14 @@ export async function runAuditOrchestrator({
     summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
     findings: [],
   };
+  const baselineStartedAt = Date.now();
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "phase_start",
+    { phase: "deterministic_baseline", skipped: Boolean(dryRun) },
+    dryRun ? "Skipping deterministic baseline for dry run." : "Starting deterministic baseline."
+  );
   if (!dryRun) {
     const deterministic = await runDeterministicReviewPipeline({
       targetPath: normalizedTargetPath,
@@ -386,6 +473,21 @@ export async function runAuditOrchestrator({
       findings: deterministic.findings,
     };
   }
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "phase_complete",
+    {
+      phase: "deterministic_baseline",
+      skipped: Boolean(dryRun),
+      durationMs: Math.max(0, Date.now() - baselineStartedAt),
+      findingCount: deterministicBaseline.findings.length,
+      summary: deterministicBaseline.summary,
+    },
+    dryRun
+      ? "Deterministic baseline skipped."
+      : `Deterministic baseline complete: ${deterministicBaseline.findings.length} finding(s).`
+  );
   if (useDeterministicSeed) {
     appendBlackboardFindings(blackboard, {
       agentId: "omar",
@@ -418,9 +520,30 @@ export async function runAuditOrchestrator({
     }
   }
 
-  const startedAt = Date.now();
-  const agentResults = await runWithConcurrency(agents, maxParallel, async (agent) => {
+  const dispatchStartedAt = Date.now();
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "phase_start",
+    { phase: "dispatch", agentCount: agents.length, maxParallel: normalizedMaxParallel },
+    `Dispatching ${agents.length} audit persona(s).`
+  );
+  const agentResults = await runWithConcurrency(agents, normalizedMaxParallel, async (agent) => {
     const agentStart = Date.now();
+    emitAuditLifecycleEvent(
+      onEvent,
+      runId,
+      "dispatch",
+      {
+        phase: "dispatch",
+        agentId: agent.id,
+        persona: agent.persona,
+        domain: agent.domain,
+        isolation: isolationMode,
+        seedFromDeterministic: useDeterministicSeed,
+      },
+      `Dispatching ${agent.id} persona.`
+    );
     const sharedContext = queryBlackboard(blackboard, {
       query: `${agent.id} ${agent.domain} ${agent.persona}`,
       agentId: agent.id,
@@ -566,7 +689,35 @@ export async function runAuditOrchestrator({
     };
   });
   agentResults.sort((left, right) => left.agentId.localeCompare(right.agentId));
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "phase_complete",
+    {
+      phase: "dispatch",
+      durationMs: Math.max(0, Date.now() - dispatchStartedAt),
+      agentCount: agentResults.length,
+      statuses: agentResults.reduce((acc, result) => {
+        const status = normalizeString(result.status) || "unknown";
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {}),
+    },
+    `Dispatch complete: ${agentResults.length} persona result(s).`
+  );
 
+  const reconcileStartedAt = Date.now();
+  const candidateFindingCount = agentResults.reduce(
+    (count, agent) => count + (Array.isArray(agent.findings) ? agent.findings.length : 0),
+    0
+  );
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "reconcile_start",
+    { phase: "reconcile", agentCount: agentResults.length, candidateFindingCount },
+    `Reconciling ${candidateFindingCount} candidate finding(s).`
+  );
   const uniqueFindings = [];
   const seen = new Set();
   for (const agent of agentResults) {
@@ -582,6 +733,20 @@ export async function runAuditOrchestrator({
     }
   }
   const summary = severitySummary(uniqueFindings);
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "reconcile_complete",
+    {
+      phase: "reconcile",
+      durationMs: Math.max(0, Date.now() - reconcileStartedAt),
+      candidateFindingCount,
+      findingCount: uniqueFindings.length,
+      dedupedCount: Math.max(0, candidateFindingCount - uniqueFindings.length),
+      summary,
+    },
+    `Reconcile complete: ${uniqueFindings.length} unique finding(s).`
+  );
   const sharedMemoryArtifact = await writeBlackboardArtifact(blackboard, {
     outputRoot,
   });
@@ -597,7 +762,7 @@ export async function runAuditOrchestrator({
     outputRoot,
     runDirectory,
     dryRun: Boolean(dryRun),
-    maxParallel: Math.max(1, Math.floor(Number(maxParallel || 1))),
+    maxParallel: normalizedMaxParallel,
     isolation: isolationMode,
     seedFromDeterministic: useDeterministicSeed,
     durationMs: Math.max(0, Date.now() - startedAt),
@@ -638,7 +803,7 @@ export async function runAuditOrchestrator({
         historyRunDocumentCount: sharedMemoryCorpus.historyRunDocumentCount,
       },
     },
-    selectedAgents: agents.map((agent) => agent.id),
+    selectedAgents: selectedAgentIds,
     agentResults,
     summary,
   };
@@ -651,6 +816,22 @@ export async function runAuditOrchestrator({
     report,
     runDirectory,
   });
+  emitAuditLifecycleEvent(
+    onEvent,
+    runId,
+    "orchestrator_complete",
+    {
+      runId,
+      targetPath: normalizedTargetPath,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      agentCount: agentResults.length,
+      summary,
+      reportJsonPath,
+      reportMarkdownPath,
+      ddPackageManifestPath: ddPackage.manifestPath || "",
+    },
+    `Audit orchestrator complete: P0=${summary.P0} P1=${summary.P1} P2=${summary.P2} P3=${summary.P3}.`
+  );
 
   return {
     ...report,
