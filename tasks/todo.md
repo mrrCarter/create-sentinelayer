@@ -1,3 +1,46 @@
+# 2026-04-27 - DD PR-B1 OmarGate Swarm Fanout (`dd/pr-b1-omargate-swarm`)
+
+## Plan
+- [x] Sync `main`, create branch, and read the DD spec, AGENTS workflow, SWE excellence framework, OmarGate orchestrator, and Jules swarm primitives.
+- [x] Post PR-B1 start/status to active Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7`.
+- [x] Add OmarGate-local swarm decision and file partition helpers using the Jules thresholds: >15 files, >=3 route groups, >5000 LOC, <=12 files/subagent, <=4 concurrent subagents.
+- [x] Route oversized persona scopes through subagent-scoped `runAiReviewLayer` calls with parent-bound cost slices and isolated run/session ids.
+- [x] Emit `swarm_start`/`swarm_complete` plus per-subagent `agent_start`/`agent_complete` events carrying persona id, subagent index, scope, and usage.
+- [x] Roll subagent findings into the existing persona result and keep final reconciliation/dedupe centralized in `reconcileReviewFindings`.
+- [x] Add deterministic unit/e2e coverage with a >15 file and >5000 LOC fixture proving `sl /omargate deep --stream` emits swarm lifecycle and respects per-persona budget.
+- [ ] Run targeted tests, `npm run check`, DD-spec-bound `review --diff`, `npm run verify`, local `/omargate deep`, `git diff --check`, then PR/CI/merge.
+
+## File Claims
+- `src/review/omargate-orchestrator.js`
+- `src/legacy-cli.js` (deterministic scope handoff only)
+- `src/commands/legacy-args.js` (OmarGate option pass-through needed for stream/dry-run proof)
+- `src/cost/history.js` (in-process append serialization for concurrent swarm AI calls)
+- `tests/unit.omargate-orchestrator.test.mjs` (new if no existing focused unit file fits)
+- `tests/unit.legacy-args-persona-flags.test.mjs`
+- `tests/unit.cost-history.test.mjs`
+- `tests/e2e.test.mjs` only if CLI stream proof needs integration coverage
+- `tasks/todo.md`
+
+## Review
+- Implemented OmarGate-local swarm fanout in `src/review/omargate-orchestrator.js`:
+  - `decideSwarm({ scope })`, `partitionFiles()`, and `divideSwarmBudget()` mirror Jules thresholds without importing the frontend/Jules-specific swarm runtime.
+  - Oversized persona scopes fan out into scoped `runAiReviewLayer` subagent calls with isolated run/session ids and per-subagent cost slices.
+  - Stream now emits `swarm_start`, per-subagent `agent_start`/`agent_complete` or `agent_error`, `swarm_complete`, and the existing persona/omargate lifecycle.
+  - Subagent findings roll back into the existing persona result and final `reconcileReviewFindings()` path.
+- Added CLI bridge pass-through in `src/commands/legacy-args.js` so `omargate deep` Commander options (`--stream`, `--ai-dry-run`, `--max-cost`, `--scan-mode`, model/provider, etc.) reach the legacy implementation.
+- Passed deterministic scope/layer/artifact metadata from `src/legacy-cli.js` into OmarGate so the swarm decision uses the actual deterministic scan scope.
+- Fixed shared cost-history concurrency for fanout by serializing in-process `appendCostEntry()` writes in `src/cost/history.js`; added a 24-way concurrent append regression.
+- Validation:
+  - `node --test tests/unit.omargate-orchestrator.test.mjs tests/unit.legacy-args-persona-flags.test.mjs` (15 tests pass)
+  - `node --test tests/unit.cost-history.test.mjs tests/unit.omargate-orchestrator.test.mjs tests/unit.legacy-args-persona-flags.test.mjs` (20 tests pass)
+  - `node --test --test-name-pattern "omargate deep --stream emits swarm" tests/e2e.test.mjs` (pass)
+  - `npm run check` (293 files pass)
+  - `node bin/create-sentinelayer.js review --diff --spec tasks/dd-build-spec-2026-04-26.md --json` (P0=0 P1=0 P2=0 P3=0; run `review-20260427-234815-6ef4bc11`)
+  - `npm run verify` (pass: check, docs build, 93 e2e, 1115 unit coverage tests, pack dry-run)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --max-cost 5` (pass: P0=0 P1=0, blocking=false; all 13 personas ok after cost-history race fix)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, P1=0, blocking=false)
+  - `git diff --check` (pass)
+
 # 2026-04-27 - DD PR-A3 Reconciliation Typed Events (`dd/pr-a3-reconcile-events`)
 
 ## Plan

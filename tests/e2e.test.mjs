@@ -1357,6 +1357,56 @@ test("CLI subcommand: omargate deep maps to legacy local command implementation"
   }
 });
 
+test("CLI omargate deep --stream emits swarm lifecycle for oversized dry-run scope", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-swarm-"));
+  try {
+    const srcDir = path.join(tempRoot, "src");
+    await mkdir(srcDir, { recursive: true });
+    const body = Array.from({ length: 340 }, (_, index) => `export const line${index} = ${index};`).join("\n");
+    for (let index = 0; index < 16; index += 1) {
+      await writeFile(path.join(srcDir, `File${index}.js`), `${body}\n`, "utf-8");
+    }
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "omargate",
+        "deep",
+        "--path",
+        tempRoot,
+        "--persona",
+        "security",
+        "--ai-dry-run",
+        "--stream",
+        "--max-cost",
+        "1",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const events = result.stdout
+      .split(/\r?\n/g)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    const swarmStart = events.filter((event) => event.event === "swarm_start");
+    const agentStart = events.filter((event) => event.event === "agent_start");
+    const terminalEvents = events.filter((event) =>
+      ["agent_complete", "agent_error", "agent_abort", "budget_stop"].includes(event.event)
+    );
+    const swarmComplete = events.filter((event) => event.event === "swarm_complete");
+
+    assert.equal(swarmStart.length >= 1, true, "expected swarm_start");
+    assert.equal(agentStart.length >= 2, true, "expected multiple subagent starts");
+    assert.equal(terminalEvents.length >= agentStart.length, true, "expected terminal event per subagent");
+    assert.equal(swarmComplete.length >= 1, true, "expected swarm_complete");
+    assert.equal(agentStart.every((event) => event.payload.files.length <= 12), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit writes pass report for prepared workspace", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {

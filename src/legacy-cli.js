@@ -1237,7 +1237,10 @@ async function runLocalOmarGateCommand(args) {
         deterministic: {
           summary: detSummary,
           findings: detFindings,
+          scope: deterministic.scope || {},
+          layers: deterministic.layers || {},
           metadata: deterministic.metadata || {},
+          artifacts: deterministic.artifacts || {},
         },
         onEvent: streamHandler,
         includeOnly: includeOnly.length > 0 ? includeOnly : null,
