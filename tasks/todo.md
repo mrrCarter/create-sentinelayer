@@ -1,3 +1,34 @@
+# 2026-04-28 - DD PR-D2 Session Auto-Name + Resume (`dd/pr-d2-session-auto-name-resume`)
+
+## Plan
+- [x] Validate current main against PR-D2 spec and confirm partial implementation gaps.
+- [x] Post D2 scope, gaps, and file claims to Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7`.
+- [x] Persist session titles locally and include them in metadata sync so resumed sessions keep a stable name.
+- [x] Make local auto-resume use recent activity (`lastInteractionAt`) as well as creation time, with robust same-workspace matching.
+- [x] Add real `--resume` default-true / `--no-resume` behavior while preserving `--force-new`.
+- [x] Add `sl session ensure --path .` returning canonical `{ sessionId, title, resumed }`.
+- [x] Add focused unit coverage for start/ensure title, same-window reuse, outside-window new session, and command contracts.
+- [x] Run focused tests, `npm run check`, DD-spec review, full verify, OmarGate, and audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-D3.
+
+## File Claims
+- `src/commands/session.js`
+- `src/session/store.js`
+- `tests/unit.session-ensure.test.mjs`
+- `tests/unit.commands-contracts.test.mjs`
+- `tasks/todo.md`
+
+## Review
+- In progress. This PR is scoped to D2 runtime session ensure/resume/title behavior only; D3 background polling stays out of this branch.
+- Implemented local title persistence in session metadata, including title fields in start payloads and metadata sync.
+- Added activity-aware resume selection using `lastInteractionAt`/`lastActivityAt`, path-normalized remote matching, and a test guard so unit runs do not hit the live remote registry.
+- Added explicit `--resume` / `--no-resume` controls and the JSON-first `session ensure` command.
+- Focused validation passed:
+  - `node --check src\commands\session.js src\session\store.js tests\unit.session-ensure.test.mjs`
+  - `node --import ./tests/setup-env.mjs --test tests/unit.session-ensure.test.mjs tests/unit.commands-contracts.test.mjs tests/unit.session-naming-derive.test.mjs tests/unit.session-store.test.mjs`
+- Repo validation passed: `npm run check`, `git diff --check`, DD-spec `review --diff --refresh` (`review-20260428-035824-48e6fc42`, P0/P1/P2/P3 all zero), and `npm run verify` after `npm ci` (check, docs build, 95 e2e, 1148 unit coverage tests, pack dry-run).
+- Local gates passed: `/omargate deep --ai-dry-run --max-cost 5` (`omargate-1777348705361-6336797c`, P0=0/P1=0, non-blocking baseline P2/P3 only) and `/audit --path . --json` (PASS, P1=0, P2=3 non-blocking).
+
 # 2026-04-28 - D1 Post-Merge Main Unblock (`fix/d1-postmerge-scope-abort-race`)
 
 ## Plan

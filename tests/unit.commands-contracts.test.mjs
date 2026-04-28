@@ -14,6 +14,7 @@ import { registerSwarmCommand } from "../src/commands/swarm.js";
 import { registerSpecCommand } from "../src/commands/spec.js";
 import { registerPromptCommand } from "../src/commands/prompt.js";
 import { registerAuditCommand } from "../src/commands/audit.js";
+import { registerSessionCommand } from "../src/commands/session.js";
 
 function buildProgram(registerFn) {
   const program = new Command();
@@ -269,6 +270,24 @@ test("Unit command contracts: spec, prompt, and audit commands expose ingest ref
   assertCommandHasOption(getCommandByPath(auditProgram, "audit performance"), "--refresh");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit compliance"), "--refresh");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit documentation"), "--refresh");
+});
+
+test("Unit command contracts: session exposes D2 ensure and resume controls", () => {
+  const program = buildProgram(registerSessionCommand);
+
+  getCommandByPath(program, "session ensure");
+  const start = getCommandByPath(program, "session start");
+  assertCommandHasOption(start, "--resume");
+  assertCommandHasOption(start, "--no-resume");
+  assertCommandHasOption(start, "--reuse-window-seconds <seconds>");
+  assertCommandHasOption(start, "--force-new");
+
+  const ensure = getCommandByPath(program, "session ensure");
+  assertCommandHasOption(ensure, "--path <path>");
+  assertCommandHasOption(ensure, "--resume");
+  assertCommandHasOption(ensure, "--no-resume");
+  assertCommandHasOption(ensure, "--reuse-window-seconds <seconds>");
+  assertCommandHasOption(ensure, "--force-new");
 });
 
 test("Unit command contracts: review rejects conflicting diff and staged flags", async () => {
