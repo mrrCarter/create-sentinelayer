@@ -58,6 +58,7 @@ import {
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
+import { listenSessionEvents } from "../session/listener.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
 import {
   buildDashboardUrl,
@@ -871,6 +872,7 @@ export function registerSessionCommand(program) {
     .command("say <sessionId> <message>")
     .description("Send a message to the session")
     .option("--agent <id>", "Agent id to emit from", "cli-user")
+    .option("--to <agent>", "Direct the message to a specific agent id")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, message, options, command) => {
@@ -884,14 +886,19 @@ export function registerSessionCommand(program) {
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const agentId = normalizeAgentId(options.agent, "cli-user");
+      const to = normalizeString(options.to);
+      const eventPayload = {
+        message: normalizedMessage,
+        channel: "session",
+      };
+      if (to) {
+        eventPayload.to = to;
+      }
       const event = createAgentEvent({
         event: "session_message",
         agentId,
         sessionId: normalizedSessionId,
-        payload: {
-          message: normalizedMessage,
-          channel: "session",
-        },
+        payload: eventPayload,
       });
       const persisted = await appendToStream(normalizedSessionId, event, {
         targetPath,
@@ -908,6 +915,93 @@ export function registerSessionCommand(program) {
         return;
       }
       console.log(formatEventLine(persisted));
+    });
+
+  session
+    .command("listen")
+    .description("Background-poll a session for events addressed to this agent or broadcast")
+    .requiredOption("--session <id>", "Session id to listen to")
+    .option(
+      "--agent <id>",
+      "Agent id to receive messages for",
+      process.env.SENTINELAYER_AGENT_ID || "cli-user",
+    )
+    .option("--interval <seconds>", "Polling interval in seconds (default 60)", "60")
+    .option("--emit <format>", "Output format: ndjson or text", "ndjson")
+    .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--since <cursor>", "Override the persisted listen cursor")
+    .option("--replay", "Emit matching historical events on the first poll")
+    .option("--max-polls <n>", "Stop after N poll cycles (useful for tests and smoke checks)")
+    .action(async (options) => {
+      const normalizedSessionId = resolveSessionIdOption(options);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const agentId = normalizeAgentId(options.agent, "cli-user");
+      const intervalSeconds = parsePositiveInteger(options.interval, "interval", 60);
+      const limit = parsePositiveInteger(options.limit, "limit", 200);
+      const emitFormat = normalizeString(options.emit).toLowerCase() || "ndjson";
+      if (!["ndjson", "text"].includes(emitFormat)) {
+        throw new Error("--emit must be one of: ndjson, text.");
+      }
+      const maxPolls =
+        options.maxPolls === undefined
+          ? null
+          : parsePositiveInteger(options.maxPolls, "max-polls", 1);
+      const since = options.since === undefined ? undefined : String(options.since);
+      const ac = new AbortController();
+      const onSigint = () => ac.abort();
+      process.on("SIGINT", onSigint);
+
+      if (emitFormat === "text") {
+        console.log(
+          pc.gray(
+            `Listening to session ${normalizedSessionId} as ${agentId}; interval=${intervalSeconds}s. Press Ctrl+C to stop.`,
+          ),
+        );
+      }
+
+      try {
+        await listenSessionEvents({
+          sessionId: normalizedSessionId,
+          targetPath,
+          agentId,
+          intervalSeconds,
+          limit,
+          since,
+          replay: Boolean(options.replay),
+          maxPolls,
+          signal: ac.signal,
+          onEvent: async (event) => {
+            if (emitFormat === "ndjson") {
+              console.log(JSON.stringify(event));
+            } else {
+              console.log(formatEventLine(event));
+            }
+          },
+          onError: async (result) => {
+            const reason = normalizeString(result?.reason) || "poll_failed";
+            if (emitFormat === "ndjson") {
+              console.log(
+                JSON.stringify(
+                  createAgentEvent({
+                    event: "session_listen_error",
+                    agentId,
+                    sessionId: normalizedSessionId,
+                    payload: {
+                      reason,
+                      cursor: result?.cursor || null,
+                    },
+                  }),
+                ),
+              );
+            } else {
+              console.log(pc.yellow(`Listen poll skipped (${reason}).`));
+            }
+          },
+        });
+      } finally {
+        process.removeListener("SIGINT", onSigint);
+      }
     });
 
   session

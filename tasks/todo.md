@@ -1,3 +1,48 @@
+# 2026-04-28 - DD PR-D3 Session Background Listener (`dd/pr-d3-session-listen`)
+
+## Plan
+- [x] Confirm PR-D2 merge and post-merge main workflows are green, sync from `origin/main`, and create a clean PR-D3 worktree.
+- [x] Run Senti `session sync` + `session read`; latest tail contains only `cli-user` self updates and duplicate relays, with no Claude/Audit response to consume.
+- [x] Read the DD PR-D3 contract, AGENTS workflow, SWE framework, existing session sync/cursor primitives, command registration, and coordination guidance.
+- [x] Add a small session listener module that loops on `/api/v1/sessions/{id}/events`, reuses `pollSessionEvents`, persists a listen-specific cursor, and filters direct/broadcast events by agent id.
+- [x] Add `sl session listen --session <id> --interval 60 --emit ndjson` plus agent/path/limit/replay/test-bounded controls.
+- [x] Add `sl session say --to <agent>` so agents can send direct D3-addressed messages through the existing session event spine.
+- [x] Update canonical coordination etiquette to prefer the background listener and keep `sync`/`read` as fallback.
+- [x] Add focused listener, command-contract, sync URL/circuit, and guidance tests.
+- [x] Run focused tests, `npm run check`, DD-spec review, full verify, local OmarGate, and audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-E1.
+
+## File Claims
+- `src/session/listener.js`
+- `src/commands/session.js`
+- `src/session/coordination-guidance.js`
+- `tests/unit.session-listener.test.mjs`
+- `tests/unit.session-sync.test.mjs`
+- `tests/unit.session-sync-apiurl-allowlist.test.mjs`
+- `tests/unit.commands-contracts.test.mjs`
+- `tests/unit.session-setup-guides.test.mjs`
+- `tests/unit.spec-session.test.mjs`
+- `tasks/todo.md`
+- `tasks/lessons.md`
+
+## Review
+- In progress. This PR is scoped to D3 agent-facing background polling and direct-message addressing only; Playwright/devTestBot work starts in PR-E1.
+- Implemented `src/session/listener.js` with listen-specific cursors, first-poll priming, timestamp-aware race protection for new first-poll events, broadcast/direct recipient filtering, and injectable poll/sleep/cursor seams.
+- Added `session listen --session <id> --agent <id> --interval 60 --emit ndjson` and `session say --to <agent>`.
+- Focused validation passed:
+  - `node --check src\session\listener.js src\commands\session.js src\session\coordination-guidance.js`
+  - `node --import ./tests/setup-env.mjs --test tests/unit.session-listener.test.mjs tests/unit.session-sync.test.mjs tests/unit.commands-contracts.test.mjs tests/unit.session-setup-guides.test.mjs tests/unit.spec-session.test.mjs` (39 tests pass)
+  - `node --import ./tests/setup-env.mjs --test tests/e2e.test.mjs` (95 tests pass)
+  - `npm run check` (296 files) and `git diff --check` (clean; Windows line-ending warnings only)
+  - First `npm run verify` reached coverage and stopped because `c8` was absent in this worktree; ran `npm ci` to restore dev dependencies.
+  - Fixed coverage-runner shared-state flake by resetting sync circuit state at the end of breaker tests and at the start of API-url allowlist tests.
+  - `npm run test:coverage` passed (1157 unit tests; statements 90.26%, branches 70.54%).
+  - `npm run verify` passed end to end: check, docs build, 95 e2e tests, 1157 unit coverage tests, and npm pack dry-run.
+  - DD diff review passed clean: `review --diff --refresh --spec tasks/dd-build-spec-2026-04-26.md --json` (`review-20260428-044352-c9ee6cbc`, P0/P1/P2/P3 all zero).
+  - Live listener smoke passed against Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7`: one process ran `session listen --session ... --agent codex-d3-smoke2 --interval 1 --emit ndjson --max-polls 10`, another sent `session say --to codex-d3-smoke2`; listener printed the direct `session_message` NDJSON with cursor `1777351471780:0a9ae6dd`.
+  - Local OmarGate passed: `/omargate deep --ai-dry-run --max-cost 5` (`omargate-1777351511227-2c593d24`, P0=0/P1=0, blocking=false; non-blocking baseline P2/P3 only).
+  - Local `/audit --path . --json` passed (`overallStatus=PASS`, P1=0, P2=3 non-blocking).
+
 # 2026-04-28 - DD PR-D2 Session Auto-Name + Resume (`dd/pr-d2-session-auto-name-resume`)
 
 ## Plan
@@ -9,7 +54,7 @@
 - [x] Add `sl session ensure --path .` returning canonical `{ sessionId, title, resumed }`.
 - [x] Add focused unit coverage for start/ensure title, same-window reuse, outside-window new session, and command contracts.
 - [x] Run focused tests, `npm run check`, DD-spec review, full verify, OmarGate, and audit.
-- [ ] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-D3.
+- [x] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-D3.
 
 ## File Claims
 - `src/commands/session.js`

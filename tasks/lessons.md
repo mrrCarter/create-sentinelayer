@@ -4,6 +4,7 @@
 
 - After user correction that Senti messages were missed, always run an explicit read/sync check before each implementation block, summarize non-self messages in the task board/Senti, and do not treat posting updates as a substitute for consuming coordination messages.
 - During a long autonomous PR train, preserve unrelated dirty files as peer/user work and keep each PR clean by staging only the scoped file claims; do not mix later-PR session/listener work into the active prompt/review PR.
+- When the user calls out lack of autonomous progress, immediately convert the next PR scope into a committed execution board with file claims, start implementation from a fresh green main, and keep advancing after each merge instead of pausing on status narration.
 
 ## 2026-04-27
 
