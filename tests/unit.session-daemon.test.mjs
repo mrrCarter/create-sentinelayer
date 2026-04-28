@@ -27,6 +27,24 @@ async function seedWorkspace(rootPath) {
   await writeFile(path.join(rootPath, "src", "index.js"), "export const fixture = true;\n", "utf-8");
 }
 
+async function waitForStreamEvent(sessionId, predicate, {
+  targetPath,
+  tail = 50,
+  timeoutMs = 1500,
+  pollMs = 25,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const stream = await readStream(sessionId, { tail, targetPath });
+    const event = stream.find(predicate);
+    if (event) {
+      return event;
+    }
+    await sleep(pollMs);
+  }
+  return null;
+}
+
 test("Unit session daemon: welcome event includes codebase synopsis and health tick detects stale + file conflict", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-daemon-"));
   let sessionId = "";
@@ -204,16 +222,19 @@ test("Unit session daemon: lock/unlock directives from session messages enforce 
       }),
       { targetPath: tempRoot }
     );
-    await sleep(250);
-
-    const interimStream = await readStream(session.sessionId, { tail: 40, targetPath: tempRoot });
-    const lockEvent = interimStream.find((event) => event.event === "file_lock");
+    const lockEvent = await waitForStreamEvent(
+      session.sessionId,
+      (event) => event.event === "file_lock" && event.payload?.file === "src/routes/auth.js",
+      { targetPath: tempRoot }
+    );
     assert.ok(lockEvent);
     assert.equal(lockEvent.agent.id, "codex-c3d4");
     assert.equal(lockEvent.payload.file, "src/routes/auth.js");
 
-    const denied = interimStream.find(
-      (event) => event.event === "daemon_alert" && event.payload.alert === "file_lock_denied"
+    const denied = await waitForStreamEvent(
+      session.sessionId,
+      (event) => event.event === "daemon_alert" && event.payload?.alert === "file_lock_denied",
+      { targetPath: tempRoot }
     );
     assert.ok(denied);
     assert.equal(denied.payload.file, "src/routes/auth.js");
@@ -231,10 +252,11 @@ test("Unit session daemon: lock/unlock directives from session messages enforce 
       }),
       { targetPath: tempRoot }
     );
-    await sleep(200);
-
-    const stream = await readStream(session.sessionId, { tail: 50, targetPath: tempRoot });
-    const unlockEvent = stream.find((event) => event.event === "file_unlock");
+    const unlockEvent = await waitForStreamEvent(
+      session.sessionId,
+      (event) => event.event === "file_unlock" && event.payload?.file === "src/routes/auth.js",
+      { targetPath: tempRoot }
+    );
     assert.ok(unlockEvent);
     assert.equal(unlockEvent.payload.file, "src/routes/auth.js");
   } finally {

@@ -1,3 +1,38 @@
+# 2026-04-28 - DD PR-E1 Playwright Base (`dd/pr-e1-playwright-base`)
+
+## Plan
+- [x] Confirm PR-D3 merge and post-merge main workflows are green, sync from `origin/main`, and create a clean PR-E1 worktree.
+- [x] Run Senti `session sync` + `session read`; latest tail contains only `cli-user` self updates and duplicate relays, with no Claude/Audit response to consume.
+- [x] Read the DD PR-E1 contract, AGENTS workflow, CLAUDE Omar loop, SWE Excellence Core Web Vitals/QA capture guidance, current runtime-audit/browser patterns, and CI dependency install constraints.
+- [x] Add exact runtime dependencies for `playwright`, `axe-core`, `@axe-core/playwright`, and Node-20-compatible `lighthouse@12.x`.
+- [x] Add `src/agents/devtestbot/runner.js` with a reusable `launch({ baseUrl, identityCreds })` wrapper that captures console, network, a11y, Lighthouse, click coverage, and video-compatible artifacts.
+- [x] Add focused smoke coverage against a local static fixture proving each capture lane writes an artifact.
+- [x] Run focused tests, `npm run check`, DD-spec review, full verify, local OmarGate, and audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-E2.
+
+## File Claims
+- `package.json`
+- `package-lock.json`
+- `.github/workflows/quality-gates.yml`
+- `.github/policies/license-policy.json`
+- `src/agents/devtestbot/runner.js`
+- `tests/unit.devtestbot-runner.test.mjs`
+- `tasks/todo.md`
+
+## Review
+- In progress. This PR is scoped to browser automation primitives only; the devTestBot persona and DD orchestrator hook remain PR-E2 and PR-E3.
+- Dependency decision: latest `lighthouse@13.1.0` requires Node `>=22.19`, so this PR pins `lighthouse@12.8.2` to preserve the package's declared Node 20/22 support.
+- Implemented the runner with explicit Playwright Chromium/ffmpeg preflight, sanitized console/network capture, axe scan output, Lighthouse JSON output, click coverage, native Playwright WebM, and a valid MP4 compatibility artifact generated from captured browser frames.
+- Focused validation passed: `node --import ./tests/setup-env.mjs --test tests/unit.devtestbot-runner.test.mjs` (2 tests pass, real browser smoke produced MP4, a11y JSON, Lighthouse JSON, console/network/click artifacts).
+- Repo validation passed: `npm run check` (297 files), `node --import ./tests/setup-env.mjs --test tests/e2e.test.mjs` (95 tests), `npm run test:coverage` (1159 tests, coverage thresholds met), and full `npm run verify` after the final patch.
+- DD-spec `review --diff --refresh` is clean (`review-20260428-054134-567e529d`, P0/P1/P2/P3 all zero). Earlier P2 loop warning was fixed by batching image decoding before MP4 encoding.
+- Production license policy check passed after allowing new permissive/transitive production licenses (`MPL-2.0`, `0BSD`, `BSD`): 242 packages, 0 failures.
+- Local gates passed: `/omargate deep --ai-dry-run --max-cost 5` (`omargate-1777354778138-4a486ce8`, P0=0/P1=0, blocking=false; non-blocking baseline P2/P3 only) and `/audit --path . --json` (PASS, P1=0, P2=3 non-blocking).
+- CI loop: PR #443 Quality Gates `Test` job failed once because the ffmpeg preflight accepted `ffmpeg` but Playwright's Linux payload is `ffmpeg-linux` under `ffmpeg-1011`. Patched `findPlaywrightFfmpegExecutable` with platform-specific Playwright payload names and added a regression test for the Linux CI cache layout.
+- Post-CI-fix validation passed: focused devTestBot test (3/3), full `npm run verify` (`check`, docs build, 95 e2e, 1160 unit coverage tests, npm pack dry-run), DD review against `tasks/dd-build-spec-2026-04-26.md` clean (`review-20260428-055436-6c0340a0`, P0/P1/P2/P3 all zero), local OmarGate dry-run non-blocking (`omargate-1777355649749-6ffc58a4`, P0=0/P1=0), and `/audit` PASS (`audit-20260428-055349`, P1=0, P2=3 non-blocking).
+- CI loop 2: PR #443 Node 22 coverage failed once in the pre-existing session daemon lock directive test because fixed sleeps did not guarantee Senti had processed the `lock:` messages before assertion. Hardened that test to poll for the exact stream events (`file_lock`, `file_lock_denied`, `file_unlock`) before asserting.
+- Post-CI-loop-2 validation passed: session daemon focused test 5 consecutive runs, full `npm run test:coverage` (1160/1160), full `npm run verify`, DD review against build spec clean (`review-20260428-060402-fffc74ac`, P0/P1/P2/P3 all zero), OmarGate dry-run non-blocking (`omargate-1777356410645-501b19e0`, P0=0/P1=0), `/audit` PASS (`audit-20260428-060649`, P1=0, P2=3 non-blocking), and `git diff --check` clean aside from Windows LF/CRLF warnings.
+
 # 2026-04-28 - DD PR-D3 Session Background Listener (`dd/pr-d3-session-listen`)
 
 ## Plan
@@ -10,7 +45,7 @@
 - [x] Update canonical coordination etiquette to prefer the background listener and keep `sync`/`read` as fallback.
 - [x] Add focused listener, command-contract, sync URL/circuit, and guidance tests.
 - [x] Run focused tests, `npm run check`, DD-spec review, full verify, local OmarGate, and audit.
-- [ ] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-E1.
+- [x] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-E1.
 
 ## File Claims
 - `src/session/listener.js`
