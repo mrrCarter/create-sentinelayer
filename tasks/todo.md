@@ -1,3 +1,41 @@
+# 2026-04-28 - DD PR-E2 devTestBot Persona (`dd/pr-e2-devtestbot-persona`)
+
+## Plan
+- [x] Confirm PR-E1 merged and post-merge main workflows are green, sync from `origin/main`, and create a clean PR-E2 worktree.
+- [x] Run Senti `session sync` + `session read`; latest tail contains only `cli-user` self updates and duplicate relays, with no new Claude/Audit response to consume.
+- [x] Read the DD PR-E2 contract, AGENTS workflow, SWE framework addendum, Jules persona patterns, AIdenID identity registry, swarm registry/runtime, and E1 devTestBot runner.
+- [x] Add `src/agents/devtestbot/config/definition.js` and `system-prompt.js` with scan-only, no-data-extraction, full system test, console/network/a11y/Lighthouse/click/password-reset lane requirements.
+- [x] Add `devtestbot.run_session` wrapper around the E1 runner that accepts `{ scope, identityId, baseUrl, recordVideo }`, uses local identity metadata only, redacts sensitive values, and returns normalized findings plus artifact paths.
+- [x] Register `devtestbot` as a built-in swarm agent and wire `swarm run --agent devtestbot --scope smoke` through the governed runtime with artifact/findings output.
+- [x] Add focused definition, prompt, tool, registry, command-contract, runtime, and CLI smoke tests.
+- [x] Run focused tests, `npm run check`, full `npm run verify`, DD-spec review, local OmarGate, and audit before opening PR.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify main before PR-E3.
+
+## File Claims
+- `src/agents/devtestbot/config/definition.js`
+- `src/agents/devtestbot/config/system-prompt.js`
+- `src/agents/devtestbot/tool.js`
+- `src/agents/devtestbot/index.js`
+- `src/swarm/registry.js`
+- `src/swarm/runtime.js`
+- `src/commands/swarm.js`
+- `tests/unit.devtestbot-definition.test.mjs`
+- `tests/unit.devtestbot-system-prompt.test.mjs`
+- `tests/unit.devtestbot-tool.test.mjs`
+- `tests/unit.swarm-registry.test.mjs`
+- `tests/unit.swarm-factory.test.mjs`
+- `tests/unit.swarm-runtime.test.mjs`
+- `tests/unit.commands-contracts.test.mjs`
+- `tests/e2e.test.mjs`
+- `tasks/todo.md`
+
+## Review
+- In progress. This PR is scoped to making devTestBot an invokable persona/tool and swarm target only; DD auto-engagement stays in PR-E3 and email/report bundling stays in F1/F2.
+- Integration decision: keep the existing `swarm run` runtime format and add a narrow `devtestbot` branch inside the assignment loop, while returning canonical agent-event envelopes for `agent_start`, `tool_call`, `tool_result`, `finding`, and `agent_complete` in the devTestBot result bundle.
+- Safety decision: the tool resolves only local identity registry metadata by `identityId`; it never accepts or returns raw passwords, OTPs, reset links, cookies, bearer tokens, or credential material.
+- Focused validation passed: `node --import ./tests/setup-env.mjs --test tests/unit.devtestbot-definition.test.mjs tests/unit.devtestbot-system-prompt.test.mjs tests/unit.devtestbot-tool.test.mjs` (5/5), `node --import ./tests/setup-env.mjs --test tests/unit.swarm-registry.test.mjs tests/unit.swarm-factory.test.mjs tests/unit.swarm-runtime.test.mjs tests/unit.commands-contracts.test.mjs` (23/23), and `node --import ./tests/setup-env.mjs --test tests/e2e.test.mjs --test-name-pattern "devTestBot|swarm registry|swarm run"` (96/96 because Node's pattern matched the broad e2e names; includes the new `swarm run --agent devtestbot --scope smoke` dry-run artifact smoke).
+- Full local validation passed: `npm run check` (301 files), `npm run verify` (docs build, e2e 96/96, unit coverage 1167/1167 with thresholds met, npm pack dry-run), `git diff --check` clean aside from Windows LF/CRLF warnings, DD diff review clean (`review-20260428-065046-d0e7cc46`, P0/P1/P2/P3 all zero), local OmarGate dry-run non-blocking (`omargate-1777359062348-5d8b4420`, P0=0/P1=0, blocking=false), and `/audit --path . --json` PASS (`audit-20260428-065101`, P1=0, P2=3 non-blocking).
+
 # 2026-04-28 - DD PR-E1 Playwright Base (`dd/pr-e1-playwright-base`)
 
 ## Plan

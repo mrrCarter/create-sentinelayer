@@ -18,14 +18,19 @@ test("Unit swarm registry: built-in registry includes OMAR + specialist domains"
   assert.equal(agents.some((agent) => agent.id === "security"), true);
   assert.equal(agents.some((agent) => agent.id === "architecture"), true);
   assert.equal(agents.some((agent) => agent.id === "reliability"), true);
+  const devTestBot = agents.find((agent) => agent.id === "devtestbot");
+  assert.ok(devTestBot);
+  assert.equal(devTestBot.tools.includes("devtestbot.run_session"), true);
+  assert.equal(devTestBot.networkMode, "enabled");
 });
 
 test("Unit swarm registry: selection handles explicit filters and missing ids", () => {
   const agents = listBuiltinSwarmAgents();
-  const selected = selectSwarmAgents(agents, "omar,security,missing-agent");
-  assert.equal(selected.selected.length, 2);
+  const selected = selectSwarmAgents(agents, "omar,security,devtestbot,missing-agent");
+  assert.equal(selected.selected.length, 3);
   assert.equal(selected.selected.some((agent) => agent.id === "omar"), true);
   assert.equal(selected.selected.some((agent) => agent.id === "security"), true);
+  assert.equal(selected.selected.some((agent) => agent.id === "devtestbot"), true);
   assert.deepEqual(selected.missing, ["missing-agent"]);
 });
 

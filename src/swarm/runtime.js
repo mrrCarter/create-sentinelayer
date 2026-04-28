@@ -10,6 +10,13 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
+function sanitizeRuntimeError(error) {
+  return String(error?.message || error || "Runtime failed.")
+    .replace(/\b(?:authorization|cookie|token|secret|password|otp|reset)\s*[:=]\s*["']?[^"'\s&]+/gi, (match) =>
+      match.replace(/[:=]\s*["']?.*$/u, "=[REDACTED]")
+    );
+}
+
 function formatTimestampToken() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
@@ -298,6 +305,9 @@ export async function runSwarmRuntime({
   execute = false,
   maxSteps = 20,
   startUrl = "about:blank",
+  identityId = "",
+  devTestBotScope = "",
+  devTestBotRunSession = null,
   playbookActions = [],
   outputDir = "",
   env,
@@ -321,6 +331,9 @@ export async function runSwarmRuntime({
   const runtimeRunDirectory = path.join(resolvedOutputRoot, "swarms", runId);
   const runStartedAt = Date.now();
   const events = [];
+  const findings = [];
+  const artifactBundles = [];
+  const devTestBotRuns = [];
   let step = 0;
 
   const usage = {
@@ -409,7 +422,128 @@ export async function runSwarmRuntime({
         })
       );
 
-      if (normalizedEngine === "mock" || !execute) {
+      if (assignment.agentId === "devtestbot") {
+        const scope = normalizeString(devTestBotScope || plan.scenario || "smoke") || "smoke";
+        const toolInput = {
+          scope,
+          identityId: normalizeString(identityId),
+          baseUrl: normalizeString(startUrl),
+          recordVideo: Boolean(execute),
+          execute: Boolean(execute),
+          targetPath: normalizedTargetPath,
+          outputRoot: resolvedOutputRoot,
+          outputDir: path.join(runtimeRunDirectory, "devtestbot", assignment.assignmentId),
+          runId: `${runId}-${assignment.assignmentId}`,
+        };
+
+        usage.toolCalls += 1;
+        usage.outputTokens += estimateTokens(`devtestbot.run_session:${scope}:${Boolean(execute)}`);
+        step += 1;
+        events.push(
+          createEvent({
+            runId,
+            step,
+            eventType: "tool_call",
+            agentId: assignment.agentId,
+            message: "devtestbot.run_session started",
+            metadata: {
+              tool: "devtestbot.run_session",
+              scope,
+              identityId: toolInput.identityId || null,
+              baseUrl: toolInput.baseUrl,
+              execute: toolInput.execute,
+              recordVideo: toolInput.recordVideo,
+            },
+            usage,
+          })
+        );
+
+        try {
+          const runner = devTestBotRunSession || (await import("../agents/devtestbot/tool.js")).runDevTestBotSession;
+          const result = await runner(toolInput, {
+            targetPath: normalizedTargetPath,
+            outputRoot: resolvedOutputRoot,
+            runId: toolInput.runId,
+            execute: Boolean(execute),
+            env,
+          });
+          const resultFindings = Array.isArray(result.findings) ? result.findings : [];
+          findings.push(...resultFindings);
+          if (result.artifactBundle) {
+            artifactBundles.push(result.artifactBundle);
+          }
+          devTestBotRuns.push({
+            assignmentId: assignment.assignmentId,
+            runId: result.runId || toolInput.runId,
+            completed: Boolean(result.completed),
+            dryRun: Boolean(result.dryRun),
+            findingCount: resultFindings.length,
+            artifactBundle: result.artifactBundle || null,
+          });
+          usage.outputTokens += estimateTokens(
+            JSON.stringify({
+              findingCount: resultFindings.length,
+              artifactBundle: result.artifactBundle ? "present" : "missing",
+            })
+          );
+          step += 1;
+          events.push(
+            createEvent({
+              runId,
+              step,
+              eventType: "tool_result",
+              agentId: assignment.agentId,
+              message: "devtestbot.run_session completed",
+              metadata: {
+                tool: "devtestbot.run_session",
+                success: true,
+                dryRun: Boolean(result.dryRun),
+                findingCount: resultFindings.length,
+                artifactBundle: result.artifactBundle || null,
+              },
+              usage,
+            })
+          );
+          for (const finding of resultFindings) {
+            step += 1;
+            events.push(
+              createEvent({
+                runId,
+                step,
+                eventType: "finding",
+                agentId: assignment.agentId,
+                message: normalizeString(finding.title || "devTestBot finding"),
+                metadata: {
+                  finding,
+                },
+                usage,
+              })
+            );
+          }
+        } catch (error) {
+          stop = {
+            stopClass: error?.code || "DEVTESTBOT_RUN_FAILED",
+            reason: sanitizeRuntimeError(error),
+            blocking: true,
+          };
+          step += 1;
+          events.push(
+            createEvent({
+              runId,
+              step,
+              eventType: "agent_error",
+              agentId: assignment.agentId,
+              message: stop.reason,
+              metadata: {
+                tool: "devtestbot.run_session",
+                stopClass: stop.stopClass,
+              },
+              usage,
+            })
+          );
+          break;
+        }
+      } else if (normalizedEngine === "mock" || !execute) {
         usage.toolCalls += 1;
         usage.outputTokens += estimateTokens(`mock:${assignment.agentId}`);
         step += 1;
@@ -558,6 +692,10 @@ export async function runSwarmRuntime({
     usage,
     eventCount: events.length,
     selectedAgents: Array.isArray(plan.selectedAgents) ? [...plan.selectedAgents] : [],
+    findingCount: findings.length,
+    findings,
+    artifactBundles,
+    devTestBotRuns,
   };
 
   return writeRuntimeArtifacts({
