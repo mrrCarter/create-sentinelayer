@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.12](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.11...v0.8.12) (2026-04-28)
+
+
+### Bug Fixes
+
+* **session:** auto-derive title from codebase + date and stop test-fixture leaks — the dashboard had filled with hundreds of `<null>`-titled "session" rows because every CLI invocation minted a fresh anonymous room and tests on developer machines silently posted to prod via the user's stored auth. Three changes:
+  - `deriveSessionTitle(targetPath)` returns a stable `<basename>-<YYYY-MM-DD>` slug (UTC, sanitized, capped at 60 chars). `sl session start` now defaults the title to that slug when `--title` isn't passed, so fresh rooms are always named.
+  - `sl session start` auto-resume now consults BOTH local filesystem state and the remote registry (`listSessionsFromApi`), matching by absolute `codebasePath`. A second machine / fresh checkout / second clone of the same repo now rejoins the open room within the reuse window instead of orphaning a duplicate. `--force-new` opts back into mint-always.
+  - New `SENTINELAYER_SKIP_REMOTE_SYNC=1` env guard short-circuits both `syncSessionEventToApi` and `syncSessionAuxPayload` before they reach the user's auth/token. The repo's `npm test` / `npm run verify` scripts wire it in via a `tests/setup-env.mjs` `--import` hook so the test suite never leaks again. Disk-persisted circuit-breaker tests + API contract tests opt the guard off locally to keep their mocked fetch paths under coverage.
+
+### Tests
+
+* Added `tests/unit.session-naming-derive.test.mjs` (7 cases) covering Unix/Windows paths, sanitization, length cap, and the `session-<date>` fallback.
+
 ## [0.8.11](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.10...v0.8.11) (2026-04-26)
 
 

@@ -1,15 +1,15 @@
 {
   "name": "sentinelayer-cli",
-  "version": "0.8.11",
+  "version": "0.8.12",
   "description": "Scaffold Sentinelayer spec/prompt/guide artifacts with secure browser auth and token bootstrap.",
   "type": "module",
   "scripts": {
     "check": "node scripts/check.mjs",
     "docs:build": "node scripts/docs-build.mjs",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "node --test tests/unit*.test.mjs",
-    "test:e2e": "node --test tests/e2e.test.mjs",
-    "test:coverage": "c8 node --test tests/unit*.test.mjs",
+    "test:unit": "node --import ./tests/setup-env.mjs --test tests/unit*.test.mjs",
+    "test:e2e": "node --import ./tests/setup-env.mjs --test tests/e2e.test.mjs",
+    "test:coverage": "c8 node --import ./tests/setup-env.mjs --test tests/unit*.test.mjs",
     "verify": "npm run check && npm run docs:build && npm run test:e2e && npm run test:coverage && npm pack --dry-run"
   },
   "bin": {

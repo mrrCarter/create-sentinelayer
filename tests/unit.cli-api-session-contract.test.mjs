@@ -15,7 +15,7 @@
 //     SessionHumanMessagePayload {text?: str, message?: str}
 //     SessionKillPayload         {reason?: str}
 
-import test from "node:test";
+import test, { before } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -24,6 +24,15 @@ import {
   syncSessionErrorToApi,
   pollHumanMessages,
 } from "../src/session/sync.js";
+
+// Contract tests exercise the network path via mocked fetchImpl. The
+// global setup-env shim sets SENTINELAYER_SKIP_REMOTE_SYNC=1 to keep
+// real CLI flows from leaking sessions into prod, but it would also
+// short-circuit these mocks. Clear it for this file so the recorders
+// observe the canonical request bodies they assert against.
+before(() => {
+  delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+});
 
 const CONTRACT = {
   events: {

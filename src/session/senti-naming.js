@@ -130,6 +130,42 @@ export function isAnonymousAgent(agent = {}) {
 }
 
 /**
+ * Derive a deterministic session title from a workspace path + clock.
+ *
+ * Carter's complaint: every CLI invocation minted an unnamed session, so the
+ * web sidebar filled with hundreds of "<null>" rows that all looked like the
+ * same chat re-created. The fix: when the caller doesn't pass `--title`, give
+ * the session a stable label based on the codebase basename + today's date in
+ * UTC, e.g. `create-sentinelayer-2026-04-28`.
+ *
+ * - Basename only (we never leak the absolute path).
+ * - Sanitized to `[a-z0-9-]` so the title is URL-safe + dashboard-friendly.
+ * - Date is UTC ISO short form (YYYY-MM-DD) for reproducibility regardless of
+ *   the host timezone.
+ * - Falls back to `session-<date>` if the path has no usable basename.
+ *
+ * @param {string} targetPath
+ * @param {{now?: Date}} [options]
+ * @returns {string}
+ */
+export function deriveSessionTitle(targetPath, { now = new Date() } = {}) {
+  const raw = String(targetPath || "").trim();
+  // Use forward slashes consistently — Windows paths come through with
+  // backslashes from path.resolve. We don't import the `path` module here
+  // to keep this function pure + cheap to test.
+  const last = raw.split(/[/\\]+/).filter(Boolean).pop() || "";
+  const slug = last
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  const stamp = (now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date())
+    .toISOString()
+    .slice(0, 10);
+  return slug ? `${slug}-${stamp}` : `session-${stamp}`;
+}
+
+/**
  * Build the payload Senti emits as `agent_identified` when it has
  * stepped in to name a participant. Consumers (CLI / web) render it
  * verbatim; the `instructions` line tells the user how to override.
