@@ -1,3 +1,28 @@
+# 2026-04-28 - D1 Post-Merge Main Unblock (`fix/d1-postmerge-scope-abort-race`)
+
+## Plan
+- [x] Identify direct post-merge main failure before starting PR-D2.
+- [x] Pull CI logs for `Quality Gates` run `25031586422`, job `Unit Coverage (>=80%, Node 22)`.
+- [x] Fix the Node 22 abort-race test harness so the expected rejection is attached before `session kill` triggers cancellation.
+- [x] Fix the session daemon context-relay test to wait for the paired `help_response` and `model_span` events instead of relying on a fixed sleep.
+- [x] Run focused tests, repo gates, review/Omar/audit as needed.
+- [ ] Open PR, merge, and re-run main workflows green.
+
+## File Claims
+- `tests/unit.triage-scope-engine.test.mjs`
+- `tests/unit.session-daemon-context.test.mjs`
+- `tasks/todo.md`
+
+## Review
+- Root cause: `buildPromise` could reject during `session kill` before the test attached `assert.rejects`, which Node 22 surfaced as an `unhandledRejection`.
+- Fix: attach the expected abort rejection immediately after confirming the scope-engine run is active, then await it after validating the kill command output.
+- Additional local flake found during coverage stress: session daemon context relay could read the stream after `help_response` but before `model_span`; fixed with a bounded event-based wait scoped to request id.
+- This is a test-ordering fix only; `src/daemon/scope-engine.js` cancellation behavior is unchanged.
+- Focused validation passed:
+  - `node --test --test-name-pattern "session kill --agent scope-engine aborts active run and emits agent_killed" tests/unit.triage-scope-engine.test.mjs`
+  - `node --test tests/unit.session-daemon-context.test.mjs`
+- Repo validation passed: `npm run verify` (check, docs build, 95 e2e, 1142 unit coverage tests, pack dry-run), `git diff --check`, DD-spec `review --diff --refresh` (`review-20260428-031757-52008bf1`, P0/P1/P2/P3 all zero), `/audit` PASS (559 files, P1=0, P2=3 non-blocking), and local `/omargate deep --ai-dry-run --max-cost 5` (`omargate-1777346279029-2b5ac57c`, P0=0/P1=0, baseline non-blocking P2/P3 only).
+
 # 2026-04-28 - DD PR-D1 Coordination Autoinject (`dd/pr-d1-coordination-autoinject`)
 
 ## Plan
