@@ -15,6 +15,7 @@ import { registerSpecCommand } from "../src/commands/spec.js";
 import { registerPromptCommand } from "../src/commands/prompt.js";
 import { registerAuditCommand } from "../src/commands/audit.js";
 import { registerSessionCommand } from "../src/commands/session.js";
+import { registerOmarGateCommand } from "../src/commands/omargate.js";
 
 function buildProgram(registerFn) {
   const program = new Command();
@@ -273,6 +274,23 @@ test("Unit command contracts: spec, prompt, and audit commands expose ingest ref
   assertCommandHasOption(getCommandByPath(auditProgram, "audit performance"), "--refresh");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit compliance"), "--refresh");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit documentation"), "--refresh");
+});
+
+test("Unit command contracts: omargate investor-dd exposes devTestBot controls", () => {
+  const program = new Command();
+  program
+    .name("sl")
+    .exitOverride()
+    .configureOutput({
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+  registerOmarGateCommand(program, async () => {});
+
+  const investorDd = getCommandByPath(program, "omargate investor-dd");
+  assertCommandHasOption(investorDd, "--devtestbot-base-url <url>");
+  assertCommandHasOption(investorDd, "--devtestbot-scope <scope>");
+  assertCommandHasOption(investorDd, "--no-devtestbot");
 });
 
 test("Unit command contracts: session exposes D2 ensure and resume controls", () => {

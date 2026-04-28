@@ -1455,6 +1455,62 @@ test("CLI omargate deep --stream emits swarm lifecycle for oversized dry-run sco
   }
 });
 
+test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bundle", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-investor-dd-devtestbot-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({ name: "investor-dd-devtestbot-fixture", version: "1.0.0", license: "MIT" }, null, 2),
+      "utf-8"
+    );
+    await writeFile(path.join(tempRoot, "src", "app.js"), "export const status = 'ok';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "omargate",
+        "investor-dd",
+        "--path",
+        tempRoot,
+        "--stream",
+        "--max-cost",
+        "2",
+        "--max-runtime-minutes",
+        "5",
+        "--max-parallel",
+        "1",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const events = result.stdout
+      .split(/\r?\n/g)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    assert.equal(events.some((event) => event.type === "devtestbot_start"), true);
+    assert.equal(events.some((event) => event.type === "devtestbot_agent_start"), true);
+    assert.equal(events.some((event) => event.type === "devtestbot_complete"), true);
+
+    const complete = events.find((event) => event.type === "devtestbot_complete");
+    assert.ok(complete?.artifactRoot);
+    assert.match(String(complete.artifactRoot), /[\\/]\.sentinelayer[\\/]runs[\\/].+[\\/]devtestbot$/);
+    const botFiles = await readdir(complete.artifactRoot);
+    assert.equal(botFiles.includes("devtestbot-1"), true);
+
+    const investorArtifactDir = path.join(path.dirname(complete.artifactRoot), "investor-dd");
+    const devTestBotSummary = JSON.parse(
+      await readFile(path.join(investorArtifactDir, "devtestbot-summary.json"), "utf-8")
+    );
+    assert.equal(devTestBotSummary.findingCount >= 1, true);
+    assert.equal(devTestBotSummary.subagents[0].dryRun, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit writes pass report for prepared workspace", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {

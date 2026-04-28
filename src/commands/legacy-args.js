@@ -60,6 +60,9 @@ export function buildLegacyArgs(baseArgs, { commandOptions = {}, command } = {})
   appendPassthroughFlag(args, "--reuse-omargate", commandOptions.reuseOmargate);
   appendPassthroughFlag(args, "--notify-email", commandOptions.notifyEmail);
   appendPassthroughFlag(args, "--notify-session", commandOptions.notifySession);
+  appendPassthroughFlag(args, "--devtestbot-base-url", commandOptions.devtestbotBaseUrl);
+  appendPassthroughFlag(args, "--devtestbot-scope", commandOptions.devtestbotScope);
+  appendNegatedBooleanFlag(args, "--no-devtestbot", commandOptions.devtestbot);
   // Omar Gate per-persona filter flags (A-CLI-1).
   appendPassthroughFlag(args, "--persona", commandOptions.persona);
   appendPassthroughFlag(args, "--skip-persona", commandOptions.skipPersona);

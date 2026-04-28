@@ -2771,4 +2771,36 @@ Review:
 - [ ] Push PR-283 update and watch `Omar Gate`, `Quality Gates`, and `Build Attestation` to completion (`gh run watch`).
 - [ ] Merge PR-283 once required checks are green.
 
+## 2026-04-28 - DD PR-E3 devTestBot Orchestrator Phase
+
+- [x] Verify PR-E2 post-merge `main` workflows and post/read Senti before starting E3.
+- [x] Branch `dd/pr-e3-dd-engages-devtestbot` from current `origin/main`.
+- [x] Inspect DD spec, AGENTS.md, SWE framework, investor-DD orchestrator, AIdenID registry, and devTestBot tool contracts.
+- [x] Use subagents for DD orchestration and AIdenID/artifact exploration; incorporate their recommendations.
+- [x] Implement `src/review/investor-dd-devtestbot.js` with planner, identity registration, bounded parallel devTestBot dispatch, artifact summary, and secret-safe event payloads.
+- [x] Wire the phase into `src/review/investor-dd-orchestrator.js` after compliance and before final `findings.json`/report/manifest packaging.
+- [x] Add CLI passthrough for approved devTestBot controls only if needed by the phase contract.
+- [x] Add focused unit coverage proving stream events, merged findings, artifact placement under `.sentinelayer/runs/<runId>/devtestbot/`, dry-run behavior, partial failure handling, and no secret leakage.
+- [x] Add CLI/e2e proof that `sl /omargate investor-dd --path . --stream` emits devTestBot phase events and writes the bundle.
+- [x] Run focused tests, `npm run check`, `npm run verify`, DD review, local OmarGate, and `/audit`.
+- [ ] Open PR, watch CI/Omar loop, patch anything found, merge on green, and verify post-merge `main`.
+
+### Review Results
+
+- Focused syntax/unit/e2e validation passed.
+- `npm run verify` passed after the final robustness patch: e2e `97/97`, unit coverage `1170/1170`, npm pack dry-run.
+- DD diff review clean: `review-20260428-074443-ef73548f`, P0/P1/P2/P3 all `0`.
+- `git diff --check` clean except Windows LF/CRLF warnings.
+- Local OmarGate: `omargate-1777362300798-c8e5428e`, P0 `0`, P1 `0`, P2 `31`, P3 `1`, blocking `false`.
+- Local `/audit`: `audit-20260428-074459`, PASS, P1 `0`, P2 `3`, blocking `false`.
+
+### File Claims
+
+- `src/review/investor-dd-devtestbot.js`: own new E3 phase helper.
+- `src/review/investor-dd-orchestrator.js`: integrate helper into existing pipeline only.
+- `src/commands/omargate.js`, `src/legacy-cli.js`, `src/commands/legacy-args.js`: only if required for E3 CLI knobs.
+- `tests/unit.investor-dd-orchestrator.test.mjs`: focused orchestrator proofs.
+- `tests/e2e.test.mjs`: CLI stream/artifact proof.
+- `tasks/evals/pr-e3-dd-engages-devtestbot.md`: same-PR eval evidence because DD orchestration is eval-impacting.
+
 

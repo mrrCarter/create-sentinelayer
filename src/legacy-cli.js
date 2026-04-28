@@ -1125,6 +1125,9 @@ async function runLocalOmarGateCommand(args) {
     const maxParallel =
       parseInt(getCommandOptionValue(args, "--max-parallel") || "3", 10) || 3;
     const streamEnabled = hasCommandOption(args, "--stream");
+    const devTestBotEnabled = !hasCommandOption(args, "--no-devtestbot");
+    const devTestBotBaseUrl = getCommandOptionValue(args, "--devtestbot-base-url") || "";
+    const devTestBotScope = getCommandOptionValue(args, "--devtestbot-scope") || "";
 
     const targetPath = path.resolve(process.cwd(), pathArg);
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
@@ -1145,6 +1148,11 @@ async function runLocalOmarGateCommand(args) {
       outputDir: outputDirArg,
       budgetOptions: { maxCostUsd, maxRuntimeMinutes, maxParallel },
       dryRun,
+      devTestBot: {
+        enabled: devTestBotEnabled,
+        baseUrl: devTestBotBaseUrl,
+        scope: devTestBotScope,
+      },
       onEvent: streamEnabled
         ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`)
         : () => {},
