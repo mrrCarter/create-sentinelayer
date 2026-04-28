@@ -159,5 +159,51 @@ describe("runOmarGateOrchestrator swarm path", () => {
     assert.equal(persona.swarm.subagentCount, 2);
     assert.equal(persona.costUsd <= 1, true);
     assert.equal(result.totalCostUsd <= 1, true);
+
+    const firstPromptPath = persona.swarm.subagents[0].artifacts?.promptPath;
+    assert.ok(firstPromptPath, "expected subagent prompt artifact path");
+    assert.match(firstPromptPath.replace(/\\/g, "/"), /swarm\/security\/subagent-1\/REVIEW_AI_PROMPT\.txt$/);
+    const promptText = await fs.readFile(firstPromptPath, "utf-8");
+    assert.match(promptText, /11-lens evidence contract/);
+    assert.match(promptText, /lensEvidence/);
+    assert.match(promptText, /user_impact/);
+  });
+
+  it("passes persona prompts through the non-swarm path and writes per-persona artifacts", async () => {
+    const targetPath = await makeTempRoot();
+    const runDirectory = path.join(targetPath, ".sentinelayer", "reviews", "review-test");
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security"],
+      maxCostUsd: 1,
+      dryRun: true,
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/auth.js"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: { runDirectory },
+      },
+    });
+
+    const persona = result.personas.find((entry) => entry.id === "security");
+    assert.ok(persona?.artifacts?.promptPath, "expected persona prompt artifact path");
+    assert.match(
+      persona.artifacts.promptPath.replace(/\\/g, "/"),
+      /\.sentinelayer\/reviews\/review-test\/personas\/security\/REVIEW_AI_PROMPT\.txt$/
+    );
+
+    const promptText = await fs.readFile(persona.artifacts.promptPath, "utf-8");
+    assert.match(promptText, /Nina Patel/);
+    assert.match(promptText, /11-lens evidence contract/);
+    assert.match(promptText, /lensEvidence/);
+    assert.match(promptText, /trafficLight/);
   });
 });

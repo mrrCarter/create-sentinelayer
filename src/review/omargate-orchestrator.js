@@ -321,7 +321,13 @@ async function runOmarPersonaSwarm({
     }));
   }
 
-  const parentRunDirectory = deterministic?.artifacts?.runDirectory || targetPath;
+  const parentRunDirectory =
+    deterministic?.artifacts?.runDirectory || path.join(targetPath, ".sentinelayer", "reviews", runId);
+  const systemPrompt = buildPersonaReviewPrompt({
+    personaId,
+    targetPath,
+    deterministicSummary: deterministic?.summary || {},
+  });
   const subagentResults = await runWithConcurrency(
     partitions.map((files, index) => ({ files, subagentIndex: index + 1 })),
     maxConcurrent,
@@ -380,6 +386,7 @@ async function runOmarPersonaSwarm({
           model: model || undefined,
           sessionId: `${subagentRunId}-ai`,
           maxCostUsd: budget.maxCostUsd,
+          systemPrompt,
           dryRun,
           env: process.env,
         });
@@ -450,6 +457,7 @@ async function runOmarPersonaSwarm({
           summary: result?.summary || summarizeFindings(findings),
           costUsd: result?.usage?.costUsd || 0,
           model: result?.model || model || null,
+          artifacts: result?.artifacts || null,
           durationMs: Date.now() - subagentStart,
         };
       } catch (err) {
@@ -564,6 +572,7 @@ async function runOmarPersonaSwarm({
         costUsd: result.costUsd || 0,
         durationMs: result.durationMs || 0,
         error: result.error || null,
+        artifacts: result.artifacts || null,
       })),
     },
   };
@@ -786,16 +795,23 @@ export async function runOmarGateOrchestrator({
         targetPath,
         mode: "full",
         runId: `${runId}-${personaId}`,
-        runDirectory: targetPath,
+        runDirectory: path.join(
+          deterministic?.artifacts?.runDirectory || path.join(targetPath, ".sentinelayer", "reviews", runId),
+          "personas",
+          personaId
+        ),
         deterministic: {
           summary: detSummary,
           findings: detFindings,
+          scope: deterministic?.scope || {},
+          layers: deterministic?.layers || {},
           metadata: deterministic?.metadata || {},
         },
         outputDir,
         provider: provider || undefined,
         model: model || undefined,
         maxCostUsd: perPersonaCost,
+        systemPrompt,
         dryRun,
         env: process.env,
       });
@@ -857,6 +873,7 @@ export async function runOmarGateOrchestrator({
         summary: result?.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
         costUsd: personaCost,
         model: result?.model || model || null,
+        artifacts: result?.artifacts || null,
         durationMs: Date.now() - personaStart,
       };
     } catch (err) {
@@ -977,6 +994,7 @@ export async function runOmarGateOrchestrator({
       model: r.model || null,
       error: r.error || null,
       swarm: r.swarm || null,
+      artifacts: r.artifacts || null,
     })),
     personaHealth,
     findings: reconciledFindings,

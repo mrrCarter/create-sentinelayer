@@ -73,6 +73,70 @@ test("Unit AI review: parse fenced JSON and enforce max findings cap", () => {
   assert.equal(parsed.findings[1].file, "b.js");
 });
 
+test("Unit AI review: parse Jules-compatible evidence fields", () => {
+  const parsed = parseAiReviewResponse({
+    text: JSON.stringify({
+      findings: [
+        {
+          severity: "P1",
+          file: "src/session.js",
+          line: 77,
+          title: "SSE reconnect can miss events",
+          evidence: "lastCursor is not used for backfill",
+          lensEvidence: {
+            E: "failed: reconnect path depends on live stream only",
+            J: "failed: no rollback verification for missed messages",
+          },
+          reproduction: {
+            type: "static_trace",
+            steps: ["Disconnect SSE", "Post event", "Reconnect without /events backfill"],
+          },
+          user_impact: "User misses Claude audit messages in the dashboard.",
+          trafficLight: "red",
+          rootCause: "The stream consumer does not backfill the canonical event endpoint.",
+          recommendedFix: "Poll /events?after=<cursor> on reconnect and slow tick.",
+          confidence: 0.93,
+        },
+      ],
+    }),
+  });
+
+  assert.equal(parsed.parser, "json");
+  assert.equal(parsed.findings.length, 1);
+  assert.deepEqual(parsed.findings[0].lensEvidence, {
+    E: "failed: reconnect path depends on live stream only",
+    J: "failed: no rollback verification for missed messages",
+  });
+  assert.deepEqual(parsed.findings[0].reproduction.steps, [
+    "Disconnect SSE",
+    "Post event",
+    "Reconnect without /events backfill",
+  ]);
+  assert.equal(parsed.findings[0].userImpact, "User misses Claude audit messages in the dashboard.");
+  assert.equal(parsed.findings[0].trafficLight, "red");
+  assert.equal(parsed.findings[0].rootCause, "The stream consumer does not backfill the canonical event endpoint.");
+  assert.equal(parsed.findings[0].recommendedFix, "Poll /events?after=<cursor> on reconnect and slow tick.");
+});
+
+test("Unit AI review: parse top-level JSON arrays as findings for legacy prompt compatibility", () => {
+  const parsed = parseAiReviewResponse({
+    text: JSON.stringify([
+      {
+        severity: "P2",
+        file: "src/a.js",
+        line: 4,
+        title: "Array finding",
+        rationale: "Legacy generic prompt returned an array.",
+        suggestedFix: "Normalize arrays as findings.",
+      },
+    ]),
+  });
+
+  assert.equal(parsed.parser, "json");
+  assert.equal(parsed.findings.length, 1);
+  assert.equal(parsed.findings[0].message, "Array finding");
+});
+
 test("Unit AI review: non-JSON response falls back to summary-only mode", () => {
   const parsed = parseAiReviewResponse({
     text: "AI reviewer could not parse structured output due to malformed payload.",
@@ -113,3 +177,17 @@ test("Unit AI review: prompt includes deterministic context and schema guardrail
   assert.match(prompt, /src\/server\.js/);
 });
 
+test("Unit AI review: prompt prepends persona system prompt when provided", () => {
+  const prompt = buildAiReviewPrompt({
+    targetPath: "/repo",
+    mode: "full",
+    deterministicSummary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+    systemPrompt: "PERSONA SYSTEM PROMPT\n11-lens evidence contract",
+  });
+
+  assert.equal(prompt.startsWith("PERSONA SYSTEM PROMPT"), true);
+  assert.match(prompt, /11-lens evidence contract/);
+  assert.match(prompt, /Output STRICT JSON only/);
+  assert.match(prompt, /lensEvidence/);
+  assert.match(prompt, /trafficLight/);
+});

@@ -70,6 +70,28 @@ function normalizeConfidenceFloor(value) {
   return Math.max(0, Math.min(1, normalized));
 }
 
+function normalizeTrafficLight(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (["green", "yellow", "red"].includes(normalized)) {
+    return normalized;
+  }
+  return "";
+}
+
+function cloneJsonCompatible(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (typeof value === "string") {
+    return normalizeString(value) || null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
 function confidenceFloorForFinding(finding = {}, {
   source = "ai",
   confidenceFloors = {},
@@ -202,15 +224,28 @@ export function reconcileReviewFindings({
       confidenceFloors,
       defaultConfidenceFloor: normalizedDefaultConfidenceFloor,
     });
+    const evidence = normalizeString(finding.evidence || finding.excerpt);
+    const rootCause = normalizeString(finding.rootCause || finding.root_cause);
+    const recommendedFix = normalizeString(
+      finding.recommendedFix || finding.recommended_fix || finding.suggestedFix
+    );
+    const suggestedFix = normalizeString(finding.suggestedFix || recommendedFix);
     const normalized = {
       findingId: "",
       severity: normalizeSeverity(finding.severity),
       file: toPosixPath(normalizeString(finding.file) || "unknown"),
       line: Math.max(1, Math.floor(Number(finding.line || 1))),
       message: normalizeString(finding.message) || "Unnamed finding",
-      excerpt: normalizeString(finding.excerpt),
+      excerpt: normalizeString(finding.excerpt || evidence || rootCause),
       ruleId: normalizeString(finding.ruleId),
-      suggestedFix: normalizeString(finding.suggestedFix),
+      suggestedFix,
+      evidence,
+      lensEvidence: cloneJsonCompatible(finding.lensEvidence || finding.lens_evidence),
+      reproduction: cloneJsonCompatible(finding.reproduction),
+      userImpact: normalizeString(finding.userImpact || finding.user_impact),
+      trafficLight: normalizeTrafficLight(finding.trafficLight || finding.traffic_light),
+      rootCause,
+      recommendedFix: recommendedFix || suggestedFix,
       persona,
       layer: normalizeString(finding.layer),
       confidence: source === "deterministic" ? 1 : formatConfidence(finding.confidence),
@@ -259,6 +294,27 @@ export function reconcileReviewFindings({
     }
     if (!preferred.suggestedFix) {
       preferred.suggestedFix = existing.suggestedFix || normalized.suggestedFix;
+    }
+    if (!preferred.evidence) {
+      preferred.evidence = existing.evidence || normalized.evidence;
+    }
+    if (!preferred.lensEvidence) {
+      preferred.lensEvidence = existing.lensEvidence || normalized.lensEvidence;
+    }
+    if (!preferred.reproduction) {
+      preferred.reproduction = existing.reproduction || normalized.reproduction;
+    }
+    if (!preferred.userImpact) {
+      preferred.userImpact = existing.userImpact || normalized.userImpact;
+    }
+    if (!preferred.trafficLight) {
+      preferred.trafficLight = existing.trafficLight || normalized.trafficLight;
+    }
+    if (!preferred.rootCause) {
+      preferred.rootCause = existing.rootCause || normalized.rootCause;
+    }
+    if (!preferred.recommendedFix) {
+      preferred.recommendedFix = existing.recommendedFix || normalized.recommendedFix;
     }
     merged.set(key, preferred);
   };
@@ -354,6 +410,9 @@ function composeReportMarkdown(report = {}) {
               `   confidence: ${(formatConfidence(finding.confidence) * 100).toFixed(0)}%\n` +
               `   sources: ${(finding.sources || []).join(", ") || "none"}\n` +
               `   verdict: ${finding.adjudication?.verdict || "pending"}\n` +
+              (finding.trafficLight ? `   traffic_light: ${finding.trafficLight}\n` : "") +
+              (finding.userImpact ? `   user_impact: ${finding.userImpact}\n` : "") +
+              (finding.rootCause ? `   root_cause: ${finding.rootCause}\n` : "") +
               `   suggested_fix: ${finding.suggestedFix || "Review and remediate as needed."}`
           )
           .join("\n")
