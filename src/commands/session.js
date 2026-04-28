@@ -29,7 +29,7 @@ import {
   registerAgent,
   unregisterAgent,
 } from "../session/agent-registry.js";
-import { stopSenti } from "../session/daemon.js";
+import { startSenti, stopSenti } from "../session/daemon.js";
 import { listRuntimeRuns } from "../session/runtime-bridge.js";
 import {
   listFileLocks,
@@ -326,6 +326,58 @@ function normalizeAgentId(value, fallbackValue = "cli-user") {
   return normalized || fallbackValue;
 }
 
+// Derive a stable, human-friendly fallback agent id from the active auth
+// session — `human-<github_username>` if logged in via GitHub, else
+// `human-<email-localpart>` as a last resort. We resolve this lazily and
+// cache per process so repeated `sl session say` calls don't churn auth.
+//
+// Carter's complaint: "we aren't auto naming these agents per joining,
+// we need to figure out a fingerprint for them somehow.. maybe at joining
+// we ask for name?" — auth-derived names are the cleanest deterministic
+// fingerprint we already have. Fall through to "cli-user" only if the
+// CLI is genuinely unauthenticated (CI fixture, fresh checkout).
+let _cachedAuthAgentId = undefined; // undefined = not yet resolved
+async function _resolveAuthAgentId(targetPath) {
+  if (_cachedAuthAgentId !== undefined) return _cachedAuthAgentId;
+  try {
+    const auth = await resolveActiveAuthSession({
+      cwd: targetPath || process.cwd(),
+      env: process.env,
+      autoRotate: false,
+    });
+    const username = normalizeString(auth?.user?.githubUsername).toLowerCase();
+    if (username) {
+      _cachedAuthAgentId = `human-${username.replace(/[^a-z0-9._-]+/g, "-")}`;
+      return _cachedAuthAgentId;
+    }
+    const email = normalizeString(auth?.user?.email).toLowerCase();
+    if (email) {
+      const local = email.split("@")[0].replace(/[^a-z0-9._-]+/g, "-");
+      if (local) {
+        _cachedAuthAgentId = `human-${local}`;
+        return _cachedAuthAgentId;
+      }
+    }
+  } catch {
+    /* unauthenticated → fall through */
+  }
+  _cachedAuthAgentId = "";
+  return "";
+}
+
+// Wrapper that prefers the auth-derived id over the literal `cli-user`
+// placeholder when the caller didn't pass --name/--agent. Callers that
+// supplied a name keep round-tripping verbatim.
+async function defaultAgentId(value, targetPath) {
+  const explicit = normalizeString(value);
+  if (explicit && explicit.toLowerCase() !== "cli-user") {
+    return normalizeAgentId(value, "cli-user");
+  }
+  const authId = await _resolveAuthAgentId(targetPath);
+  if (authId) return authId;
+  return normalizeAgentId(value, "cli-user");
+}
+
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
   const normalizedItems = Array.isArray(items) ? items : [];
   const normalizedConcurrency = Math.max(
@@ -594,6 +646,18 @@ export function registerSessionCommand(program) {
         codebaseContext: created.codebaseContext,
       }).catch(() => {});
 
+      // Auto-start the Senti orchestrator daemon. Without this, every
+      // session ran with `Senti actions: 1` (just the welcome alert)
+      // because nothing kicked the daemon ticking — agents joining
+      // never got greeted, mentions never routed, recaps never fired.
+      // Best-effort + non-blocking: the daemon registers itself in an
+      // in-memory map keyed by (sessionId, targetPath) and tolerates
+      // being started for an already-active session (returns the
+      // existing handle). If the daemon fails to start (unauth env,
+      // missing model proxy), the session keeps working — Senti just
+      // stays quiet, same as before this change.
+      void startSenti(created.sessionId, { targetPath }).catch(() => {});
+
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
         return;
@@ -846,7 +910,7 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
-        agentId: normalizeAgentId(options.name, "cli-user"),
+        agentId: await defaultAgentId(options.name, targetPath),
         model: normalizeString(options.model) || "cli",
         role: options.role || "coder",
       });
@@ -885,7 +949,7 @@ export function registerSessionCommand(program) {
         throw new Error("message is required.");
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const agentId = normalizeAgentId(options.agent, "cli-user");
+      const agentId = await defaultAgentId(options.agent, targetPath);
       const to = normalizeString(options.to);
       const eventPayload = {
         message: normalizedMessage,
@@ -1517,7 +1581,7 @@ export function registerSessionCommand(program) {
         throw new Error("session id is required.");
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const agentId = normalizeAgentId(options.agent, "cli-user");
+      const agentId = await defaultAgentId(options.agent, targetPath);
       const left = await unregisterAgent(normalizedSessionId, agentId, {
         reason: options.reason || "manual",
         targetPath,

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.0...v0.9.1) (2026-04-29)
+
+
+### Bug Fixes
+
+Carter audited the senti chat sessions and surfaced four orchestration gaps. Each one is fixed here in a borrow-don't-rebuild way:
+
+* **session:** auto-start the Senti orchestrator daemon on `sl session start`. Previously `startSenti()` was wired in `src/session/daemon.js:1110` but never called from any command, so every fresh session showed `Senti actions: 1` (just the welcome alert). Joiners weren't greeted, recaps never fired, mentions never routed. Now `sl session start` and `sl session ensure` kick the daemon best-effort + non-blocking; if auth or the LLM proxy is unavailable the session still works (Senti just stays quiet) so this never regresses an offline / CI run.
+* **session:** parse `@<name>` mentions at append-time and populate `payload.to` + `payload.mentions = { handles, broadcast }` automatically inside `appendToStream`. The existing listener in `src/session/sync.js:eventMatchesAgent` already understood `to / recipient / recipients / targetAgent / targetAgentId` — nothing was setting them. Now `@codex`, `@claude`, `@human-mrrcarter` route correctly; `@all` / `@everyone` / `@here` / `@channel` are extracted as a separate `broadcast` array so the daemon can decide whether to fan out. Pure deterministic parser in `src/session/mentions.js`; idempotent (caller-supplied `to` is respected); 10 unit tests covering Unix/Windows handles, dedup, broadcast separation, email-y false positives.
+* **session:** auth-derived default agent id replaces the `cli-user` placeholder. New `defaultAgentId(value, targetPath)` helper in `src/commands/session.js` resolves to `human-<github_username>` (or `human-<email-localpart>`) from the active auth session; falls back to `cli-user` only for genuinely unauthenticated CLI (CI fixtures). Wired into `session join`, `session say`, `session leave`. Eliminates the `cli-user → real-name` double-post pattern Carter saw on the dashboard.
+
+### Notes
+
+These fixes are upstream of the dashboard surface; future sessions auto-derive titles + names + Senti greetings without any flag work. Pre-v0.9.1 sessions that already exist still display their legacy state.
+
 ## [0.9.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.12...v0.9.0) (2026-04-28)
 
 
