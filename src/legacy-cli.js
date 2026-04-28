@@ -25,6 +25,10 @@ import { normalizeAgentEvent } from "./events/schema.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
 import { getExpressTemplate, getPackageJsonTemplate, buildReadmeContent } from "./scaffold/templates.js";
 import { generateScaffold } from "./scaffold/generator.js";
+import {
+  getCoordinationEtiquetteItems,
+  renderCoordinationNumberedList,
+} from "./session/coordination-guidance.js";
 
 let DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
 let DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
@@ -1950,6 +1954,7 @@ function buildCodingAgentConfigTemplate({ agentProfile, projectName }) {
     "Read docs/spec.md, docs/build-guide.md, tasks/todo.md, and AGENT_HANDOFF_PROMPT.md in order.",
     "Work one PR scope at a time and keep changes deterministic.",
     "Run local checks before push: /omargate deep and /audit.",
+    ...getCoordinationEtiquetteItems(),
   ];
 
   if (agentProfile.id === "aider") {
@@ -1960,7 +1965,7 @@ read:
   - tasks/todo.md
   - AGENT_HANDOFF_PROMPT.md
 notes:
-  - ${commonChecklist.join("\n  - ")}
+  - ${commonChecklist.map((item) => JSON.stringify(item)).join("\n  - ")}
 `;
   }
 
@@ -2186,16 +2191,7 @@ Repo context:
 
 ## Multi-Agent Coordination (if session active)
 
-If a SentinelLayer session is active (check \`sl session list\`):
-
-1. **On start:** Run \`sl session join <id> --name <your-name> --role coder\`
-2. **Periodically:** Run \`sl session say <id> "status: working on <file>"\` so others know what you're doing
-3. **On unexpected file change:** Instead of stopping, run:
-   \`sl session say <id> "help: unexpected change in <file> - who modified this?"\`
-   Then check \`sl session read <id> --tail 5\` for the answer and continue.
-4. **On findings:** Run \`sl session say <id> "finding: [P2] <title> in <file>:<line>"\`
-5. **On completion:** Run \`sl session leave <id>\`
-6. **Before modifying a file:** Check \`sl session read <id> --tail 10\` for recent activity on that file
+${renderCoordinationNumberedList()}
 
 Start now and continue autonomously.
 `;
@@ -2204,12 +2200,8 @@ Start now and continue autonomously.
 export function buildAgentsSessionGuideContent() {
   return `# SentinelLayer Session Guide for AI Agents
 
-## Quick Start
-1. Check: \`sl session list\` - is there an active session?
-2. Join: \`sl session join <id> --name <your-short-name> --role <coder|reviewer|tester>\`
-3. Read context: \`sl session read <id> --tail 20\` — see what others are doing
-4. Work: emit status every 5 min, post findings, ask for help instead of stopping
-5. Leave: \`sl session leave <id>\` when done
+## Required Etiquette
+${renderCoordinationNumberedList()}
 
 ## Why This Matters
 - Other agents can see what you're working on and avoid file conflicts

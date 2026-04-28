@@ -1,3 +1,41 @@
+# 2026-04-28 - DD PR-D1 Coordination Autoinject (`dd/pr-d1-coordination-autoinject`)
+
+## Plan
+- [x] Confirm PR-C3 merge and post-merge main workflows are green, sync from `origin/main`, and create a clean PR-D1 worktree.
+- [x] Run Senti `session sync` + `session read`; latest tail contains no non-self Claude/Audit messages.
+- [x] Read the DD PR-D1 contract, AGENTS workflow, SWE framework, current spec/prompt/guide generators, session setup guide injection, and coordination tests.
+- [x] Add one pure canonical coordination-etiquette helper so spec, prompt, guide exports, AGENTS.md setup, and generated session guide text share the same rules.
+- [x] Make spec generation include the coordination phase by default when session tooling is available, with an explicit test-only opt-out for no-session-tool contexts.
+- [x] Make prompt generation always include coordination operating rules, independent of whether the source spec already mentions sessions.
+- [x] Make build-guide markdown plus Jira/Linear/GitHub issue exports include coordination rules.
+- [x] Refresh focused unit/e2e coverage proving `sl spec generate`, `sl prompt generate`, and `sl guide generate/export` carry the coordination block.
+- [x] Run focused tests, `npm run check`, DD-spec review, full verify, and local OmarGate/audit gates.
+- [ ] Push PR, watch CI, merge, and verify main before PR-D2.
+
+## File Claims
+- `src/session/coordination-guidance.js`
+- `src/session/setup-guides.js`
+- `src/spec/generator.js`
+- `src/prompt/generator.js`
+- `src/guide/generator.js`
+- `src/legacy-cli.js`
+- `tests/unit.spec-session.test.mjs`
+- `tests/unit.session-setup-guides.test.mjs`
+- `tests/unit.core.test.mjs`
+- `tests/e2e.test.mjs`
+- `tasks/evals/pr-d1-coordination-autoinject.md`
+- `tasks/todo.md`
+
+## Review
+- In progress. This PR is scoped to D1 coordination text/generation only; D2 session auto-name/resume and D3 `session listen` stay out of this branch.
+- Implemented shared canonical etiquette in `src/session/coordination-guidance.js` and reused it from spec, prompt, guide, generated coding-agent config, session setup guide, and generated session guide paths.
+- Focused validation passed:
+  - `node --check src/session/coordination-guidance.js src/session/setup-guides.js src/spec/generator.js src/prompt/generator.js src/guide/generator.js src/legacy-cli.js`
+  - `node --test tests/unit.spec-session.test.mjs tests/unit.session-setup-guides.test.mjs tests/unit.core.test.mjs` (20 tests pass)
+  - `node --test --test-name-pattern "CLI spec commands expose templates and generate SPEC.md offline|CLI prompt commands generate and preview agent-targeted prompts from spec|CLI guide generate creates BUILD_GUIDE.md|CLI guide export emits jira" tests/e2e.test.mjs` (4 tests pass)
+- Repo validation passed: `npm run check` (295 files), `git diff --check`, DD-spec `review --diff --refresh` (`review-20260428-024641-0b3b4284`, P0/P1/P2/P3 all zero), and full `npm run verify` after `npm ci` (check, docs build, 95 e2e, 1142 unit coverage tests, pack dry-run).
+- Local gates passed before PR: `/omargate deep --ai-dry-run --max-cost 5` (`omargate-1777344725374-ac2378f0`, P0=0/P1=0, baseline non-blocking P2/P3 only) and `/audit --path . --json` (PASS, 559 files, P1=0, P2=3 non-blocking).
+
 # 2026-04-28 - DD PR-C3 OmarGate 11-Lens Evidence (`dd/pr-c3-eleven-lens-omargate`)
 
 ## Plan

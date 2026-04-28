@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { getCoordinationEtiquetteItems } from "../session/coordination-guidance.js";
 import { getDefaultTemplate, getTemplateById } from "./templates.js";
 
 const VALID_PROJECT_TYPES = new Set(["greenfield", "add_feature", "bugfix"]);
@@ -494,7 +495,11 @@ function shouldIncludeCoordinationPhase({
   description = "",
   agentsMarkdown = "",
   sessionActive = false,
+  sessionToolsAvailable = true,
 } = {}) {
+  if (sessionToolsAvailable === true) {
+    return true;
+  }
   if (sessionActive === true) {
     return true;
   }
@@ -507,16 +512,7 @@ function shouldIncludeCoordinationPhase({
 function buildCoordinationPhase(phaseNumber, previousPhaseTitle = "") {
   return {
     title: `Phase ${phaseNumber}: Multi-Agent Coordination Protocol`,
-    items: [
-      "Check for active sessions: `sl session list`.",
-      "If a session exists, join it: `sl session join <id> --name <your-name> --role coder`.",
-      "Emit status updates every 5 minutes: `sl session say <id> \"status: <what you're doing>\"`.",
-      "Before modifying a shared file, check recent session activity for that file.",
-      "On unexpected file changes, ask in-session instead of stopping: `sl session say <id> \"help: <question>\"`.",
-      "Post findings in-session: `sl session say <id> \"finding: [P2] <title> in <file>:<line>\"`.",
-      "On completion, update `tasks/todo.md` and emit completion status in-session.",
-      "Leave the session when done: `sl session leave <id>`.",
-    ],
+    items: getCoordinationEtiquetteItems(),
     dependencies: previousPhaseTitle ? [previousPhaseTitle] : [],
     effort: "4-8 hours",
     acceptanceCriteria: [
@@ -535,6 +531,7 @@ export function generateSpecMarkdown({
   projectType,
   agentsMarkdown = "",
   sessionActive = false,
+  sessionToolsAvailable = true,
   generatedAt = new Date().toISOString(),
 } = {}) {
   const resolvedTemplate = template || getDefaultTemplate();
@@ -566,6 +563,7 @@ export function generateSpecMarkdown({
       description,
       agentsMarkdown,
       sessionActive,
+      sessionToolsAvailable,
     })
   ) {
     phases.push(buildCoordinationPhase(phases.length + 1, phases[phases.length - 1]?.title || ""));

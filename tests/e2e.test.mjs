@@ -771,6 +771,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(envText, new RegExp(`SENTINELAYER_TOKEN=${BOOTSTRAP_VALUE_FROM_GENERATE}`));
     assert.match(gitignoreText, /(^|\r?\n)\.env(\r?\n|$)/);
     assert.match(cursorRulesText, /Sentinelayer Cursor Profile/);
+    assert.match(cursorRulesText, /Find the recent Senti session for this codebase/);
     assert.match(result.stdout, /Falling back to SENTINELAYER_TOKEN/);
     assert.match(result.stdout, /Cursor config scaffolded at/);
     assert.match(todoText, /Repo: `acme\/demo-repo`/);
@@ -789,6 +790,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
     assert.match(sessionGuideText, /sl session list/);
     assert.match(sessionGuideText, /sl session leave <id>/);
+    assert.match(sessionGuideText, /sl review --diff/);
     assert.match(workflowText, new RegExp(`sentinelayer_spec_id:\\s*${SPEC_ID_FROM_GENERATE}`));
     assert.equal(lockfile.spec_id, SPEC_ID_FROM_GENERATE);
     assert.equal(lockfile.sentinelayer_token, BOOTSTRAP_VALUE_FROM_GENERATE);
@@ -1647,6 +1649,8 @@ test("CLI spec commands expose templates and generate SPEC.md offline", async ()
     assert.match(specText, /## Security Checklist/);
     assert.match(specText, /## Phase Plan/);
     assert.match(specText, /Phase 1 - Impact Analysis/);
+    assert.match(specText, /Multi-Agent Coordination Protocol/);
+    assert.match(specText, /sl review --diff/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1815,6 +1819,8 @@ test("CLI prompt commands generate and preview agent-targeted prompts from spec"
     const promptText = await readFile(generatePayload.outputPath, "utf-8");
     assert.match(promptText, /Agent target: codex/);
     assert.match(promptText, /# SPEC - Prompt Demo/);
+    assert.match(promptText, /Find the recent Senti session for this codebase/);
+    assert.match(promptText, /sl --help/);
 
     const previewResult = await runCli({
       cwd: tempRoot,
@@ -2146,6 +2152,8 @@ test("CLI guide generate creates BUILD_GUIDE.md with phases, dependencies, and a
     assert.match(guideText, /- Estimated effort: \d+-\d+ hours/);
     assert.match(guideText, /- Dependencies: none \(entry phase\)/);
     assert.match(guideText, /#### Acceptance Criteria/);
+    assert.match(guideText, /## Multi-Agent Coordination Protocol/);
+    assert.match(guideText, /sl session sync <id> --json/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -2188,6 +2196,8 @@ test("CLI guide export emits jira, linear, and github-issues formats", async () 
     assert.equal(jiraFile.format, "jira");
     assert.equal(Array.isArray(jiraFile.issues), true);
     assert.equal(jiraFile.issues.length, 2);
+    assert.match(jiraFile.issues[0].description, /Coordination rules:/);
+    assert.match(jiraFile.issues[0].description, /sl review --diff/);
 
     const linearResult = await runCli({
       cwd: tempRoot,
@@ -2201,6 +2211,7 @@ test("CLI guide export emits jira, linear, and github-issues formats", async () 
     assert.equal(linearFile.format, "linear");
     assert.equal(Array.isArray(linearFile.issues), true);
     assert.equal(linearFile.issues.length, 2);
+    assert.match(linearFile.issues[0].description, /lock: <file> - <intent>/);
 
     const githubResult = await runCli({
       cwd: tempRoot,
@@ -2213,6 +2224,7 @@ test("CLI guide export emits jira, linear, and github-issues formats", async () 
     const githubBody = await readFile(githubPayload.outputPath, "utf-8");
     assert.match(githubBody, /# GitHub Issues Export - Export Demo/);
     assert.match(githubBody, /## Issue 1: Phase 1 - Foundation/);
+    assert.match(githubBody, /sl --help/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { buildAgentsSessionGuideContent } from "../legacy-cli.js";
+import { renderCoordinationBulletList } from "./coordination-guidance.js";
 import { getSession } from "./store.js";
 
 const SECTION_START_MARKER = "<!-- SENTINELAYER_SESSION_COORDINATION:START -->";
@@ -26,21 +27,8 @@ function buildSessionCoordinationSection() {
   return `${SECTION_START_MARKER}
 ${SECTION_HEADING}
 
-### Before You Start
-- Check for active sessions: \`sl session list\`
-- Join if one exists: \`sl session join <id> --name <your-name>\`
-- Read recent context: \`sl session read <id> --tail 20\`
-
-### While Working
-- Emit status every 5 min: \`sl session say <id> "status: <what you're doing>"\`
-- Lock files before editing: \`sl session say <id> "lock: <file> - <intent>"\`
-- Unlock when done: \`sl session say <id> "unlock: <file> - done"\`
-- Post findings: \`sl session say <id> "finding: [P2] <title> in <file>:<line>"\`
-
-### On Problems
-- Unexpected file change? Ask: \`sl session say <id> "help: unexpected change in <file>"\`
-- Need another agent's work? Request: \`sl session say <id> "handoff: @<agent> <description>"\`
-- Found issues for others? Assign: \`sl session say <id> "assign: @<agent> <task>"\`
+### Required Etiquette
+${renderCoordinationBulletList()}
 
 ### What Not To Do
 - Do not break your autonomous loop on unexpected file changes; ask in session first.

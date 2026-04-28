@@ -1,3 +1,5 @@
+import { getCoordinationEtiquetteItems } from "../session/coordination-guidance.js";
+
 export const SUPPORTED_PROMPT_TARGETS = Object.freeze([
   "claude",
   "cursor",
@@ -34,11 +36,7 @@ const TARGET_GUIDANCE = Object.freeze({
   ],
 });
 
-const SESSION_COORDINATION_GUIDANCE = Object.freeze([
-  "Multi-agent coordination: use `sl session` commands to communicate with other agents.",
-  "Always update the session chat room with your current activity so joining agents have context.",
-  "Never break your autonomous loop on unexpected file changes; ask in the session first.",
-]);
+const SESSION_COORDINATION_GUIDANCE = Object.freeze(getCoordinationEtiquetteItems());
 
 function normalizeTarget(target) {
   const normalized = String(target || "generic").trim().toLowerCase();
@@ -59,14 +57,6 @@ function buildAgentHeader(target) {
     generic: "Generic execution prompt",
   };
   return headers[target] || headers.generic;
-}
-
-function shouldAppendSessionGuidance(specMarkdown) {
-  const normalized = String(specMarkdown || "").toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return normalized.includes("coordination protocol") || normalized.includes("session");
 }
 
 export function resolvePromptTarget(target) {
@@ -96,9 +86,7 @@ export function generateExecutionPrompt({
   }
 
   const operatingRules = [...guidance];
-  if (shouldAppendSessionGuidance(specText)) {
-    operatingRules.push(...SESSION_COORDINATION_GUIDANCE);
-  }
+  operatingRules.push(...SESSION_COORDINATION_GUIDANCE);
   const guidanceMarkdown = operatingRules.map((item, index) => `${index + 1}. ${item}`).join("\n");
 
   const hasAidenId = specText.toLowerCase().includes("aidenid");
