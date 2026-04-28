@@ -1,3 +1,39 @@
+# 2026-04-28 - DD PR-C1 Confidence Floor (`dd/pr-c1-confidence-floor`)
+
+## Plan
+- [x] Confirm PR-B2 merge and post-merge workflows are green, sync `main`, and create `dd/pr-c1-confidence-floor`.
+- [x] Post PR-C1 start/status to Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7`.
+- [x] Read DD PR-C1 contract, report reconciliation code, persona prompt confidence guidance, and review-report tests.
+- [x] Add code-level confidence floor filtering in `src/review/report.js` with default threshold 0.7 and per-finding/persona override support.
+- [x] Preserve low-confidence findings when they have multi-source confirmation.
+- [x] Surface dropped single-source low-confidence count in reconciliation/report summary.
+- [x] Add focused unit coverage for 5 dropped single-source findings and multi-source low-confidence preservation.
+- [x] Run targeted tests, `npm run check`, DD-spec review, `npm run verify`, and local Omar/audit gates.
+- [ ] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-C2.
+
+## File Claims
+- `src/review/report.js`
+- `src/review/omargate-orchestrator.js`
+- `tests/unit.review-report.test.mjs`
+- `tasks/todo.md`
+
+## Review
+- Implemented confidence floor enforcement in `src/review/report.js` after reconciliation merge/dedupe and before sorting/ID assignment.
+- Preserved public `sources` while adding internal `confirmationSources` so deterministic+AI and two distinct AI personas count as multi-source confirmations; duplicate reports from one persona still count as single-source.
+- Preserved persona/layer/floor metadata and surfaced dropped low-confidence single-source counts in JSON summary and markdown.
+- Wired OmarGate persona findings to carry effective confidence floors and reconciliation metadata for `droppedBelowConfidence` / `droppedLowConfidence`.
+- Validation so far:
+  - `node --check src/review/report.js` (pass)
+  - `node --check src/review/omargate-orchestrator.js` (pass)
+  - `node --test tests/unit.review-report.test.mjs` (6 tests pass)
+  - `node --test tests/unit.omargate-orchestrator.test.mjs` (7 tests pass)
+  - `npm run check` (293 files pass)
+  - `node bin/create-sentinelayer.js review --diff --spec tasks/dd-build-spec-2026-04-26.md --json` (P0=0 P1=0 P2=0 P3=0; run `review-20260428-004612-bfde4304`)
+  - `git diff --check` (pass)
+  - `npm run verify` (pass: check, docs build, 94 e2e, 1121 unit coverage tests, pack dry-run)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --max-cost 5` (pass: P0=0 P1=0, blocking=false, `droppedLowConfidence=0`)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, P1=0, blocking=false)
+
 # 2026-04-28 - DD PR-B2 Audit Persona Swarm Fanout (`dd/pr-b2-audit-swarm`)
 
 ## Plan
