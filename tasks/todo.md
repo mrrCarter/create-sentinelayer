@@ -27,6 +27,7 @@
 - `tests/unit.swarm-runtime.test.mjs`
 - `tests/unit.commands-contracts.test.mjs`
 - `tests/e2e.test.mjs`
+- `tasks/evals/pr-e2-devtestbot-persona.md`
 - `tasks/todo.md`
 
 ## Review
@@ -35,6 +36,7 @@
 - Safety decision: the tool resolves only local identity registry metadata by `identityId`; it never accepts or returns raw passwords, OTPs, reset links, cookies, bearer tokens, or credential material.
 - Focused validation passed: `node --import ./tests/setup-env.mjs --test tests/unit.devtestbot-definition.test.mjs tests/unit.devtestbot-system-prompt.test.mjs tests/unit.devtestbot-tool.test.mjs` (5/5), `node --import ./tests/setup-env.mjs --test tests/unit.swarm-registry.test.mjs tests/unit.swarm-factory.test.mjs tests/unit.swarm-runtime.test.mjs tests/unit.commands-contracts.test.mjs` (23/23), and `node --import ./tests/setup-env.mjs --test tests/e2e.test.mjs --test-name-pattern "devTestBot|swarm registry|swarm run"` (96/96 because Node's pattern matched the broad e2e names; includes the new `swarm run --agent devtestbot --scope smoke` dry-run artifact smoke).
 - Full local validation passed: `npm run check` (301 files), `npm run verify` (docs build, e2e 96/96, unit coverage 1167/1167 with thresholds met, npm pack dry-run), `git diff --check` clean aside from Windows LF/CRLF warnings, DD diff review clean (`review-20260428-065046-d0e7cc46`, P0/P1/P2/P3 all zero), local OmarGate dry-run non-blocking (`omargate-1777359062348-5d8b4420`, P0=0/P1=0, blocking=false), and `/audit --path . --json` PASS (`audit-20260428-065101`, P1=0, P2=3 non-blocking).
+- CI loop 1: PR #444 failed Eval Impact because `src/commands/swarm.js`, `src/swarm/registry.js`, and `src/swarm/runtime.js` are AI-impacting files. Added `tasks/evals/pr-e2-devtestbot-persona.md` with deterministic evidence and rerunning the eval gate/checks.
 
 # 2026-04-28 - DD PR-E1 Playwright Base (`dd/pr-e1-playwright-base`)
 
