@@ -260,6 +260,8 @@ test("Unit command contracts: spec, prompt, and audit commands expose ingest ref
     });
   registerAuditCommand(auditProgram, async () => {});
   assertCommandHasOption(getCommandByPath(auditProgram, "audit"), "--refresh");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit"), "--reuse-omargate <runId>");
+  assertCommandHasOption(getCommandByPath(auditProgram, "audit local"), "--reuse-omargate <runId>");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit replay"), "--refresh");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit security"), "--refresh");
   assertCommandHasOption(getCommandByPath(auditProgram, "audit architecture"), "--refresh");

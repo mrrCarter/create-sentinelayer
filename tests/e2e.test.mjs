@@ -1357,6 +1357,52 @@ test("CLI subcommand: omargate deep maps to legacy local command implementation"
   }
 });
 
+test("CLI local audit can reuse latest OmarGate deterministic cache", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-reuse-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await mkdir(path.join(tempRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(tempRoot, "docs"), { recursive: true });
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(path.join(tempRoot, "src", "index.js"), "export const healthy = true;\n", "utf-8");
+    await writeFile(path.join(tempRoot, ".github", "workflows", "omar-gate.yml"), "name: Omar Gate\n", "utf-8");
+    await writeFile(path.join(tempRoot, "docs", "spec.md"), "# Spec\n", "utf-8");
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), "# Plan\n- [x] seeded\n", "utf-8");
+
+    const omarResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["omargate", "deep", "--path", tempRoot, "--no-ai", "--json"],
+    });
+    assert.equal(omarResult.code, 0, omarResult.stderr || omarResult.stdout);
+    const omarPayload = JSON.parse(String(omarResult.stdout || "").trim());
+    assert.match(omarPayload.runId, /^review-/);
+    assert.match(
+      String(omarPayload.artifacts?.deterministicCache || ""),
+      /[\\/]\.sentinelayer[\\/]runs[\\/].+[\\/]deterministic\.json$/
+    );
+    const cacheText = await readFile(omarPayload.artifacts.deterministicCache, "utf-8");
+    const cachePayload = JSON.parse(cacheText);
+    assert.equal(cachePayload.runId, omarPayload.runId);
+
+    const auditResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["/audit", "--path", tempRoot, "--reuse-omargate", "latest", "--json"],
+    });
+    assert.equal(auditResult.code, 0, auditResult.stderr || auditResult.stdout);
+    const auditPayload = JSON.parse(String(auditResult.stdout || "").trim());
+    assert.equal(auditPayload.omargateReuse.used, true);
+    assert.equal(auditPayload.reusedOmarGateRunId, omarPayload.runId);
+    assert.equal(auditPayload.reusedOmarGateDeterministicPath, omarPayload.artifacts.deterministicCache);
+
+    const reportText = await readFile(auditPayload.reportPath, "utf-8");
+    assert.match(reportText, new RegExp(`Reused OmarGate run: ${omarPayload.runId}`));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI omargate deep --stream emits swarm lifecycle for oversized dry-run scope", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-swarm-"));
   try {

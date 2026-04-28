@@ -42,6 +42,11 @@ function printAuditSummary(result) {
   if (result.sharedMemory?.artifactPath) {
     console.log(pc.gray(`Shared memory: ${result.sharedMemory.artifactPath}`));
   }
+  if (result.omargateReuse?.used) {
+    console.log(pc.gray(`Reused OmarGate run: ${result.omargateReuse.runId}`));
+  } else if (result.omargateReuse?.requested) {
+    console.log(pc.gray(`OmarGate reuse unavailable: ${result.omargateReuse.reason || "not_found"}`));
+  }
   if (result.ddPackage?.executiveSummaryPath) {
     console.log(pc.gray(`DD package: ${result.ddPackage.executiveSummaryPath}`));
   }
@@ -82,6 +87,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run orchestration planning only")
     .option("--isolation <mode>", "Persona isolation mode: strict | relaxed", "strict")
     .option("--no-seed-from-deterministic", "Run personas without deterministic baseline or specialist seed findings")
+    .option("--reuse-omargate <runId>", "Reuse deterministic findings from an OmarGate run id or latest")
     .option("--stream", "Emit NDJSON agent events to stdout")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
@@ -108,6 +114,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         refreshIngest: Boolean(options.refresh),
         isolation: parseIsolationMode(options.isolation),
         seedFromDeterministic: options.seedFromDeterministic !== false,
+        reuseOmarGate: options.reuseOmargate,
         onEvent: buildAuditOrchestratorEventHandler(emitStream),
       });
 
@@ -125,6 +132,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         maxParallel: result.maxParallel,
         isolation: result.isolation,
         seedFromDeterministic: result.seedFromDeterministic !== false,
+        omargateReuse: result.omargateReuse || null,
+        reusedOmarGateRunId: result.omargateReuse?.used ? result.omargateReuse.runId : "",
+        reusedOmarGateDeterministicPath: result.omargateReuse?.used ? result.omargateReuse.artifactPath : "",
         summary: result.summary,
         agentCount: result.agentResults.length,
         sharedMemoryPath: result.sharedMemory?.artifactPath || "",
@@ -747,6 +757,7 @@ export function registerAuditCommand(program, invokeLegacy) {
     .description("Compatibility mode: run legacy local readiness + policy audit")
     .option("--path <path>", "Target repository path")
     .option("--output-dir <path>", "Artifact root for report output")
+    .option("--reuse-omargate <runId>", "Reuse deterministic findings from an OmarGate run id or latest")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const legacyArgs = buildLegacyArgs(["/audit"], {

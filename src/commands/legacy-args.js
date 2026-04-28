@@ -57,6 +57,7 @@ export function buildLegacyArgs(baseArgs, { commandOptions = {}, command } = {})
   appendPassthroughFlag(args, "--max-runtime-minutes", commandOptions.maxRuntimeMinutes);
   appendPassthroughFlag(args, "--model", commandOptions.model);
   appendPassthroughFlag(args, "--provider", commandOptions.provider);
+  appendPassthroughFlag(args, "--reuse-omargate", commandOptions.reuseOmargate);
   appendPassthroughFlag(args, "--notify-email", commandOptions.notifyEmail);
   appendPassthroughFlag(args, "--notify-session", commandOptions.notifySession);
   // Omar Gate per-persona filter flags (A-CLI-1).
