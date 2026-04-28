@@ -329,6 +329,9 @@ jobs:
           git update-index -q --refresh
           git diff --exit-code -- package-lock.json package.json
 
+      - name: Install devTestBot browser payload
+        run: npm run devtestbot:install-browsers
+
       - name: Run test suite
         run: npm test
 
@@ -487,6 +490,9 @@ jobs:
           set -euo pipefail
           git update-index -q --refresh
           git diff --exit-code -- package-lock.json package.json
+
+      - name: Install devTestBot browser payload
+        run: npm run devtestbot:install-browsers
 
       - name: Enforce unit coverage thresholds
         run: npm run test:coverage
