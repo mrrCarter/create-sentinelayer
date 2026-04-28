@@ -23,6 +23,11 @@ async function readJson(filePath) {
   return JSON.parse(text);
 }
 
+async function writeJson(filePath, payload) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await fsp.writeFile(filePath, JSON.stringify(payload, null, 2), "utf-8");
+}
+
 test("runInvestorDd: produces full artifact bundle", async () => {
   const root = await makeTempRepo();
   try {
@@ -91,6 +96,7 @@ test("runInvestorDd: dryRun skips persona execution + still emits plan", async (
     const files = await fsp.readdir(result.artifactDir);
     assert.ok(files.includes("plan.json"));
     assert.equal(files.includes("findings.json"), false);
+    assert.equal(files.includes("devtestbot-summary.json"), false);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
@@ -279,6 +285,153 @@ test("runInvestorDd: calls notification clients when supplied", async () => {
     assert.equal(emailSent.to, "ops@example.com");
     assert.ok(dashboardSent);
     assert.equal(dashboardSent.runId, result.runId);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: runs devTestBot phase and merges artifact findings", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "export const ok = true;\n");
+    const events = [];
+    const runnerCalls = [];
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      compliancePacks: ["license"],
+      onEvent: (e) => events.push(e),
+      devTestBot: {
+        runner: async (input) => {
+          runnerCalls.push(input);
+          await fsp.mkdir(input.outputDir, { recursive: true });
+          const resultPath = path.join(input.outputDir, "devtestbot-result.json");
+          const findingsPath = path.join(input.outputDir, "findings.json");
+          const eventsPath = path.join(input.outputDir, "events.ndjson");
+          const findings = [
+            {
+              severity: "P2",
+              file: "runtime://browser",
+              line: 1,
+              title: "devTestBot merged runtime finding",
+              evidence: "browser runtime evidence",
+              rootCause: "fixture",
+              recommendedFix: "fix fixture",
+              confidence: 0.9,
+            },
+          ];
+          await writeJson(findingsPath, findings);
+          await fsp.writeFile(eventsPath, "", "utf-8");
+          await writeJson(resultPath, { ok: true });
+          return {
+            scope: input.scope,
+            completed: true,
+            dryRun: true,
+            findingCount: findings.length,
+            findings,
+            laneSummaries: {},
+            artifactBundle: {
+              root: input.outputDir,
+              resultPath,
+              findingsPath,
+              eventsPath,
+              artifacts: {},
+            },
+          };
+        },
+      },
+    });
+
+    assert.equal(runnerCalls.length, 1);
+    assert.equal(runnerCalls[0].execute, false);
+    assert.match(runnerCalls[0].outputDir, /[\\/]devtestbot[\\/]devtestbot-1$/);
+    assert.ok(events.some((e) => e.type === "devtestbot_start"));
+    assert.ok(events.some((e) => e.type === "devtestbot_agent_start"));
+    assert.ok(events.some((e) => e.type === "devtestbot_complete"));
+
+    const summary = await readJson(path.join(result.artifactDir, "summary.json"));
+    assert.equal(summary.devTestBot.skipped, false);
+    assert.equal(summary.devTestBot.swarmCount, 1);
+    assert.equal(summary.devTestBot.findingCount, 1);
+    assert.match(summary.devTestBot.artifactRoot, /[\\/]devtestbot$/);
+
+    const devTestBotSummary = await readJson(path.join(result.artifactDir, "devtestbot-summary.json"));
+    assert.equal(devTestBotSummary.subagents.length, 1);
+    assert.equal(devTestBotSummary.findingCount, 1);
+
+    const findings = await readJson(path.join(result.artifactDir, "findings.json"));
+    assert.equal(
+      findings.some((finding) => finding.title === "devTestBot merged runtime finding"),
+      true,
+    );
+
+    const manifest = await readJson(path.join(result.artifactDir, "manifest.json"));
+    assert.ok(manifest["devtestbot-summary.json"]);
+    assert.ok(await fsp.stat(path.join(path.dirname(result.artifactDir), "devtestbot", "devtestbot-1")));
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: devTestBot subagent errors are redacted and non-fatal", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "export const ok = true;\n");
+    const events = [];
+    const rawSecret = "unit-raw-password-value";
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      compliancePacks: ["license"],
+      onEvent: (e) => events.push(e),
+      devTestBot: {
+        swarmCount: 2,
+        identityCount: 2,
+        provisionIdentity: async ({ index }) => ({
+          id: `identity-${index}`,
+          emailAddress: `devtestbot-${index}@example.test`,
+          status: "ACTIVE",
+        }),
+        runner: async (input) => {
+          if (input.outputDir.endsWith(`${path.sep}devtestbot-2`)) {
+            throw new Error(`password=${rawSecret}`);
+          }
+          await fsp.mkdir(input.outputDir, { recursive: true });
+          const resultPath = path.join(input.outputDir, "devtestbot-result.json");
+          await writeJson(resultPath, { ok: true });
+          return {
+            scope: input.scope,
+            completed: true,
+            dryRun: true,
+            findingCount: 0,
+            findings: [],
+            laneSummaries: {},
+            artifactBundle: { root: input.outputDir, resultPath, artifacts: {} },
+          };
+        },
+      },
+    });
+
+    assert.equal(result.summary.devTestBot.swarmCount, 2);
+    assert.equal(events.some((e) => e.type === "devtestbot_agent_error"), true);
+
+    const streamText = await fsp.readFile(path.join(result.artifactDir, "stream.ndjson"), "utf-8");
+    const summaryText = await fsp.readFile(path.join(result.artifactDir, "summary.json"), "utf-8");
+    const devTestBotText = await fsp.readFile(path.join(result.artifactDir, "devtestbot-summary.json"), "utf-8");
+    const findingsText = await fsp.readFile(path.join(result.artifactDir, "findings.json"), "utf-8");
+    const manifestText = await fsp.readFile(path.join(result.artifactDir, "manifest.json"), "utf-8");
+    for (const text of [streamText, summaryText, devTestBotText, findingsText, manifestText]) {
+      assert.equal(text.includes(rawSecret), false);
+      assert.equal(text.includes("password=" + rawSecret), false);
+    }
+
+    const devTestBotSummary = JSON.parse(devTestBotText);
+    assert.equal(devTestBotSummary.subagents.length, 2);
+    assert.equal(devTestBotSummary.subagents.some((entry) => entry.completed === false), true);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

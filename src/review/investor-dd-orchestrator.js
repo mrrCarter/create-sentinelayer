@@ -37,6 +37,7 @@ import {
 import { notifyRunCompleted } from "./investor-dd-notification.js";
 import { attachReproducibilityChain } from "./reproducibility-chain.js";
 import { renderInvestorDdHtml } from "./investor-dd-html-report.js";
+import { runDevTestBotPhase } from "./investor-dd-devtestbot.js";
 
 const INVESTOR_DD_PERSONAS = Object.freeze([
   "security",
@@ -164,6 +165,16 @@ function buildSummaryMarkdown({ runId, summary, routing, byPersona }) {
     lines.push(`- **${sev}**: ${count}`);
   }
   lines.push("");
+  if (summary.devTestBot) {
+    lines.push("## devTestBot");
+    lines.push("");
+    lines.push(`- Skipped: ${summary.devTestBot.skipped ? "yes" : "no"}`);
+    lines.push(`- Subagents: ${summary.devTestBot.swarmCount || 0}`);
+    lines.push(`- Identities: ${summary.devTestBot.identityCount || 0}`);
+    lines.push(`- Findings: ${summary.devTestBot.findingCount || 0}`);
+    lines.push(`- Artifacts: ${summary.devTestBot.artifactRoot || "n/a"}`);
+    lines.push("");
+  }
   lines.push(`Total: ${allFindings.length}`);
   return lines.join("\n");
 }
@@ -183,6 +194,7 @@ function buildSummaryMarkdown({ runId, summary, routing, byPersona }) {
  * @param {object} [params.liveValidator.devTestBot]    - DevTestBot client.
  * @param {object} [params.liveValidator.aidenid]       - AIdenID client.
  * @param {number} [params.liveValidator.maxInteractions]
+ * @param {object|false} [params.devTestBot]     - Automated devTestBot phase config.
  * @param {object} [params.notification]         - Optional notification config.
  * @param {string} [params.notification.notifyEmail]
  * @param {object} [params.notification.emailClient]
@@ -198,6 +210,7 @@ export async function runInvestorDd({
   dryRun = false,
   compliancePacks = COMPLIANCE_PACK_CATALOG,
   liveValidator = null,
+  devTestBot = {},
   notification = null,
 } = {}) {
   if (!rootPath) throw new TypeError("runInvestorDd requires rootPath");
@@ -207,6 +220,10 @@ export async function runInvestorDd({
   const artifactBase = outputDir
     ? path.resolve(outputDir, runId, INVESTOR_DD_ARTIFACT_SUBDIR)
     : path.resolve(rootPath, ".sentinelayer", "runs", runId, INVESTOR_DD_ARTIFACT_SUBDIR);
+  const runRoot = path.dirname(artifactBase);
+  const outputRoot = outputDir
+    ? path.resolve(outputDir)
+    : path.resolve(rootPath, ".sentinelayer");
   await fsp.mkdir(artifactBase, { recursive: true });
 
   const streamPath = path.join(artifactBase, "stream.ndjson");
@@ -244,9 +261,11 @@ export async function runInvestorDd({
   let terminationReason = "ok";
   let reconciliationAvailable = false;
   let compliance = null;
+  let devTestBotPhase = null;
+  let budgetState = null;
 
   if (!dryRun) {
-    const budgetState = createBudgetState({
+    budgetState = createBudgetState({
       maxUsd: resolvedBudget.maxCostUsd,
       maxRuntimeMs: resolvedBudget.maxRuntimeMinutes * 60_000,
     });
@@ -273,6 +292,20 @@ export async function runInvestorDd({
       totalCovered: compliance.totalCovered,
       totalGaps: compliance.totalGaps,
     });
+
+    devTestBotPhase = await runDevTestBotPhase({
+      runId,
+      rootPath,
+      outputRoot,
+      runRoot,
+      artifactDir: artifactBase,
+      files,
+      findings,
+      budget: budgetState,
+      options: devTestBot === false ? { enabled: false } : devTestBot || {},
+      onEvent: emit,
+    });
+    findings.push(...(devTestBotPhase.findings || []));
 
     // Live-web validation (Jules): optional; only runs when both
     // devTestBot + aidenid clients are supplied (pluggable contracts).
@@ -346,6 +379,16 @@ export async function runInvestorDd({
       ? { totalCovered: compliance.totalCovered, totalGaps: compliance.totalGaps }
       : null,
     reconciliation: reconciliationAvailable,
+    devTestBot: devTestBotPhase
+      ? {
+          skipped: Boolean(devTestBotPhase.skipped),
+          reason: devTestBotPhase.reason || "",
+          identityCount: devTestBotPhase.plan?.identityCount || devTestBotPhase.identities?.length || 0,
+          swarmCount: devTestBotPhase.plan?.swarmCount || devTestBotPhase.subagents?.length || 0,
+          findingCount: devTestBotPhase.findingCount || 0,
+          artifactRoot: devTestBotPhase.artifactRoot || "",
+        }
+      : null,
   };
   await writeJson(path.join(artifactBase, "summary.json"), summary);
 
@@ -385,7 +428,7 @@ export async function runInvestorDd({
   }
   await writeJson(path.join(artifactBase, "manifest.json"), manifest);
 
-  const runResult = { runId, artifactDir: artifactBase, summary, findings };
+  const runResult = { runId, artifactDir: artifactBase, summary, findings, devTestBot: devTestBotPhase };
 
   // Fire-and-forget notification dispatch (email + dashboard). Failures
   // are non-fatal — the report is already persisted to disk + manifest.

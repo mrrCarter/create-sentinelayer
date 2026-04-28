@@ -218,3 +218,4 @@
 - Any local deterministic CLI command used inside CI (for example `sl review scan`) must receive a deterministic auth context (`SENTINELAYER_TOKEN`) even when it does not call privileged APIs, or auth-gate will fail the workflow.
 - Guard clauses intended for `workflow_dispatch` can accidentally suppress required PR jobs; keep PR build/deploy lanes gated by upstream job success instead of event-type branch-protection shortcuts.
 - For PR workflows, provenance manifests must write the PR head SHA (not `GITHUB_SHA` merge ref) when downstream attestation gates validate against head-commit check-runs.
+- When the user explicitly asks for full autonomous PR-by-PR execution, treat Senti reads/posts, branch creation, implementation, local gates, PR checks, merge, and post-merge `main` checks as one continuous loop; do not stop after status updates or partial prep.

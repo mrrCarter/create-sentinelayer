@@ -51,6 +51,9 @@ export function registerOmarGateCommand(program, invokeLegacy) {
     .option("--notify-session <session-id>", "Stream progress into this Senti session (default: auto-start)")
     .option("--no-email", "Skip email dispatch")
     .option("--no-dashboard", "Skip dashboard card persistence")
+    .option("--devtestbot-base-url <url>", "Approved absolute URL for devTestBot browser lanes")
+    .option("--devtestbot-scope <scope>", "devTestBot runtime scope (default: orchestrator decides)")
+    .option("--no-devtestbot", "Skip the automated devTestBot phase")
     .option("--dry-run", "Validate config + emit plan.json; skip LLM calls")
     .option("--json", "Emit machine-readable final output")
     .action(async (options, command) => {
