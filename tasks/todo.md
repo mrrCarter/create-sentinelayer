@@ -28,6 +28,8 @@
 - DD-spec `review --diff --refresh` is clean (`review-20260428-054134-567e529d`, P0/P1/P2/P3 all zero). Earlier P2 loop warning was fixed by batching image decoding before MP4 encoding.
 - Production license policy check passed after allowing new permissive/transitive production licenses (`MPL-2.0`, `0BSD`, `BSD`): 242 packages, 0 failures.
 - Local gates passed: `/omargate deep --ai-dry-run --max-cost 5` (`omargate-1777354778138-4a486ce8`, P0=0/P1=0, blocking=false; non-blocking baseline P2/P3 only) and `/audit --path . --json` (PASS, P1=0, P2=3 non-blocking).
+- CI loop: PR #443 Quality Gates `Test` job failed once because the ffmpeg preflight accepted `ffmpeg` but Playwright's Linux payload is `ffmpeg-linux` under `ffmpeg-1011`. Patched `findPlaywrightFfmpegExecutable` with platform-specific Playwright payload names and added a regression test for the Linux CI cache layout.
+- Post-CI-fix validation passed: focused devTestBot test (3/3), full `npm run verify` (`check`, docs build, 95 e2e, 1160 unit coverage tests, npm pack dry-run), DD review against `tasks/dd-build-spec-2026-04-26.md` clean (`review-20260428-055436-6c0340a0`, P0/P1/P2/P3 all zero), local OmarGate dry-run non-blocking (`omargate-1777355649749-6ffc58a4`, P0=0/P1=0), and `/audit` PASS (`audit-20260428-055349`, P1=0, P2=3 non-blocking).
 
 # 2026-04-28 - DD PR-D3 Session Background Listener (`dd/pr-d3-session-listen`)
 

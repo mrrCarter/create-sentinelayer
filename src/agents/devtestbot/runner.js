@@ -370,11 +370,9 @@ export function resolvePlaywrightChromiumExecutable() {
   );
 }
 
-export function findPlaywrightFfmpegExecutable(env = process.env) {
-  const roots = playwrightRegistryRoots(env);
-  const names = process.platform === "win32"
-    ? ["ffmpeg-win64.exe", "ffmpeg.exe"]
-    : ["ffmpeg"];
+export function findPlaywrightFfmpegExecutable(env = process.env, platform = process.platform) {
+  const roots = playwrightRegistryRoots(env, platform);
+  const names = playwrightFfmpegExecutableNames(platform);
   for (const root of roots) {
     const found = findExecutableUnder(root, names, 4);
     if (found) return found;
@@ -695,7 +693,7 @@ function summarizeIdentity(identityCreds, sensitiveValues) {
   };
 }
 
-function playwrightRegistryRoots(env) {
+function playwrightRegistryRoots(env, platform = process.platform) {
   const roots = [];
   if (env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0") {
     roots.push(env.PLAYWRIGHT_BROWSERS_PATH);
@@ -703,14 +701,20 @@ function playwrightRegistryRoots(env) {
   if (env.PLAYWRIGHT_BROWSERS_PATH === "0") {
     roots.push(path.resolve("node_modules", "playwright-core", ".local-browsers"));
   }
-  if (process.platform === "win32" && env.LOCALAPPDATA) {
+  if (platform === "win32" && env.LOCALAPPDATA) {
     roots.push(path.join(env.LOCALAPPDATA, "ms-playwright"));
-  } else if (process.platform === "darwin") {
+  } else if (platform === "darwin") {
     roots.push(path.join(os.homedir(), "Library", "Caches", "ms-playwright"));
   } else {
     roots.push(path.join(os.homedir(), ".cache", "ms-playwright"));
   }
   return [...new Set(roots.filter(Boolean))];
+}
+
+function playwrightFfmpegExecutableNames(platform = process.platform) {
+  if (platform === "win32") return ["ffmpeg-win64.exe", "ffmpeg.exe"];
+  if (platform === "darwin") return ["ffmpeg-mac", "ffmpeg"];
+  return ["ffmpeg-linux", "ffmpeg"];
 }
 
 function findExecutableUnder(root, executableNames, maxDepth) {

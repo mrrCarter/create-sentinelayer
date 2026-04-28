@@ -19,6 +19,18 @@ test("devTestBot runner redacts explicit identity values", () => {
   assert.match(result, /\[REDACTED\]/);
 });
 
+test("devTestBot runner locates Playwright ffmpeg in Linux CI cache layout", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "senti-devtestbot-ffmpeg-"));
+  const ffmpegPath = path.join(root, "ffmpeg-1011", "ffmpeg-linux");
+  try {
+    await fs.mkdir(path.dirname(ffmpegPath), { recursive: true });
+    await fs.writeFile(ffmpegPath, "");
+    assert.equal(findPlaywrightFfmpegExecutable({ PLAYWRIGHT_BROWSERS_PATH: root }, "linux"), ffmpegPath);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("devTestBot runner records browser capture lanes against a local fixture", { timeout: 180000 }, async () => {
   assert.ok(resolvePlaywrightChromiumExecutable(), "Playwright Chromium must be installed");
   assert.ok(findPlaywrightFfmpegExecutable(), "Playwright ffmpeg must be installed for MP4 artifacts");
