@@ -1,3 +1,18 @@
+# 2026-04-28 - Post-E3 Main Quality Gate Fix (`fix/e3-postmerge-quality-test`)
+
+## Plan
+- [x] Extract the post-merge `main` Quality Gates failure from run `25041008226`.
+- [x] Identify root cause: Senti stream watchers used `replayTail: 0`, so events appended immediately after `startSenti()` could be swallowed by the watcher's initial cursor read.
+- [x] Patch help/directive watchers to replay a bounded startup tail since daemon start and harden the help-response test to wait for the exact response event.
+- [x] Run focused session daemon tests repeatedly, then `npm run check`, `npm run verify`, DD review, OmarGate, and audit.
+- [ ] Open PR, watch PR CI/OmarGate to green, merge, and verify post-merge main.
+
+## Review
+- Root cause: `startSenti()` starts async stream watchers and returns the daemon handle immediately; with `tailStream(... replayTail: 0)`, a `help_request` appended before the watcher performed its first read could be treated as part of the initial cursor and never answered.
+- Fix: both help-request and session-directive watchers now replay a bounded startup tail constrained by `since: daemonState.startedAt`, and the failing test waits for the request-specific `help_response` instead of relying on a fixed sleep.
+- Focused validation passed: `node --check src/session/daemon.js`, two session daemon test files, and five consecutive focused repeats (7 tests each).
+- Full local validation passed: `npm run check` (302 files), `npm run verify` after `npm ci` (docs, e2e 97/97, coverage 1170/1170, npm pack dry-run), `git diff --check` clean aside from Windows LF/CRLF warnings, DD review clean (`review-20260428-081342-a47a9856`, P0/P1/P2/P3 all zero), OmarGate dry-run non-blocking (`omargate-1777364023905-f2419cf2`, P0=0/P1=0, blocking=false), and `/audit` PASS (`audit-20260428-081342`, P1=0, P2=3 non-blocking).
+
 # 2026-04-28 - DD PR-E2 devTestBot Persona (`dd/pr-e2-devtestbot-persona`)
 
 ## Plan

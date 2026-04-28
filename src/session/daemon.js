@@ -45,6 +45,7 @@ const HELP_MODEL_TIMEOUT_MS = 3_000;
 const HELP_CONTEXT_EVENT_TAIL = 50;
 const HELP_CONTEXT_RESULT_LIMIT = 6;
 const HELP_BLACKBOARD_ENTRY_LIMIT = 40;
+const WATCHER_STARTUP_REPLAY_TAIL = 100;
 const FILE_CONFLICT_WINDOW_MS = 60_000;
 const RENEWAL_WINDOW_MS = 60 * 60 * 1000;
 const RENEWAL_THRESHOLD_EVENTS = 10;
@@ -608,7 +609,7 @@ async function runHelpWatcher(daemonState) {
       targetPath: daemonState.targetPath,
       signal,
       since: daemonState.startedAt,
-      replayTail: 0,
+      replayTail: WATCHER_STARTUP_REPLAY_TAIL,
       pollMs: Math.max(25, Math.min(250, Math.floor(daemonState.helpRequestTimeoutMs / 4))),
     })) {
       if (!daemonState.running) {
@@ -781,7 +782,7 @@ async function runSessionDirectiveWatcher(daemonState) {
       targetPath: daemonState.targetPath,
       signal,
       since: daemonState.startedAt,
-      replayTail: 0,
+      replayTail: WATCHER_STARTUP_REPLAY_TAIL,
       pollMs: 100,
     })) {
       if (!daemonState.running) {
