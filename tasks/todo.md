@@ -19,6 +19,7 @@
 - `src/commands/audit.js`
 - `src/legacy-cli.js` / `src/commands/legacy-args.js` only if slash-command option pass-through needs it
 - `tests/e2e.test.mjs`
+- `tasks/evals/pr-c2-omargate-audit-reuse.md`
 - Focused unit test file if cleaner than e2e-only coverage
 - `tasks/todo.md`
 
@@ -40,6 +41,7 @@
   - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --max-cost 5` (pass: P0=0 P1=0, blocking=false; wrote deterministic cache `omargate-1777339398563-cea7eba1`)
   - `node bin/create-sentinelayer.js /audit --path . --reuse-omargate latest --json` (pass: reused `omargate-1777339398563-cea7eba1`, overallStatus=PASS, blocking=false)
   - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, blocking=false)
+  - First PR check pass failed Eval Impact because `src/commands/audit.js` is eval-impacting; added `tasks/evals/pr-c2-omargate-audit-reuse.md` with deterministic reuse evidence and rerunning CI.
 
 # 2026-04-28 - DD PR-C1 Confidence Floor (`dd/pr-c1-confidence-floor`)
 
