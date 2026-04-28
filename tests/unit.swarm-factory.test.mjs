@@ -40,6 +40,25 @@ test("Unit swarm factory: builds OMAR-led execution plan with phased graph", () 
   assert.equal(plan.globalBudget.warningThresholdPercent, 75);
 });
 
+test("Unit swarm factory: builds OMAR-led devTestBot execution plan", () => {
+  const agents = pickAgents(["omar", "devtestbot"]);
+  const plan = buildSwarmExecutionPlan({
+    targetPath: ".",
+    scenario: "smoke",
+    objective: "Run devTestBot smoke browser evidence collection.",
+    agents,
+    maxParallel: 1,
+  });
+
+  assert.equal(plan.selectedAgents[0], "omar");
+  assert.equal(plan.selectedAgents.includes("devtestbot"), true);
+  assert.equal(plan.assignments.some((assignment) => assignment.agentId === "devtestbot"), true);
+  const devTestBot = plan.assignments.find((assignment) => assignment.agentId === "devtestbot");
+  assert.equal(devTestBot.constraints.networkMode, "enabled");
+  assert.equal(devTestBot.constraints.permissionMode, "runtime-readonly");
+  assert.equal(devTestBot.handoff.downstreamAgentIds.includes("omar"), true);
+});
+
 test("Unit swarm factory: writes deterministic plan artifacts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-plan-"));
   try {

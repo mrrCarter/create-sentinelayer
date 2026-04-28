@@ -56,6 +56,72 @@ test("Unit swarm runtime: mock runtime writes deterministic artifacts", async ()
   }
 });
 
+test("Unit swarm runtime: dispatches devTestBot through run_session and records findings", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-devtestbot-"));
+  try {
+    const plan = buildSwarmExecutionPlan({
+      targetPath: tempRoot,
+      agents: pickAgents(["omar", "devtestbot"]),
+      scenario: "smoke",
+      maxParallel: 1,
+    });
+
+    const runtime = await runSwarmRuntime({
+      plan,
+      targetPath: tempRoot,
+      engine: "mock",
+      execute: false,
+      maxSteps: 20,
+      outputDir: path.join(tempRoot, ".sentinelayer"),
+      env: process.env,
+      identityId: "id_123",
+      devTestBotScope: "smoke",
+      devTestBotRunSession: async (input) => ({
+        runId: input.runId,
+        completed: true,
+        dryRun: true,
+        findings: [
+          {
+            severity: "P3",
+            file: "runtime://browser",
+            line: 1,
+            title: "devTestBot dry-run evidence gap",
+            evidence: "dry-run",
+            rootCause: "execute=false",
+            recommendedFix: "Run with --execute",
+            trafficLight: "yellow",
+            reproduction: { type: "runtime_probe", steps: ["swarm run --agent devtestbot"] },
+            user_impact: "No browser evidence was collected.",
+            confidence: 0.82,
+            artifacts: {},
+          },
+        ],
+        artifactBundle: {
+          root: path.join(tempRoot, "devtestbot"),
+          resultPath: path.join(tempRoot, "devtestbot", "devtestbot-result.json"),
+        },
+      }),
+    });
+
+    assert.equal(runtime.completed, true);
+    assert.equal(runtime.findingCount, 1);
+    assert.equal(runtime.findings[0].title, "devTestBot dry-run evidence gap");
+    assert.equal(runtime.artifactBundles.length, 1);
+    assert.equal(runtime.devTestBotRuns.length, 1);
+
+    const events = String(await readFile(runtime.runtimeEventsPath, "utf-8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(events.some((event) => event.eventType === "tool_call" && event.agentId === "devtestbot"), true);
+    assert.equal(events.some((event) => event.eventType === "tool_result" && event.agentId === "devtestbot"), true);
+    assert.equal(events.some((event) => event.eventType === "finding" && event.agentId === "devtestbot"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit swarm runtime: runtime stops when max-steps budget is exhausted", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-runtime-"));
   try {

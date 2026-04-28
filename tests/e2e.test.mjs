@@ -4274,6 +4274,7 @@ test("CLI swarm registry lists OMAR-led specialist agents", async () => {
     assert.equal(payload.agentCount >= 13, true);
     assert.equal(payload.agents.some((agent) => agent.id === "omar"), true);
     assert.equal(payload.agents.some((agent) => agent.id === "security"), true);
+    assert.equal(payload.agents.some((agent) => agent.id === "devtestbot"), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -4362,6 +4363,48 @@ test("CLI swarm run executes governed mock runtime and writes runtime artifacts"
       .split("\n")
       .filter(Boolean);
     assert.equal(events.length >= 2, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI swarm run supports devTestBot --agent/--scope dry-run artifact bundle", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-swarm-devtestbot-"));
+  try {
+    await writeFile(path.join(tempRoot, "index.js"), "export const status = 'ok';\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "swarm",
+        "run",
+        "--path",
+        tempRoot,
+        "--agent",
+        "devtestbot",
+        "--scope",
+        "smoke",
+        "--max-steps",
+        "10",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "swarm run");
+    assert.equal(payload.scenario, "smoke");
+    assert.equal(payload.completed, true);
+    assert.equal(payload.findingCount >= 1, true);
+    assert.equal(Array.isArray(payload.artifactBundles), true);
+    assert.equal(payload.artifactBundles.length, 1);
+    assert.equal(Array.isArray(payload.devTestBotRuns), true);
+    assert.equal(payload.devTestBotRuns[0].dryRun, true);
+    assert.match(String(payload.runtimeEventsPath || ""), /[\\/]events\.ndjson$/);
+
+    const runtime = JSON.parse(await readFile(payload.runtimeJsonPath, "utf-8"));
+    assert.equal(runtime.findings[0].file, "runtime://browser");
+    assert.match(String(runtime.artifactBundles[0].findingsPath || ""), /findings\.json$/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

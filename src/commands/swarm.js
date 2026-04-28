@@ -517,6 +517,9 @@ export function registerSwarmCommand(program) {
     .option("--scenario-file <path>", "Scenario DSL file (.sls) for runtime actions")
     .option("--registry-file <path>", "Optional custom swarm registry file (when building plan inline)")
     .option("--agents <ids>", "Comma-separated agent ids for inline plan mode", "security,testing,reliability")
+    .option("--agent <id>", "Single agent id alias for --agents")
+    .option("--scope <scope>", "Runtime scope alias for --scenario, used by devTestBot")
+    .option("--identity-id <id>", "AIdenID identity id for devTestBot runtime")
     .option("--scenario <id>", "Scenario identifier for inline plan mode", "qa_audit")
     .option(
       "--objective <text>",
@@ -571,7 +574,7 @@ export function registerSwarmCommand(program) {
         const registry = await loadSwarmRegistry({
           registryFile: options.registryFile,
         });
-        const selected = selectSwarmAgents(registry.agents, options.agents);
+        const selected = selectSwarmAgents(registry.agents, options.agent || options.agents);
         if (selected.missing.length > 0) {
           throw new Error(`Unknown agent id(s): ${selected.missing.join(", ")}`);
         }
@@ -581,7 +584,7 @@ export function registerSwarmCommand(program) {
         const selectedAgents = ensureOmarIncluded(registry.agents, selected.selected);
         plan = buildSwarmExecutionPlan({
           targetPath,
-          scenario: scenarioIdOverride || options.scenario,
+          scenario: scenarioIdOverride || options.scope || options.scenario,
           objective: options.objective,
           agents: selectedAgents,
           maxParallel: parseMaxParallel(options.maxParallel),
@@ -612,6 +615,8 @@ export function registerSwarmCommand(program) {
         execute: Boolean(options.execute),
         maxSteps: parseMaxSteps(options.maxSteps),
         startUrl: startUrlOverride || options.startUrl,
+        identityId: options.identityId,
+        devTestBotScope: options.scope || scenarioIdOverride || options.scenario,
         playbookActions,
         outputDir: options.outputDir,
         env: process.env,
@@ -631,6 +636,10 @@ export function registerSwarmCommand(program) {
         stop: runtime.stop,
         usage: runtime.usage,
         eventCount: runtime.eventCount,
+        findingCount: runtime.findingCount,
+        findings: runtime.findings,
+        artifactBundles: runtime.artifactBundles,
+        devTestBotRuns: runtime.devTestBotRuns,
         runtimeDirectory: runtime.runtimeDirectory,
         runtimeJsonPath: runtime.runtimeJsonPath,
         runtimeMarkdownPath: runtime.runtimeMarkdownPath,
