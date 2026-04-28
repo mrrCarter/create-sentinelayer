@@ -4684,6 +4684,58 @@ test("CLI audit stream emits non-Jules persona tool events", async () => {
   }
 });
 
+test("CLI audit --stream emits swarm lifecycle for oversized dry-run scope", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-swarm-"));
+  try {
+    const srcDir = path.join(tempRoot, "src");
+    await mkdir(srcDir, { recursive: true });
+    const body = Array.from({ length: 340 }, (_, index) => `export const line${index} = ${index};`).join("\n");
+    for (let index = 0; index < 16; index += 1) {
+      await writeFile(path.join(srcDir, `File${index}.js`), `${body}\n`, "utf-8");
+    }
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "audit",
+        "--path",
+        tempRoot,
+        "--agents",
+        "security",
+        "--dry-run",
+        "--no-seed-from-deterministic",
+        "--stream",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const events = result.stdout
+      .split(/\r?\n/g)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    const swarmStart = events.filter((event) => event.event === "swarm_start");
+    const subagentStarts = events.filter(
+      (event) => event.event === "agent_start" && Number(event.payload?.subagentIndex || 0) > 0
+    );
+    const subagentTerminals = events.filter(
+      (event) =>
+        ["agent_complete", "agent_error", "agent_abort", "budget_stop"].includes(event.event) &&
+        Number(event.payload?.subagentIndex || 0) > 0
+    );
+    const swarmComplete = events.filter((event) => event.event === "swarm_complete");
+
+    assert.equal(swarmStart.length >= 1, true, "expected swarm_start");
+    assert.equal(subagentStarts.length >= 2, true, "expected multiple subagent starts");
+    assert.equal(subagentTerminals.length >= subagentStarts.length, true, "expected terminal event per subagent");
+    assert.equal(swarmComplete.length >= 1, true, "expected swarm_complete");
+    assert.equal(subagentStarts.every((event) => event.payload.files.length <= 12), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit package rebuilds DD package from run id", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-package-cmd-"));
   try {

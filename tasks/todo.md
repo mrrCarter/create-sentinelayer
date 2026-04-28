@@ -1,3 +1,44 @@
+# 2026-04-28 - DD PR-B2 Audit Persona Swarm Fanout (`dd/pr-b2-audit-swarm`)
+
+## Plan
+- [x] Confirm PR-B1 post-merge main workflows are green and branch from current `main`.
+- [x] Poll/post Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7` before starting B2.
+- [x] Read the DD spec B2 contract, repo AGENTS workflow, SWE framework, audit persona loop, audit orchestrator, and PR-B1 swarm implementation.
+- [x] Add audit persona swarm decision, file partitioning, and budget slicing using the Jules/PR-B1 thresholds: >15 files, >=3 route groups, >5000 LOC, <=12 files/subagent, <=4 concurrent subagents.
+- [x] Route oversized non-Jules `/audit` persona scopes through isolated subagent persona loops with parent-bound budgets.
+- [x] Emit `swarm_start`/`swarm_complete` and per-subagent `agent_start`/terminal lifecycle events carrying persona id, subagent index, scope, and usage.
+- [x] Roll subagent findings and usage back into the existing audit persona result so orchestration reconciliation/dedupe remains centralized.
+- [x] Add focused unit and CLI stream fixture coverage proving `sl audit --stream` emits swarm lifecycle on a >15-file, >5000-LOC fixture.
+- [ ] Run targeted tests, `npm run check`, DD-spec-bound `review --diff`, `npm run verify`, local `/omargate deep`, local `/audit`, `git diff --check`, then PR/CI/merge.
+
+## File Claims
+- `src/audit/persona-loop.js`
+- `src/audit/orchestrator.js` only if the persona loop needs real ingest scope handoff
+- `tests/unit.audit-persona-loop.test.mjs`
+- `tests/e2e.test.mjs`
+- `tasks/todo.md`
+- `tasks/lessons.md`
+- Optional only if cleaner than duplication: a shared swarm scope helper used by audit and OmarGate
+
+## Review
+- Implemented audit persona swarm fanout in `src/audit/persona-loop.js`:
+  - `buildAuditPersonaFileScope()`, `decideAuditPersonaSwarm()`, `partitionAuditPersonaFiles()`, and `divideAuditSwarmBudget()` mirror PR-B1/Jules thresholds without importing OmarGate internals.
+  - Oversized persona scopes derive from `ingest.indexedFiles.files`, split into <=12-file partitions, run with <=4 inner concurrency, and split the persona budget across subagents.
+  - Subagent persona loops receive assigned file prompts, filtered seed/baseline findings, isolated run ids, and event context.
+  - Stream events now include parent `swarm_start`/`swarm_complete` plus per-subagent lifecycle events with persona id, partition, file scope, and usage.
+- Added `swarm` metadata to audit orchestrator agent result artifacts.
+- Validation so far:
+  - `node --check src/audit/persona-loop.js; node --check src/audit/orchestrator.js` (pass)
+  - `node --test tests/unit.audit-persona-loop.test.mjs` (7 tests pass)
+  - `node --test --test-name-pattern "audit --stream emits swarm lifecycle" tests/e2e.test.mjs` (pass)
+  - `npm run check` (293 files pass)
+  - `node bin/create-sentinelayer.js review --diff --spec tasks/dd-build-spec-2026-04-26.md --json` (P0=0 P1=0 P2=0 P3=0; run `review-20260428-001800-a192e2f0`)
+  - `npm run verify` (pass: check, docs build, 94 e2e, 1117 unit coverage tests, pack dry-run)
+  - `node bin/create-sentinelayer.js audit --path . --agents security --dry-run --stream` (pass; emitted `swarm_start`, `security-subagent-*` lifecycle, and `swarm_complete`)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --max-cost 5` (pass: P0=0 P1=0, blocking=false)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, P1=0, blocking=false)
+  - `git diff --check` (pass)
+
 # 2026-04-27 - DD PR-B1 OmarGate Swarm Fanout (`dd/pr-b1-omargate-swarm`)
 
 ## Plan
@@ -8,7 +49,7 @@
 - [x] Emit `swarm_start`/`swarm_complete` plus per-subagent `agent_start`/`agent_complete` events carrying persona id, subagent index, scope, and usage.
 - [x] Roll subagent findings into the existing persona result and keep final reconciliation/dedupe centralized in `reconcileReviewFindings`.
 - [x] Add deterministic unit/e2e coverage with a >15 file and >5000 LOC fixture proving `sl /omargate deep --stream` emits swarm lifecycle and respects per-persona budget.
-- [ ] Run targeted tests, `npm run check`, DD-spec-bound `review --diff`, `npm run verify`, local `/omargate deep`, `git diff --check`, then PR/CI/merge.
+- [x] Run targeted tests, `npm run check`, DD-spec-bound `review --diff`, `npm run verify`, local `/omargate deep`, `git diff --check`, then PR/CI/merge.
 
 ## File Claims
 - `src/review/omargate-orchestrator.js`
