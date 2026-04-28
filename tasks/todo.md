@@ -1,3 +1,33 @@
+# 2026-04-28 - DD PR-F2 Orchestrator Email Trigger (`dd/pr-f2-dd-orchestrator-email`)
+
+## Plan
+- [x] Verify PR-F1 merged in `sentinelayer-api` and post-merge Omar Gate is green before starting F2.
+- [x] Create a clean `create-sentinelayer` worktree from `origin/main` and align the branch name with the spec.
+- [x] Read the DD F2 contract, AGENTS/SWE guidance, Senti lessons, existing `investor-dd` command registration, legacy arg bridge, orchestrator stream lifecycle, auth/session resolver, API request wrapper, and telemetry sync circuit-breaker pattern.
+- [x] Add `--email-on-complete <to>` to the commander surface and legacy argument bridge for `/omargate investor-dd`.
+- [x] Add a bounded, authenticated DD report email client that POSTs `/api/v1/runs/{run_id}/send-report-email` with a deterministic idempotency key and never logs tokens or local artifact paths.
+- [x] Wire the investor-DD orchestrator to call the client after DD phases finish and emit `dd_email_queued` on success or redacted `dd_email_error` on failure without invalidating the DD run.
+- [x] Add focused tests for command registration, legacy flag pass-through, client request/idempotency/error behavior, orchestrator stream events, and CLI dry-run/event output.
+- [x] Run focused tests, `npm run check`, full `npm run verify`, DD review, local Omar, and local audit.
+- [ ] Open PR, watch CI/OmarGate, merge, and verify post-merge main.
+
+## Review
+- In progress. F2 is scoped to the CLI/orchestrator trigger only; the API email endpoint was merged separately as `sentinelayer-api` PR #470 and verified green on main run `25044223824`.
+- Implemented:
+  - `omargate investor-dd --email-on-complete <addr>` and legacy `/omargate investor-dd` pass-through.
+  - `src/review/dd-report-email-client.js` with active auth resolution, bounded API request, deterministic idempotency key, recipient validation, and token/local-path error redaction.
+  - investor-DD orchestrator post-completion trigger that emits both `type` and `event` as `dd_email_queued`; failures emit redacted `dd_email_error` and never change DD run status.
+  - e2e mock API verification for the streamed `dd_email_queued` event and authenticated POST to `/api/v1/runs/{run_id}/send-report-email`.
+- Validation green:
+  - `node --check` on changed JS modules.
+  - `node --import ./tests/setup-env.mjs --test tests/unit.dd-report-email-client.test.mjs tests/unit.investor-dd-orchestrator.test.mjs tests/unit.legacy-args-persona-flags.test.mjs tests/unit.commands-contracts.test.mjs` (`41 passed`).
+  - `node --import ./tests/setup-env.mjs --test tests/e2e.test.mjs` (`97 passed`; includes `dd_email_queued` and email POST mock).
+  - `npm run verify` (`check` 303 files, docs build, e2e 97/97, unit coverage 1177/1177, npm pack dry-run).
+  - `git diff --check` clean aside from Windows LF/CRLF warnings.
+  - DD review `review-20260428-093713-8d81f09a` clean (`P0=0 P1=0 P2=0 P3=0`).
+  - Omar dry-run `omargate-1777369034867-ba212027` non-blocking (`P0=0 P1=0`, blocking=false).
+  - `/audit` `audit-20260428-093713` PASS (`P1=0`, blocking=false).
+
 # 2026-04-28 - Post-E3 Main Quality Gate Fix (`fix/e3-postmerge-quality-test`)
 
 ## Plan

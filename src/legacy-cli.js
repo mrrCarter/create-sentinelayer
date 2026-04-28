@@ -1128,6 +1128,7 @@ async function runLocalOmarGateCommand(args) {
     const devTestBotEnabled = !hasCommandOption(args, "--no-devtestbot");
     const devTestBotBaseUrl = getCommandOptionValue(args, "--devtestbot-base-url") || "";
     const devTestBotScope = getCommandOptionValue(args, "--devtestbot-scope") || "";
+    const emailOnComplete = getCommandOptionValue(args, "--email-on-complete") || "";
 
     const targetPath = path.resolve(process.cwd(), pathArg);
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
@@ -1135,6 +1136,9 @@ async function runLocalOmarGateCommand(args) {
     }
 
     const { runInvestorDd } = await import("./review/investor-dd-orchestrator.js");
+    const reportEmailClient = emailOnComplete
+      ? await import("./review/dd-report-email-client.js")
+      : null;
     if (!asJson) {
       printSection("Investor-DD Audit");
       printInfo(`Target: ${targetPath}`);
@@ -1153,6 +1157,19 @@ async function runLocalOmarGateCommand(args) {
         baseUrl: devTestBotBaseUrl,
         scope: devTestBotScope,
       },
+      reportEmail: emailOnComplete
+        ? {
+            to: emailOnComplete,
+            client: {
+              send: ({ runId, to }) => reportEmailClient.sendDdReportEmail({
+                runId,
+                to,
+                cwd: targetPath,
+                env: process.env,
+              }),
+            },
+          }
+        : null,
       onEvent: streamEnabled
         ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`)
         : () => {},
