@@ -29,6 +29,11 @@ const OMAR_SWARM_THRESHOLDS = Object.freeze({
   maxConcurrentAgents: 4,
 });
 
+const OMARGATE_DEFAULT_CONFIDENCE_FLOOR = 0.7;
+const OMARGATE_CONFIDENCE_FLOORS = Object.freeze(
+  Object.fromEntries(PERSONA_IDS.map((personaId) => [personaId, OMARGATE_DEFAULT_CONFIDENCE_FLOOR]))
+);
+
 /**
  * Run bounded-concurrency parallel execution.
  * @param {Array} items
@@ -261,6 +266,10 @@ function decoratePersonaResult(personaId, baseResult) {
   };
 }
 
+function omargateConfidenceFloorForPersona(personaId) {
+  return OMARGATE_CONFIDENCE_FLOORS[personaId] || OMARGATE_DEFAULT_CONFIDENCE_FLOOR;
+}
+
 async function runOmarPersonaSwarm({
   personaId,
   identity,
@@ -375,11 +384,14 @@ async function runOmarPersonaSwarm({
           env: process.env,
         });
 
+        const personaConfidenceFloor = omargateConfidenceFloorForPersona(personaId);
         const findings = (result?.findings || []).map((finding) => {
           const normalized = {
             ...finding,
             persona: personaId,
             layer: personaId,
+            confidenceFloor: personaConfidenceFloor,
+            personaConfidenceFloor,
             swarm: {
               personaId,
               subagentIndex,
@@ -788,10 +800,13 @@ export async function runOmarGateOrchestrator({
         env: process.env,
       });
 
+      const personaConfidenceFloor = omargateConfidenceFloorForPersona(personaId);
       const findings = (result?.findings || []).map((f) => ({
         ...f,
         persona: personaId,
         layer: personaId,
+        confidenceFloor: personaConfidenceFloor,
+        personaConfidenceFloor,
       }));
 
       if (onEvent) {
@@ -893,9 +908,17 @@ export async function runOmarGateOrchestrator({
   const reconciled = reconcileReviewFindings({
     deterministicFindings: detFindings,
     aiFindings: allAiFindings,
+    defaultConfidenceFloor: OMARGATE_DEFAULT_CONFIDENCE_FLOOR,
+    confidenceFloors: OMARGATE_CONFIDENCE_FLOORS,
   });
   const reconciledFindings = reconciled.findings;
   const reconciledSummary = reconciled.summary;
+  const droppedBelowConfidence = Number(reconciledSummary?.droppedBelowConfidence || 0);
+  const candidateFindingCount = detFindings.length + allAiFindings.length;
+  const dedupedCount = Math.max(
+    0,
+    candidateFindingCount - reconciledFindings.length - droppedBelowConfidence
+  );
 
   const totalCost = settled.reduce((sum, r) => sum + (r.costUsd || 0), 0);
   const totalDuration = Date.now() - startTime;
@@ -961,6 +984,7 @@ export async function runOmarGateOrchestrator({
       deterministic: detFindings.length,
       ai: allAiFindings.length,
       reconciled: reconciledFindings.length,
+      droppedBelowConfidence,
     },
     summary: reconciledSummary,
     totalCostUsd: totalCost,
@@ -969,7 +993,12 @@ export async function runOmarGateOrchestrator({
       deterministicFindings: detFindings.length,
       aiFindings: allAiFindings.length,
       reconciledFindings: reconciledFindings.length,
-      dedupedCount: detFindings.length + allAiFindings.length - reconciledFindings.length,
+      dedupedCount,
+      droppedBelowConfidence,
+      droppedLowConfidence: droppedBelowConfidence,
+      droppedLowConfidenceSingleSource: Number(
+        reconciledSummary?.droppedBelowConfidenceSingleSource || droppedBelowConfidence
+      ),
       multiSourceFindings: reconciledFindings.filter(
         (f) => Array.isArray(f.sources) && f.sources.length > 1
       ).length,

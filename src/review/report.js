@@ -62,6 +62,53 @@ function formatConfidence(value) {
   return Math.max(0, Math.min(1, normalized));
 }
 
+function normalizeConfidenceFloor(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) {
+    return 0.7;
+  }
+  return Math.max(0, Math.min(1, normalized));
+}
+
+function confidenceFloorForFinding(finding = {}, {
+  source = "ai",
+  confidenceFloors = {},
+  defaultConfidenceFloor = 0.7,
+} = {}) {
+  const persona = normalizeString(finding.persona || finding.personaId || finding.agentId);
+  const layer = normalizeString(finding.layer);
+  const identity = sourceIdentityForFinding(finding, source);
+  const floor =
+    finding.confidenceFloor ??
+    finding.personaConfidenceFloor ??
+    confidenceFloors[identity] ??
+    confidenceFloors[persona] ??
+    confidenceFloors[layer] ??
+    confidenceFloors[source] ??
+    defaultConfidenceFloor;
+  return normalizeConfidenceFloor(floor);
+}
+
+function sourceIdentityForFinding(finding = {}, source = "ai") {
+  if (source === "deterministic") {
+    return "deterministic";
+  }
+  const persona = normalizeString(
+    finding.persona || finding.personaId || finding.agentId || finding.layer
+  );
+  return `ai:${persona || "generic"}`;
+}
+
+function hasMultiSourceConfirmation(finding = {}) {
+  const confirmationSources = Array.isArray(finding.confirmationSources)
+    ? finding.confirmationSources
+    : [];
+  const sourceIdentities = confirmationSources.length > 0
+    ? confirmationSources
+    : (Array.isArray(finding.sources) ? finding.sources : []);
+  return new Set(sourceIdentities.filter(Boolean)).size >= 2;
+}
+
 function dedupeKeyForFinding(finding = {}) {
   const file = toPosixPath(normalizeString(finding.file) || "unknown");
   const line = Number(finding.line || 1);
@@ -104,13 +151,57 @@ function summarizeFindings(findings = []) {
   };
 }
 
+export function dropBelowConfidence(findings = [], { threshold = 0.7 } = {}) {
+  const defaultThreshold = normalizeConfidenceFloor(threshold);
+  const kept = [];
+  const dropped = [];
+
+  for (const finding of findings || []) {
+    const confidence = formatConfidence(finding.confidence);
+    const confidenceFloor = normalizeConfidenceFloor(
+      finding.confidenceFloor ?? finding.personaConfidenceFloor ?? defaultThreshold
+    );
+    if (!hasMultiSourceConfirmation(finding) && confidence < confidenceFloor) {
+      dropped.push({
+        ...finding,
+        confidence,
+        confidenceFloor,
+        droppedReason: "below_confidence_floor_single_source",
+      });
+      continue;
+    }
+    kept.push({
+      ...finding,
+      confidence,
+      confidenceFloor,
+    });
+  }
+
+  return {
+    findings: kept,
+    dropped,
+    droppedCount: dropped.length,
+    threshold: defaultThreshold,
+  };
+}
+
 export function reconcileReviewFindings({
   deterministicFindings = [],
   aiFindings = [],
+  confidenceFloor = 0.7,
+  defaultConfidenceFloor = confidenceFloor,
+  confidenceFloors = {},
 } = {}) {
   const merged = new Map();
+  const normalizedDefaultConfidenceFloor = normalizeConfidenceFloor(defaultConfidenceFloor);
 
   const addFinding = (finding, source) => {
+    const persona = normalizeString(finding.persona || finding.personaId || finding.agentId);
+    const confidenceFloorForSource = confidenceFloorForFinding(finding, {
+      source,
+      confidenceFloors,
+      defaultConfidenceFloor: normalizedDefaultConfidenceFloor,
+    });
     const normalized = {
       findingId: "",
       severity: normalizeSeverity(finding.severity),
@@ -120,9 +211,12 @@ export function reconcileReviewFindings({
       excerpt: normalizeString(finding.excerpt),
       ruleId: normalizeString(finding.ruleId),
       suggestedFix: normalizeString(finding.suggestedFix),
+      persona,
       layer: normalizeString(finding.layer),
       confidence: source === "deterministic" ? 1 : formatConfidence(finding.confidence),
+      confidenceFloor: confidenceFloorForSource,
       sources: [source],
+      confirmationSources: [sourceIdentityForFinding(finding, source)],
       adjudication: {
         verdict: "pending",
         note: "",
@@ -138,8 +232,25 @@ export function reconcileReviewFindings({
     }
 
     const nextSources = new Set([...(existing.sources || []), source]);
+    const nextConfirmationSources = new Set([
+      ...(existing.confirmationSources || []),
+      ...(normalized.confirmationSources || []),
+    ]);
     const preferred = compareFindingPriority(existing, normalized) <= 0 ? existing : normalized;
     preferred.sources = [...nextSources].sort((left, right) => left.localeCompare(right));
+    preferred.confirmationSources = [...nextConfirmationSources].sort((left, right) =>
+      left.localeCompare(right)
+    );
+    preferred.confidenceFloor = Math.max(
+      normalizeConfidenceFloor(existing.confidenceFloor),
+      normalizeConfidenceFloor(normalized.confidenceFloor)
+    );
+    if (!preferred.persona) {
+      preferred.persona = existing.persona || normalized.persona;
+    }
+    if (!preferred.layer) {
+      preferred.layer = existing.layer || normalized.layer;
+    }
     if (!preferred.excerpt) {
       preferred.excerpt = existing.excerpt || normalized.excerpt;
     }
@@ -159,7 +270,10 @@ export function reconcileReviewFindings({
     addFinding(finding, "ai");
   }
 
-  const findings = [...merged.values()].sort((left, right) => {
+  const confidenceFilter = dropBelowConfidence([...merged.values()], {
+    threshold: normalizedDefaultConfidenceFloor,
+  });
+  const findings = confidenceFilter.findings.sort((left, right) => {
     const severityDelta = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
     if (severityDelta !== 0) {
       return severityDelta;
@@ -177,7 +291,13 @@ export function reconcileReviewFindings({
 
   return {
     findings,
-    summary: summarizeFindings(findings),
+    droppedFindings: confidenceFilter.dropped,
+    summary: {
+      ...summarizeFindings(findings),
+      confidenceFloor: confidenceFilter.threshold,
+      droppedBelowConfidence: confidenceFilter.droppedCount,
+      droppedBelowConfidenceSingleSource: confidenceFilter.droppedCount,
+    },
   };
 }
 
@@ -250,6 +370,7 @@ function composeReportMarkdown(report = {}) {
     `- Findings: P0=${report.summary.P0} P1=${report.summary.P1} P2=${report.summary.P2} P3=${report.summary.P3}`,
     `- Blocking: ${report.summary.blocking ? "yes" : "no"}`,
     `- Total findings: ${report.findings.length}`,
+    `- Dropped below confidence floor (single-source): ${report.summary.droppedBelowConfidence || 0}`,
     "",
     "Metadata:",
     `- commit_sha: ${report.metadata.git.commitSha || "unknown"}`,
@@ -280,6 +401,8 @@ export async function buildUnifiedReviewReport({
   deterministic,
   aiLayer = null,
   specFile = "",
+  defaultConfidenceFloor = 0.7,
+  confidenceFloors = {},
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedMode = normalizeString(mode) || "full";
@@ -289,6 +412,8 @@ export async function buildUnifiedReviewReport({
   const reconciliation = reconcileReviewFindings({
     deterministicFindings: deterministic?.findings || [],
     aiFindings: aiLayer?.findings || [],
+    defaultConfidenceFloor,
+    confidenceFloors,
   });
   const spec = await resolveSpecMetadata(normalizedTargetPath, specFile);
   const commitSha = runGit(normalizedTargetPath, ["rev-parse", "HEAD"]);
@@ -303,6 +428,7 @@ export async function buildUnifiedReviewReport({
     mode: normalizedMode,
     summary: reconciliation.summary,
     findings: reconciliation.findings,
+    droppedFindings: reconciliation.droppedFindings,
     severityMatrix: buildSeverityMatrix(),
     metadata: {
       git: {
