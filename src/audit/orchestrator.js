@@ -646,6 +646,7 @@ export async function runAuditOrchestrator({
       agenticRunId: agenticReport?.runId || "",
       agenticStatus: agenticReport?.status || (agent.id === "frontend" ? "preserved-frontend-flow" : ""),
       agenticMessageHistoryLength: Number(agenticReport?.messageHistoryLength || 0),
+      swarm: agenticReport?.swarm || null,
       usage: agenticReport?.usage || {
         costUsd: 0,
         outputTokens: 0,

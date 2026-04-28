@@ -5,7 +5,11 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
+  buildAuditPersonaFileScope,
   createIsolatedPersonaContext,
+  decideAuditPersonaSwarm,
+  divideAuditSwarmBudget,
+  partitionAuditPersonaFiles,
   runPersonaAgenticLoop,
 } from "../src/audit/persona-loop.js";
 
@@ -239,6 +243,81 @@ test("Unit audit persona-loop: plan-mode personas keep FileEdit granted but unav
     assert.equal(result.grantedTools.includes("FileEdit"), true);
     assert.equal(result.availableTools.includes("FileEdit"), false);
     assert.equal(result.status, "dry_run");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit audit persona-loop: swarm helpers mirror Jules thresholds and budget slicing", () => {
+  const files = Array.from({ length: 16 }, (_, index) => ({
+    path: `src/File${index}.js`,
+    loc: 340,
+  }));
+  const scope = buildAuditPersonaFileScope({
+    ingest: {
+      summary: { totalLoc: 5440 },
+      indexedFiles: { files },
+    },
+  });
+
+  const decision = decideAuditPersonaSwarm({ scope });
+  const partitions = partitionAuditPersonaFiles(scope.files);
+  const budget = divideAuditSwarmBudget({ maxCostUsd: 0.8, maxOutputTokens: 800, maxToolCalls: 40 }, partitions.length);
+
+  assert.equal(decision.spawn, true);
+  assert.equal(decision.fileCount, 16);
+  assert.equal(decision.estimatedLoc, 5440);
+  assert.equal(partitions.length, 2);
+  assert.equal(partitions.every((partition) => partition.length <= 12), true);
+  assert.equal(budget.maxCostUsd, 0.4);
+  assert.equal(budget.maxOutputTokens, 400);
+  assert.equal(budget.maxToolCalls, 20);
+});
+
+test("Unit audit persona-loop: oversized persona scope fans out with bounded lifecycle events", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-persona-swarm-"));
+  try {
+    const files = Array.from({ length: 16 }, (_, index) => ({
+      path: `src/File${index}.js`,
+      loc: 340,
+    }));
+    const events = [];
+    const result = await runPersonaAgenticLoop({
+      agent: securityAgent(),
+      rootPath: tempRoot,
+      ingest: {
+        summary: { filesScanned: 16, totalLoc: 5440 },
+        indexedFiles: { files },
+      },
+      dryRun: true,
+      budget: { maxCostUsd: 0.8, maxOutputTokens: 800, maxToolCalls: 40 },
+      onEvent: (evt) => events.push(evt),
+    });
+
+    const swarmStart = events.find((event) => event.event === "swarm_start");
+    const swarmComplete = events.find((event) => event.event === "swarm_complete");
+    const subagentStarts = events.filter(
+      (event) => event.event === "agent_start" && Number(event.payload?.subagentIndex || 0) > 0
+    );
+    const subagentTerminals = events.filter(
+      (event) => event.event === "agent_complete" && Number(event.payload?.subagentIndex || 0) > 0
+    );
+
+    assert.ok(swarmStart, "expected swarm_start");
+    assert.equal(swarmStart.agent.id, "security");
+    assert.equal(swarmStart.payload.partitionCount, 2);
+    assert.equal(swarmStart.payload.maxConcurrent <= 4, true);
+    assert.equal(subagentStarts.length, 2);
+    assert.equal(subagentStarts.every((event) => event.agent.id.startsWith("security-subagent-")), true);
+    assert.equal(subagentStarts.every((event) => event.payload.files.length <= 12), true);
+    assert.equal(subagentStarts.every((event) => event.payload.budget.maxCostUsd === 0.4), true);
+    assert.equal(subagentTerminals.length, 2);
+    assert.ok(swarmComplete, "expected swarm_complete");
+    assert.equal(swarmComplete.payload.subagentCount, 2);
+    assert.equal(result.status, "dry_run");
+    assert.equal(result.agentId, "security");
+    assert.equal(result.swarm.subagentCount, 2);
+    assert.deepEqual(result.swarm.partitionSizes, [12, 4]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

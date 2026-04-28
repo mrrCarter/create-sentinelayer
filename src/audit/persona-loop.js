@@ -28,6 +28,14 @@ const DEFAULT_PERSONA_BUDGET = Object.freeze({
   warningThresholdPercent: 70,
 });
 
+const AUDIT_SWARM_THRESHOLDS = Object.freeze({
+  minFilesForSwarm: 15,
+  minRouteGroupsForSwarm: 3,
+  minLocForSwarm: 5000,
+  maxFilesPerScanner: 12,
+  maxConcurrentAgents: 4,
+});
+
 const MUTATING_TOOLS = new Set(["FileEdit"]);
 const DEFAULT_ISOLATION_MODE = "strict";
 
@@ -53,6 +61,177 @@ function normalizeNumber(value, fallback = 0) {
 
 function toPosixPath(value) {
   return normalizeString(value).replace(/\\/g, "/");
+}
+
+function uniqueScopeFiles(files = []) {
+  const seen = new Set();
+  const normalized = [];
+  for (const item of Array.isArray(files) ? files : []) {
+    const rawPath =
+      typeof item === "string"
+        ? item
+        : item?.path || item?.file || item?.relativePath || "";
+    const filePath = toPosixPath(rawPath);
+    if (!filePath || seen.has(filePath)) {
+      continue;
+    }
+    seen.add(filePath);
+    const loc =
+      typeof item === "object" && item
+        ? Math.max(0, Math.floor(normalizeNumber(item.loc ?? item.lines ?? item.lineCount, 0)))
+        : 0;
+    normalized.push({ path: filePath, loc });
+  }
+  return normalized;
+}
+
+function filterFindingsByFiles(findings = [], files = []) {
+  const fileSet = new Set(uniqueScopeFiles(files).map((file) => file.path));
+  if (fileSet.size === 0) {
+    return Array.isArray(findings) ? findings : [];
+  }
+  return (Array.isArray(findings) ? findings : []).filter((finding) => {
+    const filePath = toPosixPath(finding?.file || finding?.path || "");
+    return !filePath || fileSet.has(filePath);
+  });
+}
+
+function filesFromScope(scope = {}) {
+  if (Array.isArray(scope.files)) {
+    return uniqueScopeFiles(scope.files);
+  }
+  if (Array.isArray(scope.primary)) {
+    return uniqueScopeFiles(scope.primary);
+  }
+  if (Array.isArray(scope.scannedRelativeFiles)) {
+    return uniqueScopeFiles(scope.scannedRelativeFiles);
+  }
+  return [];
+}
+
+function estimateScopeLoc(scope = {}, files = []) {
+  const explicit =
+    normalizeNumber(scope.totalLoc, 0) ||
+    normalizeNumber(scope.estimatedLoc, 0) ||
+    normalizeNumber(scope.summary?.totalLoc, 0);
+  if (explicit > 0) {
+    return Math.floor(explicit);
+  }
+  return files.reduce((sum, file) => sum + (file.loc > 0 ? file.loc : 80), 0);
+}
+
+function detectRouteGroups(files = []) {
+  const routeGroups = new Set();
+  for (const file of files) {
+    const filePath = toPosixPath(file.path || file);
+    const match = filePath.match(/(?:^|\/)(?:app|pages|routes)\/([^/]+)/);
+    if (match?.[1]) {
+      routeGroups.add(match[1]);
+    }
+  }
+  return [...routeGroups].sort();
+}
+
+export function buildAuditPersonaFileScope({ ingest = null, scope = {} } = {}) {
+  const explicitFiles = filesFromScope(scope);
+  const ingestFiles = uniqueScopeFiles(ingest?.indexedFiles?.files || []);
+  const files = explicitFiles.length > 0 ? explicitFiles : ingestFiles;
+  const totalLoc =
+    normalizeNumber(scope.totalLoc, 0) ||
+    normalizeNumber(scope.estimatedLoc, 0) ||
+    normalizeNumber(scope.summary?.totalLoc, 0) ||
+    normalizeNumber(ingest?.summary?.totalLoc, 0) ||
+    estimateScopeLoc(scope, files);
+
+  return {
+    files,
+    scannedFiles: files.length,
+    scannedRelativeFiles: files.map((file) => file.path),
+    totalLoc: Math.floor(totalLoc),
+  };
+}
+
+export function decideAuditPersonaSwarm({ scope = {} } = {}) {
+  const files = filesFromScope(scope);
+  const routeGroups = detectRouteGroups(files);
+  const estimatedLoc = estimateScopeLoc(scope, files);
+  const spawn =
+    files.length > AUDIT_SWARM_THRESHOLDS.minFilesForSwarm ||
+    routeGroups.length >= AUDIT_SWARM_THRESHOLDS.minRouteGroupsForSwarm ||
+    estimatedLoc > AUDIT_SWARM_THRESHOLDS.minLocForSwarm;
+
+  let reason = "below all thresholds";
+  if (files.length > AUDIT_SWARM_THRESHOLDS.minFilesForSwarm) {
+    reason = `${files.length} files exceeds threshold (${AUDIT_SWARM_THRESHOLDS.minFilesForSwarm})`;
+  } else if (routeGroups.length >= AUDIT_SWARM_THRESHOLDS.minRouteGroupsForSwarm) {
+    reason = `${routeGroups.length} route groups exceeds threshold (${AUDIT_SWARM_THRESHOLDS.minRouteGroupsForSwarm})`;
+  } else if (estimatedLoc > AUDIT_SWARM_THRESHOLDS.minLocForSwarm) {
+    reason = `${estimatedLoc} LOC exceeds threshold (${AUDIT_SWARM_THRESHOLDS.minLocForSwarm})`;
+  }
+
+  return {
+    spawn,
+    fileCount: files.length,
+    routeGroups: routeGroups.length,
+    routeGroupNames: routeGroups,
+    estimatedLoc,
+    reason,
+    thresholds: { ...AUDIT_SWARM_THRESHOLDS },
+    maxConcurrent: AUDIT_SWARM_THRESHOLDS.maxConcurrentAgents,
+  };
+}
+
+export function partitionAuditPersonaFiles(
+  files = [],
+  maxPerPartition = AUDIT_SWARM_THRESHOLDS.maxFilesPerScanner
+) {
+  const normalizedFiles = uniqueScopeFiles(files);
+  const partitionSize = Math.max(
+    1,
+    Math.floor(normalizeNumber(maxPerPartition, AUDIT_SWARM_THRESHOLDS.maxFilesPerScanner))
+  );
+  const partitions = [];
+  for (let index = 0; index < normalizedFiles.length; index += partitionSize) {
+    partitions.push(normalizedFiles.slice(index, index + partitionSize));
+  }
+  return partitions;
+}
+
+export function divideAuditSwarmBudget(budget = {}, subagentCount = 1) {
+  const count = Math.max(1, Math.floor(normalizeNumber(subagentCount, 1)));
+  const parentBudget = { ...DEFAULT_PERSONA_BUDGET, ...(budget || {}) };
+  return {
+    maxCostUsd: Math.max(0, normalizeNumber(parentBudget.maxCostUsd, DEFAULT_PERSONA_BUDGET.maxCostUsd)) / count,
+    maxOutputTokens: Math.max(
+      1,
+      Math.floor(normalizeNumber(parentBudget.maxOutputTokens, DEFAULT_PERSONA_BUDGET.maxOutputTokens) / count)
+    ),
+    maxRuntimeMs: Math.max(1, Math.floor(normalizeNumber(parentBudget.maxRuntimeMs, DEFAULT_PERSONA_BUDGET.maxRuntimeMs))),
+    maxToolCalls: Math.max(
+      1,
+      Math.floor(normalizeNumber(parentBudget.maxToolCalls, DEFAULT_PERSONA_BUDGET.maxToolCalls) / count)
+    ),
+    warningThresholdPercent: parentBudget.warningThresholdPercent,
+  };
+}
+
+async function runWithConcurrency(items, maxConcurrent, fn) {
+  const results = [];
+  const executing = new Set();
+
+  for (const item of items) {
+    const p = Promise.resolve().then(() => fn(item)).finally(() => {
+      executing.delete(p);
+    });
+    executing.add(p);
+    results.push(p);
+
+    if (executing.size >= maxConcurrent) {
+      await Promise.race(executing);
+    }
+  }
+
+  return Promise.all(results);
 }
 
 function severitySummary(findings = []) {
@@ -97,6 +276,16 @@ function buildAgentIdentity(agent = {}) {
     id: normalizeString(agent.id) || "audit-persona",
     persona: normalizeString(agent.persona || agent.id || "Audit Persona"),
     domain: normalizeString(agent.domain),
+  };
+}
+
+function buildSubagentPersona(agent = {}, subagentIndex = 1) {
+  const normalizedAgent = normalizeAuditPersona(agent || {});
+  return {
+    ...normalizedAgent,
+    id: `${normalizedAgent.id}-subagent-${subagentIndex}`,
+    persona: `${normalizedAgent.persona} Subagent ${subagentIndex}`,
+    parentId: normalizedAgent.id,
   };
 }
 
@@ -192,6 +381,7 @@ export function createIsolatedPersonaContext({
   clientFactory = null,
   env = process.env,
   isolation = DEFAULT_ISOLATION_MODE,
+  eventContext = null,
 } = {}) {
   const normalizedAgent = normalizeAuditPersona(agent || {});
   const resolvedRootPath = path.resolve(String(rootPath || "."));
@@ -214,7 +404,7 @@ export function createIsolatedPersonaContext({
     const evt = createAgentEvent({
       event,
       agent: agentIdentity,
-      payload,
+      payload: { ...(eventContext || {}), ...payload },
       usage: snapshotUsage(ctx),
       sessionId: ctx.sessionId,
       runId: resolvedRunId,
@@ -257,6 +447,7 @@ function buildPersonaSystemPrompt({
   availableTools,
   sharedContext,
   hybridContext,
+  assignedFiles = [],
 }) {
   const summary = ingest?.summary || {};
   const frameworks = Array.isArray(ingest?.frameworks) ? ingest.frameworks.join(", ") : "";
@@ -265,6 +456,10 @@ function buildPersonaSystemPrompt({
     : "";
   const sharedCount = Array.isArray(sharedContext?.entries) ? sharedContext.entries.length : 0;
   const hybridCount = Array.isArray(hybridContext?.results) ? hybridContext.results.length : 0;
+  const assignedFileLines = uniqueScopeFiles(assignedFiles)
+    .slice(0, 24)
+    .map((file) => `- ${file.path}${file.loc ? ` (${file.loc} LOC)` : ""}`)
+    .join("\n");
 
   return `SYSTEM PROMPT - SENTINELAYER AUDIT PERSONA
 ${agent.persona} | ${agent.domain} | ${agent.id}
@@ -281,6 +476,8 @@ Frameworks: ${frameworks || "unknown"}
 Risk surfaces: ${riskSurfaces || "none"}
 Shared context entries: ${sharedCount}
 Hybrid memory entries: ${hybridCount}
+Assigned file partition:
+${assignedFileLines || "- full persona scope"}
 
 AVAILABLE TOOLS
 Granted: ${grantedTools.join(", ") || "none"}
@@ -333,10 +530,18 @@ function buildInitialUserPrompt({
   seedFindings,
   sharedContext,
   hybridContext,
+  assignedFiles = [],
 }) {
   const parts = [];
   parts.push(`Run an isolated ${agent.domain} audit pass now.`);
   parts.push("Start by inspecting the code with tools. Do not simply restate routed baseline findings.");
+  const scopeFiles = uniqueScopeFiles(assignedFiles);
+  if (scopeFiles.length > 0) {
+    parts.push(`\nYou are sub-scoped to ${scopeFiles.length} file(s). Focus this pass on:`);
+    for (const file of scopeFiles.slice(0, 24)) {
+      parts.push(`- ${file.path}`);
+    }
+  }
 
   const baselineFindings = Array.isArray(deterministicBaseline?.findings)
     ? deterministicBaseline.findings
@@ -486,7 +691,7 @@ function computeConfidence(agent, findings = []) {
   return Math.max(0, Math.min(1, total / findings.length));
 }
 
-export async function runPersonaAgenticLoop({
+async function runSinglePersonaAgenticLoop({
   agent,
   rootPath,
   ingest = null,
@@ -504,12 +709,16 @@ export async function runPersonaAgenticLoop({
   env = process.env,
   dryRun = false,
   isolation = DEFAULT_ISOLATION_MODE,
+  runId: requestedRunId = "",
+  eventContext = null,
+  assignedFiles = [],
 } = {}) {
   const resolvedRootPath = path.resolve(String(rootPath || "."));
   const normalizedAgent = normalizeAuditPersona(agent || {});
   const startedAt = Date.now();
   const isolatedContext = createIsolatedPersonaContext({
     agent: normalizedAgent,
+    runId: requestedRunId,
     rootPath: resolvedRootPath,
     artifactDir,
     provider,
@@ -518,6 +727,7 @@ export async function runPersonaAgenticLoop({
     clientFactory,
     env,
     isolation,
+    eventContext,
   });
   const {
     runId,
@@ -536,6 +746,7 @@ export async function runPersonaAgenticLoop({
   const allFindings = (Array.isArray(seedFindings) ? seedFindings : []).map((finding) =>
     normalizeFinding(finding, normalizedAgent, "legacy-seed")
   );
+  const assignedScopeFiles = uniqueScopeFiles(assignedFiles);
   const loopMaxTurns = Math.max(
     1,
     Math.floor(normalizeNumber(maxTurns, normalizedAgent.maxTurns || DEFAULT_MAX_TURNS))
@@ -551,6 +762,8 @@ export async function runPersonaAgenticLoop({
     isolation: isolationMode,
     permissionMode: normalizedAgent.permissionMode,
     dryRun: Boolean(dryRun),
+    files: assignedScopeFiles.map((file) => file.path),
+    fileCount: assignedScopeFiles.length,
     seedFindingCount: allFindings.length,
     deterministicBaselineFindingCount: Array.isArray(deterministicBaseline?.findings)
       ? deterministicBaseline.findings.length
@@ -594,6 +807,7 @@ export async function runPersonaAgenticLoop({
     availableTools,
     sharedContext,
     hybridContext,
+    assignedFiles,
   });
   messages.push({
     role: "user",
@@ -603,6 +817,7 @@ export async function runPersonaAgenticLoop({
       seedFindings: allFindings,
       sharedContext,
       hybridContext,
+      assignedFiles,
     }),
   });
 
@@ -765,5 +980,363 @@ export async function runPersonaAgenticLoop({
     isolation: isolationMode,
     messageHistoryLength: messages.length,
     turns: turnCount,
+  };
+}
+
+function emitSwarmLifecycle(onEvent, event, agent, payload = {}, usage = null, runId = "") {
+  if (!onEvent) {
+    return null;
+  }
+  const evt = createAgentEvent({
+    event,
+    agent,
+    payload,
+    usage: usage || undefined,
+    runId,
+  });
+  onEvent(evt);
+  return evt;
+}
+
+function aggregateUsage(results = []) {
+  const filesRead = new Set();
+  const usage = {
+    costUsd: 0,
+    outputTokens: 0,
+    toolCalls: 0,
+    durationMs: 0,
+    filesRead: [],
+  };
+  for (const result of results || []) {
+    const resultUsage = result?.usage || {};
+    usage.costUsd += normalizeNumber(resultUsage.costUsd, 0);
+    usage.outputTokens += normalizeNumber(resultUsage.outputTokens, 0);
+    usage.toolCalls += normalizeNumber(resultUsage.toolCalls, 0);
+    usage.durationMs += normalizeNumber(resultUsage.durationMs, 0);
+    for (const file of resultUsage.filesRead || []) {
+      filesRead.add(file);
+    }
+  }
+  usage.filesRead = [...filesRead].sort();
+  return usage;
+}
+
+function summarizeSwarmStatus(results = []) {
+  const statuses = new Set(results.map((result) => normalizeString(result.status) || "unknown"));
+  const errorCount = results.filter((result) => result.status === "error").length;
+  const okCount = results.length - errorCount;
+  if (results.length === 0) {
+    return "error";
+  }
+  if (errorCount === 0 && statuses.size === 1 && statuses.has("dry_run")) {
+    return "dry_run";
+  }
+  if (errorCount > 0 && okCount === 0) {
+    return "error";
+  }
+  if (errorCount > 0) {
+    return "completed_with_errors";
+  }
+  if (statuses.has("budget_stop")) {
+    return "budget_stop";
+  }
+  if (statuses.has("aborted")) {
+    return "aborted";
+  }
+  if (statuses.size === 1) {
+    return [...statuses][0];
+  }
+  return "completed";
+}
+
+export async function runPersonaAgenticLoop(options = {}) {
+  const {
+    agent,
+    rootPath,
+    ingest = null,
+    deterministicBaseline = null,
+    seedFindings = [],
+    budget = {},
+    maxTurns = null,
+    onEvent = null,
+    dryRun = false,
+    isolation = DEFAULT_ISOLATION_MODE,
+    scope = {},
+  } = options;
+  const normalizedAgent = normalizeAuditPersona(agent || {});
+  const personaScope = buildAuditPersonaFileScope({ ingest, scope });
+  const decision = decideAuditPersonaSwarm({ scope: personaScope });
+
+  if (!decision.spawn || personaScope.files.length === 0) {
+    return runSinglePersonaAgenticLoop(options);
+  }
+
+  const parentRunId =
+    normalizeString(options.runId) ||
+    `audit-persona-${normalizedAgent.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const swarmRunId = `${parentRunId}-swarm`;
+  const startedAt = Date.now();
+  const partitions = partitionAuditPersonaFiles(
+    personaScope.files,
+    AUDIT_SWARM_THRESHOLDS.maxFilesPerScanner
+  );
+  const subagentBudget = divideAuditSwarmBudget(budget, partitions.length);
+  const maxConcurrent = Math.min(AUDIT_SWARM_THRESHOLDS.maxConcurrentAgents, partitions.length);
+  const parentAgent = buildAgentIdentity(normalizedAgent);
+  const parentBudget = { ...DEFAULT_PERSONA_BUDGET, ...(budget || {}) };
+  const grantedTools = resolveGrantedTools(normalizedAgent);
+  const availableTools = resolveAvailableTools(normalizedAgent);
+  const normalizedIsolation = normalizeIsolationMode(isolation);
+  const loopMaxTurns = Math.max(
+    1,
+    Math.floor(normalizeNumber(maxTurns, normalizedAgent.maxTurns || DEFAULT_MAX_TURNS))
+  );
+
+  emitSwarmLifecycle(
+    onEvent,
+    "agent_start",
+    parentAgent,
+    {
+      runId: parentRunId,
+      mode: "audit",
+      swarm: true,
+      maxTurns: loopMaxTurns,
+      budget: parentBudget,
+      grantedTools,
+      availableTools,
+      isolation: normalizedIsolation,
+      permissionMode: normalizedAgent.permissionMode,
+      dryRun: Boolean(dryRun),
+      seedFindingCount: Array.isArray(seedFindings) ? seedFindings.length : 0,
+      deterministicBaselineFindingCount: Array.isArray(deterministicBaseline?.findings)
+        ? deterministicBaseline.findings.length
+        : 0,
+      fileCount: personaScope.files.length,
+      partitionCount: partitions.length,
+    },
+    null,
+    parentRunId
+  );
+
+  emitSwarmLifecycle(
+    onEvent,
+    "swarm_start",
+    parentAgent,
+    {
+      runId: parentRunId,
+      swarmRunId,
+      personaId: normalizedAgent.id,
+      mode: "audit",
+      reason: decision.reason,
+      fileCount: decision.fileCount,
+      estimatedLoc: decision.estimatedLoc,
+      routeGroups: decision.routeGroups,
+      routeGroupNames: decision.routeGroupNames,
+      partitionCount: partitions.length,
+      maxFilesPerSubagent: AUDIT_SWARM_THRESHOLDS.maxFilesPerScanner,
+      maxConcurrent,
+      parentMaxCostUsd: parentBudget.maxCostUsd,
+      subagentMaxCostUsd: subagentBudget.maxCostUsd,
+    },
+    null,
+    parentRunId
+  );
+
+  const subagentResults = await runWithConcurrency(
+    partitions.map((files, index) => ({ files, subagentIndex: index + 1 })),
+    maxConcurrent,
+    async ({ files, subagentIndex }) => {
+      const subagentStart = Date.now();
+      const subagentAgent = buildSubagentPersona(normalizedAgent, subagentIndex);
+      const subagentIdentity = buildAgentIdentity(subagentAgent);
+      const subagentRunId = `${swarmRunId}-${subagentIndex}`;
+      const scopedFiles = files.map((file) => file.path);
+      const eventContext = {
+        parentRunId,
+        swarmRunId,
+        subagentRunId,
+        personaId: normalizedAgent.id,
+        parentPersonaId: normalizedAgent.id,
+        subagentIndex,
+        partitionCount: partitions.length,
+        files: scopedFiles,
+        fileCount: scopedFiles.length,
+      };
+
+      try {
+        const scopedBaseline = deterministicBaseline
+          ? {
+              ...deterministicBaseline,
+              findings: filterFindingsByFiles(deterministicBaseline.findings, files),
+            }
+          : deterministicBaseline;
+        const result = await runSinglePersonaAgenticLoop({
+          ...options,
+          agent: subagentAgent,
+          deterministicBaseline: scopedBaseline,
+          seedFindings: filterFindingsByFiles(seedFindings, files),
+          budget: subagentBudget,
+          maxTurns: loopMaxTurns,
+          runId: subagentRunId,
+          eventContext,
+          assignedFiles: files,
+        });
+        const findings = (result.findings || []).map((finding) => ({
+          ...finding,
+          persona: normalizedAgent.id,
+          swarm: {
+            runId: swarmRunId,
+            personaId: normalizedAgent.id,
+            subagentIndex,
+            partitionCount: partitions.length,
+            files: scopedFiles,
+          },
+        }));
+        return {
+          ...result,
+          agentId: subagentAgent.id,
+          parentAgentId: normalizedAgent.id,
+          findings,
+          summary: severitySummary(findings),
+          files: scopedFiles,
+          subagentIndex,
+          durationMs: Math.max(0, Date.now() - subagentStart),
+        };
+      } catch (error) {
+        emitSwarmLifecycle(
+          onEvent,
+          "agent_error",
+          subagentIdentity,
+          {
+            ...eventContext,
+            error: error instanceof Error ? error.message : String(error),
+            durationMs: Math.max(0, Date.now() - subagentStart),
+          },
+          {
+            costUsd: 0,
+            outputTokens: 0,
+            toolCalls: 0,
+            durationMs: Math.max(0, Date.now() - subagentStart),
+          },
+          subagentRunId
+        );
+        return {
+          runId: subagentRunId,
+          agentId: subagentAgent.id,
+          parentAgentId: normalizedAgent.id,
+          persona: subagentAgent.persona,
+          domain: subagentAgent.domain,
+          status: "error",
+          findings: [],
+          summary: severitySummary([]),
+          confidence: computeConfidence(normalizedAgent, []),
+          usage: {
+            costUsd: 0,
+            outputTokens: 0,
+            toolCalls: 0,
+            durationMs: Math.max(0, Date.now() - subagentStart),
+            filesRead: [],
+          },
+          grantedTools,
+          availableTools,
+          isolation: normalizedIsolation,
+          messageHistoryLength: 0,
+          turns: 0,
+          files: scopedFiles,
+          subagentIndex,
+          error: error instanceof Error ? error.message : String(error),
+          durationMs: Math.max(0, Date.now() - subagentStart),
+        };
+      }
+    }
+  );
+
+  subagentResults.sort((left, right) => left.subagentIndex - right.subagentIndex);
+  const findings = subagentResults.flatMap((result) => result.findings || []);
+  const summary = severitySummary(findings);
+  const usage = aggregateUsage(subagentResults);
+  usage.durationMs = Math.max(0, Date.now() - startedAt);
+  const status = summarizeSwarmStatus(subagentResults);
+  const confidence = computeConfidence(normalizedAgent, findings);
+  const okCount = subagentResults.filter((result) => result.status !== "error").length;
+  const errorCount = subagentResults.length - okCount;
+
+  emitSwarmLifecycle(
+    onEvent,
+    "swarm_complete",
+    parentAgent,
+    {
+      runId: parentRunId,
+      swarmRunId,
+      personaId: normalizedAgent.id,
+      subagentCount: subagentResults.length,
+      ok: okCount,
+      error: errorCount,
+      findings: findings.length,
+      summary,
+      totalCostUsd: usage.costUsd,
+      durationMs: usage.durationMs,
+    },
+    usage,
+    parentRunId
+  );
+
+  emitSwarmLifecycle(
+    onEvent,
+    "agent_complete",
+    parentAgent,
+    {
+      ...summary,
+      runId: parentRunId,
+      status,
+      turns: subagentResults.reduce((sum, result) => sum + normalizeNumber(result.turns, 0), 0),
+      confidence,
+      costUsd: usage.costUsd,
+      durationMs: usage.durationMs,
+      swarm: true,
+      subagentCount: subagentResults.length,
+    },
+    usage,
+    parentRunId
+  );
+
+  return {
+    runId: parentRunId,
+    agentId: normalizedAgent.id,
+    persona: normalizedAgent.persona,
+    domain: normalizedAgent.domain,
+    status,
+    findings,
+    summary,
+    confidence,
+    usage,
+    grantedTools,
+    availableTools,
+    isolation: normalizedIsolation,
+    messageHistoryLength: subagentResults.reduce(
+      (sum, result) => sum + normalizeNumber(result.messageHistoryLength, 0),
+      0
+    ),
+    turns: subagentResults.reduce((sum, result) => sum + normalizeNumber(result.turns, 0), 0),
+    swarm: {
+      runId: swarmRunId,
+      decision,
+      subagentCount: subagentResults.length,
+      ok: okCount,
+      error: errorCount,
+      partitionSizes: partitions.map((files) => files.length),
+      subagents: subagentResults.map((result) => ({
+        id: result.agentId,
+        index: result.subagentIndex,
+        status: result.status,
+        files: result.files || [],
+        findings: (result.findings || []).length,
+        costUsd: result.usage?.costUsd || 0,
+        outputTokens: result.usage?.outputTokens || 0,
+        toolCalls: result.usage?.toolCalls || 0,
+        durationMs: result.durationMs || result.usage?.durationMs || 0,
+        error: result.error || null,
+      })),
+    },
   };
 }

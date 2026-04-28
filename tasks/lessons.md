@@ -3,6 +3,7 @@
 ## 2026-04-27
 
 - When the user asks for a full autonomous multi-PR run, keep the execution board active and immediately advance to the next branch after post-merge gates instead of stopping after a single PR summary.
+- After context compaction in a multi-PR chain, first verify the last merge/workflow state, sync Senti, then continue to the next named PR; a green merged PR is a waypoint, not the end state.
 - If a Senti session rejects writes as expired, create a fresh session immediately, post the dashboard link, and continue polling both the old readable session and the new writable session for coordination.
 
 ## 2026-04-26
