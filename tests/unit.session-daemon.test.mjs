@@ -157,10 +157,11 @@ test("Unit session daemon: unanswered help_request gets auto-response within tim
         targetPath: tempRoot,
       }
     );
-    await sleep(350);
-
-    const stream = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
-    const response = stream.find((event) => event.event === "help_response");
+    const response = await waitForStreamEvent(
+      session.sessionId,
+      (event) => event.event === "help_response" && event.payload?.requestId === "req-help-1",
+      { targetPath: tempRoot }
+    );
     assert.ok(response);
     assert.equal(validateAgentEvent(response, { allowLegacy: false }), true);
     assert.equal(response.agent.id, "senti");
