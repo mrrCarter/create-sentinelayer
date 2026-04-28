@@ -1,3 +1,9 @@
+import {
+  getCoordinationEtiquetteItems,
+  renderCoordinationMarkdownSection,
+  renderCoordinationTicketBlock,
+} from "../session/coordination-guidance.js";
+
 export const SUPPORTED_GUIDE_EXPORT_FORMATS = Object.freeze([
   "jira",
   "linear",
@@ -167,6 +173,8 @@ function buildTicket(phase, index) {
       "",
       "Acceptance criteria:",
       acceptanceBlock || "1. Phase outcomes are verified by deterministic checks.",
+      "",
+      renderCoordinationTicketBlock(),
     ].join("\n"),
   };
 }
@@ -235,6 +243,8 @@ ${goal}
 ## Phase Execution Plan
 ${phaseMarkdown}
 
+${renderCoordinationMarkdownSection()}
+
 ## Suggested PR Sequence
 ${resolvedPhases
   .map((phase, index) => `${index + 1}. ${phase.title} (${phase.effort.label})`)
@@ -246,6 +256,7 @@ ${resolvedPhases
     goal,
     phases: resolvedPhases,
     tickets,
+    coordinationRules: getCoordinationEtiquetteItems(),
     markdown,
   };
 }
@@ -256,12 +267,14 @@ export function renderGuideExport({ format, guide }) {
     project: guide.projectName,
     generated_at: new Date().toISOString(),
     issues: guide.tickets,
+    coordination_rules: Array.isArray(guide.coordinationRules) ? guide.coordinationRules : [],
   };
 
   if (normalized === "jira") {
     return JSON.stringify(
       {
         format: "jira",
+        coordination_rules: payload.coordination_rules,
         issues: payload.issues.map((issue) => ({
           summary: issue.title,
           description: issue.description,
@@ -279,6 +292,7 @@ export function renderGuideExport({ format, guide }) {
     return JSON.stringify(
       {
         format: "linear",
+        coordination_rules: payload.coordination_rules,
         issues: payload.issues.map((issue, index) => ({
           title: issue.title,
           description: issue.description,

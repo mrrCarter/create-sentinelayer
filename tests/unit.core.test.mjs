@@ -198,6 +198,8 @@ test("Unit: spec generator renders deterministic sections from template + ingest
   assert.match(markdown, /Phase 1 - Impact Analysis/);
   assert.match(markdown, /Estimated effort:/);
   assert.match(markdown, /Dependencies:/);
+  assert.match(markdown, /Multi-Agent Coordination Protocol/);
+  assert.match(markdown, /sl review --diff/);
 });
 
 test("Unit: spec helpers validate template ids and project-name inference", () => {
@@ -320,6 +322,7 @@ test("Unit: prompt generator resolves target and embeds authoritative spec block
 
   assert.match(prompt, /Codex execution prompt/);
   assert.match(prompt, /Agent target: codex/);
+  assert.match(prompt, /Find the recent Senti session for this codebase/);
   assert.match(prompt, /## Source Spec \(Authoritative\)/);
   assert.match(prompt, /# SPEC - Prompt Unit Test/);
   assert.throws(

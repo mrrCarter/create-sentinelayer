@@ -71,6 +71,11 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.equal(countCoordinationMarkers(firstAgents), 1);
     assert.equal(countCoordinationMarkers(firstClaude), 1);
     assert.match(firstGuide, /SentinelLayer Session Guide for AI Agents/);
+    assert.match(firstAgents, /Find the recent Senti session for this codebase/);
+    assert.match(firstAgents, /lock: <file> - <intent>/);
+    assert.match(firstAgents, /sl review --diff/);
+    assert.match(firstAgents, /sl --help/);
+    assert.match(firstGuide, /sl session sync <id> --json/);
 
     const second = await setupSessionGuides(session.sessionId, { targetPath: tempRoot });
     assert.equal(second.agents.changed, false);
@@ -130,6 +135,7 @@ Legacy text to replace.
     assert.match(updatedAgents, /## Existing Policy/);
     assert.match(updatedAgents, /## Final Notes/);
     assert.match(updatedAgents, /## Multi-Agent Session Coordination \(SentinelLayer\)/);
+    assert.match(updatedAgents, /sl session list --path \./);
     assert.equal(countCoordinationMarkers(updatedAgents), 1);
 
     const updatedClaude = await readFile(path.join(tempRoot, "CLAUDE.md"), "utf-8");
@@ -213,6 +219,7 @@ test("Unit session setup-guides: `session inject-guide` only mutates existing in
 
     const agentsText = await readFile(path.join(tempRoot, "AGENTS.md"), "utf-8");
     assert.match(agentsText, /Keep this file and append coordination section only\./);
+    assert.match(agentsText, /plan: <scope>; files: <paths>/);
     assert.equal(countCoordinationMarkers(agentsText), 1);
 
     const claudeText = await readOptionalFile(path.join(tempRoot, "CLAUDE.md"));
