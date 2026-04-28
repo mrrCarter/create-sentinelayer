@@ -57,6 +57,7 @@ import {
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
+import { deriveSessionTitle } from "../session/senti-naming.js";
 import {
   buildDashboardUrl,
   buildTemplateLaunchPlan,
@@ -302,30 +303,80 @@ export function registerSessionCommand(program) {
         3600,
       );
 
-      // Auto-resume: if there's an active local session for this same
-      // workspace path created in the last `reuseWindowSeconds`, reuse
-      // it instead of minting a new id. Kills the orphan-creation
-      // pattern where every CLI invocation produced a fresh empty
-      // session. `--force-new` opts back into the old behavior.
+      // Auto-resume: prefer an existing active session for this codebase
+      // over minting a new one. We check both local filesystem state and the
+      // remote registry — local-only resume meant a fresh checkout / second
+      // machine would orphan the room each time, exactly the mess Carter
+      // surfaced ("all of them look like one chat re-created").
+      //
+      // Order:
+      //   1. Local session for the same targetPath inside the reuse window.
+      //   2. Remote active session whose codebasePath matches the absolute
+      //      targetPath, sorted by last activity. We fold these into the
+      //      candidate pool so a session minted on another machine can be
+      //      rejoined rather than duplicated.
+      // `--force-new` opts back into the old "always mint" behavior.
       let resumed = null;
       if (!options.forceNew) {
+        const cutoffMs = Date.now() - reuseWindowSeconds * 1000;
+        const candidates = [];
         try {
           const active = await listActiveSessions({ targetPath });
-          const cutoffMs = Date.now() - reuseWindowSeconds * 1000;
-          const candidates = active.filter((entry) => {
+          for (const entry of active) {
             const createdMs = Date.parse(entry.createdAt || "");
-            return Number.isFinite(createdMs) && createdMs >= cutoffMs;
+            if (Number.isFinite(createdMs) && createdMs >= cutoffMs) {
+              candidates.push({ ...entry, _source: "local" });
+            }
+          }
+        } catch {
+          /* local lookup failure is non-fatal */
+        }
+        try {
+          const remote = await listSessionsFromApi({
+            targetPath,
+            includeArchived: false,
+            limit: 50,
           });
-          candidates.sort((a, b) =>
+          if (remote && remote.ok) {
+            const normalizedTarget = String(targetPath).toLowerCase();
+            for (const entry of remote.sessions || []) {
+              const codebase = String(entry.codebasePath || "").toLowerCase();
+              if (!codebase || codebase !== normalizedTarget) continue;
+              if (entry.archiveStatus && entry.archiveStatus !== "active") continue;
+              const lastMs = Date.parse(entry.lastActivityAt || entry.createdAt || "");
+              if (Number.isFinite(lastMs) && lastMs >= cutoffMs) {
+                candidates.push({
+                  sessionId: entry.sessionId,
+                  createdAt: entry.createdAt,
+                  lastActivityAt: entry.lastActivityAt,
+                  expiresAt: entry.expiresAt,
+                  status: entry.status || "active",
+                  template: entry.templateName || null,
+                  title: entry.title || null,
+                  _source: "remote",
+                });
+              }
+            }
+          }
+        } catch {
+          /* remote lookup failure is non-fatal */
+        }
+        if (candidates.length > 0) {
+          // Prefer the most recent activity. Local + remote may name the
+          // same session; dedupe on sessionId before picking.
+          const seen = new Set();
+          const deduped = [];
+          for (const entry of candidates) {
+            if (seen.has(entry.sessionId)) continue;
+            seen.add(entry.sessionId);
+            deduped.push(entry);
+          }
+          deduped.sort((a, b) =>
             String(b.lastActivityAt || b.createdAt || "").localeCompare(
               String(a.lastActivityAt || a.createdAt || ""),
             ),
           );
-          if (candidates.length > 0) {
-            resumed = candidates[0];
-          }
-        } catch (error) {
-          // listActiveSessions failure is non-fatal; fall through to fresh create.
+          resumed = deduped[0];
         }
       }
 
@@ -358,11 +409,19 @@ export function registerSessionCommand(program) {
       const durationMs = Date.now() - startedAt;
       const launchPlan = template ? buildTemplateLaunchPlan(created.sessionId, template) : [];
       const dashboardUrl = buildDashboardUrl(created.sessionId);
+      // Default the title to a stable codebase+date slug so the web sidebar
+      // never fills with anonymous "<null>" rows. The caller can still
+      // override with --title. We skip the auto-title for resumed sessions
+      // because the room already has a name we don't want to clobber.
       const titleArg = normalizeString(options.title);
+      const autoTitle = !resumed && !titleArg ? deriveSessionTitle(targetPath) : "";
+      const effectiveTitle = titleArg || autoTitle;
 
-      // If the caller passed --title, push it to the API so the web
-      // sidebar shows the label (best-effort, non-blocking).
-      if (titleArg) {
+      // If a title needs to land on the dashboard, push it. We always push
+      // when the caller passed --title, AND we push the auto-derived title
+      // for fresh (non-resumed) sessions so the room is never anonymous on
+      // the web. Best-effort, non-blocking.
+      if (effectiveTitle) {
         void (async () => {
           try {
             const session = await resolveActiveAuthSession({
@@ -378,7 +437,7 @@ export function registerSessionCommand(program) {
                 method: "POST",
                 operationName: "session.set_title",
                 headers: { Authorization: `Bearer ${session.token}` },
-                body: { title: titleArg },
+                body: { title: effectiveTitle },
               },
             );
           } catch (_error) {
@@ -405,7 +464,8 @@ export function registerSessionCommand(program) {
         launchPlan,
         dashboardUrl,
         resumed: Boolean(resumed),
-        title: titleArg || null,
+        title: effectiveTitle || null,
+        titleAuto: Boolean(autoTitle && !titleArg),
       };
 
       // Best-effort admin visibility sync. Session creation remains local-first.

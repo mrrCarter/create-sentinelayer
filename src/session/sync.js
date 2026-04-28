@@ -407,6 +407,17 @@ export async function syncSessionEventToApi(
     return { synced: false, reason: "invalid_input" };
   }
 
+  // Test-fixture leak guard. Tests in this repo (and downstream consumers)
+  // create + tear down sessions using a temp workspace; on a developer
+  // machine those calls inherit the user's stored auth and silently posted
+  // hundreds of orphan rooms to prod (Carter saw ~200 "<null>" sessions).
+  // Honoring SENTINELAYER_SKIP_REMOTE_SYNC=1 keeps everything local while
+  // still exercising the appendToStream + agent_join code paths the tests
+  // care about. Local NDJSON durability is unaffected.
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
+    return { synced: false, reason: "remote_sync_disabled_env" };
+  }
+
   const normalizedNowMs = Number(nowMs()) || Date.now();
   if (isCircuitOpen(outboundCircuit, normalizedNowMs)) {
     return { synced: false, reason: "circuit_breaker_open" };
@@ -499,6 +510,13 @@ async function syncSessionAuxPayload(
   const normalizedSessionId = normalizeString(sessionId);
   if (!normalizedSessionId || !pathSuffix || !payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { synced: false, reason: "invalid_input" };
+  }
+
+  // Same test-fixture leak guard as syncSessionEventToApi — keep parity
+  // so neither the event channel nor the metadata/error channels can
+  // exfiltrate a test session into prod when the env flag is set.
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
+    return { synced: false, reason: "remote_sync_disabled_env" };
   }
 
   const normalizedNowMs = Number(nowMs()) || Date.now();
@@ -1034,6 +1052,11 @@ export function resetSessionSyncStateForTests() {
   inboundCircuit.openedAtMs = 0;
   sessionIngestWindowBySessionId.clear();
   humanRelayWindowBySessionId.clear();
+  // Tests that exercise the network path explicitly need the
+  // SENTINELAYER_SKIP_REMOTE_SYNC guard off — otherwise the function
+  // short-circuits before the mocked fetchImpl is ever called. Tests that
+  // want the guard on can re-set the env after resetting.
+  delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
 }
 
 export {

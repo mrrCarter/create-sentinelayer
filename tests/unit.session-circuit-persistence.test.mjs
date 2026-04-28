@@ -36,6 +36,12 @@ async function withTempHome(fn) {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "senti-circuit-"));
   const previousHome = process.env.HOME;
   const previousUserProfile = process.env.USERPROFILE;
+  // Tests in this file exercise the network path via mocked fetchImpl.
+  // The setup-env shim sets SENTINELAYER_SKIP_REMOTE_SYNC=1 globally to
+  // protect the user's prod sessions; we toggle it off here so the
+  // circuit-breaker tests can observe their mocked fetches.
+  const previousSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
   __resetCircuitStateForTests(tempHome);
@@ -47,6 +53,8 @@ async function withTempHome(fn) {
     else process.env.HOME = previousHome;
     if (previousUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = previousUserProfile;
+    if (previousSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = previousSkip;
     await rm(tempHome, { recursive: true, force: true });
   }
 }
