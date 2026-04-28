@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   pollHumanMessages,
+  pollSessionEvents,
   resetSessionSyncStateForTests,
   syncSessionErrorToApi,
   syncSessionEventToApi,
@@ -185,6 +186,7 @@ test("Unit session sync: outbound circuit breaker opens after consecutive failur
   assert.equal(blocked.synced, false);
   assert.equal(blocked.reason, "circuit_breaker_open");
   assert.equal(callCount, 3);
+  resetSessionSyncStateForTests();
 });
 
 test("Unit session sync: pollHumanMessages sanitizes, truncates, and rate limits relayed events", async () => {
@@ -277,4 +279,82 @@ test("Unit session sync: inbound circuit breaker opens after consecutive poll fa
   assert.equal(blocked.ok, false);
   assert.equal(blocked.reason, "circuit_breaker_open");
   assert.equal(callCount, 3);
+  resetSessionSyncStateForTests();
+});
+
+test("Unit session sync: pollSessionEvents uses cursor and limit against events endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await pollSessionEvents("sess-events", {
+    since: "cursor-1",
+    limit: 500,
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: [
+            {
+              cursor: "cursor-2",
+              event: "session_message",
+              payload: { message: "hello" },
+            },
+          ],
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_400_000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.cursor, "cursor-2");
+  assert.equal(result.events.length, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-events/events?after=cursor-1&limit=200"
+  );
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");
+});
+
+test("Unit session sync: pollSessionEvents reuses inbound circuit breaker", async () => {
+  resetSessionSyncStateForTests();
+  let callCount = 0;
+  const failureFetch = async () => {
+    callCount += 1;
+    return {
+      ok: false,
+      status: 503,
+    };
+  };
+  const authStub = async () => ({
+    token: "tok_test_123",
+    apiUrl: "https://api.sentinelayer.com",
+  });
+
+  for (let index = 0; index < 3; index += 1) {
+    const result = await pollSessionEvents("sess-events-breaker", {
+      resolveAuthSession: authStub,
+      fetchImpl: failureFetch,
+      nowMs: () => 1_700_000_500_000,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "api_503");
+  }
+
+  const blocked = await pollSessionEvents("sess-events-breaker", {
+    resolveAuthSession: authStub,
+    fetchImpl: failureFetch,
+    nowMs: () => 1_700_000_500_100,
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, "circuit_breaker_open");
+  assert.equal(callCount, 3);
+  resetSessionSyncStateForTests();
 });

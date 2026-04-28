@@ -276,6 +276,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const program = buildProgram(registerSessionCommand);
 
   getCommandByPath(program, "session ensure");
+  getCommandByPath(program, "session listen");
   const start = getCommandByPath(program, "session start");
   assertCommandHasOption(start, "--resume");
   assertCommandHasOption(start, "--no-resume");
@@ -288,6 +289,19 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(ensure, "--no-resume");
   assertCommandHasOption(ensure, "--reuse-window-seconds <seconds>");
   assertCommandHasOption(ensure, "--force-new");
+
+  const say = getCommandByPath(program, "session say");
+  assertCommandHasOption(say, "--to <agent>");
+
+  const listen = getCommandByPath(program, "session listen");
+  assertCommandHasOption(listen, "--session <id>");
+  assertCommandHasOption(listen, "--agent <id>");
+  assertCommandHasOption(listen, "--interval <seconds>");
+  assertCommandHasOption(listen, "--emit <format>");
+  assertCommandHasOption(listen, "--limit <n>");
+  assertCommandHasOption(listen, "--since <cursor>");
+  assertCommandHasOption(listen, "--replay");
+  assertCommandHasOption(listen, "--max-polls <n>");
 });
 
 test("Unit command contracts: review rejects conflicting diff and staged flags", async () => {

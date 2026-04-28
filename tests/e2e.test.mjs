@@ -2153,6 +2153,7 @@ test("CLI guide generate creates BUILD_GUIDE.md with phases, dependencies, and a
     assert.match(guideText, /- Dependencies: none \(entry phase\)/);
     assert.match(guideText, /#### Acceptance Criteria/);
     assert.match(guideText, /## Multi-Agent Coordination Protocol/);
+    assert.match(guideText, /sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson/);
     assert.match(guideText, /sl session sync <id> --json/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -6691,13 +6692,14 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     const sayResult = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
-      args: ["session", "say", sessionId, "test message", "--agent", "agent-alpha", "--path", tempRoot, "--json"],
+      args: ["session", "say", sessionId, "test message", "--agent", "agent-alpha", "--to", "agent-beta", "--path", tempRoot, "--json"],
     });
     assert.equal(sayResult.code, 0, sayResult.stderr || sayResult.stdout);
     const sayPayload = JSON.parse(String(sayResult.stdout || "").trim());
     assert.equal(sayPayload.command, "session say");
     assert.equal(sayPayload.event.event, "session_message");
     assert.equal(sayPayload.event.payload.message, "test message");
+    assert.equal(sayPayload.event.payload.to, "agent-beta");
 
     const readResult = await runCli({
       cwd: tempRoot,

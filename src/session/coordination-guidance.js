@@ -4,7 +4,7 @@ export const COORDINATION_ETIQUETTE_ITEMS = Object.freeze([
   "Find the recent Senti session for this codebase: run `sl session list --path .` and `sl session list --remote --path .`; join the right room with `sl session join <id> --name <your-name> --role coder`.",
   "Before implementation, post a short plan and file claims with `sl session say <id> \"plan: <scope>; files: <paths>\"`.",
   "Claim shared files before editing with `lock: <file> - <intent>` and release them with `unlock: <file> - done`.",
-  "Poll coordination every 5 minutes: run `sl session sync <id> --json`, then `sl session read <id> --tail 20 --json`, and answer any non-self message.",
+  "Run a background listener for replies: `sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson`; if background polling is unavailable, fall back to `sl session sync <id> --json` then `sl session read <id> --tail 20 --json` every 5 minutes.",
   "Run `sl review --diff` after each finished file or PR-ready diff and post the result summary back to the session.",
   "Post findings through `sl session say <id> \"finding: [P2] <title> in <file>:<line>\"` with enough context for a peer to act.",
   "Ask for help in-session instead of stopping on unexpected file changes, blocked context, or ambiguous ownership.",

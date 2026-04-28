@@ -165,6 +165,7 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   });
   assert.match(handoff, /## Multi-Agent Coordination \(if session active\)/);
   assert.match(handoff, /sl session join <id> --name <your-name> --role coder/);
+  assert.match(handoff, /sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson/);
   assert.match(handoff, /sl session sync <id> --json/);
   assert.match(handoff, /sl --help/);
 
@@ -172,5 +173,6 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   assert.match(guide, /SentinelLayer Session Guide for AI Agents/);
   assert.match(guide, /sl session list/);
   assert.match(guide, /sl session say <id>/);
+  assert.match(guide, /sl session listen --session <id>/);
   assert.match(guide, /sl review --diff/);
 });

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { pollHumanMessages, syncSessionEventToApi } from "../src/session/sync.js";
+import {
+  pollHumanMessages,
+  resetSessionSyncStateForTests,
+  syncSessionEventToApi,
+} from "../src/session/sync.js";
 
 // The sync.js module does not export resolveApiBaseUrl directly, so we exercise
 // the allowlist via the public API by mocking resolveAuthSession to return
@@ -24,6 +28,7 @@ function makeFetchRecorder() {
 }
 
 test("sync apiUrl allowlist: tampered session.apiUrl falls back to canonical host on pollHumanMessages", async () => {
+  resetSessionSyncStateForTests();
   const { calls, fetchImpl } = makeFetchRecorder();
   const tamperedSession = {
     token: "fake-token-for-test",
@@ -44,6 +49,7 @@ test("sync apiUrl allowlist: tampered session.apiUrl falls back to canonical hos
 });
 
 test("sync apiUrl allowlist: tampered session.apiUrl falls back on syncSessionEventToApi", async () => {
+  resetSessionSyncStateForTests();
   const { calls, fetchImpl } = makeFetchRecorder();
   const tamperedSession = {
     token: "fake-token-for-test",
@@ -68,6 +74,7 @@ test("sync apiUrl allowlist: tampered session.apiUrl falls back on syncSessionEv
 });
 
 test("sync apiUrl allowlist: localhost is allowed for dev sessions", async () => {
+  resetSessionSyncStateForTests();
   const { calls, fetchImpl } = makeFetchRecorder();
   const devSession = {
     token: "fake-token",
@@ -86,6 +93,7 @@ test("sync apiUrl allowlist: localhost is allowed for dev sessions", async () =>
 });
 
 test("sync apiUrl allowlist: api.staging.sentinelayer.com is allowed", async () => {
+  resetSessionSyncStateForTests();
   const { calls, fetchImpl } = makeFetchRecorder();
   const stagingSession = {
     token: "fake-token",
