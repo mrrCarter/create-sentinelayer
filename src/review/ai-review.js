@@ -58,6 +58,20 @@ function sanitizeExcerpt(text) {
     .slice(0, 180);
 }
 
+function cloneJsonCompatible(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (typeof value === "string") {
+    return normalizeString(value) || null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
 function extractJsonPayload(rawText) {
   const text = String(rawText || "").trim();
   if (!text) {
@@ -80,7 +94,10 @@ function extractJsonPayload(rawText) {
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (Array.isArray(parsed)) {
+        return { findings: parsed };
+      }
+      if (parsed && typeof parsed === "object") {
         return parsed;
       }
     } catch {
@@ -118,14 +135,31 @@ function normalizeConfidence(value) {
   return Math.max(0, Math.min(1, normalized));
 }
 
+function normalizeTrafficLight(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (["green", "yellow", "red"].includes(normalized)) {
+    return normalized;
+  }
+  return "";
+}
+
 function normalizeAiFinding(rawFinding, index) {
   if (!rawFinding || typeof rawFinding !== "object" || Array.isArray(rawFinding)) {
     return null;
   }
 
   const message = normalizeString(rawFinding.title || rawFinding.message);
-  const rationale = normalizeString(rawFinding.rationale || rawFinding.excerpt);
-  const suggestedFix = normalizeString(rawFinding.suggestedFix);
+  const evidence = normalizeString(rawFinding.evidence || rawFinding.excerpt);
+  const rootCause = normalizeString(rawFinding.rootCause || rawFinding.root_cause || rawFinding.rationale);
+  const recommendedFix = normalizeString(
+    rawFinding.recommendedFix || rawFinding.recommended_fix || rawFinding.suggestedFix
+  );
+  const rationale = normalizeString(rawFinding.rationale || rootCause || evidence || rawFinding.excerpt);
+  const suggestedFix = normalizeString(rawFinding.suggestedFix || recommendedFix);
+  const lensEvidence = cloneJsonCompatible(rawFinding.lensEvidence || rawFinding.lens_evidence);
+  const reproduction = cloneJsonCompatible(rawFinding.reproduction);
+  const userImpact = normalizeString(rawFinding.userImpact || rawFinding.user_impact);
+  const trafficLight = normalizeTrafficLight(rawFinding.trafficLight || rawFinding.traffic_light);
 
   return {
     severity: normalizeSeverity(rawFinding.severity),
@@ -134,6 +168,13 @@ function normalizeAiFinding(rawFinding, index) {
     message: message || `AI finding ${index + 1}`,
     rationale: rationale || "AI reviewer flagged a potential issue requiring validation.",
     suggestedFix: suggestedFix || "Review and remediate this finding.",
+    evidence,
+    lensEvidence,
+    reproduction,
+    userImpact,
+    trafficLight,
+    rootCause,
+    recommendedFix: recommendedFix || suggestedFix || "Review and remediate this finding.",
     confidence: normalizeConfidence(rawFinding.confidence),
   };
 }
@@ -212,6 +253,7 @@ export function buildAiReviewPrompt({
   deterministicFindings = [],
   scopedFiles = [],
   specContext = null,
+  systemPrompt = "",
   maxFindings = DEFAULT_AI_MAX_FINDINGS,
 } = {}) {
   const normalizedSummary = deterministicSummary || { P0: 0, P1: 0, P2: 0, P3: 0 };
@@ -226,7 +268,7 @@ export function buildAiReviewPrompt({
   const specAcceptanceCriteriaCount = Number(specContext?.acceptanceCriteriaCount || 0);
   const specPreview = Array.isArray(specContext?.endpointsPreview) ? specContext.endpointsPreview : [];
 
-  return [
+  const basePrompt = [
     "You are Sentinelayer Omar reviewer layer 9.3.",
     "Review the deterministic findings and scoped files. Add ONLY materially new findings.",
     "Do not repeat deterministic findings unless you add new exploitability rationale.",
@@ -241,6 +283,13 @@ export function buildAiReviewPrompt({
     '      "file": "relative/path",',
     '      "line": 1,',
     '      "title": "finding title",',
+    '      "evidence": "concrete code excerpt or static trace evidence",',
+    '      "lensEvidence": {"A": "passed|failed|not_applicable: short evidence"},',
+    '      "reproduction": {"type": "static_trace|manual_step|shell|runtime_probe", "steps": ["step 1"]},',
+    '      "user_impact": "operator/user/system impact",',
+    '      "trafficLight": "green|yellow|red",',
+    '      "rootCause": "why this exists",',
+    '      "recommendedFix": "specific remediation",',
     '      "rationale": "why this matters",',
     '      "suggestedFix": "specific remediation",',
     '      "confidence": 0.0',
@@ -264,6 +313,18 @@ export function buildAiReviewPrompt({
     "",
     "Deterministic findings:",
     findingLines || "- none",
+  ].join("\n");
+
+  const promptPrelude = normalizeString(systemPrompt);
+  if (!promptPrelude) {
+    return basePrompt;
+  }
+  return [
+    promptPrelude,
+    "",
+    "---",
+    "",
+    basePrompt,
   ].join("\n");
 }
 
@@ -305,6 +366,9 @@ function composeAiReviewMarkdown({
             (finding, index) =>
               `${index + 1}. [${finding.severity}] ${finding.file}:${finding.line} ${finding.message}\n` +
               `   rationale: ${finding.rationale}\n` +
+              (finding.evidence ? `   evidence: ${finding.evidence}\n` : "") +
+              (finding.userImpact ? `   user_impact: ${finding.userImpact}\n` : "") +
+              (finding.trafficLight ? `   traffic_light: ${finding.trafficLight}\n` : "") +
               `   suggested_fix: ${finding.suggestedFix}` +
               (finding.confidence === null ? "" : `\n   confidence: ${finding.confidence.toFixed(2)}`)
           )
@@ -335,16 +399,25 @@ function composeAiReviewMarkdown({
 }
 
 function toReviewFinding(aiFinding, index) {
+  const suggestedFix = aiFinding.suggestedFix || aiFinding.recommendedFix;
   return {
     severity: aiFinding.severity,
     file: aiFinding.file,
     line: aiFinding.line,
     message: aiFinding.message,
-    excerpt: sanitizeExcerpt(aiFinding.rationale),
+    excerpt: sanitizeExcerpt(aiFinding.evidence || aiFinding.rationale),
     ruleId: `SL-AI-${String(index + 1).padStart(3, "0")}`,
-    suggestedFix: aiFinding.suggestedFix,
+    suggestedFix,
     layer: "ai_reasoning",
     confidence: aiFinding.confidence,
+    evidence: aiFinding.evidence,
+    lensEvidence: aiFinding.lensEvidence,
+    reproduction: aiFinding.reproduction,
+    userImpact: aiFinding.userImpact,
+    trafficLight: aiFinding.trafficLight,
+    rootCause: aiFinding.rootCause,
+    recommendedFix: aiFinding.recommendedFix || suggestedFix,
+    rationale: aiFinding.rationale,
   };
 }
 
@@ -357,6 +430,20 @@ function buildDryRunResponse({ deterministicSummary, maxFindings } = {}) {
       file: "src/example.js",
       line: 1 + index,
       title: `DRY_RUN finding ${index + 1}`,
+      evidence: "const unsafe = exampleInput;",
+      lensEvidence: {
+        A: "not_applicable: no route/runtime boundary in dry-run fixture",
+        J: "failed: synthetic path needs targeted verification before merge",
+        K: "passed: no AI tool permission escalation in dry-run fixture",
+      },
+      reproduction: {
+        type: "static_trace",
+        steps: ["Inspect src/example.js", "Trace exampleInput into the synthetic finding path"],
+      },
+      user_impact: "Operator sees a synthetic risk used to validate OmarGate evidence plumbing.",
+      trafficLight: index === 0 ? "yellow" : "green",
+      rootCause: "DRY_RUN synthetic root cause for evidence-contract validation.",
+      recommendedFix: "Validate this path with targeted remediation.",
       rationale: `Synthetic AI rationale with deterministic context P1=${deterministicSummary.P1}.`,
       suggestedFix: "Validate this path with targeted remediation.",
       confidence: index === 0 ? 0.72 : 0.54,
@@ -393,6 +480,7 @@ export async function runAiReviewLayer({
   maxToolCalls = 0,
   maxNoProgress = 3,
   warningThresholdPercent = 80,
+  systemPrompt = "",
   dryRun = false,
   env = process.env,
 } = {}) {
@@ -436,6 +524,7 @@ export async function runAiReviewLayer({
     deterministicFindings: deterministic?.findings || [],
     scopedFiles: deterministic?.scope?.scannedRelativeFiles || [],
     specContext: deterministic?.layers?.specBinding || null,
+    systemPrompt,
     maxFindings: normalizedMaxFindings,
   });
 

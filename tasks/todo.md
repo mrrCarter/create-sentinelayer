@@ -1,3 +1,56 @@
+# 2026-04-28 - DD PR-C3 OmarGate 11-Lens Evidence (`dd/pr-c3-eleven-lens-omargate`)
+
+## Plan
+- [x] Confirm PR-C2 merge and post-merge workflows are green, sync from `origin/main`, and create a clean PR-C3 worktree.
+- [x] Post PR-C3 start/status and clean-worktree file claims to Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7`.
+- [x] Read DD PR-C3 contract, Jules 11-lens prompt pattern, OmarGate persona prompt generation, AI parser, OmarGate orchestration, report reconciliation, and tests.
+- [x] Add a compact generic 11-lens appendix to all OmarGate persona prompts without importing Jules modules.
+- [x] Wire persona prompts into both OmarGate single-call and swarm subagent AI paths.
+- [x] Persist per-persona and per-subagent prompt artifacts without cross-persona overwrites.
+- [x] Parse/preserve Jules-compatible evidence fields (`lensEvidence`, `reproduction`, `userImpact`, `trafficLight`, `rootCause`, `recommendedFix`).
+- [x] Add focused prompt, parser, OmarGate artifact, and report reconciliation tests.
+- [x] Run focused tests, repo gates, DD-spec review, full verify, and local OmarGate evidence check.
+- [ ] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-D1.
+
+## File Claims
+- `src/review/persona-prompts.js`
+- `src/review/ai-review.js`
+- `src/review/omargate-orchestrator.js`
+- `src/review/report.js`
+- `tests/unit.persona-prompts.test.mjs`
+- `tests/unit.review-ai.test.mjs`
+- `tests/unit.omargate-orchestrator.test.mjs`
+- `tests/unit.review-report.test.mjs`
+- `tasks/evals/pr-c3-eleven-lens-omargate.md`
+- `tasks/todo.md`
+- `tasks/lessons.md`
+
+## Review
+- In progress. Implementation is isolated in clean worktree `create-sentinelayer-pr176-c3-clean` so unrelated session auto-name/resume dirty work in the original worktree does not contaminate this PR.
+- Borrowed the 11-lens evidence contract shape into OmarGate prompt code directly rather than importing Jules modules.
+- Wired OmarGate persona-specific prompts into dry-run/live AI review calls for both single persona execution and swarm subagents.
+- Routed prompt artifacts to `.sentinelayer/reviews/<run>/personas/<persona>/REVIEW_AI_PROMPT.txt` and `.sentinelayer/reviews/<run>/swarm/<persona>/subagent-N/REVIEW_AI_PROMPT.txt`.
+- Extended AI parsing/reconciliation to keep evidence contract fields through final reports.
+- Focused validation passed:
+  - `node --check src/review/persona-prompts.js src/review/ai-review.js src/review/omargate-orchestrator.js src/review/report.js`
+  - `node --test tests/unit.persona-prompts.test.mjs` (2 tests pass)
+  - `node --test tests/unit.review-ai.test.mjs` (7 tests pass)
+  - `node --test tests/unit.omargate-orchestrator.test.mjs` (8 tests pass)
+  - `node --test tests/unit.review-report.test.mjs` (7 tests pass)
+- Repo gates passed:
+  - `npm run check` (294 files pass)
+  - `git diff --check` (pass)
+  - `node bin/create-sentinelayer.js review --diff --spec tasks/dd-build-spec-2026-04-26.md --json` (P0=0 P1=0 P2=0 P3=0; run `review-20260428-015704-2ee60711`)
+  - `npm run verify` (pass: check, docs build, 95 e2e tests, 1133 unit coverage tests, npm pack dry-run)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --persona security --max-cost 1` (pass: P0=0 P1=0 blocking=false; run `omargate-1777341743129-96e25ff3`)
+- False-positive guard measurement recorded in `tasks/evals/pr-c3-eleven-lens-omargate.md`: baseline `origin/main` prompt coverage was 0/13 personas with `lensEvidence`; PR-C3 prompt tests prove 13/13 persona prompt coverage, and local OmarGate dry-run proved generated prompt artifacts plus reconciled evidence fields.
+- Post-rebase validation on `origin/main` `6790450` passed:
+  - Focused syntax/tests: persona prompts, AI parser, OmarGate orchestrator, and report reconciliation passed 24/24 focused tests.
+  - `npm run check` passed (294 files) and `git diff --check` passed.
+  - `review --diff --refresh --spec tasks/dd-build-spec-2026-04-26.md --json` was clean but scoped to 0 files because the PR changes are committed; verified PR diff separately with 11 changed files.
+  - Full deterministic spec review (`review --spec tasks/dd-build-spec-2026-04-26.md --refresh --json`) scanned 556 files with P0=0/P1=0 and only non-blocking baseline P2 findings.
+  - `npm run verify` passed: check, docs build, 95 e2e tests, 1140 unit coverage tests, and npm pack dry-run.
+
 # 2026-04-28 - DD PR-C2 OmarGate Audit Reuse (`dd/pr-c2-omargate-audit-reuse`)
 
 ## Plan
@@ -10,7 +63,7 @@
 - [x] Preserve unchanged behavior when reuse is absent, invalid, or unavailable.
 - [x] Add focused unit/e2e coverage for omargate artifact persistence and `audit --reuse-omargate latest`.
 - [x] Run targeted tests, `npm run check`, DD-spec review, `npm run verify`, and local Omar/audit gates.
-- [ ] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-C3.
+- [x] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-C3.
 
 ## File Claims
 - `src/review/omargate-orchestrator.js`
@@ -42,6 +95,7 @@
   - `node bin/create-sentinelayer.js /audit --path . --reuse-omargate latest --json` (pass: reused `omargate-1777339398563-cea7eba1`, overallStatus=PASS, blocking=false)
   - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, blocking=false)
   - First PR check pass failed Eval Impact because `src/commands/audit.js` is eval-impacting; added `tasks/evals/pr-c2-omargate-audit-reuse.md` with deterministic reuse evidence and rerunning CI.
+  - PR #436 merged as `05c09cd4162aa530f969e1fe7d5b1e5cf0d42aa7`; post-merge main workflows passed before PR-C3 started.
 
 # 2026-04-28 - DD PR-C1 Confidence Floor (`dd/pr-c1-confidence-floor`)
 

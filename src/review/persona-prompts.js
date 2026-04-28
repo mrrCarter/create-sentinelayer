@@ -27,6 +27,29 @@ Non-negotiables for your review:
 
 Your output must help an acquirer decide whether to buy this codebase. Be FOUND-violations accurate, not speculation-padded.`;
 
+export const ELEVEN_LENS_EVIDENCE_APPENDIX = `## 11-lens evidence contract
+Evaluate every confirmed finding through these lenses before returning it:
+
+A. Route/runtime boundary integrity
+B. State, lifecycle, and hook correctness
+C. Render cost, re-render, and scalability mechanics
+D. Hydration, SSR, streaming, and environment divergence
+E. Data fetching, caching, timeout, and freshness behavior
+F. Bundle/dependency footprint and code-splitting risk
+G. Assets, scripts, layout stability, and resource loading
+H. Accessibility, keyboard, focus, and trust-critical UX
+I. Mobile/responsive reliability across 360px, 768px, and desktop
+J. Verification, rollback, and QA readiness
+K. AI governance, provenance, HITL, and agent/tool permission surfaces
+
+For each finding include:
+- lensEvidence: object keyed by lens letter with "passed", "failed", or "not_applicable" plus one short evidence sentence
+- reproduction: object with type (manual_step | shell | runtime_probe | static_trace) and steps array; required for P0/P1
+- user_impact: one sentence describing what a user/operator/system experiences
+- trafficLight: green | yellow | red for automation safety
+- rootCause: why the issue exists
+- recommendedFix: concrete fix path`;
+
 const PERSONA_PROMPTS = {
   security: {
     role: "Nina Patel — Security Specialist",
@@ -291,6 +314,8 @@ ${FAANG_GRADE_PREAMBLE}
 
 ${persona.focus}
 
+${ELEVEN_LENS_EVIDENCE_APPENDIX}
+
 ${checklistBlock}
 ## Context
 Target: ${targetPath || "(not provided)"}
@@ -313,6 +338,10 @@ Return a JSON OBJECT (not array) with this shape — return ONLY the JSON, no ot
       "line": 42,
       "title": "Brief description",
       "evidence": "Concrete code excerpt at file:line (min 1 line)",
+      "lensEvidence": { "A": "not_applicable: no route/runtime boundary impact", "K": "passed: no AI governance surface involved" },
+      "reproduction": { "type": "static_trace", "steps": ["Inspect path/to/file.ext:42", "Trace the value/control flow to the failing behavior"] },
+      "user_impact": "One sentence describing the user/operator/system failure mode",
+      "trafficLight": "green|yellow|red",
       "rootCause": "Why this is a problem",
       "recommendedFix": "Specific code change to apply",
       "confidence": 0.85,
@@ -326,6 +355,8 @@ Rules:
 - Maximum ${maxFindings} findings.
 - Only report findings you have HIGH confidence in (>= 0.7).
 - Every finding MUST have concrete file:line evidence AND a non-empty \`evidence\` code excerpt.
+- Every finding MUST include \`lensEvidence\`, \`user_impact\`, \`trafficLight\`, \`rootCause\`, and \`recommendedFix\`.
+- P0/P1 findings MUST include \`reproduction\` steps.
 - Do NOT repeat findings already in the deterministic scan.
 - Do NOT report hypothetical/speculative issues.
 - Focus on REAL, EXPLOITABLE, IMPACTFUL problems in your domain.
@@ -337,10 +368,12 @@ Rules:
 function buildGenericPrompt({ targetPath, deterministicSummary, maxFindings }) {
   return `You are a senior code reviewer. Analyze the code for security, quality, and reliability issues.
 
+${ELEVEN_LENS_EVIDENCE_APPENDIX}
+
 Target: ${targetPath || "(not provided)"}
 Deterministic scan: P0=${deterministicSummary.P0 || 0} P1=${deterministicSummary.P1 || 0} P2=${deterministicSummary.P2 || 0}
 
-Return a JSON array of up to ${maxFindings} findings with: severity, file, line, title, evidence, rootCause, recommendedFix, confidence.
+Return a JSON object with inspectedFiles, coverage, and up to ${maxFindings} findings. Each finding needs: severity, file, line, title, evidence, lensEvidence, reproduction for P0/P1, user_impact, trafficLight, rootCause, recommendedFix, confidence.
 Only report findings with concrete evidence. Do NOT repeat deterministic findings.`;
 }
 

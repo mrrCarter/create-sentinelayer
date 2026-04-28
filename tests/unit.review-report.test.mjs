@@ -149,6 +149,52 @@ test("Unit review report: confidence floor keeps findings confirmed by two AI pe
   assert.equal(reconciled.summary.droppedBelowConfidence, 0);
 });
 
+test("Unit review report: reconciliation preserves 11-lens evidence fields", () => {
+  const reconciled = reconcileReviewFindings({
+    aiFindings: [
+      {
+        severity: "P1",
+        file: "src/session.js",
+        line: 77,
+        message: "SSE reconnect can miss messages",
+        evidence: "stream reconnect path does not call /events",
+        lensEvidence: {
+          E: "failed: no canonical event backfill after reconnect",
+          J: "failed: no verification artifact for missed-event recovery",
+        },
+        reproduction: {
+          type: "static_trace",
+          steps: ["Disconnect stream", "Create event", "Reconnect without backfill"],
+        },
+        userImpact: "Operator misses peer audit updates.",
+        trafficLight: "red",
+        rootCause: "Live stream and canonical event list are divergent sources.",
+        recommendedFix: "Backfill from /events?after=<cursor> and dedupe by cursor.",
+        confidence: 0.91,
+        persona: "reliability",
+      },
+    ],
+  });
+
+  assert.equal(reconciled.findings.length, 1);
+  const finding = reconciled.findings[0];
+  assert.equal(finding.evidence, "stream reconnect path does not call /events");
+  assert.deepEqual(finding.lensEvidence, {
+    E: "failed: no canonical event backfill after reconnect",
+    J: "failed: no verification artifact for missed-event recovery",
+  });
+  assert.deepEqual(finding.reproduction.steps, [
+    "Disconnect stream",
+    "Create event",
+    "Reconnect without backfill",
+  ]);
+  assert.equal(finding.userImpact, "Operator misses peer audit updates.");
+  assert.equal(finding.trafficLight, "red");
+  assert.equal(finding.rootCause, "Live stream and canonical event list are divergent sources.");
+  assert.equal(finding.recommendedFix, "Backfill from /events?after=<cursor> and dedupe by cursor.");
+  assert.equal(finding.suggestedFix, "Backfill from /events?after=<cursor> and dedupe by cursor.");
+});
+
 test("Unit review report: dropBelowConfidence supports per-finding floor overrides", () => {
   const filtered = dropBelowConfidence([
     {
