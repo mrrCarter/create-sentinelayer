@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.9.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.12...v0.9.0) (2026-04-28)
+
+
+### Features
+
+* **audit:** add Jules-parity persona tools, harden persona isolation, and emit typed audit lifecycle/reconciliation events ([#428](https://github.com/mrrCarter/create-sentinelayer/pull/428), [#431](https://github.com/mrrCarter/create-sentinelayer/pull/431), [#432](https://github.com/mrrCarter/create-sentinelayer/pull/432)).
+* **omargate:** add swarm fanout for OmarGate and audit personas, enforce confidence floors, reuse deterministic OmarGate findings in audit, and attach 11-lens evidence contracts ([#433](https://github.com/mrrCarter/create-sentinelayer/pull/433), [#434](https://github.com/mrrCarter/create-sentinelayer/pull/434), [#435](https://github.com/mrrCarter/create-sentinelayer/pull/435), [#436](https://github.com/mrrCarter/create-sentinelayer/pull/436), [#438](https://github.com/mrrCarter/create-sentinelayer/pull/438)).
+* **session:** auto-inject coordination etiquette, add stable session ensure/auto-resume behavior, and add `sl session listen` background polling with direct addressed messages ([#439](https://github.com/mrrCarter/create-sentinelayer/pull/439), [#441](https://github.com/mrrCarter/create-sentinelayer/pull/441), [#442](https://github.com/mrrCarter/create-sentinelayer/pull/442)).
+* **devtestbot:** add Playwright browser automation base, register the devTestBot swarm persona, and wire investor-DD to engage devTestBot with artifact-backed findings ([#443](https://github.com/mrrCarter/create-sentinelayer/pull/443), [#444](https://github.com/mrrCarter/create-sentinelayer/pull/444), [#445](https://github.com/mrrCarter/create-sentinelayer/pull/445)).
+* **dd:** trigger authenticated, idempotent DD report email delivery from `omargate investor-dd --email-on-complete <addr>` after orchestrator completion ([#447](https://github.com/mrrCarter/create-sentinelayer/pull/447)).
+
+
+### Bug Fixes
+
+* **session:** replay a bounded startup tail for Senti daemon help/directive watchers so immediate post-start events are not swallowed by watcher cursor initialization ([#446](https://github.com/mrrCarter/create-sentinelayer/pull/446)).
+* **tests:** stabilize post-merge session daemon and scope-engine coverage races found during the DD train ([#440](https://github.com/mrrCarter/create-sentinelayer/pull/440)).
+
+
+### Release Plumbing
+
+* **release:** publish the full DD build surface to npm `latest`. The previous `0.8.12` package predates B/C/D/E/F merges, so this release carries swarm fanout, confidence gates, session listener guidance, devTestBot, and DD email-on-complete support.
+
 ## [0.8.12](https://github.com/mrrCarter/create-sentinelayer/compare/v0.8.11...v0.8.12) (2026-04-28)
 
 

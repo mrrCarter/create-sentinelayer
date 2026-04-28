@@ -1,3 +1,26 @@
+# 2026-04-28 - v0.9.0 DD Release Gap Closure (`release/v0.9.0-dd-spec`)
+
+## Plan
+- [x] Validate Claude audit findings against current `origin/main` and npm registry state.
+- [x] Confirm D3 coordination etiquette already includes `sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson`; no doc code change needed for that stale audit item.
+- [x] Create a fresh `origin/main` worktree and branch for the release gap.
+- [x] Bump `sentinelayer-cli` package metadata and release-please manifest to `0.9.0`.
+- [x] Add a `0.9.0` changelog entry covering DD PRs A1-F2 plus post-merge fixes.
+- [x] Run local release-quality gates: version checks, `npm run verify`, DD review, OmarGate, and audit.
+- [ ] Open PR, watch CI/Omar/attestation to green, merge, and verify post-merge main.
+- [ ] Create/dispatch the `v0.9.0` release workflow and verify npm `latest` resolves to `0.9.0`.
+
+## Review
+- In progress. Claude's npm/latest gap is confirmed: npm `sentinelayer-cli@latest` is `0.8.12`, while main contains the completed DD train through PR-F2.
+- Claude's D3 etiquette gap is stale on current main: `src/session/coordination-guidance.js` already instructs agents to run `sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson` and fall back to `sync/read`.
+- Local validation is green:
+  - Version surfaces: `package.json`, `package-lock.json`, and `.release-please-manifest.json` all resolve to `0.9.0`; `node bin/create-sentinelayer.js --version` and `node bin/sl.js --version` return `0.9.0`.
+  - `npm run verify` passed: `check` 303 files, docs build, e2e `97/97`, unit coverage `1177/1177`, and npm pack dry-run produced `sentinelayer-cli-0.9.0.tgz`.
+  - DD review `review-20260428-144628-30afe299` passed clean (`P0=0 P1=0 P2=0 P3=0`).
+  - OmarGate dry-run `omargate-1777387595707-70ae39d4` is non-blocking (`P0=0 P1=0`, blocking=false).
+  - `/audit` `audit-20260428-144643` passed (`P1=0`, blocking=false).
+  - `git diff --check` clean aside from Windows LF/CRLF warnings.
+
 # 2026-04-28 - DD PR-F2 Orchestrator Email Trigger (`dd/pr-f2-dd-orchestrator-email`)
 
 ## Plan
