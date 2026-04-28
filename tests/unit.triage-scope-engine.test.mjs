@@ -269,6 +269,7 @@ test("Unit triage scope engine: session kill --agent scope-engine aborts active 
       targetPath: tempRoot,
     });
     assert.ok(activeRun, "Expected scope-engine run to be active before kill.");
+    const buildAbort = assert.rejects(buildPromise, /Scope engine run aborted/i);
 
     const program = createSessionProgram();
     const logs = await withCapturedConsole(async () => {
@@ -294,7 +295,7 @@ test("Unit triage scope engine: session kill --agent scope-engine aborts active 
     assert.equal(payload.stopped, true);
     assert.equal(payload.scopeStops >= 1, true);
 
-    await assert.rejects(buildPromise, /Scope engine run aborted/i);
+    await buildAbort;
 
     const stream = await readStream(session.sessionId, { tail: 30, targetPath: tempRoot });
     const killEvent = stream.find(

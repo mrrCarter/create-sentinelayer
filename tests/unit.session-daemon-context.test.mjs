@@ -21,6 +21,23 @@ async function seedWorkspace(rootPath) {
   await writeFile(path.join(rootPath, "src", "index.js"), "export const fixture = true;\n", "utf-8");
 }
 
+async function waitForStreamEvents(
+  sessionId,
+  targetPath,
+  predicate,
+  { timeoutMs = 3000, pollMs = 40 } = {}
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const events = await readStream(sessionId, { tail: 50, targetPath });
+    if (predicate(events)) {
+      return events;
+    }
+    await sleep(pollMs);
+  }
+  throw new Error("Timed out waiting for session daemon context events.");
+}
+
 test("Unit session daemon context relay: unanswered help_request emits help_response and model_span in under 5s", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-context-"));
   let sessionId = "";
@@ -72,10 +89,21 @@ test("Unit session daemon context relay: unanswered help_request emits help_resp
       }
     );
 
-    await sleep(220);
-    const stream = await readStream(session.sessionId, { tail: 30, targetPath: tempRoot });
-    const response = stream.find((event) => event.event === "help_response");
-    const modelSpan = stream.find((event) => event.event === "model_span");
+    const stream = await waitForStreamEvents(
+      session.sessionId,
+      tempRoot,
+      (events) =>
+        events.some(
+          (event) => event.event === "help_response" && event.payload?.requestId === "req-context-1"
+        ) &&
+        events.some((event) => event.event === "model_span" && event.payload?.requestId === "req-context-1")
+    );
+    const response = stream.find(
+      (event) => event.event === "help_response" && event.payload?.requestId === "req-context-1"
+    );
+    const modelSpan = stream.find(
+      (event) => event.event === "model_span" && event.payload?.requestId === "req-context-1"
+    );
 
     assert.ok(response);
     assert.ok(modelSpan);
@@ -144,10 +172,21 @@ test("Unit session daemon context relay: LLM failure emits fallback response wit
       }
     );
 
-    await sleep(220);
-    const stream = await readStream(session.sessionId, { tail: 30, targetPath: tempRoot });
-    const response = stream.find((event) => event.event === "help_response");
-    const modelSpan = stream.find((event) => event.event === "model_span");
+    const stream = await waitForStreamEvents(
+      session.sessionId,
+      tempRoot,
+      (events) =>
+        events.some(
+          (event) => event.event === "help_response" && event.payload?.requestId === "req-context-2"
+        ) &&
+        events.some((event) => event.event === "model_span" && event.payload?.requestId === "req-context-2")
+    );
+    const response = stream.find(
+      (event) => event.event === "help_response" && event.payload?.requestId === "req-context-2"
+    );
+    const modelSpan = stream.find(
+      (event) => event.event === "model_span" && event.payload?.requestId === "req-context-2"
+    );
 
     assert.ok(response);
     assert.ok(modelSpan);
