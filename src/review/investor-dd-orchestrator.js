@@ -38,6 +38,7 @@ import { notifyRunCompleted } from "./investor-dd-notification.js";
 import { attachReproducibilityChain } from "./reproducibility-chain.js";
 import { renderInvestorDdHtml } from "./investor-dd-html-report.js";
 import { runDevTestBotPhase } from "./investor-dd-devtestbot.js";
+import { redactDdEmailError } from "./dd-report-email-client.js";
 
 const INVESTOR_DD_PERSONAS = Object.freeze([
   "security",
@@ -179,6 +180,81 @@ function buildSummaryMarkdown({ runId, summary, routing, byPersona }) {
   return lines.join("\n");
 }
 
+async function triggerReportEmail({ reportEmail, runResult, dryRun, emit }) {
+  const to = String(reportEmail?.to || "").trim();
+  if (!to) return null;
+
+  if (dryRun && reportEmail.skipWhenDryRun !== false) {
+    const result = { queued: false, skipped: true, runId: runResult.runId, to, code: "DD_EMAIL_DRY_RUN" };
+    emit({
+      type: "dd_email_skipped",
+      event: "dd_email_skipped",
+      runId: runResult.runId,
+      to,
+      reason: "dry_run",
+    });
+    return result;
+  }
+
+  const client = reportEmail.client;
+  if (!client || typeof client.send !== "function") {
+    const result = { queued: false, runId: runResult.runId, to, code: "DD_EMAIL_CLIENT_MISSING" };
+    emit({
+      type: "dd_email_error",
+      event: "dd_email_error",
+      runId: runResult.runId,
+      to,
+      code: result.code,
+      error: "DD report email client is not configured.",
+    });
+    return result;
+  }
+
+  try {
+    const result = await client.send({ runId: runResult.runId, to, run: runResult });
+    if (result?.queued) {
+      emit({
+        type: "dd_email_queued",
+        event: "dd_email_queued",
+        runId: String(result.runId || runResult.runId),
+        to: String(result.to || to),
+        messageId: result.messageId || "",
+        replay: Boolean(result.replay),
+        sent: result.sent !== false,
+      });
+      return result;
+    }
+
+    emit({
+      type: "dd_email_error",
+      event: "dd_email_error",
+      runId: runResult.runId,
+      to,
+      code: String(result?.code || "DD_EMAIL_FAILED"),
+      status: Number(result?.status || 0),
+      error: redactDdEmailError(result?.error || "DD report email request failed."),
+    });
+    return result || { queued: false, runId: runResult.runId, to };
+  } catch (err) {
+    const result = {
+      queued: false,
+      runId: runResult.runId,
+      to,
+      code: "DD_EMAIL_EXCEPTION",
+      error: redactDdEmailError(err instanceof Error ? err.message : String(err)),
+    };
+    emit({
+      type: "dd_email_error",
+      event: "dd_email_error",
+      runId: runResult.runId,
+      to,
+      code: result.code,
+      error: result.error,
+    });
+    return result;
+  }
+}
+
 /**
  * Run the investor-DD orchestration end to end.
  *
@@ -195,6 +271,9 @@ function buildSummaryMarkdown({ runId, summary, routing, byPersona }) {
  * @param {object} [params.liveValidator.aidenid]       - AIdenID client.
  * @param {number} [params.liveValidator.maxInteractions]
  * @param {object|false} [params.devTestBot]     - Automated devTestBot phase config.
+ * @param {object|null} [params.reportEmail]     - Optional API-side report email trigger.
+ * @param {string} [params.reportEmail.to]
+ * @param {object} [params.reportEmail.client]   - { send({ runId, to, run }) }.
  * @param {object} [params.notification]         - Optional notification config.
  * @param {string} [params.notification.notifyEmail]
  * @param {object} [params.notification.emailClient]
@@ -211,6 +290,7 @@ export async function runInvestorDd({
   compliancePacks = COMPLIANCE_PACK_CATALOG,
   liveValidator = null,
   devTestBot = {},
+  reportEmail = null,
   notification = null,
 } = {}) {
   if (!rootPath) throw new TypeError("runInvestorDd requires rootPath");
@@ -412,6 +492,17 @@ export async function runInvestorDd({
     durationSeconds,
     terminationReason,
   });
+
+  const runResult = { runId, artifactDir: artifactBase, summary, findings, devTestBot: devTestBotPhase };
+  if (reportEmail) {
+    runResult.reportEmail = await triggerReportEmail({
+      reportEmail,
+      runResult,
+      dryRun,
+      emit,
+    });
+  }
+
   await streamHandle.close();
 
   const artifactFiles = await fsp.readdir(artifactBase);
@@ -427,8 +518,6 @@ export async function runInvestorDd({
     };
   }
   await writeJson(path.join(artifactBase, "manifest.json"), manifest);
-
-  const runResult = { runId, artifactDir: artifactBase, summary, findings, devTestBot: devTestBotPhase };
 
   // Fire-and-forget notification dispatch (email + dashboard). Failures
   // are non-fatal — the report is already persisted to disk + manifest.

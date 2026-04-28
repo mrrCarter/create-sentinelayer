@@ -290,6 +290,99 @@ test("runInvestorDd: calls notification clients when supplied", async () => {
   }
 });
 
+test("runInvestorDd: triggers DD report email after completion and streams queued event", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "export const ok = true;\n");
+    const events = [];
+    const sends = [];
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      compliancePacks: ["license"],
+      devTestBot: false,
+      onEvent: (e) => events.push(e),
+      reportEmail: {
+        to: "investor@example.com",
+        client: {
+          send: async (payload) => {
+            sends.push(payload);
+            return {
+              queued: true,
+              sent: true,
+              runId: payload.runId,
+              to: payload.to,
+              messageId: "msg-dd-1",
+              replay: false,
+            };
+          },
+        },
+      },
+    });
+
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0].runId, result.runId);
+    assert.equal(sends[0].to, "investor@example.com");
+    assert.equal(sends[0].run.runId, result.runId);
+    assert.equal(result.reportEmail.queued, true);
+
+    const queued = events.find((event) => event.type === "dd_email_queued");
+    assert.ok(queued);
+    assert.equal(queued.event, "dd_email_queued");
+    assert.equal(queued.runId, result.runId);
+    assert.equal(queued.to, "investor@example.com");
+    assert.equal(queued.messageId, "msg-dd-1");
+    assert.equal(events.at(-1).type, "dd_email_queued");
+
+    const stream = await fsp.readFile(path.join(result.artifactDir, "stream.ndjson"), "utf-8");
+    assert.match(stream, /"type":"dd_email_queued"/);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: DD report email errors are redacted and non-fatal", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "export const ok = true;\n");
+    const events = [];
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      personas: ["security"],
+      compliancePacks: ["license"],
+      devTestBot: false,
+      onEvent: (e) => events.push(e),
+      reportEmail: {
+        to: "investor@example.com",
+        client: {
+          send: async () => ({
+            queued: false,
+            code: "RUN_NOT_FOUND",
+            status: 404,
+            error: "failed Bearer secret-token at C:\\Users\\carther\\repo",
+          }),
+        },
+      },
+    });
+
+    assert.equal(result.summary.terminationReason, "ok");
+    assert.equal(result.reportEmail.queued, false);
+    const errorEvent = events.find((event) => event.type === "dd_email_error");
+    assert.ok(errorEvent);
+    assert.equal(errorEvent.event, "dd_email_error");
+    assert.equal(errorEvent.code, "RUN_NOT_FOUND");
+    assert.equal(errorEvent.status, 404);
+    assert.equal(String(errorEvent.error).includes("secret-token"), false);
+    assert.equal(String(errorEvent.error).includes("C:\\Users\\carther"), false);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runInvestorDd: runs devTestBot phase and merges artifact findings", async () => {
   const root = await makeTempRepo();
   try {

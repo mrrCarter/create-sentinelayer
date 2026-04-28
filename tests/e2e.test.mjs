@@ -150,6 +150,61 @@ jobs:
   };
 }
 
+async function startDdEmailMockApi() {
+  const state = {
+    requestCount: 0,
+    lastHeaders: {},
+    lastPayload: null,
+    lastRunId: "",
+  };
+
+  const server = createServer(async (req, res) => {
+    try {
+      const parsedUrl = new URL(req.url || "/", "http://127.0.0.1");
+      const match = parsedUrl.pathname.match(/^\/api\/v1\/runs\/([^/]+)\/send-report-email$/);
+      if (req.method === "POST" && match) {
+        state.requestCount += 1;
+        state.lastHeaders = { ...req.headers };
+        state.lastPayload = await readJsonBody(req);
+        state.lastRunId = decodeURIComponent(match[1] || "");
+        return jsonResponse(res, 200, {
+          sent: true,
+          run_id: state.lastRunId,
+          to: state.lastPayload.to,
+          message_id: "msg-e2e-dd-email",
+          replay: false,
+        });
+      }
+      return jsonResponse(res, 404, {
+        error: { code: "NOT_FOUND", message: "Route not found" },
+      });
+    } catch (error) {
+      return jsonResponse(res, 500, {
+        error: {
+          code: "TEST_SERVER_ERROR",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Unable to resolve DD email mock API address");
+  }
+
+  return {
+    apiUrl: `http://127.0.0.1:${address.port}`,
+    state,
+    async close() {
+      server.close();
+      await once(server, "close");
+    },
+  };
+}
+
 async function startAidenIdMockApi({
   events = null,
   latestExtractionResponses = null,
@@ -1457,6 +1512,7 @@ test("CLI omargate deep --stream emits swarm lifecycle for oversized dry-run sco
 
 test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bundle", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-investor-dd-devtestbot-"));
+  const mock = await startDdEmailMockApi();
   try {
     await mkdir(path.join(tempRoot, "src"), { recursive: true });
     await writeFile(
@@ -1468,7 +1524,7 @@ test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bu
 
     const result = await runCli({
       cwd: tempRoot,
-      env: { ...process.env },
+      env: { ...process.env, SENTINELAYER_API_URL: mock.apiUrl },
       args: [
         "omargate",
         "investor-dd",
@@ -1481,6 +1537,8 @@ test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bu
         "5",
         "--max-parallel",
         "1",
+        "--email-on-complete",
+        "investor@example.com",
       ],
     });
     assert.equal(result.code, 0, result.stderr || result.stdout);
@@ -1493,6 +1551,11 @@ test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bu
     assert.equal(events.some((event) => event.type === "devtestbot_start"), true);
     assert.equal(events.some((event) => event.type === "devtestbot_agent_start"), true);
     assert.equal(events.some((event) => event.type === "devtestbot_complete"), true);
+    const emailEvent = events.find((event) => event.type === "dd_email_queued");
+    assert.ok(emailEvent, "expected dd_email_queued event");
+    assert.equal(emailEvent.event, "dd_email_queued");
+    assert.equal(emailEvent.to, "investor@example.com");
+    assert.equal(emailEvent.messageId, "msg-e2e-dd-email");
 
     const complete = events.find((event) => event.type === "devtestbot_complete");
     assert.ok(complete?.artifactRoot);
@@ -1506,7 +1569,15 @@ test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bu
     );
     assert.equal(devTestBotSummary.findingCount >= 1, true);
     assert.equal(devTestBotSummary.subagents[0].dryRun, true);
+
+    assert.equal(mock.state.requestCount, 1);
+    assert.equal(mock.state.lastRunId, emailEvent.runId);
+    assert.equal(mock.state.lastPayload.to, "investor@example.com");
+    const expectedAuth = ["Bearer", ["api", "token", "e2e", "test", "session"].join("_")].join(" ");
+    assert.equal(mock.state.lastHeaders.authorization, expectedAuth);
+    assert.match(String(mock.state.lastHeaders["idempotency-key"] || ""), /^sl-cli-dd-email-[a-f0-9]{32}$/);
   } finally {
+    await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

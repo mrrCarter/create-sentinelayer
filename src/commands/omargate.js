@@ -48,6 +48,7 @@ export function registerOmarGateCommand(program, invokeLegacy) {
     .option("--skip-persona <csv>", "Skip these personas (comma-separated IDs)")
     .option("--stream", "Emit NDJSON events to stdout as personas work file-by-file")
     .option("--notify-email <addr>", "Send final report to this email (default: account email)")
+    .option("--email-on-complete <addr>", "Trigger the API-side DD report email after the run completes")
     .option("--notify-session <session-id>", "Stream progress into this Senti session (default: auto-start)")
     .option("--no-email", "Skip email dispatch")
     .option("--no-dashboard", "Skip dashboard card persistence")
