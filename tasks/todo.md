@@ -1,3 +1,46 @@
+# 2026-04-28 - DD PR-C2 OmarGate Audit Reuse (`dd/pr-c2-omargate-audit-reuse`)
+
+## Plan
+- [x] Confirm PR-C1 merge and post-merge workflows are green, sync `main`, and create `dd/pr-c2-omargate-audit-reuse`.
+- [x] Post PR-C2 start/status to Senti session `d42cc584-1ee9-494b-b2d6-220c8525fde7`.
+- [x] Read DD PR-C2 contract, OmarGate report/run artifact writers, audit command option wiring, audit orchestrator deterministic phase, and relevant tests.
+- [x] Persist `/omargate deep` deterministic findings under `.sentinelayer/runs/<runId>/deterministic.json` with enough metadata for audit reuse.
+- [x] Add `/audit --reuse-omargate <runId|latest>` option, resolve cached deterministic artifacts, and skip deterministic phase when valid.
+- [x] Feed reused findings into the audit blackboard/report metadata and include prior run id in the report header.
+- [x] Preserve unchanged behavior when reuse is absent, invalid, or unavailable.
+- [x] Add focused unit/e2e coverage for omargate artifact persistence and `audit --reuse-omargate latest`.
+- [x] Run targeted tests, `npm run check`, DD-spec review, `npm run verify`, and local Omar/audit gates.
+- [ ] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-C3.
+
+## File Claims
+- `src/review/omargate-orchestrator.js`
+- `src/review/local-review.js`
+- `src/audit/orchestrator.js`
+- `src/commands/audit.js`
+- `src/legacy-cli.js` / `src/commands/legacy-args.js` only if slash-command option pass-through needs it
+- `tests/e2e.test.mjs`
+- Focused unit test file if cleaner than e2e-only coverage
+- `tasks/todo.md`
+
+## Review
+- Implemented shared OmarGate deterministic cache helper in `src/review/omargate-cache.js` with stable run paths, latest index resolution, target-path matching, invalid run id protection, and fail-closed missing/malformed behavior.
+- Wired `/omargate deep` to write `.sentinelayer/runs/<runId>/deterministic.json` after report generation and expose the OmarGate run id/cache path in JSON output.
+- Wired modern `audit --reuse-omargate <runId|latest>` to load cached deterministic findings, skip deterministic rerun when valid, seed the audit blackboard from `source=omargate-reuse`, and show the reused OmarGate run in report metadata.
+- Wired legacy slash `/audit --reuse-omargate <runId|latest>` so the spec's `sl /audit --path . --reuse-omargate latest` sequence reuses the latest OmarGate deterministic cache and reports the prior run id.
+- Focused validation so far:
+  - `node --check src/review/omargate-cache.js src/legacy-cli.js src/audit/orchestrator.js src/commands/audit.js src/commands/legacy-args.js` (pass)
+  - `node --test tests/unit.omargate-cache.test.mjs` (3 tests pass)
+  - `node --test tests/unit.audit-omargate-reuse.test.mjs` (2 tests pass)
+  - `node --test tests/unit.commands-contracts.test.mjs` (11 tests pass)
+  - `node --test --test-name-pattern "CLI local audit can reuse latest OmarGate deterministic cache" tests/e2e.test.mjs` (pass)
+  - `npm run check` (294 files pass)
+  - `git diff --check` (pass)
+  - `node bin/create-sentinelayer.js review --diff --spec tasks/dd-build-spec-2026-04-26.md --json` (P0=0 P1=0 P2=0 P3=0; run `review-20260428-012022-eefde2d6`)
+  - `npm run verify` (pass: check, docs build, 95 e2e, 1126 unit coverage tests, pack dry-run)
+  - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --max-cost 5` (pass: P0=0 P1=0, blocking=false; wrote deterministic cache `omargate-1777339398563-cea7eba1`)
+  - `node bin/create-sentinelayer.js /audit --path . --reuse-omargate latest --json` (pass: reused `omargate-1777339398563-cea7eba1`, overallStatus=PASS, blocking=false)
+  - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, blocking=false)
+
 # 2026-04-28 - DD PR-C1 Confidence Floor (`dd/pr-c1-confidence-floor`)
 
 ## Plan
@@ -9,7 +52,7 @@
 - [x] Surface dropped single-source low-confidence count in reconciliation/report summary.
 - [x] Add focused unit coverage for 5 dropped single-source findings and multi-source low-confidence preservation.
 - [x] Run targeted tests, `npm run check`, DD-spec review, `npm run verify`, and local Omar/audit gates.
-- [ ] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-C2.
+- [x] Open PR, watch CI, merge, confirm post-merge main workflows, then continue PR-C2.
 
 ## File Claims
 - `src/review/report.js`
@@ -33,6 +76,8 @@
   - `npm run verify` (pass: check, docs build, 94 e2e, 1121 unit coverage tests, pack dry-run)
   - `node bin/create-sentinelayer.js /omargate deep --path . --json --ai-dry-run --max-cost 5` (pass: P0=0 P1=0, blocking=false, `droppedLowConfidence=0`)
   - `node bin/create-sentinelayer.js /audit --path . --json` (pass: overallStatus=PASS, P1=0, blocking=false)
+  - PR #435 checks green: Omar Gate, Quality Gates, Eval Impact, Build Attestation.
+  - PR #435 merged as `326a70ef45a0dfc2b6db030b8f058a61824b69c7`; post-merge main workflows green: Omar Gate, Quality Gates, Build Attestation, Release Please.
 
 # 2026-04-28 - DD PR-B2 Audit Persona Swarm Fanout (`dd/pr-b2-audit-swarm`)
 

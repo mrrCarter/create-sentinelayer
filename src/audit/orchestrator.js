@@ -6,6 +6,7 @@ import { resolveOutputRoot } from "../config/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { resolveCodebaseIngest } from "../ingest/engine.js";
 import { runDeterministicReviewPipeline } from "../review/local-review.js";
+import { loadOmarGateDeterministicCache } from "../review/omargate-cache.js";
 import {
   renderArchitectureSpecialistMarkdown,
   runArchitectureSpecialist,
@@ -227,6 +228,7 @@ Max parallel: ${report.maxParallel}
 Dry run: ${report.dryRun ? "yes" : "no"}
 Persona isolation: ${report.isolation || "strict"}
 Seed from deterministic: ${report.seedFromDeterministic === false ? "no" : "yes"}
+OmarGate reuse: ${report.omargateReuse?.used ? `yes (${report.omargateReuse.runId})` : report.omargateReuse?.requested ? `requested ${report.omargateReuse.requested} (${report.omargateReuse.reason || "unavailable"})` : "no"}
 
 Summary:
 - Findings: P0=${report.summary.P0} P1=${report.summary.P1} P2=${report.summary.P2} P3=${report.summary.P3}
@@ -254,6 +256,7 @@ Ingest:
 Deterministic baseline:
 - Run ID: ${report.deterministicBaseline.runId || "n/a"}
 - Report: ${report.deterministicBaseline.reportPath || "n/a"}
+- Reused OmarGate run: ${report.omargateReuse?.used ? report.omargateReuse.runId : "n/a"}
 - Summary: P0=${report.deterministicBaseline.summary.P0} P1=${report.deterministicBaseline.summary.P1} P2=${report.deterministicBaseline.summary.P2} P3=${report.deterministicBaseline.summary.P3}
 
 Agent outcomes:
@@ -377,10 +380,12 @@ export async function runAuditOrchestrator({
   clientFactory = null,
   isolation = "strict",
   seedFromDeterministic = true,
+  reuseOmarGate = "",
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
   const isolationMode = normalizeIsolationMode(isolation);
   const useDeterministicSeed = seedFromDeterministic !== false;
+  const requestedOmarGateReuse = normalizeString(reuseOmarGate);
   const outputRoot = await resolveOutputRoot({
     cwd: normalizedTargetPath,
     outputDirOverride: outputDir,
@@ -411,6 +416,7 @@ export async function runAuditOrchestrator({
       dryRun: Boolean(dryRun),
       isolation: isolationMode,
       seedFromDeterministic: useDeterministicSeed,
+      reuseOmarGate: requestedOmarGateReuse || "",
     },
     `Audit orchestrator starting with ${selectedAgentIds.length} agent(s).`
   );
@@ -451,27 +457,86 @@ export async function runAuditOrchestrator({
     summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
     findings: [],
   };
+  let omargateReuse = {
+    requested: requestedOmarGateReuse,
+    used: false,
+    runId: "",
+    deterministicRunId: "",
+    artifactPath: "",
+    reason: requestedOmarGateReuse ? (dryRun ? "dry_run" : "not_found") : "not_requested",
+  };
   const baselineStartedAt = Date.now();
   emitAuditLifecycleEvent(
     onEvent,
     runId,
     "phase_start",
-    { phase: "deterministic_baseline", skipped: Boolean(dryRun) },
-    dryRun ? "Skipping deterministic baseline for dry run." : "Starting deterministic baseline."
+    {
+      phase: "deterministic_baseline",
+      skipped: Boolean(dryRun),
+      reuseRequested: Boolean(requestedOmarGateReuse),
+      requestedOmarGateRunId: requestedOmarGateReuse,
+    },
+    dryRun
+      ? "Skipping deterministic baseline for dry run."
+      : requestedOmarGateReuse
+        ? "Resolving OmarGate deterministic baseline reuse."
+        : "Starting deterministic baseline."
   );
   if (!dryRun) {
-    const deterministic = await runDeterministicReviewPipeline({
-      targetPath: normalizedTargetPath,
-      mode: "full",
-      outputDir,
-    });
-    deterministicBaseline = {
-      runId: deterministic.runId,
-      reportPath: deterministic.artifacts.markdownPath,
-      reportJsonPath: deterministic.artifacts.jsonPath,
-      summary: deterministic.summary,
-      findings: deterministic.findings,
-    };
+    let reusedBaseline = null;
+    if (requestedOmarGateReuse) {
+      const reused = await loadOmarGateDeterministicCache({
+        targetPath: normalizedTargetPath,
+        outputDir,
+        runIdOrLatest: requestedOmarGateReuse,
+      });
+      if (reused.found) {
+        const cache = reused.cache || {};
+        reusedBaseline = {
+          runId: cache.deterministicRunId || cache.runId || reused.runId,
+          reportPath: cache.source?.reportPath || "",
+          reportJsonPath: cache.artifacts?.jsonPath || "",
+          summary: cache.summary || severitySummary(cache.findings || []),
+          findings: Array.isArray(cache.findings) ? cache.findings : [],
+          reusedFromOmarGate: true,
+          reusedOmarGateRunId: reused.runId,
+          reuseArtifactPath: reused.artifactPath,
+        };
+        omargateReuse = {
+          requested: requestedOmarGateReuse,
+          used: true,
+          runId: reused.runId,
+          deterministicRunId: cache.deterministicRunId || "",
+          artifactPath: reused.artifactPath,
+          reason: "",
+        };
+      } else {
+        omargateReuse = {
+          requested: requestedOmarGateReuse,
+          used: false,
+          runId: "",
+          deterministicRunId: "",
+          artifactPath: "",
+          reason: reused.reason || "not_found",
+        };
+      }
+    }
+    if (reusedBaseline) {
+      deterministicBaseline = reusedBaseline;
+    } else {
+      const deterministic = await runDeterministicReviewPipeline({
+        targetPath: normalizedTargetPath,
+        mode: "full",
+        outputDir,
+      });
+      deterministicBaseline = {
+        runId: deterministic.runId,
+        reportPath: deterministic.artifacts.markdownPath,
+        reportJsonPath: deterministic.artifacts.jsonPath,
+        summary: deterministic.summary,
+        findings: deterministic.findings,
+      };
+    }
   }
   emitAuditLifecycleEvent(
     onEvent,
@@ -480,19 +545,23 @@ export async function runAuditOrchestrator({
     {
       phase: "deterministic_baseline",
       skipped: Boolean(dryRun),
+      reused: Boolean(omargateReuse.used),
+      omargateReuse,
       durationMs: Math.max(0, Date.now() - baselineStartedAt),
       findingCount: deterministicBaseline.findings.length,
       summary: deterministicBaseline.summary,
     },
     dryRun
       ? "Deterministic baseline skipped."
-      : `Deterministic baseline complete: ${deterministicBaseline.findings.length} finding(s).`
+      : omargateReuse.used
+        ? `Reused OmarGate deterministic baseline ${omargateReuse.runId}: ${deterministicBaseline.findings.length} finding(s).`
+        : `Deterministic baseline complete: ${deterministicBaseline.findings.length} finding(s).`
   );
   if (useDeterministicSeed) {
     appendBlackboardFindings(blackboard, {
       agentId: "omar",
       findings: deterministicBaseline.findings,
-      source: "deterministic-baseline",
+      source: omargateReuse.used ? "omargate-reuse" : "deterministic-baseline",
     });
   }
   const memoryProvider = resolveMemoryProvider(process.env);
@@ -784,6 +853,7 @@ export async function runAuditOrchestrator({
       },
     },
     deterministicBaseline,
+    omargateReuse,
     sharedMemory: {
       enabled: true,
       artifactPath: sharedMemoryArtifact.artifactPath,

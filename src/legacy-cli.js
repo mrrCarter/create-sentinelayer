@@ -1334,6 +1334,7 @@ async function runLocalOmarGateCommand(args) {
   const combinedP1 = combinedSummary.P1 || 0;
   const combinedP2 = combinedSummary.P2 || 0;
   const combinedP3 = combinedSummary.P3 || 0;
+  const omargateRunId = orchestratorResult?.runId || deterministic.runId;
 
   // Write per-phase artifacts alongside REVIEW_DETERMINISTIC so post-mortems
   // can inspect exactly what each layer contributed.
@@ -1379,6 +1380,7 @@ async function runLocalOmarGateCommand(args) {
   const report = `# Local Omar Gate Deep Scan
 
 Generated: ${nowIso()}
+Run ID: ${omargateRunId}
 Target: ${targetPath}
 Elapsed: ${totalElapsed}
 
@@ -1398,12 +1400,24 @@ ${formatFindingsMarkdown(allFindings)}
   const reportPath = await writeLocalCommandReport(targetPath, "omargate-deep", report, {
     outputDir: outputDirArg,
   });
+  const { writeOmarGateDeterministicCache } = await import("./review/omargate-cache.js");
+  const deterministicCache = await writeOmarGateDeterministicCache({
+    targetPath,
+    outputDir: outputDirArg,
+    runId: omargateRunId,
+    deterministic,
+    reportPath,
+  });
+  artifactPaths.deterministicCache = deterministicCache.artifactPath;
+  artifactPaths.latestOmarGate = deterministicCache.latestPath;
+
   if (asJson) {
     console.log(
       JSON.stringify(
         {
           command: "/omargate deep",
           targetPath,
+          runId: omargateRunId,
           reportPath,
           scannedFiles,
           p0: combinedP0,
@@ -1460,6 +1474,7 @@ async function runLocalAuditCommand(args) {
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
+  const reuseOmarGate = getCommandOptionValue(args, "--reuse-omargate") || "";
   const targetPath = path.resolve(process.cwd(), pathArg);
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
@@ -1469,6 +1484,16 @@ async function runLocalAuditCommand(args) {
     printSection("Local Audit");
     printInfo(`Target: ${targetPath}`);
   }
+
+  const buildScanFromOmarGateCache = (cache) => {
+    const findings = Array.isArray(cache?.findings) ? cache.findings : [];
+    return {
+      scannedFiles: Number(cache?.scope?.scannedFiles || findings.length || 0),
+      findings,
+      p1: findings.filter((item) => item.severity === "P1").length,
+      p2: findings.filter((item) => item.severity === "P2").length,
+    };
+  };
 
   const requiredChecks = [
     {
@@ -1491,7 +1516,44 @@ async function runLocalAuditCommand(args) {
     },
   ];
 
-  const scan = await runCredentialScan(targetPath);
+  let omargateReuse = {
+    requested: reuseOmarGate || "",
+    used: false,
+    runId: "",
+    artifactPath: "",
+    reason: reuseOmarGate ? "not_found" : "not_requested",
+  };
+  let scan = null;
+  if (reuseOmarGate) {
+    const { loadOmarGateDeterministicCache } = await import("./review/omargate-cache.js");
+    const reused = await loadOmarGateDeterministicCache({
+      targetPath,
+      outputDir: outputDirArg,
+      runIdOrLatest: reuseOmarGate,
+    });
+    if (reused.found) {
+      scan = buildScanFromOmarGateCache(reused.cache);
+      omargateReuse = {
+        requested: reuseOmarGate,
+        used: true,
+        runId: reused.runId,
+        deterministicRunId: reused.cache?.deterministicRunId || "",
+        artifactPath: reused.artifactPath,
+        reason: "",
+      };
+    } else {
+      omargateReuse = {
+        requested: reuseOmarGate,
+        used: false,
+        runId: "",
+        artifactPath: "",
+        reason: reused.reason || "not_found",
+      };
+    }
+  }
+  if (!scan) {
+    scan = await runCredentialScan(targetPath);
+  }
   const failedP1Checks = requiredChecks.filter((item) => !item.ok && item.severity === "P1").length;
   const failedP2Checks = requiredChecks.filter((item) => !item.ok && item.severity === "P2").length;
   const totalP1 = scan.p1 + failedP1Checks;
@@ -1509,11 +1571,13 @@ async function runLocalAuditCommand(args) {
 Generated: ${nowIso()}
 Target: ${targetPath}
 Overall status: ${overallStatus}
+OmarGate reuse: ${omargateReuse.used ? `yes (${omargateReuse.runId})` : omargateReuse.requested ? `requested ${omargateReuse.requested} (${omargateReuse.reason})` : "no"}
 
 Readiness checks:
 ${checkText}
 
 Scan summary:
+- Reused OmarGate run: ${omargateReuse.used ? omargateReuse.runId : "n/a"}
 - Files scanned: ${scan.scannedFiles}
 - P1 findings: ${scan.p1}
 - P2 findings: ${scan.p2}
@@ -1539,6 +1603,9 @@ ${formatFindingsMarkdown(scan.findings)}
           p1Total: totalP1,
           p2Total: totalP2,
           blocking: totalP1 > 0,
+          omargateReuse,
+          reusedOmarGateRunId: omargateReuse.used ? omargateReuse.runId : "",
+          reusedOmarGateDeterministicPath: omargateReuse.used ? omargateReuse.artifactPath : "",
         },
         null,
         2
@@ -1546,6 +1613,11 @@ ${formatFindingsMarkdown(scan.findings)}
     );
   } else {
     console.log(pc.cyan(`Report: ${reportPath}`));
+    if (omargateReuse.used) {
+      console.log(pc.gray(`Reused OmarGate run: ${omargateReuse.runId}`));
+    } else if (omargateReuse.requested) {
+      console.log(pc.gray(`OmarGate reuse unavailable: ${omargateReuse.reason}`));
+    }
     console.log(`Overall status: ${overallStatus}`);
     console.log(`P1 total: ${totalP1}`);
     console.log(`P2 total: ${totalP2}`);
