@@ -3,6 +3,7 @@ import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent, normalizeAgentEvent } from "../events/schema.js";
+import { enrichEventWithMentions } from "./mentions.js";
 import { resolveSessionPaths } from "./paths.js";
 import { redactEventPayload } from "./redact.js";
 import { syncSessionEventToApi } from "./sync.js";
@@ -235,7 +236,14 @@ export async function appendToStream(
   }
 
   const rawEvent = materializeCanonicalEvent(paths.sessionId, event);
-  const canonicalEvent = redactEventPayload(rawEvent);
+  // Parse `@<name>` mentions out of the message text and surface them
+  // as payload.to + payload.mentions so the listener (sl session listen)
+  // and Senti daemon can route to/notify the addressed agent. Pure +
+  // idempotent — if the caller already supplied an explicit `to/recipient`
+  // we leave it alone. Runs before redaction so the redactor sees a
+  // stable shape.
+  const enrichedEvent = enrichEventWithMentions(rawEvent);
+  const canonicalEvent = redactEventPayload(enrichedEvent);
   const nowIso = new Date().toISOString();
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_MAX_STREAM_EVENTS);
 
