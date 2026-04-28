@@ -47,6 +47,7 @@ import {
   listActiveSessions,
   listAllSessions,
   recordSessionProvisionedIdentities,
+  updateSessionTitle,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import { readSessionPreview } from "../session/preview.js";
@@ -87,6 +88,233 @@ function parsePositiveInteger(rawValue, field, fallbackValue) {
     throw new Error(`${field} must be a positive integer.`);
   }
   return Math.floor(normalized);
+}
+
+function normalizeComparablePath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/g, "")
+    .toLowerCase();
+}
+
+function latestSessionActivityMs(entry = {}) {
+  for (const key of ["lastInteractionAt", "lastActivityAt", "createdAt"]) {
+    const epoch = Date.parse(normalizeString(entry[key]));
+    if (Number.isFinite(epoch)) return epoch;
+  }
+  return 0;
+}
+
+function remoteSessionLookupDisabled() {
+  return String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1";
+}
+
+function mergeResumeCandidate(existing, incoming) {
+  if (!existing) return incoming;
+  const existingActivity = Number(existing._activityMs || 0);
+  const incomingActivity = Number(incoming._activityMs || 0);
+  const preferIncomingPaths = existing._source !== "local" && incoming._source === "local";
+  const base = preferIncomingPaths ? incoming : existing;
+  const other = preferIncomingPaths ? existing : incoming;
+  return {
+    ...base,
+    title: normalizeString(base.title) || normalizeString(other.title) || null,
+    lastActivityAt:
+      normalizeString(incoming.lastActivityAt) || normalizeString(existing.lastActivityAt) || null,
+    lastInteractionAt:
+      normalizeString(incoming.lastInteractionAt) || normalizeString(existing.lastInteractionAt) || null,
+    _activityMs: Math.max(existingActivity, incomingActivity),
+  };
+}
+
+async function findReusableSessionCandidate({
+  targetPath,
+  reuseWindowSeconds = 3600,
+  resume = true,
+  forceNew = false,
+} = {}) {
+  if (forceNew || resume === false) return null;
+  const cutoffMs = Date.now() - reuseWindowSeconds * 1000;
+  const byId = new Map();
+
+  try {
+    const active = await listActiveSessions({ targetPath });
+    for (const entry of active) {
+      const activityMs = latestSessionActivityMs(entry);
+      if (!activityMs || activityMs < cutoffMs) continue;
+      const candidate = {
+        ...entry,
+        _source: "local",
+        _activityMs: activityMs,
+      };
+      byId.set(entry.sessionId, mergeResumeCandidate(byId.get(entry.sessionId), candidate));
+    }
+  } catch {
+    /* local lookup failure is non-fatal */
+  }
+
+  if (!remoteSessionLookupDisabled()) {
+    try {
+      const remote = await listSessionsFromApi({
+        targetPath,
+        includeArchived: false,
+        limit: 50,
+      });
+      if (remote && remote.ok) {
+        const normalizedTarget = normalizeComparablePath(targetPath);
+        for (const entry of remote.sessions || []) {
+          const codebase = normalizeComparablePath(entry.codebasePath || entry.targetPath);
+          if (!codebase || codebase !== normalizedTarget) continue;
+          if (entry.archiveStatus && entry.archiveStatus !== "active") continue;
+          const activityMs = latestSessionActivityMs(entry);
+          if (!activityMs || activityMs < cutoffMs) continue;
+          const candidate = {
+            sessionId: entry.sessionId,
+            createdAt: entry.createdAt,
+            lastActivityAt: entry.lastActivityAt,
+            expiresAt: entry.expiresAt,
+            status: entry.status || "active",
+            template: entry.templateName || null,
+            title: entry.title || null,
+            _source: "remote",
+            _activityMs: activityMs,
+          };
+          byId.set(entry.sessionId, mergeResumeCandidate(byId.get(entry.sessionId), candidate));
+        }
+      }
+    } catch {
+      /* remote lookup failure is non-fatal */
+    }
+  }
+
+  const candidates = [...byId.values()];
+  candidates.sort((left, right) => Number(right._activityMs || 0) - Number(left._activityMs || 0));
+  return candidates[0] || null;
+}
+
+async function pushSessionTitleToApi(sessionId, title, { targetPath } = {}) {
+  const normalizedTitle = normalizeString(title);
+  if (!normalizedTitle || remoteSessionLookupDisabled()) return;
+  try {
+    const session = await resolveActiveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+    if (!session?.token || !session?.apiUrl) return;
+    const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
+    await requestJsonMutation(
+      `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/title`,
+      {
+        method: "POST",
+        operationName: "session.set_title",
+        headers: { Authorization: `Bearer ${session.token}` },
+        body: { title: normalizedTitle },
+      },
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+async function ensureWorkspaceSession({
+  targetPath,
+  ttlSeconds = DEFAULT_TTL_SECONDS,
+  template = null,
+  title = "",
+  resume = true,
+  forceNew = false,
+  reuseWindowSeconds = 3600,
+} = {}) {
+  const titleArg = normalizeString(title);
+  const fallbackTitle = deriveSessionTitle(targetPath);
+  const startedAt = Date.now();
+  const resumedCandidate = await findReusableSessionCandidate({
+    targetPath,
+    reuseWindowSeconds,
+    resume,
+    forceNew,
+  });
+  let created;
+  const resumeTitle =
+    titleArg || normalizeString(resumedCandidate?.title) || fallbackTitle;
+
+  if (resumedCandidate) {
+    if (resumedCandidate._source === "remote" && !resumedCandidate.sessionDir) {
+      created = await createSession({
+        targetPath,
+        ttlSeconds,
+        sessionId: resumedCandidate.sessionId,
+        title: resumeTitle,
+        createdAt: resumedCandidate.createdAt,
+        expiresAt: resumedCandidate.expiresAt,
+        lastInteractionAt:
+          resumedCandidate.lastInteractionAt ||
+          resumedCandidate.lastActivityAt ||
+          resumedCandidate.createdAt,
+      });
+    } else {
+      created = {
+        sessionId: resumedCandidate.sessionId,
+        sessionDir: resumedCandidate.sessionDir || null,
+        metadataPath: resumedCandidate.metadataPath || null,
+        streamPath: resumedCandidate.streamPath || null,
+        createdAt: resumedCandidate.createdAt,
+        updatedAt: resumedCandidate.updatedAt || null,
+        lastInteractionAt: resumedCandidate.lastInteractionAt || null,
+        expiresAt: resumedCandidate.expiresAt,
+        elapsedTimer: resumedCandidate.elapsedTimer || 0,
+        renewalCount: resumedCandidate.renewalCount || 0,
+        status: resumedCandidate.status || "active",
+        template: resumedCandidate.template || null,
+        title: normalizeString(resumedCandidate.title) || null,
+        codebaseContext: resumedCandidate.codebaseContext || null,
+      };
+      if (resumeTitle && resumeTitle !== created.title) {
+        const updated = await updateSessionTitle(created.sessionId, {
+          targetPath,
+          title: resumeTitle,
+        }).catch(() => null);
+        if (updated) {
+          created = {
+            ...created,
+            ...updated,
+          };
+        }
+      }
+    }
+  } else {
+    created = await createSession({
+      targetPath,
+      ttlSeconds,
+      template,
+      title: titleArg || fallbackTitle,
+    });
+  }
+
+  const effectiveTitle = titleArg || normalizeString(created.title) || fallbackTitle;
+  const titleAuto = !titleArg && !resumedCandidate;
+  const shouldPushTitle = Boolean(
+    titleArg ||
+      titleAuto ||
+      (resumedCandidate && effectiveTitle && !normalizeString(resumedCandidate.title))
+  );
+  if (shouldPushTitle) {
+    void pushSessionTitleToApi(created.sessionId, effectiveTitle, { targetPath });
+  }
+
+  return {
+    created: {
+      ...created,
+      title: effectiveTitle || null,
+      resumed: Boolean(resumedCandidate),
+    },
+    resumedCandidate,
+    durationMs: Date.now() - startedAt,
+    title: effectiveTitle || null,
+    titleAuto,
+  };
 }
 
 function normalizeAgentId(value, fallbackValue = "cli-user") {
@@ -280,6 +508,15 @@ export function registerSessionCommand(program) {
       "Always create a new session even if a recent active one exists for this workspace",
     )
     .option(
+      "--resume",
+      "Reuse the most recent active session for this workspace when one is inside the reuse window",
+      true,
+    )
+    .option(
+      "--no-resume",
+      "Disable automatic resume and mint a new session unless --force-new is also present",
+    )
+    .option(
       "--reuse-window-seconds <seconds>",
       "Window in which an existing active session for this workspace will be reused (default 3600 = 1h)",
       "3600",
@@ -302,149 +539,22 @@ export function registerSessionCommand(program) {
         "reuse-window-seconds",
         3600,
       );
-
-      // Auto-resume: prefer an existing active session for this codebase
-      // over minting a new one. We check both local filesystem state and the
-      // remote registry — local-only resume meant a fresh checkout / second
-      // machine would orphan the room each time, exactly the mess Carter
-      // surfaced ("all of them look like one chat re-created").
-      //
-      // Order:
-      //   1. Local session for the same targetPath inside the reuse window.
-      //   2. Remote active session whose codebasePath matches the absolute
-      //      targetPath, sorted by last activity. We fold these into the
-      //      candidate pool so a session minted on another machine can be
-      //      rejoined rather than duplicated.
-      // `--force-new` opts back into the old "always mint" behavior.
-      let resumed = null;
-      if (!options.forceNew) {
-        const cutoffMs = Date.now() - reuseWindowSeconds * 1000;
-        const candidates = [];
-        try {
-          const active = await listActiveSessions({ targetPath });
-          for (const entry of active) {
-            const createdMs = Date.parse(entry.createdAt || "");
-            if (Number.isFinite(createdMs) && createdMs >= cutoffMs) {
-              candidates.push({ ...entry, _source: "local" });
-            }
-          }
-        } catch {
-          /* local lookup failure is non-fatal */
-        }
-        try {
-          const remote = await listSessionsFromApi({
-            targetPath,
-            includeArchived: false,
-            limit: 50,
-          });
-          if (remote && remote.ok) {
-            const normalizedTarget = String(targetPath).toLowerCase();
-            for (const entry of remote.sessions || []) {
-              const codebase = String(entry.codebasePath || "").toLowerCase();
-              if (!codebase || codebase !== normalizedTarget) continue;
-              if (entry.archiveStatus && entry.archiveStatus !== "active") continue;
-              const lastMs = Date.parse(entry.lastActivityAt || entry.createdAt || "");
-              if (Number.isFinite(lastMs) && lastMs >= cutoffMs) {
-                candidates.push({
-                  sessionId: entry.sessionId,
-                  createdAt: entry.createdAt,
-                  lastActivityAt: entry.lastActivityAt,
-                  expiresAt: entry.expiresAt,
-                  status: entry.status || "active",
-                  template: entry.templateName || null,
-                  title: entry.title || null,
-                  _source: "remote",
-                });
-              }
-            }
-          }
-        } catch {
-          /* remote lookup failure is non-fatal */
-        }
-        if (candidates.length > 0) {
-          // Prefer the most recent activity. Local + remote may name the
-          // same session; dedupe on sessionId before picking.
-          const seen = new Set();
-          const deduped = [];
-          for (const entry of candidates) {
-            if (seen.has(entry.sessionId)) continue;
-            seen.add(entry.sessionId);
-            deduped.push(entry);
-          }
-          deduped.sort((a, b) =>
-            String(b.lastActivityAt || b.createdAt || "").localeCompare(
-              String(a.lastActivityAt || a.createdAt || ""),
-            ),
-          );
-          resumed = deduped[0];
-        }
-      }
-
-      const startedAt = Date.now();
-      let created;
-      if (resumed) {
-        // Surface the resumed session's metadata in the same shape
-        // createSession returns so downstream code stays unchanged.
-        created = {
-          sessionId: resumed.sessionId,
-          sessionDir: resumed.sessionDir || null,
-          metadataPath: resumed.metadataPath || null,
-          streamPath: resumed.streamPath || null,
-          createdAt: resumed.createdAt,
-          expiresAt: resumed.expiresAt,
-          elapsedTimer: 0,
-          renewalCount: resumed.renewalCount || 0,
-          status: resumed.status || "active",
-          template: resumed.template || null,
-          codebaseContext: resumed.codebaseContext || null,
-          resumed: true,
-        };
-      } else {
-        created = await createSession({
-          targetPath,
-          ttlSeconds,
-          template,
-        });
-      }
-      const durationMs = Date.now() - startedAt;
+      const titleArg = normalizeString(options.title);
+      const ensured = await ensureWorkspaceSession({
+        targetPath,
+        ttlSeconds,
+        template,
+        title: titleArg,
+        resume: options.resume !== false,
+        forceNew: Boolean(options.forceNew),
+        reuseWindowSeconds,
+      });
+      const created = ensured.created;
+      const resumed = Boolean(ensured.resumedCandidate);
+      const durationMs = ensured.durationMs;
       const launchPlan = template ? buildTemplateLaunchPlan(created.sessionId, template) : [];
       const dashboardUrl = buildDashboardUrl(created.sessionId);
-      // Default the title to a stable codebase+date slug so the web sidebar
-      // never fills with anonymous "<null>" rows. The caller can still
-      // override with --title. We skip the auto-title for resumed sessions
-      // because the room already has a name we don't want to clobber.
-      const titleArg = normalizeString(options.title);
-      const autoTitle = !resumed && !titleArg ? deriveSessionTitle(targetPath) : "";
-      const effectiveTitle = titleArg || autoTitle;
-
-      // If a title needs to land on the dashboard, push it. We always push
-      // when the caller passed --title, AND we push the auto-derived title
-      // for fresh (non-resumed) sessions so the room is never anonymous on
-      // the web. Best-effort, non-blocking.
-      if (effectiveTitle) {
-        void (async () => {
-          try {
-            const session = await resolveActiveAuthSession({
-              cwd: targetPath,
-              env: process.env,
-              autoRotate: false,
-            });
-            if (!session?.token || !session?.apiUrl) return;
-            const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
-            await requestJsonMutation(
-              `${apiUrl}/api/v1/sessions/${encodeURIComponent(created.sessionId)}/title`,
-              {
-                method: "POST",
-                operationName: "session.set_title",
-                headers: { Authorization: `Bearer ${session.token}` },
-                body: { title: effectiveTitle },
-              },
-            );
-          } catch (_error) {
-            /* best-effort */
-          }
-        })();
-      }
+      const effectiveTitle = ensured.title;
 
       const payload = {
         command: "session start",
@@ -455,7 +565,9 @@ export function registerSessionCommand(program) {
         metadataPath: created.metadataPath,
         streamPath: created.streamPath,
         createdAt: created.createdAt,
+        updatedAt: created.updatedAt,
         expiresAt: created.expiresAt,
+        lastInteractionAt: created.lastInteractionAt,
         ttlSeconds,
         elapsedTimer: created.elapsedTimer,
         renewalCount: created.renewalCount,
@@ -463,9 +575,9 @@ export function registerSessionCommand(program) {
         template: created.template,
         launchPlan,
         dashboardUrl,
-        resumed: Boolean(resumed),
+        resumed,
         title: effectiveTitle || null,
-        titleAuto: Boolean(autoTitle && !titleArg),
+        titleAuto: Boolean(ensured.titleAuto),
       };
 
       // Best-effort admin visibility sync. Session creation remains local-first.
@@ -475,6 +587,7 @@ export function registerSessionCommand(program) {
         status: created.status,
         createdAt: created.createdAt,
         expiresAt: created.expiresAt,
+        title: effectiveTitle || null,
         ttlSeconds,
         template: created.template,
         codebaseContext: created.codebaseContext,
@@ -536,6 +649,62 @@ export function registerSessionCommand(program) {
     });
 
   session
+    .command("ensure")
+    .description("Join or create the canonical session for this workspace and emit JSON")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--title <title>", "Title applied if a new or unnamed resumed session needs one")
+    .option(
+      "--ttl-seconds <seconds>",
+      `Session time-to-live in seconds when a new session is minted (default ${DEFAULT_TTL_SECONDS})`
+    )
+    .option(
+      "--force-new",
+      "Always create a new session even if a recent active one exists for this workspace",
+    )
+    .option(
+      "--resume",
+      "Reuse the most recent active session for this workspace when one is inside the reuse window",
+      true,
+    )
+    .option("--no-resume", "Disable automatic resume and mint a new session")
+    .option(
+      "--reuse-window-seconds <seconds>",
+      "Window in which an existing active session for this workspace will be reused (default 3600 = 1h)",
+      "3600",
+    )
+    .option("--json", "Emit machine-readable output (default for this command)")
+    .action(async (options) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const ttlSeconds = parsePositiveInteger(
+        options.ttlSeconds,
+        "ttl-seconds",
+        DEFAULT_TTL_SECONDS,
+      );
+      const reuseWindowSeconds = parsePositiveInteger(
+        options.reuseWindowSeconds,
+        "reuse-window-seconds",
+        3600,
+      );
+      const ensured = await ensureWorkspaceSession({
+        targetPath,
+        ttlSeconds,
+        title: normalizeString(options.title),
+        resume: options.resume !== false,
+        forceNew: Boolean(options.forceNew),
+        reuseWindowSeconds,
+      });
+      const payload = {
+        command: "session ensure",
+        targetPath,
+        sessionId: ensured.created.sessionId,
+        title: ensured.title || null,
+        resumed: Boolean(ensured.resumedCandidate),
+        dashboardUrl: buildDashboardUrl(ensured.created.sessionId),
+      };
+      console.log(JSON.stringify(payload, null, 2));
+    });
+
+  session
     .command("set-title <sessionId> <title>")
     .description("Set the human-readable title on a session (visible in web sidebar + transcript).")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -564,10 +733,15 @@ export function registerSessionCommand(program) {
           body: { title: normalizedTitle },
         },
       );
+      const localUpdated = await updateSessionTitle(normalizedSessionId, {
+        targetPath,
+        title: normalizedTitle,
+      }).catch(() => null);
       const payload = {
         command: "session set-title",
         sessionId: normalizedSessionId,
         title: normalizedTitle,
+        localUpdated: Boolean(localUpdated),
         result,
       };
       if (shouldEmitJson(options, command)) {

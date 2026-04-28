@@ -43,6 +43,21 @@ function normalizeNonNegativeInteger(value, fallbackValue = 0) {
   return Math.floor(normalized);
 }
 
+function normalizeCreateSessionId(value) {
+  const normalized = normalizeString(value);
+  if (!normalized) return randomUUID();
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.includes("/") ||
+    normalized.includes("\\") ||
+    normalized.includes("..")
+  ) {
+    throw new Error("sessionId must not contain path traversal segments.");
+  }
+  return normalized;
+}
+
 function normalizeIsoTimestamp(value, fallbackIso = new Date().toISOString()) {
   const normalized = normalizeString(value);
   if (!normalized) {
@@ -148,7 +163,7 @@ function toRelativePosix(baseDir, absolutePath) {
 
 function normalizeDateKeyFromCloseoutPath(closeoutPath = "", fallbackIso = new Date().toISOString()) {
   const normalized = toPosixPath(closeoutPath);
-  const match = /\/observability\/(\d{4}-\d{2}-\d{2})\//.exec(`/${normalized}`);
+  const match = /\/observability\/(\d{4}-\d{2}-\d{2})\//.exec("/" + normalized);
   if (match) {
     return match[1];
   }
@@ -330,6 +345,7 @@ function normalizeMetadata(raw = {}, { sessionId, targetPath, nowIso } = {}) {
     createdAt,
     updatedAt: normalizeIsoTimestamp(raw.updatedAt, nowIso),
     expiresAt,
+    title: normalizeString(raw.title) || null,
     ttlSeconds,
     renewalCount: Math.max(0, Number(raw.renewalCount || 0)),
     maxLifetimeSeconds: normalizePositiveInteger(raw.maxLifetimeSeconds, MAX_SESSION_LIFETIME_SECONDS),
@@ -364,7 +380,10 @@ function buildSessionPayload(metadata, paths, nowIso = new Date().toISOString())
     metadataPath: paths.metadataPath,
     streamPath: paths.streamPath,
     createdAt: metadata.createdAt,
+    updatedAt: metadata.updatedAt,
     expiresAt: metadata.expiresAt,
+    lastInteractionAt: metadata.lastInteractionAt,
+    title: metadata.title,
     elapsedTimer: buildElapsedTimer(metadata.createdAt, nowIso),
     renewalCount: metadata.renewalCount,
     status: metadata.status,
@@ -406,11 +425,22 @@ export async function createSession({
   targetPath = process.cwd(),
   ttlSeconds = DEFAULT_TTL_SECONDS,
   template = null,
+  sessionId: requestedSessionId = "",
+  title = "",
+  createdAt = "",
+  expiresAt = "",
+  lastInteractionAt = "",
 } = {}) {
   const resolvedTargetPath = path.resolve(String(targetPath || "."));
   const normalizedTtlSeconds = normalizePositiveInteger(ttlSeconds, DEFAULT_TTL_SECONDS);
-  const sessionId = randomUUID();
+  const sessionId = normalizeCreateSessionId(requestedSessionId);
   const nowIso = new Date().toISOString();
+  const createdIso = normalizeIsoTimestamp(createdAt, nowIso);
+  const expiresIso = normalizeIsoTimestamp(
+    expiresAt,
+    toIsoAfterSeconds(createdIso, normalizedTtlSeconds)
+  );
+  const interactionIso = normalizeIsoTimestamp(lastInteractionAt, createdIso);
   const paths = resolveSessionPaths(sessionId, { targetPath: resolvedTargetPath });
   const codebaseContext = await collectSessionCodebaseContext(resolvedTargetPath);
 
@@ -419,14 +449,15 @@ export async function createSession({
       schemaVersion: SESSION_SCHEMA_VERSION,
       sessionId,
       targetPath: resolvedTargetPath,
-      createdAt: nowIso,
+      createdAt: createdIso,
       updatedAt: nowIso,
-      expiresAt: toIsoAfterSeconds(nowIso, normalizedTtlSeconds),
+      expiresAt: expiresIso,
+      title: normalizeString(title) || null,
       ttlSeconds: normalizedTtlSeconds,
       renewalCount: 0,
       maxLifetimeSeconds: MAX_SESSION_LIFETIME_SECONDS,
       status: SESSION_STATUS_ACTIVE,
-      lastInteractionAt: nowIso,
+      lastInteractionAt: interactionIso,
       expiredAt: null,
       archivedAt: null,
       s3Path: null,
@@ -447,6 +478,24 @@ export async function createSession({
   await fsp.writeFile(paths.streamPath, "", { encoding: "utf-8", flag: "a" });
 
   return buildSessionPayload(metadata, paths, nowIso);
+}
+
+export async function updateSessionTitle(
+  sessionId,
+  { targetPath = process.cwd(), title = "" } = {}
+) {
+  const loaded = await loadMetadata(sessionId, { targetPath });
+  if (!loaded) {
+    return null;
+  }
+  const nowIso = new Date().toISOString();
+  const metadata = {
+    ...loaded.metadata,
+    title: normalizeString(title) || null,
+    updatedAt: nowIso,
+  };
+  const saved = await saveMetadata(metadata, loaded.paths);
+  return buildSessionPayload(saved, loaded.paths, nowIso);
 }
 
 export async function getSession(sessionId, { targetPath = process.cwd() } = {}) {
