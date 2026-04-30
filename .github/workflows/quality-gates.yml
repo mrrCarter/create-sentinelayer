@@ -300,7 +300,13 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    # PR-E1 (Playwright + Lighthouse + axe-core) lifted real test wall-clock
+    # past the original 20-min cap; the runner was force-killing orphan
+    # `npm test` / `node` processes before the suite could finish, leaving
+    # Test cancelled and Quality Summary failure with no actionable output.
+    # 40 min keeps headroom for further DD-stage growth without normalizing
+    # a 30-min suite as the steady state.
+    timeout-minutes: 40
     needs: [eval-gate-terminal, lint, syntax-matrix]
     if: >-
       ${{
