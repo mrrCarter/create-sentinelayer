@@ -54,6 +54,7 @@ import { readSessionPreview } from "../session/preview.js";
 import {
   listSessionsFromApi,
   probeSessionAccess,
+  syncSessionEventToApi,
   syncSessionMetadataToApi,
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
@@ -221,6 +222,28 @@ async function pushSessionTitleToApi(sessionId, title, { targetPath } = {}) {
   } catch {
     /* best-effort */
   }
+}
+
+async function ensureLocalSessionForRemoteCommand(sessionId, { targetPath, title = "" } = {}) {
+  const existing = await getSession(sessionId, { targetPath });
+  if (existing) {
+    return { materialized: false, session: existing };
+  }
+  const access = await probeSessionAccess(sessionId, { targetPath }).catch((error) => ({
+    accessible: false,
+    reason: normalizeString(error?.message) || "probe_failed",
+  }));
+  if (!access?.accessible) {
+    throw new Error(
+      `Session '${sessionId}' was not found locally and remote access failed (${access?.reason || "unknown"}).`,
+    );
+  }
+  const created = await createSession({
+    targetPath,
+    sessionId,
+    title: normalizeString(title) || `remote-${String(sessionId).slice(0, 8)}`,
+  });
+  return { materialized: true, session: created };
 }
 
 async function ensureWorkspaceSession({
@@ -914,6 +937,9 @@ export function registerSessionCommand(program) {
         throw new Error("session id is required.");
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const localSession = await ensureLocalSessionForRemoteCommand(normalizedSessionId, {
+        targetPath,
+      });
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
         agentId: await defaultAgentId(options.name, targetPath),
@@ -929,6 +955,7 @@ export function registerSessionCommand(program) {
         model: joined.model,
         status: joined.status,
         joinedAt: joined.joinedAt,
+        materializedLocalSession: localSession.materialized,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -956,6 +983,9 @@ export function registerSessionCommand(program) {
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const agentId = await defaultAgentId(options.agent, targetPath);
+      const localSession = await ensureLocalSessionForRemoteCommand(normalizedSessionId, {
+        targetPath,
+      });
       const to = normalizeString(options.to);
       const eventPayload = {
         message: normalizedMessage,
@@ -964,12 +994,29 @@ export function registerSessionCommand(program) {
       if (to) {
         eventPayload.to = to;
       }
+      const clientMessageId = `cli-${randomUUID()}`;
       const event = createAgentEvent({
         event: "session_message",
         agentId,
         sessionId: normalizedSessionId,
         payload: eventPayload,
       });
+      event.eventId = clientMessageId;
+      event.idempotencyToken = clientMessageId;
+      let remoteSync = null;
+      if (localSession.materialized) {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
+            targetPath,
+          });
+          if (remoteSync?.synced) break;
+        }
+        if (!remoteSync?.synced) {
+          throw new Error(
+            `Remote send failed (${remoteSync?.reason || "unknown"}); local cache was not updated.`,
+          );
+        }
+      }
       const persisted = await appendToStream(normalizedSessionId, event, {
         targetPath,
       });
@@ -979,6 +1026,8 @@ export function registerSessionCommand(program) {
         sessionId: normalizedSessionId,
         agentId,
         event: persisted,
+        materializedLocalSession: localSession.materialized,
+        remoteSync: remoteSync || undefined,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -1248,6 +1297,11 @@ export function registerSessionCommand(program) {
         dropped: result.dropped,
         cursor: result.cursor,
         persistedCursor: result.persistedCursor,
+        humanRelayed: result.humanRelayed,
+        eventsRelayed: result.eventsRelayed,
+        eventsCursor: result.eventsCursor,
+        materializedLocalSession: result.materializedLocalSession,
+        localAppendComplete: result.localAppendComplete,
         access: access || undefined,
       };
       if (shouldEmitJson(options, command)) {

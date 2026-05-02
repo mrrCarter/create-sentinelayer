@@ -227,7 +227,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ steps.checks_target.outputs.target_sha }}
-          MAX_WAIT_SECONDS: "1800"
+          # quality-gates.yml allows the full test job up to 40 minutes, then
+          # runs package/provenance summary jobs before this attestation can
+          # consume their check-runs. Keep the waiter above that contract so a
+          # slow-but-valid quality run does not fail attestation first.
+          MAX_WAIT_SECONDS: "3600"
           POLL_INTERVAL_SECONDS: "10"
         shell: bash
         run: |

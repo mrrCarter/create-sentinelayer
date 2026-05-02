@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { hydrateSessionFromRemote } from "../src/session/remote-hydrate.js";
+import { readStream } from "../src/session/stream.js";
 import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 
 async function makeTempRepo() {
@@ -133,6 +134,114 @@ test("hydrateSessionFromRemote: append failures don't abort the batch", async ()
     });
     assert.equal(calls, 3);
     assert.equal(result.relayed, 2);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: materializes remote-only sessions before local append", async () => {
+  const root = await makeTempRepo();
+  const oldSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+  try {
+    const result = await hydrateSessionFromRemote({
+      sessionId: "remote-only",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            event: "session_message",
+            cursor: "e-1",
+            ts: "2026-05-02T16:00:00.000Z",
+            agent: { id: "claude-1", model: "claude-opus-4-7" },
+            payload: { message: "remote message" },
+          },
+        ],
+        cursor: "e-1",
+      }),
+    });
+    const events = await readStream("remote-only", { targetPath: root, tail: 0 });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 1);
+    assert.equal(result.materializedLocalSession, true);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.message, "remote message");
+    assert.equal(
+      await readSyncCursor("remote-only", { targetPath: root, suffix: "events" }),
+      "e-1",
+    );
+  } finally {
+    if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: does not advance cursors when local append fails", async () => {
+  const root = await makeTempRepo();
+  try {
+    const result = await hydrateSessionFromRemote({
+      sessionId: "append-fails",
+      targetPath: root,
+      _poll: async () => ({
+        ok: true,
+        events: [{ event: "human_relay", cursor: "h-1", payload: { message: "human" } }],
+        cursor: "h-1",
+      }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [{ event: "session_message", cursor: "e-1", agent: { id: "codex" }, payload: { message: "agent" } }],
+        cursor: "e-1",
+      }),
+      _append: async () => {
+        throw new Error("missing metadata");
+      },
+      _ensureLocalSession: async () => ({ materialized: false }),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 0);
+    assert.equal(result.persistedCursor, false);
+    assert.equal(result.localAppendComplete, false);
+    assert.equal(await readSyncCursor("append-fails", { targetPath: root }), null);
+    assert.equal(await readSyncCursor("append-fails", { targetPath: root, suffix: "events" }), null);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: marks materialized killed-session events as post-kill", async () => {
+  const root = await makeTempRepo();
+  try {
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "killed-remote",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            event: "session_message",
+            cursor: "e-killed",
+            agent: { id: "codex" },
+            payload: { message: "late message" },
+          },
+        ],
+        cursor: "e-killed",
+      }),
+      _ensureLocalSession: async () => ({ materialized: true, remoteStatus: "killed" }),
+      _append: async (_sessionId, event) => {
+        appended.push(event);
+        return event;
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.remoteStatus, "killed");
+    assert.equal(appended.length, 1);
+    assert.equal(appended[0]._post_kill, true);
+    assert.equal(appended[0].payload._post_kill, true);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
