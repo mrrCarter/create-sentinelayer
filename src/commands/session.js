@@ -61,6 +61,7 @@ import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
+import { pushSessionTitleToApi } from "../session/title-sync.js";
 import {
   buildDashboardUrl,
   buildTemplateLaunchPlan,
@@ -199,31 +200,6 @@ async function findReusableSessionCandidate({
   return candidates[0] || null;
 }
 
-async function pushSessionTitleToApi(sessionId, title, { targetPath } = {}) {
-  const normalizedTitle = normalizeString(title);
-  if (!normalizedTitle || remoteSessionLookupDisabled()) return;
-  try {
-    const session = await resolveActiveAuthSession({
-      cwd: targetPath,
-      env: process.env,
-      autoRotate: false,
-    });
-    if (!session?.token || !session?.apiUrl) return;
-    const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
-    await requestJsonMutation(
-      `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/title`,
-      {
-        method: "POST",
-        operationName: "session.set_title",
-        headers: { Authorization: `Bearer ${session.token}` },
-        body: { title: normalizedTitle },
-      },
-    );
-  } catch {
-    /* best-effort */
-  }
-}
-
 async function ensureLocalSessionForRemoteCommand(sessionId, { targetPath, title = "" } = {}) {
   const existing = await getSession(sessionId, { targetPath });
   if (existing) {
@@ -323,13 +299,16 @@ async function ensureWorkspaceSession({
 
   const effectiveTitle = titleArg || normalizeString(created.title) || fallbackTitle;
   const titleAuto = !titleArg && !resumedCandidate;
+  const pendingTitleSync = Boolean(created.remoteTitleSync?.pending && effectiveTitle);
   const shouldPushTitle = Boolean(
     titleArg ||
       titleAuto ||
+      pendingTitleSync ||
       (resumedCandidate && effectiveTitle && !normalizeString(resumedCandidate.title))
   );
+  let titleSync = null;
   if (shouldPushTitle) {
-    void pushSessionTitleToApi(created.sessionId, effectiveTitle, { targetPath });
+    titleSync = await pushSessionTitleToApi(created.sessionId, effectiveTitle, { targetPath });
   }
 
   return {
@@ -342,6 +321,7 @@ async function ensureWorkspaceSession({
     durationMs: Date.now() - startedAt,
     title: effectiveTitle || null,
     titleAuto,
+    titleSync,
   };
 }
 
@@ -658,6 +638,7 @@ export function registerSessionCommand(program) {
         resumed,
         title: effectiveTitle || null,
         titleAuto: Boolean(ensured.titleAuto),
+        titleSync: ensured.titleSync || undefined,
       };
 
       // Best-effort admin visibility sync. Session creation remains local-first.
@@ -794,6 +775,7 @@ export function registerSessionCommand(program) {
         title: ensured.title || null,
         resumed: Boolean(ensured.resumedCandidate),
         dashboardUrl: buildDashboardUrl(ensured.created.sessionId),
+        titleSync: ensured.titleSync || undefined,
       };
       console.log(JSON.stringify(payload, null, 2));
     });
