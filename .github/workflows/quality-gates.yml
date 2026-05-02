@@ -2,7 +2,7 @@ name: Quality Gates
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   schedule:
