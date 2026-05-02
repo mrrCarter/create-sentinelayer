@@ -18,11 +18,81 @@
  * sync, and vice-versa.
  */
 
-import { pollHumanMessages, pollSessionEvents } from "./sync.js";
+import { listSessionsFromApi, pollHumanMessages, pollSessionEvents } from "./sync.js";
 import { appendToStream } from "./stream.js";
+import { createSession, getSession } from "./store.js";
 import { readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
+
+function eventRelayKey(event = {}) {
+  if (!event || typeof event !== "object") return "";
+  if (typeof event.cursor === "string" && event.cursor.trim()) {
+    return `cursor:${event.cursor.trim()}`;
+  }
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  const messageId = typeof payload.messageId === "string" ? payload.messageId.trim() : "";
+  if (messageId) {
+    return `message:${messageId}`;
+  }
+  try {
+    return `fingerprint:${JSON.stringify({
+      event: event.event || event.type || "",
+      agent: event.agent?.id || event.agentId || "",
+      payload,
+      ts: event.ts || event.timestamp || event.at || "",
+    })}`;
+  } catch {
+    return "";
+  }
+}
+
+async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() } = {}) {
+  const existing = await getSession(sessionId, { targetPath });
+  if (existing) {
+    return { materialized: false, session: existing };
+  }
+  let remoteStatus = "";
+  const remoteList = await listSessionsFromApi({
+    targetPath,
+    includeArchived: true,
+    limit: 200,
+  }).catch(() => null);
+  if (remoteList?.ok) {
+    const match = (remoteList.sessions || []).find((entry) => entry?.sessionId === sessionId);
+    remoteStatus = String(match?.archiveStatus || match?.status || "").trim().toLowerCase();
+  }
+  const created = await createSession({
+    targetPath,
+    sessionId,
+    title: `remote-${String(sessionId).slice(0, 8)}`,
+  });
+  return { materialized: true, session: created, remoteStatus };
+}
+
+function sourceFullyRelayed(events = [], successfulKeys = new Set()) {
+  const relayedEvents = Array.isArray(events) ? events : [];
+  if (relayedEvents.length === 0) return true;
+  return relayedEvents.every((event) => {
+    const key = eventRelayKey(event);
+    return key && successfulKeys.has(key);
+  });
+}
+
+function markPostKillEvent(event = {}) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return event;
+  const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? event.payload
+    : {};
+  return {
+    ...event,
+    _post_kill: true,
+    payload: {
+      ...payload,
+      _post_kill: true,
+    },
+  };
+}
 
 /**
  * Fetch new human messages for a session, append them to the local
@@ -46,6 +116,7 @@ export async function hydrateSessionFromRemote({
   _poll = pollHumanMessages,
   _pollEvents = pollSessionEvents,
   _append = appendToStream,
+  _ensureLocalSession = ensureLocalSessionShell,
 } = {}) {
   if (!sessionId || typeof sessionId !== "string") {
     return {
@@ -82,17 +153,24 @@ export async function hydrateSessionFromRemote({
   // Dedup across sources — both endpoints can return the same event
   // (e.g. a human relay event). Cursor values are unique per event.
   const seenCursors = new Set();
+  const seenKeys = new Set();
   const merged = [];
   for (const e of humanResult?.events || []) {
     const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
     if (c && seenCursors.has(c)) continue;
+    const key = eventRelayKey(e);
+    if (key && seenKeys.has(key)) continue;
     if (c) seenCursors.add(c);
+    if (key) seenKeys.add(key);
     merged.push(e);
   }
   for (const e of eventsResult?.events || []) {
     const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
     if (c && seenCursors.has(c)) continue;
+    const key = eventRelayKey(e);
+    if (key && seenKeys.has(key)) continue;
     if (c) seenCursors.add(c);
+    if (key) seenKeys.add(key);
     merged.push(e);
   }
 
@@ -112,10 +190,30 @@ export async function hydrateSessionFromRemote({
   }
 
   let relayed = 0;
-  for (const event of merged) {
+  let materializedLocalSession = false;
+  let remoteStatus = "";
+  const successfulRelayKeys = new Set();
+  if (merged.length > 0) {
+    try {
+      const localSession = await _ensureLocalSession(sessionId, { targetPath });
+      materializedLocalSession = Boolean(localSession?.materialized);
+      remoteStatus = String(localSession?.remoteStatus || "").trim().toLowerCase();
+    } catch {
+      // Keep the old degraded behavior: append attempts below will
+      // fail visibly in the returned counters, but remote polling still
+      // returns a structured result.
+    }
+  }
+  const appendEvents =
+    remoteStatus && !["active", "pending"].includes(remoteStatus)
+      ? merged.map((event) => markPostKillEvent(event))
+      : merged;
+  for (const event of appendEvents) {
     try {
       await _append(sessionId, event, { targetPath });
       relayed += 1;
+      const key = eventRelayKey(event);
+      if (key) successfulRelayKeys.add(key);
     } catch {
       // Append errors are observable via the stream but should not
       // abort the rest of the batch — partial relay is still progress.
@@ -123,11 +221,13 @@ export async function hydrateSessionFromRemote({
   }
 
   let persistedCursor = false;
-  if (typeof humanResult?.cursor === "string" && humanResult.cursor.trim()) {
+  const humanCursorSafe = sourceFullyRelayed(humanResult?.events || [], successfulRelayKeys);
+  const eventsCursorSafe = sourceFullyRelayed(eventsResult?.events || [], successfulRelayKeys);
+  if (humanCursorSafe && typeof humanResult?.cursor === "string" && humanResult.cursor.trim()) {
     const result = await writeSyncCursor(sessionId, humanResult.cursor, { targetPath }).catch(() => null);
     persistedCursor = Boolean(result && result.written);
   }
-  if (typeof eventsResult?.cursor === "string" && eventsResult.cursor.trim()) {
+  if (eventsCursorSafe && typeof eventsResult?.cursor === "string" && eventsResult.cursor.trim()) {
     await writeSyncCursor(sessionId, eventsResult.cursor, {
       targetPath,
       suffix: EVENTS_CURSOR_SUFFIX,
@@ -145,5 +245,8 @@ export async function hydrateSessionFromRemote({
     eventsRelayed: (eventsResult?.events || []).length,
     eventsCursor:
       typeof eventsResult?.cursor === "string" ? eventsResult.cursor : eventsCursor || null,
+    materializedLocalSession,
+    localAppendComplete: humanCursorSafe && eventsCursorSafe,
+    remoteStatus: remoteStatus || null,
   };
 }
