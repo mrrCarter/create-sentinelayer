@@ -112,6 +112,10 @@ function remoteSessionLookupDisabled() {
   return String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1";
 }
 
+function sentiAutostartDisabled() {
+  return String(process.env.SENTINELAYER_SKIP_SENTI_AUTOSTART || "").trim() === "1";
+}
+
 function mergeResumeCandidate(existing, incoming) {
   if (!existing) return incoming;
   const existingActivity = Number(existing._activityMs || 0);
@@ -679,7 +683,9 @@ export function registerSessionCommand(program) {
       // existing handle). If the daemon fails to start (unauth env,
       // missing model proxy), the session keeps working — Senti just
       // stays quiet, same as before this change.
-      void startSenti(created.sessionId, { targetPath }).catch(() => {});
+      if (!sentiAutostartDisabled()) {
+        void startSenti(created.sessionId, { targetPath }).catch(() => {});
+      }
 
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));

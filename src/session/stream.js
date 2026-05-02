@@ -328,7 +328,7 @@ export async function* tailStream(
     }
 
     try {
-      await sleep(normalizedPollMs, null, signal ? { signal } : undefined);
+      await sleep(normalizedPollMs, null, signal ? { signal, ref: false } : { ref: false });
     } catch (error) {
       if (error && typeof error === "object" && error.name === "AbortError") {
         return;

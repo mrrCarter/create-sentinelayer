@@ -2,13 +2,20 @@ name: Quality Gates
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  schedule:
+    - cron: "17 5 * * *"
   workflow_dispatch:
     inputs:
       emergency_eval_skip:
         description: "Allow eval-impact skip when base commit is unavailable (requires approval)"
+        required: false
+        default: false
+        type: boolean
+      run_playwright_e2e:
+        description: "Run the full Playwright/Lighthouse e2e suite"
         required: false
         default: false
         type: boolean
@@ -298,15 +305,9 @@ jobs:
           node bin/sl.js --version
 
   test:
-    name: Test
+    name: Test (unit)
     runs-on: ubuntu-22.04
-    # PR-E1 (Playwright + Lighthouse + axe-core) lifted real test wall-clock
-    # past the original 20-min cap; the runner was force-killing orphan
-    # `npm test` / `node` processes before the suite could finish, leaving
-    # Test cancelled and Quality Summary failure with no actionable output.
-    # 40 min keeps headroom for further DD-stage growth without normalizing
-    # a 30-min suite as the steady state.
-    timeout-minutes: 40
+    timeout-minutes: 20
     needs: [eval-gate-terminal, lint, syntax-matrix]
     if: >-
       ${{
@@ -338,8 +339,52 @@ jobs:
       - name: Install devTestBot browser payload
         run: npm run devtestbot:install-browsers
 
-      - name: Run test suite
-        run: npm test
+      - name: Run unit test suite
+        run: npm run test:unit
+
+  playwright-e2e:
+    name: Test (e2e-playwright)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    needs: [eval-gate-terminal, lint, syntax-matrix]
+    if: >-
+      ${{
+        always() &&
+        needs.eval-gate-terminal.result == 'success' &&
+        needs.lint.result == 'success' &&
+        needs.syntax-matrix.result == 'success' &&
+        (
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' && inputs.run_playwright_e2e) ||
+          (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-playwright-e2e'))
+        )
+      }}
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.CANONICAL_NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Assert lockfile immutability after install
+        shell: bash
+        run: |
+          set -euo pipefail
+          git update-index -q --refresh
+          git diff --exit-code -- package-lock.json package.json
+
+      - name: Install devTestBot browser payload
+        run: npm run devtestbot:install-browsers
+
+      - name: Run full e2e suite
+        run: npm run test:e2e
 
   security-scan:
     name: Deterministic Security Scan
@@ -512,7 +557,7 @@ jobs:
           if-no-files-found: error
 
   e2e-packaging:
-    name: E2E & Package (Node ${{ matrix.node }})
+    name: Package Smoke (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     needs: [eval-gate-terminal, unit-coverage]
@@ -545,9 +590,6 @@ jobs:
           set -euo pipefail
           git update-index -q --refresh
           git diff --exit-code -- package-lock.json package.json
-
-      - name: Run E2E tests
-        run: npm run test:e2e
 
       - name: Validate package tarball
         if: ${{ matrix.node == '22' }}
