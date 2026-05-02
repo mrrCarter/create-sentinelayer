@@ -22,6 +22,13 @@ function normalizeFailureReason(error) {
   return normalizeString(error?.message) || "sync_failed";
 }
 
+function isTerminalTitleSyncError(error) {
+  return (
+    error instanceof SentinelayerApiError &&
+    (error.status === 422 || error.code === "INVALID_SESSION_TITLE")
+  );
+}
+
 export async function pushSessionTitleToApi(
   sessionId,
   title,
@@ -56,7 +63,7 @@ export async function pushSessionTitleToApi(
     const session = await resolveAuthSession({
       cwd: targetPath,
       env,
-      autoRotate: false,
+      autoRotate: true,
     });
     if (!session?.token || !session?.apiUrl) {
       await recordRemoteTitleSync(normalizedSessionId, {
@@ -88,12 +95,13 @@ export async function pushSessionTitleToApi(
     return { synced: true, status: result?.status || 200 };
   } catch (error) {
     const reason = normalizeFailureReason(error);
+    const terminal = isTerminalTitleSyncError(error);
     await recordRemoteTitleSync(normalizedSessionId, {
       targetPath,
       title: normalizedTitle,
-      pending: true,
+      pending: !terminal,
       failureReason: reason,
     }).catch(() => null);
-    return { synced: false, reason };
+    return { synced: false, reason, terminal };
   }
 }

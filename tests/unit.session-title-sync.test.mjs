@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
+import { SentinelayerApiError } from "../src/auth/http.js";
 import { pushSessionTitleToApi } from "../src/session/title-sync.js";
 import {
   createSession,
@@ -22,7 +23,7 @@ test("Unit session title sync: push uses bounded retryable title endpoint and re
     resolveAuthSession: async (args) => {
       assert.equal(args.cwd, "/tmp/workspace");
       assert.equal(args.env, env);
-      assert.equal(args.autoRotate, false);
+      assert.equal(args.autoRotate, true);
       return {
         token: "tok_test_123",
         apiUrl: "https://api.sentinelayer.com/",
@@ -84,6 +85,36 @@ test("Unit session title sync: failed push leaves pending repair metadata", asyn
   assert.equal(records[1].payload.failureReason, "network down");
 });
 
+test("Unit session title sync: terminal validation errors do not stay pending", async () => {
+  const records = [];
+
+  const result = await pushSessionTitleToApi("sess-title-422", "## Bad Title", {
+    targetPath: "/tmp/workspace",
+    env: {},
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    requestMutation: async () => {
+      throw new SentinelayerApiError("Invalid session title", {
+        status: 422,
+        code: "INVALID_SESSION_TITLE",
+      });
+    },
+    recordRemoteTitleSync: async (sessionId, payload) => {
+      records.push({ sessionId, payload });
+    },
+  });
+
+  assert.equal(result.synced, false);
+  assert.equal(result.reason, "INVALID_SESSION_TITLE");
+  assert.equal(result.terminal, true);
+  assert.equal(records.length, 2);
+  assert.equal(records[0].payload.pending, true);
+  assert.equal(records[1].payload.pending, false);
+  assert.equal(records[1].payload.failureReason, "INVALID_SESSION_TITLE");
+});
+
 test("Unit session title sync: remoteTitleSync repair state survives metadata reload", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-title-sync-"));
   try {
@@ -103,6 +134,32 @@ test("Unit session title sync: remoteTitleSync repair state survives metadata re
     assert.equal(stored.remoteTitleSync.pending, true);
     assert.equal(stored.remoteTitleSync.title, "Local Title");
     assert.equal(stored.remoteTitleSync.failureReason, "network down");
+    assert.equal(stored.remoteTitleSync.lastAttemptAt, "2026-05-02T18:00:00.000Z");
+    assert.equal(stored.remoteTitleSync.lastSyncedAt, null);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session title sync: terminal remoteTitleSync state preserves failure without sync timestamp", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-title-terminal-"));
+  try {
+    const created = await createSession({
+      targetPath: tempRoot,
+      title: "## Bad Title",
+    });
+    await recordSessionRemoteTitleSync(created.sessionId, {
+      targetPath: tempRoot,
+      title: "## Bad Title",
+      pending: false,
+      failureReason: "INVALID_SESSION_TITLE",
+      lastAttemptAt: "2026-05-02T18:00:00.000Z",
+    });
+
+    const stored = await getSession(created.sessionId, { targetPath: tempRoot });
+    assert.equal(stored.remoteTitleSync.pending, false);
+    assert.equal(stored.remoteTitleSync.title, "## Bad Title");
+    assert.equal(stored.remoteTitleSync.failureReason, "INVALID_SESSION_TITLE");
     assert.equal(stored.remoteTitleSync.lastAttemptAt, "2026-05-02T18:00:00.000Z");
     assert.equal(stored.remoteTitleSync.lastSyncedAt, null);
   } finally {

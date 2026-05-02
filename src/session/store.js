@@ -549,8 +549,9 @@ export async function recordSessionRemoteTitleSync(
         pending: Boolean(pending),
         title: normalizeString(title) || normalizeString(loaded.metadata.title) || null,
         lastAttemptAt: lastAttemptAt || nowIso,
-        lastSyncedAt: pending ? lastSyncedAt || null : lastSyncedAt || nowIso,
-        failureReason: pending ? normalizeString(failureReason) || "unknown" : null,
+        lastSyncedAt:
+          !pending && !normalizeString(failureReason) ? lastSyncedAt || nowIso : lastSyncedAt || null,
+        failureReason: normalizeString(failureReason) || null,
       },
       { nowIso },
     ),
