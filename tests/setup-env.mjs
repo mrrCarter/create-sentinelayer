@@ -7,3 +7,4 @@
 // Wired in via `node --import ./tests/setup-env.mjs --test ...` in
 // package.json scripts. Cross-platform; no extra deps.
 process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+process.env.SENTINELAYER_SKIP_SENTI_AUTOSTART = "1";
