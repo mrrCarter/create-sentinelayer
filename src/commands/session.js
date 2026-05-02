@@ -222,28 +222,6 @@ async function ensureLocalSessionForRemoteCommand(sessionId, { targetPath, title
   return { materialized: true, session: created };
 }
 
-async function ensureLocalSessionForRemoteCommand(sessionId, { targetPath, title = "" } = {}) {
-  const existing = await getSession(sessionId, { targetPath });
-  if (existing) {
-    return { materialized: false, session: existing };
-  }
-  const access = await probeSessionAccess(sessionId, { targetPath }).catch((error) => ({
-    accessible: false,
-    reason: normalizeString(error?.message) || "probe_failed",
-  }));
-  if (!access?.accessible) {
-    throw new Error(
-      `Session '${sessionId}' was not found locally and remote access failed (${access?.reason || "unknown"}).`,
-    );
-  }
-  const created = await createSession({
-    targetPath,
-    sessionId,
-    title: normalizeString(title) || `remote-${String(sessionId).slice(0, 8)}`,
-  });
-  return { materialized: true, session: created };
-}
-
 async function ensureWorkspaceSession({
   targetPath,
   ttlSeconds = DEFAULT_TTL_SECONDS,
