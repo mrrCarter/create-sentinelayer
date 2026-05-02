@@ -183,6 +183,31 @@ function normalizeSharedResources(raw = {}, { nowIso = new Date().toISOString() 
   };
 }
 
+function normalizeRemoteTitleSync(raw = {}, { nowIso = new Date().toISOString() } = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const title = normalizeString(raw.title);
+  const lastAttemptAt = raw.lastAttemptAt
+    ? normalizeIsoTimestamp(raw.lastAttemptAt, nowIso)
+    : null;
+  const lastSyncedAt = raw.lastSyncedAt
+    ? normalizeIsoTimestamp(raw.lastSyncedAt, nowIso)
+    : null;
+  const failureReason = normalizeString(raw.failureReason) || null;
+  const pending = Boolean(raw.pending);
+  if (!pending && !title && !lastAttemptAt && !lastSyncedAt && !failureReason) {
+    return null;
+  }
+  return {
+    pending,
+    title: title || null,
+    lastAttemptAt,
+    lastSyncedAt,
+    failureReason,
+  };
+}
+
 function normalizeTemplateAgent(raw = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
@@ -357,6 +382,7 @@ function normalizeMetadata(raw = {}, { sessionId, targetPath, nowIso } = {}) {
     archiveStatus: normalizeString(raw.archiveStatus) || "pending",
     codebaseContext: normalizeCodebaseContext(raw.codebaseContext || {}),
     sharedResources: normalizeSharedResources(raw.sharedResources || {}, { nowIso }),
+    remoteTitleSync: normalizeRemoteTitleSync(raw.remoteTitleSync || null, { nowIso }),
     template: normalizeSessionTemplate(raw.template || null),
   };
 }
@@ -391,6 +417,7 @@ function buildSessionPayload(metadata, paths, nowIso = new Date().toISOString())
     s3Path: metadata.s3Path,
     codebaseContext: metadata.codebaseContext,
     sharedResources: metadata.sharedResources,
+    remoteTitleSync: metadata.remoteTitleSync,
     template: metadata.template,
   };
 }
@@ -464,6 +491,7 @@ export async function createSession({
       archiveStatus: "pending",
       codebaseContext,
       sharedResources: normalizeSharedResources({}, { nowIso }),
+      remoteTitleSync: null,
       template: normalizeSessionTemplate(template),
     },
     {
@@ -492,6 +520,40 @@ export async function updateSessionTitle(
   const metadata = {
     ...loaded.metadata,
     title: normalizeString(title) || null,
+    updatedAt: nowIso,
+  };
+  const saved = await saveMetadata(metadata, loaded.paths);
+  return buildSessionPayload(saved, loaded.paths, nowIso);
+}
+
+export async function recordSessionRemoteTitleSync(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    title = "",
+    pending = false,
+    failureReason = "",
+    lastAttemptAt = "",
+    lastSyncedAt = "",
+  } = {}
+) {
+  const loaded = await loadMetadata(sessionId, { targetPath });
+  if (!loaded) {
+    return null;
+  }
+  const nowIso = new Date().toISOString();
+  const metadata = {
+    ...loaded.metadata,
+    remoteTitleSync: normalizeRemoteTitleSync(
+      {
+        pending: Boolean(pending),
+        title: normalizeString(title) || normalizeString(loaded.metadata.title) || null,
+        lastAttemptAt: lastAttemptAt || nowIso,
+        lastSyncedAt: pending ? lastSyncedAt || null : lastSyncedAt || nowIso,
+        failureReason: pending ? normalizeString(failureReason) || "unknown" : null,
+      },
+      { nowIso },
+    ),
     updatedAt: nowIso,
   };
   const saved = await saveMetadata(metadata, loaded.paths);
