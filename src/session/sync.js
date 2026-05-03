@@ -622,6 +622,7 @@ export async function pollHumanMessages(
     since = null,
     timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
     limit = HUMAN_MESSAGE_FETCH_LIMIT,
+    forceCircuitProbe = false,
     resolveAuthSession = resolveActiveAuthSession,
     fetchImpl = fetchWithTimeout,
     nowMs = Date.now,
@@ -638,7 +639,7 @@ export async function pollHumanMessages(
   }
 
   const normalizedNowMs = Number(nowMs()) || Date.now();
-  if (isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
     return {
       ok: false,
       reason: "circuit_breaker_open",
@@ -781,6 +782,7 @@ export async function pollSessionEvents(
     since = null,
     limit = 200,
     timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    forceCircuitProbe = false,
     resolveAuthSession = resolveActiveAuthSession,
     fetchImpl = fetchWithTimeout,
     nowMs = Date.now,
@@ -797,7 +799,7 @@ export async function pollSessionEvents(
   }
 
   const normalizedNowMs = Number(nowMs()) || Date.now();
-  if (isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
     return {
       ok: false,
       reason: "circuit_breaker_open",

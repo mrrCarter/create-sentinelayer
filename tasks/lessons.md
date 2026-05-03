@@ -221,3 +221,8 @@
 - For PR workflows, provenance manifests must write the PR head SHA (not `GITHUB_SHA` merge ref) when downstream attestation gates validate against head-commit check-runs.
 - When the user explicitly asks for full autonomous PR-by-PR execution, treat Senti reads/posts, branch creation, implementation, local gates, PR checks, merge, and post-merge `main` checks as one continuous loop; do not stop after status updates or partial prep.
 - Stream tail watchers launched from `start*()` APIs need a bounded startup replay window; returning a handle does not prove the async watcher has performed its first cursor read, so immediate post-start events can otherwise be skipped.
+
+## 2026-05-03
+
+- When Senti participation is part of the task, keep an active subagent polling loop alive for the whole work period; if a poller times out or completes, immediately replace it before continuing implementation.
+- Treat Senti reads as a required input channel, not a status-output sink: poll for peer/human messages before coding decisions, after long gates, and before finalizing or merging a PR.

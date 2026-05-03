@@ -7,7 +7,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { hydrateSessionFromRemote } from "../src/session/remote-hydrate.js";
-import { readStream } from "../src/session/stream.js";
+import { appendToStream, readStream } from "../src/session/stream.js";
+import { createSession } from "../src/session/store.js";
 import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 
 async function makeTempRepo() {
@@ -393,6 +394,155 @@ test("hydrateSessionFromRemote: events poll failure doesn't block human relay (p
     assert.equal(result.relayed, 1);
     assert.equal(result.humanRelayed, 1);
     assert.equal(result.eventsRelayed, 0);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: probes once when both sources are blocked by open circuit", async () => {
+  const root = await makeTempRepo();
+  try {
+    const pollCalls = [];
+    const eventPollCalls = [];
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "probe-open-circuit",
+      targetPath: root,
+      _poll: async (_sessionId, options) => {
+        pollCalls.push(options);
+        if (!options.forceCircuitProbe) {
+          return { ok: false, reason: "circuit_breaker_open", events: [], cursor: options.since || null };
+        }
+        return { ok: true, events: [], cursor: options.since || null, dropped: [] };
+      },
+      _pollEvents: async (_sessionId, options) => {
+        eventPollCalls.push(options);
+        if (!options.forceCircuitProbe) {
+          return { ok: false, reason: "circuit_breaker_open", events: [], cursor: options.since || null };
+        }
+        return {
+          ok: true,
+          events: [
+            {
+              event: "session_message",
+              cursor: "events-recovered",
+              agent: { id: "codex" },
+              payload: { message: "recovered" },
+            },
+          ],
+          cursor: "events-recovered",
+        };
+      },
+      _append: async (_sessionId, event) => {
+        appended.push(event);
+        return event;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 1);
+    assert.equal(result.eventsCursor, "events-recovered");
+    assert.deepEqual(
+      pollCalls.map((call) => Boolean(call.forceCircuitProbe)),
+      [false, true],
+    );
+    assert.deepEqual(
+      eventPollCalls.map((call) => Boolean(call.forceCircuitProbe)),
+      [false, true],
+    );
+    assert.equal(appended[0].payload.message, "recovered");
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: skips remote canonical events already present locally without cursor", async () => {
+  const root = await makeTempRepo();
+  const oldSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+  try {
+    await createSession({ sessionId: "local-duplicate", targetPath: root, ttlSeconds: 120 });
+    const localEvent = {
+      event: "session_message",
+      ts: "2026-05-03T13:08:14.291Z",
+      agent: { id: "codex", model: "gpt-5-codex" },
+      payload: {
+        message: "status: already local - Codex",
+        channel: "session",
+        source: "agent",
+      },
+    };
+    await appendToStream("local-duplicate", localEvent, {
+      targetPath: root,
+      syncRemote: false,
+    });
+
+    const result = await hydrateSessionFromRemote({
+      sessionId: "local-duplicate",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            ...localEvent,
+            ts: "2026-05-03T13:08:14.291000+00:00",
+            timestamp: "2026-05-03T13:08:14.291000+00:00",
+            payload: {
+              ...localEvent.payload,
+              messageId: "remote-canonical-message-id",
+            },
+            cursor: "remote-canonical-cursor",
+            eventId: "remote-event-id",
+            idempotencyToken: "remote-event-id",
+            sequenceId: 123,
+          },
+        ],
+        cursor: "remote-canonical-cursor",
+      }),
+    });
+
+    const events = await readStream("local-duplicate", { targetPath: root, tail: 0 });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 0);
+    assert.equal(result.eventsRelayed, 1);
+    assert.equal(result.localAppendComplete, true);
+    assert.equal(
+      await readSyncCursor("local-duplicate", { targetPath: root, suffix: "events" }),
+      "remote-canonical-cursor",
+    );
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.message, "status: already local - Codex");
+  } finally {
+    if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: probeOpenCircuit false preserves circuit short-circuit", async () => {
+  const root = await makeTempRepo();
+  try {
+    let pollCount = 0;
+    let eventPollCount = 0;
+    const result = await hydrateSessionFromRemote({
+      sessionId: "no-probe-open-circuit",
+      targetPath: root,
+      probeOpenCircuit: false,
+      _poll: async () => {
+        pollCount += 1;
+        return { ok: false, reason: "circuit_breaker_open", events: [], cursor: null };
+      },
+      _pollEvents: async () => {
+        eventPollCount += 1;
+        return { ok: false, reason: "circuit_breaker_open", events: [], cursor: null };
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "circuit_breaker_open");
+    assert.equal(pollCount, 1);
+    assert.equal(eventPollCount, 1);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

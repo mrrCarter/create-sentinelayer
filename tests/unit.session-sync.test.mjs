@@ -358,3 +358,68 @@ test("Unit session sync: pollSessionEvents reuses inbound circuit breaker", asyn
   assert.equal(callCount, 3);
   resetSessionSyncStateForTests();
 });
+
+test("Unit session sync: pollSessionEvents can force a one-shot probe through an open circuit", async () => {
+  resetSessionSyncStateForTests();
+  let callCount = 0;
+  const authStub = async () => ({
+    token: "tok_test_123",
+    apiUrl: "https://api.sentinelayer.com",
+  });
+  const failureFetch = async () => {
+    callCount += 1;
+    return { ok: false, status: 503 };
+  };
+
+  for (let index = 0; index < 3; index += 1) {
+    const result = await pollSessionEvents("sess-events-probe", {
+      resolveAuthSession: authStub,
+      fetchImpl: failureFetch,
+      nowMs: () => 1_700_000_600_000,
+    });
+    assert.equal(result.reason, "api_503");
+  }
+
+  const blocked = await pollSessionEvents("sess-events-probe", {
+    resolveAuthSession: authStub,
+    fetchImpl: failureFetch,
+    nowMs: () => 1_700_000_600_100,
+  });
+  assert.equal(blocked.reason, "circuit_breaker_open");
+  assert.equal(callCount, 3);
+
+  const recovered = await pollSessionEvents("sess-events-probe", {
+    resolveAuthSession: authStub,
+    forceCircuitProbe: true,
+    fetchImpl: async () => {
+      callCount += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: [{ cursor: "recovered", event: "session_message", payload: { message: "ok" } }],
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_600_200,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.cursor, "recovered");
+  assert.equal(callCount, 4);
+
+  const afterRecovery = await pollSessionEvents("sess-events-probe", {
+    resolveAuthSession: authStub,
+    fetchImpl: async () => {
+      callCount += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [] }),
+      };
+    },
+    nowMs: () => 1_700_000_600_300,
+  });
+  assert.equal(afterRecovery.ok, true);
+  assert.equal(callCount, 5);
+  resetSessionSyncStateForTests();
+});

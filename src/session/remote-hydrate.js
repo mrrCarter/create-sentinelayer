@@ -19,32 +19,109 @@
  */
 
 import { listSessionsFromApi, pollHumanMessages, pollSessionEvents } from "./sync.js";
-import { appendToStream } from "./stream.js";
+import { appendToStream, readStream } from "./stream.js";
 import { createSession, getSession } from "./store.js";
 import { readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
 
-function eventRelayKey(event = {}) {
-  if (!event || typeof event !== "object") return "";
+function keyString(value) {
+  return String(value || "").trim();
+}
+
+function timestampKey(...values) {
+  for (const value of values) {
+    const normalized = keyString(value);
+    if (!normalized) continue;
+    const epoch = Date.parse(normalized);
+    if (Number.isFinite(epoch)) {
+      return new Date(epoch).toISOString();
+    }
+    return normalized;
+  }
+  return "";
+}
+
+function stableJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => stableJsonValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entryValue]) => [key, stableJsonValue(entryValue)])
+    );
+  }
+  return value;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(stableJsonValue(value));
+}
+
+function eventRelayKeys(event = {}) {
+  if (!event || typeof event !== "object") return [];
+  const keys = [];
   if (typeof event.cursor === "string" && event.cursor.trim()) {
-    return `cursor:${event.cursor.trim()}`;
+    keys.push(`cursor:${event.cursor.trim()}`);
   }
   const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
   const messageId = typeof payload.messageId === "string" ? payload.messageId.trim() : "";
   if (messageId) {
-    return `message:${messageId}`;
+    keys.push(`message:${messageId}`);
   }
   try {
-    return `fingerprint:${JSON.stringify({
+    keys.push(`fingerprint:${stableStringify({
       event: event.event || event.type || "",
       agent: event.agent?.id || event.agentId || "",
       payload,
-      ts: event.ts || event.timestamp || event.at || "",
-    })}`;
+      ts: timestampKey(event.ts, event.timestamp, event.at),
+    })}`);
   } catch {
-    return "";
+    // ignore malformed payloads; callers will fall back to any cursor/message key.
   }
+  const message = keyString(payload.message || payload.text || payload.body);
+  if (message) {
+    try {
+      keys.push(`content:${stableStringify({
+        event: keyString(event.event || event.type),
+        agent: keyString(event.agent?.id || event.agentId || payload.agentId || payload.authorId),
+        payload: {
+          channel: keyString(payload.channel),
+          clientKind: keyString(payload.clientKind),
+          message,
+          source: keyString(payload.source),
+          to: payload.to || payload.recipient || payload.mentions || null,
+        },
+        ts: timestampKey(event.ts, event.timestamp, event.at),
+      })}`);
+    } catch {
+      // Best-effort duplicate suppression only.
+    }
+  }
+  return keys;
+}
+
+function eventHasKnownRelayKey(event = {}, knownKeys = new Set()) {
+  const keys = eventRelayKeys(event);
+  return keys.length > 0 && keys.some((key) => knownKeys.has(key));
+}
+
+function addRelayKeys(knownKeys, event = {}) {
+  for (const key of eventRelayKeys(event)) {
+    knownKeys.add(key);
+  }
+}
+
+async function readExistingRelayKeys(sessionId, { targetPath = process.cwd() } = {}) {
+  const knownKeys = new Set();
+  const events = await readStream(sessionId, { targetPath, tail: 0 }).catch(() => []);
+  for (const event of events) {
+    addRelayKeys(knownKeys, event);
+  }
+  return knownKeys;
 }
 
 async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() } = {}) {
@@ -73,10 +150,7 @@ async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() }
 function sourceFullyRelayed(events = [], successfulKeys = new Set()) {
   const relayedEvents = Array.isArray(events) ? events : [];
   if (relayedEvents.length === 0) return true;
-  return relayedEvents.every((event) => {
-    const key = eventRelayKey(event);
-    return key && successfulKeys.has(key);
-  });
+  return relayedEvents.every((event) => eventHasKnownRelayKey(event, successfulKeys));
 }
 
 function markPostKillEvent(event = {}) {
@@ -117,6 +191,7 @@ export async function hydrateSessionFromRemote({
   _pollEvents = pollSessionEvents,
   _append = appendToStream,
   _ensureLocalSession = ensureLocalSessionShell,
+  probeOpenCircuit = true,
 } = {}) {
   if (!sessionId || typeof sessionId !== "string") {
     return {
@@ -145,10 +220,21 @@ export async function hydrateSessionFromRemote({
   // Run both pollers in parallel — they hit different endpoints and
   // are independent. A human-only poll stays fast even when the
   // events poll is heavy.
-  const [humanResult, eventsResult] = await Promise.all([
+  let [humanResult, eventsResult] = await Promise.all([
     _poll(sessionId, { targetPath, since: humanCursor }),
     _pollEvents(sessionId, { targetPath, since: eventsCursor }),
   ]);
+
+  if (
+    probeOpenCircuit &&
+    humanResult?.reason === "circuit_breaker_open" &&
+    eventsResult?.reason === "circuit_breaker_open"
+  ) {
+    [humanResult, eventsResult] = await Promise.all([
+      _poll(sessionId, { targetPath, since: humanCursor, forceCircuitProbe: true }),
+      _pollEvents(sessionId, { targetPath, since: eventsCursor, forceCircuitProbe: true }),
+    ]);
+  }
 
   // Dedup across sources — both endpoints can return the same event
   // (e.g. a human relay event). Cursor values are unique per event.
@@ -158,19 +244,17 @@ export async function hydrateSessionFromRemote({
   for (const e of humanResult?.events || []) {
     const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
     if (c && seenCursors.has(c)) continue;
-    const key = eventRelayKey(e);
-    if (key && seenKeys.has(key)) continue;
+    if (eventHasKnownRelayKey(e, seenKeys)) continue;
     if (c) seenCursors.add(c);
-    if (key) seenKeys.add(key);
+    addRelayKeys(seenKeys, e);
     merged.push(e);
   }
   for (const e of eventsResult?.events || []) {
     const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
     if (c && seenCursors.has(c)) continue;
-    const key = eventRelayKey(e);
-    if (key && seenKeys.has(key)) continue;
+    if (eventHasKnownRelayKey(e, seenKeys)) continue;
     if (c) seenCursors.add(c);
-    if (key) seenKeys.add(key);
+    addRelayKeys(seenKeys, e);
     merged.push(e);
   }
 
@@ -192,8 +276,12 @@ export async function hydrateSessionFromRemote({
   let relayed = 0;
   let materializedLocalSession = false;
   let remoteStatus = "";
-  const successfulRelayKeys = new Set();
-  if (merged.length > 0) {
+  const successfulRelayKeys =
+    merged.length > 0 ? await readExistingRelayKeys(sessionId, { targetPath }) : new Set();
+  const newEvents = successfulRelayKeys.size > 0
+    ? merged.filter((event) => !eventHasKnownRelayKey(event, successfulRelayKeys))
+    : merged;
+  if (newEvents.length > 0) {
     try {
       const localSession = await _ensureLocalSession(sessionId, { targetPath });
       materializedLocalSession = Boolean(localSession?.materialized);
@@ -206,14 +294,13 @@ export async function hydrateSessionFromRemote({
   }
   const appendEvents =
     remoteStatus && !["active", "pending"].includes(remoteStatus)
-      ? merged.map((event) => markPostKillEvent(event))
-      : merged;
+      ? newEvents.map((event) => markPostKillEvent(event))
+      : newEvents;
   for (const event of appendEvents) {
     try {
       await _append(sessionId, event, { targetPath });
       relayed += 1;
-      const key = eventRelayKey(event);
-      if (key) successfulRelayKeys.add(key);
+      addRelayKeys(successfulRelayKeys, event);
     } catch {
       // Append errors are observable via the stream but should not
       // abort the rest of the batch — partial relay is still progress.
