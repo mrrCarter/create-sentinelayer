@@ -22,104 +22,18 @@ import { listSessionsFromApi, pollHumanMessages, pollSessionEvents } from "./syn
 import { appendToStream, readStream } from "./stream.js";
 import { createSession, getSession } from "./store.js";
 import { readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
+import {
+  addSessionEventIdentityKeys,
+  sessionEventHasKnownIdentity,
+} from "./event-identity.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
-
-function keyString(value) {
-  return String(value || "").trim();
-}
-
-function timestampKey(...values) {
-  for (const value of values) {
-    const normalized = keyString(value);
-    if (!normalized) continue;
-    const epoch = Date.parse(normalized);
-    if (Number.isFinite(epoch)) {
-      return new Date(epoch).toISOString();
-    }
-    return normalized;
-  }
-  return "";
-}
-
-function stableJsonValue(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => stableJsonValue(item));
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([, entryValue]) => entryValue !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entryValue]) => [key, stableJsonValue(entryValue)])
-    );
-  }
-  return value;
-}
-
-function stableStringify(value) {
-  return JSON.stringify(stableJsonValue(value));
-}
-
-function eventRelayKeys(event = {}) {
-  if (!event || typeof event !== "object") return [];
-  const keys = [];
-  if (typeof event.cursor === "string" && event.cursor.trim()) {
-    keys.push(`cursor:${event.cursor.trim()}`);
-  }
-  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
-  const messageId = typeof payload.messageId === "string" ? payload.messageId.trim() : "";
-  if (messageId) {
-    keys.push(`message:${messageId}`);
-  }
-  try {
-    keys.push(`fingerprint:${stableStringify({
-      event: event.event || event.type || "",
-      agent: event.agent?.id || event.agentId || "",
-      payload,
-      ts: timestampKey(event.ts, event.timestamp, event.at),
-    })}`);
-  } catch {
-    // ignore malformed payloads; callers will fall back to any cursor/message key.
-  }
-  const message = keyString(payload.message || payload.text || payload.body);
-  if (message) {
-    try {
-      keys.push(`content:${stableStringify({
-        event: keyString(event.event || event.type),
-        agent: keyString(event.agent?.id || event.agentId || payload.agentId || payload.authorId),
-        payload: {
-          channel: keyString(payload.channel),
-          clientKind: keyString(payload.clientKind),
-          message,
-          source: keyString(payload.source),
-          to: payload.to || payload.recipient || payload.mentions || null,
-        },
-        ts: timestampKey(event.ts, event.timestamp, event.at),
-      })}`);
-    } catch {
-      // Best-effort duplicate suppression only.
-    }
-  }
-  return keys;
-}
-
-function eventHasKnownRelayKey(event = {}, knownKeys = new Set()) {
-  const keys = eventRelayKeys(event);
-  return keys.length > 0 && keys.some((key) => knownKeys.has(key));
-}
-
-function addRelayKeys(knownKeys, event = {}) {
-  for (const key of eventRelayKeys(event)) {
-    knownKeys.add(key);
-  }
-}
 
 async function readExistingRelayKeys(sessionId, { targetPath = process.cwd() } = {}) {
   const knownKeys = new Set();
   const events = await readStream(sessionId, { targetPath, tail: 0 }).catch(() => []);
   for (const event of events) {
-    addRelayKeys(knownKeys, event);
+    addSessionEventIdentityKeys(knownKeys, event);
   }
   return knownKeys;
 }
@@ -150,7 +64,7 @@ async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() }
 function sourceFullyRelayed(events = [], successfulKeys = new Set()) {
   const relayedEvents = Array.isArray(events) ? events : [];
   if (relayedEvents.length === 0) return true;
-  return relayedEvents.every((event) => eventHasKnownRelayKey(event, successfulKeys));
+  return relayedEvents.every((event) => sessionEventHasKnownIdentity(event, successfulKeys));
 }
 
 function markPostKillEvent(event = {}) {
@@ -244,17 +158,17 @@ export async function hydrateSessionFromRemote({
   for (const e of humanResult?.events || []) {
     const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
     if (c && seenCursors.has(c)) continue;
-    if (eventHasKnownRelayKey(e, seenKeys)) continue;
+    if (sessionEventHasKnownIdentity(e, seenKeys)) continue;
     if (c) seenCursors.add(c);
-    addRelayKeys(seenKeys, e);
+    addSessionEventIdentityKeys(seenKeys, e);
     merged.push(e);
   }
   for (const e of eventsResult?.events || []) {
     const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
     if (c && seenCursors.has(c)) continue;
-    if (eventHasKnownRelayKey(e, seenKeys)) continue;
+    if (sessionEventHasKnownIdentity(e, seenKeys)) continue;
     if (c) seenCursors.add(c);
-    addRelayKeys(seenKeys, e);
+    addSessionEventIdentityKeys(seenKeys, e);
     merged.push(e);
   }
 
@@ -279,7 +193,7 @@ export async function hydrateSessionFromRemote({
   const successfulRelayKeys =
     merged.length > 0 ? await readExistingRelayKeys(sessionId, { targetPath }) : new Set();
   const newEvents = successfulRelayKeys.size > 0
-    ? merged.filter((event) => !eventHasKnownRelayKey(event, successfulRelayKeys))
+    ? merged.filter((event) => !sessionEventHasKnownIdentity(event, successfulRelayKeys))
     : merged;
   if (newEvents.length > 0) {
     try {
@@ -300,7 +214,7 @@ export async function hydrateSessionFromRemote({
     try {
       await _append(sessionId, event, { targetPath });
       relayed += 1;
-      addRelayKeys(successfulRelayKeys, event);
+      addSessionEventIdentityKeys(successfulRelayKeys, event);
     } catch {
       // Append errors are observable via the stream but should not
       // abort the rest of the batch — partial relay is still progress.

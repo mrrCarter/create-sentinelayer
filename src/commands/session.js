@@ -50,6 +50,11 @@ import {
   updateSessionTitle,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
+import {
+  addSessionEventIdentityKeys,
+  dedupeSessionEvents,
+  sessionEventHasKnownIdentity,
+} from "../session/event-identity.js";
 import { readSessionPreview } from "../session/preview.js";
 import {
   listSessionsFromApi,
@@ -1258,10 +1263,11 @@ export function registerSessionCommand(program) {
       }
 
       if (!options.follow) {
-        const events = await readStream(normalizedSessionId, {
+        const allEvents = await readStream(normalizedSessionId, {
           targetPath,
-          tail,
+          tail: 0,
         });
+        const events = dedupeSessionEvents(allEvents).slice(-tail);
         const payload = {
           command: "session read",
           targetPath,
@@ -1327,10 +1333,15 @@ export function registerSessionCommand(program) {
       if (!emitJson) {
         console.log(pc.gray(`Following session ${normalizedSessionId}... Press Ctrl+C to stop.`));
       }
+      const seenFollowEvents = new Set();
       for await (const event of tailStream(normalizedSessionId, {
         targetPath,
         replayTail: tail,
       })) {
+        if (sessionEventHasKnownIdentity(event, seenFollowEvents)) {
+          continue;
+        }
+        addSessionEventIdentityKeys(seenFollowEvents, event);
         if (emitJson) {
           console.log(JSON.stringify(event));
         } else {
