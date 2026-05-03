@@ -1,3 +1,22 @@
+# 2026-05-03 - Senti Remote Read Circuit Recovery (`codex/senti-remote-read-circuit-recovery`)
+
+## Plan
+- [x] Reproduce the dogfood symptom: after a successful `post-agent`, `session read --remote` can return `circuit_breaker_open` and serve stale local events.
+- [x] Confirm root cause: one shared inbound circuit can block both human-message and `/events` pollers before a foreground read has a chance to verify recovery.
+- [x] Add a one-shot foreground circuit probe in `hydrateSessionFromRemote` when both sources fail only because the inbound circuit is open.
+- [x] Keep normal background pollers protected by default; the forced probe is hydrator-scoped and opt-out for tests/callers.
+- [x] Add unit coverage for forced recovery, duplicate canonical-event suppression, and no-probe opt-out behavior.
+- [x] Run focused tests, full verify, local review/Omar/audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
+
+## Review
+- Scope is CLI remote hydration only; no web/API changes.
+- Added foreground-only open-circuit recovery for `session read --remote`: if both inbound sources short-circuit, the hydrator performs one forced probe through each source and records success through the existing circuit breaker path.
+- Existing background pollers still default to circuit protection; only the hydrator passes `forceCircuitProbe`, and callers/tests can disable the hydrator probe with `probeOpenCircuit: false`.
+- Added local-stream relay-key dedupe so remote canonical events with a cursor, transport ids, and API timestamp formatting do not get re-appended when the same message already exists locally from `post-agent` without a remote cursor.
+- Live dogfood proof: after posting `status: timestamp-normalized dedupe live check...`, `session read --remote` returned `remote.ok=true`, `eventsRelayed=1`, `relayed=0`, and the local stream count for that exact message stayed `1`.
+- Verification: `git diff --check` clean aside from Windows LF/CRLF warnings; `node --check` passed for `src/session/sync.js` and `src/session/remote-hydrate.js`; focused tests passed `29/29`; `npm run verify` passed check/docs/e2e `97/97`/coverage `1205/1205`/npm pack dry-run on final rerun; one interim recap timing flake passed in isolation and on coverage rerun; review `review-20260503-134827-59c83e9a` P0=0/P1=0; audit `audit-20260503-134836.md` PASS P1=0; Omar `omargate-1777816130647-24a0cfd6` P0=0/P1=0.
+
 # 2026-05-03 - Senti Listen Adaptive Poll (`codex/senti-listen-adaptive-poll`)
 
 ## Plan
