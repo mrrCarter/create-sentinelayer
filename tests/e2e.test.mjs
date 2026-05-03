@@ -2280,7 +2280,7 @@ test("CLI guide generate creates BUILD_GUIDE.md with phases, dependencies, and a
     assert.match(guideText, /- Dependencies: none \(entry phase\)/);
     assert.match(guideText, /#### Acceptance Criteria/);
     assert.match(guideText, /## Multi-Agent Coordination Protocol/);
-    assert.match(guideText, /sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson/);
+    assert.match(guideText, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson/);
     assert.match(guideText, /sl session sync <id> --json/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

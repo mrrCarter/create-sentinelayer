@@ -13,6 +13,10 @@ const BROADCAST_RECIPIENTS = new Set([
   "all-agents",
 ]);
 
+const DEFAULT_ACTIVE_INTERVAL_SECONDS = 5;
+const DEFAULT_ACTIVE_WINDOW_SECONDS = 300;
+const MAX_CLOCK_SKEW_MS = 60_000;
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -127,6 +131,70 @@ function eventTimestampMs(event = {}) {
   return 0;
 }
 
+function normalizeLower(value) {
+  return normalizeString(value).toLowerCase();
+}
+
+function isHumanMarker(value) {
+  const raw = normalizeLower(value);
+  if (!raw) return false;
+  if (["human", "user", "operator"].includes(raw)) return true;
+  const comparable = normalizeComparableId(raw);
+  return Boolean(
+    comparable === "human" ||
+      comparable === "user" ||
+      comparable === "operator" ||
+      comparable.startsWith("human-") ||
+      comparable.startsWith("user-")
+  );
+}
+
+function isHumanAuthoredEvent(event = {}) {
+  if (!isPlainObject(event)) return false;
+  const payload = isPlainObject(event.payload) ? event.payload : {};
+  const agent = isPlainObject(event.agent) ? event.agent : {};
+  const markerCandidates = [
+    payload.source,
+    payload.authorType,
+    payload.senderType,
+    payload.model,
+    payload.role,
+    event.source,
+    event.authorType,
+    event.senderType,
+    event.model,
+    event.role,
+    agent.model,
+    agent.role,
+  ];
+  if (markerCandidates.some(isHumanMarker)) return true;
+
+  const idCandidates = [
+    agent.id,
+    event.agentId,
+    event.authorId,
+    event.senderId,
+    payload.agentId,
+    payload.authorId,
+    payload.senderId,
+  ];
+  return idCandidates.some(isHumanMarker);
+}
+
+function humanActivityTimestampMs(event = {}, nowMs = Date.now()) {
+  if (!isHumanAuthoredEvent(event)) return 0;
+  return eventTimestampMs(event) || nowMs;
+}
+
+function isRecentActivity(activityMs, nowMs, windowMs) {
+  return (
+    Number.isFinite(activityMs) &&
+    activityMs > 0 &&
+    activityMs <= nowMs + MAX_CLOCK_SKEW_MS &&
+    nowMs - activityMs <= windowMs
+  );
+}
+
 /**
  * Poll session events in the background and emit only events addressed to
  * the current agent or broadcast to everyone. The loop advances its cursor
@@ -138,6 +206,8 @@ export async function listenSessionEvents({
   targetPath = process.cwd(),
   agentId = "cli-user",
   intervalSeconds = 60,
+  activeIntervalSeconds = DEFAULT_ACTIVE_INTERVAL_SECONDS,
+  activeWindowSeconds = DEFAULT_ACTIVE_WINDOW_SECONDS,
   limit = 200,
   since = undefined,
   replay = false,
@@ -170,8 +240,16 @@ export async function listenSessionEvents({
   let lastReason = "";
   const maxPollCount = normalizePositiveInteger(maxPolls, 0);
   const pollLimit = normalizePositiveInteger(limit, 200);
-  const sleepMs = Math.max(1, normalizePositiveInteger(intervalSeconds, 60)) * 1000;
+  const idleSleepMs = Math.max(1, normalizePositiveInteger(intervalSeconds, 60)) * 1000;
+  const activeSleepMs =
+    Math.max(1, normalizePositiveInteger(activeIntervalSeconds, DEFAULT_ACTIVE_INTERVAL_SECONDS)) *
+    1000;
+  const activeWindowMs =
+    Math.max(1, normalizePositiveInteger(activeWindowSeconds, DEFAULT_ACTIVE_WINDOW_SECONDS)) *
+    1000;
   const startedAtMs = Number(_nowMs()) || Date.now();
+  let lastHumanActivityMs = 0;
+  let lastSleepMs = 0;
 
   while (!signal?.aborted) {
     pollCount += 1;
@@ -184,6 +262,13 @@ export async function listenSessionEvents({
     if (result?.ok) {
       lastReason = "";
       const events = Array.isArray(result.events) ? result.events : [];
+      const observedAtMs = Number(_nowMs()) || Date.now();
+      for (const event of events) {
+        const activityMs = humanActivityTimestampMs(event, observedAtMs);
+        if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
+          lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
+        }
+      }
       const shouldEmitBatch = primed || Boolean(replay);
       for (const event of events) {
         if (!eventMatchesAgent(event, normalizedAgentId)) continue;
@@ -213,8 +298,12 @@ export async function listenSessionEvents({
     }
 
     if (maxPollCount > 0 && pollCount >= maxPollCount) break;
+    const sleepAtMs = Number(_nowMs()) || Date.now();
+    const humanActive = isRecentActivity(lastHumanActivityMs, sleepAtMs, activeWindowMs);
+    const nextSleepMs = humanActive ? Math.min(idleSleepMs, activeSleepMs) : idleSleepMs;
+    lastSleepMs = nextSleepMs;
     try {
-      await _sleep(sleepMs, { signal });
+      await _sleep(nextSleepMs, { signal });
     } catch (error) {
       if (shouldAbort(error, signal)) break;
       throw error;
@@ -231,6 +320,11 @@ export async function listenSessionEvents({
     matched,
     emitted,
     persistedCursor,
+    idleIntervalSeconds: Math.round(idleSleepMs / 1000),
+    activeIntervalSeconds: Math.round(activeSleepMs / 1000),
+    activeWindowSeconds: Math.round(activeWindowMs / 1000),
+    lastHumanActivityAt: lastHumanActivityMs ? new Date(lastHumanActivityMs).toISOString() : null,
+    lastSleepMs,
     reason: lastReason,
   };
 }

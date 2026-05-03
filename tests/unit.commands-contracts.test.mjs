@@ -326,6 +326,8 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--session <id>");
   assertCommandHasOption(listen, "--agent <id>");
   assertCommandHasOption(listen, "--interval <seconds>");
+  assertCommandHasOption(listen, "--active-interval <seconds>");
+  assertCommandHasOption(listen, "--active-window <seconds>");
   assertCommandHasOption(listen, "--emit <format>");
   assertCommandHasOption(listen, "--limit <n>");
   assertCommandHasOption(listen, "--since <cursor>");
