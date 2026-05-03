@@ -1114,7 +1114,17 @@ export function registerSessionCommand(program) {
       "Agent id to receive messages for",
       process.env.SENTINELAYER_AGENT_ID || "cli-user",
     )
-    .option("--interval <seconds>", "Polling interval in seconds (default 60)", "60")
+    .option("--interval <seconds>", "Idle polling interval in seconds (default 60)", "60")
+    .option(
+      "--active-interval <seconds>",
+      "Polling interval after recent human activity (default 5)",
+      "5",
+    )
+    .option(
+      "--active-window <seconds>",
+      "Seconds after a human message to keep the active interval (default 300)",
+      "300",
+    )
     .option("--emit <format>", "Output format: ndjson or text", "ndjson")
     .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -1126,6 +1136,12 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const agentId = normalizeAgentId(options.agent, "cli-user");
       const intervalSeconds = parsePositiveInteger(options.interval, "interval", 60);
+      const activeIntervalSeconds = parsePositiveInteger(
+        options.activeInterval,
+        "active-interval",
+        5,
+      );
+      const activeWindowSeconds = parsePositiveInteger(options.activeWindow, "active-window", 300);
       const limit = parsePositiveInteger(options.limit, "limit", 200);
       const emitFormat = normalizeString(options.emit).toLowerCase() || "ndjson";
       if (!["ndjson", "text"].includes(emitFormat)) {
@@ -1143,7 +1159,7 @@ export function registerSessionCommand(program) {
       if (emitFormat === "text") {
         console.log(
           pc.gray(
-            `Listening to session ${normalizedSessionId} as ${agentId}; interval=${intervalSeconds}s. Press Ctrl+C to stop.`,
+            `Listening to session ${normalizedSessionId} as ${agentId}; idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
           ),
         );
       }
@@ -1154,6 +1170,8 @@ export function registerSessionCommand(program) {
           targetPath,
           agentId,
           intervalSeconds,
+          activeIntervalSeconds,
+          activeWindowSeconds,
           limit,
           since,
           replay: Boolean(options.replay),

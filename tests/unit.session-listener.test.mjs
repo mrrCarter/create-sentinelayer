@@ -168,3 +168,119 @@ test("Unit session listener: reports poll failures and keeps looping", async () 
   assert.deepEqual(emitted, ["c1"]);
   assert.equal(result.reason, "");
 });
+
+test("Unit session listener: recent human activity switches to active cadence", async () => {
+  let nowMs = Date.parse("2026-05-03T12:00:00.000Z");
+  const sleeps = [];
+  const batches = [
+    {
+      ok: true,
+      events: [
+        evt(
+          "c1",
+          { source: "human", to: "codex-1" },
+          { agent: { id: "human-carter", model: "human" }, ts: "2026-05-03T11:59:59.000Z" },
+        ),
+      ],
+      cursor: "c1",
+    },
+    { ok: true, events: [], cursor: "c1" },
+  ];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-active",
+    agentId: "codex-1",
+    intervalSeconds: 60,
+    activeIntervalSeconds: 5,
+    activeWindowSeconds: 300,
+    maxPolls: 2,
+    _nowMs: () => nowMs,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => batches.shift(),
+    _sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+
+  assert.deepEqual(sleeps, [5_000]);
+  assert.equal(result.lastSleepMs, 5_000);
+  assert.equal(result.lastHumanActivityAt, "2026-05-03T11:59:59.000Z");
+});
+
+test("Unit session listener: agent-only traffic keeps the idle cadence", async () => {
+  const sleeps = [];
+  const batches = [
+    {
+      ok: true,
+      events: [
+        evt(
+          "c1",
+          { source: "agent", to: "codex-1" },
+          { agent: { id: "claude-verifier", model: "claude-opus-4-7" }, ts: "2026-05-03T12:00:00.000Z" },
+        ),
+      ],
+      cursor: "c1",
+    },
+    { ok: true, events: [], cursor: "c1" },
+  ];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-idle",
+    agentId: "codex-1",
+    intervalSeconds: 60,
+    activeIntervalSeconds: 5,
+    maxPolls: 2,
+    _nowMs: () => Date.parse("2026-05-03T12:00:00.000Z"),
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => batches.shift(),
+    _sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  assert.deepEqual(sleeps, [60_000]);
+  assert.equal(result.lastHumanActivityAt, null);
+});
+
+test("Unit session listener: active cadence expires back to idle", async () => {
+  let nowMs = Date.parse("2026-05-03T12:00:00.000Z");
+  const sleeps = [];
+  const batches = [
+    {
+      ok: true,
+      events: [
+        evt(
+          "c1",
+          { source: "human", to: "codex-1" },
+          { agent: { id: "human-carter", model: "human" }, ts: "2026-05-03T12:00:00.000Z" },
+        ),
+      ],
+      cursor: "c1",
+    },
+    { ok: true, events: [], cursor: "c1" },
+    { ok: true, events: [], cursor: "c1" },
+    { ok: true, events: [], cursor: "c1" },
+  ];
+
+  await listenSessionEvents({
+    sessionId: "sess-expire",
+    agentId: "codex-1",
+    intervalSeconds: 60,
+    activeIntervalSeconds: 1,
+    activeWindowSeconds: 1,
+    maxPolls: 4,
+    _nowMs: () => nowMs,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => batches.shift(),
+    _sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+
+  assert.deepEqual(sleeps, [1_000, 1_000, 60_000]);
+});

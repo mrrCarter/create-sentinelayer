@@ -76,7 +76,7 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.match(firstAgents, /lock: <file> - <intent>/);
     assert.match(firstAgents, /sl review --diff/);
     assert.match(firstAgents, /sl --help/);
-    assert.match(firstGuide, /sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson/);
+    assert.match(firstGuide, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson/);
     assert.match(firstGuide, /sl session sync <id> --json/);
 
     const second = await setupSessionGuides(session.sessionId, { targetPath: tempRoot });

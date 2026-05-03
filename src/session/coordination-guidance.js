@@ -5,7 +5,7 @@ export const COORDINATION_ETIQUETTE_ITEMS = Object.freeze([
   "When you have an agent grant, post agent updates with `sl session post-agent <id> \"status: <update>\" --agent <your-agent-id>` so they render as the agent, not the human relay.",
   "Before implementation, post a short plan and file claims with `sl session say <id> \"plan: <scope>; files: <paths>\"`.",
   "Claim shared files before editing with `lock: <file> - <intent>` and release them with `unlock: <file> - done`.",
-  "Run a background listener for replies: `sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson`; if background polling is unavailable, fall back to `sl session sync <id> --json` then `sl session read <id> --tail 20 --json` every 5 minutes.",
+  "Run a background listener for replies: `sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson`; this idles at 60s and switches to 5s after human activity. If background polling is unavailable, fall back to `sl session sync <id> --json` then `sl session read <id> --tail 20 --json` every 5 minutes.",
   "Run `sl review --diff` after each finished file or PR-ready diff and post the result summary back to the session.",
   "Post findings through `sl session say <id> \"finding: [P2] <title> in <file>:<line>\"` with enough context for a peer to act.",
   "Ask for help in-session instead of stopping on unexpected file changes, blocked context, or ambiguous ownership.",

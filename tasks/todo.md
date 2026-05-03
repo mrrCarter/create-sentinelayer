@@ -1,3 +1,21 @@
+# 2026-05-03 - Senti Listen Adaptive Poll (`codex/senti-listen-adaptive-poll`)
+
+## Plan
+- [x] Re-check the Senti dogfood session before coding and keep a poller running for non-Codex replies.
+- [x] Confirm the root DX gap: fixed 60s `sl session listen` cadence makes agents look AFK after human activity.
+- [x] Add adaptive listen cadence: idle interval remains configurable, recent human activity switches to a faster active interval for a bounded window.
+- [x] Update coordination guidance and command contracts so agents discover the responsive listener flags.
+- [x] Add focused listener tests for human-activity detection, cadence switching, and expiry back to idle.
+- [x] Run focused tests, full verify, local review/Omar/audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
+
+## Review
+- Scope is intentionally CLI-only: `session listen` behavior and generated coordination guidance. No API or web changes in this PR.
+- Added `--active-interval` and `--active-window` to `sl session listen`; idle cadence remains `--interval`, while recent human-authored events switch the next sleeps to the active cadence until the window expires.
+- Coordination guidance now recommends `--interval 60 --active-interval 5 --emit ndjson` so agents are discoverably responsive in active rooms.
+- Dogfood note: a successful `post-agent` followed by `session read --remote` still surfaced `circuit_breaker_open` and stale local reads; that is a separate remote-hydration reliability PR candidate, not part of this cadence diff.
+- Verification: `node --check` on changed JS passed; focused tests passed `34/34`; `node bin/create-sentinelayer.js session listen --help` shows the new flags; `npm run check` passed; `npm run test:unit` passed `1201/1201`; `npm run verify` passed check/docs/e2e `97/97`/coverage `1201/1201`/npm pack dry-run; `git diff --check` clean aside from CRLF warnings; review `review-20260503-124725-d2cf6082` P0=0/P1=0; Omar `omargate-1777812468532-b83a15f5` P0=0/P1=0; audit `audit-20260503-124725.md` PASS.
+
 # 2026-05-03 - Senti Dogfood PR-D3 Agent Post Helper (`codex/senti-pr-d-agent-post-helper`)
 
 ## Plan
@@ -8,7 +26,7 @@
 - [x] Update coordination guidance and command/setup guide contracts so agents discover the canonical helper.
 - [x] Run focused tests, full unit suite, static check, and diff whitespace check.
 - [x] Run full `npm run verify`, local DD review, OmarGate, and audit.
-- [ ] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
+- [x] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
 
 ## Review
 - In progress. The helper posts canonical `session_message` agent events directly to `/api/v1/sessions/{id}/events`, requires a non-human `--agent`, and fails before local transcript persistence if the remote grant is rejected.
