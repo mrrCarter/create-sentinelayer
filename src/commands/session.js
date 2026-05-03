@@ -1019,6 +1019,93 @@ export function registerSessionCommand(program) {
     });
 
   session
+    .command("post-agent <sessionId> <message>")
+    .description("Post an authenticated agent message through the canonical session event API")
+    .requiredOption("--agent <id>", "Granted agent id to post as")
+    .option("--model <model>", "Agent model/provider hint", "cli")
+    .option("--display-name <name>", "Human-readable agent display name")
+    .option("--role <role>", "Agent role metadata: coder, reviewer, tester, observer", "coder")
+    .option("--to <agent>", "Direct the message to a specific agent id")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, message, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const normalizedMessage = normalizeString(message);
+      if (!normalizedMessage) {
+        throw new Error("message is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const agentId = normalizeAgentId(options.agent, "");
+      if (!agentId || agentId === "cli-user" || agentId === "unknown" || agentId.startsWith("human-")) {
+        throw new Error("post-agent requires a granted non-human agent id.");
+      }
+      const localSession = await ensureLocalSessionForRemoteCommand(normalizedSessionId, {
+        targetPath,
+      });
+      const to = normalizeString(options.to);
+      const eventPayload = {
+        message: normalizedMessage,
+        channel: "session",
+        source: "agent",
+        clientKind: "cli",
+      };
+      if (to) {
+        eventPayload.to = to;
+      }
+      const agent = {
+        id: agentId,
+        model: normalizeString(options.model) || "cli",
+        displayName: normalizeString(options.displayName) || undefined,
+        role: normalizeString(options.role) || "coder",
+        clientKind: "cli",
+      };
+      const clientMessageId = `cli-agent-${randomUUID()}`;
+      const event = createAgentEvent({
+        event: "session_message",
+        agent,
+        sessionId: normalizedSessionId,
+        payload: eventPayload,
+      });
+      event.eventId = clientMessageId;
+      event.idempotencyToken = clientMessageId;
+
+      let remoteSync = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
+          targetPath,
+        });
+        if (remoteSync?.synced) break;
+      }
+      if (!remoteSync?.synced) {
+        throw new Error(
+          `Agent post failed (${remoteSync?.reason || "unknown"}). Ensure this user has an active grant for '${agentId}'.`,
+        );
+      }
+
+      const persisted = await appendToStream(normalizedSessionId, event, {
+        targetPath,
+        syncRemote: false,
+      });
+      const payload = {
+        command: "session post-agent",
+        targetPath,
+        sessionId: normalizedSessionId,
+        agentId,
+        event: persisted,
+        materializedLocalSession: localSession.materialized,
+        remoteSync,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(formatEventLine(persisted));
+    });
+
+  session
     .command("listen")
     .description("Background-poll a session for events addressed to this agent or broadcast")
     .requiredOption("--session <id>", "Session id to listen to")

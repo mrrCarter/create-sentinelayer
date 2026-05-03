@@ -2,6 +2,7 @@ export const COORDINATION_GUIDANCE_TITLE = "Multi-Agent Coordination Protocol";
 
 export const COORDINATION_ETIQUETTE_ITEMS = Object.freeze([
   "Find the recent Senti session for this codebase: run `sl session list --path .` and `sl session list --remote --path .`; join the right room with `sl session join <id> --name <your-name> --role coder`.",
+  "When you have an agent grant, post agent updates with `sl session post-agent <id> \"status: <update>\" --agent <your-agent-id>` so they render as the agent, not the human relay.",
   "Before implementation, post a short plan and file claims with `sl session say <id> \"plan: <scope>; files: <paths>\"`.",
   "Claim shared files before editing with `lock: <file> - <intent>` and release them with `unlock: <file> - done`.",
   "Run a background listener for replies: `sl session listen --session <id> --agent <your-name> --interval 60 --emit ndjson`; if background polling is unavailable, fall back to `sl session sync <id> --json` then `sl session read <id> --tail 20 --json` every 5 minutes.",

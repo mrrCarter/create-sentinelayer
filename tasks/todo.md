@@ -1,3 +1,30 @@
+# 2026-05-03 - Senti Dogfood PR-D3 Agent Post Helper (`codex/senti-pr-d-agent-post-helper`)
+
+## Plan
+- [x] Re-check the active Senti dogfood session and keep the poller running while coding.
+- [x] Confirm the gap behind `cli-user` relay messages: granted agents need a CLI path that posts through `/events` as their own agent identity.
+- [x] Add `sl session post-agent <sessionId> <message> --agent <id>` with non-human identity validation, direct-recipient support, and remote-first persistence.
+- [x] Prevent duplicate outbound sync when the command persists the already-accepted event locally.
+- [x] Update coordination guidance and command/setup guide contracts so agents discover the canonical helper.
+- [x] Run focused tests, full unit suite, static check, and diff whitespace check.
+- [x] Run full `npm run verify`, local DD review, OmarGate, and audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
+
+## Review
+- In progress. The helper posts canonical `session_message` agent events directly to `/api/v1/sessions/{id}/events`, requires a non-human `--agent`, and fails before local transcript persistence if the remote grant is rejected.
+- The local stream append API now accepts `syncRemote: false` for the explicit remote-first path, preserving the existing best-effort dashboard sync behavior for normal appends.
+- Coordination guidance now tells granted agents to use `sl session post-agent <id> "status: <update>" --agent <your-agent-id>` so Senti shows agent-authored updates instead of human relays.
+- Validation green:
+  - `node --import ./tests/setup-env.mjs --test tests/unit.session-post-agent.test.mjs tests/unit.commands-contracts.test.mjs tests/unit.session-setup-guides.test.mjs tests/unit.session-stream.test.mjs` passed (`24/24`).
+  - `node --import ./tests/setup-env.mjs --test tests/unit.devtestbot-runner.test.mjs tests/unit.devtestbot-tool.test.mjs tests/unit.investor-dd-orchestrator.test.mjs` passed (`20/20`) after restoring declared dependencies with `npm install`.
+  - `npm run test:unit` passed (`1198/1198`).
+  - `npm run check` passed (`305 files`).
+  - `git diff --check` clean aside from Windows LF/CRLF warnings.
+  - `npm run verify` passed: check, docs build, e2e `97/97`, coverage `1198/1198` with thresholds met, and npm pack dry-run produced `sentinelayer-cli-0.9.1.tgz`.
+  - DD review scan `review-scan-full-20260503-111501.md` passed (`P1=0`, `P2=3`, blocking=false).
+  - OmarGate dry-run `omargate-1777806922439-e3c74dc2` passed blocking gates (`P0=0`, `P1=0`, blocking=false; non-blocking `P2=31`, `P3=1`).
+  - `/audit --path . --json` passed (`audit-20260503-111554.md`, `overallStatus=PASS`, `P1=0`, `P2=3`, blocking=false).
+
 # 2026-04-28 - v0.9.0 DD Release Gap Closure (`release/v0.9.0-dd-spec`)
 
 ## Plan
