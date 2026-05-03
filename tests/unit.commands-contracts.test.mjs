@@ -315,6 +315,13 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const say = getCommandByPath(program, "session say");
   assertCommandHasOption(say, "--to <agent>");
 
+  const postAgent = getCommandByPath(program, "session post-agent");
+  assertCommandHasOption(postAgent, "--agent <id>");
+  assertCommandHasOption(postAgent, "--model <model>");
+  assertCommandHasOption(postAgent, "--display-name <name>");
+  assertCommandHasOption(postAgent, "--role <role>");
+  assertCommandHasOption(postAgent, "--to <agent>");
+
   const listen = getCommandByPath(program, "session listen");
   assertCommandHasOption(listen, "--session <id>");
   assertCommandHasOption(listen, "--agent <id>");
