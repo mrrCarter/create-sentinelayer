@@ -20,12 +20,20 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { resolveSessionPaths } from "./paths.js";
 import { readStream } from "./stream.js";
+import {
+  addSessionEventIdentityKeys,
+  dedupeSessionEvents,
+  sessionEventHasKnownIdentity,
+  sessionEventIdentityKeys,
+} from "./event-identity.js";
 
 const DEFAULT_RECONNECT_BACKOFF_MS = 2_000;
 const MAX_RECONNECT_BACKOFF_MS = 30_000;
 
 function eventKey(event) {
   if (!event || typeof event !== "object") return null;
+  const identityKeys = sessionEventIdentityKeys(event);
+  if (identityKeys.length > 0) return identityKeys[0];
   if (event.id) return `id:${event.id}`;
   if (event.eventId) return `id:${event.eventId}`;
   const ts = event.ts || event.timestamp;
@@ -57,7 +65,7 @@ export async function* watchLocalStream({
 
   // Replay the tail first so any caller getting the iterator catches
   // up with the in-flight context before live events start arriving.
-  const initial = await _readEvents(sessionId, { targetPath, tail: initialTail });
+  const initial = dedupeSessionEvents(await _readEvents(sessionId, { targetPath, tail: initialTail }));
   for (const event of initial) {
     const candidate = event.ts || event.timestamp;
     if (candidate) lastTs = candidate;
@@ -293,7 +301,8 @@ export async function* mergeLiveSources({
     if (item.event) {
       const key = eventKey(item.event);
       if (key) {
-        if (seen.has(key)) continue;
+        if (sessionEventHasKnownIdentity(item.event, seen) || seen.has(key)) continue;
+        addSessionEventIdentityKeys(seen, item.event);
         seen.add(key);
         if (seen.size > 5000) {
           // bound memory — older keys roll out

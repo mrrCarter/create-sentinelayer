@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6870,6 +6870,20 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     assert.equal(sayPayload.event.event, "session_message");
     assert.equal(sayPayload.event.payload.message, "test message");
     assert.equal(sayPayload.event.payload.to, "agent-beta");
+    const duplicateCanonical = {
+      ...sayPayload.event,
+      ts: String(sayPayload.event.ts || "").replace(/Z$/, "000+00:00"),
+      timestamp: String(sayPayload.event.timestamp || sayPayload.event.ts || "").replace(/Z$/, "000+00:00"),
+      cursor: "canonical-cursor-1",
+      eventId: "canonical-event-1",
+      idempotencyToken: "canonical-event-1",
+      sequenceId: 1001,
+    };
+    await appendFile(
+      path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "stream.ndjson"),
+      `${JSON.stringify(duplicateCanonical)}\n`,
+      "utf-8",
+    );
 
     const readResult = await runCli({
       cwd: tempRoot,
@@ -6880,6 +6894,10 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     const readPayload = JSON.parse(String(readResult.stdout || "").trim());
     assert.equal(readPayload.command, "session read");
     assert.equal(readPayload.events.some((event) => event.event === "session_message"), true);
+    assert.equal(
+      readPayload.events.filter((event) => event.payload?.message === "test message").length,
+      1,
+    );
 
     const statusResult = await runCli({
       cwd: tempRoot,

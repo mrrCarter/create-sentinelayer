@@ -1,3 +1,22 @@
+# 2026-05-03 - Senti Read Display Dedupe (`codex/senti-read-dedupe`)
+
+## Plan
+- [x] Re-check the active Senti dogfood session and confirm no new non-Codex direction before coding.
+- [x] Confirm remaining gap after PR #458: old duplicated local NDJSON rows can still leak through `session read` and live-source replay even though future remote hydration suppresses duplicate appends.
+- [x] Extract shared session-event identity logic so remote hydration, read output, and live-source merge use the same timestamp-normalized duplicate keys.
+- [x] Apply non-destructive display-time dedupe to `session read` and initial live-source replay; do not rewrite or truncate existing transcript files.
+- [x] Add focused unit/e2e coverage for local optimistic vs API canonical duplicates and same-message/different-agent separation.
+- [x] Run local review/Omar/audit.
+- [ ] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
+
+## Review
+- In progress. Scope is CLI read/live display only; the PR intentionally does not mutate historical `.sentinelayer/sessions/*/stream.ndjson` files.
+- File claim: `src/session/event-identity.js`, `src/session/remote-hydrate.js`, `src/commands/session.js`, `src/session/live-source.js`, `tests/unit.session-event-identity.test.mjs`, and the existing CLI session e2e flow.
+- Expected behavior: canonical remote event shapes with cursor/event ids and API timestamp precision collapse with already-local optimistic rows, while distinct agents posting identical text remain separate visible messages.
+- Focused verification is green after tightening the identity helper to avoid id-only false dedupe: `node --check` on changed JS, identity/live-source `9/9`, remote-hydrate/sync `29/29`, and the CLI session e2e duplicate-injection flow all passed.
+- Full verify is green: `npm run verify` passed `check` on 306 files, docs build, e2e `97/97`, coverage `1209/1209`, and npm pack dry-run for `sentinelayer-cli-0.9.1.tgz`.
+- Local gates are clean: `git diff --check` only emitted Windows LF/CRLF warnings, review scan `review-scan-full-20260503-142700.md` has `P1=0` and blocking=false, Omar `omargate-1777818465011-27cbdc83` has `P0=0/P1=0`, and slash audit `audit-20260503-142744.md` is PASS with `P1=0`.
+
 # 2026-05-03 - Senti Remote Read Circuit Recovery (`codex/senti-remote-read-circuit-recovery`)
 
 ## Plan
@@ -7,7 +26,7 @@
 - [x] Keep normal background pollers protected by default; the forced probe is hydrator-scoped and opt-out for tests/callers.
 - [x] Add unit coverage for forced recovery, duplicate canonical-event suppression, and no-probe opt-out behavior.
 - [x] Run focused tests, full verify, local review/Omar/audit.
-- [ ] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
+- [x] Open PR, watch CI/OmarGate to green, merge, and verify post-merge main.
 
 ## Review
 - Scope is CLI remote hydration only; no web/API changes.
