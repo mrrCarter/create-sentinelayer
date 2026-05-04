@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  __resetAutoGrantCacheForTests,
   pollHumanMessages,
   pollSessionEvents,
   resetSessionSyncStateForTests,
@@ -421,5 +422,272 @@ test("Unit session sync: pollSessionEvents can force a one-shot probe through an
   });
   assert.equal(afterRecovery.ok, true);
   assert.equal(callCount, 5);
+  resetSessionSyncStateForTests();
+});
+
+// PR fix(session): auto-grant agent identity on 403 IDENTITY_FORGERY and retry.
+// Carter hit IDENTITY_FORGERY in prod after PR #478 deployed server-side
+// agent-identity enforcement: every CLI agent post returned 403 with code
+// IDENTITY_FORGERY because the active user had not granted that agent.id.
+// These tests pin the auto-grant + retry behaviour, the failure branch, the
+// loop-breaker, and the fast path so a future regression is loud.
+
+function buildIdentityForgeryEventEnvelope({ agentId = "codex", role = "coder" } = {}) {
+  return {
+    event: "session_message",
+    sessionId: "sess-grant-1",
+    agent: { id: agentId, role },
+    payload: { message: "agent post" },
+  };
+}
+
+function makeJsonResponse({ ok, status, body = null }) {
+  return {
+    ok,
+    status,
+    json: async () => body,
+  };
+}
+
+test("Unit session sync: 403 IDENTITY_FORGERY auto-grants and retries successfully", async () => {
+  resetSessionSyncStateForTests();
+  __resetAutoGrantCacheForTests();
+  const calls = [];
+  const responses = [
+    // First /events POST -> 403 IDENTITY_FORGERY
+    makeJsonResponse({
+      ok: false,
+      status: 403,
+      body: {
+        error: { code: "IDENTITY_FORGERY", message: "agent identity 'codex' is not granted to this user" },
+      },
+    }),
+    // POST /agent-grants -> 200 OK
+    makeJsonResponse({ ok: true, status: 200, body: { granted: true } }),
+    // Retry /events -> 200 OK
+    makeJsonResponse({ ok: true, status: 202 }),
+  ];
+  const result = await syncSessionEventToApi(
+    "sess-grant-1",
+    buildIdentityForgeryEventEnvelope({ agentId: "codex", role: "coder" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        calls.push({ url, method: options.method, body: options.body });
+        return responses.shift();
+      },
+      nowMs: () => 1_700_000_700_000,
+    }
+  );
+
+  assert.equal(result.synced, true, "expected synced=true after grant + retry");
+  assert.equal(result.autoGranted, true);
+  assert.equal(calls.length, 3, "expected 3 calls: events, grant, events-retry");
+  assert.equal(calls[0].url, "https://api.sentinelayer.com/api/v1/sessions/sess-grant-1/events");
+  assert.equal(calls[1].url, "https://api.sentinelayer.com/api/v1/sessions/agent-grants");
+  assert.equal(calls[1].method, "POST");
+  const grantBody = JSON.parse(calls[1].body);
+  assert.equal(grantBody.agent_id, "codex");
+  assert.equal(grantBody.role, "coder");
+  assert.equal(calls[2].url, "https://api.sentinelayer.com/api/v1/sessions/sess-grant-1/events");
+  resetSessionSyncStateForTests();
+});
+
+test("Unit session sync: 403 IDENTITY_FORGERY -> grant 422 returns grant_failed_422 with no retry", async () => {
+  resetSessionSyncStateForTests();
+  __resetAutoGrantCacheForTests();
+  const calls = [];
+  const responses = [
+    makeJsonResponse({
+      ok: false,
+      status: 403,
+      body: { error: { code: "IDENTITY_FORGERY", message: "denied" } },
+    }),
+    // Grant returns 422 (e.g. invalid agent_id payload)
+    makeJsonResponse({
+      ok: false,
+      status: 422,
+      body: { error: { code: "INVALID_AGENT_ID", message: "bad shape" } },
+    }),
+  ];
+  const result = await syncSessionEventToApi(
+    "sess-grant-2",
+    buildIdentityForgeryEventEnvelope({ agentId: "claude", role: "coder" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        calls.push({ url, method: options.method });
+        return responses.shift();
+      },
+      nowMs: () => 1_700_000_700_100,
+    }
+  );
+
+  assert.equal(result.synced, false);
+  assert.equal(result.reason, "grant_failed_422");
+  assert.equal(calls.length, 2, "expected 2 calls: events + grant; NO retry");
+  assert.equal(calls[1].url, "https://api.sentinelayer.com/api/v1/sessions/agent-grants");
+  resetSessionSyncStateForTests();
+});
+
+test("Unit session sync: 403 IDENTITY_FORGERY for already-granted agentId does not re-grant", async () => {
+  resetSessionSyncStateForTests();
+  __resetAutoGrantCacheForTests();
+
+  // First call seeds the auto-grant cache: 403 -> grant 200 -> retry 200.
+  const firstCalls = [];
+  const firstResponses = [
+    makeJsonResponse({
+      ok: false,
+      status: 403,
+      body: { error: { code: "IDENTITY_FORGERY", message: "denied" } },
+    }),
+    makeJsonResponse({ ok: true, status: 200 }),
+    makeJsonResponse({ ok: true, status: 202 }),
+  ];
+  const firstResult = await syncSessionEventToApi(
+    "sess-grant-3",
+    buildIdentityForgeryEventEnvelope({ agentId: "gemini", role: "coder" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        firstCalls.push({ url, method: options.method });
+        return firstResponses.shift();
+      },
+      nowMs: () => 1_700_000_700_200,
+    }
+  );
+  assert.equal(firstResult.synced, true);
+  assert.equal(firstCalls.length, 3);
+
+  // Second call for the same agentId: server still returns 403 (e.g.
+  // grant did not actually persist). We must NOT loop on grant.
+  const secondCalls = [];
+  const secondResult = await syncSessionEventToApi(
+    "sess-grant-3",
+    buildIdentityForgeryEventEnvelope({ agentId: "gemini", role: "coder" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        secondCalls.push({ url, method: options.method });
+        return makeJsonResponse({
+          ok: false,
+          status: 403,
+          body: { error: { code: "IDENTITY_FORGERY", message: "still denied" } },
+        });
+      },
+      nowMs: () => 1_700_000_700_300,
+    }
+  );
+  assert.equal(secondResult.synced, false);
+  assert.equal(secondResult.reason, "api_403");
+  assert.equal(
+    secondCalls.length,
+    1,
+    "loop-breaker: second 403 for cached agentId must NOT issue another grant"
+  );
+  assert.equal(secondCalls[0].url, "https://api.sentinelayer.com/api/v1/sessions/sess-grant-3/events");
+  resetSessionSyncStateForTests();
+});
+
+test("Unit session sync: 200 on first attempt preserves fast path (no grant call)", async () => {
+  resetSessionSyncStateForTests();
+  __resetAutoGrantCacheForTests();
+  const calls = [];
+  const result = await syncSessionEventToApi(
+    "sess-grant-4",
+    buildIdentityForgeryEventEnvelope({ agentId: "codex", role: "coder" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        calls.push({ url, method: options.method });
+        return { ok: true, status: 202 };
+      },
+      nowMs: () => 1_700_000_700_400,
+    }
+  );
+
+  assert.equal(result.synced, true);
+  assert.equal(result.autoGranted, undefined, "fast path must not flag autoGranted");
+  assert.equal(calls.length, 1, "fast path: exactly one /events POST, no grant");
+  assert.equal(calls[0].url, "https://api.sentinelayer.com/api/v1/sessions/sess-grant-4/events");
+  resetSessionSyncStateForTests();
+});
+
+test("Unit session sync: 403 IDENTITY_FORGERY with reserved agentId (cli-user) skips grant", async () => {
+  resetSessionSyncStateForTests();
+  __resetAutoGrantCacheForTests();
+  const calls = [];
+  const result = await syncSessionEventToApi(
+    "sess-grant-5",
+    buildIdentityForgeryEventEnvelope({ agentId: "cli-user", role: "coder" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        calls.push({ url, method: options.method });
+        return makeJsonResponse({
+          ok: false,
+          status: 403,
+          body: { error: { code: "IDENTITY_FORGERY", message: "denied" } },
+        });
+      },
+      nowMs: () => 1_700_000_700_500,
+    }
+  );
+  assert.equal(result.synced, false);
+  assert.equal(result.reason, "api_403");
+  assert.equal(calls.length, 1, "reserved agent id must NOT trigger grant");
+  resetSessionSyncStateForTests();
+});
+
+test("Unit session sync: orchestrator role is normalized to 'coder' in grant payload", async () => {
+  resetSessionSyncStateForTests();
+  __resetAutoGrantCacheForTests();
+  const calls = [];
+  const responses = [
+    makeJsonResponse({
+      ok: false,
+      status: 403,
+      body: { error: { code: "IDENTITY_FORGERY", message: "denied" } },
+    }),
+    makeJsonResponse({ ok: true, status: 200 }),
+    makeJsonResponse({ ok: true, status: 202 }),
+  ];
+  const result = await syncSessionEventToApi(
+    "sess-grant-6",
+    buildIdentityForgeryEventEnvelope({ agentId: "kai-chen", role: "orchestrator" }),
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_test_grant",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        calls.push({ url, body: options.body });
+        return responses.shift();
+      },
+      nowMs: () => 1_700_000_700_600,
+    }
+  );
+  assert.equal(result.synced, true);
+  const grantBody = JSON.parse(calls[1].body);
+  assert.equal(grantBody.role, "coder", "orchestrator must fall back to coder pending API enum extension");
   resetSessionSyncStateForTests();
 });
