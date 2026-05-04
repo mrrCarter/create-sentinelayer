@@ -205,19 +205,150 @@ async function findReusableSessionCandidate({
   return candidates[0] || null;
 }
 
-async function ensureLocalSessionForRemoteCommand(sessionId, { targetPath, title = "" } = {}) {
+// Verify that a session id is reachable for the active user via the API
+// singleton endpoint added in API PR #483 (`GET /api/v1/sessions/{id}`).
+//
+// Carter's complaint: "I can't create a session from the web and still have
+// it available for you guys in CLI" — the historical CLI flow assumed the
+// session was created locally first, so attaching to a web/peer-created
+// session left the agent guessing about access. Singleton GET resolves
+// that with one round-trip and gives us metadata for friendly output.
+//
+// Behaviour contract:
+//   - Returns `{ ok: true, source, session, status }` on success.
+//   - Returns `{ ok: false, reason: "not_found", status: 404 }` when the
+//     session genuinely isn't visible to the caller (404 + list fallback
+//     also empty). Callers should map this to a friendly "not found" exit.
+//   - Returns `{ ok: false, reason: "forbidden", status: 403 }` for explicit
+//     deny (caller is authenticated but not a member).
+//   - On 5xx: retries ONCE, then surfaces `{ ok: false, reason: "api_5xx" }`.
+//   - On 404 from the singleton: falls back to filtering the list endpoint
+//     so users on stale prod servers (pre-#483) aren't blocked. If the list
+//     contains the session id we treat it as success and return that row.
+//   - When `SENTINELAYER_SKIP_REMOTE_SYNC=1` (test bootstrap), short-circuits
+//     to `{ ok: true, source: "skipped", session: null }` so unit tests
+//     can exercise the local materialization path without a real API.
+async function verifyRemoteSession(sessionId, { targetPath } = {}) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return { ok: false, reason: "invalid_session_id" };
+  }
+  if (remoteSessionLookupDisabled()) {
+    return { ok: true, source: "skipped", session: null };
+  }
+  let auth;
+  try {
+    auth = await resolveActiveAuthSession({
+      cwd: targetPath || process.cwd(),
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session" };
+  }
+  if (!auth || !auth.token) {
+    return { ok: false, reason: "not_authenticated", status: 401 };
+  }
+  const apiUrl = String(auth.apiUrl || "").replace(/\/+$/, "");
+  if (!apiUrl) {
+    return { ok: false, reason: "no_api_url" };
+  }
+  const endpoint = `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
+  const headers = { Authorization: `Bearer ${auth.token}` };
+  let lastReason = "unknown";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(endpoint, { method: "GET", headers });
+    } catch (err) {
+      lastReason = normalizeString(err?.message) || "fetch_failed";
+      continue;
+    }
+    if (response && response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const sessionPayload = body && body.session && typeof body.session === "object"
+        ? body.session
+        : body && typeof body === "object"
+          ? body
+          : null;
+      return {
+        ok: true,
+        source: "singleton",
+        session: sessionPayload,
+        status: response.status,
+      };
+    }
+    if (!response) {
+      lastReason = "no_response";
+      continue;
+    }
+    if (response.status === 404) {
+      // Pre-#483 fallback: scan the list endpoint once for the same id.
+      const listResult = await listSessionsFromApi({
+        targetPath,
+        includeArchived: false,
+        limit: 50,
+      }).catch(() => null);
+      if (listResult && listResult.ok) {
+        const found = (listResult.sessions || []).find(
+          (entry) => normalizeString(entry?.sessionId) === normalizedSessionId,
+        );
+        if (found) {
+          return { ok: true, source: "list_fallback", session: found, status: 200 };
+        }
+      }
+      return { ok: false, reason: "not_found", status: 404 };
+    }
+    if (response.status === 403) {
+      return { ok: false, reason: "forbidden", status: 403 };
+    }
+    if (response.status >= 500 && response.status < 600) {
+      lastReason = `api_${response.status}`;
+      continue; // retry once on 5xx
+    }
+    return { ok: false, reason: `api_${response.status}`, status: response.status };
+  }
+  return { ok: false, reason: lastReason };
+}
+
+// Render an absolute ISO timestamp as a coarse "Nm ago" / "Nh ago" / "Nd ago"
+// label for human-readable join output. Returns `"never"` for missing input
+// and `"just now"` for sub-minute deltas.
+function formatRelativeAge(isoTimestamp) {
+  const epoch = Date.parse(normalizeString(isoTimestamp));
+  if (!Number.isFinite(epoch)) return "never";
+  const deltaMs = Date.now() - epoch;
+  if (deltaMs < 60_000) return "just now";
+  const minutes = Math.floor(deltaMs / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+async function ensureLocalSessionForRemoteCommand(
+  sessionId,
+  { targetPath, title = "", skipRemoteProbe = false } = {},
+) {
   const existing = await getSession(sessionId, { targetPath });
   if (existing) {
     return { materialized: false, session: existing };
   }
-  const access = await probeSessionAccess(sessionId, { targetPath }).catch((error) => ({
-    accessible: false,
-    reason: normalizeString(error?.message) || "probe_failed",
-  }));
-  if (!access?.accessible) {
-    throw new Error(
-      `Session '${sessionId}' was not found locally and remote access failed (${access?.reason || "unknown"}).`,
-    );
+  // `skipRemoteProbe` is set by callers that have already verified the session
+  // via `verifyRemoteSession` (the singleton GET) — re-probing the legacy
+  // `/events?limit=1` endpoint here would be a redundant round-trip and, for
+  // tests that mock only the singleton, would spuriously 404.
+  if (!skipRemoteProbe) {
+    const access = await probeSessionAccess(sessionId, { targetPath }).catch((error) => ({
+      accessible: false,
+      reason: normalizeString(error?.message) || "probe_failed",
+    }));
+    if (!access?.accessible) {
+      throw new Error(
+        `Session '${sessionId}' was not found locally and remote access failed (${access?.reason || "unknown"}).`,
+      );
+    }
   }
   const created = await createSession({
     targetPath,
@@ -732,6 +863,10 @@ export function registerSessionCommand(program) {
     .command("ensure")
     .description("Join or create the canonical session for this workspace and emit JSON")
     .option("--path <path>", "Workspace path for the session", ".")
+    .option(
+      "--session <id>",
+      "Attach to an explicit remote-created session id (verifies + materializes local state, like `session join`).",
+    )
     .option("--title <title>", "Title applied if a new or unnamed resumed session needs one")
     .option(
       "--ttl-seconds <seconds>",
@@ -765,6 +900,54 @@ export function registerSessionCommand(program) {
         "reuse-window-seconds",
         3600,
       );
+
+      // --session <id> short-circuit: behave like `session join`. This is the
+      // path Carter cared about — "create on web, share id, attach in CLI".
+      // We verify the session is reachable, materialize a minimal local
+      // NDJSON if missing, and emit the same `{sessionId, title, resumed}`
+      // contract callers already consume from `ensure`.
+      const explicitSessionId = normalizeString(options.session);
+      if (explicitSessionId) {
+        const verification = await verifyRemoteSession(explicitSessionId, { targetPath });
+        if (!verification.ok) {
+          if (verification.status === 404 || verification.reason === "not_found") {
+            throw new Error(
+              `Session not found, archived, or not accessible to your account. (id=${explicitSessionId})`,
+            );
+          }
+          if (verification.status === 403 || verification.reason === "forbidden") {
+            throw new Error(
+              `Session '${explicitSessionId}' exists but your account is not a member.`,
+            );
+          }
+          if (verification.reason === "not_authenticated") {
+            throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
+          }
+          throw new Error(
+            `Failed to verify session '${explicitSessionId}' (${verification.reason || "unknown"}). Try again in a moment.`,
+          );
+        }
+        const remoteSession = verification.session || {};
+        const localSession = await ensureLocalSessionForRemoteCommand(explicitSessionId, {
+          targetPath,
+          title: normalizeString(remoteSession.title),
+          skipRemoteProbe: true,
+        });
+        const payload = {
+          command: "session ensure",
+          targetPath,
+          sessionId: explicitSessionId,
+          title: normalizeString(remoteSession.title) || localSession?.session?.title || null,
+          resumed: true,
+          attached: true,
+          materializedLocalSession: localSession.materialized,
+          verificationSource: verification.source,
+          dashboardUrl: buildDashboardUrl(explicitSessionId),
+        };
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
       const ensured = await ensureWorkspaceSession({
         targetPath,
         ttlSeconds,
@@ -912,8 +1095,14 @@ export function registerSessionCommand(program) {
 
   session
     .command("join <sessionId>")
-    .description("Join an active session")
-    .option("--name <name>", "Agent display name")
+    .description(
+      "Attach to a remote-created session for posting and listening, materializing minimal local state on demand.",
+    )
+    .option("--name <name>", "Agent display name (legacy alias for --agent)")
+    .option(
+      "--agent <id>",
+      "Granted agent id to emit an agent_join event as. Behaves like post-agent for human/placeholder ids — those are recorded in the local registry only.",
+    )
     .option("--role <role>", "Agent role: coder, reviewer, tester, observer", "coder")
     .option("--model <model>", "Agent model hint", "cli")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -924,31 +1113,104 @@ export function registerSessionCommand(program) {
         throw new Error("session id is required.");
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+
+      // PR #483 contract: verify the session exists and the caller has access
+      // BEFORE materializing local cache state. Without this we'd silently
+      // create a phantom local NDJSON for a session that's archived or owned
+      // by another tenant — which is the bug Carter reported when asking for
+      // a clean "share an id from web → join in CLI" flow.
+      const verification = await verifyRemoteSession(normalizedSessionId, { targetPath });
+      if (!verification.ok) {
+        if (verification.status === 404 || verification.reason === "not_found") {
+          throw new Error(
+            `Session not found, archived, or not accessible to your account. (id=${normalizedSessionId})`,
+          );
+        }
+        if (verification.status === 403 || verification.reason === "forbidden") {
+          throw new Error(
+            `Session '${normalizedSessionId}' exists but your account is not a member.`,
+          );
+        }
+        if (verification.reason === "not_authenticated") {
+          throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
+        }
+        throw new Error(
+          `Failed to verify session '${normalizedSessionId}' (${verification.reason || "unknown"}). Try again in a moment.`,
+        );
+      }
+
+      const remoteSession = verification.session || {};
       const localSession = await ensureLocalSessionForRemoteCommand(normalizedSessionId, {
         targetPath,
+        title: normalizeString(remoteSession.title),
+        skipRemoteProbe: true,
       });
+
+      const explicitAgent = normalizeString(options.agent);
+      const agentSeed = explicitAgent || normalizeString(options.name);
+      const resolvedAgentId = await defaultAgentId(agentSeed, targetPath);
+      const role = normalizeString(options.role) || "coder";
+      const model = normalizeString(options.model) || "cli";
+
+      // `registerAgent` already writes the canonical `agent_join` event to the
+      // local NDJSON and best-effort relays it to /events via appendToStream
+      // → syncSessionEventToApi. That gives us the exact `post-agent` parity
+      // the spec calls for when `--agent <granted>` is provided. We don't
+      // double-emit; we just record whether the explicit agent path was used
+      // so the JSON output can advertise it to callers (and tests).
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
-        agentId: await defaultAgentId(options.name, targetPath),
-        model: normalizeString(options.model) || "cli",
-        role: options.role || "coder",
+        agentId: resolvedAgentId,
+        model,
+        role,
       });
+      const agentJoinRelayed =
+        Boolean(explicitAgent) &&
+        Boolean(resolvedAgentId) &&
+        resolvedAgentId !== "cli-user" &&
+        resolvedAgentId !== "unknown" &&
+        !resolvedAgentId.startsWith("human-");
+
+      const eventCount = Number(remoteSession.eventCount ?? remoteSession.events ?? 0);
+      const agents = Array.isArray(remoteSession.agents) ? remoteSession.agents : [];
+      const agentCount = Number(remoteSession.agentCount ?? agents.length ?? 0);
+      const lastActivityIso =
+        normalizeString(remoteSession.lastInteractionAt) ||
+        normalizeString(remoteSession.lastActivityAt) ||
+        normalizeString(remoteSession.updatedAt) ||
+        normalizeString(remoteSession.createdAt) ||
+        "";
+      const remoteTitle = normalizeString(remoteSession.title);
+
       const payload = {
         command: "session join",
+        joined: true,
         targetPath,
         sessionId: normalizedSessionId,
+        title: remoteTitle || null,
         agentId: joined.agentId,
         role: joined.role,
         model: joined.model,
         status: joined.status,
         joinedAt: joined.joinedAt,
         materializedLocalSession: localSession.materialized,
+        verificationSource: verification.source,
+        eventCount: Number.isFinite(eventCount) ? eventCount : 0,
+        agentCount: Number.isFinite(agentCount) ? agentCount : 0,
+        lastActivityAt: lastActivityIso || null,
+        agentJoinRelayed,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
-      console.log(pc.bold(`Joined session ${normalizedSessionId}`));
+      const titleLabel = remoteTitle ? `"${remoteTitle}"` : "(untitled)";
+      const ageLabel = lastActivityIso ? formatRelativeAge(lastActivityIso) : "never";
+      console.log(
+        pc.bold(
+          `Joined session ${titleLabel} (${normalizedSessionId}) — ${payload.eventCount} events, ${payload.agentCount} agents, last activity ${ageLabel}`,
+        ),
+      );
       console.log(pc.gray(`agent=${joined.agentId} role=${joined.role} model=${joined.model}`));
     });
 
