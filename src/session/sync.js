@@ -103,6 +103,96 @@ const inboundCircuit = {
 const sessionIngestWindowBySessionId = new Map();
 const humanRelayWindowBySessionId = new Map();
 
+// Per-process record of agent identities for which we have already issued an
+// auto-grant attempt against `POST /api/v1/sessions/agent-grants`. Server-side
+// agent-identity enforcement (PR #478) returns 403 IDENTITY_FORGERY when the
+// active user has not granted the `agent.id` carried on a session event. The
+// CLI auto-grants on the first 403 and retries the event POST exactly once,
+// but if the grant itself fails (e.g. 422 from a malformed agent_id), we MUST
+// NOT loop. This Set is the loop-breaker: insertion order is preserved (Set
+// semantics in V8) so an LRU-ish trim drops the oldest entries first when the
+// cap is exceeded. SessionId-agnostic by design — once a user grants
+// `agent.id="codex"`, the grant is global to their account.
+const AUTO_GRANT_ATTEMPT_CACHE_MAX = 50;
+const autoGrantAttemptedAgentIds = new Set();
+
+// Reserved agent_id values that the API treats specially — granting these
+// is either a no-op or rejected outright. Skip the auto-grant round-trip and
+// return the original 403 cleanly.
+const AUTO_GRANT_RESERVED_PREFIXES = ["human-"];
+const AUTO_GRANT_RESERVED_EXACT = new Set(["", "cli-user", "unknown"]);
+
+// API role enum (per PR #478 server contract). Anything not in this set
+// (notably the legacy `orchestrator` role we still emit locally) falls back
+// to `coder`. This is a forward-compat workaround pending an API enum
+// extension that adds `orchestrator`.
+const AUTO_GRANT_VALID_ROLES = new Set([
+  "auditor",
+  "coder",
+  "coordinator",
+  "observer",
+  "reviewer",
+]);
+const AUTO_GRANT_DEFAULT_ROLE = "coder";
+
+function rememberAutoGrantAttempt(agentId) {
+  if (!agentId) return;
+  if (autoGrantAttemptedAgentIds.has(agentId)) {
+    // Refresh insertion order so the most recently used entry survives
+    // LRU eviction when the cap is hit.
+    autoGrantAttemptedAgentIds.delete(agentId);
+    autoGrantAttemptedAgentIds.add(agentId);
+    return;
+  }
+  autoGrantAttemptedAgentIds.add(agentId);
+  while (autoGrantAttemptedAgentIds.size > AUTO_GRANT_ATTEMPT_CACHE_MAX) {
+    const oldest = autoGrantAttemptedAgentIds.values().next().value;
+    if (oldest === undefined) break;
+    autoGrantAttemptedAgentIds.delete(oldest);
+  }
+}
+
+function isReservedAgentIdForGrant(agentId) {
+  const id = normalizeString(agentId);
+  if (AUTO_GRANT_RESERVED_EXACT.has(id)) return true;
+  for (const prefix of AUTO_GRANT_RESERVED_PREFIXES) {
+    if (id.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function resolveGrantRole(rawRole) {
+  const normalized = normalizeString(rawRole).toLowerCase();
+  if (AUTO_GRANT_VALID_ROLES.has(normalized)) {
+    return normalized;
+  }
+  return AUTO_GRANT_DEFAULT_ROLE;
+}
+
+async function readResponseJsonSafely(response) {
+  if (!response || typeof response.json !== "function") {
+    return null;
+  }
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function isIdentityForgeryBody(body) {
+  if (!body || typeof body !== "object") return false;
+  const error = body.error;
+  if (!error || typeof error !== "object") return false;
+  return normalizeString(error.code) === "IDENTITY_FORGERY";
+}
+
+// Test-only: clear the per-process auto-grant attempt cache so unit tests
+// exercising the loop-breaker don't bleed state across runs.
+export function __resetAutoGrantCacheForTests() {
+  autoGrantAttemptedAgentIds.clear();
+}
+
 const SECRET_LIKE_PATTERN =
   /(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]+PRIVATE KEY-----|SENTINELAYER_TOKEN|AIDENID_API_KEY|NPM_TOKEN|xox[baprs]-[A-Za-z0-9-]+)/i;
 
@@ -456,35 +546,125 @@ export async function syncSessionEventToApi(
 
   const apiBaseUrl = resolveApiBaseUrl(session);
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events`;
+  const requestBody = JSON.stringify({
+    event,
+    source: "cli",
+  });
+  const requestInit = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.token}`,
+    },
+    body: requestBody,
+  };
+  const resolvedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
 
   try {
-    const response = await fetchImpl(
-      endpoint,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
-        },
-        body: JSON.stringify({
-          event,
-          source: "cli",
-        }),
-      },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
-    );
+    const response = await fetchImpl(endpoint, requestInit, resolvedTimeoutMs);
 
-    if (!response || !response.ok) {
-      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    if (response && response.ok) {
+      recordCircuitSuccess(outboundCircuit);
       return {
-        synced: false,
-        reason: `api_${response ? response.status : "no_response"}`,
+        synced: true,
+        status: response.status,
       };
     }
-    recordCircuitSuccess(outboundCircuit);
+
+    // Handle PR #478 IDENTITY_FORGERY: server now requires the active user to
+    // have explicitly granted any `agent.id` posted to /events. Without this
+    // auto-grant, every CLI-driven agent post returns 403 and the user sees
+    // their agents "talking" locally while the API has zero record. We attempt
+    // the grant once per agentId per process, then retry the event POST once.
+    if (response && response.status === 403) {
+      const body = await readResponseJsonSafely(response);
+      if (isIdentityForgeryBody(body)) {
+        const agentId = normalizeString(event?.agent?.id);
+        if (!agentId || isReservedAgentIdForGrant(agentId)) {
+          // Reserved or empty — server enforcement is intentional, no grant
+          // attempt is meaningful. Treat as a normal 403 failure.
+          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          return { synced: false, reason: "api_403" };
+        }
+        if (autoGrantAttemptedAgentIds.has(agentId)) {
+          // We already tried to grant this identity in a prior event in this
+          // process and either it succeeded but the server still says no, or
+          // the grant failed. Either way, don't loop — surface the 403.
+          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          return { synced: false, reason: "api_403" };
+        }
+        rememberAutoGrantAttempt(agentId);
+
+        const grantRole = resolveGrantRole(event?.agent?.role);
+        const grantEndpoint = `${apiBaseUrl}/api/v1/sessions/agent-grants`;
+        let grantResponse = null;
+        try {
+          grantResponse = await fetchImpl(
+            grantEndpoint,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${session.token}`,
+              },
+              body: JSON.stringify({
+                agent_id: agentId,
+                role: grantRole,
+              }),
+            },
+            resolvedTimeoutMs
+          );
+        } catch (grantError) {
+          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          return {
+            synced: false,
+            reason: normalizeString(grantError?.message) || "grant_failed",
+          };
+        }
+
+        const grantStatus = grantResponse ? grantResponse.status : 0;
+        const grantOk = Boolean(grantResponse && grantResponse.ok);
+        // Treat 409 (already granted) as success — idempotent on the server.
+        const grantIdempotent = grantStatus === 409;
+        if (!grantOk && !grantIdempotent) {
+          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          return {
+            synced: false,
+            reason: `grant_failed_${grantStatus || "no_response"}`,
+          };
+        }
+
+        // Retry the original event POST exactly once.
+        let retryResponse;
+        try {
+          retryResponse = await fetchImpl(endpoint, requestInit, resolvedTimeoutMs);
+        } catch (retryError) {
+          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          return {
+            synced: false,
+            reason: normalizeString(retryError?.message) || "sync_failed",
+          };
+        }
+        if (retryResponse && retryResponse.ok) {
+          recordCircuitSuccess(outboundCircuit);
+          return {
+            synced: true,
+            status: retryResponse.status,
+            autoGranted: true,
+          };
+        }
+        recordCircuitFailure(outboundCircuit, normalizedNowMs);
+        return {
+          synced: false,
+          reason: `api_${retryResponse ? retryResponse.status : "no_response"}`,
+        };
+      }
+    }
+
+    recordCircuitFailure(outboundCircuit, normalizedNowMs);
     return {
-      synced: true,
-      status: response.status,
+      synced: false,
+      reason: `api_${response ? response.status : "no_response"}`,
     };
   } catch (error) {
     recordCircuitFailure(outboundCircuit, normalizedNowMs);
@@ -1054,6 +1234,7 @@ export function resetSessionSyncStateForTests() {
   inboundCircuit.openedAtMs = 0;
   sessionIngestWindowBySessionId.clear();
   humanRelayWindowBySessionId.clear();
+  autoGrantAttemptedAgentIds.clear();
   // Tests that exercise the network path explicitly need the
   // SENTINELAYER_SKIP_REMOTE_SYNC guard off — otherwise the function
   // short-circuits before the mocked fetchImpl is ever called. Tests that
