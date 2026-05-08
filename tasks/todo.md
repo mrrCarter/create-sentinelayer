@@ -1,3 +1,20 @@
+# 2026-05-08 - PR #462 Omar Unblock Loop (`codex/create-main-omar-p2-fix`)
+
+## Plan
+- [x] Re-check Senti and PR #462 status before additional edits.
+- [x] Confirm code P2 findings are cleared and remaining blocker is the Omar managed LLM fail-closed P0.
+- [x] Inspect create wrapper, pinned action behavior, and managed proxy quota path to isolate the root cause.
+- [x] Patch create's Omar wrapper so a validated BYO `OPENAI_API_KEY` is not forced through the managed LLM proxy.
+- [x] Run focused workflow wrapper test and changed unit tests.
+- [x] Run static check, full unit suite, and diff whitespace check.
+- [ ] Push PR #462 update, watch Omar Gate/Quality/Attestation, and iterate until green.
+- [ ] Merge PR #462, verify post-merge main, then resume release/npm parity.
+
+## Review
+- In progress. The P2 scanner false positives are fixed in source/tests. The remaining P0 was workflow routing, not application code: the wrapper required `OPENAI_API_KEY` but forced `sentinelayer_managed_llm: "true"` against pinned action `14ca51c`, sending fallback scans through the shared managed proxy and hitting the daily quota.
+- Focused verification passed: backend tools `14/14`, devTestBot runner `4/4`, and Omar wrapper regression `1/1`.
+- Full local verification passed: `npm run check` (`306 files`), `npm run test:unit` (`1225/1225`), and `git diff --check` (CRLF warnings only).
+
 # 2026-05-03 - Senti Read Display Dedupe (`codex/senti-read-dedupe`)
 
 ## Plan

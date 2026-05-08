@@ -212,6 +212,7 @@
 
 - When Omar Gate is the required security path, do not rely on multi-agent review workflows or substitute checks; ensure the Omar Gate workflow is the only enforcement path and is actually executed per PR.
 - If Omar LLM analysis is required, explicitly set `sentinelayer_managed_llm: "true"` (or equivalent action input) and verify the workflow is not running in a skipped/LLM-disabled mode before merging.
+- If a repo validates and passes a real `OPENAI_API_KEY` into Omar, do not force `sentinelayer_managed_llm: "true"` in its wrapper; that routes BYO scans through the managed proxy on older pinned action SHAs and can exhaust shared proxy quota.
 
 ## 2026-04-13
 
