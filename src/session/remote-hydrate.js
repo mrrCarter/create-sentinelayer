@@ -28,6 +28,8 @@ import {
 } from "./event-identity.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
+const DEFAULT_EVENT_PAGE_LIMIT = 200;
+const DEFAULT_MAX_EVENT_PAGES = 25;
 
 async function readExistingRelayKeys(sessionId, { targetPath = process.cwd() } = {}) {
   const knownKeys = new Set();
@@ -82,6 +84,94 @@ function markPostKillEvent(event = {}) {
   };
 }
 
+function normalizePositiveInteger(value, fallbackValue) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallbackValue;
+  }
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return fallbackValue;
+  }
+  return Math.floor(normalized);
+}
+
+async function pollSessionEventPages({
+  sessionId,
+  targetPath,
+  since,
+  _pollEvents,
+  limit,
+  maxPages,
+  forceCircuitProbe = false,
+}) {
+  const normalizedLimit = Math.max(
+    1,
+    Math.min(DEFAULT_EVENT_PAGE_LIMIT, normalizePositiveInteger(limit, DEFAULT_EVENT_PAGE_LIMIT)),
+  );
+  const normalizedMaxPages = Math.max(
+    1,
+    Math.min(100, normalizePositiveInteger(maxPages, DEFAULT_MAX_EVENT_PAGES)),
+  );
+  const events = [];
+  let cursor = typeof since === "string" && since.trim() ? since.trim() : null;
+  let reason = "";
+  let pageCount = 0;
+
+  for (let page = 0; page < normalizedMaxPages; page += 1) {
+    const result = await _pollEvents(sessionId, {
+      targetPath,
+      since: cursor,
+      limit: normalizedLimit,
+      forceCircuitProbe,
+    });
+    pageCount += 1;
+    if (!result?.ok) {
+      return {
+        ok: events.length > 0,
+        reason: result?.reason || "poll_failed",
+        events,
+        cursor,
+        pageCount,
+        complete: false,
+        truncated: events.length > 0,
+      };
+    }
+
+    const pageEvents = Array.isArray(result.events) ? result.events : [];
+    events.push(...pageEvents);
+    const nextCursor =
+      typeof result.cursor === "string" && result.cursor.trim() ? result.cursor.trim() : cursor;
+    const progressed = nextCursor && nextCursor !== cursor;
+    cursor = nextCursor || cursor;
+
+    if (pageEvents.length < normalizedLimit) {
+      return {
+        ok: true,
+        reason: "",
+        events,
+        cursor,
+        pageCount,
+        complete: true,
+        truncated: false,
+      };
+    }
+    if (!progressed) {
+      reason = "cursor_not_advanced";
+      break;
+    }
+  }
+
+  return {
+    ok: events.length > 0,
+    reason: reason || "max_event_pages_reached",
+    events,
+    cursor,
+    pageCount,
+    complete: false,
+    truncated: true,
+  };
+}
+
 /**
  * Fetch new human messages for a session, append them to the local
  * stream, and advance the persisted cursor. Returns a structured
@@ -106,6 +196,8 @@ export async function hydrateSessionFromRemote({
   _append = appendToStream,
   _ensureLocalSession = ensureLocalSessionShell,
   probeOpenCircuit = true,
+  eventPageLimit = DEFAULT_EVENT_PAGE_LIMIT,
+  maxEventPages = DEFAULT_MAX_EVENT_PAGES,
 } = {}) {
   if (!sessionId || typeof sessionId !== "string") {
     return {
@@ -136,7 +228,14 @@ export async function hydrateSessionFromRemote({
   // events poll is heavy.
   let [humanResult, eventsResult] = await Promise.all([
     _poll(sessionId, { targetPath, since: humanCursor }),
-    _pollEvents(sessionId, { targetPath, since: eventsCursor }),
+    pollSessionEventPages({
+      sessionId,
+      targetPath,
+      since: eventsCursor,
+      _pollEvents,
+      limit: eventPageLimit,
+      maxPages: maxEventPages,
+    }),
   ]);
 
   if (
@@ -146,7 +245,15 @@ export async function hydrateSessionFromRemote({
   ) {
     [humanResult, eventsResult] = await Promise.all([
       _poll(sessionId, { targetPath, since: humanCursor, forceCircuitProbe: true }),
-      _pollEvents(sessionId, { targetPath, since: eventsCursor, forceCircuitProbe: true }),
+      pollSessionEventPages({
+        sessionId,
+        targetPath,
+        since: eventsCursor,
+        _pollEvents,
+        limit: eventPageLimit,
+        maxPages: maxEventPages,
+        forceCircuitProbe: true,
+      }),
     ]);
   }
 
@@ -212,7 +319,7 @@ export async function hydrateSessionFromRemote({
       : newEvents;
   for (const event of appendEvents) {
     try {
-      await _append(sessionId, event, { targetPath });
+      await _append(sessionId, event, { targetPath, syncRemote: false });
       relayed += 1;
       addSessionEventIdentityKeys(successfulRelayKeys, event);
     } catch {
@@ -246,6 +353,10 @@ export async function hydrateSessionFromRemote({
     eventsRelayed: (eventsResult?.events || []).length,
     eventsCursor:
       typeof eventsResult?.cursor === "string" ? eventsResult.cursor : eventsCursor || null,
+    eventsPageCount: Number(eventsResult?.pageCount || 0),
+    eventsBackfillComplete: Boolean(eventsResult?.complete !== false),
+    eventsBackfillTruncated: Boolean(eventsResult?.truncated),
+    eventsBackfillReason: eventsResult?.complete === false ? eventsResult?.reason || "" : "",
     materializedLocalSession,
     localAppendComplete: humanCursorSafe && eventsCursorSafe,
     remoteStatus: remoteStatus || null,

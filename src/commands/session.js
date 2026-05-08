@@ -59,6 +59,7 @@ import { readSessionPreview } from "../session/preview.js";
 import {
   listSessionsFromApi,
   probeSessionAccess,
+  pollSessionEventsBefore,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
 } from "../session/sync.js";
@@ -1502,10 +1503,16 @@ export function registerSessionCommand(program) {
       const emitJson = shouldEmitJson(options, command);
 
       let hydration = null;
+      let remoteTail = null;
       if (options.remote) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
+        });
+        remoteTail = await pollSessionEventsBefore(normalizedSessionId, {
+          targetPath,
+          limit: tail,
+          timeoutMs: 15_000,
         });
         if (!emitJson) {
           if (hydration.ok) {
@@ -1514,6 +1521,13 @@ export function registerSessionCommand(program) {
                 `Hydrated from remote: relayed=${hydration.relayed} dropped=${hydration.dropped}.`,
               ),
             );
+            if (hydration.eventsBackfillComplete === false) {
+              console.log(
+                pc.yellow(
+                  `Remote backfill still has more pages (${hydration.eventsBackfillReason || "incomplete"}); latest tail was fetched directly.`,
+                ),
+              );
+            }
           } else {
             console.log(
               pc.yellow(
@@ -1529,7 +1543,30 @@ export function registerSessionCommand(program) {
           targetPath,
           tail: 0,
         });
-        const events = dedupeSessionEvents(allEvents).slice(-tail);
+        const displayEvents = [...allEvents];
+        if (remoteTail?.ok && Array.isArray(remoteTail.events) && remoteTail.events.length > 0) {
+          const knownKeys = new Set();
+          for (const event of allEvents) {
+            addSessionEventIdentityKeys(knownKeys, event);
+          }
+          for (const event of remoteTail.events) {
+            if (sessionEventHasKnownIdentity(event, knownKeys)) {
+              continue;
+            }
+            try {
+              const appended = await appendToStream(normalizedSessionId, event, {
+                targetPath,
+                syncRemote: false,
+              });
+              displayEvents.push(appended);
+              addSessionEventIdentityKeys(knownKeys, appended);
+            } catch {
+              displayEvents.push(event);
+              addSessionEventIdentityKeys(knownKeys, event);
+            }
+          }
+        }
+        const events = dedupeSessionEvents(displayEvents).slice(-tail);
         const payload = {
           command: "session read",
           targetPath,
@@ -1537,7 +1574,19 @@ export function registerSessionCommand(program) {
           tail,
           count: events.length,
           events,
-          remote: hydration,
+          remote: hydration
+            ? {
+                ...hydration,
+                tailProbe: remoteTail
+                  ? {
+                      ok: Boolean(remoteTail.ok),
+                      reason: remoteTail.reason || "",
+                      count: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
+                      cursor: remoteTail.cursor || null,
+                    }
+                  : null,
+              }
+            : hydration,
         };
         if (emitJson) {
           console.log(JSON.stringify(payload, null, 2));
