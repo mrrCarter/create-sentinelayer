@@ -54,7 +54,7 @@ runs:
 
     - name: Execute pinned Omar action
       id: omar
-      uses: mrrCarter/sentinelayer-v1-action@14ca51c75ca81fdb6e6b7668d417d6a5abc39018
+      uses: mrrCarter/sentinelayer-v1-action@b13504565105b2496c5b1dbb7a3e9bf914c2a9f8
       with:
         github_token: ${{ inputs.github_token }}
         sentinelayer_token: ${{ inputs.sentinelayer_token }}

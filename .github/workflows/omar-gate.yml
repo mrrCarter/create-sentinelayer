@@ -449,7 +449,7 @@ jobs:
           OMAR_P3: ${{ steps.omar.outputs.p3_count || '0' }}
         run: |
           set -euo pipefail
-          if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9-]{8,64}$'; then
+          if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9_-]{8,128}$'; then
             echo "::error::Invalid Omar run_id output: ${OMAR_RUN_ID}"
             exit 1
           fi
