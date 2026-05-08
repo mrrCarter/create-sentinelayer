@@ -2316,7 +2316,7 @@ jobs:
           fi
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@e6491aa0bad0f4117c6834038fabb24f7dd9863c
+        uses: mrrCarter/sentinelayer-v1-action@b13504565105b2496c5b1dbb7a3e9bf914c2a9f8
         with:
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
