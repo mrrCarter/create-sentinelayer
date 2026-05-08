@@ -325,6 +325,68 @@ test("hydrateSessionFromRemote: merges human + agent events from both pollers (c
   }
 });
 
+test("hydrateSessionFromRemote: walks durable event pages before rendering tail", async () => {
+  const root = await makeTempRepo();
+  try {
+    const eventPollCalls = [];
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "long-room",
+      targetPath: root,
+      eventPageLimit: 2,
+      maxEventPages: 5,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async (_sessionId, options) => {
+        eventPollCalls.push(options);
+        if (!options.since) {
+          return {
+            ok: true,
+            events: [
+              { event: "session_message", cursor: "e-1", payload: { message: "page 1a" } },
+              { event: "session_message", cursor: "e-2", payload: { message: "page 1b" } },
+            ],
+            cursor: "e-2",
+          };
+        }
+        assert.equal(options.since, "e-2");
+        return {
+          ok: true,
+          events: [
+            { event: "session_message", cursor: "e-3", payload: { message: "page 2 latest" } },
+          ],
+          cursor: "e-3",
+        };
+      },
+      _append: async (_sessionId, event, options) => {
+        appended.push({ event, options });
+        return event;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 3);
+    assert.equal(result.eventsRelayed, 3);
+    assert.equal(result.eventsCursor, "e-3");
+    assert.equal(result.eventsPageCount, 2);
+    assert.equal(result.eventsBackfillComplete, true);
+    assert.equal(result.eventsBackfillTruncated, false);
+    assert.deepEqual(
+      eventPollCalls.map((call) => call.since || null),
+      [null, "e-2"],
+    );
+    assert.deepEqual(
+      appended.map((entry) => entry.event.payload.message),
+      ["page 1a", "page 1b", "page 2 latest"],
+    );
+    assert.deepEqual(
+      appended.map((entry) => entry.options?.syncRemote),
+      [false, false, false],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("hydrateSessionFromRemote: dedups events that appear in both pollers", async () => {
   const root = await makeTempRepo();
   try {

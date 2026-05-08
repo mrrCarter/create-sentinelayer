@@ -14,6 +14,7 @@ const SESSION_INGEST_LIMIT_PER_MINUTE = 500;
 const HUMAN_MESSAGE_LIMIT_PER_MINUTE = 10;
 const HUMAN_MESSAGE_MAX_LENGTH = 2_000;
 const HUMAN_MESSAGE_FETCH_LIMIT = 50;
+const SESSION_EVENT_FETCH_LIMIT = 200;
 
 // Audit §2.9: crash-recovery contract for in-memory circuit state.
 // Persist outbound/inbound circuit state to disk so a process restart
@@ -218,6 +219,39 @@ function normalizePositiveInteger(value, fallbackValue) {
     return fallbackValue;
   }
   return Math.floor(normalized);
+}
+
+function eventTimestampMs(event = {}) {
+  for (const key of ["ts", "timestamp", "createdAt", "at"]) {
+    const epoch = Date.parse(normalizeString(event?.[key]));
+    if (Number.isFinite(epoch)) {
+      return epoch;
+    }
+  }
+  return 0;
+}
+
+function eventSequenceNumber(event = {}) {
+  for (const key of ["sequenceId", "sequence_id", "sequence"]) {
+    const value = Number(event?.[key]);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function chronologicalSessionEvents(events = []) {
+  return (Array.isArray(events) ? events : [])
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => {
+      const timeDiff = eventTimestampMs(left.event) - eventTimestampMs(right.event);
+      if (timeDiff !== 0) return timeDiff;
+      const sequenceDiff = eventSequenceNumber(left.event) - eventSequenceNumber(right.event);
+      if (sequenceDiff !== 0) return sequenceDiff;
+      return left.index - right.index;
+    })
+    .map((entry) => entry.event);
 }
 
 // Session-apiUrl allowlist. A session file is an untrusted input: if an
@@ -525,7 +559,11 @@ export async function syncSessionEventToApi(
     };
   }
 
-  if (event?.payload?.relayedFromApi) {
+  if (
+    event?.payload?.relayedFromApi ||
+    normalizeString(event?.cursor) ||
+    normalizeString(event?.sequenceId || event?.sequence_id)
+  ) {
     return { synced: false, reason: "relay_event_skip" };
   }
 
@@ -1018,7 +1056,10 @@ export async function pollSessionEvents(
   if (normalizedSince) {
     query.set("after", normalizedSince);
   }
-  query.set("limit", String(Math.max(1, Math.min(200, normalizePositiveInteger(limit, 200)))));
+  query.set(
+    "limit",
+    String(Math.max(1, Math.min(SESSION_EVENT_FETCH_LIMIT, normalizePositiveInteger(limit, SESSION_EVENT_FETCH_LIMIT))))
+  );
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events?${query.toString()}`;
 
   try {
@@ -1067,6 +1108,131 @@ export async function pollSessionEvents(
       reason: normalizeString(error?.message) || "poll_failed",
       events: [],
       cursor: normalizedSince || null,
+    };
+  }
+}
+
+/**
+ * Poll the latest durable session events page via the reverse-history endpoint.
+ *
+ * This powers `sl session read --remote --tail`: a forward cursor can be many
+ * pages behind in long rooms, but a tail read must show the latest messages now.
+ * The API returns newest-first for `/events/before`; callers get chronological
+ * order so appending/displaying matches the local NDJSON stream.
+ */
+export async function pollSessionEventsBefore(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    beforeSequence = null,
+    limit = 50,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    forceCircuitProbe = false,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return {
+      ok: false,
+      reason: "invalid_session_id",
+      events: [],
+      cursor: null,
+      beforeSequence: null,
+    };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      events: [],
+      cursor: null,
+      beforeSequence: null,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "no_session",
+      events: [],
+      cursor: null,
+      beforeSequence: null,
+    };
+  }
+  if (!session || !session.token) {
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      events: [],
+      cursor: null,
+      beforeSequence: null,
+    };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const query = new URLSearchParams();
+  const normalizedBeforeSequence = Number(beforeSequence);
+  if (Number.isFinite(normalizedBeforeSequence) && normalizedBeforeSequence > 0) {
+    query.set("beforeSequence", String(Math.floor(normalizedBeforeSequence)));
+  }
+  query.set(
+    "limit",
+    String(Math.max(1, Math.min(SESSION_EVENT_FETCH_LIMIT, normalizePositiveInteger(limit, 50))))
+  );
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events/before?${query.toString()}`;
+
+  try {
+    const response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        events: [],
+        cursor: null,
+        beforeSequence: Number.isFinite(normalizedBeforeSequence) ? normalizedBeforeSequence : null,
+      };
+    }
+    const payload = await response.json().catch(() => ({}));
+    recordCircuitSuccess(inboundCircuit);
+
+    const events = chronologicalSessionEvents(payload?.events || []);
+    const lastEvent = events[events.length - 1] || null;
+    const firstEvent = events[0] || null;
+    return {
+      ok: true,
+      reason: "",
+      events,
+      cursor: normalizeString(lastEvent?.cursor) || null,
+      beforeSequence: eventSequenceNumber(firstEvent) || null,
+    };
+  } catch (error) {
+    recordCircuitFailure(inboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "poll_failed",
+      events: [],
+      cursor: null,
+      beforeSequence: Number.isFinite(normalizedBeforeSequence) ? normalizedBeforeSequence : null,
     };
   }
 }

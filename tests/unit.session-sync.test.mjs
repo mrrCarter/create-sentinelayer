@@ -5,6 +5,7 @@ import {
   __resetAutoGrantCacheForTests,
   pollHumanMessages,
   pollSessionEvents,
+  pollSessionEventsBefore,
   resetSessionSyncStateForTests,
   syncSessionErrorToApi,
   syncSessionEventToApi,
@@ -66,6 +67,39 @@ test("Unit session sync: relay events from API are not re-synced outbound", asyn
     {
       resolveAuthSession: async () => ({
         token: "tok_test_123",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async () => {
+        called = true;
+        return { ok: true, status: 200 };
+      },
+    }
+  );
+  assert.equal(result.synced, false);
+  assert.equal(result.reason, "relay_event_skip");
+  assert.equal(called, false);
+});
+
+test("Unit session sync: durable API events with cursor are not re-synced outbound", async () => {
+  resetSessionSyncStateForTests();
+  let called = false;
+  const apiToken = "unit-test-token";
+  const result = await syncSessionEventToApi(
+    "sess-1",
+    {
+      event: "session_message",
+      sessionId: "sess-1",
+      cursor: "1778224296063:00001ab2",
+      eventId: "evt-api",
+      sequenceId: 6834,
+      agent: { id: "claude-verifier", model: "claude-opus-4-7" },
+      payload: {
+        message: "remote durable event",
+      },
+    },
+    {
+      resolveAuthSession: async () => ({
+        token: apiToken,
         apiUrl: "https://api.sentinelayer.com",
       }),
       fetchImpl: async () => {
@@ -322,6 +356,60 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");
+});
+
+test("Unit session sync: pollSessionEventsBefore fetches latest tail chronologically", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const apiToken = "unit-test-token";
+  const result = await pollSessionEventsBefore("sess-events", {
+    beforeSequence: 100,
+    limit: 500,
+    resolveAuthSession: async () => ({
+      token: apiToken,
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          events: [
+            {
+              cursor: "cursor-99",
+              sequenceId: 99,
+              ts: "2026-05-08T06:00:02.000Z",
+              event: "session_message",
+              payload: { message: "newest" },
+            },
+            {
+              cursor: "cursor-98",
+              sequenceId: 98,
+              ts: "2026-05-08T06:00:01.000Z",
+              event: "session_message",
+              payload: { message: "older" },
+            },
+          ],
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_450_000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.cursor, "cursor-99");
+  assert.equal(result.events.length, 2);
+  assert.deepEqual(
+    result.events.map((event) => event.payload.message),
+    ["older", "newest"],
+  );
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-events/events/before?beforeSequence=100&limit=200"
+  );
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.headers.Authorization, `Bearer ${apiToken}`);
 });
 
 test("Unit session sync: pollSessionEvents reuses inbound circuit breaker", async () => {
