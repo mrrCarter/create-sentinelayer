@@ -448,11 +448,17 @@ export async function writeMp4FromPngFrames(page, frames, outputPath, viewport =
 
     const canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext("2d", { alpha: false });
-    const bitmaps = await Promise.all(payloadFrames.map(async (item) => {
-      const imageResponse = await fetch("data:image/png;base64," + item.pngBase64);
-      const imageBlob = await imageResponse.blob();
-      return createImageBitmap(imageBlob);
-    }));
+    const pngBlobFromBase64 = (pngBase64) => {
+      const binary = atob(pngBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new Blob([bytes], { type: "image/png" });
+    };
+    const bitmaps = await Promise.all(
+      payloadFrames.map((item) => createImageBitmap(pngBlobFromBase64(item.pngBase64)))
+    );
     for (let index = 0; index < payloadFrames.length; index += 1) {
       const bitmap = bitmaps[index];
       context.fillStyle = "#ffffff";
