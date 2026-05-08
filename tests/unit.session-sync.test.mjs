@@ -91,6 +91,7 @@ test("Unit session sync: durable API events with cursor are not re-synced outbou
       sessionId: "sess-1",
       cursor: "1778224296063:00001ab2",
       eventId: "evt-api",
+      idempotencyToken: "local-idempotency-after-hydrate",
       sequenceId: 6834,
       agent: { id: "claude-verifier", model: "claude-opus-4-7" },
       payload: {
@@ -111,6 +112,38 @@ test("Unit session sync: durable API events with cursor are not re-synced outbou
   assert.equal(result.synced, false);
   assert.equal(result.reason, "relay_event_skip");
   assert.equal(called, false);
+});
+
+test("Unit session sync: local idempotency metadata alone is still synced outbound", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const apiToken = "unit-test-token";
+  const result = await syncSessionEventToApi(
+    "sess-1",
+    {
+      event: "session_message",
+      sessionId: "sess-1",
+      idempotencyToken: "local-post-agent-idempotency",
+      agent: { id: "codex", model: "gpt-5" },
+      payload: {
+        message: "local post-agent event",
+      },
+    },
+    {
+      resolveAuthSession: async () => ({
+        token: apiToken,
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        return { ok: true, status: 200 };
+      },
+    }
+  );
+  assert.equal(result.synced, true);
+  assert.equal(calls.length, 1);
+  const payload = JSON.parse(calls[0].options.body);
+  assert.equal(payload.event.idempotencyToken, "local-post-agent-idempotency");
 });
 
 test("Unit session sync: syncSessionMetadataToApi posts metadata payload", async () => {

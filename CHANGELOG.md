@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.1...v0.9.2) (2026-05-08)
+
+
+### Bug Fixes
+
+* **session:** fix remote session tail hydration for long Senti rooms. `sl session read --remote` now walks durable `/events` pages, probes `/events/before` for the latest displayed tail, and appends API-sourced events locally with `syncRemote: false` so CLI pollers do not re-post remote messages back to the API.
+* **session:** preserve local `post-agent` idempotency behavior while blocking durable API relay loops. Events with only local idempotency metadata still sync; hydrated events carrying API durable markers such as `cursor` or `sequenceId` are treated as remote relays and skipped outbound.
+
+
+### Release Plumbing
+
+* **release:** publish the session-tail and remote-relay fixes to npm `latest`. The repository had advanced to `0.9.1` while npm `latest` still resolved to `0.9.0`; this patch re-aligns package metadata, release-please manifest state, and the public install path.
+
 ## [0.9.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.0...v0.9.1) (2026-04-29)
 
 
