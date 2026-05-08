@@ -75,6 +75,14 @@ test("circuit-breaker-check: suppressed when opossum / cockatiel is in scope", a
   }
 });
 
+test("circuit-breaker-check: does not classify timeout-audit scanner regexes as runtime outbound calls", async () => {
+  const findings = await runCircuitBreakerCheck({
+    rootPath: process.cwd(),
+    files: ["src/agents/backend/tools/timeout-audit.js"],
+  });
+  assert.equal(findings.length, 0);
+});
+
 test("retry-audit: flags for-loop retry with constant sleep", async () => {
   const root = await makeTempRepo();
   try {

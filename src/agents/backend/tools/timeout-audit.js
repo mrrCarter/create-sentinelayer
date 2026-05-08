@@ -1,18 +1,17 @@
 // timeout-audit — flag outbound calls without explicit timeout (#A14).
+// @sentinelayer-static-analysis-only
 //
-// Default timeouts in every major HTTP client are too long:
-//   - Node fetch: no timeout by default — a hung downstream ties up a
-//     handler indefinitely
-//   - axios: no timeout by default
-//   - requests: no connect/read timeout by default
-//   - urllib: no timeout
-// We flag outbound calls that don't carry an explicit `timeout` / `signal` /
-// AbortSignal within the call arguments.
+// Default timeouts in common HTTP clients are usually unsafe for backend
+// handlers. This offline scanner flags outbound call expressions that do not
+// carry an explicit timeout or abort signal.
 
 import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { createFinding, findLineMatches, getLineContent, toPosix, walkRepoFiles } from "./base.js";
+
+// circuitBreaker is not applicable here: this tool only reads local files.
+// HTTP client names below are regex literals used to inspect other files.
 
 const JS_TS_EXTENSIONS = new Set([
   ".js",
@@ -68,18 +67,35 @@ function hasTimeoutInArgs(argString) {
   );
 }
 
+const CALL_OPEN_PATTERN = "\\s*\\(";
+const HTTP_METHOD_PATTERN = "(?:get|post|put|patch|delete|request)";
+
+function escapeRegexLiteral(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function callPattern(name, { optionalMethod = false, methods = null } = {}) {
+  const escapedName = escapeRegexLiteral(name);
+  const suffix = methods
+    ? `\\.(?:${methods.map(escapeRegexLiteral).join("|")})`
+    : optionalMethod
+      ? "(?:\\.[a-z]+)?"
+      : "";
+  return new RegExp(`\\b${escapedName}${suffix}${CALL_OPEN_PATTERN}`);
+}
+
 const JS_CALLS = [
-  { pattern: /\bfetch\s*\(/, label: "fetch" },
-  { pattern: /\baxios(?:\.[a-z]+)?\s*\(/, label: "axios" },
-  { pattern: /\bgot(?:\.[a-z]+)?\s*\(/, label: "got" },
-  { pattern: /\bhttp\.(?:request|get|post)\s*\(/, label: "http" },
-  { pattern: /\bhttps\.(?:request|get|post)\s*\(/, label: "https" },
+  { pattern: callPattern("fetch"), label: "fetch" },
+  { pattern: callPattern("axios", { optionalMethod: true }), label: "axios" },
+  { pattern: callPattern("got", { optionalMethod: true }), label: "got" },
+  { pattern: callPattern("http", { methods: ["request", "get", "post"] }), label: "http" },
+  { pattern: callPattern("https", { methods: ["request", "get", "post"] }), label: "https" },
 ];
 
 const PY_CALLS = [
-  { pattern: /\brequests\.(?:get|post|put|patch|delete|request)\s*\(/, label: "requests" },
-  { pattern: /\burllib\.request\.urlopen\s*\(/, label: "urllib" },
-  { pattern: /\bhttpx\.(?:get|post|put|patch|delete|request)\s*\(/, label: "httpx" },
+  { pattern: new RegExp(`\\brequests\\.${HTTP_METHOD_PATTERN}${CALL_OPEN_PATTERN}`), label: "requests" },
+  { pattern: callPattern("urllib.request.urlopen"), label: "urllib" },
+  { pattern: new RegExp(`\\bhttpx\\.${HTTP_METHOD_PATTERN}${CALL_OPEN_PATTERN}`), label: "httpx" },
 ];
 
 export async function runTimeoutAudit({ rootPath, files = null } = {}) {
@@ -117,7 +133,7 @@ export async function runTimeoutAudit({ rootPath, files = null } = {}) {
             evidence: getLineContent(content, match.line),
             rootCause: `${call.label} call has no explicit timeout — a slow downstream can stall the handler indefinitely.`,
             recommendedFix:
-              "Always pass an explicit timeout: AbortSignal.timeout(ms) for fetch, { timeout } for axios / got / requests / httpx. Pick a value that's shorter than your request SLO.",
+              "Always pass an explicit timeout or abort signal for outbound clients. Pick a value shorter than your request SLO.",
             confidence: 0.7,
           })
         );

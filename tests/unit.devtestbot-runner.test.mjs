@@ -31,6 +31,16 @@ test("devTestBot runner locates Playwright ffmpeg in Linux CI cache layout", asy
   }
 });
 
+test("devTestBot runner decodes MP4 frame data URLs without browser fetch", async () => {
+  const source = await fs.readFile(
+    new URL("../src/agents/devtestbot/runner.js", import.meta.url),
+    "utf-8"
+  );
+  assert.match(source, /pngBlobFromBase64/);
+  assert.equal(source.includes('fetch("data:image/png;base64,'), false);
+  assert.match(source, /createImageBitmap\(pngBlobFromBase64\(item\.pngBase64\)\)/);
+});
+
 test("devTestBot runner records browser capture lanes against a local fixture", { timeout: 180000 }, async () => {
   assert.ok(resolvePlaywrightChromiumExecutable(), "Playwright Chromium must be installed");
   assert.ok(findPlaywrightFfmpegExecutable(), "Playwright ffmpeg must be installed for MP4 artifacts");
