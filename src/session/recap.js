@@ -198,6 +198,35 @@ function buildRecapText({
   ).trim();
 }
 
+// Multi-agent session etiquette + read-path rules surfaced in the
+// context_briefing payload an agent receives on first join. Web
+// renders this as markdown (see sentinelayer-web Session.tsx
+// SessionMessage), so headers/lists/inline code are intentional.
+//
+// Keep this short and operationally actionable. Anything that's
+// purely doctrinal belongs in AGENTS.md, not the per-join briefing.
+const AGENT_JOIN_RULES = [
+  "**Welcome to this session.** Quick rules so we coordinate cleanly:",
+  "",
+  "**Reading the room** — When you join, the recap above summarizes activity since the last quiet stretch. To read further back, run `sl session read --remote --tail 50 --json` (bump `--tail` if you need more). Do this BEFORE responding so you don't repeat questions or miss a lock-and-claim someone else already opened.",
+  "",
+  "**Polling cadence** — Poll new events at most once per 60s (`sl session listen` or `sl session read --remote --tail N`). More frequent than that wastes budget and can hit per-user rate limits. Less frequent than ~5min and peers may think you went idle.",
+  "",
+  "**Writing back** — You can use **markdown**: bold, italic, lists, fenced code, and `inline code`. The web dashboard renders it. Plain text also works. Keep posts terse and technical — link to the work, don't recap it.",
+  "",
+  "**Coordination** — Lock-and-claim before you start a scope another agent could be on. If you push back on someone's approach, cite the specific assumption you disagree with and the file:line evidence.",
+  "",
+  "**Stop conditions** — If the human asks you to stop, stop. If 60+ minutes of total session silence, stop polling.",
+].join("\n");
+
+function buildAgentJoinBriefingText({ recap = "", forAgent = "" } = {}) {
+  const trimmedRecap = normalizeString(recap);
+  const trimmedAgent = normalizeString(forAgent);
+  const greeting = trimmedAgent ? `**${trimmedAgent}** joined. ${trimmedRecap}` : trimmedRecap;
+  const recapBlock = greeting || "Welcome — no prior session activity to summarize yet.";
+  return `${recapBlock}\n\n---\n\n${AGENT_JOIN_RULES}`;
+}
+
 function buildPeriodicText(recap = {}) {
   const summary = recap.summary && typeof recap.summary === "object" ? recap.summary : {};
   const elapsedMinutes = Number(summary.elapsedMinutes || 0);
@@ -303,6 +332,7 @@ export async function emitContextBriefing(
     maxEvents = DEFAULT_RECAP_MAX_EVENTS,
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
+    includeJoinRules = true,
   } = {}
 ) {
   const recap = await buildSessionRecap(sessionId, {
@@ -311,6 +341,9 @@ export async function emitContextBriefing(
     targetPath,
     nowIso,
   });
+  const briefingMessage = includeJoinRules
+    ? buildAgentJoinBriefingText({ recap: recap.text, forAgent: forAgentId })
+    : recap.text;
   const event = createAgentEvent({
     event: "context_briefing",
     agentId: SENTI_AGENT_ID,
@@ -319,7 +352,9 @@ export async function emitContextBriefing(
     ts: recap.generatedAt,
     payload: {
       forAgent: normalizeString(forAgentId) || null,
+      message: briefingMessage,
       recap: recap.text,
+      rules: includeJoinRules ? AGENT_JOIN_RULES : null,
       ephemeral: true,
       style: RECAP_STYLE,
       generatedAt: recap.generatedAt,

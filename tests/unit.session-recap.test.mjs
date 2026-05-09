@@ -65,6 +65,74 @@ test("Unit session recap: joining agent receives context briefing within 2 secon
   }
 });
 
+test("Unit session recap: agent-join briefing includes operational rules", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-rules-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const joined = await registerAgent(session.sessionId, {
+      agentId: "claude-verifier",
+      model: "claude-opus-4-7",
+      role: "reviewer",
+      targetPath: tempRoot,
+    });
+
+    const events = await readStream(session.sessionId, { tail: 50, targetPath: tempRoot });
+    const briefing = events.find(
+      (event) =>
+        event.event === "context_briefing" &&
+        event.agent?.id === "senti" &&
+        event.payload?.forAgent === joined.agentId,
+    );
+    assert.ok(briefing);
+
+    const message = String(briefing.payload.message || "");
+    const rules = String(briefing.payload.rules || "");
+
+    // payload.message is the rendered briefing the web reads first via payloadText.
+    assert.ok(message.length > 0, "briefing payload.message must be non-empty");
+    // Rules block is present in both the message and the standalone rules field.
+    assert.match(message, /Reading the room/);
+    assert.match(message, /Polling cadence/);
+    assert.match(message, /Writing back/);
+    assert.match(message, /markdown/i);
+    assert.match(message, /Stop conditions/);
+    assert.match(rules, /Reading the room/);
+    assert.match(rules, /sl session read --remote --tail/);
+    // Recap text is preserved separately for clients that want just the activity summary.
+    assert.match(String(briefing.payload.recap || ""), /(While you were away|no active peers)/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: includeJoinRules=false omits rules from briefing", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-norules-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    // Register without auto-emitting; emit manually with includeJoinRules: false.
+    const { emitContextBriefing } = await import("../src/session/recap.js");
+    const result = await emitContextBriefing(session.sessionId, {
+      forAgentId: "test-agent",
+      targetPath: tempRoot,
+      includeJoinRules: false,
+    });
+
+    const message = String(result.event.payload.message || "");
+    const rules = result.event.payload.rules;
+
+    assert.equal(rules, null, "rules field should be null when includeJoinRules=false");
+    assert.equal(
+      /Reading the room/.test(message),
+      false,
+      "message should not include rules block when opted out",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: periodic recap emits while active and stops after inactivity", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-periodic-"));
   let emitter = null;
