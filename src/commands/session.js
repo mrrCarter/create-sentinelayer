@@ -505,56 +505,16 @@ function normalizeAgentId(value, fallbackValue = "cli-user") {
   return normalized || fallbackValue;
 }
 
-// Derive a stable, human-friendly fallback agent id from the active auth
-// session — `human-<github_username>` if logged in via GitHub, else
-// `human-<email-localpart>` as a last resort. We resolve this lazily and
-// cache per process so repeated `sl session say` calls don't churn auth.
-//
-// Carter's complaint: "we aren't auto naming these agents per joining,
-// we need to figure out a fingerprint for them somehow.. maybe at joining
-// we ask for name?" — auth-derived names are the cleanest deterministic
-// fingerprint we already have. Fall through to "cli-user" only if the
-// CLI is genuinely unauthenticated (CI fixture, fresh checkout).
-let _cachedAuthAgentId = undefined; // undefined = not yet resolved
-async function _resolveAuthAgentId(targetPath) {
-  if (_cachedAuthAgentId !== undefined) return _cachedAuthAgentId;
-  try {
-    const auth = await resolveActiveAuthSession({
-      cwd: targetPath || process.cwd(),
-      env: process.env,
-      autoRotate: false,
-    });
-    const username = normalizeString(auth?.user?.githubUsername).toLowerCase();
-    if (username) {
-      _cachedAuthAgentId = `human-${username.replace(/[^a-z0-9._-]+/g, "-")}`;
-      return _cachedAuthAgentId;
-    }
-    const email = normalizeString(auth?.user?.email).toLowerCase();
-    if (email) {
-      const local = email.split("@")[0].replace(/[^a-z0-9._-]+/g, "-");
-      if (local) {
-        _cachedAuthAgentId = `human-${local}`;
-        return _cachedAuthAgentId;
-      }
-    }
-  } catch {
-    /* unauthenticated → fall through */
-  }
-  _cachedAuthAgentId = "";
-  return "";
+// Preserve the literal default identity for `session say`. This command is
+// often used by agents as a low-friction relay; silently rewriting the default
+// `cli-user` to the authenticated human makes a forgotten --agent flag look
+// like the workspace owner authored the message.
+export function resolveSessionSayAgentId(value) {
+  return normalizeAgentId(value, "cli-user");
 }
 
-// Wrapper that prefers the auth-derived id over the literal `cli-user`
-// placeholder when the caller didn't pass --name/--agent. Callers that
-// supplied a name keep round-tripping verbatim.
-async function defaultAgentId(value, targetPath) {
-  const explicit = normalizeString(value);
-  if (explicit && explicit.toLowerCase() !== "cli-user") {
-    return normalizeAgentId(value, "cli-user");
-  }
-  const authId = await _resolveAuthAgentId(targetPath);
-  if (authId) return authId;
-  return normalizeAgentId(value, "cli-user");
+async function defaultAgentId(value, _targetPath) {
+  return resolveSessionSayAgentId(value);
 }
 
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {

@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { Command } from "commander";
 
-import { registerSessionCommand } from "../src/commands/session.js";
+import { registerSessionCommand, resolveSessionSayAgentId } from "../src/commands/session.js";
 import { resetSessionSyncStateForTests } from "../src/session/sync.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
@@ -61,6 +61,43 @@ function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
     }
   };
 }
+
+test("Unit session say identity: default placeholder is not rewritten to human auth identity", () => {
+  assert.equal(resolveSessionSayAgentId(undefined), "cli-user");
+  assert.equal(resolveSessionSayAgentId(""), "cli-user");
+  assert.equal(resolveSessionSayAgentId("cli-user"), "cli-user");
+  assert.equal(resolveSessionSayAgentId("Claude Mythos"), "claude-mythos");
+});
+
+test("Unit session say identity: omitted --agent persists cli-user visibly", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-default-"));
+  const restoreEnv = installAuthEnv();
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const output = await runSessionCommand([
+      "session",
+      "say",
+      session.sessionId,
+      "default author should stay placeholder",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.command, "session say");
+    assert.equal(payload.agentId, "cli-user");
+    assert.equal(payload.event.agent.id, "cli-user");
+    assert.equal(payload.event.payload.message, "default author should stay placeholder");
+  } finally {
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("Unit session post-agent: posts canonical agent event and persists only after remote acceptance", async () => {
   resetSessionSyncStateForTests();
