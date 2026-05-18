@@ -8,7 +8,7 @@ import path from "node:path";
 
 import { hydrateSessionFromRemote } from "../src/session/remote-hydrate.js";
 import { appendToStream, readStream } from "../src/session/stream.js";
-import { createSession } from "../src/session/store.js";
+import { createSession, getSession } from "../src/session/store.js";
 import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 
 async function makeTempRepo() {
@@ -578,6 +578,82 @@ test("hydrateSessionFromRemote: skips remote canonical events already present lo
   } finally {
     if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
     else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: refreshes expired local cache before appending remote events", async () => {
+  const root = await makeTempRepo();
+  const oldToken = process.env.SENTINELAYER_TOKEN;
+  const oldApiUrl = process.env.SENTINELAYER_API_URL;
+  const oldSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  const originalFetch = globalThis.fetch;
+  try {
+    process.env.SENTINELAYER_TOKEN = "tok_hydrate_expired";
+    process.env.SENTINELAYER_API_URL = "https://api.sentinelayer.com";
+    delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    await createSession({
+      sessionId: "hydrate-expired-cache",
+      targetPath: root,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+      ttlSeconds: 60,
+    });
+    globalThis.fetch = async (url) => {
+      assert.match(String(url), /\/api\/v1\/sessions/);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sessions: [
+            {
+              sessionId: "hydrate-expired-cache",
+              status: "active",
+              title: "Remote Hydrate",
+              lastInteractionAt: "2026-05-08T10:57:22.160Z",
+            },
+          ],
+        }),
+      };
+    };
+
+    const result = await hydrateSessionFromRemote({
+      sessionId: "hydrate-expired-cache",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            event: "session_message",
+            agent: { id: "claude-verifier", model: "claude-opus" },
+            payload: { message: "remote event after local ttl" },
+            ts: "2026-05-08T10:57:22.160Z",
+            cursor: "hydrate-expired-cursor",
+            sequenceId: 7217,
+          },
+        ],
+        cursor: "hydrate-expired-cursor",
+      }),
+    });
+
+    const events = await readStream("hydrate-expired-cache", { targetPath: root, tail: 20 });
+    const metadata = await getSession("hydrate-expired-cache", { targetPath: root });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 1);
+    assert.equal(result.localAppendComplete, true);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.message, "remote event after local ttl");
+    assert.equal(metadata.title, "Remote Hydrate");
+    assert.ok(Date.parse(metadata.expiresAt) > Date.now());
+  } finally {
+    if (oldToken === undefined) delete process.env.SENTINELAYER_TOKEN;
+    else process.env.SENTINELAYER_TOKEN = oldToken;
+    if (oldApiUrl === undefined) delete process.env.SENTINELAYER_API_URL;
+    else process.env.SENTINELAYER_API_URL = oldApiUrl;
+    if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
+    globalThis.fetch = originalFetch;
     await fsp.rm(root, { recursive: true, force: true });
   }
 });

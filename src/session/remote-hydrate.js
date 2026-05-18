@@ -20,7 +20,12 @@
 
 import { listSessionsFromApi, pollHumanMessages, pollSessionEvents } from "./sync.js";
 import { appendToStream, readStream } from "./stream.js";
-import { createSession, getSession } from "./store.js";
+import {
+  createSession,
+  getSession,
+  isSessionCacheExpired,
+  refreshSessionCacheForRemoteActivity,
+} from "./store.js";
 import { readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 import {
   addSessionEventIdentityKeys,
@@ -42,10 +47,8 @@ async function readExistingRelayKeys(sessionId, { targetPath = process.cwd() } =
 
 async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() } = {}) {
   const existing = await getSession(sessionId, { targetPath });
-  if (existing) {
-    return { materialized: false, session: existing };
-  }
   let remoteStatus = "";
+  let remoteSession = null;
   const remoteList = await listSessionsFromApi({
     targetPath,
     includeArchived: true,
@@ -53,14 +56,40 @@ async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() }
   }).catch(() => null);
   if (remoteList?.ok) {
     const match = (remoteList.sessions || []).find((entry) => entry?.sessionId === sessionId);
+    remoteSession = match || null;
     remoteStatus = String(match?.archiveStatus || match?.status || "").trim().toLowerCase();
+  }
+  if (existing) {
+    const existingStatus = String(existing.status || "").trim().toLowerCase();
+    const locallyClosedByStatus = existingStatus === "expired" || existingStatus === "archived";
+    const remoteAllowsRefresh =
+      ["active", "pending"].includes(remoteStatus) || (!remoteStatus && !locallyClosedByStatus);
+    if (isSessionCacheExpired(existing) && remoteAllowsRefresh) {
+      const refreshed = await refreshSessionCacheForRemoteActivity(sessionId, {
+        targetPath,
+        title: remoteSession?.title || "",
+        lastInteractionAt:
+          remoteSession?.lastInteractionAt ||
+          remoteSession?.lastActivityAt ||
+          remoteSession?.updatedAt ||
+          remoteSession?.createdAt ||
+          "",
+      });
+      return {
+        materialized: false,
+        refreshed: Boolean(refreshed),
+        session: refreshed || existing,
+        remoteStatus,
+      };
+    }
+    return { materialized: false, refreshed: false, session: existing, remoteStatus };
   }
   const created = await createSession({
     targetPath,
     sessionId,
     title: `remote-${String(sessionId).slice(0, 8)}`,
   });
-  return { materialized: true, session: created, remoteStatus };
+  return { materialized: true, refreshed: false, session: created, remoteStatus };
 }
 
 function sourceFullyRelayed(events = [], successfulKeys = new Set()) {

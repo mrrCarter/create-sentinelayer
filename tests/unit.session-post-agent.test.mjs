@@ -183,6 +183,148 @@ test("Unit session post-agent: remote rejection does not write local transcript"
   }
 });
 
+test("Unit session post-agent: refreshes expired local cache after remote acceptance", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-expired-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      sessionId: "remote-expired-cache",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+      ttlSeconds: 60,
+    });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: options.method === "GET" ? 200 : 202,
+        text: async () => "",
+        json: async () => ({ events: [], cursor: null }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "post-agent",
+      session.sessionId,
+      "status: remote accepted before local append",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.refreshedLocalSession, true);
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.options.method === "GET" &&
+          call.url.includes(`/api/v1/sessions/${session.sessionId}/events?limit=1`),
+      ),
+    );
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.message, "status: remote accepted before local append");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session join: refreshes expired local cache after remote verification", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-expired-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      sessionId: "remote-join-expired-cache",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+      ttlSeconds: 60,
+      title: "stale local title",
+    });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            session: {
+              sessionId: session.sessionId,
+              title: "remote title",
+              status: "active",
+              eventCount: 7217,
+              agentCount: 5,
+              lastInteractionAt: "2026-05-09T14:52:11.934Z",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "join",
+      session.sessionId,
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-5",
+      "--role",
+      "coder",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.joined, true);
+    assert.equal(payload.refreshedLocalSession, true);
+    assert.equal(payload.title, "remote title");
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.options.method === "GET" &&
+          call.url.endsWith(`/api/v1/sessions/${session.sessionId}`),
+      ),
+    );
+    assert.ok(calls.filter((call) => call.options.method === "POST").length >= 1);
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    const joinEvent = events.find((event) => event.event === "agent_join");
+    assert.ok(joinEvent);
+    assert.equal(joinEvent.agent.id, "codex");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session post-agent: rejects human and placeholder identities before remote call", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-human-"));

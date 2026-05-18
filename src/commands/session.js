@@ -44,9 +44,11 @@ import {
   createSession,
   DEFAULT_TTL_SECONDS,
   getSession,
+  isSessionCacheExpired,
   listActiveSessions,
   listAllSessions,
   recordSessionProvisionedIdentities,
+  refreshSessionCacheForRemoteActivity,
   updateSessionTitle,
 } from "../session/store.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -330,11 +332,44 @@ function formatRelativeAge(isoTimestamp) {
 
 async function ensureLocalSessionForRemoteCommand(
   sessionId,
-  { targetPath, title = "", skipRemoteProbe = false } = {},
+  { targetPath, title = "", skipRemoteProbe = false, remoteSession = null } = {},
 ) {
   const existing = await getSession(sessionId, { targetPath });
   if (existing) {
-    return { materialized: false, session: existing };
+    if (!isSessionCacheExpired(existing)) {
+      return { materialized: false, refreshed: false, session: existing };
+    }
+    const existingStatus = normalizeString(existing.status).toLowerCase();
+    const locallyClosedByStatus = existingStatus === "expired" || existingStatus === "archived";
+    if (locallyClosedByStatus && !skipRemoteProbe) {
+      throw new Error(
+        `Session '${sessionId}' is ${existingStatus} locally; run \`sl session join ${sessionId}\` to verify remote access before posting.`,
+      );
+    }
+
+    let access = { accessible: Boolean(skipRemoteProbe), reason: "" };
+    if (!skipRemoteProbe) {
+      access = await probeSessionAccess(sessionId, { targetPath }).catch((error) => ({
+        accessible: false,
+        reason: normalizeString(error?.message) || "probe_failed",
+      }));
+    }
+    if (!access?.accessible) {
+      throw new Error(
+        `Session '${sessionId}' is expired locally and remote access failed (${access?.reason || "unknown"}).`,
+      );
+    }
+
+    const refreshed = await refreshSessionCacheForRemoteActivity(sessionId, {
+      targetPath,
+      title,
+      lastInteractionAt:
+        normalizeString(remoteSession?.lastInteractionAt) ||
+        normalizeString(remoteSession?.lastActivityAt) ||
+        normalizeString(remoteSession?.updatedAt) ||
+        normalizeString(remoteSession?.createdAt),
+    });
+    return { materialized: false, refreshed: Boolean(refreshed), session: refreshed || existing };
   }
   // `skipRemoteProbe` is set by callers that have already verified the session
   // via `verifyRemoteSession` (the singleton GET) — re-probing the legacy
@@ -356,7 +391,7 @@ async function ensureLocalSessionForRemoteCommand(
     sessionId,
     title: normalizeString(title) || `remote-${String(sessionId).slice(0, 8)}`,
   });
-  return { materialized: true, session: created };
+  return { materialized: true, refreshed: false, session: created };
 }
 
 async function ensureWorkspaceSession({
@@ -933,6 +968,7 @@ export function registerSessionCommand(program) {
           targetPath,
           title: normalizeString(remoteSession.title),
           skipRemoteProbe: true,
+          remoteSession,
         });
         const payload = {
           command: "session ensure",
@@ -942,6 +978,7 @@ export function registerSessionCommand(program) {
           resumed: true,
           attached: true,
           materializedLocalSession: localSession.materialized,
+          refreshedLocalSession: Boolean(localSession.refreshed),
           verificationSource: verification.source,
           dashboardUrl: buildDashboardUrl(explicitSessionId),
         };
@@ -1145,6 +1182,7 @@ export function registerSessionCommand(program) {
         targetPath,
         title: normalizeString(remoteSession.title),
         skipRemoteProbe: true,
+        remoteSession,
       });
 
       const explicitAgent = normalizeString(options.agent);
@@ -1195,6 +1233,7 @@ export function registerSessionCommand(program) {
         status: joined.status,
         joinedAt: joined.joinedAt,
         materializedLocalSession: localSession.materialized,
+        refreshedLocalSession: Boolean(localSession.refreshed),
         verificationSource: verification.source,
         eventCount: Number.isFinite(eventCount) ? eventCount : 0,
         agentCount: Number.isFinite(agentCount) ? agentCount : 0,
@@ -1277,6 +1316,7 @@ export function registerSessionCommand(program) {
         agentId,
         event: persisted,
         materializedLocalSession: localSession.materialized,
+        refreshedLocalSession: Boolean(localSession.refreshed),
         remoteSync: remoteSync || undefined,
       };
       if (shouldEmitJson(options, command)) {
@@ -1364,6 +1404,7 @@ export function registerSessionCommand(program) {
         agentId,
         event: persisted,
         materializedLocalSession: localSession.materialized,
+        refreshedLocalSession: Boolean(localSession.refreshed),
         remoteSync,
       };
       if (shouldEmitJson(options, command)) {

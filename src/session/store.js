@@ -388,7 +388,8 @@ function normalizeMetadata(raw = {}, { sessionId, targetPath, nowIso } = {}) {
 }
 
 function isExpired(metadata, nowIso = new Date().toISOString()) {
-  if (!metadata || normalizeSessionStatus(metadata.status) === SESSION_STATUS_EXPIRED) {
+  const status = normalizeSessionStatus(metadata?.status);
+  if (!metadata || status === SESSION_STATUS_EXPIRED || status === SESSION_STATUS_ARCHIVED) {
     return true;
   }
   const expiryEpoch = Date.parse(normalizeIsoTimestamp(metadata.expiresAt, nowIso));
@@ -397,6 +398,10 @@ function isExpired(metadata, nowIso = new Date().toISOString()) {
     return false;
   }
   return nowEpoch >= expiryEpoch;
+}
+
+export function isSessionCacheExpired(metadata, nowIso = new Date().toISOString()) {
+  return isExpired(metadata, nowIso);
 }
 
 function buildSessionPayload(metadata, paths, nowIso = new Date().toISOString()) {
@@ -522,6 +527,53 @@ export async function updateSessionTitle(
     title: normalizeString(title) || null,
     updatedAt: nowIso,
   };
+  const saved = await saveMetadata(metadata, loaded.paths);
+  return buildSessionPayload(saved, loaded.paths, nowIso);
+}
+
+export async function refreshSessionCacheForRemoteActivity(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    title = "",
+    ttlSeconds = DEFAULT_TTL_SECONDS,
+    lastInteractionAt = "",
+    nowIso = new Date().toISOString(),
+  } = {}
+) {
+  const loaded = await loadMetadata(sessionId, { targetPath });
+  if (!loaded) {
+    return null;
+  }
+  const normalizedTtlSeconds = normalizePositiveInteger(ttlSeconds, DEFAULT_TTL_SECONDS);
+  const remoteInteractionIso = normalizeIsoTimestamp(
+    lastInteractionAt,
+    loaded.metadata.lastInteractionAt || loaded.metadata.createdAt || nowIso
+  );
+  const currentInteractionEpoch = Date.parse(
+    normalizeIsoTimestamp(loaded.metadata.lastInteractionAt, loaded.metadata.createdAt || nowIso)
+  );
+  const remoteInteractionEpoch = Date.parse(remoteInteractionIso);
+  const lastInteractionIso =
+    Number.isFinite(remoteInteractionEpoch) &&
+    (!Number.isFinite(currentInteractionEpoch) || remoteInteractionEpoch > currentInteractionEpoch)
+      ? remoteInteractionIso
+      : normalizeIsoTimestamp(loaded.metadata.lastInteractionAt, nowIso);
+
+  const metadata = {
+    ...loaded.metadata,
+    updatedAt: nowIso,
+    expiresAt: toIsoAfterSeconds(nowIso, normalizedTtlSeconds),
+    ttlSeconds: normalizedTtlSeconds,
+    status: SESSION_STATUS_ACTIVE,
+    expiredAt: null,
+    lastInteractionAt: lastInteractionIso,
+  };
+  const normalizedTitle = normalizeString(title);
+  if (normalizedTitle) {
+    metadata.title = normalizedTitle;
+  }
+
   const saved = await saveMetadata(metadata, loaded.paths);
   return buildSessionPayload(saved, loaded.paths, nowIso);
 }
