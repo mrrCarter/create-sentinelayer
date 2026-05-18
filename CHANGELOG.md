@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.2...v0.9.3) (2026-05-18)
+
+
+### Features
+
+* **session:** inject agent-join coordination rules into Senti context briefings so new agents see catch-up, polling cadence, writing, lock-and-claim, and stop-condition guidance as soon as they join ([#466](https://github.com/mrrCarter/create-sentinelayer/pull/466)).
+
+
+### Bug Fixes
+
+* **session:** refresh stale local metadata from the remote session before write commands, allowing valid remote sessions to keep working after the local cache expires while preserving strict local-only expiry guards ([#467](https://github.com/mrrCarter/create-sentinelayer/pull/467)).
+* **session:** stop rewriting omitted/default `sl session say --agent` values from `cli-user` to `human-<auth-user>`, preventing accidental human impersonation while keeping explicit agent ids normalized ([#468](https://github.com/mrrCarter/create-sentinelayer/pull/468)).
+
+
+### Release Plumbing
+
+* **release:** publish the Senti coordination and L1 reliability fixes to npm `latest`.
+
 ## [0.9.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.1...v0.9.2) (2026-05-08)
 
 
