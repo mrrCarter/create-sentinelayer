@@ -5,6 +5,9 @@ import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { Command } from "commander";
+
+import { registerSessionCommand } from "../src/commands/session.js";
 import { validateAgentEvent } from "../src/events/schema.js";
 import { registerAgent } from "../src/session/agent-registry.js";
 import {
@@ -24,6 +27,33 @@ async function seedWorkspace(rootPath) {
     "utf-8"
   );
   await writeFile(path.join(rootPath, "src", "index.js"), "export const fixture = true;\n", "utf-8");
+}
+
+function buildSessionProgram() {
+  const program = new Command();
+  program
+    .name("sl")
+    .exitOverride()
+    .configureOutput({
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+  registerSessionCommand(program);
+  return program;
+}
+
+async function captureConsoleLog(fn) {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => {
+    lines.push(args.map((arg) => String(arg)).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return lines.join("\n");
 }
 
 test("Unit session recap: joining agent receives context briefing within 2 seconds", async () => {
@@ -193,6 +223,179 @@ test("Unit session recap: includes task ownership ledger in recap text", async (
     assert.equal(recap.summary.pendingTasksForAgent, 1);
     assert.equal(recap.summary.taskLedger.accepted, 1);
     assert.equal(recap.summary.taskLedger.pending, 1);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: CLI recap now emits deterministic JSON", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-now-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await registerAgent(session.sessionId, {
+      agentId: "lead-r1f2",
+      model: "gpt-5.4",
+      role: "reviewer",
+      targetPath: tempRoot,
+    });
+    await registerAgent(session.sessionId, {
+      agentId: "codex-c3d4",
+      model: "gpt-5.4",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    const codexTask = await assignTask(session.sessionId, {
+      fromAgentId: "lead-r1f2",
+      toAgentId: "codex-c3d4",
+      priority: "P1",
+      task: "Implement deterministic recap command output.",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T12:00:00.000Z",
+    });
+    await acceptTask(session.sessionId, "codex-c3d4", codexTask.task.taskId, {
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T12:01:00.000Z",
+    });
+
+    const program = buildSessionProgram();
+    const stdout = await captureConsoleLog(async () => {
+      await program.parseAsync(
+        [
+          "session",
+          "recap",
+          "now",
+          "--session",
+          session.sessionId,
+          "--agent",
+          "codex-c3d4",
+          "--path",
+          tempRoot,
+          "--max-events",
+          "50",
+          "--json",
+        ],
+        { from: "user" },
+      );
+    });
+
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.command, "session recap now");
+    assert.equal(payload.sessionId, session.sessionId);
+    assert.equal(payload.agentId, "codex-c3d4");
+    assert.equal(payload.maxEvents, 50);
+    assert.equal(payload.ephemeral, true);
+    assert.equal(payload.style, "italic-grey");
+    assert.match(payload.recap, /Tasks: 1 active of 1 total/);
+    assert.equal(payload.summary.pendingTasksForAgent, 1);
+    assert.equal(payload.summary.taskLedger.accepted, 1);
+    assert.equal(payload.summary.taskLedger.recent[0].taskId, codexTask.task.taskId);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: recent window uses event time, not late backfill append order", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-order-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        eventId: "fresh-proof",
+        sequenceId: 200,
+        ts: "2026-05-19T12:10:00.000Z",
+        payload: { message: "fresh production proof is complete" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        eventId: "fresh-proof",
+        sequenceId: 200,
+        ts: "2026-05-19T12:10:00.000Z",
+        payload: { message: "fresh production proof is complete" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        sequenceId: 100,
+        ts: "2026-05-08T12:00:00.000Z",
+        payload: { message: "old hydrated backfill should not dominate recap" },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      maxEvents: 1,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T12:11:00.000Z",
+    });
+
+    assert.match(recap.text, /fresh production proof is complete/);
+    assert.doesNotMatch(recap.text, /old hydrated backfill/);
+    assert.equal((recap.text.match(/fresh production proof is complete/g) || []).length, 1);
+    assert.equal(recap.summary.lastEventAt, "2026-05-19T12:10:00.000Z");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: elapsedMinutes uses session age while windowElapsedMinutes uses selected events", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-age-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      ttlSeconds: 86_400,
+      createdAt: "2026-05-19T00:00:00.000Z",
+    });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        sequenceId: 10,
+        ts: "2026-05-19T11:30:00.000Z",
+        payload: { message: "older event outside selected window" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        sequenceId: 11,
+        ts: "2026-05-19T12:00:00.000Z",
+        payload: { message: "latest selected event" },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      maxEvents: 1,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T12:01:00.000Z",
+    });
+
+    assert.equal(recap.summary.sessionStartedAt, "2026-05-19T00:00:00.000Z");
+    assert.equal(recap.summary.elapsedMinutes, 721);
+    assert.equal(recap.summary.windowElapsedMinutes, 1);
+    assert.equal(recap.summary.lastEventAt, "2026-05-19T12:00:00.000Z");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

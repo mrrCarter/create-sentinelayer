@@ -333,6 +333,14 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--since <cursor>");
   assertCommandHasOption(listen, "--replay");
   assertCommandHasOption(listen, "--max-polls <n>");
+
+  const recapNow = getCommandByPath(program, "session recap now");
+  assertCommandHasOption(recapNow, "--session <id>");
+  assertCommandHasOption(recapNow, "--remote");
+  assertCommandHasOption(recapNow, "--agent <id>");
+  assertCommandHasOption(recapNow, "--max-events <n>");
+  assertCommandHasOption(recapNow, "--path <path>");
+  assertCommandHasOption(recapNow, "--json");
 });
 
 test("Unit command contracts: review rejects conflicting diff and staged flags", async () => {

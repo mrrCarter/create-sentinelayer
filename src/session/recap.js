@@ -3,8 +3,10 @@ import path from "node:path";
 import process from "node:process";
 
 import { createAgentEvent } from "../events/schema.js";
+import { dedupeSessionEvents } from "./event-identity.js";
 import { resolveSessionPaths } from "./paths.js";
 import { appendToStream, readStream } from "./stream.js";
+import { getSession } from "./store.js";
 
 const SENTI_AGENT_ID = "senti";
 const SENTI_MODEL = "gpt-5.4-mini";
@@ -279,16 +281,62 @@ async function readTaskLedgerSummary(
   }
 }
 
-function buildElapsedMinutes(events = [], nowIso = new Date().toISOString()) {
-  if (!Array.isArray(events) || events.length === 0) {
+function elapsedMinutesBetween(startIso, nowIso = new Date().toISOString()) {
+  const normalizedStartIso = normalizeString(startIso);
+  if (!normalizedStartIso) {
     return 0;
   }
-  const firstEpoch = toEpoch(events[0]?.ts, nowIso);
+  const firstEpoch = toEpoch(normalizedStartIso, nowIso);
   const nowEpoch = toEpoch(nowIso, nowIso);
   if (!Number.isFinite(firstEpoch) || !Number.isFinite(nowEpoch) || nowEpoch <= firstEpoch) {
     return 0;
   }
   return Math.max(0, Math.floor((nowEpoch - firstEpoch) / 60_000));
+}
+
+function earliestIso(values = [], fallbackIso = new Date().toISOString()) {
+  const validEpochs = values
+    .map((value) => normalizeString(value))
+    .filter(Boolean)
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value));
+  if (validEpochs.length === 0) {
+    return "";
+  }
+  validEpochs.sort((left, right) => left - right);
+  return normalizeIsoTimestamp(new Date(validEpochs[0]).toISOString(), fallbackIso);
+}
+
+function buildElapsedMinutes(events = [], nowIso = new Date().toISOString(), { startedAt = "" } = {}) {
+  const eventStart = Array.isArray(events) && events.length > 0 ? events[0]?.ts || events[0]?.timestamp : "";
+  const startIso = earliestIso([startedAt, eventStart], nowIso);
+  return elapsedMinutesBetween(startIso, nowIso);
+}
+
+function eventSequenceNumber(event = {}) {
+  for (const value of [event.sequenceId, event.sequence, event.seq, event.payload?.sequenceId]) {
+    const normalized = Number(value);
+    if (Number.isFinite(normalized)) {
+      return normalized;
+    }
+  }
+  return 0;
+}
+
+function sortEventsByConversationTime(events = [], fallbackIso = new Date().toISOString()) {
+  return [...(Array.isArray(events) ? events : [])].sort((left, right) => {
+    const leftEpoch = toEpoch(left?.ts || left?.timestamp, fallbackIso);
+    const rightEpoch = toEpoch(right?.ts || right?.timestamp, fallbackIso);
+    if (leftEpoch !== rightEpoch) {
+      return leftEpoch - rightEpoch;
+    }
+    const leftSequence = eventSequenceNumber(left);
+    const rightSequence = eventSequenceNumber(right);
+    if (leftSequence !== rightSequence) {
+      return leftSequence - rightSequence;
+    }
+    return normalizeString(left?.cursor).localeCompare(normalizeString(right?.cursor));
+  });
 }
 
 function buildRecapKey(sessionId, targetPath) {
@@ -413,10 +461,19 @@ export async function buildSessionRecap(
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_RECAP_MAX_EVENTS);
   const normalizedForAgentId = normalizeString(forAgentId);
 
-  const events = await readStream(normalizedSessionId, {
+  const allEvents = await readStream(normalizedSessionId, {
     targetPath: normalizedTargetPath,
-    tail: normalizedMaxEvents,
+    tail: 0,
   });
+  let sessionMetadata = null;
+  try {
+    sessionMetadata = await getSession(normalizedSessionId, { targetPath: normalizedTargetPath });
+  } catch {
+    sessionMetadata = null;
+  }
+  const events = sortEventsByConversationTime(dedupeSessionEvents(allEvents), normalizedNow).slice(
+    -normalizedMaxEvents,
+  );
   const visibleEvents = (Array.isArray(events) ? events : []).filter((event) => {
     const agentId = normalizeString(event.agent?.id || event.agentId);
     if (!agentId) {
@@ -452,7 +509,10 @@ export async function buildSessionRecap(
     forAgentId: normalizedForAgentId,
     limit: 2,
   });
-  const elapsedMinutes = buildElapsedMinutes(visibleEvents, normalizedNow);
+  const windowElapsedMinutes = buildElapsedMinutes(visibleEvents, normalizedNow);
+  const elapsedMinutes = buildElapsedMinutes(visibleEvents, normalizedNow, {
+    startedAt: sessionMetadata?.createdAt,
+  });
   const latestEvent = visibleEvents.length > 0 ? visibleEvents[visibleEvents.length - 1] : null;
   const recapText = buildRecapText({
     activeAgents,
@@ -481,6 +541,10 @@ export async function buildSessionRecap(
       taskLedger,
       snippets,
       elapsedMinutes,
+      windowElapsedMinutes,
+      sessionStartedAt: sessionMetadata?.createdAt
+        ? normalizeIsoTimestamp(sessionMetadata.createdAt, normalizedNow)
+        : null,
       lastActorId: normalizeString(latestEvent?.agent?.id || latestEvent?.agentId) || null,
       lastEventAt: latestEvent ? normalizeIsoTimestamp(latestEvent.ts, normalizedNow) : null,
     },
