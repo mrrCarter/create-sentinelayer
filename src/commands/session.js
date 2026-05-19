@@ -68,6 +68,7 @@ import {
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
+import { buildSessionRecap } from "../session/recap.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
 import { pushSessionTitleToApi } from "../session/title-sync.js";
 import {
@@ -558,6 +559,51 @@ function formatEventLine(event = {}) {
     return `${ts} ${agentId} ${type}: ${message}`;
   }
   return `${ts} ${agentId} ${type}`;
+}
+
+async function appendMissingRemoteEvents(sessionId, remoteEvents = [], { targetPath } = {}) {
+  const events = Array.isArray(remoteEvents) ? remoteEvents : [];
+  if (events.length === 0) {
+    return {
+      appended: 0,
+      skipped: 0,
+      failed: 0,
+    };
+  }
+  const knownKeys = new Set();
+  const localEvents = await readStream(sessionId, {
+    targetPath,
+    tail: 0,
+  });
+  for (const event of localEvents) {
+    addSessionEventIdentityKeys(knownKeys, event);
+  }
+
+  let appended = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const event of events) {
+    if (sessionEventHasKnownIdentity(event, knownKeys)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const persisted = await appendToStream(sessionId, event, {
+        targetPath,
+        syncRemote: false,
+      });
+      addSessionEventIdentityKeys(knownKeys, persisted);
+      appended += 1;
+    } catch {
+      addSessionEventIdentityKeys(knownKeys, event);
+      failed += 1;
+    }
+  }
+  return {
+    appended,
+    skipped,
+    failed,
+  };
 }
 
 function formatTemplateLaunchLine(slot = {}) {
@@ -1477,6 +1523,92 @@ export function registerSessionCommand(program) {
       } finally {
         process.removeListener("SIGINT", onSigint);
       }
+    });
+
+  const recap = session
+    .command("recap")
+    .description("Build deterministic Senti session recaps");
+
+  recap
+    .command("now [sessionId]")
+    .description("Summarize current session activity, peers, findings, locks, and task ownership")
+    .option("--session <id>", "Session id to recap")
+    .option(
+      "--remote",
+      "Hydrate the latest durable API events before building the recap",
+    )
+    .option(
+      "--agent <id>",
+      "Agent id requesting the recap; self-authored events are omitted from recent snippets",
+      process.env.SENTINELAYER_AGENT_ID || "",
+    )
+    .option("--max-events <n>", "Maximum recent local events to inspect (default 100)", "100")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId) || resolveSessionIdOption(options);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const agentId = normalizeAgentId(options.agent, "");
+      const maxEvents = parsePositiveInteger(options.maxEvents, "max-events", 100);
+      let hydration = null;
+      let remoteTail = null;
+      let remoteAppend = null;
+      if (options.remote) {
+        hydration = await hydrateSessionFromRemote({
+          sessionId: normalizedSessionId,
+          targetPath,
+        });
+        remoteTail = await pollSessionEventsBefore(normalizedSessionId, {
+          targetPath,
+          limit: maxEvents,
+          timeoutMs: 15_000,
+        });
+        if (remoteTail?.ok && Array.isArray(remoteTail.events) && remoteTail.events.length > 0) {
+          remoteAppend = await appendMissingRemoteEvents(normalizedSessionId, remoteTail.events, {
+            targetPath,
+          });
+        }
+      }
+      const current = await buildSessionRecap(normalizedSessionId, {
+        forAgentId: agentId,
+        maxEvents,
+        targetPath,
+      });
+      const payload = {
+        command: "session recap now",
+        targetPath,
+        sessionId: normalizedSessionId,
+        agentId: current.forAgentId,
+        maxEvents,
+        generatedAt: current.generatedAt,
+        ephemeral: current.ephemeral,
+        style: current.style,
+        recap: current.text,
+        summary: current.summary,
+        remote: options.remote
+          ? {
+              hydration,
+              tailProbe: remoteTail
+                ? {
+                    ok: Boolean(remoteTail.ok),
+                    reason: remoteTail.reason || "",
+                    count: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
+                    cursor: remoteTail.cursor || null,
+                  }
+                : null,
+              appendedTail: remoteAppend,
+            }
+          : null,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.bold(`Recap for session ${normalizedSessionId}`));
+      if (payload.agentId) {
+        console.log(pc.gray(`for agent=${payload.agentId}`));
+      }
+      console.log(current.text);
     });
 
   session

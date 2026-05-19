@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { createAgentEvent } from "../events/schema.js";
+import { dedupeSessionEvents } from "./event-identity.js";
 import { resolveSessionPaths } from "./paths.js";
 import { appendToStream, readStream } from "./stream.js";
 
@@ -291,6 +292,32 @@ function buildElapsedMinutes(events = [], nowIso = new Date().toISOString()) {
   return Math.max(0, Math.floor((nowEpoch - firstEpoch) / 60_000));
 }
 
+function eventSequenceNumber(event = {}) {
+  for (const value of [event.sequenceId, event.sequence, event.seq, event.payload?.sequenceId]) {
+    const normalized = Number(value);
+    if (Number.isFinite(normalized)) {
+      return normalized;
+    }
+  }
+  return 0;
+}
+
+function sortEventsByConversationTime(events = [], fallbackIso = new Date().toISOString()) {
+  return [...(Array.isArray(events) ? events : [])].sort((left, right) => {
+    const leftEpoch = toEpoch(left?.ts || left?.timestamp, fallbackIso);
+    const rightEpoch = toEpoch(right?.ts || right?.timestamp, fallbackIso);
+    if (leftEpoch !== rightEpoch) {
+      return leftEpoch - rightEpoch;
+    }
+    const leftSequence = eventSequenceNumber(left);
+    const rightSequence = eventSequenceNumber(right);
+    if (leftSequence !== rightSequence) {
+      return leftSequence - rightSequence;
+    }
+    return normalizeString(left?.cursor).localeCompare(normalizeString(right?.cursor));
+  });
+}
+
 function buildRecapKey(sessionId, targetPath) {
   return `${path.resolve(String(targetPath || "."))}::${normalizeString(sessionId)}`;
 }
@@ -413,10 +440,13 @@ export async function buildSessionRecap(
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_RECAP_MAX_EVENTS);
   const normalizedForAgentId = normalizeString(forAgentId);
 
-  const events = await readStream(normalizedSessionId, {
+  const allEvents = await readStream(normalizedSessionId, {
     targetPath: normalizedTargetPath,
-    tail: normalizedMaxEvents,
+    tail: 0,
   });
+  const events = sortEventsByConversationTime(dedupeSessionEvents(allEvents), normalizedNow).slice(
+    -normalizedMaxEvents,
+  );
   const visibleEvents = (Array.isArray(events) ? events : []).filter((event) => {
     const agentId = normalizeString(event.agent?.id || event.agentId);
     if (!agentId) {
