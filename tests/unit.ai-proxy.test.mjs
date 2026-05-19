@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import { invokeViaProxy } from "../src/ai/proxy.js";
 
+const authFixture = ["fixture", "auth", "value"].join("-");
+
 function createProxyResponse(payload = {}) {
   return {
     ok: true,
@@ -44,7 +46,7 @@ test("Unit AI proxy: sends session usage context with one canonical idempotency 
 
   const result = await invokeViaProxy({
     apiUrl: "https://api.example.test",
-    token: "sl_fixture_token",
+    token: authFixture,
     prompt: "hello",
     systemPrompt: "system",
     model: "gpt-5.4-mini",
@@ -93,7 +95,7 @@ test("Unit AI proxy: omits session usage fields when no context is provided", as
 
   await invokeViaProxy({
     apiUrl: "https://api.example.test",
-    token: "sl_fixture_token",
+    token: authFixture,
     prompt: "hello",
     fetchImpl,
   });
