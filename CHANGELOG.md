@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.4...v0.9.5) (2026-05-19)
+
+
+### Features
+
+* **session:** add `sl session recap now` with optional remote hydration, deterministic recency ordering, duplicate-safe durable tail append, and separate session-age/window-age summary fields ([#473](https://github.com/mrrCarter/create-sentinelayer/pull/473)).
+
+
+### Documentation
+
+* **pricing:** add the CLI pricing tier and free-tier abuse-control addendum for DD packaging, paid audit surfaces, and quota enforcement ([#472](https://github.com/mrrCarter/create-sentinelayer/pull/472)).
+
+
+### Release Plumbing
+
+* **release:** publish the REC-2 recap command and pricing addendum to npm `latest`.
+
 ## [0.9.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.3...v0.9.4) (2026-05-19)
 
 
