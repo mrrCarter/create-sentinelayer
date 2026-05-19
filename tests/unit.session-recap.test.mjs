@@ -300,12 +300,6 @@ test("Unit session recap: recent window uses event time, not late backfill appen
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
-    await registerAgent(session.sessionId, {
-      agentId: "claude-reviewer",
-      model: "claude-opus-4-7",
-      role: "reviewer",
-      targetPath: tempRoot,
-    });
 
     await appendToStream(
       session.sessionId,
@@ -354,6 +348,54 @@ test("Unit session recap: recent window uses event time, not late backfill appen
     assert.doesNotMatch(recap.text, /old hydrated backfill/);
     assert.equal((recap.text.match(/fresh production proof is complete/g) || []).length, 1);
     assert.equal(recap.summary.lastEventAt, "2026-05-19T12:10:00.000Z");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: elapsedMinutes uses session age while windowElapsedMinutes uses selected events", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-age-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      ttlSeconds: 86_400,
+      createdAt: "2026-05-19T00:00:00.000Z",
+    });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        sequenceId: 10,
+        ts: "2026-05-19T11:30:00.000Z",
+        payload: { message: "older event outside selected window" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        sequenceId: 11,
+        ts: "2026-05-19T12:00:00.000Z",
+        payload: { message: "latest selected event" },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      maxEvents: 1,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T12:01:00.000Z",
+    });
+
+    assert.equal(recap.summary.sessionStartedAt, "2026-05-19T00:00:00.000Z");
+    assert.equal(recap.summary.elapsedMinutes, 721);
+    assert.equal(recap.summary.windowElapsedMinutes, 1);
+    assert.equal(recap.summary.lastEventAt, "2026-05-19T12:00:00.000Z");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
