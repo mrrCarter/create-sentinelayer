@@ -1,15 +1,18 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 
 import {
   createMultiProviderApiClient,
   resolveModel,
   resolveProvider,
 } from "../ai/client.js";
+import { computeProviderCost } from "../billing/price-book.js";
+import { buildBillingRunId, buildCallIdempotencyKey } from "../billing/ledger-entry.js";
+import { recordSessionUsage } from "../billing/session-usage.js";
 import { loadConfig } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
-import { estimateModelCost } from "../cost/tracker.js";
 import { estimateTokens } from "../cost/tokenizer.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 
@@ -329,21 +332,22 @@ export function buildAiReviewPrompt({
 }
 
 function maybeEstimateModelCost({ modelId, inputTokens, outputTokens }) {
-  try {
-    return {
-      costUsd: estimateModelCost({
-        modelId,
-        inputTokens,
-        outputTokens,
-      }),
-      pricingFound: true,
-    };
-  } catch {
-    return {
-      costUsd: 0,
-      pricingFound: false,
-    };
-  }
+  const priced = computeProviderCost({
+    model: modelId,
+    inputTokens,
+    outputTokens,
+  });
+  return {
+    costUsd: priced.providerCostUsd ?? 0,
+    providerCostUsd: priced.providerCostUsd,
+    pricingFound: !priced.unpriced,
+    priceBookVersion: priced.priceBookVersion,
+    canonicalModel: priced.canonicalModel,
+  };
+}
+
+function stableConfigHash(value = {}) {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function composeAiReviewMarkdown({
@@ -529,6 +533,7 @@ export async function runAiReviewLayer({
   });
 
   const startedAt = Date.now();
+  const startedAtIso = new Date(startedAt).toISOString();
   const responseText = dryRun
     ? buildDryRunResponse({
         deterministicSummary: deterministic?.summary || {},
@@ -643,6 +648,53 @@ export async function runAiReviewLayer({
     }
   );
 
+  let sessionUsageLedger = null;
+  try {
+    const billingRunId = buildBillingRunId({
+      sessionId: normalizedSessionId,
+      invocationTimestamp: startedAtIso,
+      configHash: stableConfigHash({
+        sourceCommand: "review",
+        layer: "ai_reasoning",
+        provider: resolvedProvider,
+        model: resolvedModel,
+        mode: normalizedMode,
+        runId: normalizedRunId,
+        dryRun: Boolean(dryRun),
+      }),
+    });
+    sessionUsageLedger = await recordSessionUsage(
+      normalizedSessionId,
+      {
+        agentId: "audit-orchestrator",
+        action: "audit_run",
+        model: resolvedModel,
+        inputTokens,
+        outputTokens,
+        idempotencyKey: buildCallIdempotencyKey({ runId: billingRunId, callIndex: 0 }),
+        billingTier: "internal",
+        createdAt: startedAtIso,
+        metadata: {
+          sourceCommand: "review",
+          layer: "ai_reasoning",
+          provider: resolvedProvider,
+          mode: normalizedMode,
+          runId: normalizedRunId,
+          dryRun: Boolean(dryRun),
+          pricingFound: modelCost.pricingFound,
+        },
+      },
+      {
+        targetPath: normalizedTargetPath,
+      },
+    );
+  } catch (error) {
+    sessionUsageLedger = {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error || "session_usage_failed"),
+    };
+  }
+
   let stopTelemetry = null;
   if (budget.blocking) {
     stopTelemetry = await appendRunEvent(
@@ -704,6 +756,7 @@ export async function runAiReviewLayer({
     dryRun: Boolean(dryRun),
     usage,
     pricingFound: modelCost.pricingFound,
+    sessionUsageLedger,
     budget,
     deterministicSummary,
     aiSummary,
@@ -756,6 +809,7 @@ export async function runAiReviewLayer({
       usageEventId: usageTelemetry.event.eventId,
       stopEventId: stopTelemetry?.event?.eventId || null,
     },
+    billing: sessionUsageLedger,
   };
 }
 

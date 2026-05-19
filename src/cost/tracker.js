@@ -6,8 +6,16 @@ const DEFAULT_MODEL_PRICING = Object.freeze({
     outputPerMillionUsd: 10.0,
   }),
   "gpt-5.3-codex": Object.freeze({
-    inputPerMillionUsd: 1.5,
-    outputPerMillionUsd: 6.0,
+    inputPerMillionUsd: 1.75,
+    outputPerMillionUsd: 14.0,
+  }),
+  "gpt-5.4-mini": Object.freeze({
+    inputPerMillionUsd: 0.75,
+    outputPerMillionUsd: 4.5,
+  }),
+  "gpt-4.1-mini": Object.freeze({
+    inputPerMillionUsd: 0.4,
+    outputPerMillionUsd: 1.6,
   }),
   "claude-sonnet-4": Object.freeze({
     inputPerMillionUsd: 3.0,
@@ -21,6 +29,14 @@ const DEFAULT_MODEL_PRICING = Object.freeze({
     inputPerMillionUsd: 3.0,
     outputPerMillionUsd: 15.0,
   }),
+  "claude-opus-4": Object.freeze({
+    inputPerMillionUsd: 15.0,
+    outputPerMillionUsd: 75.0,
+  }),
+  "claude-opus-4.1": Object.freeze({
+    inputPerMillionUsd: 15.0,
+    outputPerMillionUsd: 75.0,
+  }),
   "claude-opus-4-6": Object.freeze({
     inputPerMillionUsd: 15.0,
     outputPerMillionUsd: 75.0,
@@ -28,6 +44,14 @@ const DEFAULT_MODEL_PRICING = Object.freeze({
   "claude-opus-4-7": Object.freeze({
     inputPerMillionUsd: 15.0,
     outputPerMillionUsd: 75.0,
+  }),
+  "claude-haiku-3.5": Object.freeze({
+    inputPerMillionUsd: 0.8,
+    outputPerMillionUsd: 4.0,
+  }),
+  "claude-haiku-3": Object.freeze({
+    inputPerMillionUsd: 0.25,
+    outputPerMillionUsd: 1.25,
   }),
   "gemini-2.5-pro": Object.freeze({
     inputPerMillionUsd: 2.5,

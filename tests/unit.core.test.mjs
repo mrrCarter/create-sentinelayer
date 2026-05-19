@@ -353,7 +353,7 @@ test("Unit: cost tracker estimates, aggregates, and enforces budget deterministi
     inputTokens: 100_000,
     outputTokens: 100_000,
   });
-  assert.equal(modelCost, 0.75);
+  assert.equal(modelCost, 1.575);
 
   const usage = rollupUsage([
     { inputTokens: 500, outputTokens: 200, costUsd: 0.01 },
