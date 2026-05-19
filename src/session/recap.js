@@ -13,6 +13,14 @@ const DEFAULT_RECAP_MAX_EVENTS = 100;
 const DEFAULT_RECAP_INTERVAL_MS = 300_000;
 const DEFAULT_RECAP_INACTIVITY_MS = 600_000;
 const DEFAULT_RECAP_ACTIVITY_THRESHOLD = 5;
+const DEFAULT_TASK_SUMMARY_LIMIT = 3;
+const ACTIVE_TASK_STATUSES = new Set(["PENDING", "ACCEPTED", "BLOCKED"]);
+const TASK_STATUS_KEYS = {
+  PENDING: "pending",
+  ACCEPTED: "accepted",
+  COMPLETED: "completed",
+  BLOCKED: "blocked",
+};
 
 const ACTIVE_RECAP_EMITTERS = new Map();
 
@@ -160,6 +168,117 @@ async function readPendingTasks(sessionId, { forAgentId = "", targetPath = proce
   }
 }
 
+function normalizeTaskStatus(value) {
+  const normalized = normalizeString(value).toUpperCase();
+  return Object.prototype.hasOwnProperty.call(TASK_STATUS_KEYS, normalized)
+    ? normalized
+    : "PENDING";
+}
+
+function taskOwner(task = {}) {
+  return (
+    normalizeString(task.toAgentId) ||
+    normalizeString(task.requestedToAgentId) ||
+    (normalizeString(task.roleFilter) ? `role:${normalizeString(task.roleFilter)}` : "") ||
+    "unassigned"
+  );
+}
+
+function shortTaskText(value) {
+  const text = normalizeString(value).replace(/\s+/g, " ");
+  if (text.length <= 80) {
+    return text;
+  }
+  return `${text.slice(0, 77)}...`;
+}
+
+function emptyTaskLedgerSummary() {
+  return {
+    total: 0,
+    active: 0,
+    pending: 0,
+    accepted: 0,
+    blocked: 0,
+    completed: 0,
+    owners: [],
+    recent: [],
+  };
+}
+
+function summarizeTaskLedger(tasks = [], { limit = DEFAULT_TASK_SUMMARY_LIMIT } = {}) {
+  const summary = emptyTaskLedgerSummary();
+  const owners = new Map();
+  const normalizedTasks = [];
+
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    if (!task || typeof task !== "object") {
+      continue;
+    }
+    const status = normalizeTaskStatus(task.status);
+    const statusKey = TASK_STATUS_KEYS[status];
+    const owner = taskOwner(task);
+    const priority = normalizeString(task.priority) || "when-free";
+    const taskId = normalizeString(task.taskId) || "task";
+    const updatedAt = normalizeIsoTimestamp(
+      task.updatedAt || task.completedAt || task.acceptedAt || task.createdAt,
+      new Date().toISOString(),
+    );
+    const record = {
+      taskId,
+      status,
+      priority,
+      owner,
+      task: shortTaskText(task.task),
+      updatedAt,
+    };
+    normalizedTasks.push(record);
+    summary.total += 1;
+    summary[statusKey] += 1;
+
+    if (ACTIVE_TASK_STATUSES.has(status)) {
+      summary.active += 1;
+      const ownerRecord = owners.get(owner) || {
+        agentId: owner,
+        active: 0,
+        pending: 0,
+        accepted: 0,
+        blocked: 0,
+      };
+      ownerRecord.active += 1;
+      ownerRecord[statusKey] += 1;
+      owners.set(owner, ownerRecord);
+    }
+  }
+
+  summary.owners = [...owners.values()]
+    .sort((left, right) => {
+      if (right.active !== left.active) return right.active - left.active;
+      return left.agentId.localeCompare(right.agentId);
+    })
+    .slice(0, Math.max(1, limit));
+  summary.recent = normalizedTasks
+    .sort((left, right) => toEpoch(right.updatedAt) - toEpoch(left.updatedAt))
+    .slice(0, Math.max(1, limit));
+  return summary;
+}
+
+async function readTaskLedgerSummary(
+  sessionId,
+  { targetPath = process.cwd(), limit = DEFAULT_TASK_SUMMARY_LIMIT } = {},
+) {
+  const paths = resolveSessionPaths(sessionId, { targetPath });
+  try {
+    const raw = await fsp.readFile(paths.tasksPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return summarizeTaskLedger(parsed?.tasks || [], { limit });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return emptyTaskLedgerSummary();
+    }
+    return emptyTaskLedgerSummary();
+  }
+}
+
 function buildElapsedMinutes(events = [], nowIso = new Date().toISOString()) {
   if (!Array.isArray(events) || events.length === 0) {
     return 0;
@@ -181,6 +300,7 @@ function buildRecapText({
   totalFindings = 0,
   activeLocks = 0,
   pendingTasks = 0,
+  taskLedger = emptyTaskLedgerSummary(),
   snippets = [],
 } = {}) {
   const agentText =
@@ -191,11 +311,47 @@ function buildRecapText({
   const lockText = `${activeLocks} file lock${activeLocks === 1 ? "" : "s"} active`;
   const pendingText =
     pendingTasks > 0 ? `You have ${pendingTasks} pending task${pendingTasks === 1 ? "" : "s"}.` : "";
+  const taskText = buildTaskLedgerText(taskLedger);
   const snippetText = snippets.length > 0 ? `Recent: ${snippets.join(" | ")}` : "";
-  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${snippetText}`.replace(
+  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${snippetText}`.replace(
     /\s+/g,
     " "
   ).trim();
+}
+
+function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
+  const total = Number(taskLedger.total || 0);
+  if (!total) {
+    return "Tasks: none queued";
+  }
+  const active = Number(taskLedger.active || 0);
+  const counts = [
+    `${Number(taskLedger.pending || 0)} pending`,
+    `${Number(taskLedger.accepted || 0)} accepted`,
+    `${Number(taskLedger.blocked || 0)} blocked`,
+    `${Number(taskLedger.completed || 0)} done`,
+  ].join(", ");
+  const ownerText =
+    Array.isArray(taskLedger.owners) && taskLedger.owners.length > 0
+      ? `Owners: ${taskLedger.owners
+          .map((owner) => {
+            const parts = [];
+            if (owner.pending) parts.push(`${owner.pending} pending`);
+            if (owner.accepted) parts.push(`${owner.accepted} accepted`);
+            if (owner.blocked) parts.push(`${owner.blocked} blocked`);
+            return `${owner.agentId} (${parts.join("/") || `${owner.active || 0} active`})`;
+          })
+          .join("; ")}`
+      : "Owners: none active";
+  const recentText =
+    Array.isArray(taskLedger.recent) && taskLedger.recent.length > 0
+      ? `Recent tasks: ${taskLedger.recent
+          .map((task) => `${task.priority} ${task.status} ${task.owner}: ${task.task}`)
+          .join(" | ")}`
+      : "";
+  return [`Tasks: ${active} active of ${total} total (${counts})`, ownerText, recentText]
+    .filter(Boolean)
+    .join(". ");
 }
 
 // Multi-agent session etiquette + read-path rules surfaced in the
@@ -235,7 +391,8 @@ function buildPeriodicText(recap = {}) {
   const activeLocks = Number(summary.activeLocks || 0);
   const lastActor = normalizeString(summary.lastActorId);
   const actorText = lastActor ? `${lastActor} active` : "no active actor";
-  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${actorText}.`;
+  const taskText = buildTaskLedgerText(summary.taskLedger);
+  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${actorText}.`;
 }
 
 export async function buildSessionRecap(
@@ -288,6 +445,9 @@ export async function buildSessionRecap(
     forAgentId: normalizedForAgentId,
     targetPath: normalizedTargetPath,
   });
+  const taskLedger = await readTaskLedgerSummary(normalizedSessionId, {
+    targetPath: normalizedTargetPath,
+  });
   const snippets = summarizeRecentActivity(visibleEvents, {
     forAgentId: normalizedForAgentId,
     limit: 2,
@@ -299,6 +459,7 @@ export async function buildSessionRecap(
     totalFindings: totalFindingsCount,
     activeLocks,
     pendingTasks,
+    taskLedger,
     snippets,
   });
 
@@ -317,6 +478,7 @@ export async function buildSessionRecap(
       totalFindingsCount,
       activeLocks,
       pendingTasksForAgent: pendingTasks,
+      taskLedger,
       snippets,
       elapsedMinutes,
       lastActorId: normalizeString(latestEvent?.agent?.id || latestEvent?.agentId) || null,
