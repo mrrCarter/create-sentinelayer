@@ -77,6 +77,11 @@ import {
   getTemplateRegistry,
   resolveSessionTemplate,
 } from "../session/templates.js";
+import {
+  createSessionCheckpoint,
+  generateSessionCheckpoint,
+  listSessionCheckpoints,
+} from "../session/checkpoints.js";
 import { authLoginHint } from "../ui/command-hints.js";
 import { parseCsvTokens } from "./ai/shared.js";
 
@@ -559,6 +564,53 @@ function formatEventLine(event = {}) {
     return `${ts} ${agentId} ${type}: ${message}`;
   }
   return `${ts} ${agentId} ${type}`;
+}
+
+function checkpointSequenceRange(checkpoint = {}) {
+  const start = Number(checkpoint.startSequence || 0);
+  const end = Number(checkpoint.endSequence || 0);
+  if (Number.isFinite(start) && start > 0 && Number.isFinite(end) && end > 0) {
+    return `#${Math.floor(start)}-${Math.floor(end)}`;
+  }
+  if (Number.isFinite(start) && start > 0) {
+    return `#${Math.floor(start)}`;
+  }
+  return "anchor pending";
+}
+
+function formatCheckpointLine(checkpoint = {}) {
+  const id = normalizeString(checkpoint.checkpointId) || "checkpoint";
+  const kind = normalizeString(checkpoint.kind) || "summary";
+  const title = normalizeString(checkpoint.title) || "Untitled checkpoint";
+  const byline = normalizeString(checkpoint.createdByAgentId || checkpoint.createdBy);
+  const by = byline ? ` by ${byline}` : "";
+  return `${checkpointSequenceRange(checkpoint)} ${id} [${kind}] ${title}${by}`;
+}
+
+async function readCheckpointSummaryOption(options = {}, { targetPath } = {}) {
+  const inlineSummary = normalizeString(options.summary);
+  const summaryFile = normalizeString(options.summaryFile);
+  if (inlineSummary && summaryFile) {
+    throw new Error("Use either --summary or --summary-file, not both.");
+  }
+  if (summaryFile) {
+    const resolved = path.resolve(targetPath || process.cwd(), summaryFile);
+    return fsp.readFile(resolved, "utf-8");
+  }
+  return inlineSummary;
+}
+
+async function hydrateAfterCheckpointMutation(sessionId, { targetPath } = {}) {
+  return hydrateSessionFromRemote({
+    sessionId,
+    targetPath,
+    probeOpenCircuit: false,
+    eventPageLimit: 200,
+    maxEventPages: 5,
+  }).catch((error) => ({
+    ok: false,
+    reason: error instanceof Error ? error.message : "hydrate_failed",
+  }));
 }
 
 async function appendMissingRemoteEvents(sessionId, remoteEvents = [], { targetPath } = {}) {
@@ -1882,6 +1934,155 @@ export function registerSessionCommand(program) {
           ),
         );
       }
+    });
+
+  const checkpoint = session
+    .command("checkpoint")
+    .description("List, create, and generate durable session checkpoints");
+
+  checkpoint
+    .command("list <sessionId>")
+    .description("List durable checkpoints for a remote session")
+    .option("--limit <n>", "Maximum checkpoints to return (default 100, max 200)", "100")
+    .option("--path <path>", "Workspace path for auth/session context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await listSessionCheckpoints(normalizedSessionId, {
+        targetPath,
+        limit: options.limit,
+      });
+      const payload = {
+        command: "session checkpoint list",
+        targetPath,
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      if (result.checkpoints.length === 0) {
+        console.log(pc.gray(`No checkpoints for session ${normalizedSessionId}.`));
+        return;
+      }
+      for (const item of result.checkpoints) {
+        console.log(formatCheckpointLine(item));
+      }
+    });
+
+  checkpoint
+    .command("create <sessionId>")
+    .description("Create a durable checkpoint anchored to a canonical sequence range")
+    .requiredOption("--start-sequence <n>", "First canonical event sequence included in the checkpoint")
+    .requiredOption("--end-sequence <n>", "Last canonical event sequence included in the checkpoint")
+    .requiredOption("--title <title>", "Short checkpoint title")
+    .option("--summary <text>", "Checkpoint summary text")
+    .option("--summary-file <file>", "Read checkpoint summary text from a file")
+    .option("--kind <kind>", "Checkpoint kind (summary, handoff, milestone, billing)", "summary")
+    .option("--checkpoint-id <id>", "Explicit checkpoint id; defaults to a stable hash of range/body")
+    .option("--agent <id>", "Optional agent id recorded as checkpoint creator")
+    .option("--token-start <n>", "Optional token-range start")
+    .option("--token-end <n>", "Optional token-range end")
+    .option("--path <path>", "Workspace path for auth/session context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const agentId = normalizeString(options.agent)
+        ? await defaultAgentId(options.agent, targetPath)
+        : "";
+      const summary = await readCheckpointSummaryOption(options, { targetPath });
+      const result = await createSessionCheckpoint(normalizedSessionId, {
+        targetPath,
+        checkpointId: options.checkpointId,
+        startSequence: options.startSequence,
+        endSequence: options.endSequence,
+        kind: options.kind,
+        title: options.title,
+        summary,
+        createdByAgentId: agentId,
+        tokenStart: options.tokenStart,
+        tokenEnd: options.tokenEnd,
+      });
+      const hydration = await hydrateAfterCheckpointMutation(normalizedSessionId, { targetPath });
+      const payload = {
+        command: "session checkpoint create",
+        targetPath,
+        ...result,
+        hydration,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      const duplicate = result.duplicate ? "duplicate " : "";
+      console.log(pc.bold(`${duplicate}checkpoint created`));
+      if (result.checkpoint) {
+        console.log(formatCheckpointLine(result.checkpoint));
+      }
+      if (!hydration.ok) {
+        console.log(pc.gray(`Local hydrate skipped: ${hydration.reason || "unknown"}`));
+      }
+    });
+
+  checkpoint
+    .command("generate <sessionId>")
+    .description("Generate a checkpoint from the next uncheckpointed durable event window")
+    .option("--min-events <n>", "Minimum source events required before creating (default 20)", "20")
+    .option("--max-events <n>", "Maximum source events to summarize (default 80, max 200)", "80")
+    .option("--operation-id <key>", "Explicit retry key for this generate invocation")
+    .option("--agent <id>", "Optional agent id recorded as checkpoint creator")
+    .option("--path <path>", "Workspace path for auth/session context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const agentId = normalizeString(options.agent)
+        ? await defaultAgentId(options.agent, targetPath)
+        : "";
+      const result = await generateSessionCheckpoint(normalizedSessionId, {
+        targetPath,
+        minEvents: options.minEvents,
+        maxEvents: options.maxEvents,
+        idempotencyKey: options.operationId,
+        createdByAgentId: agentId,
+      });
+      const hydration = result.checkpoint
+        ? await hydrateAfterCheckpointMutation(normalizedSessionId, { targetPath })
+        : null;
+      const payload = {
+        command: "session checkpoint generate",
+        targetPath,
+        ...result,
+        hydration: hydration || undefined,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      if (result.checkpoint) {
+        console.log(pc.bold(result.duplicate ? "checkpoint already covered" : "checkpoint generated"));
+        console.log(formatCheckpointLine(result.checkpoint));
+        if (hydration && !hydration.ok) {
+          console.log(pc.gray(`Local hydrate skipped: ${hydration.reason || "unknown"}`));
+        }
+        return;
+      }
+      console.log(
+        pc.gray(
+          `No checkpoint created: ${normalizeString(result.reason) || "not_needed"} (${Number(result.eventCount || 0)} events, min ${Number(result.minEvents || 0)}).`,
+        ),
+      );
     });
 
   session
