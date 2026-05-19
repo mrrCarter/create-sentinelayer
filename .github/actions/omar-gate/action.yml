@@ -10,9 +10,6 @@ inputs:
   sentinelayer_spec_id:
     description: Sentinelayer spec digest id.
     required: true
-  google_api_key:
-    description: Google API key for BYOK Omar scans.
-    required: true
   scan_mode:
     description: Omar scan profile.
     required: true
@@ -59,15 +56,12 @@ runs:
         github_token: ${{ inputs.github_token }}
         sentinelayer_token: ${{ inputs.sentinelayer_token }}
         sentinelayer_spec_id: ${{ inputs.sentinelayer_spec_id }}
-        openai_api_key: ""
-        llm_provider: google
-        google_api_key: ${{ inputs.google_api_key }}
-        sentinelayer_managed_llm: "false"
+        sentinelayer_managed_llm: "true"
         scan_mode: ${{ inputs.scan_mode }}
         severity_gate: ${{ inputs.severity_gate }}
-        model: gemini-2.5-pro
+        model: gpt-5.3-codex
         codex_model: gpt-5.3-codex
-        model_fallback: gemini-2.5-flash
-        use_codex: "false"
+        model_fallback: gpt-4.1-mini
+        use_codex: "true"
         codex_only: "false"
         llm_failure_policy: block
