@@ -299,6 +299,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
 
   getCommandByPath(program, "session ensure");
   getCommandByPath(program, "session listen");
+  getCommandByPath(program, "session checkpoint");
   const start = getCommandByPath(program, "session start");
   assertCommandHasOption(start, "--resume");
   assertCommandHasOption(start, "--no-resume");
@@ -341,6 +342,30 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(recapNow, "--max-events <n>");
   assertCommandHasOption(recapNow, "--path <path>");
   assertCommandHasOption(recapNow, "--json");
+
+  const checkpointList = getCommandByPath(program, "session checkpoint list");
+  assertCommandHasOption(checkpointList, "--limit <n>");
+  assertCommandHasOption(checkpointList, "--path <path>");
+  assertCommandHasOption(checkpointList, "--json");
+
+  const checkpointCreate = getCommandByPath(program, "session checkpoint create");
+  assertCommandHasOption(checkpointCreate, "--start-sequence <n>");
+  assertCommandHasOption(checkpointCreate, "--end-sequence <n>");
+  assertCommandHasOption(checkpointCreate, "--title <title>");
+  assertCommandHasOption(checkpointCreate, "--summary <text>");
+  assertCommandHasOption(checkpointCreate, "--summary-file <file>");
+  assertCommandHasOption(checkpointCreate, "--kind <kind>");
+  assertCommandHasOption(checkpointCreate, "--checkpoint-id <id>");
+  assertCommandHasOption(checkpointCreate, "--agent <id>");
+  assertCommandHasOption(checkpointCreate, "--token-start <n>");
+  assertCommandHasOption(checkpointCreate, "--token-end <n>");
+
+  const checkpointGenerate = getCommandByPath(program, "session checkpoint generate");
+  assertCommandHasOption(checkpointGenerate, "--min-events <n>");
+  assertCommandHasOption(checkpointGenerate, "--max-events <n>");
+  assertCommandHasOption(checkpointGenerate, "--operation-id <key>");
+  assertCommandHasOption(checkpointGenerate, "--agent <id>");
+  assertCommandHasOption(checkpointGenerate, "--json");
 });
 
 test("Unit command contracts: review rejects conflicting diff and staged flags", async () => {
