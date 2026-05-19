@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.6...v0.9.7) (2026-05-19)
+
+
+### Features
+
+* **billing:** add PRC-1 session usage metering with a versioned `billing/v1` price book, deterministic ledger entries, redacted usage metadata, and AI review/Omar-priced `session_usage` events ([#477](https://github.com/mrrCarter/create-sentinelayer/pull/477)).
+
+
+### Tests
+
+* **evals:** add deterministic eval evidence for the AI review billing telemetry change so eval-impact gates validate the behavior-preserving metering path ([#477](https://github.com/mrrCarter/create-sentinelayer/pull/477)).
+
+
+### Release Plumbing
+
+* **release:** publish the PRC-1 billing usage ledger to npm `latest`.
+
 ## [0.9.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.5...v0.9.6) (2026-05-19)
 
 
