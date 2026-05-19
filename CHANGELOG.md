@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.5...v0.9.6) (2026-05-19)
+
+
+### Features
+
+* **session:** add `sl session checkpoint list`, `create`, and `generate` commands for the existing checkpoint API, including JSON output, explicit `--operation-id` retry keys for generated checkpoints, stable manual checkpoint ids, and local stream hydration after remote checkpoint writes ([#475](https://github.com/mrrCarter/create-sentinelayer/pull/475)).
+
+
+### Release Plumbing
+
+* **release:** publish the Senti checkpoint CLI surface to npm `latest`.
+
 ## [0.9.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.4...v0.9.5) (2026-05-19)
 
 
