@@ -389,14 +389,6 @@ jobs:
             exit 0
           fi
           bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${SENTINELAYER_TOKEN}"
-      - name: Validate Google key secret for Omar LLM scan
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-        run: |
-          set -euo pipefail
-          bash .github/scripts/require-secret.sh "GOOGLE_API_KEY" "${GOOGLE_API_KEY}"
       - name: Validate Omar configuration invariants
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -434,7 +426,6 @@ jobs:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
       - name: Validate Omar output contract
