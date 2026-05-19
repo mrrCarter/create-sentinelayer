@@ -8,11 +8,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { validateAgentEvent } from "../src/events/schema.js";
 import { registerAgent } from "../src/session/agent-registry.js";
 import {
+  buildSessionRecap,
   emitPeriodicRecap,
   shouldEmitRecap,
 } from "../src/session/recap.js";
 import { createSession } from "../src/session/store.js";
 import { appendToStream, readStream } from "../src/session/stream.js";
+import { acceptTask, assignTask } from "../src/session/tasks.js";
 
 async function seedWorkspace(rootPath) {
   await mkdir(path.join(rootPath, "src"), { recursive: true });
@@ -128,6 +130,69 @@ test("Unit session recap: includeJoinRules=false omits rules from briefing", asy
       false,
       "message should not include rules block when opted out",
     );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: includes task ownership ledger in recap text", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-task-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await registerAgent(session.sessionId, {
+      agentId: "lead-r1f2",
+      model: "gpt-5.4",
+      role: "reviewer",
+      targetPath: tempRoot,
+    });
+    await registerAgent(session.sessionId, {
+      agentId: "codex-c3d4",
+      model: "gpt-5.4",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    await registerAgent(session.sessionId, {
+      agentId: "claude-a1b2",
+      model: "claude-opus-4-7",
+      role: "reviewer",
+      targetPath: tempRoot,
+    });
+
+    const codexTask = await assignTask(session.sessionId, {
+      fromAgentId: "lead-r1f2",
+      toAgentId: "codex-c3d4",
+      priority: "P1",
+      task: "Implement checkpoint restore navigation contract.",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:00:00.000Z",
+    });
+    await acceptTask(session.sessionId, "codex-c3d4", codexTask.task.taskId, {
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:01:00.000Z",
+    });
+    await assignTask(session.sessionId, {
+      fromAgentId: "lead-r1f2",
+      toAgentId: "claude-a1b2",
+      priority: "P2",
+      task: "Review recap UX and billing ledger spec.",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:02:00.000Z",
+    });
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex-c3d4",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Tasks: 2 active of 2 total/);
+    assert.match(recap.text, /codex-c3d4 \(1 accepted\)/);
+    assert.match(recap.text, /claude-a1b2 \(1 pending\)/);
+    assert.match(recap.text, /P1 ACCEPTED codex-c3d4: Implement checkpoint restore/);
+    assert.equal(recap.summary.pendingTasksForAgent, 1);
+    assert.equal(recap.summary.taskLedger.accepted, 1);
+    assert.equal(recap.summary.taskLedger.pending, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
