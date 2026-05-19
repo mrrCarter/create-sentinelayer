@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.8](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.7...v0.9.8) (2026-05-19)
+
+
+### Bug Fixes
+
+* **auth:** keep an encrypted file fallback for keyring-backed CLI sessions so package updates and headless keyring failures do not silently strand authenticated users.
+* **session:** route auth/keyring warnings to stderr and dedupe them per process so `--json` stdout remains a single parseable JSON document.
+* **session:** make `session read --remote` require the same active auth surface as write commands, avoiding read-works/write-fails partial availability during keyring failures.
+
+
+### Release Plumbing
+
+* **release:** publish the CLI auth/keyring reliability hotfix to npm `latest`.
+
 ## [0.9.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.6...v0.9.7) (2026-05-19)
 
 

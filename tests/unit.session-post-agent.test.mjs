@@ -398,3 +398,49 @@ test("Unit session post-agent: rejects human and placeholder identities before r
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit session read: --remote requires the same active auth surface as writes", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-remote-auth-"));
+  const previous = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    SENTINELAYER_TOKEN: process.env.SENTINELAYER_TOKEN,
+    SENTINELAYER_API_URL: process.env.SENTINELAYER_API_URL,
+    SENTINELAYER_DISABLE_KEYRING: process.env.SENTINELAYER_DISABLE_KEYRING,
+  };
+  try {
+    process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
+    process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+    delete process.env.SENTINELAYER_TOKEN;
+    delete process.env.SENTINELAYER_API_URL;
+
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "read",
+          session.sessionId,
+          "--remote",
+          "--path",
+          tempRoot,
+          "--json",
+        ]),
+      /Remote session read requires authentication/,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

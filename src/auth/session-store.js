@@ -17,6 +17,8 @@ const SESSION_WARNING_ALLOWED_FIELDS = new Set([
   "codeHint",
   "requestIdHash",
 ]);
+const emittedSessionWarningKeys = new Set();
+let keytarClientOverrideForTests;
 
 function nowIso() {
   return new Date().toISOString();
@@ -69,24 +71,43 @@ function sanitizeSessionWarningDetails(details) {
 
 function emitSessionWarning(code, details = {}) {
   const sanitizedDetails = sanitizeSessionWarningDetails(details);
+  const normalizedCode = String(code || "SESSION_WARNING").toUpperCase();
+  const allowedDetails = {};
+  for (const [key, value] of Object.entries(sanitizedDetails)) {
+    allowedDetails[key] = SESSION_WARNING_ALLOWED_FIELDS.has(key) ? value : "[OMITTED]";
+  }
+  const warningKey = `${normalizedCode}:${JSON.stringify(allowedDetails)}`;
+  if (emittedSessionWarningKeys.has(warningKey)) {
+    return;
+  }
+  emittedSessionWarningKeys.add(warningKey);
+
   const payload = {
     level: "warn",
-    code: String(code || "SESSION_WARNING").toUpperCase(),
+    code: normalizedCode,
     warningId: createSessionWarningId(),
     timestamp: nowIso(),
   };
-  for (const [key, value] of Object.entries(sanitizedDetails)) {
-    if (SESSION_WARNING_ALLOWED_FIELDS.has(key)) {
-      payload[key] = value;
-    } else {
-      payload[key] = "[OMITTED]";
-    }
+  for (const [key, value] of Object.entries(allowedDetails)) {
+    payload[key] = value;
   }
   try {
-    console.warn(`${SESSION_WARNING_PREFIX} ${JSON.stringify(payload)}`);
+    process.stderr.write(`${SESSION_WARNING_PREFIX} ${JSON.stringify(payload)}\n`);
   } catch {
-    console.warn(`${SESSION_WARNING_PREFIX} ${payload.code}`);
+    console.error(`${SESSION_WARNING_PREFIX} ${payload.code}`);
   }
+}
+
+export function resetSessionWarningsForTests() {
+  emittedSessionWarningKeys.clear();
+}
+
+export function setKeytarClientForTests(client) {
+  const previous = keytarClientOverrideForTests;
+  keytarClientOverrideForTests = client || null;
+  return () => {
+    keytarClientOverrideForTests = previous;
+  };
 }
 
 function resolveHomeDir(homeDir) {
@@ -356,7 +377,10 @@ async function replaceWithBackup(tmpPath, filePath) {
   }
 }
 
-async function loadKeytarClient() {
+async function loadKeytarClient({ allowImplicit = false } = {}) {
+  if (keytarClientOverrideForTests !== undefined) {
+    return keytarClientOverrideForTests;
+  }
   const disableKeyring = String(process.env.SENTINELAYER_DISABLE_KEYRING || "")
     .trim()
     .toLowerCase();
@@ -372,7 +396,7 @@ async function loadKeytarClient() {
     keyringMode === "on" ||
     keyringMode === "true" ||
     keyringMode === "1";
-  if (!enableKeyring) {
+  if (!enableKeyring && !allowImplicit) {
     return null;
   }
   try {
@@ -392,6 +416,20 @@ async function loadKeytarClient() {
   } catch {
     return null;
   }
+}
+
+async function encryptTokenForFileFallback(token, { homeDir } = {}) {
+  const key = await loadOrCreateFileKey({ homeDir });
+  return encryptToken(token, key);
+}
+
+async function attachEncryptedTokenFallback(metadata, token, { homeDir } = {}) {
+  const encrypted = await encryptTokenForFileFallback(token, { homeDir });
+  metadata.tokenEncrypted = encrypted.tokenEncrypted;
+  metadata.tokenIv = encrypted.tokenIv;
+  metadata.tokenTag = encrypted.tokenTag;
+  metadata.token = null;
+  return metadata;
 }
 
 async function readMetadata({ homeDir } = {}) {
@@ -480,20 +518,12 @@ async function migratePlaintextTokenIfNeeded({ metadata, filePath, homeDir } = {
     nextMetadata.storage = "keyring";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
-    const key = await loadOrCreateFileKey({ homeDir });
-    const encrypted = encryptToken(plaintextToken, key);
-    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
-    nextMetadata.tokenIv = encrypted.tokenIv;
-    nextMetadata.tokenTag = encrypted.tokenTag;
+    await attachEncryptedTokenFallback(nextMetadata, plaintextToken, { homeDir });
   } else {
-    const key = await loadOrCreateFileKey({ homeDir });
-    const encrypted = encryptToken(plaintextToken, key);
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
-    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
-    nextMetadata.tokenIv = encrypted.tokenIv;
-    nextMetadata.tokenTag = encrypted.tokenTag;
+    await attachEncryptedTokenFallback(nextMetadata, plaintextToken, { homeDir });
   }
 
   await writeMetadata(filePath, nextMetadata);
@@ -570,7 +600,7 @@ export async function readStoredSession({ homeDir } = {}) {
   }
 
   if (metadata.storage === "keyring") {
-    const keytar = await loadKeytarClient();
+    const keytar = await loadKeytarClient({ allowImplicit: true });
     let keyringError = null;
     if (keytar && metadata.keyringAccount) {
       try {
@@ -763,17 +793,12 @@ export async function writeStoredSession(
     nextMetadata.storage = "keyring";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = keyringAccount;
-    nextMetadata.token = null;
+    await attachEncryptedTokenFallback(nextMetadata, normalizedToken, { homeDir });
   } else {
     nextMetadata.storage = "file";
     nextMetadata.keyringService = KEYRING_SERVICE;
     nextMetadata.keyringAccount = "";
-    const key = await loadOrCreateFileKey({ homeDir });
-    const encrypted = encryptToken(normalizedToken, key);
-    nextMetadata.token = null;
-    nextMetadata.tokenEncrypted = encrypted.tokenEncrypted;
-    nextMetadata.tokenIv = encrypted.tokenIv;
-    nextMetadata.tokenTag = encrypted.tokenTag;
+    await attachEncryptedTokenFallback(nextMetadata, normalizedToken, { homeDir });
   }
 
   await writeMetadata(filePath, nextMetadata);
@@ -794,7 +819,7 @@ export async function writeStoredSession(
 export async function clearStoredSession({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (metadata && metadata.storage === "keyring") {
-    const keytar = await loadKeytarClient();
+    const keytar = await loadKeytarClient({ allowImplicit: true });
     if (keytar && metadata.keyringAccount) {
       await keytar.deletePassword(metadata.keyringService || KEYRING_SERVICE, metadata.keyringAccount);
     }
