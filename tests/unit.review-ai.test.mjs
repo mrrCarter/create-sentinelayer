@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-import { buildAiReviewPrompt, parseAiReviewResponse } from "../src/review/ai-review.js";
+import { buildAiReviewPrompt, parseAiReviewResponse, runAiReviewLayer } from "../src/review/ai-review.js";
+import { readStream } from "../src/session/stream.js";
+
+async function makeRoot() {
+  return fsp.mkdtemp(path.join(os.tmpdir(), "review-ai-billing-"));
+}
 
 test("Unit AI review: parse structured JSON response into normalized findings", () => {
   const response = {
@@ -190,4 +198,49 @@ test("Unit AI review: prompt prepends persona system prompt when provided", () =
   assert.match(prompt, /Output STRICT JSON only/);
   assert.match(prompt, /lensEvidence/);
   assert.match(prompt, /trafficLight/);
+});
+
+test("Unit AI review: dry run records session usage billing ledger", async () => {
+  const root = await makeRoot();
+  try {
+    const runDirectory = path.join(root, "runs", "review-ai");
+    const result = await runAiReviewLayer({
+      targetPath: root,
+      runDirectory,
+      runId: "review-ai-billing",
+      sessionId: "sess-review-billing",
+      mode: "diff",
+      provider: "openai",
+      model: "gpt-5.3-codex",
+      dryRun: true,
+      maxFindings: 1,
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+        findings: [],
+        scope: { scannedRelativeFiles: ["src/a.js"] },
+      },
+      env: {},
+    });
+
+    assert.equal(result.billing.ok, true);
+    assert.equal(result.billing.ledgerEntry.action, "audit_run");
+    assert.equal(result.billing.ledgerEntry.agentId, "audit-orchestrator");
+    assert.equal(result.billing.ledgerEntry.model, "gpt-5.3-codex");
+    assert.equal(result.billing.ledgerEntry.customerCostUsd, null);
+    assert.equal(result.billing.ledgerEntry.metadata.sourceCommand, "review");
+
+    const events = await readStream("sess-review-billing", { targetPath: root, tail: 0 });
+    const usageEvents = events.filter((event) => event.event === "session_usage");
+    assert.equal(usageEvents.length, 1);
+    assert.equal(usageEvents[0].payload.schema, "billing/v1");
+    assert.equal(usageEvents[0].payload.action, "audit_run");
+    assert.equal(usageEvents[0].payload.usage.totalTokens, result.usage.inputTokens + result.usage.outputTokens);
+    assert.equal(usageEvents[0].payload.prompt, undefined);
+    assert.equal(usageEvents[0].payload.response, undefined);
+
+    const report = JSON.parse(await fsp.readFile(path.join(runDirectory, "REVIEW_AI.json"), "utf-8"));
+    assert.equal(report.sessionUsageLedger.ledgerEntry.ledgerEntryId, result.billing.ledgerEntry.ledgerEntryId);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
 });
