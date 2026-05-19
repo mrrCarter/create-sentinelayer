@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.8...v0.10.0) (2026-05-19)
+
+
+### Features
+
+* **session:** meter senti proxy usage ([5cbeca0](https://github.com/mrrCarter/create-sentinelayer/commit/5cbeca0c99f22db796f9534fb782eb5ec1709ca2))
+
 ## [0.9.8](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.7...v0.9.8) (2026-05-19)
 
 
