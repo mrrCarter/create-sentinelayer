@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.3...v0.9.4) (2026-05-19)
+
+
+### Features
+
+* **session:** include the local Senti task ledger in automatic recaps so polling agents and humans can see active/total task counts, status counts, owners, and recent assignments without rereading the full transcript ([#470](https://github.com/mrrCarter/create-sentinelayer/pull/470)).
+
+
+### Documentation
+
+* **session:** add reviewable architecture specs for checkpoint restore/navigation, automatic recap cadence and payloads, and billing-grade token/cost ledgers ([#470](https://github.com/mrrCarter/create-sentinelayer/pull/470)).
+
+
+### Release Plumbing
+
+* **release:** publish the Senti L2 recap/spec work to npm `latest`.
+
 ## [0.9.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.2...v0.9.3) (2026-05-18)
 
 
