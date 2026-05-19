@@ -27,7 +27,15 @@ const PROXY_RETRY_STATUSES = new Set([429, 502, 503, 504]);
  * @param {number} [options.temperature] - Temperature (default: 0.1)
  * @param {string} [options.apiUrl] - Override API URL
  * @param {string} [options.token] - Override Bearer token
- * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number, costUsd: number, model: string, provider: string, latencyMs: number } }>}
+ * @param {string} [options.sessionId] - Optional Senti session id for server-side usage metering
+ * @param {string} [options.agentId] - Optional session agent id for server-side usage metering
+ * @param {string} [options.action] - Optional metered action, defaults server-side when omitted
+ * @param {string} [options.usageIdempotencyKey] - Stable per-intent key for proxy + ledger idempotency
+ * @param {string} [options.billingTier] - Optional billing tier hint
+ * @param {string} [options.customerPricingPolicy] - Optional customer pricing policy hint
+ * @param {object} [options.metadata] - Optional allowlisted billing metadata
+ * @param {Function} [options.fetchImpl] - Optional fetch implementation for tests
+ * @returns {Promise<{ text: string, usage: { inputTokens: number, outputTokens: number, costUsd: number, model: string, provider: string, latencyMs: number }, usageLedger: object | null }>}
  */
 export async function invokeViaProxy({
   prompt,
@@ -37,6 +45,14 @@ export async function invokeViaProxy({
   temperature = 0.1,
   apiUrl = "",
   token = "",
+  sessionId = "",
+  agentId = "",
+  action = "",
+  usageIdempotencyKey = "",
+  billingTier = "",
+  customerPricingPolicy = "",
+  metadata = null,
+  fetchImpl = fetch,
 } = {}) {
   // Resolve credentials from session if not provided
   let resolvedApiUrl = String(apiUrl || "").trim();
@@ -59,13 +75,40 @@ export async function invokeViaProxy({
 
   const url = `${resolvedApiUrl.replace(/\/+$/, "")}/api/v1/proxy/llm`;
 
-  const body = JSON.stringify({
+  const requestBody = {
     model,
     system_prompt: systemPrompt || "You are a code reviewer.",
     user_content: String(prompt || ""),
     max_tokens: maxTokens,
     temperature,
-  });
+  };
+
+  const normalizedSessionId = String(sessionId || "").trim();
+  const normalizedAgentId = String(agentId || "").trim();
+  const normalizedAction = String(action || "").trim();
+  const normalizedUsageIdempotencyKey = String(usageIdempotencyKey || "").trim();
+  const normalizedBillingTier = String(billingTier || "").trim();
+  const normalizedCustomerPricingPolicy = String(customerPricingPolicy || "").trim();
+  if (normalizedSessionId) requestBody.session_id = normalizedSessionId;
+  if (normalizedAgentId) requestBody.agent_id = normalizedAgentId;
+  if (normalizedAction) requestBody.action = normalizedAction;
+  if (normalizedUsageIdempotencyKey) requestBody.usage_idempotency_key = normalizedUsageIdempotencyKey;
+  if (normalizedBillingTier) requestBody.billing_tier = normalizedBillingTier;
+  if (normalizedCustomerPricingPolicy) requestBody.customer_pricing_policy = normalizedCustomerPricingPolicy;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    requestBody.metadata = metadata;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${resolvedToken}`,
+    Accept: "application/json",
+  };
+  if (normalizedUsageIdempotencyKey) {
+    headers["Idempotency-Key"] = normalizedUsageIdempotencyKey;
+  }
+
+  const body = JSON.stringify(requestBody);
 
   let response = null;
   let lastError = null;
@@ -75,13 +118,9 @@ export async function invokeViaProxy({
       const controller = new AbortController();
       const timeoutHandle = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
       try {
-        response = await fetch(url, {
+        response = await fetchImpl(url, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${resolvedToken}`,
-            Accept: "application/json",
-          },
+          headers,
           body,
           signal: controller.signal,
         });
@@ -131,6 +170,7 @@ export async function invokeViaProxy({
       provider: result.usage?.provider || "sentinelayer",
       latencyMs: result.usage?.latency_ms || 0,
     },
+    usageLedger: result.usageLedger || result.usage_ledger || null,
   };
 }
 

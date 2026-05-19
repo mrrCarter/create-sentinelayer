@@ -394,6 +394,7 @@ jobs:
           local_node_version="$(node --version)"
           local_npm_version="$(npm --version)"
           local_toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${local_node_version}" "${local_npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
+          toolchain_drift_notes=()
           if [ -n "${source_runner_os}" ] && [ "${source_runner_os}" != "${RUNNER_OS}" ]; then
             echo "::error::Runner OS mismatch. expected=${source_runner_os} actual=${RUNNER_OS}."
             exit 1
@@ -403,16 +404,26 @@ jobs:
             exit 1
           fi
           if [ -n "${source_node_version}" ] && [ "${source_node_version}" != "${local_node_version}" ]; then
-            echo "::error::Node version mismatch. expected=${source_node_version} actual=${local_node_version}."
-            exit 1
+            echo "::warning::Node version drift after reproducible digest match. expected=${source_node_version} actual=${local_node_version}."
+            toolchain_drift_notes+=("node: expected=${source_node_version} actual=${local_node_version}")
           fi
           if [ -n "${source_npm_version}" ] && [ "${source_npm_version}" != "${local_npm_version}" ]; then
-            echo "::error::npm version mismatch. expected=${source_npm_version} actual=${local_npm_version}."
-            exit 1
+            echo "::warning::npm version drift after reproducible digest match. expected=${source_npm_version} actual=${local_npm_version}."
+            toolchain_drift_notes+=("npm: expected=${source_npm_version} actual=${local_npm_version}")
           fi
           if [ -n "${source_toolchain_fingerprint}" ] && [ "${source_toolchain_fingerprint}" != "${local_toolchain_fingerprint}" ]; then
-            echo "::error::Toolchain fingerprint mismatch. expected=${source_toolchain_fingerprint} actual=${local_toolchain_fingerprint}."
-            exit 1
+            echo "::warning::Toolchain fingerprint drift after reproducible digest match. expected=${source_toolchain_fingerprint} actual=${local_toolchain_fingerprint}."
+            toolchain_drift_notes+=("fingerprint: expected=${source_toolchain_fingerprint} actual=${local_toolchain_fingerprint}")
+          fi
+          if [ "${#toolchain_drift_notes[@]}" -gt 0 ]; then
+            {
+              echo "## Reproducibility Toolchain Drift"
+              echo "- artifact_digest_match: \`true\`"
+              echo "- policy: \`warn_after_digest_match\`"
+              for note in "${toolchain_drift_notes[@]}"; do
+                echo "- ${note}"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "LOCAL_REBUILD_SHA256=${local_sha256}" >> "$GITHUB_ENV"
 

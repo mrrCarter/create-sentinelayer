@@ -453,6 +453,10 @@ async function buildHelpResponseMessage(
       normalizePositiveInteger(daemonState.helpRequestTimeoutMs, HELP_REQUEST_TIMEOUT_MS) * 2
     )
   );
+  const requestCorrelationId =
+    normalizeString(requestEvent?.payload?.requestId) ||
+    normalizeString(requestEvent?.requestId) ||
+    normalizeIsoTimestamp(requestEvent?.ts, daemonState.startedAt);
 
   try {
     const llmResult = await runWithTimeout(
@@ -463,6 +467,15 @@ async function buildHelpResponseMessage(
           prompt: userPrompt,
           maxTokens: 320,
           temperature: 0.1,
+          sessionId: daemonState.sessionId,
+          agentId: SENTI_IDENTITY.id,
+          action: "proxy_llm",
+          usageIdempotencyKey: `senti:${daemonState.sessionId}:help:${requestCorrelationId}`,
+          billingTier: "internal",
+          metadata: {
+            purpose: "senti_help_response",
+            runId: requestCorrelationId,
+          },
         })
       ),
       llmTimeoutMs,
