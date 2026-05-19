@@ -52,11 +52,13 @@ test("Unit session daemon context relay: unanswered help_request emits help_resp
       targetPath: tempRoot,
     });
 
+    const llmCalls = [];
     await startSenti(session.sessionId, {
       targetPath: tempRoot,
       autoStart: false,
       helpRequestTimeoutMs: 25,
-      llmInvoker: async () => {
+      llmInvoker: async (request) => {
+        llmCalls.push(request);
         await sleep(30);
         return {
           text: "Route to src/auth/login.js and inspect token verification timeout.",
@@ -124,6 +126,16 @@ test("Unit session daemon context relay: unanswered help_request emits help_resp
     assert.equal(modelSpan.payload.inputTokens, 120);
     assert.equal(modelSpan.payload.outputTokens, 18);
     assert.equal(modelSpan.payload.costUsd, 0.0008);
+    assert.equal(llmCalls.length, 1);
+    assert.equal(llmCalls[0].sessionId, session.sessionId);
+    assert.equal(llmCalls[0].agentId, "senti");
+    assert.equal(llmCalls[0].action, "proxy_llm");
+    assert.equal(llmCalls[0].usageIdempotencyKey, `senti:${session.sessionId}:help:req-context-1`);
+    assert.equal(llmCalls[0].billingTier, "internal");
+    assert.deepEqual(llmCalls[0].metadata, {
+      purpose: "senti_help_response",
+      runId: "req-context-1",
+    });
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
