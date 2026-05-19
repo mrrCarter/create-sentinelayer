@@ -1,5 +1,11 @@
 # Lessons
 
+## 2026-05-19
+
+- When the user says CLI auth was refreshed, immediately re-test both Senti read and write paths instead of carrying forward stale auth assumptions.
+- Auth/keyring diagnostics must go to stderr and be one-time per process; any command with `--json` must keep stdout as a single machine-parseable document.
+- Treat OS keyring as an optional hardening layer, not the only durable token store; persisted auth needs a file fallback that survives headless keyring and package-update scenarios.
+
 ## 2026-04-28
 
 - Before closing a multi-PR CLI feature train, verify both repository main and the published npm dist-tag; green merged code is not user-available until the package version is bumped, released, and `npm view sentinelayer-cli version` reflects the new feature surface.

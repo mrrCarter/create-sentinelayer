@@ -1690,6 +1690,14 @@ export function registerSessionCommand(program) {
       let hydration = null;
       let remoteTail = null;
       if (options.remote) {
+        const authSession = await resolveActiveAuthSession({
+          cwd: targetPath,
+          env: process.env,
+          autoRotate: false,
+        });
+        if (!authSession || !authSession.token) {
+          throw new Error(`Remote session read requires authentication. Run \`${authLoginHint()}\` first.`);
+        }
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
