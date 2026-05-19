@@ -23,6 +23,8 @@ export async function recordSessionUsage(
   params = {},
   {
     targetPath = process.cwd(),
+    // Billing events originate in the CLI and must reach the API for server-side
+    // ledger/quota projection; this intentionally defaults to remote sync.
     syncRemote = true,
     ensureLocalSession = true,
     append = appendUsageEvent,
