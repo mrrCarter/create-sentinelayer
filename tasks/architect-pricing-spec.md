@@ -24,13 +24,13 @@ The product surface charges subscription tiers, not raw per-token. Token cost is
 | **Free** | $0 | 1 | — | 1 | 7 days | Onboarding hook. Full deliverable, watermarked PDF/report. Personal repos only. |
 | **Indie / Solo** | $149 / mo | 4 | ~$37 | 1 | 30 days | Personal repos, Slack export off, full report. |
 | **Pro / Team** | $499 / mo | 15 | ~$33 | 5 | 90 days | Org repos, Slack export, role-based seats. |
-| **Acquirer DD** | per-engagement, $1,499 anchor | 1-3 + audit/findings export + PlexAura DD Protocol overlay | $99-$199 anchored | custom | engagement + 1 yr | Productized SKU for `SWE_excellence_framework.md` DD use case. White-glove. |
+| **Acquirer DD** | per-engagement, $1,499 anchor | 1-3 + audit/findings export + PlexAura DD Protocol overlay | DD package price; $500-$1,499 effective depending on scope | custom | engagement + 1 yr | Productized SKU for `SWE_excellence_framework.md` DD use case. White-glove. See market-anchor note below. |
 
 **Pricing rules:**
 
 - **Priced surfaces**: `sl audit` (full 15-agent swarm), `sl audit security` (Jules security-focused), `sl audit frontend` (Jules frontend-focused), `sl /omargate deep` (security analysis with LLM-backed depth). All count against the tier audit quota.
 - **Free surfaces** (always, regardless of tier): `sl session say/join/read`, `sl session recap` (periodic recap is free, operational glue not deliverable), `sl session checkpoint create/list` (checkpoint is free, context anchor not analysis), `sl review scan` (deterministic local review, no LLM compute), dashboard reads, transcript export, `sl auth`, `sl spec`, `sl prompt`, `sl guide`.
-- **Anchor framing**: the $99-$199 per-audit perception lives in the **DD per-engagement SKU** ($1,499 = roughly one DD-grade audit at premium positioning). Subscription tiers bundle to a better effective rate to drive recurring revenue. User math is "I can run 4 audits/mo for less than a single DD-grade run", a clear upsell ladder.
+- **Anchor framing** (market positioning, NOT a literal per-audit price in the DD SKU): the $99-$199 per-audit number is the **market-comparable price perception** for DD-grade audit work (Snyk paid tier, Veracode per-engagement scans, etc.). The DD SKU price ($1,499 / engagement) is the *package* price for 1-3 audits + findings export + PlexAura DD Protocol overlay, which produces an effective rate of ~$500-$1,499/audit at the package level. Use the $99-$199 number in marketing prose to anchor *perceived value*, not in the price table where users will do the math and notice the gap. Subscription tiers (Indie/Team) bundle to a meaningfully better effective rate ($33-$37/audit), which is the actual upsell ladder against the DD anchor.
 - **Free tier rationale**: 1 audit/mo with full deliverable (watermarked) lets the user experience real value before paying. Cheap for us, one audit per user per month is small compute, and the deliverable quality is the conversion driver.
 - **Overage policy**: when a paid tier exhausts its monthly audit quota, fail-closed with a clear "upgrade or wait until next cycle" error. **Never** silently bill overages without explicit user acknowledgement (no surprise invoices, that is a SS B.2.3 fail-closed application to the billing surface).
 - **Free or internal dogfood sessions** are flagged by policy via a `billing_tier=internal` session attribute, not by deleting usage data. Usage data still records for accounting; charges are suppressed.
@@ -143,4 +143,11 @@ The first product price book should be explicit and versioned:
 - **Tier downgrade arbitrage**: downgrade takes effect end-of-period, not immediately, so users cannot burn 14 audits on Team, downgrade to Indie, and pay $149 for what should have been $499.
 - **Stripe webhook spoofing**: webhook handler validates signature using Stripe's verification SDK. SS K.2, strict signature check.
 - **Card on file harvesting**: never store full card numbers; always rely on Stripe tokenization. CLI never sees card details. SS E.5 evidence: every charge maps to a Stripe payment intent ID that is auditable in Stripe dashboard.
-- **Free tier abuse**: rate-limit account creation per IP/email-domain to prevent users farming free audits via throwaway accounts. Soft limit: 3 free-tier accounts per domain.
+- **Free tier abuse**: risk-based account creation controls, NOT a flat per-domain cap (a flat "3 accounts per domain" rule punishes legitimate `gmail.com`/`outlook.com` users and is trivially evadable via throwaway domains). The right controls:
+  - **Normalized email**: lowercase + remove gmail-style dot variants and `+aliases` before uniqueness check.
+  - **OAuth identity preferred**: GitHub/Google OAuth ties account creation to a real third-party identity, raising the cost of throwaway account creation.
+  - **IP / device velocity**: flag bursts of accounts from the same IP / device fingerprint within a short window for manual review.
+  - **Disposable-domain denylist**: maintained list (`mailinator`, `tempmail`, `guerrillamail`, etc.) blocks the easy evasion path.
+  - **Payment / org reuse signals**: if Stripe sees the same card on multiple "new" accounts, flag for fraud review.
+  - **Per-private-org-domain caps** only: domain-cap rules apply to *private* org domains (corporate emails like `@acme.com`) where reuse is expected, NOT to consumer email providers. Public domains are governed by the other controls above.
+  - **Soft-then-hard**: first signal triggers human review and audit-quota throttle to 0 until cleared; second confirmed abuse triggers account suspension.
