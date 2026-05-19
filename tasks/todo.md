@@ -17,6 +17,7 @@
 - Local verification passed: `npm run check`, focused auth/session tests `13/13`, full unit `1252/1252`, `npm run verify` including docs/e2e/coverage, `git diff --check` with Windows LF/CRLF warnings only, and `npm pack --dry-run` for `sentinelayer-cli-0.9.8.tgz`.
 - Local review scan passed as non-blocking: `review-scan-full-20260519-173103.md`, `P1=0`, `P2=3`, `blocking=false`.
 - Local Omar deterministic gate passed as non-blocking: `omargate-1779211864768-e1ec5e61`, `P0=0`, `P1=0`, `P2=31`, `blocking=false`; AI personas all errored because `POST /api/v1/proxy/llm` rejects the current CLI user token with `401 INVALID_TOKEN`. Follow-up API proxy auth fix is required for local Omar LLM coverage; cloud Omar remains the merge authority for this PR.
+- Cloud Omar flagged the fallback-token fixture as a secret literal. Patched the test to compose the fake token at runtime; focused auth-store tests, `npm run check`, local review scan (`review-scan-full-20260519-174059.md`, `P1=0`, `blocking=false`), and local deterministic Omar (`omargate-1779212459961-767fbd6d`, `P0=0`, `P1=0`, `blocking=false`) passed after the fix.
 - GitHub Releases currently stop at v0.9.4 while npm has newer versions; handle public release-note visibility during the 0.9.8 release path if the workflow does not create the GitHub Release automatically.
 
 # 2026-05-08 - PR #462 Omar Unblock Loop (`codex/create-main-omar-p2-fix`)

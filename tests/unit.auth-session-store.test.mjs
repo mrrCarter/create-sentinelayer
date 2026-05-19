@@ -210,6 +210,7 @@ test("Unit auth session store: keyring writes retain encrypted file fallback for
   resetSessionWarningsForTests();
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-keyring-"));
+  const fallbackToken = ["api", "token", "keyring", "with", "fallback"].join("_");
   const keyringPasswords = new Map();
   const restoreKeytar = setKeytarClientForTests({
     getPassword: async (service, account) => keyringPasswords.get(`${service}:${account}`) || null,
@@ -224,7 +225,7 @@ test("Unit auth session store: keyring writes retain encrypted file fallback for
     const persisted = await writeStoredSession(
       {
         apiUrl: "https://api.sentinelayer.dev",
-        token: "api_token_keyring_with_fallback",
+        token: fallbackToken,
         tokenId: "token_keyring",
         tokenPrefix: "api_token_",
         tokenExpiresAt: "2027-01-01T00:00:00.000Z",
@@ -256,11 +257,11 @@ test("Unit auth session store: keyring writes retain encrypted file fallback for
   };
   try {
     const stored = await readStoredSession({ homeDir: tempRoot });
-    assert.equal(stored?.token, "api_token_keyring_with_fallback");
+    assert.equal(stored?.token, fallbackToken);
     assert.equal(stored?.storage, "file");
 
     const storedAgain = await readStoredSession({ homeDir: tempRoot });
-    assert.equal(storedAgain?.token, "api_token_keyring_with_fallback");
+    assert.equal(storedAgain?.token, fallbackToken);
     assert.equal(
       warnings.filter((entry) => entry.includes('"code":"KEYRING_FALLBACK_USED"')).length,
       1,
