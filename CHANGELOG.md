@@ -230,6 +230,7 @@
 
 ### Bug Fixes
 
+* **session:** paginate remote session list JSON output across API cursors and dedupe mutable activity-order overlaps ([#489](https://github.com/mrrCarter/create-sentinelayer/pull/489)) ([5d64afe](https://github.com/mrrCarter/create-sentinelayer/commit/5d64afe22b2042a1b9ae2392d1e6aabb255f76fc))
 * **aidenid:** restore async credential flow and status metadata ([#198](https://github.com/mrrCarter/create-sentinelayer/issues/198)) ([16cebd0](https://github.com/mrrCarter/create-sentinelayer/commit/16cebd0930b3eabcd5bb348f533983700eada406))
 * **ai:** scrub google api key errors and harden env ignore rules (PR 99) ([#99](https://github.com/mrrCarter/create-sentinelayer/issues/99)) ([661c24b](https://github.com/mrrCarter/create-sentinelayer/commit/661c24b35965d46e9d2ff928c68547c1f23b956b))
 * align telemetry sync with API /api/v1/telemetry endpoint ([#185](https://github.com/mrrCarter/create-sentinelayer/issues/185)) ([bb5f791](https://github.com/mrrCarter/create-sentinelayer/commit/bb5f791e1e134229ec8fc52049b6038d434b0baf))
