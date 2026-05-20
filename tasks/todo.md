@@ -3004,4 +3004,29 @@ Review:
 - `tests/e2e.test.mjs`: CLI stream/artifact proof.
 - `tasks/evals/pr-e3-dd-engages-devtestbot.md`: same-PR eval evidence because DD orchestration is eval-impacting.
 
+# L1 Senti Session Regression Proof (2026-05-20)
+
+## Plan
+- [x] Rebase proof branch from `origin/main` at CLI `0.10.1`.
+- [x] Tighten `session join --agent` test coverage so one join proves exactly one local `agent_join`, exactly one `context_briefing`, and no phantom `agent_leave`.
+- [x] Tighten `session say` coverage so omitted `--agent` still persists exactly one local `session_message` from `cli-user`.
+- [x] Run focused join and say/post-agent tests before deciding whether production code needs a fix.
+- [x] Run broader CLI checks and open a proof PR for Claude/Omar review.
+
+## Review
+- Focused tests passed without production-code changes:
+  - `node --test tests\unit.session-attach.test.mjs` -> 7 passed.
+  - `node --test tests\unit.session-post-agent.test.mjs` -> 9 passed.
+- Broader checks:
+  - `npm run check` -> 310 files passed.
+  - `git diff --check` -> clean except expected Windows LF/CRLF warnings in touched files.
+  - First `npm run test:unit` exposed a fresh-worktree missing dependency (`@axe-core/playwright`); `npm ci` restored the lockfile dependency set.
+  - Second `npm run test:unit` hit one transient `session-daemon` lock/unlock assertion; isolated rerun passed.
+  - Final `npm run test:unit` -> 63 suites, 1257 tests passed, 0 failed.
+  - `node bin\sl.js review --diff --json` -> `review-20260520-064503-5225582d`, P0/P1/P2/P3 all 0, blocking false.
+  - `node bin\sl.js /omargate deep --path . --ai-dry-run --scan-mode baseline --json` -> `omargate-1779259504736-996df58a`, P0 0, P1 0, blocking false; non-blocking P2s are outside this test-only diff.
+- Result: L1C/L1D are not active defects on current `origin/main`; the PR pins them as regression contracts.
+- Claude/Mythos audit approved PR #485 on Senti and requested one optional L1C micro-tighten; join coverage now also asserts zero `agent_leave` for any identity during the join run.
+- Follow-up kept separate: simulate remote-ack/local-append failure and require either retry-to-local or an explicit pending-local replay marker.
+
 
