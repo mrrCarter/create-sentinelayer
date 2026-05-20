@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.10.0...v0.10.1) (2026-05-20)
+
+
+### Bug Fixes
+
+* **session:** refresh stale local cache before writes ([#483](https://github.com/mrrCarter/create-sentinelayer/issues/483)) ([4ff291e](https://github.com/mrrCarter/create-sentinelayer/commit/4ff291ef422f36012cf031b84c22cf9f0aea8e00))
+
 ## [0.10.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.9.8...v0.10.0) (2026-05-19)
 
 
