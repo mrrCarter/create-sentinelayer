@@ -361,6 +361,7 @@ test("Unit session recap: elapsedMinutes uses session age while windowElapsedMin
       targetPath: tempRoot,
       ttlSeconds: 86_400,
       createdAt: "2026-05-19T00:00:00.000Z",
+      expiresAt: "2027-05-19T00:00:00.000Z",
     });
     await appendToStream(
       session.sessionId,

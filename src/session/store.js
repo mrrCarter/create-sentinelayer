@@ -537,6 +537,7 @@ export async function refreshSessionCacheForRemoteActivity(
     targetPath = process.cwd(),
     title = "",
     ttlSeconds = DEFAULT_TTL_SECONDS,
+    expiresAt = "",
     lastInteractionAt = "",
     nowIso = new Date().toISOString(),
   } = {}
@@ -563,7 +564,7 @@ export async function refreshSessionCacheForRemoteActivity(
   const metadata = {
     ...loaded.metadata,
     updatedAt: nowIso,
-    expiresAt: toIsoAfterSeconds(nowIso, normalizedTtlSeconds),
+    expiresAt: normalizeIsoTimestamp(expiresAt, toIsoAfterSeconds(nowIso, normalizedTtlSeconds)),
     ttlSeconds: normalizedTtlSeconds,
     status: SESSION_STATUS_ACTIVE,
     expiredAt: null,

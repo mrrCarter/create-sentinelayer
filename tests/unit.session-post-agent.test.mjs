@@ -280,6 +280,85 @@ test("Unit session post-agent: refreshes expired local cache after remote accept
   }
 });
 
+test("Unit session post-agent: refreshes locally expired status when remote session is active", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-status-expired-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      sessionId: "remote-status-expired-cache",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+      ttlSeconds: 60,
+    });
+    const metadataPath = path.join(session.sessionDir, "metadata.json");
+    const metadata = JSON.parse(await readFile(metadataPath, "utf-8"));
+    metadata.status = "expired";
+    metadata.expiredAt = "2026-01-02T00:00:00.000Z";
+    await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
+
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "GET") {
+        assert.ok(String(url).endsWith(`/api/v1/sessions/${session.sessionId}`));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            session: {
+              sessionId: session.sessionId,
+              title: "remote still active",
+              status: "active",
+              archiveStatus: "active",
+              expiresAt: "2027-01-02T00:00:00.000Z",
+              lastInteractionAt: "2027-01-01T12:00:00.000Z",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "post-agent",
+      session.sessionId,
+      "status: remote active despite stale local status",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.refreshedLocalSession, true);
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 1);
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+
+    const refreshedMetadata = JSON.parse(await readFile(metadataPath, "utf-8"));
+    assert.equal(refreshedMetadata.status, "active");
+    assert.equal(refreshedMetadata.expiredAt, null);
+    assert.equal(refreshedMetadata.expiresAt, "2027-01-02T00:00:00.000Z");
+    assert.equal(refreshedMetadata.title, "remote still active");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session join: refreshes expired local cache after remote verification", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-expired-"));

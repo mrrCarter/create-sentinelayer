@@ -6,13 +6,15 @@ import { createAgentEvent, normalizeAgentEvent } from "../events/schema.js";
 import { enrichEventWithMentions } from "./mentions.js";
 import { resolveSessionPaths } from "./paths.js";
 import { redactEventPayload } from "./redact.js";
-import { syncSessionEventToApi } from "./sync.js";
+import { fetchSessionFromApi, listSessionsFromApi, syncSessionEventToApi } from "./sync.js";
 
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const DEFAULT_LOCK_STALE_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 25;
 const DEFAULT_MAX_STREAM_EVENTS = 10_000;
+const DEFAULT_REMOTE_REFRESH_TTL_SECONDS = 24 * 60 * 60;
+const REMOTE_REFRESH_TIMEOUT_MS = 2_500;
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -41,6 +43,15 @@ function normalizePositiveInteger(value, fallbackValue) {
   return Math.floor(normalized);
 }
 
+function toIsoAfterSeconds(baseIso, seconds) {
+  const baseEpoch = Date.parse(normalizeIsoTimestamp(baseIso, new Date().toISOString()));
+  const normalizedSeconds = normalizePositiveInteger(
+    seconds,
+    DEFAULT_REMOTE_REFRESH_TTL_SECONDS,
+  );
+  return new Date(baseEpoch + normalizedSeconds * 1000).toISOString();
+}
+
 async function readSessionMetadata(paths) {
   try {
     const raw = await fsp.readFile(paths.metadataPath, "utf-8");
@@ -62,6 +73,108 @@ async function writeSessionMetadata(paths, metadata = {}) {
   const tmpPath = `${paths.metadataPath}.${process.pid}.${Date.now()}.tmp`;
   await fsp.writeFile(tmpPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
   await fsp.rename(tmpPath, paths.metadataPath);
+}
+
+function remoteStatusAllowsLocalRefresh(remoteSession = {}) {
+  const status = normalizeString(remoteSession.archiveStatus || remoteSession.status).toLowerCase();
+  return !status || status === "active" || status === "pending";
+}
+
+function resolveRemoteSessionStatus(remoteSession = {}) {
+  return normalizeString(remoteSession.archiveStatus || remoteSession.status).toLowerCase();
+}
+
+async function resolveRemoteRefreshCandidate(sessionId, { targetPath = process.cwd() } = {}) {
+  const singletonResult = await fetchSessionFromApi(sessionId, {
+    targetPath,
+    timeoutMs: REMOTE_REFRESH_TIMEOUT_MS,
+  }).catch((error) => ({
+    ok: false,
+    reason: normalizeString(error?.message) || "fetch_failed",
+    session: null,
+  }));
+  if (singletonResult?.ok && singletonResult.session) {
+    if (!remoteStatusAllowsLocalRefresh(singletonResult.session)) {
+      return {
+        ok: false,
+        reason: `remote_${resolveRemoteSessionStatus(singletonResult.session) || "closed"}`,
+        remoteSession: singletonResult.session,
+      };
+    }
+    return { ok: true, reason: "", remoteSession: singletonResult.session };
+  }
+  if (singletonResult?.status && singletonResult.status !== 404) {
+    return { ok: false, reason: singletonResult.reason || `api_${singletonResult.status}` };
+  }
+
+  const listResult = await listSessionsFromApi({
+    targetPath,
+    includeArchived: true,
+    limit: 200,
+    timeoutMs: REMOTE_REFRESH_TIMEOUT_MS,
+  }).catch((error) => ({
+    ok: false,
+    reason: normalizeString(error?.message) || "list_failed",
+    sessions: [],
+  }));
+  if (listResult?.ok) {
+    const remoteSession = (listResult.sessions || []).find(
+      (entry) => normalizeString(entry?.sessionId) === sessionId,
+    );
+    if (remoteSession) {
+      if (!remoteStatusAllowsLocalRefresh(remoteSession)) {
+        return {
+          ok: false,
+          reason: `remote_${resolveRemoteSessionStatus(remoteSession) || "closed"}`,
+          remoteSession,
+        };
+      }
+      return { ok: true, reason: "", remoteSession };
+    }
+  }
+
+  return { ok: false, reason: listResult?.reason || singletonResult?.reason || "remote_unavailable" };
+}
+
+async function refreshExpiredMetadataFromRemote(paths, metadata = {}, { targetPath = process.cwd() } = {}) {
+  const candidate = await resolveRemoteRefreshCandidate(paths.sessionId, { targetPath });
+  if (!candidate?.ok) {
+    return { refreshed: false, reason: candidate?.reason || "remote_unavailable", metadata };
+  }
+  const remoteSession = candidate.remoteSession || {};
+  const nowIso = new Date().toISOString();
+  const ttlSeconds = normalizePositiveInteger(
+    metadata.ttlSeconds,
+    DEFAULT_REMOTE_REFRESH_TTL_SECONDS,
+  );
+  const remoteExpiresAt = normalizeString(remoteSession.expiresAt);
+  const remoteExpiryEpoch = Date.parse(remoteExpiresAt);
+  const nowEpoch = Date.parse(nowIso);
+  const expiresAt =
+    Number.isFinite(remoteExpiryEpoch) && Number.isFinite(nowEpoch) && remoteExpiryEpoch > nowEpoch
+      ? new Date(remoteExpiryEpoch).toISOString()
+      : toIsoAfterSeconds(nowIso, ttlSeconds);
+  const refreshed = {
+    ...metadata,
+    updatedAt: nowIso,
+    expiresAt,
+    ttlSeconds,
+    status: "active",
+    expiredAt: null,
+    archivedAt: null,
+    archiveStatus: resolveRemoteSessionStatus(remoteSession) || "active",
+    title: normalizeString(remoteSession.title) || metadata.title || null,
+    lastInteractionAt: normalizeIsoTimestamp(
+      remoteSession.lastInteractionAt ||
+        remoteSession.lastActivityAt ||
+        remoteSession.updatedAt ||
+        remoteSession.createdAt ||
+        metadata.lastInteractionAt,
+      metadata.lastInteractionAt || metadata.createdAt || nowIso,
+    ),
+  };
+  await writeSessionMetadata(paths, refreshed);
+  return { refreshed: true, reason: "", metadata: refreshed };
 }
 
 function isSessionExpired(metadata = {}, nowIso = new Date().toISOString()) {
@@ -227,12 +340,18 @@ export async function appendToStream(
   { targetPath = process.cwd(), maxEvents = DEFAULT_MAX_STREAM_EVENTS, syncRemote = true } = {}
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
-  const metadata = await readSessionMetadata(paths);
+  let metadata = await readSessionMetadata(paths);
   if (!metadata) {
     throw new Error(`Session '${paths.sessionId}' was not found.`);
   }
   if (isSessionExpired(metadata)) {
-    throw new Error(`Session '${paths.sessionId}' is expired and does not accept new events.`);
+    const refresh = await refreshExpiredMetadataFromRemote(paths, metadata, { targetPath });
+    if (!refresh.refreshed) {
+      throw new Error(
+        `Session '${paths.sessionId}' is expired and does not accept new events (remote refresh failed: ${refresh.reason}).`,
+      );
+    }
+    metadata = refresh.metadata;
   }
 
   const rawEvent = materializeCanonicalEvent(paths.sessionId, event);
