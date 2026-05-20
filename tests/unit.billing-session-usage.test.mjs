@@ -111,7 +111,7 @@ test("Unit billing ledger: deterministic ids and metadata sanitization", () => {
 test("Unit billing session usage: persists billing/v1 events without raw prompt text", async () => {
   const root = await makeRoot();
   try {
-    const createdAt = "2026-05-19T12:00:00.000Z";
+    const createdAt = new Date().toISOString();
     const created = await createSession({
       targetPath: root,
       sessionId: "sess-billing",
