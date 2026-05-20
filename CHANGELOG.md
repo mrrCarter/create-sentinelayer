@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.10.1...v0.10.2) (2026-05-20)
+
+
+### Bug Fixes
+
+* **scan:** publish the Omar action timeout pin through the generated workflow templates, action lock, and install scripts so new CLI users inherit the fixed async trigger path.
+* **tests:** refresh the billing usage fixture timestamp so the release test suite does not age out of the 24-hour usage window.
+
+
 ## [0.10.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.10.0...v0.10.1) (2026-05-20)
 
 
