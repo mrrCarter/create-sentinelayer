@@ -34,16 +34,61 @@ test("listSessionsFromApi: forwards include_archived + limit", async () => {
       observedUrl = url;
       return {
         ok: true,
-        json: async () => ({ sessions: [{ sessionId: "a" }], count: 1 }),
+        json: async () => ({ sessions: [{ sessionId: "a" }], count: 1, has_more: false }),
       };
     }),
   });
   assert.equal(result.ok, true);
   assert.equal(result.count, 1);
   assert.equal(result.sessions[0].sessionId, "a");
+  assert.equal(result.nextCursor, null);
+  assert.equal(result.hasMore, false);
   assert.match(observedUrl, /\/api\/v1\/sessions\?/);
   assert.match(observedUrl, /include_archived=true/);
   assert.match(observedUrl, /limit=25/);
+});
+
+test("listSessionsFromApi: fetchAll walks cursor pages and dedupes overlaps", async () => {
+  const observedUrls = [];
+  const result = await listSessionsFromApi({
+    targetPath: "/tmp",
+    limit: 2,
+    fetchAll: true,
+    resolveAuthSession: fakeSession(),
+    fetchImpl: fakeFetch((url) => {
+      observedUrls.push(url);
+      if (observedUrls.length === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessions: [{ sessionId: "active-old" }, { sessionId: "newer-quiet" }],
+            next_cursor: "cursor-2",
+            has_more: true,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          sessions: [{ sessionId: "newer-quiet" }, { sessionId: "oldest" }],
+          next_cursor: null,
+          has_more: false,
+        }),
+      };
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.sessions.map((item) => item.sessionId),
+    ["active-old", "newer-quiet", "oldest"],
+  );
+  assert.equal(result.count, 3);
+  assert.equal(result.nextCursor, null);
+  assert.equal(result.hasMore, false);
+  assert.equal(observedUrls.length, 2);
+  assert.doesNotMatch(observedUrls[0], /cursor=/);
+  assert.match(observedUrls[1], /cursor=cursor-2/);
 });
 
 test("listSessionsFromApi: returns api_403 when forbidden", async () => {
