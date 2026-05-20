@@ -1320,6 +1320,91 @@ export async function listSessionsFromApi({
 }
 
 /**
+ * Fetch one visible session row by id via `GET /api/v1/sessions/{id}`.
+ *
+ * The session-events read probe can prove membership, but it cannot prove the
+ * remote session is still active. Callers that need to refresh local closed
+ * metadata should use this status-bearing endpoint first, then fall back to
+ * `listSessionsFromApi` only for older API deployments without singleton read.
+ *
+ * @param {string} sessionId
+ * @param {object} [options]
+ * @param {string} [options.targetPath]
+ * @param {Function} [options.resolveAuthSession]
+ * @param {Function} [options.fetchImpl]
+ * @param {number} [options.timeoutMs]
+ * @returns {Promise<{ok: boolean, reason: string, session: object|null, status?: number}>}
+ */
+export async function fetchSessionFromApi(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return { ok: false, reason: "invalid_session_id", session: null };
+  }
+
+  let session;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", session: null };
+  }
+  if (!session || !session.token) {
+    return { ok: false, reason: "not_authenticated", session: null, status: 401 };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
+
+  let response;
+  try {
+    response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      reason: normalizeString(err?.message) || "fetch_failed",
+      session: null,
+    };
+  }
+  if (!response) {
+    return { ok: false, reason: "no_response", session: null };
+  }
+  if (response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const sessionPayload = body && body.session && typeof body.session === "object"
+      ? body.session
+      : body && typeof body === "object"
+        ? body
+        : null;
+    return { ok: true, reason: "", session: sessionPayload, status: response.status };
+  }
+  if (response.status === 403) {
+    return { ok: false, reason: "not_a_member", session: null, status: 403 };
+  }
+  if (response.status === 404) {
+    return { ok: false, reason: "session_not_found", session: null, status: 404 };
+  }
+  return { ok: false, reason: `api_${response.status}`, session: null, status: response.status };
+}
+
+/**
  * Probe whether a single session is visible to the active user.
  *
  * Used by `session sync` to discriminate between "owned but empty" and

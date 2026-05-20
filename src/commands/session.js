@@ -347,14 +347,37 @@ async function ensureLocalSessionForRemoteCommand(
     }
     const existingStatus = normalizeString(existing.status).toLowerCase();
     const locallyClosedByStatus = existingStatus === "expired" || existingStatus === "archived";
+    let verifiedRemoteSession = remoteSession;
+    let verifiedRemoteStatus = normalizeString(
+      verifiedRemoteSession?.archiveStatus || verifiedRemoteSession?.status,
+    ).toLowerCase();
     if (locallyClosedByStatus && !skipRemoteProbe) {
+      const verification = await verifyRemoteSession(sessionId, { targetPath }).catch((error) => ({
+        ok: false,
+        reason: normalizeString(error?.message) || "verify_failed",
+      }));
+      if (!verification?.ok) {
+        throw new Error(
+          `Session '${sessionId}' is ${existingStatus} locally and remote verification failed (${verification?.reason || "unknown"}).`,
+        );
+      }
+      verifiedRemoteSession = verification.session || verifiedRemoteSession;
+      verifiedRemoteStatus = normalizeString(
+        verifiedRemoteSession?.archiveStatus || verifiedRemoteSession?.status,
+      ).toLowerCase();
+    }
+    if (
+      locallyClosedByStatus &&
+      verifiedRemoteStatus &&
+      !["active", "pending"].includes(verifiedRemoteStatus)
+    ) {
       throw new Error(
-        `Session '${sessionId}' is ${existingStatus} locally; run \`sl session join ${sessionId}\` to verify remote access before posting.`,
+        `Session '${sessionId}' is ${existingStatus} locally and remote status is ${verifiedRemoteStatus}; refusing to reopen a closed session.`,
       );
     }
 
-    let access = { accessible: Boolean(skipRemoteProbe), reason: "" };
-    if (!skipRemoteProbe) {
+    let access = { accessible: Boolean(skipRemoteProbe || locallyClosedByStatus), reason: "" };
+    if (!skipRemoteProbe && !locallyClosedByStatus) {
       access = await probeSessionAccess(sessionId, { targetPath }).catch((error) => ({
         accessible: false,
         reason: normalizeString(error?.message) || "probe_failed",
@@ -368,12 +391,13 @@ async function ensureLocalSessionForRemoteCommand(
 
     const refreshed = await refreshSessionCacheForRemoteActivity(sessionId, {
       targetPath,
-      title,
+      title: title || normalizeString(verifiedRemoteSession?.title),
+      expiresAt: normalizeString(verifiedRemoteSession?.expiresAt),
       lastInteractionAt:
-        normalizeString(remoteSession?.lastInteractionAt) ||
-        normalizeString(remoteSession?.lastActivityAt) ||
-        normalizeString(remoteSession?.updatedAt) ||
-        normalizeString(remoteSession?.createdAt),
+        normalizeString(verifiedRemoteSession?.lastInteractionAt) ||
+        normalizeString(verifiedRemoteSession?.lastActivityAt) ||
+        normalizeString(verifiedRemoteSession?.updatedAt) ||
+        normalizeString(verifiedRemoteSession?.createdAt),
     });
     return { materialized: false, refreshed: Boolean(refreshed), session: refreshed || existing };
   }
@@ -396,6 +420,13 @@ async function ensureLocalSessionForRemoteCommand(
     targetPath,
     sessionId,
     title: normalizeString(title) || `remote-${String(sessionId).slice(0, 8)}`,
+    createdAt: normalizeString(remoteSession?.createdAt),
+    expiresAt: normalizeString(remoteSession?.expiresAt),
+    lastInteractionAt:
+      normalizeString(remoteSession?.lastInteractionAt) ||
+      normalizeString(remoteSession?.lastActivityAt) ||
+      normalizeString(remoteSession?.updatedAt) ||
+      normalizeString(remoteSession?.createdAt),
   });
   return { materialized: true, refreshed: false, session: created };
 }

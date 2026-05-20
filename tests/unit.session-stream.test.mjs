@@ -19,6 +19,26 @@ async function seedWorkspace(rootPath) {
   await writeFile(path.join(rootPath, "src", "index.js"), "export const value = 1;\n", "utf-8");
 }
 
+function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
+  const previous = {
+    SENTINELAYER_SKIP_REMOTE_SYNC: process.env.SENTINELAYER_SKIP_REMOTE_SYNC,
+    SENTINELAYER_TOKEN: process.env.SENTINELAYER_TOKEN,
+    SENTINELAYER_API_URL: process.env.SENTINELAYER_API_URL,
+  };
+  delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  process.env.SENTINELAYER_TOKEN = "tok_session_stream_test";
+  process.env.SENTINELAYER_API_URL = apiUrl;
+  return () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
 test("Unit session stream: append and read events preserves canonical envelope", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-stream-"));
   try {
@@ -162,6 +182,101 @@ test("Unit session stream: expired session blocks writes, renew re-enables write
     );
     assert.equal(appended.payload.state, "resumed");
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session stream: expired local cache refreshes before append when remote is active", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-stream-remote-refresh-"));
+  const restoreEnv = installAuthEnv("https://api.sentinelayer.com");
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 60 });
+    await expireSession(session.sessionId, { targetPath: tempRoot });
+
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      assert.equal(options.method, "GET");
+      assert.ok(String(url).endsWith(`/api/v1/sessions/${session.sessionId}`));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          session: {
+            sessionId: session.sessionId,
+            status: "active",
+            archiveStatus: "active",
+            title: "remote active session",
+            expiresAt: "2027-01-02T00:00:00.000Z",
+            lastInteractionAt: "2027-01-01T12:00:00.000Z",
+          },
+        }),
+      };
+    };
+
+    const appended = await appendToStream(
+      session.sessionId,
+      {
+        event: "agent_status",
+        agentId: "senti",
+        payload: { state: "remote-resumed" },
+      },
+      { targetPath: tempRoot, syncRemote: false },
+    );
+    assert.equal(appended.payload.state, "remote-resumed");
+
+    const metadata = JSON.parse(await readFile(path.join(session.sessionDir, "metadata.json"), "utf-8"));
+    assert.equal(metadata.status, "active");
+    assert.equal(metadata.expiredAt, null);
+    assert.equal(metadata.expiresAt, "2027-01-02T00:00:00.000Z");
+    assert.equal(metadata.title, "remote active session");
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session stream: expired local cache does not reopen when remote is closed", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-stream-remote-closed-"));
+  const restoreEnv = installAuthEnv("https://api.sentinelayer.com");
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 60 });
+    await expireSession(session.sessionId, { targetPath: tempRoot });
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        session: {
+          sessionId: session.sessionId,
+          status: "killed",
+          archiveStatus: "killed",
+        },
+      }),
+    });
+
+    await assert.rejects(
+      () =>
+        appendToStream(
+          session.sessionId,
+          {
+            event: "agent_status",
+            agentId: "senti",
+            payload: { state: "should-not-reopen" },
+          },
+          { targetPath: tempRoot, syncRemote: false },
+        ),
+      /remote_killed/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
