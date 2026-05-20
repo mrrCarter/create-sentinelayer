@@ -258,8 +258,28 @@ test("Unit session join: --agent <granted> relays agent_join canonical event", a
     assert.equal(agentBlock.id || joinPost.body.event.agentId, "codex");
 
     const local = await readStream(remoteSessionId, { targetPath: tempRoot, tail: 20 });
-    const persistedJoin = local.find((event) => event.event === "agent_join");
-    assert.ok(persistedJoin, "expected local stream to contain the agent_join event");
+    const joinEvents = local.filter(
+      (event) => event.event === "agent_join" && (event.agent?.id || event.agentId) === "codex",
+    );
+    assert.equal(joinEvents.length, 1, "join must persist exactly one codex agent_join");
+    const briefingEvents = local.filter(
+      (event) =>
+        event.event === "context_briefing" &&
+        event.agent?.id === "senti" &&
+        event.payload?.forAgent === "codex",
+    );
+    assert.equal(
+      briefingEvents.length,
+      1,
+      "join must persist exactly one context_briefing for the joined agent",
+    );
+    const leaveEvents = local.filter(
+      (event) => event.event === "agent_leave" && (event.agent?.id || event.agentId) === "codex",
+    );
+    assert.equal(leaveEvents.length, 0, "join must not emit a phantom agent_leave");
+    const anyLeaveEvents = local.filter((event) => event.event === "agent_leave");
+    assert.equal(anyLeaveEvents.length, 0, "join must not emit any phantom agent_leave");
+    const persistedJoin = joinEvents[0];
     const persistedAgentBlock = persistedJoin.agent || {};
     assert.equal(persistedAgentBlock.id || persistedJoin.agentId, "codex");
   } finally {

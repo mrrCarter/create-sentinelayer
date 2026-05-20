@@ -92,6 +92,15 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
     assert.equal(payload.agentId, "cli-user");
     assert.equal(payload.event.agent.id, "cli-user");
     assert.equal(payload.event.payload.message, "default author should stay placeholder");
+
+    const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    const persistedMessages = local.filter(
+      (event) =>
+        event.event === "session_message" &&
+        event.agent?.id === "cli-user" &&
+        event.payload?.message === "default author should stay placeholder",
+    );
+    assert.equal(persistedMessages.length, 1, "session say must append exactly one local message");
   } finally {
     restoreEnv();
     resetSessionSyncStateForTests();
