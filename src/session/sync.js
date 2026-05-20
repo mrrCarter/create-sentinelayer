@@ -1243,21 +1243,27 @@ export async function pollSessionEventsBefore(
  *
  * Mirrors the failure shape of `pollHumanMessages` so callers can render
  * a single error path: `{ ok, reason, sessions, count }`. Sessions are
- * returned in API order (newest-first per the server's contract); the
+ * returned in API order (most-recently-active first per the server's contract); the
  * caller is responsible for any further sort or filter.
  *
  * @param {object} [options]
  * @param {string} [options.targetPath]
  * @param {boolean} [options.includeArchived]
  * @param {number} [options.limit]
+ * @param {string|null} [options.cursor]
+ * @param {boolean} [options.fetchAll]
+ * @param {number} [options.maxPages]
  * @param {Function} [options.resolveAuthSession]
  * @param {Function} [options.fetchImpl]
- * @returns {Promise<{ok: boolean, reason: string, sessions: Array<object>, count: number}>}
+ * @returns {Promise<{ok: boolean, reason: string, sessions: Array<object>, count: number, nextCursor: string|null, hasMore: boolean}>}
  */
 export async function listSessionsFromApi({
   targetPath = process.cwd(),
   includeArchived = false,
   limit = 50,
+  cursor = null,
+  fetchAll = false,
+  maxPages = 50,
   resolveAuthSession = resolveActiveAuthSession,
   fetchImpl = fetchWithTimeout,
   timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
@@ -1270,52 +1276,93 @@ export async function listSessionsFromApi({
       autoRotate: false,
     });
   } catch {
-    return { ok: false, reason: "no_session", sessions: [], count: 0 };
+    return {
+      ok: false,
+      reason: "no_session",
+      sessions: [],
+      count: 0,
+      nextCursor: null,
+      hasMore: false,
+    };
   }
   if (!session || !session.token) {
-    return { ok: false, reason: "not_authenticated", sessions: [], count: 0 };
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      sessions: [],
+      count: 0,
+      nextCursor: null,
+      hasMore: false,
+    };
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const query = new URLSearchParams();
-  if (includeArchived) query.set("include_archived", "true");
   const normalizedLimit = Math.max(1, Math.min(200, normalizePositiveInteger(limit, 50)));
-  query.set("limit", String(normalizedLimit));
-  const endpoint = `${apiBaseUrl}/api/v1/sessions?${query.toString()}`;
+  const normalizedMaxPages = Math.max(1, Math.min(100, normalizePositiveInteger(maxPages, 50)));
+  let nextCursor = normalizeString(cursor) || null;
+  let hasMore = false;
+  const sessions = [];
+  const seenSessionIds = new Set();
+  let count = 0;
 
-  let response;
-  try {
-    response = await fetchImpl(
-      endpoint,
-      {
-        method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
-      },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
-    );
-  } catch (err) {
-    return {
-      ok: false,
-      reason: normalizeString(err?.message) || "list_failed",
-      sessions: [],
-      count: 0,
-    };
+  for (let page = 0; page < normalizedMaxPages; page += 1) {
+    const query = new URLSearchParams();
+    if (includeArchived) query.set("include_archived", "true");
+    query.set("limit", String(normalizedLimit));
+    if (nextCursor) query.set("cursor", nextCursor);
+    const endpoint = `${apiBaseUrl}/api/v1/sessions?${query.toString()}`;
+
+    let response;
+    try {
+      response = await fetchImpl(
+        endpoint,
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${session.token}` },
+        },
+        normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        reason: normalizeString(err?.message) || "list_failed",
+        sessions: [],
+        count: 0,
+        nextCursor: null,
+        hasMore: false,
+      };
+    }
+    if (!response || !response.ok) {
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        sessions: [],
+        count: 0,
+        nextCursor: null,
+        hasMore: false,
+      };
+    }
+    const payload = await response.json().catch(() => ({}));
+    const pageSessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+    for (const item of pageSessions) {
+      const sessionId = normalizeString(item?.sessionId || item?.id);
+      if (sessionId && seenSessionIds.has(sessionId)) continue;
+      if (sessionId) seenSessionIds.add(sessionId);
+      sessions.push(item);
+    }
+    count = sessions.length;
+    nextCursor = normalizeString(payload?.next_cursor || payload?.nextCursor);
+    hasMore = Boolean(payload?.has_more && nextCursor);
+    if (!fetchAll || !hasMore) break;
   }
-  if (!response || !response.ok) {
-    return {
-      ok: false,
-      reason: `api_${response ? response.status : "no_response"}`,
-      sessions: [],
-      count: 0,
-    };
-  }
-  const payload = await response.json().catch(() => ({}));
-  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+
   return {
     ok: true,
     reason: "",
     sessions,
-    count: typeof payload?.count === "number" ? payload.count : sessions.length,
+    count,
+    nextCursor: nextCursor || null,
+    hasMore,
   };
 }
 

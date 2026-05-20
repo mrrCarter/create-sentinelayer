@@ -2474,7 +2474,8 @@ export function registerSessionCommand(program) {
         const remote = await listSessionsFromApi({
           targetPath,
           includeArchived,
-          limit,
+          limit: emitJson ? 200 : limit,
+          fetchAll: emitJson,
         });
         const trimmed = emitJson ? remote.sessions : remote.sessions.slice(0, limit);
         const payload = {
@@ -2485,6 +2486,8 @@ export function registerSessionCommand(program) {
           ok: remote.ok,
           reason: remote.reason || "",
           count: remote.count,
+          nextCursor: remote.nextCursor || null,
+          hasMore: Boolean(remote.hasMore),
           sessions: trimmed,
         };
         if (emitJson) {
@@ -2519,10 +2522,12 @@ export function registerSessionCommand(program) {
             `${item.sessionId} status=${item.status}${archive} created=${created}${lastActivity}`,
           );
         }
-        if (remote.count > trimmed.length) {
+        if (remote.count > trimmed.length || remote.hasMore) {
           console.log(
             pc.gray(
-              `… ${remote.count - trimmed.length} more (raise --limit or use --json).`,
+              remote.hasMore
+                ? "… more sessions are available (raise --limit or use --json)."
+                : `… ${remote.count - trimmed.length} more (raise --limit or use --json).`,
             ),
           );
         }
