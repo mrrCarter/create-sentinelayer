@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.2...v0.11.3) (2026-05-21)
+
+
+### Bug Fixes
+
+* keep idle session listen polls quiet ([67fdc1b](https://github.com/mrrCarter/create-sentinelayer/commit/67fdc1b453c54762505f95f1c4ae905e744353e7))
+
 ## [0.11.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.1...v0.11.2) (2026-05-21)
 
 
