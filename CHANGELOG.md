@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.4...v0.12.0) (2026-05-21)
+
+
+### Features
+
+* add CLI session action parity ([4d0c527](https://github.com/mrrCarter/create-sentinelayer/commit/4d0c5279440a1c82d89a2152b0ef6128cb770a06))
+
 ## [0.11.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.3...v0.11.4) (2026-05-21)
 
 
