@@ -9,7 +9,7 @@ import path from "node:path";
 import { hydrateSessionFromRemote } from "../src/session/remote-hydrate.js";
 import { appendToStream, readStream } from "../src/session/stream.js";
 import { createSession, getSession } from "../src/session/store.js";
-import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
+import { compareSyncCursors, readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 
 async function makeTempRepo() {
   return fsp.mkdtemp(path.join(os.tmpdir(), "senti-hydrate-"));
@@ -283,6 +283,26 @@ test("writeSyncCursor: round-trips an iso timestamp", async () => {
   }
 });
 
+test("writeSyncCursor: refuses stable cursors that move backward by sequence", async () => {
+  const root = await makeTempRepo();
+  try {
+    assert.equal(compareSyncCursors("1779364717000:000026d4", "1779369999000:000026d3"), 1);
+    await writeSyncCursor("sess-stale", "1779369999000:000026d3", { targetPath: root, suffix: "events" });
+    const result = await writeSyncCursor("sess-stale", "1779364717000:000026d2", {
+      targetPath: root,
+      suffix: "events",
+    });
+    assert.equal(result.written, false);
+    assert.equal(result.reason, "stale_cursor");
+    assert.equal(
+      await readSyncCursor("sess-stale", { targetPath: root, suffix: "events" }),
+      "1779369999000:000026d3",
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("hydrateSessionFromRemote: merges human + agent events from both pollers (codex/claude blind-spot fix)", async () => {
   const root = await makeTempRepo();
   try {
@@ -381,6 +401,50 @@ test("hydrateSessionFromRemote: walks durable event pages before rendering tail"
     assert.deepEqual(
       appended.map((entry) => entry.options?.syncRemote),
       [false, false, false],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: stops durable paging when the API cursor moves backward", async () => {
+  const root = await makeTempRepo();
+  try {
+    const eventPollCalls = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "backward-cursor",
+      targetPath: root,
+      eventPageLimit: 2,
+      maxEventPages: 5,
+      since: "1779369999000:000026d3",
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async (_sessionId, options) => {
+        eventPollCalls.push(options);
+        return {
+          ok: true,
+          events: [
+            { event: "session_message", cursor: "1779364717000:000026d2", payload: { message: "stale page" } },
+          ],
+          cursor: "1779364717000:000026d2",
+        };
+      },
+      _append: async () => {
+        throw new Error("stale cursor pages should not append");
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 0);
+    assert.equal(result.eventsRelayed, 0);
+    assert.equal(result.eventsBackfillComplete, false);
+    assert.equal(result.eventsBackfillReason, "cursor_not_advanced");
+    assert.deepEqual(
+      eventPollCalls.map((call) => call.since),
+      ["1779369999000:000026d3"],
+    );
+    assert.equal(
+      await readSyncCursor("backward-cursor", { targetPath: root, suffix: "events" }),
+      "1779369999000:000026d3",
     );
   } finally {
     await fsp.rm(root, { recursive: true, force: true });

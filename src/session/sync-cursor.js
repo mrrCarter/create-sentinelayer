@@ -46,6 +46,62 @@ export async function readSyncCursor(sessionId, { targetPath, suffix = "" } = {}
   }
 }
 
+function parseStableCursor(cursor) {
+  const normalized = typeof cursor === "string" ? cursor.trim() : "";
+  const match = /^(\d{10,}):([0-9a-fA-F]{1,16})$/.exec(normalized);
+  if (!match) return null;
+  const timeMs = Number(match[1]);
+  const sequence = Number.parseInt(match[2], 16);
+  if (!Number.isFinite(timeMs) || !Number.isFinite(sequence)) return null;
+  return { timeMs, sequence };
+}
+
+function parseIsoCursor(cursor) {
+  const normalized = typeof cursor === "string" ? cursor.trim() : "";
+  if (!normalized || normalized.includes(":") === false) return null;
+  const epoch = Date.parse(normalized);
+  return Number.isFinite(epoch) ? epoch : null;
+}
+
+export function compareSyncCursors(candidate, current) {
+  const next = typeof candidate === "string" ? candidate.trim() : "";
+  const previous = typeof current === "string" ? current.trim() : "";
+  if (!next) return null;
+  if (!previous) return 1;
+  if (next === previous) return 0;
+
+  const nextStable = parseStableCursor(next);
+  const previousStable = parseStableCursor(previous);
+  if (nextStable && previousStable) {
+    if (nextStable.sequence !== previousStable.sequence) {
+      return nextStable.sequence > previousStable.sequence ? 1 : -1;
+    }
+    if (nextStable.timeMs !== previousStable.timeMs) {
+      return nextStable.timeMs > previousStable.timeMs ? 1 : -1;
+    }
+    return 0;
+  }
+
+  const nextIso = parseIsoCursor(next);
+  const previousIso = parseIsoCursor(previous);
+  if (nextIso !== null && previousIso !== null) {
+    if (nextIso === previousIso) return 0;
+    return nextIso > previousIso ? 1 : -1;
+  }
+
+  return null;
+}
+
+export function cursorAdvances(candidate, current) {
+  const comparison = compareSyncCursors(candidate, current);
+  if (comparison === null) {
+    const next = typeof candidate === "string" ? candidate.trim() : "";
+    const previous = typeof current === "string" ? current.trim() : "";
+    return Boolean(next && next !== previous);
+  }
+  return comparison > 0;
+}
+
 /**
  * Persist the human-message cursor for a session. No-op when cursor is
  * empty so we never overwrite a real value with an empty one.
@@ -60,6 +116,26 @@ export async function writeSyncCursor(sessionId, cursor, { targetPath, suffix = 
   const normalized = typeof cursor === "string" ? cursor.trim() : "";
   if (!sessionId || !normalized) {
     return { written: false, path: filePath };
+  }
+  const existing = await readSyncCursor(sessionId, { targetPath, suffix });
+  const comparison = compareSyncCursors(normalized, existing);
+  if (existing && comparison !== null && comparison < 0) {
+    return {
+      written: false,
+      path: filePath,
+      reason: "stale_cursor",
+      previousCursor: existing,
+      cursor: normalized,
+    };
+  }
+  if (existing && comparison === 0) {
+    return {
+      written: false,
+      path: filePath,
+      reason: "unchanged",
+      previousCursor: existing,
+      cursor: normalized,
+    };
   }
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const payload = { cursor: normalized, updatedAt: new Date().toISOString() };

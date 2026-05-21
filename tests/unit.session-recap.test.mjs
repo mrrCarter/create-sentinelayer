@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { setTimeout as sleep } from "node:timers/promises";
 
 import { Command } from "commander";
 
@@ -407,6 +406,9 @@ test("Unit session recap: periodic recap emits while active and stops after inac
   let emitter = null;
   try {
     await seedWorkspace(tempRoot);
+    const baseTime = Date.parse("2026-05-19T12:00:00.000Z");
+    let nowOffsetMs = 20;
+    const nowProvider = () => new Date(baseTime + nowOffsetMs).toISOString();
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
     await registerAgent(session.sessionId, {
       agentId: "codex-a1",
@@ -419,6 +421,7 @@ test("Unit session recap: periodic recap emits while active and stops after inac
       {
         event: "session_message",
         agentId: "codex-a1",
+        ts: new Date(baseTime).toISOString(),
         payload: { message: "status: implementing recap flow" },
       },
       { targetPath: tempRoot }
@@ -429,6 +432,7 @@ test("Unit session recap: periodic recap emits while active and stops after inac
       intervalMs: 10_000,
       inactivityMs: 140,
       maxEvents: 50,
+      nowProvider,
     });
     await emitter.tickNow();
 
@@ -441,7 +445,7 @@ test("Unit session recap: periodic recap emits while active and stops after inac
     assert.equal(recaps[0].payload.ephemeral, true);
     assert.equal(recaps[0].payload.style, "italic-grey");
 
-    await sleep(220);
+    nowOffsetMs = 220;
     await emitter.tickNow();
     assert.equal(emitter.isRunning(), false);
 
