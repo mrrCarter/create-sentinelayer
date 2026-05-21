@@ -1,7 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import pc from "picocolors";
 
@@ -59,9 +59,12 @@ import {
 } from "../session/event-identity.js";
 import { readSessionPreview } from "../session/preview.js";
 import {
+  createSessionMessageAction,
+  listSessionMessageActions,
   listSessionsFromApi,
   probeSessionAccess,
   pollSessionEventsBefore,
+  searchSessionEvents,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
 } from "../session/sync.js";
@@ -95,6 +98,174 @@ function shouldEmitJson(options, command) {
 
 function normalizeString(value) {
   return String(value || "").trim();
+}
+
+const SESSION_MESSAGE_ACTION_TYPES = new Set([
+  "ack",
+  "working_on",
+  "reply",
+  "like",
+  "dislike",
+  "disregard",
+]);
+
+function normalizeSessionMessageActionType(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (!SESSION_MESSAGE_ACTION_TYPES.has(normalized)) {
+    throw new Error(
+      `action type must be one of: ${[...SESSION_MESSAGE_ACTION_TYPES].join(", ")}.`,
+    );
+  }
+  return normalized;
+}
+
+function parseOptionalPositiveInteger(rawValue, field) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return null;
+  }
+  return parsePositiveInteger(rawValue, field, null);
+}
+
+function shortSha256(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 32);
+}
+
+function actionEventType(actionType) {
+  if (actionType === "reply") return "session_reply";
+  if (actionType === "like" || actionType === "dislike") return "session_reaction";
+  return "session_action";
+}
+
+function actionTargetSequence(action = {}) {
+  const value = Number(action.targetSequenceId ?? action.target_sequence_id ?? 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
+function actionTargetCursor(action = {}) {
+  return normalizeString(action.targetCursor ?? action.target_cursor);
+}
+
+function actionActorId(action = {}) {
+  return normalizeString(action.actorId ?? action.actor_id) || "unknown";
+}
+
+function actionCreatedAt(action = {}) {
+  return normalizeString(action.createdAt ?? action.created_at) || new Date().toISOString();
+}
+
+function actionDisplayMessage(action = {}) {
+  const actionType = normalizeString(action.actionType ?? action.action_type).toLowerCase();
+  const targetSequence = actionTargetSequence(action);
+  const targetLabel = targetSequence ? `#${targetSequence}` : actionTargetCursor(action) || "target";
+  const note = normalizeString(action.note);
+  if (note) return `${actionType} ${targetLabel}: ${note}`;
+  return `${actionType} ${targetLabel}`;
+}
+
+function buildSessionActionEvent(sessionId, action = {}) {
+  const actionType = normalizeString(action.actionType ?? action.action_type).toLowerCase();
+  if (!SESSION_MESSAGE_ACTION_TYPES.has(actionType)) return null;
+  const id =
+    normalizeString(action.id) ||
+    shortSha256(
+      JSON.stringify({
+        actionType,
+        targetSequenceId: actionTargetSequence(action),
+        targetCursor: actionTargetCursor(action),
+        actorId: actionActorId(action),
+        note: normalizeString(action.note),
+        createdAt: actionCreatedAt(action),
+      }),
+    );
+  const actorId = actionActorId(action);
+  const event = createAgentEvent({
+    event: actionEventType(actionType),
+    agent: {
+      id: actorId,
+      role: normalizeString(action.actorRole ?? action.actor_role) || undefined,
+      model: normalizeString(action.actorKind ?? action.actor_kind) || "session-action",
+    },
+    sessionId,
+    ts: actionCreatedAt(action),
+    payload: {
+      actionId: id,
+      actionType,
+      targetSequenceId: actionTargetSequence(action),
+      targetCursor: actionTargetCursor(action) || null,
+      note: normalizeString(action.note) || null,
+      message: actionDisplayMessage(action),
+      source: "session_action",
+    },
+  });
+  event.eventId = `session-action-${id}`;
+  event.idempotencyToken = normalizeString(action.idempotencyKey ?? action.idempotency_key) || event.eventId;
+  event.cursor = `action:${id}`;
+  return event;
+}
+
+function buildSessionActionEvents(sessionId, actions = []) {
+  return (Array.isArray(actions) ? actions : [])
+    .map((action) => buildSessionActionEvent(sessionId, action))
+    .filter(Boolean);
+}
+
+function eventTimestampMs(event = {}) {
+  for (const key of ["ts", "timestamp", "createdAt", "at"]) {
+    const epoch = Date.parse(normalizeString(event?.[key]));
+    if (Number.isFinite(epoch)) return epoch;
+  }
+  return 0;
+}
+
+function eventSequenceNumber(event = {}) {
+  for (const key of ["sequenceId", "sequence_id", "sequence"]) {
+    const value = Number(event?.[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
+}
+
+function mergeSessionActionEvents(events = [], actionEvents = []) {
+  return dedupeSessionEvents([...(Array.isArray(events) ? events : []), ...actionEvents])
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => {
+      const timeDiff = eventTimestampMs(left.event) - eventTimestampMs(right.event);
+      if (timeDiff !== 0) return timeDiff;
+      const sequenceDiff = eventSequenceNumber(left.event) - eventSequenceNumber(right.event);
+      if (sequenceDiff !== 0) return sequenceDiff;
+      return left.index - right.index;
+    })
+    .map((entry) => entry.event);
+}
+
+async function appendActionEventIfMissing(sessionId, actionEvent, { targetPath } = {}) {
+  if (!actionEvent) return { appended: false, reason: "no_event", event: null };
+  const existingEvents = await readStream(sessionId, { targetPath, tail: 0 }).catch(() => []);
+  const knownKeys = new Set();
+  for (const event of existingEvents) {
+    addSessionEventIdentityKeys(knownKeys, event);
+  }
+  if (sessionEventHasKnownIdentity(actionEvent, knownKeys)) {
+    return { appended: false, reason: "already_present", event: actionEvent };
+  }
+  const appended = await appendToStream(sessionId, actionEvent, {
+    targetPath,
+    syncRemote: false,
+  });
+  return { appended: true, reason: "", event: appended };
+}
+
+function defaultActionIdempotencyKey({
+  actionType,
+  targetSequenceId,
+  targetCursor,
+  note,
+  agentId,
+} = {}) {
+  const target = targetSequenceId ? `seq:${targetSequenceId}` : `cursor:${normalizeString(targetCursor)}`;
+  const noteHash = note ? shortSha256(note) : "none";
+  const actor = normalizeString(agentId) || "user";
+  return `cli:${normalizeString(actionType).toLowerCase()}:${target}:${actor}:${noteHash}`;
 }
 
 function compareIsoDesc(left = "", right = "") {
@@ -653,6 +824,16 @@ function formatEventLine(event = {}) {
   const type = normalizeString(event.event || event.type) || "event";
   const agentId = normalizeString(event.agent?.id || event.agentId || "unknown");
   const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  if (type === "session_action" || type === "session_reply" || type === "session_reaction") {
+    const actionType = normalizeString(payload.actionType) || type.replace(/^session_/, "");
+    const targetSequence = Number(payload.targetSequenceId || 0);
+    const target = Number.isFinite(targetSequence) && targetSequence > 0
+      ? `#${Math.floor(targetSequence)}`
+      : normalizeString(payload.targetCursor) || "target";
+    const note = normalizeString(payload.note || payload.message || "");
+    const suffix = note && note !== `${actionType} ${target}` ? `: ${note}` : "";
+    return `${ts} ${agentId} ${type} ${actionType} ${target}${suffix}`;
+  }
   const message = normalizeString(payload.message || payload.response || payload.alert || payload.reason || "");
   if (message) {
     return `${ts} ${agentId} ${type}: ${message}`;
@@ -1413,6 +1594,8 @@ export function registerSessionCommand(program) {
     .description("Send a message to the session")
     .option("--agent <id>", "Agent id to emit from", "cli-user")
     .option("--to <agent>", "Direct the message to a specific agent id")
+    .option("--reply-to <sequence>", "Mark this message as a reply to a target sequence id")
+    .option("--reply-cursor <cursor>", "Mark this message as a reply to a target event cursor")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, message, options, command) => {
@@ -1430,12 +1613,20 @@ export function registerSessionCommand(program) {
         targetPath,
       });
       const to = normalizeString(options.to);
+      const replyToSequenceId = parseOptionalPositiveInteger(options.replyTo, "reply-to");
+      const replyToCursor = normalizeString(options.replyCursor);
       const eventPayload = {
         message: normalizedMessage,
         channel: "session",
       };
       if (to) {
         eventPayload.to = to;
+      }
+      if (replyToSequenceId) {
+        eventPayload.replyToSequenceId = replyToSequenceId;
+      }
+      if (replyToCursor) {
+        eventPayload.replyToCursor = replyToCursor;
       }
       const clientMessageId = `cli-${randomUUID()}`;
       const event = createAgentEvent({
@@ -1567,6 +1758,140 @@ export function registerSessionCommand(program) {
         return;
       }
       console.log(formatEventLine(persisted));
+    });
+
+  async function runMessageActionCommand({
+    sessionId,
+    actionType,
+    options,
+    command,
+    commandName = "session action",
+    targetSequenceId: targetSequenceIdOverride = null,
+    targetCursor: targetCursorOverride = "",
+    note: noteOverride = "",
+  } = {}) {
+    const normalizedSessionId = normalizeString(sessionId);
+    if (!normalizedSessionId) {
+      throw new Error("session id is required.");
+    }
+    const normalizedActionType = normalizeSessionMessageActionType(actionType);
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    const targetSequenceId =
+      targetSequenceIdOverride ||
+      parseOptionalPositiveInteger(options.targetSequence, "target-sequence");
+    const targetCursor = normalizeString(targetCursorOverride) || normalizeString(options.targetCursor);
+    if (!targetSequenceId && !targetCursor) {
+      throw new Error("Provide --target-sequence or --target-cursor.");
+    }
+    await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+    const note = normalizeString(noteOverride) || normalizeString(options.note);
+    const agentId = await defaultAgentId(options.agent, targetPath);
+    const idempotencyKey =
+      normalizeString(options.idempotencyKey) ||
+      defaultActionIdempotencyKey({
+        actionType: normalizedActionType,
+        targetSequenceId,
+        targetCursor,
+        note,
+        agentId,
+      });
+
+    const result = await createSessionMessageAction(normalizedSessionId, {
+      actionType: normalizedActionType,
+      targetPath,
+      targetSequenceId,
+      targetCursor,
+      note,
+      metadata: {
+        source: "cli",
+        agentId,
+      },
+      idempotencyKey,
+      timeoutMs: 15_000,
+    });
+    if (!result.ok || !result.action) {
+      throw new Error(`Session action failed (${result.reason || "unknown"}).`);
+    }
+    const actionEvent = buildSessionActionEvent(normalizedSessionId, result.action);
+    const localAppend = await appendActionEventIfMissing(normalizedSessionId, actionEvent, {
+      targetPath,
+    });
+    const payload = {
+      command: commandName,
+      targetPath,
+      sessionId: normalizedSessionId,
+      actionType: normalizedActionType,
+      duplicate: Boolean(result.duplicate),
+      action: result.action,
+      event: localAppend.event,
+      localAppend: {
+        appended: Boolean(localAppend.appended),
+        reason: localAppend.reason || "",
+      },
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    }
+    console.log(formatEventLine(localAppend.event || actionEvent));
+    return payload;
+  }
+
+  session
+    .command("action <sessionId> <actionType>")
+    .description("Create a message action for a target session event")
+    .option("--target-sequence <n>", "Target event sequence id")
+    .option("--target-cursor <cursor>", "Target event cursor")
+    .option("--note <text>", "Optional action note or reply body")
+    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, actionType, options, command) => {
+      await runMessageActionCommand({ sessionId, actionType, options, command });
+    });
+
+  session
+    .command("react <sessionId> <reaction>")
+    .description("React to a target session event with like or dislike")
+    .option("--target-sequence <n>", "Target event sequence id")
+    .option("--target-cursor <cursor>", "Target event cursor")
+    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, reaction, options, command) => {
+      const normalizedReaction = normalizeSessionMessageActionType(reaction);
+      if (normalizedReaction !== "like" && normalizedReaction !== "dislike") {
+        throw new Error("reaction must be one of: like, dislike.");
+      }
+      await runMessageActionCommand({
+        sessionId,
+        actionType: normalizedReaction,
+        options,
+        command,
+        commandName: "session react",
+      });
+    });
+
+  session
+    .command("reply <sessionId> <targetSequenceId> <message...>")
+    .description("Reply to a target session event using the message-action channel")
+    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, targetSequenceId, messageParts, options, command) => {
+      const message = Array.isArray(messageParts) ? messageParts.join(" ") : messageParts;
+      await runMessageActionCommand({
+        sessionId,
+        actionType: "reply",
+        options,
+        command,
+        commandName: "session reply",
+        targetSequenceId: parsePositiveInteger(targetSequenceId, "targetSequenceId", 0),
+        note: message,
+      });
     });
 
   session
@@ -1773,6 +2098,8 @@ export function registerSessionCommand(program) {
       "--remote",
       "Hydrate from the SentinelLayer API before reading (pulls web-posted messages into the local NDJSON)",
     )
+    .option("--before-sequence <n>", "Remote page ending before this sequence id")
+    .option("--no-actions", "Do not include remote message actions/replies/reactions")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -1782,10 +2109,12 @@ export function registerSessionCommand(program) {
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const tail = parsePositiveInteger(options.tail, "tail", 20);
+      const beforeSequence = parseOptionalPositiveInteger(options.beforeSequence, "before-sequence");
       const emitJson = shouldEmitJson(options, command);
 
       let hydration = null;
       let remoteTail = null;
+      let remoteActions = null;
       if (options.remote) {
         const authSession = await resolveActiveAuthSession({
           cwd: targetPath,
@@ -1801,9 +2130,17 @@ export function registerSessionCommand(program) {
         });
         remoteTail = await pollSessionEventsBefore(normalizedSessionId, {
           targetPath,
+          beforeSequence,
           limit: tail,
           timeoutMs: 15_000,
         });
+        if (options.actions !== false) {
+          remoteActions = await listSessionMessageActions(normalizedSessionId, {
+            targetPath,
+            limit: 500,
+            timeoutMs: 15_000,
+          });
+        }
         if (!emitJson) {
           if (hydration.ok) {
             console.log(
@@ -1822,6 +2159,13 @@ export function registerSessionCommand(program) {
             console.log(
               pc.yellow(
                 `Remote hydrate skipped (${hydration.reason}); showing local stream only.`,
+              ),
+            );
+          }
+          if (remoteActions && !remoteActions.ok) {
+            console.log(
+              pc.yellow(
+                `Remote message actions skipped (${remoteActions.reason}); showing events only.`,
               ),
             );
           }
@@ -1860,7 +2204,10 @@ export function registerSessionCommand(program) {
             }
           }
         }
-        const events = dedupeSessionEvents(displayEvents).slice(-tail);
+        const actionEvents = remoteActions?.ok
+          ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
+          : [];
+        const events = mergeSessionActionEvents(displayEvents, actionEvents).slice(-tail);
         const remoteVerified = Boolean(
           options.remote &&
             ((hydration && hydration.ok) || (remoteTail && remoteTail.ok))
@@ -1870,6 +2217,7 @@ export function registerSessionCommand(program) {
           targetPath,
           sessionId: normalizedSessionId,
           tail,
+          beforeSequence,
           count: events.length,
           events,
           displaySource: !options.remote
@@ -1890,9 +2238,22 @@ export function registerSessionCommand(program) {
                       reason: remoteTail.reason || "",
                       count: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
                       cursor: remoteTail.cursor || null,
+                      beforeSequence: remoteTail.beforeSequence || null,
                       verified: Boolean(remoteTail.ok),
                       appended: remoteTailAppended,
                       displayedOnly: remoteTailDisplayedOnly,
+                    }
+                  : null,
+                actions: remoteActions
+                  ? {
+                      ok: Boolean(remoteActions.ok),
+                      reason: remoteActions.reason || "",
+                      count: Array.isArray(remoteActions.actions)
+                        ? remoteActions.actions.length
+                        : 0,
+                      actions: remoteActions.actions || [],
+                      syntheticEventCount: actionEvents.length,
+                      projection: remoteActions.projection || null,
                     }
                   : null,
               }
@@ -1968,6 +2329,57 @@ export function registerSessionCommand(program) {
         } else {
           console.log(formatEventLine(event));
         }
+      }
+    });
+
+  session
+    .command("search <sessionId> <query>")
+    .description("Search durable API session events by text, event type, or agent")
+    .option("--before-sequence <n>", "Return matches older than this sequence id")
+    .option("--limit <n>", "Maximum search results (default 20, max 50)", "20")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, query, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const normalizedQuery = normalizeString(query);
+      if (normalizedQuery.length < 2) {
+        throw new Error("query must be at least 2 characters.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const beforeSequence = parseOptionalPositiveInteger(options.beforeSequence, "before-sequence");
+      const limit = parsePositiveInteger(options.limit, "limit", 20);
+      const result = await searchSessionEvents(normalizedSessionId, {
+        query: normalizedQuery,
+        targetPath,
+        beforeSequence,
+        limit,
+        timeoutMs: 15_000,
+      });
+      const payload = {
+        command: "session search",
+        targetPath,
+        sessionId: normalizedSessionId,
+        ...result,
+        nextBeforeSequence: result.nextBeforeSequence || null,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      if (!result.ok) {
+        throw new Error(`Session search failed (${result.reason || "unknown"}).`);
+      }
+      for (const item of result.results || []) {
+        const event = item.event || {};
+        const sequence = item.sequenceId ? `#${item.sequenceId}` : "";
+        const snippet = normalizeString(item.snippet);
+        console.log(`${sequence} ${formatEventLine(event)}${snippet ? ` | ${snippet}` : ""}`);
+      }
+      if (result.hasMore && result.nextBeforeSequence) {
+        console.log(pc.gray(`More results before sequence ${result.nextBeforeSequence}.`));
       }
     });
 
@@ -2303,6 +2715,11 @@ export function registerSessionCommand(program) {
       "json",
     )
     .option("--out <file>", "Write to file instead of stdout")
+    .option(
+      "--remote",
+      "Hydrate from the SentinelLayer API before exporting and include remote message actions",
+    )
+    .option("--no-actions", "Do not include remote message actions/replies/reactions")
     .option("--path <path>", "Workspace path for the session", ".")
     .action(async (sessionId, options) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -2313,6 +2730,21 @@ export function registerSessionCommand(program) {
       const format = String(options.format || "json").trim().toLowerCase();
       if (format !== "json" && format !== "ndjson") {
         throw new Error(`--format must be 'json' or 'ndjson' (received '${format}').`);
+      }
+      let hydration = null;
+      let remoteActions = null;
+      if (options.remote) {
+        hydration = await hydrateSessionFromRemote({
+          sessionId: normalizedSessionId,
+          targetPath,
+        }).catch((error) => ({ ok: false, reason: error?.message || "hydrate_failed" }));
+        if (options.actions !== false) {
+          remoteActions = await listSessionMessageActions(normalizedSessionId, {
+            targetPath,
+            limit: 500,
+            timeoutMs: 15_000,
+          });
+        }
       }
 
       const sessionPayload = await getSession(normalizedSessionId, { targetPath });
@@ -2334,9 +2766,13 @@ export function registerSessionCommand(program) {
           limit: 5_000,
         }),
       ]);
+      const actionEvents = remoteActions?.ok
+        ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
+        : [];
+      const exportEvents = mergeSessionActionEvents(events, actionEvents);
       const stats = computeTranscriptStats({
         sessionMeta: sessionPayload,
-        events,
+        events: exportEvents,
       });
       const participants = buildSessionParticipants({
         statsAgents: stats.agents,
@@ -2351,7 +2787,10 @@ export function registerSessionCommand(program) {
         for (const participant of participants) {
           lines.push(JSON.stringify({ kind: "participant", value: participant }));
         }
-        for (const event of events) lines.push(JSON.stringify({ kind: "event", value: event }));
+        for (const action of remoteActions?.actions || []) {
+          lines.push(JSON.stringify({ kind: "action", value: action }));
+        }
+        for (const event of exportEvents) lines.push(JSON.stringify({ kind: "event", value: event }));
         for (const task of tasks.tasks || []) lines.push(JSON.stringify({ kind: "task", value: task }));
         output = `${lines.join("\n")}\n`;
       } else {
@@ -2362,14 +2801,31 @@ export function registerSessionCommand(program) {
             session: sessionPayload,
             agents,
             participants,
-            events,
+            actions: remoteActions?.actions || [],
+            actionProjection: remoteActions?.projection || null,
+            actionEvents,
+            events: exportEvents,
             tasks: tasks.tasks || [],
+            remote: {
+              hydration,
+              actions: remoteActions
+                ? {
+                    ok: Boolean(remoteActions.ok),
+                    reason: remoteActions.reason || "",
+                    count: Array.isArray(remoteActions.actions) ? remoteActions.actions.length : 0,
+                    syntheticEventCount: actionEvents.length,
+                  }
+                : null,
+            },
             counts: {
               agents: participants.length,
               participants: participants.length,
               derivedAgents: stats.agents.length,
               registeredAgents: agents.length,
-              events: events.length,
+              events: exportEvents.length,
+              rawEvents: events.length,
+              actions: Array.isArray(remoteActions?.actions) ? remoteActions.actions.length : 0,
+              actionEvents: actionEvents.length,
               tasks: (tasks.tasks || []).length,
             },
             totals: stats.totals,
@@ -2386,7 +2842,7 @@ export function registerSessionCommand(program) {
         await fsp.writeFile(outPath, output, "utf-8");
         console.log(
           pc.gray(
-            `Exported ${events.length} events / ${participants.length} participants (${agents.length} registered agents) / ${
+            `Exported ${exportEvents.length} events / ${participants.length} participants (${agents.length} registered agents) / ${
               (tasks.tasks || []).length
             } tasks → ${outPath}`,
           ),
@@ -2410,6 +2866,7 @@ export function registerSessionCommand(program) {
       "--remote",
       "Hydrate from the SentinelLayer API before rendering (pulls web-posted messages into the local NDJSON)",
     )
+    .option("--no-actions", "Do not include remote message actions/replies/reactions")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -2421,11 +2878,19 @@ export function registerSessionCommand(program) {
       const emitJson = shouldEmitJson(options, command);
 
       let hydration = null;
+      let remoteActions = null;
       if (options.remote) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
         }).catch((error) => ({ ok: false, reason: error?.message || "hydrate_failed" }));
+        if (options.actions !== false) {
+          remoteActions = await listSessionMessageActions(normalizedSessionId, {
+            targetPath,
+            limit: 500,
+            timeoutMs: 15_000,
+          });
+        }
       }
 
       const sessionPayload = await getSession(normalizedSessionId, { targetPath });
@@ -2437,6 +2902,10 @@ export function registerSessionCommand(program) {
         listAgents(normalizedSessionId, { targetPath, includeInactive: true }),
         readStream(normalizedSessionId, { targetPath, tail: 0 }),
       ]);
+      const actionEvents = remoteActions?.ok
+        ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
+        : [];
+      const transcriptEvents = mergeSessionActionEvents(events, actionEvents);
 
       // Pull GitHub/Google avatar + display name from the active auth
       // session so any human-id seen in the stream renders with the
@@ -2472,7 +2941,7 @@ export function registerSessionCommand(program) {
           createdAt: sessionPayload.createdAt,
           status: sessionPayload.status,
         },
-        events,
+        events: transcriptEvents,
         agents,
         speakerProfiles,
         options: {
@@ -2497,7 +2966,10 @@ export function registerSessionCommand(program) {
         sessionId: normalizedSessionId,
         outPath,
         bytes: Buffer.byteLength(markdown, "utf-8"),
-        eventCount: events.length,
+        eventCount: transcriptEvents.length,
+        rawEventCount: events.length,
+        actionCount: Array.isArray(remoteActions?.actions) ? remoteActions.actions.length : 0,
+        actionEventCount: actionEvents.length,
         agentCount: participants.length,
         participantCount: participants.length,
         derivedAgentCount: stats.agents.length,
@@ -2506,7 +2978,18 @@ export function registerSessionCommand(program) {
         sessionLiveSeconds: stats.sessionLiveSeconds,
         sentiActions: stats.sentiActions,
         totals: stats.totals,
-        remote: hydration,
+        remote: {
+          hydration,
+          actions: remoteActions
+            ? {
+                ok: Boolean(remoteActions.ok),
+                reason: remoteActions.reason || "",
+                count: Array.isArray(remoteActions.actions) ? remoteActions.actions.length : 0,
+                syntheticEventCount: actionEvents.length,
+                projection: remoteActions.projection || null,
+              }
+            : null,
+        },
       };
       if (emitJson) {
         console.log(JSON.stringify(payload, null, 2));
@@ -2515,7 +2998,7 @@ export function registerSessionCommand(program) {
       console.log(pc.bold(`Downloaded session ${normalizedSessionId} → ${outPath}`));
       console.log(
         pc.gray(
-          `${events.length} events · ${participants.length} participants (${agents.length} registered agents) · live ${stats.sessionLiveSeconds}s · senti=${stats.sentiActions} · tokens=${stats.totals.tokenTotal} · cost=$${stats.totals.costTotalUsd.toFixed(4)}`,
+          `${transcriptEvents.length} events · ${participants.length} participants (${agents.length} registered agents) · actions=${payload.actionCount} · live ${stats.sessionLiveSeconds}s · senti=${stats.sentiActions} · tokens=${stats.totals.tokenTotal} · cost=$${stats.totals.costTotalUsd.toFixed(4)}`,
         ),
       );
     });

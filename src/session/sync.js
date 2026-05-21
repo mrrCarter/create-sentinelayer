@@ -15,6 +15,8 @@ const HUMAN_MESSAGE_LIMIT_PER_MINUTE = 10;
 const HUMAN_MESSAGE_MAX_LENGTH = 2_000;
 const HUMAN_MESSAGE_FETCH_LIMIT = 50;
 const SESSION_EVENT_FETCH_LIMIT = 200;
+const SESSION_ACTION_FETCH_LIMIT = 500;
+const SESSION_SEARCH_FETCH_LIMIT = 50;
 
 // Audit §2.9: crash-recovery contract for in-memory circuit state.
 // Persist outbound/inbound circuit state to disk so a process restart
@@ -1233,6 +1235,347 @@ export async function pollSessionEventsBefore(
       events: [],
       cursor: null,
       beforeSequence: Number.isFinite(normalizedBeforeSequence) ? normalizedBeforeSequence : null,
+    };
+  }
+}
+
+
+export async function listSessionMessageActions(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    targetSequenceId = null,
+    limit = SESSION_ACTION_FETCH_LIMIT,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    forceCircuitProbe = false,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return {
+      ok: false,
+      reason: "invalid_session_id",
+      actions: [],
+      count: 0,
+      projection: null,
+    };
+  }
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      actions: [],
+      count: 0,
+      projection: null,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", actions: [], count: 0, projection: null };
+  }
+  if (!session || !session.token) {
+    return { ok: false, reason: "not_authenticated", actions: [], count: 0, projection: null };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const query = new URLSearchParams();
+  const normalizedTargetSequence = Number(targetSequenceId);
+  if (Number.isFinite(normalizedTargetSequence) && normalizedTargetSequence > 0) {
+    query.set("targetSequenceId", String(Math.floor(normalizedTargetSequence)));
+  }
+  query.set(
+    "limit",
+    String(Math.max(1, Math.min(SESSION_ACTION_FETCH_LIMIT, normalizePositiveInteger(limit, 200))))
+  );
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/actions?${query.toString()}`;
+
+  try {
+    const response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        actions: [],
+        count: 0,
+        projection: null,
+      };
+    }
+    const payload = await response.json().catch(() => ({}));
+    recordCircuitSuccess(inboundCircuit);
+    const actions = Array.isArray(payload?.actions) ? payload.actions : [];
+    return {
+      ok: true,
+      reason: "",
+      sessionId: normalizeString(payload?.sessionId) || normalizedSessionId,
+      actions,
+      count: Number(payload?.count ?? actions.length) || actions.length,
+      projection: payload?.projection && typeof payload.projection === "object"
+        ? payload.projection
+        : null,
+    };
+  } catch (error) {
+    recordCircuitFailure(inboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "actions_read_failed",
+      actions: [],
+      count: 0,
+      projection: null,
+    };
+  }
+}
+
+export async function createSessionMessageAction(
+  sessionId,
+  {
+    actionType,
+    targetPath = process.cwd(),
+    targetSequenceId = null,
+    targetCursor = "",
+    note = "",
+    metadata = {},
+    idempotencyKey = "",
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const normalizedActionType = normalizeString(actionType).toLowerCase();
+  if (!normalizedSessionId || !normalizedActionType) {
+    return { ok: false, reason: "invalid_input", action: null };
+  }
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
+    return { ok: false, reason: "remote_sync_disabled_env", action: null };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(outboundCircuit, normalizedNowMs)) {
+    return { ok: false, reason: "circuit_breaker_open", action: null };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", action: null };
+  }
+  if (!session || !session.token) {
+    return { ok: false, reason: "not_authenticated", action: null };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/actions`;
+  const body = {
+    actionType: normalizedActionType,
+    metadata: metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {},
+  };
+  const normalizedTargetSequence = Number(targetSequenceId);
+  if (Number.isFinite(normalizedTargetSequence) && normalizedTargetSequence > 0) {
+    body.targetSequenceId = Math.floor(normalizedTargetSequence);
+  }
+  const normalizedTargetCursor = normalizeString(targetCursor);
+  if (normalizedTargetCursor) {
+    body.targetCursor = normalizedTargetCursor;
+  }
+  const normalizedNote = normalizeString(note);
+  if (normalizedNote) {
+    body.note = normalizedNote;
+  }
+  const normalizedIdempotencyKey = normalizeString(idempotencyKey);
+  if (normalizedIdempotencyKey) {
+    body.idempotencyKey = normalizedIdempotencyKey;
+  }
+
+  try {
+    const response = await fetchImpl(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify(body),
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        action: null,
+      };
+    }
+    const payload = await response.json().catch(() => ({}));
+    recordCircuitSuccess(outboundCircuit);
+    return {
+      ok: Boolean(payload?.ok ?? true),
+      reason: "",
+      duplicate: Boolean(payload?.duplicate),
+      action: payload?.action && typeof payload.action === "object" ? payload.action : null,
+    };
+  } catch (error) {
+    recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "action_write_failed",
+      action: null,
+    };
+  }
+}
+
+export async function searchSessionEvents(
+  sessionId,
+  {
+    query,
+    targetPath = process.cwd(),
+    beforeSequence = null,
+    limit = 20,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    forceCircuitProbe = false,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const normalizedQuery = normalizeString(query);
+  if (!normalizedSessionId || normalizedQuery.length < 2) {
+    return {
+      ok: false,
+      reason: "invalid_input",
+      query: normalizedQuery,
+      results: [],
+      count: 0,
+      hasMore: false,
+      nextBeforeSequence: null,
+    };
+  }
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      query: normalizedQuery,
+      results: [],
+      count: 0,
+      hasMore: false,
+      nextBeforeSequence: null,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "no_session",
+      query: normalizedQuery,
+      results: [],
+      count: 0,
+      hasMore: false,
+      nextBeforeSequence: null,
+    };
+  }
+  if (!session || !session.token) {
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      query: normalizedQuery,
+      results: [],
+      count: 0,
+      hasMore: false,
+      nextBeforeSequence: null,
+    };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const queryParams = new URLSearchParams();
+  queryParams.set("q", normalizedQuery);
+  const normalizedBeforeSequence = Number(beforeSequence);
+  if (Number.isFinite(normalizedBeforeSequence) && normalizedBeforeSequence > 0) {
+    queryParams.set("beforeSequence", String(Math.floor(normalizedBeforeSequence)));
+  }
+  queryParams.set(
+    "limit",
+    String(Math.max(1, Math.min(SESSION_SEARCH_FETCH_LIMIT, normalizePositiveInteger(limit, 20))))
+  );
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events/search?${queryParams.toString()}`;
+
+  try {
+    const response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        query: normalizedQuery,
+        results: [],
+        count: 0,
+        hasMore: false,
+        nextBeforeSequence: null,
+      };
+    }
+    const payload = await response.json().catch(() => ({}));
+    recordCircuitSuccess(inboundCircuit);
+    const results = Array.isArray(payload?.results) ? payload.results : [];
+    return {
+      ok: true,
+      reason: "",
+      query: normalizeString(payload?.query) || normalizedQuery,
+      results,
+      count: Number(payload?.count ?? results.length) || results.length,
+      hasMore: Boolean(payload?.has_more ?? payload?.hasMore),
+      nextBeforeSequence: Number(payload?.next_before_sequence ?? payload?.nextBeforeSequence) || null,
+    };
+  } catch (error) {
+    recordCircuitFailure(inboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "search_failed",
+      query: normalizedQuery,
+      results: [],
+      count: 0,
+      hasMore: false,
+      nextBeforeSequence: null,
     };
   }
 }
