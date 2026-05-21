@@ -69,6 +69,7 @@ import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
 import { buildSessionRecap } from "../session/recap.js";
+import { computeTranscriptStats } from "../session/transcript.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
 import { pushSessionTitleToApi } from "../session/title-sync.js";
 import {
@@ -94,6 +95,68 @@ function shouldEmitJson(options, command) {
 
 function normalizeString(value) {
   return String(value || "").trim();
+}
+
+function compareIsoDesc(left = "", right = "") {
+  return normalizeString(right).localeCompare(normalizeString(left));
+}
+
+function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = {}) {
+  const byAgentId = new Map();
+  for (const agent of Array.isArray(statsAgents) ? statsAgents : []) {
+    const agentId = normalizeString(agent?.agentId || agent?.id);
+    if (!agentId) continue;
+    byAgentId.set(agentId, {
+      ...agent,
+      agentId,
+      registered: false,
+      source: "events",
+    });
+  }
+
+  for (const agent of Array.isArray(registeredAgents) ? registeredAgents : []) {
+    const agentId = normalizeString(agent?.agentId || agent?.id);
+    if (!agentId) continue;
+    const existing = byAgentId.get(agentId);
+    if (existing) {
+      byAgentId.set(agentId, {
+        ...existing,
+        model: existing.model || normalizeString(agent.model),
+        role: normalizeString(agent.role) || existing.role,
+        status: normalizeString(agent.status) || existing.status,
+        registered: true,
+        source: "events+registry",
+        joinedAt: normalizeString(agent.joinedAt) || existing.joinedAt,
+        lastActivityAt: normalizeString(agent.lastActivityAt) || existing.lastActivityAt,
+        active: agent.active,
+      });
+      continue;
+    }
+    byAgentId.set(agentId, {
+      agentId,
+      displayName: normalizeString(agent.displayName) || agentId,
+      model: normalizeString(agent.model),
+      role: normalizeString(agent.role),
+      status: normalizeString(agent.status),
+      firstSeen: normalizeString(agent.joinedAt) || null,
+      lastSeen: normalizeString(agent.lastActivityAt) || normalizeString(agent.joinedAt) || null,
+      joinedAt: normalizeString(agent.joinedAt) || null,
+      lastActivityAt: normalizeString(agent.lastActivityAt) || null,
+      active: agent.active,
+      eventCount: 0,
+      activeSeconds: 0,
+      tokens: 0,
+      costUsd: 0,
+      registered: true,
+      source: "registry",
+    });
+  }
+
+  return [...byAgentId.values()].sort((left, right) => {
+    const eventDelta = Number(right.eventCount || 0) - Number(left.eventCount || 0);
+    if (eventDelta !== 0) return eventDelta;
+    return compareIsoDesc(left.lastSeen || left.lastActivityAt, right.lastSeen || right.lastActivityAt);
+  });
 }
 
 function parsePositiveInteger(rawValue, field, fallbackValue) {
@@ -1291,6 +1354,8 @@ export function registerSessionCommand(program) {
         agentId: resolvedAgentId,
         model,
         role,
+        trackProcessExit: false,
+        awaitRemoteSync: Boolean(explicitAgent),
       });
       const agentJoinRelayed =
         Boolean(explicitAgent) &&
@@ -2269,12 +2334,23 @@ export function registerSessionCommand(program) {
           limit: 5_000,
         }),
       ]);
+      const stats = computeTranscriptStats({
+        sessionMeta: sessionPayload,
+        events,
+      });
+      const participants = buildSessionParticipants({
+        statsAgents: stats.agents,
+        registeredAgents: agents,
+      });
 
       let output;
       if (format === "ndjson") {
         const lines = [];
         lines.push(JSON.stringify({ kind: "session", value: sessionPayload }));
         for (const agent of agents) lines.push(JSON.stringify({ kind: "agent", value: agent }));
+        for (const participant of participants) {
+          lines.push(JSON.stringify({ kind: "participant", value: participant }));
+        }
         for (const event of events) lines.push(JSON.stringify({ kind: "event", value: event }));
         for (const task of tasks.tasks || []) lines.push(JSON.stringify({ kind: "task", value: task }));
         output = `${lines.join("\n")}\n`;
@@ -2285,13 +2361,18 @@ export function registerSessionCommand(program) {
             exportedAt: new Date().toISOString(),
             session: sessionPayload,
             agents,
+            participants,
             events,
             tasks: tasks.tasks || [],
             counts: {
-              agents: agents.length,
+              agents: participants.length,
+              participants: participants.length,
+              derivedAgents: stats.agents.length,
+              registeredAgents: agents.length,
               events: events.length,
               tasks: (tasks.tasks || []).length,
             },
+            totals: stats.totals,
           },
           null,
           2,
@@ -2305,7 +2386,7 @@ export function registerSessionCommand(program) {
         await fsp.writeFile(outPath, output, "utf-8");
         console.log(
           pc.gray(
-            `Exported ${events.length} events / ${agents.length} agents / ${
+            `Exported ${events.length} events / ${participants.length} participants (${agents.length} registered agents) / ${
               (tasks.tasks || []).length
             } tasks → ${outPath}`,
           ),
@@ -2399,6 +2480,10 @@ export function registerSessionCommand(program) {
           includeSystemEvents: options.systemEvents !== false,
         },
       });
+      const participants = buildSessionParticipants({
+        statsAgents: stats.agents,
+        registeredAgents: agents,
+      });
 
       const outArg = normalizeString(options.out);
       const outPath = outArg
@@ -2413,7 +2498,11 @@ export function registerSessionCommand(program) {
         outPath,
         bytes: Buffer.byteLength(markdown, "utf-8"),
         eventCount: events.length,
-        agentCount: agents.length,
+        agentCount: participants.length,
+        participantCount: participants.length,
+        derivedAgentCount: stats.agents.length,
+        registeredAgentCount: agents.length,
+        participants,
         sessionLiveSeconds: stats.sessionLiveSeconds,
         sentiActions: stats.sentiActions,
         totals: stats.totals,
@@ -2426,7 +2515,7 @@ export function registerSessionCommand(program) {
       console.log(pc.bold(`Downloaded session ${normalizedSessionId} → ${outPath}`));
       console.log(
         pc.gray(
-          `${events.length} events · ${agents.length} agents · live ${stats.sessionLiveSeconds}s · senti=${stats.sentiActions} · tokens=${stats.totals.tokenTotal} · cost=$${stats.totals.costTotalUsd.toFixed(4)}`,
+          `${events.length} events · ${participants.length} participants (${agents.length} registered agents) · live ${stats.sessionLiveSeconds}s · senti=${stats.sentiActions} · tokens=${stats.totals.tokenTotal} · cost=$${stats.totals.costTotalUsd.toFixed(4)}`,
         ),
       );
     });

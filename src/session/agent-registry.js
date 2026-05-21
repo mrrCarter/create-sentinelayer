@@ -156,14 +156,19 @@ async function writeAgentSnapshot(snapshotPath, snapshot) {
   await fsp.rename(tmpPath, snapshotPath);
 }
 
-async function emitAgentEvent(sessionId, event, payload, { targetPath = process.cwd() } = {}) {
+async function emitAgentEvent(
+  sessionId,
+  event,
+  payload,
+  { targetPath = process.cwd(), awaitRemoteSync = false } = {}
+) {
   const envelope = createAgentEvent({
     event,
     agentId: payload.agentId,
     sessionId,
     payload,
   });
-  await appendToStream(sessionId, envelope, { targetPath });
+  await appendToStream(sessionId, envelope, { targetPath, awaitRemoteSync });
 }
 
 function buildAgentSnapshotPath(paths, agentId) {
@@ -238,7 +243,14 @@ function _ensureExitHooksInstalled() {
 
 export async function registerAgent(
   sessionId,
-  { agentId = "", model = "", role = "observer", targetPath = process.cwd() } = {}
+  {
+    agentId = "",
+    model = "",
+    role = "observer",
+    targetPath = process.cwd(),
+    trackProcessExit = true,
+    awaitRemoteSync = false,
+  } = {}
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
   const nowIso = new Date().toISOString();
@@ -289,8 +301,10 @@ export async function registerAgent(
     model: snapshot.model,
     role: snapshot.role,
     status: snapshot.status,
-  }, { targetPath });
-  _trackLocalAgent(paths.sessionId, snapshot.agentId, targetPath);
+  }, { targetPath, awaitRemoteSync });
+  if (trackProcessExit) {
+    _trackLocalAgent(paths.sessionId, snapshot.agentId, targetPath);
+  }
 
   if (renamedFrom) {
     const welcome = buildSentiWelcome({
@@ -310,6 +324,7 @@ export async function registerAgent(
     await emitContextBriefing(paths.sessionId, {
       forAgentId: snapshot.agentId,
       targetPath,
+      awaitRemoteSync,
     }).catch(() => {});
   }
 

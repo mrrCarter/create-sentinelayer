@@ -451,6 +451,45 @@ test("hydrateSessionFromRemote: stops durable paging when the API cursor moves b
   }
 });
 
+test("hydrateSessionFromRemote: treats empty same-cursor durable page as complete idle", async () => {
+  const root = await makeTempRepo();
+  try {
+    const eventPollCalls = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "idle-same-cursor",
+      targetPath: root,
+      eventPageLimit: 2,
+      maxEventPages: 5,
+      since: "1779369999000:000026d3",
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async (_sessionId, options) => {
+        eventPollCalls.push(options);
+        return {
+          ok: true,
+          events: [],
+          cursor: "1779369999000:000026d3",
+        };
+      },
+      _append: async () => {
+        throw new Error("idle pages should not append");
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 0);
+    assert.equal(result.eventsRelayed, 0);
+    assert.equal(result.eventsBackfillComplete, true);
+    assert.equal(result.eventsBackfillTruncated, false);
+    assert.equal(result.eventsBackfillReason, "");
+    assert.deepEqual(
+      eventPollCalls.map((call) => call.since),
+      ["1779369999000:000026d3"],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("hydrateSessionFromRemote: dedups events that appear in both pollers", async () => {
   const root = await makeTempRepo();
   try {

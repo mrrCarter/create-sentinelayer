@@ -216,12 +216,30 @@ test("buildTranscriptMarkdown: scales to 20 distinct speakers without dropping r
 });
 
 test("buildTranscriptMarkdown: registered-but-silent agents still appear in participants", () => {
-  const { markdown } = buildTranscriptMarkdown({
+  const { markdown, stats } = buildTranscriptMarkdown({
     sessionMeta: { sessionId: "s1" },
     events: [],
     agents: [{ agentId: "claude-3", model: "claude-opus-4-7", role: "coder" }],
   });
   assert.match(markdown, /\| .* \| \*\*[^*]+\*\* `claude-3` \|.*idle/);
+  assert.ok(!markdown.includes("(no agents joined)"));
+  assert.equal(stats.participantCount, 1);
+});
+
+test("buildTranscriptMarkdown: participantCount matches event speakers plus silent registry", () => {
+  const { stats } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "s1" },
+    events: [
+      ev({ event: "session_message", agentId: "codex", ts: "2026-04-25T10:00:30.000Z" }),
+      ev({ event: "agent_response", agentId: "claude-1", ts: "2026-04-25T10:00:31.000Z" }),
+    ],
+    agents: [
+      { agentId: "codex", model: "gpt-5", role: "coder" },
+      { agentId: "senti", model: "kai-chen", role: "orchestrator" },
+    ],
+  });
+  assert.equal(stats.agents.length, 2);
+  assert.equal(stats.participantCount, 3);
 });
 
 test("buildTranscriptMarkdown: humans get profile avatar URL embedded as image markdown", () => {
