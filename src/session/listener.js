@@ -277,8 +277,9 @@ export async function listenSessionEvents({
       lastReason = "";
       const events = Array.isArray(result.events) ? result.events : [];
       const nextCursor = normalizeString(result.cursor) || cursorFromEvents(events, cursor);
-      const cursorMovedBackward = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
-      if (cursorMovedBackward) {
+      const cursorDidNotAdvance = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
+      const cursorFault = cursorDidNotAdvance && (nextCursor !== cursor || events.length > 0);
+      if (cursorFault) {
         lastReason = "cursor_not_advanced";
         await onError({
           ok: false,
