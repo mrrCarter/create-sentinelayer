@@ -315,6 +315,8 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
 
   const say = getCommandByPath(program, "session say");
   assertCommandHasOption(say, "--to <agent>");
+  assertCommandHasOption(say, "--reply-to <sequence>");
+  assertCommandHasOption(say, "--reply-cursor <cursor>");
 
   const postAgent = getCommandByPath(program, "session post-agent");
   assertCommandHasOption(postAgent, "--agent <id>");
@@ -322,6 +324,29 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(postAgent, "--display-name <name>");
   assertCommandHasOption(postAgent, "--role <role>");
   assertCommandHasOption(postAgent, "--to <agent>");
+
+  const action = getCommandByPath(program, "session action");
+  assertCommandHasOption(action, "--target-sequence <n>");
+  assertCommandHasOption(action, "--target-cursor <cursor>");
+  assertCommandHasOption(action, "--note <text>");
+  assertCommandHasOption(action, "--agent <id>");
+  assertCommandHasOption(action, "--idempotency-key <key>");
+
+  const react = getCommandByPath(program, "session react");
+  assertCommandHasOption(react, "--target-sequence <n>");
+  assertCommandHasOption(react, "--target-cursor <cursor>");
+
+  const reply = getCommandByPath(program, "session reply");
+  assertCommandHasOption(reply, "--agent <id>");
+  assertCommandHasOption(reply, "--idempotency-key <key>");
+
+  const read = getCommandByPath(program, "session read");
+  assertCommandHasOption(read, "--before-sequence <n>");
+  assertCommandHasOption(read, "--no-actions");
+
+  const search = getCommandByPath(program, "session search");
+  assertCommandHasOption(search, "--before-sequence <n>");
+  assertCommandHasOption(search, "--limit <n>");
 
   const listen = getCommandByPath(program, "session listen");
   assertCommandHasOption(listen, "--session <id>");

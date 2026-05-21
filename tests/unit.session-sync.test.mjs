@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 
 import {
   __resetAutoGrantCacheForTests,
+  createSessionMessageAction,
+  listSessionMessageActions,
   pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
   resetSessionSyncStateForTests,
+  searchSessionEvents,
   syncSessionErrorToApi,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
@@ -443,6 +446,126 @@ test("Unit session sync: pollSessionEventsBefore fetches latest tail chronologic
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${apiToken}`);
+});
+
+test("Unit session sync: listSessionMessageActions hits actions endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await listSessionMessageActions("sess-actions", {
+    targetSequenceId: 42,
+    limit: 999,
+    resolveAuthSession: async () => ({
+      token: "tok_actions",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sessionId: "sess-actions",
+          actions: [{ id: "act-1", actionType: "working_on", targetSequenceId: 42 }],
+          count: 1,
+          projection: { byTarget: [] },
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_460_000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.actions.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-actions/actions?targetSequenceId=42&limit=500",
+  );
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.headers.Authorization, "Bearer tok_actions");
+});
+
+test("Unit session sync: createSessionMessageAction posts idempotent action payload", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await createSessionMessageAction("sess-actions", {
+    actionType: "reply",
+    targetSequenceId: 42,
+    note: "taking this",
+    idempotencyKey: "reply-42",
+    metadata: { source: "unit" },
+    resolveAuthSession: async () => ({
+      token: "tok_actions",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          duplicate: false,
+          action: { id: "act-1", actionType: "reply", targetSequenceId: 42 },
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_470_000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action.id, "act-1");
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-actions/actions",
+  );
+  assert.equal(calls[0].options.method, "POST");
+  const body = JSON.parse(calls[0].options.body);
+  assert.deepEqual(body, {
+    actionType: "reply",
+    targetSequenceId: 42,
+    note: "taking this",
+    metadata: { source: "unit" },
+    idempotencyKey: "reply-42",
+  });
+});
+
+test("Unit session sync: searchSessionEvents calls durable search endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await searchSessionEvents("sess-search", {
+    query: "checkpoint",
+    beforeSequence: 100,
+    limit: 99,
+    resolveAuthSession: async () => ({
+      token: "tok_search",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          query: "checkpoint",
+          results: [{ sequenceId: 99, snippet: "checkpoint ready", event: {} }],
+          count: 1,
+          has_more: true,
+          next_before_sequence: 99,
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_480_000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 1);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.nextBeforeSequence, 99);
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-search/events/search?q=checkpoint&beforeSequence=100&limit=50",
+  );
+  assert.equal(calls[0].options.method, "GET");
 });
 
 test("Unit session sync: pollSessionEvents reuses inbound circuit breaker", async () => {

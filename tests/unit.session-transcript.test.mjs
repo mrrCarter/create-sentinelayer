@@ -158,6 +158,48 @@ test("buildTranscriptMarkdown: conversation renders user message as ### heading 
   assert.match(markdown, /^ship it$/m);
 });
 
+test("buildTranscriptMarkdown: session action/reply/reaction events render in conversation", () => {
+  const { markdown } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "s1" },
+    events: [
+      ev({
+        event: "session_action",
+        agentId: "codex",
+        ts: "2026-04-25T10:00:31.000Z",
+        payload: {
+          actionType: "working_on",
+          targetSequenceId: 10,
+          message: "working_on #10",
+        },
+      }),
+      ev({
+        event: "session_reply",
+        agentId: "claude",
+        ts: "2026-04-25T10:00:32.000Z",
+        payload: {
+          actionType: "reply",
+          targetSequenceId: 10,
+          message: "reply #10: patched",
+        },
+      }),
+      ev({
+        event: "session_reaction",
+        agentId: "human-carter",
+        ts: "2026-04-25T10:00:33.000Z",
+        payload: {
+          actionType: "like",
+          targetSequenceId: 10,
+          message: "like #10",
+        },
+      }),
+    ],
+  });
+
+  assert.match(markdown, /^working_on #10$/m);
+  assert.match(markdown, /^reply #10: patched$/m);
+  assert.match(markdown, /^like #10$/m);
+});
+
 test("buildTranscriptMarkdown: system events render as italic dash-bullets", () => {
   const { markdown } = buildTranscriptMarkdown({
     sessionMeta: { sessionId: "s1" },
