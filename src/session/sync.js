@@ -1255,7 +1255,7 @@ export async function pollSessionEventsBefore(
  * @param {number} [options.maxPages]
  * @param {Function} [options.resolveAuthSession]
  * @param {Function} [options.fetchImpl]
- * @returns {Promise<{ok: boolean, reason: string, sessions: Array<object>, count: number, nextCursor: string|null, hasMore: boolean}>}
+ * @returns {Promise<{ok: boolean, reason: string, sessions: Array<object>, count: number, nextCursor: string|null, hasMore: boolean, truncated: boolean, warnings: Array<object>}>}
  */
 export async function listSessionsFromApi({
   targetPath = process.cwd(),
@@ -1283,6 +1283,8 @@ export async function listSessionsFromApi({
       count: 0,
       nextCursor: null,
       hasMore: false,
+      truncated: false,
+      warnings: [],
     };
   }
   if (!session || !session.token) {
@@ -1293,6 +1295,8 @@ export async function listSessionsFromApi({
       count: 0,
       nextCursor: null,
       hasMore: false,
+      truncated: false,
+      warnings: [],
     };
   }
 
@@ -1330,6 +1334,8 @@ export async function listSessionsFromApi({
         count: 0,
         nextCursor: null,
         hasMore: false,
+        truncated: false,
+        warnings: [],
       };
     }
     if (!response || !response.ok) {
@@ -1340,6 +1346,8 @@ export async function listSessionsFromApi({
         count: 0,
         nextCursor: null,
         hasMore: false,
+        truncated: false,
+        warnings: [],
       };
     }
     const payload = await response.json().catch(() => ({}));
@@ -1356,6 +1364,18 @@ export async function listSessionsFromApi({
     if (!fetchAll || !hasMore) break;
   }
 
+  const truncated = Boolean(fetchAll && hasMore && nextCursor);
+  const warnings = truncated
+    ? [
+        {
+          code: "SESSION_LIST_MAX_PAGES_REACHED",
+          message: `Session list stopped after ${normalizedMaxPages} pages; output is partial and nextCursor can resume the listing.`,
+          maxPages: normalizedMaxPages,
+          nextCursor,
+        },
+      ]
+    : [];
+
   return {
     ok: true,
     reason: "",
@@ -1363,6 +1383,8 @@ export async function listSessionsFromApi({
     count,
     nextCursor: nextCursor || null,
     hasMore,
+    truncated,
+    warnings,
   };
 }
 
