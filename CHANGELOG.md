@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.3...v0.11.4) (2026-05-21)
+
+
+### Bug Fixes
+
+* harden session join and transcript exports ([5fa4d6b](https://github.com/mrrCarter/create-sentinelayer/commit/5fa4d6bcaffd557c23540c3a45108d9f7aa87799))
+
 ## [0.11.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.2...v0.11.3) (2026-05-21)
 
 
