@@ -104,6 +104,8 @@ Ship a deterministic CLI feature.
   });
   assert.match(prompt, /Find the recent Senti session for this codebase/);
   assert.match(prompt, /plan: <scope>; files: <paths>/);
+  assert.match(prompt, /sl session react <id> ack --target-sequence <n>/);
+  assert.match(prompt, /sl session search <id> "<topic>" --limit 10/);
   assert.match(prompt, /sl review --diff/);
   assert.match(prompt, /sl --help/);
 });
@@ -129,6 +131,7 @@ Ship deterministic coordination.
   assert.match(guide.markdown, /## Multi-Agent Coordination Protocol/);
   assert.match(guide.markdown, /sl session list --path \./);
   assert.match(guide.tickets[0].description, /Coordination rules:/);
+  assert.match(guide.tickets[0].description, /sl session reply <id> <sequence>/);
   assert.match(guide.tickets[0].description, /sl review --diff/);
 
   const jira = JSON.parse(renderGuideExport({ format: "jira", guide }));
@@ -167,6 +170,7 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   assert.match(handoff, /sl session join <id> --name <your-name> --role coder/);
   assert.match(handoff, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson/);
   assert.match(handoff, /sl session sync <id> --json/);
+  assert.match(handoff, /sl session react <id> ack --target-sequence <n>/);
   assert.match(handoff, /sl --help/);
 
   const guide = buildAgentsSessionGuideContent();
@@ -174,5 +178,6 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   assert.match(guide, /sl session list/);
   assert.match(guide, /sl session say <id>/);
   assert.match(guide, /sl session listen --session <id>/);
+  assert.match(guide, /sl session search <id> "<topic>" --limit 10/);
   assert.match(guide, /sl review --diff/);
 });
