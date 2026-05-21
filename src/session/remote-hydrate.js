@@ -26,7 +26,7 @@ import {
   isSessionCacheExpired,
   refreshSessionCacheForRemoteActivity,
 } from "./store.js";
-import { readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
+import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 import {
   addSessionEventIdentityKeys,
   sessionEventHasKnownIdentity,
@@ -166,11 +166,15 @@ async function pollSessionEventPages({
       };
     }
 
-    const pageEvents = Array.isArray(result.events) ? result.events : [];
-    events.push(...pageEvents);
     const nextCursor =
       typeof result.cursor === "string" && result.cursor.trim() ? result.cursor.trim() : cursor;
-    const progressed = nextCursor && nextCursor !== cursor;
+    const progressed = nextCursor && cursorAdvances(nextCursor, cursor);
+    if (nextCursor && cursor && !progressed) {
+      reason = "cursor_not_advanced";
+      break;
+    }
+    const pageEvents = Array.isArray(result.events) ? result.events : [];
+    events.push(...pageEvents);
     cursor = nextCursor || cursor;
 
     if (pageEvents.length < normalizedLimit) {

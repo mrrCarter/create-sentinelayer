@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import { pollSessionEvents } from "./sync.js";
-import { readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
+import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 
 const BROADCAST_RECIPIENTS = new Set([
   "*",
@@ -123,6 +123,19 @@ function cursorFromEvents(events = [], fallbackCursor = null) {
   return cursor;
 }
 
+function eventIdentityKey(event = {}) {
+  const cursor = normalizeString(event?.cursor);
+  if (cursor) return `cursor:${cursor}`;
+  const sequence = normalizeString(event?.sequenceId || event?.sequence_id || event?.sequence);
+  if (sequence) return `sequence:${sequence}`;
+  return JSON.stringify({
+    event: normalizeString(event?.event),
+    agent: normalizeString(event?.agent?.id || event?.agentId),
+    ts: normalizeString(event?.ts || event?.timestamp || event?.createdAt || event?.at),
+    message: normalizeString(event?.payload?.message || event?.payload?.text || event?.payload?.detail),
+  });
+}
+
 function eventTimestampMs(event = {}) {
   for (const key of ["ts", "timestamp", "createdAt", "at"]) {
     const epoch = Date.parse(normalizeString(event?.[key]));
@@ -238,6 +251,7 @@ export async function listenSessionEvents({
   let matched = 0;
   let persistedCursor = false;
   let lastReason = "";
+  const emittedKeys = new Set();
   const maxPollCount = normalizePositiveInteger(maxPolls, 0);
   const pollLimit = normalizePositiveInteger(limit, 200);
   const idleSleepMs = Math.max(1, normalizePositiveInteger(intervalSeconds, 60)) * 1000;
@@ -262,32 +276,46 @@ export async function listenSessionEvents({
     if (result?.ok) {
       lastReason = "";
       const events = Array.isArray(result.events) ? result.events : [];
-      const observedAtMs = Number(_nowMs()) || Date.now();
-      for (const event of events) {
-        const activityMs = humanActivityTimestampMs(event, observedAtMs);
-        if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
-          lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
-        }
-      }
-      const shouldEmitBatch = primed || Boolean(replay);
-      for (const event of events) {
-        if (!eventMatchesAgent(event, normalizedAgentId)) continue;
-        matched += 1;
-        if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
-        await onEvent(event);
-        emitted += 1;
-      }
-
       const nextCursor = normalizeString(result.cursor) || cursorFromEvents(events, cursor);
-      if (nextCursor && nextCursor !== cursor) {
-        const writeResult = await _writeCursor(normalizedSessionId, nextCursor, {
-          targetPath,
-          suffix: cursorSuffix,
-        }).catch(() => null);
-        persistedCursor = Boolean(writeResult?.written) || persistedCursor;
-        cursor = nextCursor;
+      const cursorMovedBackward = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
+      if (cursorMovedBackward) {
+        lastReason = "cursor_not_advanced";
+        await onError({
+          ok: false,
+          reason: lastReason,
+          cursor: cursor || null,
+          candidateCursor: nextCursor,
+        });
+      } else {
+        const observedAtMs = Number(_nowMs()) || Date.now();
+        for (const event of events) {
+          const activityMs = humanActivityTimestampMs(event, observedAtMs);
+          if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
+            lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
+          }
+        }
+        const shouldEmitBatch = primed || Boolean(replay);
+        for (const event of events) {
+          if (!eventMatchesAgent(event, normalizedAgentId)) continue;
+          const key = eventIdentityKey(event);
+          if (emittedKeys.has(key)) continue;
+          matched += 1;
+          if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
+          await onEvent(event);
+          emittedKeys.add(key);
+          emitted += 1;
+        }
+
+        if (nextCursor && nextCursor !== cursor) {
+          const writeResult = await _writeCursor(normalizedSessionId, nextCursor, {
+            targetPath,
+            suffix: cursorSuffix,
+          }).catch(() => null);
+          persistedCursor = Boolean(writeResult?.written) || persistedCursor;
+          cursor = nextCursor;
+        }
+        primed = true;
       }
-      primed = true;
     } else {
       lastReason = normalizeString(result?.reason) || "poll_failed";
       await onError({

@@ -117,6 +117,50 @@ test("Unit session listener: empty first poll primes listener so first new event
   assert.equal(result.cursor, "c1");
 });
 
+test("Unit session listener: stale cursors are not persisted or re-emitted", async () => {
+  const writes = [];
+  const errors = [];
+  const emitted = [];
+  const staleEvent = evt("1779364717000:000026d2", { to: "codex-1" });
+  const batches = [
+    {
+      ok: true,
+      events: [staleEvent],
+      cursor: "1779364717000:000026d2",
+    },
+    {
+      ok: true,
+      events: [staleEvent],
+      cursor: "1779364717000:000026d2",
+    },
+  ];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stale-cursor",
+    agentId: "codex-1",
+    intervalSeconds: 1,
+    maxPolls: 2,
+    replay: true,
+    _readCursor: async () => "1779369999000:000026d3",
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _poll: async (sessionId, options) => {
+      assert.equal(options.since, "1779369999000:000026d3");
+      return batches.shift();
+    },
+    _sleep: async () => {},
+    onError: async (error) => errors.push(error.reason),
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(writes, []);
+  assert.deepEqual(errors, ["cursor_not_advanced", "cursor_not_advanced"]);
+  assert.deepEqual(emitted, []);
+  assert.equal(result.cursor, "1779369999000:000026d3");
+});
+
 test("Unit session listener: first poll emits matching events created after listener start", async () => {
   const emitted = [];
   const oldEvent = evt("old", { to: "codex-1" });

@@ -1397,6 +1397,7 @@ export function registerSessionCommand(program) {
       }
       const persisted = await appendToStream(normalizedSessionId, event, {
         targetPath,
+        syncRemote: !localSession.materialized,
       });
       const payload = {
         command: "session say",
@@ -1768,6 +1769,8 @@ export function registerSessionCommand(program) {
           tail: 0,
         });
         const displayEvents = [...allEvents];
+        let remoteTailAppended = 0;
+        let remoteTailDisplayedOnly = 0;
         if (remoteTail?.ok && Array.isArray(remoteTail.events) && remoteTail.events.length > 0) {
           const knownKeys = new Set();
           for (const event of allEvents) {
@@ -1784,13 +1787,19 @@ export function registerSessionCommand(program) {
               });
               displayEvents.push(appended);
               addSessionEventIdentityKeys(knownKeys, appended);
+              remoteTailAppended += 1;
             } catch {
               displayEvents.push(event);
               addSessionEventIdentityKeys(knownKeys, event);
+              remoteTailDisplayedOnly += 1;
             }
           }
         }
         const events = dedupeSessionEvents(displayEvents).slice(-tail);
+        const remoteVerified = Boolean(
+          options.remote &&
+            ((hydration && hydration.ok) || (remoteTail && remoteTail.ok))
+        );
         const payload = {
           command: "session read",
           targetPath,
@@ -1798,6 +1807,15 @@ export function registerSessionCommand(program) {
           tail,
           count: events.length,
           events,
+          displaySource: !options.remote
+            ? "local"
+            : remoteTail?.ok
+              ? "remote_verified_tail"
+              : hydration?.ok
+                ? "hydrated_local"
+                : "local_only",
+          remoteVerified,
+          localEventCount: allEvents.length,
           remote: hydration
             ? {
                 ...hydration,
@@ -1807,6 +1825,9 @@ export function registerSessionCommand(program) {
                       reason: remoteTail.reason || "",
                       count: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
                       cursor: remoteTail.cursor || null,
+                      verified: Boolean(remoteTail.ok),
+                      appended: remoteTailAppended,
+                      displayedOnly: remoteTailDisplayedOnly,
                     }
                   : null,
               }

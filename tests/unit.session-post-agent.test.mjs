@@ -108,6 +108,60 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
   }
 });
 
+test("Unit session say: materialized remote sessions post once then append locally without resync", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-materialized-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "GET") {
+        assert.ok(String(url).endsWith("/api/v1/sessions/remote-say/events?limit=1"));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [] }),
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "say",
+      "remote-say",
+      "status: materialized remote should not double post",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.materializedLocalSession, true);
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+
+    const events = await readStream("remote-say", { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.message, "status: materialized remote should not double post");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session post-agent: posts canonical agent event and persists only after remote acceptance", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-"));
@@ -528,6 +582,86 @@ test("Unit session read: --remote requires the same active auth surface as write
         process.env[key] = value;
       }
     }
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read: --remote --json reports remote verification and tail provenance", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-remote-json-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, sessionId: "remote-read-json", ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      const textUrl = String(url);
+      if (textUrl.includes("/human-messages?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [], cursor: null }),
+        };
+      }
+      if (textUrl.includes("/events/before?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: [
+              {
+                event: "session_message",
+                sessionId: session.sessionId,
+                cursor: "1779364717000:000026d4",
+                sequenceId: 9940,
+                ts: "2026-05-21T12:20:00.000Z",
+                agent: { id: "claude-mythos" },
+                payload: { message: "remote verified tail" },
+              },
+            ],
+          }),
+        };
+      }
+      if (textUrl.includes("/events?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [], cursor: null }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--tail",
+      "5",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.displaySource, "remote_verified_tail");
+    assert.equal(payload.remoteVerified, true);
+    assert.equal(payload.remote.tailProbe.verified, true);
+    assert.equal(payload.remote.tailProbe.appended, 1);
+    assert.equal(payload.remote.tailProbe.displayedOnly, 0);
+    assert.equal(payload.events[0].payload.message, "remote verified tail");
+    assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=5")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
     resetSessionSyncStateForTests();
     await rm(tempRoot, { recursive: true, force: true });
   }
