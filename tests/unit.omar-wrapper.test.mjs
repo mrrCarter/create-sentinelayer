@@ -21,6 +21,8 @@ test("Unit Omar wrapper: managed LLM keeps Omar in fail-closed full-action mode"
   assert.doesNotMatch(wrapperText, /sentinelayer_managed_llm:\s*"false"/);
   assert.match(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate authoritative Omar helper syntax/);
+  assert.match(workflowText, /check_omar_workflow_contract\.py --self-test/);
+  assert.match(workflowText, /python3 scripts\/ci\/check_omar_workflow_contract\.py/);
   assert.match(workflowText, /wait_for_authoritative_omar_review\.py --self-test/);
   assert.match(workflowText, /Wait for authoritative Omar\/MAM review surface/);
   assert.match(workflowText, /wait_for_authoritative_omar_review\.py/);

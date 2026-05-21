@@ -424,6 +424,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/ci/check_omar_workflow_contract.py --self-test
+          python3 scripts/ci/check_omar_workflow_contract.py
           python3 -m py_compile scripts/ci/wait_for_authoritative_omar_review.py
           python3 scripts/ci/wait_for_authoritative_omar_review.py --self-test
       - name: Run Omar Gate
