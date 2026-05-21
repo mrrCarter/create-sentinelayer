@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.0...v0.11.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* warn on truncated remote session lists ([#490](https://github.com/mrrCarter/create-sentinelayer/issues/490)) ([552a7ea](https://github.com/mrrCarter/create-sentinelayer/commit/552a7eaf659f16dc0a41ae858e12720174680ea0))
+
 ## [0.11.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.10.2...v0.11.0) (2026-05-20)
 
 
