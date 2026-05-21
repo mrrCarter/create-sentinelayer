@@ -166,14 +166,25 @@ async function pollSessionEventPages({
       };
     }
 
+    const pageEvents = Array.isArray(result.events) ? result.events : [];
     const nextCursor =
       typeof result.cursor === "string" && result.cursor.trim() ? result.cursor.trim() : cursor;
     const progressed = nextCursor && cursorAdvances(nextCursor, cursor);
+    if (nextCursor && cursor && !progressed && pageEvents.length === 0) {
+      return {
+        ok: true,
+        reason: "",
+        events,
+        cursor,
+        pageCount,
+        complete: true,
+        truncated: false,
+      };
+    }
     if (nextCursor && cursor && !progressed) {
       reason = "cursor_not_advanced";
       break;
     }
-    const pageEvents = Array.isArray(result.events) ? result.events : [];
     events.push(...pageEvents);
     cursor = nextCursor || cursor;
 

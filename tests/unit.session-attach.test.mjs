@@ -20,9 +20,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 
 import { Command } from "commander";
 
@@ -63,6 +65,15 @@ async function runSessionCommand(args = []) {
     console.error = originalErr;
   }
   return { stdout: logs.join("\n").trim(), stderr: errLogs.join("\n").trim() };
+}
+
+async function readStreamEventually(sessionId, { targetPath, tail = 20, minEvents = 1, attempts = 20 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const events = await readStream(sessionId, { targetPath, tail });
+    if (events.length >= minEvents) return events;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return readStream(sessionId, { targetPath, tail });
 }
 
 function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
@@ -285,6 +296,118 @@ test("Unit session join: --agent <granted> relays agent_join canonical event", a
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session join: spawned CLI does not emit process-exit agent_leave", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-process-"));
+  const originalSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  const remoteSessionId = "sess-process-join-1111111111";
+  const eventPosts = [];
+  let server = null;
+  try {
+    await seedWorkspace(tempRoot);
+    server = http.createServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const requestUrl = String(req.url || "");
+        if (req.method === "GET" && requestUrl === `/api/v1/sessions/${remoteSessionId}`) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              session: {
+                sessionId: remoteSessionId,
+                title: "Spawned join",
+                eventCount: 0,
+                agentCount: 0,
+                createdAt: new Date().toISOString(),
+              },
+            }),
+          );
+          return;
+        }
+        if (req.method === "GET" && requestUrl === `/api/v1/sessions/${remoteSessionId}/events?limit=1`) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ events: [] }));
+          return;
+        }
+        if (req.method === "POST" && requestUrl === `/api/v1/sessions/${remoteSessionId}/events`) {
+          eventPosts.push(JSON.parse(Buffer.concat(chunks).toString("utf-8") || "{}"));
+          res.writeHead(202, { "content-type": "application/json" });
+          res.end("{}");
+          return;
+        }
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const apiUrl = `http://127.0.0.1:${server.address().port}`;
+    const child = spawn(
+      process.execPath,
+      [
+        "bin/sl.js",
+        "session",
+        "join",
+        remoteSessionId,
+        "--agent",
+        "codex",
+        "--model",
+        "gpt-5-codex",
+        "--role",
+        "coder",
+        "--path",
+        tempRoot,
+        "--json",
+      ],
+      {
+        cwd: path.resolve("."),
+        env: {
+          ...process.env,
+          SENTINELAYER_API_URL: apiUrl,
+          SENTINELAYER_TOKEN: "tok_join_process_test",
+          SENTINELAYER_SKIP_REMOTE_SYNC: "",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exitCode = await new Promise((resolve) => child.on("exit", resolve));
+    assert.equal(exitCode, 0, stderr);
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.command, "session join");
+
+    const local = await readStreamEventually(remoteSessionId, {
+      targetPath: tempRoot,
+      tail: 20,
+      minEvents: 2,
+    });
+    const localEventNames = local.map((event) => event.event);
+    const remoteEventNames = eventPosts.map((entry) => entry.event?.event);
+    assert.deepEqual(localEventNames, ["agent_join", "context_briefing"]);
+    assert.deepEqual(remoteEventNames, ["agent_join", "context_briefing"]);
+    assert.equal(localEventNames.includes("agent_leave"), false);
+    assert.equal(remoteEventNames.includes("agent_leave"), false);
+  } finally {
+    if (server) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    if (originalSkip === undefined) {
+      delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    } else {
+      process.env.SENTINELAYER_SKIP_REMOTE_SYNC = originalSkip;
+    }
     resetSessionSyncStateForTests();
     await rm(tempRoot, { recursive: true, force: true });
   }

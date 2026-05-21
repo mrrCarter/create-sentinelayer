@@ -359,26 +359,32 @@ export function buildTranscriptMarkdown({
       `| ${avatarMd(identity)} | **${agent.displayName}** \`${agent.agentId}\` | ${agent.family} | ${formatDuration(agent.activeSeconds)} | ${agent.eventCount} | ${agent.tokens.toLocaleString("en-US")} | $${agent.costUsd.toFixed(4)} |`,
     );
   }
-  if (stats.agents.length === 0) {
-    lines.push("| 👤 | (no agents joined) | — | 0s | 0 | 0 | $0.00 |");
-  }
   // Surface registered-but-silent agents at the bottom of the table so
   // the participants list is comprehensive even if they never emitted
   // a stream event.
   const seenIds = new Set(stats.agents.map((a) => a.agentId));
+  const silentRegisteredAgents = [];
   for (const registered of agents || []) {
     const id = normalize(registered?.agentId);
     if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
     const profile = speakerProfiles.get(id) || null;
     const identity = resolveSpeakerIdentity({
       agentId: id,
       agentModel: registered.model || "",
       profile,
     });
+    silentRegisteredAgents.push({ id, identity });
+  }
+  if (stats.agents.length === 0 && silentRegisteredAgents.length === 0) {
+    lines.push("| 👤 | (no agents joined) | — | 0s | 0 | 0 | $0.00 |");
+  }
+  for (const registered of silentRegisteredAgents) {
     lines.push(
-      `| ${avatarMd(identity)} | **${identity.displayName}** \`${id}\` | ${identity.family} | 0s · idle | 0 | 0 | $0.0000 |`,
+      `| ${avatarMd(registered.identity)} | **${registered.identity.displayName}** \`${registered.id}\` | ${registered.identity.family} | 0s · idle | 0 | 0 | $0.0000 |`,
     );
   }
+  stats.participantCount = stats.agents.length + silentRegisteredAgents.length;
   lines.push("");
 
   // Conversation

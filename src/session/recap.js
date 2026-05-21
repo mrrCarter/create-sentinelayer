@@ -559,6 +559,7 @@ export async function emitContextBriefing(
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
     includeJoinRules = true,
+    awaitRemoteSync = false,
   } = {}
 ) {
   const recap = await buildSessionRecap(sessionId, {
@@ -588,6 +589,7 @@ export async function emitContextBriefing(
   });
   const persisted = await appendToStream(sessionId, event, {
     targetPath,
+    awaitRemoteSync,
   });
   return {
     recap,

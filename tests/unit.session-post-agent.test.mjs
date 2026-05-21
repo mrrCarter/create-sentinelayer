@@ -154,6 +154,21 @@ test("Unit session say: materialized remote sessions post once then append local
     const events = await readStream("remote-say", { targetPath: tempRoot, tail: 20 });
     assert.equal(events.length, 1);
     assert.equal(events[0].payload.message, "status: materialized remote should not double post");
+
+    const readOutput = await runSessionCommand([
+      "session",
+      "read",
+      "remote-say",
+      "--tail",
+      "5",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+    const readPayload = JSON.parse(readOutput);
+    assert.equal(readPayload.displaySource, "local");
+    assert.equal(readPayload.count, 1);
+    assert.equal(readPayload.events[0].payload.message, "status: materialized remote should not double post");
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv();

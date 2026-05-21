@@ -337,7 +337,12 @@ function filterBySince(events = [], since) {
 export async function appendToStream(
   sessionId,
   event,
-  { targetPath = process.cwd(), maxEvents = DEFAULT_MAX_STREAM_EVENTS, syncRemote = true } = {}
+  {
+    targetPath = process.cwd(),
+    maxEvents = DEFAULT_MAX_STREAM_EVENTS,
+    syncRemote = true,
+    awaitRemoteSync = false,
+  } = {}
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
   let metadata = await readSessionMetadata(paths);
@@ -381,9 +386,14 @@ export async function appendToStream(
 
   if (syncRemote) {
     // Best-effort dashboard sync. Never block local stream durability on API state.
-    void syncSessionEventToApi(paths.sessionId, canonicalEvent, {
+    const syncPromise = syncSessionEventToApi(paths.sessionId, canonicalEvent, {
       targetPath,
     }).catch(() => {});
+    if (awaitRemoteSync) {
+      await syncPromise;
+    } else {
+      void syncPromise;
+    }
   }
 
   return canonicalEvent;
