@@ -131,7 +131,7 @@ def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
         "Validate authoritative Omar helper syntax",
         "check_omar_workflow_contract.py --self-test",
         "wait_for_authoritative_omar_review.py --self-test",
-        "Wait for authoritative Omar/MAM review surface",
+        "Wait for authoritative Omar Gate review surface",
         "wait_for_authoritative_omar_review.py",
         "--summary-out",
         "--upsert-comment",
@@ -198,7 +198,7 @@ jobs:
       - name: Run Omar Gate
         id: omar
         uses: ./.github/actions/omar-gate
-      - name: Wait for authoritative Omar/MAM review surface
+      - name: Wait for authoritative Omar Gate review surface
         run: python3 scripts/ci/wait_for_authoritative_omar_review.py --summary-out /tmp/summary.json --upsert-comment
   omar_enforce:
     name: Omar Gate
@@ -216,7 +216,7 @@ jobs:
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
         wrapper,
     )
-    _assert_fails(valid_workflow.replace("Wait for authoritative Omar/MAM review surface", ""), wrapper)
+    _assert_fails(valid_workflow.replace("Wait for authoritative Omar Gate review surface", ""), wrapper)
     _assert_fails(
         valid_workflow,
         wrapper.replace(
