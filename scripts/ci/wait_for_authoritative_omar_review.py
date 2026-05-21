@@ -95,13 +95,18 @@ def _is_authoritative_summary_comment(body: str, run_id: str = "") -> bool:
     has_legacy_marker = LEGACY_OMAR_MARKER in normalized
     if not (has_summary_marker or has_legacy_marker):
         return False
+    has_supported_heading = (
+        "### Omar Gate Review" in normalized
+        or "### Omar Multi-Agent Review" in normalized
+    )
     required_fragments = (
-        "### Omar Multi-Agent Review",
         "**Status:**",
         "**Findings:**",
         "#### Top Findings",
         "#### Coverage",
     )
+    if not has_supported_heading:
+        return False
     if not all(fragment in normalized for fragment in required_fragments):
         return False
     return _comment_references_run(normalized, run_id)
@@ -217,18 +222,18 @@ def build_authoritative_comment(
             AUTHORITATIVE_COMMENT_MARKER,
             "### Omar Gate Authoritative Review",
             "",
-            "**Status:** passed after Sentinelayer MAM completion",
+            "**Status:** passed after Sentinelayer review completion",
             "",
             f"- Repository: `{repo}`",
             f"- Head SHA: `{sha}`",
-            f"- MAM check: `{review.check_name}` -> `{review.check_conclusion}`",
+            f"- Sentinelayer review check: `{review.check_conclusion}`",
             f"- Findings: `P0={counts.get('P0', 0)} P1={counts.get('P1', 0)} P2={counts.get('P2', 0)} P3={counts.get('P3', 0)}`",
             f"- Sentinelayer run: `{review.run_id}`",
             f"- Review comment: {review.comment_url}",
             f"- Review dashboard: {review.check_details_url}",
             f"- Workflow run: {workflow_url}",
             "",
-            "This comment is posted only after the workflow observes the Sentinelayer-owned MAM check and matching summary comment. Bridge-only/stub comments are ignored by the gate.",
+            "This comment is posted only after the workflow observes the Sentinelayer-owned review check and matching Omar Gate summary comment. Bridge-only/stub comments are ignored by the gate.",
             f"<!-- sentinelayer:omar-gate:authoritative-review:{review.run_id} -->",
             "",
         ]
@@ -257,7 +262,7 @@ def run_self_test() -> None:
             "html_url": "https://github.com/mrrCarter/create-sentinelayer/pull/491#issuecomment-4506267940",
             "updated_at": "2026-05-21T08:43:00Z",
             "body": f"""<!-- sentinelayer-omar-summary -->
-### Omar Multi-Agent Review
+### Omar Gate Review
 
 **Status:** completed
 **Findings:** 0 critical | 1 high | 2 medium | 3 low
@@ -301,6 +306,8 @@ def run_self_test() -> None:
     )
     if AUTHORITATIVE_COMMENT_MARKER not in body:
         raise OmarReviewError("self-test failed: authoritative marker missing")
+    if "MAM" in body or "Omar Multi-Agent Review" in body:
+        raise OmarReviewError("self-test failed: old review wording leaked into authoritative comment")
     bridge_comment = dict(comments[0])
     bridge_comment["body"] += "\nOmar Gate Action v1 is a thin GitHub App bridge.\n"
     try:
