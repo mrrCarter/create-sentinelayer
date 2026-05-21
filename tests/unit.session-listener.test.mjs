@@ -117,6 +117,37 @@ test("Unit session listener: empty first poll primes listener so first new event
   assert.equal(result.cursor, "c1");
 });
 
+test("Unit session listener: empty poll at the same cursor is a quiet idle cycle", async () => {
+  const errors = [];
+  const writes = [];
+  const emitted = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-idle",
+    agentId: "codex-1",
+    intervalSeconds: 1,
+    maxPolls: 1,
+    _readCursor: async () => "1779371147039:00002724",
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _poll: async (sessionId, options) => {
+      assert.equal(options.since, "1779371147039:00002724");
+      return { ok: true, events: [], cursor: "1779371147039:00002724" };
+    },
+    _sleep: async () => {},
+    onError: async (error) => errors.push(error.reason),
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(emitted, []);
+  assert.equal(result.reason, "");
+  assert.equal(result.cursor, "1779371147039:00002724");
+});
+
 test("Unit session listener: stale cursors are not persisted or re-emitted", async () => {
   const writes = [];
   const errors = [];
