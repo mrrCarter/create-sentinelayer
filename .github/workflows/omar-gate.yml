@@ -125,6 +125,7 @@ jobs:
       contents: read
       id-token: write
       checks: write
+      issues: write
       pull-requests: write
     outputs:
       trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
@@ -418,6 +419,13 @@ jobs:
             echo "## Security Review Environment"
             echo "- required_reviewers: \`${reviewer_count}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate authoritative Omar helper syntax
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/ci/wait_for_authoritative_omar_review.py
+          python3 scripts/ci/wait_for_authoritative_omar_review.py --self-test
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
@@ -448,6 +456,34 @@ jobs:
           for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
             case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
           done
+      - name: Wait for authoritative Omar/MAM review surface
+        if: steps.trust_boundary.outputs.trusted_context == 'true' && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OMAR_RUN_ID}" ]; then
+            echo "::error::Omar action did not emit run_id; cannot bind Sentinelayer MAM review provenance."
+            exit 1
+          fi
+          mkdir -p /tmp/omar-authoritative
+          python3 scripts/ci/wait_for_authoritative_omar_review.py \
+            --repo "${REPOSITORY}" \
+            --sha "${HEAD_SHA}" \
+            --pr-number "${PR_NUMBER}" \
+            --run-id "${OMAR_RUN_ID}" \
+            --timeout-seconds 900 \
+            --poll-seconds 15 \
+            --comment-out /tmp/omar-authoritative/comment.md \
+            --summary-out /tmp/omar-authoritative/summary.json \
+            --upsert-comment \
+            --workflow-url "${WORKFLOW_URL}"
       - name: Stage Omar artifacts (redacted)
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -495,20 +531,35 @@ jobs:
   omar_enforce:
     name: Omar Gate
     needs: [omar_scan, omar_untrusted_scan]
-    if: >-
-      ${{
-        always() &&
-        (
-          (needs.omar_scan.result == 'success' && needs.omar_scan.outputs.trusted_context == 'true') ||
-          (needs.omar_untrusted_scan.result == 'success')
-        )
-      }}
+    if: ${{ always() }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
       checks: write
       pull-requests: write
     steps:
+      - name: Require selected Omar scan success
+        shell: bash
+        env:
+          TRUSTED_SCAN_RESULT: ${{ needs.omar_scan.result }}
+          TRUSTED_CONTEXT: ${{ needs.omar_scan.outputs.trusted_context || '' }}
+          UNTRUSTED_SCAN_RESULT: ${{ needs.omar_untrusted_scan.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || '' }}
+          BASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${HEAD_REPOSITORY}" != "${BASE_REPOSITORY}" ]; then
+            if [ "${UNTRUSTED_SCAN_RESULT}" != "success" ]; then
+              echo "::error::Untrusted Omar scan did not succeed (result=${UNTRUSTED_SCAN_RESULT})."
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ "${TRUSTED_SCAN_RESULT}" != "success" ] || [ "${TRUSTED_CONTEXT}" != "true" ]; then
+            echo "::error::Trusted Omar scan did not succeed (result=${TRUSTED_SCAN_RESULT}, trusted_context=${TRUSTED_CONTEXT:-<empty>})."
+            exit 1
+          fi
       - name: Enforce Omar reviewer merge thresholds
         shell: bash
         env:
