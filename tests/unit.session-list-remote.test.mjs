@@ -91,6 +91,43 @@ test("listSessionsFromApi: fetchAll walks cursor pages and dedupes overlaps", as
   assert.match(observedUrls[1], /cursor=cursor-2/);
 });
 
+test("listSessionsFromApi: fetchAll reports truncation when maxPages is exhausted", async () => {
+  const observedUrls = [];
+  const result = await listSessionsFromApi({
+    targetPath: "/tmp",
+    limit: 2,
+    fetchAll: true,
+    maxPages: 1,
+    resolveAuthSession: fakeSession(),
+    fetchImpl: fakeFetch((url) => {
+      observedUrls.push(url);
+      return {
+        ok: true,
+        json: async () => ({
+          sessions: [{ sessionId: "active-old" }, { sessionId: "newer-quiet" }],
+          next_cursor: "cursor-2",
+          has_more: true,
+        }),
+      };
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.sessions.map((item) => item.sessionId),
+    ["active-old", "newer-quiet"],
+  );
+  assert.equal(result.count, 2);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.nextCursor, "cursor-2");
+  assert.equal(result.truncated, true);
+  assert.equal(result.warnings.length, 1);
+  assert.equal(result.warnings[0].code, "SESSION_LIST_MAX_PAGES_REACHED");
+  assert.equal(result.warnings[0].maxPages, 1);
+  assert.equal(result.warnings[0].nextCursor, "cursor-2");
+  assert.equal(observedUrls.length, 1);
+});
+
 test("listSessionsFromApi: returns api_403 when forbidden", async () => {
   const result = await listSessionsFromApi({
     targetPath: "/tmp",

@@ -2488,6 +2488,8 @@ export function registerSessionCommand(program) {
           count: remote.count,
           nextCursor: remote.nextCursor || null,
           hasMore: Boolean(remote.hasMore),
+          truncated: Boolean(remote.truncated),
+          warnings: Array.isArray(remote.warnings) ? remote.warnings : [],
           sessions: trimmed,
         };
         if (emitJson) {
@@ -2528,6 +2530,13 @@ export function registerSessionCommand(program) {
               remote.hasMore
                 ? "… more sessions are available (raise --limit or use --json)."
                 : `… ${remote.count - trimmed.length} more (raise --limit or use --json).`,
+            ),
+          );
+        }
+        if (remote.truncated) {
+          console.log(
+            pc.yellow(
+              "Remote session listing is truncated by the page cap; JSON output includes nextCursor for resume.",
             ),
           );
         }
