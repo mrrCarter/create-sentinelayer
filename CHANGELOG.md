@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.1...v0.11.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* harden session remote cursors and read provenance ([07ea057](https://github.com/mrrCarter/create-sentinelayer/commit/07ea0573af86c5da8c7a2a6b08e91c224e1277d1))
+
 ## [0.11.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.0...v0.11.1) (2026-05-21)
 
 
