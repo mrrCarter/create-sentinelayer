@@ -19,4 +19,20 @@ test("Unit Omar wrapper: managed LLM keeps Omar in fail-closed full-action mode"
   assert.match(wrapperText, /model_fallback:\s*gpt-4\.1-mini/);
   assert.match(wrapperText, /use_codex:\s*"true"/);
   assert.doesNotMatch(wrapperText, /sentinelayer_managed_llm:\s*"false"/);
+  assert.match(workflowText, /issues:\s*write/);
+  assert.match(workflowText, /Validate authoritative Omar helper syntax/);
+  assert.match(workflowText, /wait_for_authoritative_omar_review\.py --self-test/);
+  assert.match(workflowText, /Wait for authoritative Omar\/MAM review surface/);
+  assert.match(workflowText, /wait_for_authoritative_omar_review\.py/);
+  assert.match(workflowText, /--summary-out\s+\/tmp\/omar-authoritative\/summary\.json/);
+  assert.match(workflowText, /--upsert-comment/);
+  assert.match(workflowText, /github\.event_name == 'pull_request'/);
+  assert.match(workflowText, /omar_enforce:[\s\S]*if:\s*\$\{\{\s*always\(\)\s*\}\}/);
+  assert.match(workflowText, /Require selected Omar scan success/);
+  assert.match(workflowText, /Trusted Omar scan did not succeed/);
+  assert.match(workflowText, /Untrusted Omar scan did not succeed/);
+  assert.ok(
+    workflowText.indexOf("Validate authoritative Omar helper syntax") < workflowText.indexOf("Run Omar Gate"),
+    "helper syntax/self-test validation should run before Omar consumes scan quota",
+  );
 });
