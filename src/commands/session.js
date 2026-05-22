@@ -107,13 +107,58 @@ const SESSION_MESSAGE_ACTION_TYPES = new Set([
   "like",
   "dislike",
   "disregard",
+  "view",
+]);
+
+const SESSION_MESSAGE_ACTION_ALIASES = new Map([
+  ["comment", "reply"],
+]);
+
+const SESSION_MESSAGE_ACTION_DESCRIPTIONS = Object.freeze([
+  {
+    type: "ack",
+    command: "sl session react <id> ack --target-sequence <n>",
+    description: "Acknowledge that you read a message without adding a top-level post.",
+  },
+  {
+    type: "working_on",
+    command: "sl session action <id> working_on --target-sequence <n> --note \"scope\"",
+    description: "Claim active ownership of a target message or task.",
+  },
+  {
+    type: "reply",
+    alias: "comment",
+    command: "sl session reply <id> <sequence> \"message\"",
+    description: "Thread a substantive response under a specific message.",
+  },
+  {
+    type: "like",
+    command: "sl session react <id> like --target-sequence <n>",
+    description: "Positive lightweight feedback.",
+  },
+  {
+    type: "dislike",
+    command: "sl session react <id> dislike --target-sequence <n>",
+    description: "Negative lightweight feedback.",
+  },
+  {
+    type: "disregard",
+    command: "sl session action <id> disregard --target-sequence <n>",
+    description: "Mark a message as intentionally ignored or superseded.",
+  },
+  {
+    type: "view",
+    command: "sl session view <id> <sequence>",
+    description: "Record a read receipt for a target message.",
+  },
 ]);
 
 function normalizeSessionMessageActionType(value) {
-  const normalized = normalizeString(value).toLowerCase();
+  const raw = normalizeString(value).toLowerCase();
+  const normalized = SESSION_MESSAGE_ACTION_ALIASES.get(raw) || raw;
   if (!SESSION_MESSAGE_ACTION_TYPES.has(normalized)) {
     throw new Error(
-      `action type must be one of: ${[...SESSION_MESSAGE_ACTION_TYPES].join(", ")}.`,
+      `action type must be one of: ${[...SESSION_MESSAGE_ACTION_TYPES].join(", ")}; aliases: comment=reply.`,
     );
   }
   return normalized;
@@ -1838,8 +1883,33 @@ export function registerSessionCommand(program) {
   }
 
   session
+    .command("actions")
+    .description("List supported low-noise message actions with examples")
+    .option("--json", "Emit machine-readable output")
+    .action((options, command) => {
+      const payload = {
+        command: "session actions",
+        actions: SESSION_MESSAGE_ACTION_DESCRIPTIONS,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return payload;
+      }
+      console.log(pc.bold("Supported session message actions"));
+      for (const action of SESSION_MESSAGE_ACTION_DESCRIPTIONS) {
+        const alias = action.alias ? ` (alias: ${action.alias})` : "";
+        console.log(`${pc.cyan(action.type)}${alias}`);
+        console.log(`  ${action.description}`);
+        console.log(pc.gray(`  ${action.command}`));
+      }
+      return payload;
+    });
+
+  session
     .command("action <sessionId> <actionType>")
-    .description("Create a message action for a target session event")
+    .description(
+      "Create a message action for a target session event (ack, working_on, reply/comment, like, dislike, disregard, view)",
+    )
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--note <text>", "Optional action note or reply body")
@@ -1891,6 +1961,44 @@ export function registerSessionCommand(program) {
         commandName: "session reply",
         targetSequenceId: parsePositiveInteger(targetSequenceId, "targetSequenceId", 0),
         note: message,
+      });
+    });
+
+  session
+    .command("comment <sessionId> <targetSequenceId> <message...>")
+    .description("Alias for `session reply`; add a threaded comment to a target event")
+    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, targetSequenceId, messageParts, options, command) => {
+      const message = Array.isArray(messageParts) ? messageParts.join(" ") : messageParts;
+      await runMessageActionCommand({
+        sessionId,
+        actionType: "reply",
+        options,
+        command,
+        commandName: "session comment",
+        targetSequenceId: parsePositiveInteger(targetSequenceId, "targetSequenceId", 0),
+        note: message,
+      });
+    });
+
+  session
+    .command("view <sessionId> <targetSequenceId>")
+    .description("Record a read receipt for a target session event")
+    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, targetSequenceId, options, command) => {
+      await runMessageActionCommand({
+        sessionId,
+        actionType: "view",
+        options,
+        command,
+        commandName: "session view",
+        targetSequenceId: parsePositiveInteger(targetSequenceId, "targetSequenceId", 0),
       });
     });
 

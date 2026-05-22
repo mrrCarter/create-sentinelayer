@@ -332,6 +332,9 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(action, "--agent <id>");
   assertCommandHasOption(action, "--idempotency-key <key>");
 
+  const actions = getCommandByPath(program, "session actions");
+  assert.ok(actions.description().includes("message actions"));
+
   const react = getCommandByPath(program, "session react");
   assertCommandHasOption(react, "--target-sequence <n>");
   assertCommandHasOption(react, "--target-cursor <cursor>");
@@ -339,6 +342,14 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const reply = getCommandByPath(program, "session reply");
   assertCommandHasOption(reply, "--agent <id>");
   assertCommandHasOption(reply, "--idempotency-key <key>");
+
+  const comment = getCommandByPath(program, "session comment");
+  assertCommandHasOption(comment, "--agent <id>");
+  assertCommandHasOption(comment, "--idempotency-key <key>");
+
+  const view = getCommandByPath(program, "session view");
+  assertCommandHasOption(view, "--agent <id>");
+  assertCommandHasOption(view, "--idempotency-key <key>");
 
   const read = getCommandByPath(program, "session read");
   assertCommandHasOption(read, "--before-sequence <n>");
