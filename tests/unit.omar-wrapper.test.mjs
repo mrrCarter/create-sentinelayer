@@ -23,6 +23,8 @@ test("Unit Omar workflow: managed LLM keeps Omar in fail-closed direct-action mo
   assert.doesNotMatch(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate Omar workflow contract/);
   assert.match(workflowText, /check_omar_workflow_contract\.py --self-test/);
+  assert.match(workflowText, /check_forbidden_omar_surface\.py --self-test/);
+  assert.match(workflowText, /python3 scripts\/ci\/check_forbidden_omar_surface\.py/);
   assert.match(workflowText, /python3 scripts\/ci\/check_omar_workflow_contract\.py/);
   assert.doesNotMatch(workflowText, /wait_for_authoritative_omar_review\.py/);
   assert.doesNotMatch(workflowText, /Wait for authoritative Omar Gate review surface/);

@@ -133,8 +133,8 @@ def validate_omar_contract(workflow_text: str) -> None:
 
     forbidden_comment_fragments = (
         "Wait for authoritative Omar Gate review surface",
-        "wait_for_authoritative_omar_review.py",
-        "sentinelayer-omar-summary",
+        "wait_for_" + "authoritative" + "_omar_review.py",
+        "sentinelayer-omar-" + "summary",
         "--summary-out",
         "--upsert" + "-comment",
     )
@@ -149,6 +149,8 @@ def validate_omar_contract(workflow_text: str) -> None:
         "OMAR_SPEC_ID must be a 64-character lowercase hex digest",
         "Validate Omar workflow contract",
         "check_omar_workflow_contract.py --self-test",
+        "check_forbidden_omar_surface.py --self-test",
+        "check_forbidden_omar_surface.py",
         "Run Omar Gate",
         "Stage Omar artifacts",
         "Upload Omar artifacts",
@@ -207,6 +209,8 @@ jobs:
       - name: Validate Omar workflow contract
         run: |
           python3 scripts/ci/check_omar_workflow_contract.py --self-test
+          python3 scripts/ci/check_forbidden_omar_surface.py --self-test
+          python3 scripts/ci/check_forbidden_omar_surface.py
       - name: Validate Omar configuration invariants
         run: |
           echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"

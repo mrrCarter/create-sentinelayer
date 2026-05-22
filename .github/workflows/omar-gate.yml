@@ -425,6 +425,8 @@ jobs:
           set -euo pipefail
           python3 scripts/ci/check_omar_workflow_contract.py --self-test
           python3 scripts/ci/check_omar_workflow_contract.py
+          python3 scripts/ci/check_forbidden_omar_surface.py --self-test
+          python3 scripts/ci/check_forbidden_omar_surface.py
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
