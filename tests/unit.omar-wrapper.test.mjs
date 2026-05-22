@@ -24,7 +24,7 @@ test("Unit Omar wrapper: managed LLM keeps Omar in fail-closed full-action mode"
   assert.match(workflowText, /check_omar_workflow_contract\.py --self-test/);
   assert.match(workflowText, /python3 scripts\/ci\/check_omar_workflow_contract\.py/);
   assert.match(workflowText, /wait_for_authoritative_omar_review\.py --self-test/);
-  assert.match(workflowText, /Wait for authoritative Omar\/MAM review surface/);
+  assert.match(workflowText, /Wait for authoritative Omar Gate review surface/);
   assert.match(workflowText, /wait_for_authoritative_omar_review\.py/);
   assert.match(workflowText, /--summary-out\s+\/tmp\/omar-authoritative\/summary\.json/);
   assert.match(workflowText, /--upsert-comment/);
