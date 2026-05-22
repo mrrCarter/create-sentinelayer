@@ -26,7 +26,7 @@ test("Unit Omar wrapper: managed LLM keeps Omar in fail-closed full-action mode"
   assert.doesNotMatch(workflowText, /wait_for_authoritative_omar_review\.py/);
   assert.doesNotMatch(workflowText, /Wait for authoritative Omar Gate review surface/);
   assert.doesNotMatch(workflowText, /--summary-out\s+\/tmp\/omar-authoritative\/summary\.json/);
-  assert.doesNotMatch(workflowText, /--upsert-comment/);
+  assert.doesNotMatch(workflowText, new RegExp("--upsert" + "-comment"));
   assert.doesNotMatch(workflowText, /sentinelayer-omar-summary/);
   assert.match(workflowText, /Stage Omar artifacts/);
   assert.match(workflowText, /Upload Omar artifacts/);

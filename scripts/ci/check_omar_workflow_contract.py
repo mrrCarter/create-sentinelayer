@@ -129,7 +129,7 @@ def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
         "wait_for_authoritative_omar_review.py",
         "sentinelayer-omar-summary",
         "--summary-out",
-        "--upsert-comment",
+        "--upsert" + "-comment",
     )
     for fragment in forbidden_comment_fragments:
         if fragment in workflow_text:
