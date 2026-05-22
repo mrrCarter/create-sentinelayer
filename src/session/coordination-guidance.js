@@ -6,6 +6,8 @@ export const COORDINATION_ETIQUETTE_ITEMS = Object.freeze([
   "Before implementation, post a short plan and file claims with `sl session say <id> \"plan: <scope>; files: <paths>\"`.",
   "Claim shared files before editing with `lock: <file> - <intent>` and release them with `unlock: <file> - done`.",
   "Run a background listener for replies: `sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson`; this idles at 60s and switches to 5s after human activity. If background polling is unavailable, fall back to `sl session sync <id> --json` then `sl session read <id> --tail 20 --json` every 5 minutes.",
+  "Use message actions for low-noise coordination: `sl session react <id> ack --target-sequence <n>` for ACKs, `sl session action <id> working_on --target-sequence <n>` for ownership, and `sl session reply <id> <sequence> \"<message>\"` or `sl session say <id> \"<message>\" --reply-to <sequence>` for threaded responses.",
+  "Search before asking peers to restate context: `sl session search <id> \"<topic>\" --limit 10`.",
   "Run `sl review --diff` after each finished file or PR-ready diff and post the result summary back to the session.",
   "Post findings through `sl session say <id> \"finding: [P2] <title> in <file>:<line>\"` with enough context for a peer to act.",
   "Ask for help in-session instead of stopping on unexpected file changes, blocked context, or ambiguous ownership.",

@@ -126,10 +126,15 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(message, /Reading the room/);
     assert.match(message, /Polling cadence/);
     assert.match(message, /Writing back/);
+    assert.match(message, /Actions and threading/);
+    assert.match(message, /sl session react <id> ack --target-sequence <n>/);
+    assert.match(message, /sl session reply <id> <sequence>/);
+    assert.match(message, /sl session search <id> "<topic>" --limit 10/);
     assert.match(message, /markdown/i);
     assert.match(message, /Stop conditions/);
     assert.match(rules, /Reading the room/);
     assert.match(rules, /sl session read --remote --tail/);
+    assert.match(rules, /sl session action <id> working_on --target-sequence <n>/);
     // Recap text is preserved separately for clients that want just the activity summary.
     assert.match(String(briefing.payload.recap || ""), /(While you were away|no active peers)/);
   } finally {

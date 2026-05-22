@@ -76,8 +76,14 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.match(firstAgents, /lock: <file> - <intent>/);
     assert.match(firstAgents, /sl review --diff/);
     assert.match(firstAgents, /sl --help/);
+    assert.match(firstAgents, /sl session react <id> ack --target-sequence <n>/);
+    assert.match(firstAgents, /sl session reply <id> <sequence>/);
+    assert.match(firstAgents, /sl session search <id> "<topic>" --limit 10/);
     assert.match(firstGuide, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson/);
     assert.match(firstGuide, /sl session sync <id> --json/);
+    assert.match(firstGuide, /sl session react <id> ack --target-sequence <n>/);
+    assert.match(firstGuide, /sl session reply <id> <sequence>/);
+    assert.match(firstGuide, /sl session search <id> "<topic>" --limit 10/);
 
     const second = await setupSessionGuides(session.sessionId, { targetPath: tempRoot });
     assert.equal(second.agents.changed, false);

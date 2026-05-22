@@ -16,7 +16,9 @@ from urllib.request import Request, urlopen
 
 
 AUTHORITATIVE_COMMENT_MARKER = "<!-- sentinelayer:omar-gate:authoritative-review -->"
-MAM_CHECK_NAME = "Omar Multi-Agent Review"
+OMAR_REVIEW_CHECK_NAME = "Omar Gate Review"
+LEGACY_OMAR_REVIEW_CHECK_NAME = "Omar Multi-Agent Review"
+OMAR_REVIEW_CHECK_NAMES = (OMAR_REVIEW_CHECK_NAME, LEGACY_OMAR_REVIEW_CHECK_NAME)
 SENTINELAYER_SUMMARY_MARKER = "<!-- sentinelayer-omar-summary"
 LEGACY_OMAR_MARKER = "<!-- sentinelayer:omar-gate:"
 SENTINELAYER_COMMENT_AUTHORS = {"sentinelayer", "sentinelayer[bot]"}
@@ -95,13 +97,18 @@ def _is_authoritative_summary_comment(body: str, run_id: str = "") -> bool:
     has_legacy_marker = LEGACY_OMAR_MARKER in normalized
     if not (has_summary_marker or has_legacy_marker):
         return False
+    has_supported_heading = (
+        "### Omar Gate Review" in normalized
+        or "### Omar Multi-Agent Review" in normalized
+    )
     required_fragments = (
-        "### Omar Multi-Agent Review",
         "**Status:**",
         "**Findings:**",
         "#### Top Findings",
         "#### Coverage",
     )
+    if not has_supported_heading:
+        return False
     if not all(fragment in normalized for fragment in required_fragments):
         return False
     return _comment_references_run(normalized, run_id)
@@ -113,10 +120,10 @@ def _is_sentinelayer_comment_author(comment: dict[str, Any]) -> bool:
     return login in SENTINELAYER_COMMENT_AUTHORS
 
 
-def select_mam_check(check_runs: list[dict[str, Any]], run_id: str = "") -> dict[str, Any] | None:
+def select_omar_review_check(check_runs: list[dict[str, Any]], run_id: str = "") -> dict[str, Any] | None:
     candidates: list[dict[str, Any]] = []
     for check in check_runs:
-        if str(check.get("name") or "") != MAM_CHECK_NAME:
+        if str(check.get("name") or "") not in OMAR_REVIEW_CHECK_NAMES:
             continue
         app = check.get("app") if isinstance(check.get("app"), dict) else {}
         if str(app.get("slug") or "") != "sentinelayer":
@@ -164,20 +171,20 @@ def evaluate_authoritative_review(
     comments: list[dict[str, Any]],
     run_id: str,
 ) -> AuthoritativeReview:
-    check = select_mam_check(check_runs, run_id=run_id)
+    check = select_omar_review_check(check_runs, run_id=run_id)
     if check is None:
-        raise OmarReviewPending(f"waiting for Sentinelayer `{MAM_CHECK_NAME}` check")
+        raise OmarReviewPending("waiting for Sentinelayer review check")
 
     status = str(check.get("status") or "").lower()
     conclusion = str(check.get("conclusion") or "").lower()
     if status != "completed":
-        raise OmarReviewPending(f"`{MAM_CHECK_NAME}` check is {status or 'not completed'}")
+        raise OmarReviewPending(f"Sentinelayer review check is {status or 'not completed'}")
     if conclusion != "success":
         if conclusion in {"", "neutral", "skipped"}:
             raise OmarReviewPending(
-                f"`{MAM_CHECK_NAME}` check has non-authoritative `{conclusion or 'unknown'}` conclusion"
+                f"Sentinelayer review check has non-authoritative `{conclusion or 'unknown'}` conclusion"
             )
-        raise OmarReviewError(f"`{MAM_CHECK_NAME}` check concluded `{conclusion or 'unknown'}`")
+        raise OmarReviewError(f"Sentinelayer review check concluded `{conclusion or 'unknown'}`")
 
     comment = select_summary_comment(comments, run_id=run_id)
     if comment is None:
@@ -192,7 +199,7 @@ def evaluate_authoritative_review(
 
     return AuthoritativeReview(
         run_id=run_id,
-        check_name=str(check.get("name") or MAM_CHECK_NAME),
+        check_name=str(check.get("name") or OMAR_REVIEW_CHECK_NAME),
         check_conclusion=conclusion,
         check_details_url=str(check.get("details_url") or ""),
         check_summary=summary,
@@ -217,18 +224,18 @@ def build_authoritative_comment(
             AUTHORITATIVE_COMMENT_MARKER,
             "### Omar Gate Authoritative Review",
             "",
-            "**Status:** passed after Sentinelayer MAM completion",
+            "**Status:** passed after Sentinelayer review completion",
             "",
             f"- Repository: `{repo}`",
             f"- Head SHA: `{sha}`",
-            f"- MAM check: `{review.check_name}` -> `{review.check_conclusion}`",
+            f"- Sentinelayer review check: `{review.check_conclusion}`",
             f"- Findings: `P0={counts.get('P0', 0)} P1={counts.get('P1', 0)} P2={counts.get('P2', 0)} P3={counts.get('P3', 0)}`",
             f"- Sentinelayer run: `{review.run_id}`",
             f"- Review comment: {review.comment_url}",
             f"- Review dashboard: {review.check_details_url}",
             f"- Workflow run: {workflow_url}",
             "",
-            "This comment is posted only after the workflow observes the Sentinelayer-owned MAM check and matching summary comment. Bridge-only/stub comments are ignored by the gate.",
+            "This comment is posted only after the workflow observes the Sentinelayer-owned review check and matching Omar Gate summary comment. Bridge-only/stub comments are ignored by the gate.",
             f"<!-- sentinelayer:omar-gate:authoritative-review:{review.run_id} -->",
             "",
         ]
@@ -239,7 +246,7 @@ def run_self_test() -> None:
     run_id = "ghdeep_mrrcarter-create-sentinelayer_7007815d2f0ccbc6"
     check_runs = [
         {
-            "name": MAM_CHECK_NAME,
+            "name": OMAR_REVIEW_CHECK_NAME,
             "app": {"slug": "sentinelayer"},
             "status": "completed",
             "conclusion": "success",
@@ -257,7 +264,7 @@ def run_self_test() -> None:
             "html_url": "https://github.com/mrrCarter/create-sentinelayer/pull/491#issuecomment-4506267940",
             "updated_at": "2026-05-21T08:43:00Z",
             "body": f"""<!-- sentinelayer-omar-summary -->
-### Omar Multi-Agent Review
+### Omar Gate Review
 
 **Status:** completed
 **Findings:** 0 critical | 1 high | 2 medium | 3 low
@@ -292,7 +299,7 @@ def run_self_test() -> None:
     except OmarReviewPending:
         pass
     else:
-        raise OmarReviewError("self-test failed: neutral MAM check was accepted")
+        raise OmarReviewError("self-test failed: neutral review check was accepted")
     body = build_authoritative_comment(
         review=review,
         repo="mrrCarter/create-sentinelayer",
@@ -301,6 +308,8 @@ def run_self_test() -> None:
     )
     if AUTHORITATIVE_COMMENT_MARKER not in body:
         raise OmarReviewError("self-test failed: authoritative marker missing")
+    if "MAM" in body or "Omar Multi-Agent Review" in body:
+        raise OmarReviewError("self-test failed: old review wording leaked into authoritative comment")
     bridge_comment = dict(comments[0])
     bridge_comment["body"] += "\nOmar Gate Action v1 is a thin GitHub App bridge.\n"
     try:
@@ -443,7 +452,7 @@ def wait_for_review(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Wait for the authoritative Sentinelayer Omar/MAM PR review surface.")
+    parser = argparse.ArgumentParser(description="Wait for the authoritative Sentinelayer Omar Gate PR review surface.")
     parser.add_argument("--self-test", action="store_true", help="Run dependency-free contract checks and exit.")
     parser.add_argument("--repo", default="", help="GitHub repository, for example owner/name.")
     parser.add_argument("--sha", default="", help="PR head SHA to inspect for check-runs.")

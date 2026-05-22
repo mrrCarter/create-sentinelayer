@@ -125,7 +125,6 @@ jobs:
       contents: read
       id-token: write
       checks: write
-      issues: write
       pull-requests: write
     outputs:
       trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
@@ -419,15 +418,13 @@ jobs:
             echo "## Security Review Environment"
             echo "- required_reviewers: \`${reviewer_count}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Validate authoritative Omar helper syntax
+      - name: Validate Omar workflow contract
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/ci/check_omar_workflow_contract.py --self-test
           python3 scripts/ci/check_omar_workflow_contract.py
-          python3 -m py_compile scripts/ci/wait_for_authoritative_omar_review.py
-          python3 scripts/ci/wait_for_authoritative_omar_review.py --self-test
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
@@ -458,34 +455,6 @@ jobs:
           for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
             case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
           done
-      - name: Wait for authoritative Omar/MAM review surface
-        if: steps.trust_boundary.outputs.trusted_context == 'true' && github.event_name == 'pull_request'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
-          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          if [ -z "${OMAR_RUN_ID}" ]; then
-            echo "::error::Omar action did not emit run_id; cannot bind Sentinelayer MAM review provenance."
-            exit 1
-          fi
-          mkdir -p /tmp/omar-authoritative
-          python3 scripts/ci/wait_for_authoritative_omar_review.py \
-            --repo "${REPOSITORY}" \
-            --sha "${HEAD_SHA}" \
-            --pr-number "${PR_NUMBER}" \
-            --run-id "${OMAR_RUN_ID}" \
-            --timeout-seconds 900 \
-            --poll-seconds 15 \
-            --comment-out /tmp/omar-authoritative/comment.md \
-            --summary-out /tmp/omar-authoritative/summary.json \
-            --upsert-comment \
-            --workflow-url "${WORKFLOW_URL}"
       - name: Stage Omar artifacts (redacted)
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash

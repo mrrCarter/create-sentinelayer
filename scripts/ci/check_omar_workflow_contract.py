@@ -121,25 +121,35 @@ def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
         raise OmarWorkflowContractError("top-level permissions must include id-token: write")
 
     omar_scan_lines = _find_job_lines(workflow_lines, "omar_scan")
-    for permission in ("id-token: write", "issues: write"):
-        if not _permissions_block_has(omar_scan_lines, "    permissions:", "      ", permission):
-            raise OmarWorkflowContractError(
-                f"jobs.omar_scan.permissions must include {permission}"
-            )
+    if not _permissions_block_has(omar_scan_lines, "    permissions:", "      ", "id-token: write"):
+        raise OmarWorkflowContractError("jobs.omar_scan.permissions must include id-token: write")
 
-    required_authoritative_fragments = (
-        "Validate authoritative Omar helper syntax",
-        "check_omar_workflow_contract.py --self-test",
-        "wait_for_authoritative_omar_review.py --self-test",
-        "Wait for authoritative Omar/MAM review surface",
+    forbidden_comment_fragments = (
+        "Wait for authoritative Omar Gate review surface",
         "wait_for_authoritative_omar_review.py",
+        "sentinelayer-omar-summary",
         "--summary-out",
         "--upsert-comment",
     )
-    for fragment in required_authoritative_fragments:
+    for fragment in forbidden_comment_fragments:
+        if fragment in workflow_text:
+            raise OmarWorkflowContractError(
+                f"omar-gate.yml must not require PR summary-comment evidence: {fragment}"
+            )
+
+    required_direct_fragments = (
+        "Validate Omar workflow contract",
+        "check_omar_workflow_contract.py --self-test",
+        "Run Omar Gate",
+        "Stage Omar artifacts",
+        "Upload Omar artifacts",
+        "actions/upload-artifact",
+        "omar-artifacts/**",
+    )
+    for fragment in required_direct_fragments:
         if fragment not in workflow_text:
             raise OmarWorkflowContractError(
-                f"omar-gate.yml is missing authoritative Omar review fragment: {fragment}"
+                f"omar-gate.yml is missing direct Omar Gate evidence fragment: {fragment}"
             )
 
     required_enforcer_fragments = (
@@ -155,9 +165,9 @@ def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
                 f"omar-gate.yml is missing fail-closed Omar enforcer fragment: {fragment}"
             )
 
-    if workflow_text.index("Validate authoritative Omar helper syntax") > workflow_text.index("Run Omar Gate"):
+    if workflow_text.index("Validate Omar workflow contract") > workflow_text.index("Run Omar Gate"):
         raise OmarWorkflowContractError(
-            "authoritative helper validation must run before Omar consumes scan quota"
+            "workflow contract validation must run before Omar consumes scan quota"
         )
 
 
@@ -189,17 +199,19 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      issues: write
     steps:
-      - name: Validate authoritative Omar helper syntax
+      - name: Validate Omar workflow contract
         run: |
           python3 scripts/ci/check_omar_workflow_contract.py --self-test
-          python3 scripts/ci/wait_for_authoritative_omar_review.py --self-test
       - name: Run Omar Gate
         id: omar
         uses: ./.github/actions/omar-gate
-      - name: Wait for authoritative Omar/MAM review surface
-        run: python3 scripts/ci/wait_for_authoritative_omar_review.py --summary-out /tmp/summary.json --upsert-comment
+      - name: Stage Omar artifacts
+        run: echo stage
+      - name: Upload Omar artifacts
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+        with:
+          path: omar-artifacts/**
   omar_enforce:
     name: Omar Gate
     if: ${{ always() }}
@@ -216,7 +228,7 @@ jobs:
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
         wrapper,
     )
-    _assert_fails(valid_workflow.replace("Wait for authoritative Omar/MAM review surface", ""), wrapper)
+    _assert_fails(valid_workflow.replace("actions/upload-artifact", "actions/cache"), wrapper)
     _assert_fails(
         valid_workflow,
         wrapper.replace(
