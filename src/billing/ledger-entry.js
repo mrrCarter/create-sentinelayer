@@ -7,7 +7,10 @@ export const PRICED_ACTIONS = Object.freeze([
   "audit_run",
   "audit_security",
   "audit_frontend",
+  "chat_ask",
   "omargate_deep",
+  "scan_precheck",
+  "spec_generate_ai",
 ]);
 
 const OMIT_METADATA_KEYS = new Set([

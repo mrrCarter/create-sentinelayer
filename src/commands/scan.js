@@ -11,6 +11,7 @@ import {
   resolveModel,
   resolveProvider,
 } from "../ai/client.js";
+import { recordCliLlmSessionUsage, usageNumber } from "../billing/llm-session-usage.js";
 import { loadConfig, resolveOutputRoot } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
@@ -585,6 +586,7 @@ export function registerScanCommand(program) {
         profile,
       });
 
+      const startedAtIso = new Date().toISOString();
       const startedAtMs = Date.now();
       const client = createMultiProviderApiClient();
       const response = await client.invoke({
@@ -615,13 +617,16 @@ export function registerScanCommand(program) {
       await fsp.mkdir(path.dirname(reportPath), { recursive: true });
       await fsp.writeFile(reportPath, reportMarkdown, "utf-8");
 
-      const inputTokens = estimateTokens(prompt, { model: response.model });
-      const outputTokens = estimateTokens(aiMarkdown, { model: response.model });
+      const estimatedInputTokens = estimateTokens(prompt, { model: response.model });
+      const estimatedOutputTokens = estimateTokens(aiMarkdown, { model: response.model });
+      const inputTokens = usageNumber(response.usage?.inputTokens, estimatedInputTokens);
+      const outputTokens = usageNumber(response.usage?.outputTokens, estimatedOutputTokens);
       const modelCost = maybeEstimateModelCost({
         modelId: response.model,
         inputTokens,
         outputTokens,
       });
+      const costUsd = usageNumber(response.usage?.costUsd, modelCost.costUsd);
       const sessionId = String(options.sessionId || "scan-ai-precheck").trim() || "scan-ai-precheck";
 
       const appendedCost = await appendCostEntry(
@@ -639,7 +644,7 @@ export function registerScanCommand(program) {
           cacheWriteTokens: 0,
           durationMs,
           toolCalls: 1,
-          costUsd: modelCost.costUsd,
+          costUsd,
           progressScore: aiMarkdown ? 1 : 0,
         }
       );
@@ -682,7 +687,7 @@ export function registerScanCommand(program) {
             outputTokens,
             cacheReadTokens: 0,
             cacheWriteTokens: 0,
-            costUsd: modelCost.costUsd,
+            costUsd,
             durationMs,
             toolCalls: 1,
           },
@@ -727,8 +732,27 @@ export function registerScanCommand(program) {
               invocationId: appendedCost.entry.invocationId,
             },
           }
-        );
+          );
       }
+
+      const sessionUsageLedger = await recordCliLlmSessionUsage({
+        sessionId,
+        agentId: "scan-precheck",
+        action: "scan_precheck",
+        model: response.model,
+        inputTokens,
+        outputTokens,
+        startedAtIso,
+        targetPath,
+        sourceCommand: "scan precheck",
+        provider: response.provider,
+        metadata: {
+          specPath,
+          profile,
+          policyPackId: activePolicy.selected?.id || "",
+          pricingFound: modelCost.pricingFound,
+        },
+      });
 
       const payload = {
         command: "scan precheck",
@@ -749,10 +773,11 @@ export function registerScanCommand(program) {
           usage: {
             inputTokens,
             outputTokens,
-            costUsd: modelCost.costUsd,
+            costUsd,
             durationMs,
             toolCalls: 1,
           },
+          billing: sessionUsageLedger,
           budget,
           cost: {
             filePath: appendedCost.filePath,
