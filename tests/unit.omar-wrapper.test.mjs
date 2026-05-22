@@ -5,20 +5,21 @@ import test from "node:test";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
-test("Unit Omar wrapper: managed LLM keeps Omar in fail-closed full-action mode", async () => {
+test("Unit Omar workflow: managed LLM keeps Omar in fail-closed direct-action mode", async () => {
   const workflowText = await readFile(path.join(repoRoot, ".github", "workflows", "omar-gate.yml"), "utf8");
-  const wrapperText = await readFile(path.join(repoRoot, ".github", "actions", "omar-gate", "action.yml"), "utf8");
 
   assert.doesNotMatch(workflowText, /Validate Google key secret for Omar LLM scan/);
   assert.doesNotMatch(workflowText, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
-  assert.doesNotMatch(wrapperText, /llm_provider:/);
-  assert.doesNotMatch(wrapperText, /google_api_key:/);
-  assert.doesNotMatch(wrapperText, /openai_api_key:/);
-  assert.match(wrapperText, /sentinelayer_managed_llm:\s*"true"/);
-  assert.match(wrapperText, /model:\s*gpt-5\.3-codex/);
-  assert.match(wrapperText, /model_fallback:\s*gpt-4\.1-mini/);
-  assert.match(wrapperText, /use_codex:\s*"true"/);
-  assert.doesNotMatch(wrapperText, /sentinelayer_managed_llm:\s*"false"/);
+  assert.match(workflowText, /uses:\s*mrrCarter\/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4/);
+  assert.doesNotMatch(workflowText, /uses:\s*\.\/\.github\/actions\/omar-gate/);
+  assert.doesNotMatch(workflowText, /llm_provider:/);
+  assert.doesNotMatch(workflowText, /google_api_key:/);
+  assert.doesNotMatch(workflowText, /openai_api_key:/);
+  assert.match(workflowText, /sentinelayer_managed_llm:\s*"true"/);
+  assert.match(workflowText, /model:\s*gpt-5\.3-codex/);
+  assert.match(workflowText, /model_fallback:\s*gpt-4\.1-mini/);
+  assert.match(workflowText, /use_codex:\s*"true"/);
+  assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.doesNotMatch(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate Omar workflow contract/);
   assert.match(workflowText, /check_omar_workflow_contract\.py --self-test/);
