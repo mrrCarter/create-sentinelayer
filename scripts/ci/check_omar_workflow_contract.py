@@ -107,13 +107,20 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
             raise OmarWorkflowContractError("sentinelayer_managed_llm must be literal")
 
 
-def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
+def validate_omar_contract(workflow_text: str) -> None:
     _reject_bridge_or_provider_inputs(workflow_text)
-    _reject_bridge_or_provider_inputs(wrapper_text)
 
-    if not any(_line_has_managed_llm_enabled(line) for line in wrapper_text.splitlines()):
+    if "./.github/actions/omar-gate" in workflow_text:
         raise OmarWorkflowContractError(
-            'local Omar wrapper must configure sentinelayer_managed_llm: "true"'
+            "Omar workflow must call sentinelayer-v1-action directly, not a local wrapper"
+        )
+    if "mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4" not in workflow_text:
+        raise OmarWorkflowContractError(
+            "Omar workflow must use the pinned sentinelayer-v1-action directly"
+        )
+    if not any(_line_has_managed_llm_enabled(line) for line in workflow_text.splitlines()):
+        raise OmarWorkflowContractError(
+            'Omar workflow must configure sentinelayer_managed_llm: "true"'
         )
 
     workflow_lines = workflow_text.splitlines()
@@ -138,6 +145,8 @@ def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
             )
 
     required_direct_fragments = (
+        "Validate Omar configuration invariants",
+        "OMAR_SPEC_ID must be a 64-character lowercase hex digest",
         "Validate Omar workflow contract",
         "check_omar_workflow_contract.py --self-test",
         "Run Omar Gate",
@@ -169,26 +178,21 @@ def validate_omar_contract(workflow_text: str, wrapper_text: str) -> None:
         raise OmarWorkflowContractError(
             "workflow contract validation must run before Omar consumes scan quota"
         )
+    if workflow_text.index("Validate Omar configuration invariants") > workflow_text.index("Run Omar Gate"):
+        raise OmarWorkflowContractError(
+            "workflow configuration validation must run before Omar consumes scan quota"
+        )
 
 
-def _assert_fails(workflow_text: str, wrapper_text: str) -> None:
+def _assert_fails(workflow_text: str) -> None:
     try:
-        validate_omar_contract(workflow_text, wrapper_text)
+        validate_omar_contract(workflow_text)
     except OmarWorkflowContractError:
         return
     raise AssertionError("invalid Omar workflow should fail validation")
 
 
 def _run_self_tests() -> None:
-    wrapper = """
-name: Omar Gate Wrapper
-runs:
-  using: composite
-  steps:
-    - uses: mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4
-      with:
-        sentinelayer_managed_llm: "true"
-"""
     valid_workflow = """
 name: Omar Gate
 permissions:
@@ -203,9 +207,14 @@ jobs:
       - name: Validate Omar workflow contract
         run: |
           python3 scripts/ci/check_omar_workflow_contract.py --self-test
+      - name: Validate Omar configuration invariants
+        run: |
+          echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"
       - name: Run Omar Gate
         id: omar
-        uses: ./.github/actions/omar-gate
+        uses: mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4
+        with:
+          sentinelayer_managed_llm: "true"
       - name: Stage Omar artifacts
         run: echo stage
       - name: Upload Omar artifacts
@@ -221,29 +230,29 @@ jobs:
           echo "Trusted Omar scan did not succeed"
           echo "Untrusted Omar scan did not succeed"
 """
-    validate_omar_contract(valid_workflow, wrapper)
+    validate_omar_contract(valid_workflow)
 
-    _assert_fails(valid_workflow, wrapper.replace('sentinelayer_managed_llm: "true"', ""))
+    _assert_fails(
+        valid_workflow.replace('sentinelayer_managed_llm: "true"', ""),
+    )
     _assert_fails(
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
-        wrapper,
     )
-    _assert_fails(valid_workflow.replace("actions/upload-artifact", "actions/cache"), wrapper)
+    _assert_fails(valid_workflow.replace("actions/upload-artifact", "actions/cache"))
+    _assert_fails(valid_workflow.replace("mrrCarter/sentinelayer-v1-action@", "./.github/actions/omar-gate # "))
     _assert_fails(
-        valid_workflow,
-        wrapper.replace(
-            "sentinelayer_managed_llm: \"true\"",
-            "google_api_key: ${{ secrets.GOOGLE_API_KEY }}\n        sentinelayer_managed_llm: \"false\"",
-        ),
+        valid_workflow.replace(
+            'sentinelayer_managed_llm: "true"',
+            "google_api_key: ${{ secrets.GOOGLE_API_KEY }}\n          sentinelayer_managed_llm: \"false\"",
+        )
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify create-sentinelayer Omar workflow/wrapper uses authoritative managed Omar."
+        description="Verify create-sentinelayer Omar workflow uses authoritative managed Omar directly."
     )
     parser.add_argument("--workflow", default=".github/workflows/omar-gate.yml")
-    parser.add_argument("--wrapper", default=".github/actions/omar-gate/action.yml")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
@@ -251,10 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         _run_self_tests()
 
     try:
-        validate_omar_contract(
-            Path(args.workflow).read_text(encoding="utf-8"),
-            Path(args.wrapper).read_text(encoding="utf-8"),
-        )
+        validate_omar_contract(Path(args.workflow).read_text(encoding="utf-8"))
     except OmarWorkflowContractError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
