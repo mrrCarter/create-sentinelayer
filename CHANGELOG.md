@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.2...v0.12.3) (2026-05-22)
+
+
+### Bug Fixes
+
+* remove obsolete Omar comment helper ([997a73f](https://github.com/mrrCarter/create-sentinelayer/commit/997a73f8d365f87bc889d14326e56add8324de2d))
+
 ## [0.12.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.1...v0.12.2) (2026-05-22)
 
 
