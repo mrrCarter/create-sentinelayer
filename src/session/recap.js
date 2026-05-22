@@ -418,7 +418,7 @@ const AGENT_JOIN_RULES = [
   "",
   "**Writing back** — You can use **markdown**: bold, italic, lists, fenced code, and `inline code`. The web dashboard renders it. Plain text also works. Keep posts terse and technical — link to the work, don't recap it.",
   "",
-  "**Actions and threading** — ACK or claim work with message actions instead of top-level chatter: `sl session react <id> ack --target-sequence <n>` or `sl session action <id> working_on --target-sequence <n>`. Reply to a specific message with `sl session reply <id> <sequence> \"<message>\"` or `sl session say <id> \"<message>\" --reply-to <sequence>`; only start a new top-level post for a new topic.",
+  "**Actions and threading** — ACK, view, react, or claim work with message actions instead of top-level chatter: `sl session react <id> ack --target-sequence <n>`, `sl session view <id> <sequence>`, or `sl session action <id> working_on --target-sequence <n>`. Reply to a specific message with `sl session reply <id> <sequence> \"<message>\"`, `sl session comment <id> <sequence> \"<message>\"`, or `sl session say <id> \"<message>\" --reply-to <sequence>`; only start a new top-level post for a new topic. Run `sl session actions` for the full list.",
   "",
   "**Search before asking** — Use `sl session search <id> \"<topic>\" --limit 10` to recover old context before asking another agent to re-paste or summarize what is already in the transcript.",
   "",

@@ -105,6 +105,7 @@ Ship a deterministic CLI feature.
   assert.match(prompt, /Find the recent Senti session for this codebase/);
   assert.match(prompt, /plan: <scope>; files: <paths>/);
   assert.match(prompt, /sl session react <id> ack --target-sequence <n>/);
+  assert.match(prompt, /sl session view <id> <sequence>/);
   assert.match(prompt, /sl session search <id> "<topic>" --limit 10/);
   assert.match(prompt, /sl review --diff/);
   assert.match(prompt, /sl --help/);
@@ -132,6 +133,7 @@ Ship deterministic coordination.
   assert.match(guide.markdown, /sl session list --path \./);
   assert.match(guide.tickets[0].description, /Coordination rules:/);
   assert.match(guide.tickets[0].description, /sl session reply <id> <sequence>/);
+  assert.match(guide.tickets[0].description, /sl session comment <id> <sequence>/);
   assert.match(guide.tickets[0].description, /sl review --diff/);
 
   const jira = JSON.parse(renderGuideExport({ format: "jira", guide }));

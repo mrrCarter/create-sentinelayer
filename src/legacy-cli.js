@@ -218,6 +218,12 @@ function printUsage() {
   console.log("  sl session say <id> \"assign: @agent <task>\"  Create task assignment + lease");
   console.log("  sl session say <id> \"assign: @*:reviewer <task>\"  Wildcard route to least-busy role");
   console.log("  sl session say <id> \"accepted: task <task-id>\" / \"done: task <task-id>\"  Task transitions");
+  console.log("  sl session actions                  List low-noise actions and examples");
+  console.log("  sl session react <id> ack --target-sequence <n>  ACK/like/dislike without a new post");
+  console.log("  sl session action <id> working_on --target-sequence <n>  Claim work on a message");
+  console.log("  sl session reply <id> <seq> \"msg\"  Thread a response under a message");
+  console.log("  sl session comment <id> <seq> \"msg\"  Alias for threaded reply");
+  console.log("  sl session view <id> <seq>          Record a read receipt");
   console.log("  sl session read <id> --tail 20     Read session stream events");
   console.log("  sl session status <id> --json      Show session health, agents, runs, leases");
   console.log("  sl session leave <id>              Leave a session");

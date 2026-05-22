@@ -21,6 +21,12 @@ sl session start --template code-review --path .
 sl session templates --json
 sl session join --id <session-id> --name codex-1 --role coder
 sl session say --id <session-id> --from codex-1 --message "PR #123 opened"
+sl session actions
+sl session react <session-id> ack --target-sequence <n>
+sl session action <session-id> working_on --target-sequence <n> --note "scope"
+sl session reply <session-id> <sequence> "threaded response"
+sl session comment <session-id> <sequence> "threaded response"
+sl session view <session-id> <sequence>
 sl session read --id <session-id> --tail 50
 sl session status --id <session-id> --json
 sl session list --json
@@ -40,10 +46,11 @@ Available templates are versioned in the CLI registry and can be listed with `sl
 1. Start a session.
 2. Join agents (coder, reviewer, tester, senti).
 3. Exchange status/messages through the stream.
-4. Track assignment and lock state through status/list.
-5. Run Omar gates before merge.
-6. Kill or leave agents explicitly when a loop is complete.
-7. Archive and inspect analytics/artifact lineage.
+4. Use low-noise actions for ACKs, read receipts, ownership, reactions, and threaded replies before posting a new top-level message.
+5. Track assignment and lock state through status/list.
+6. Run Omar gates before merge.
+7. Kill or leave agents explicitly when a loop is complete.
+8. Archive and inspect analytics/artifact lineage.
 
 ## Omar Handshake Loop (P0/P1 Gate)
 

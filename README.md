@@ -104,6 +104,7 @@ Inputs for non-interactive mode:
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
 
 - session event stream and replay (`start`, `join`, `say`, `read`, `status`, `leave`, `list`, `kill`)
+- low-noise message actions (`react ack|like|dislike`, `action working_on|disregard`, `reply`/`comment`, `view`, `actions`)
 - agent lifecycle controls (join/heartbeat/leave/kill)
 - recap and context briefing for late-joining agents
 - analytics + lineage artifacts at session closeout

@@ -43,20 +43,21 @@ async function startActionMockApi() {
       if (req.method === "POST" && req.url === "/api/v1/sessions/sess-actions/actions") {
         state.actionAuthHeader = String(req.headers.authorization || "");
         state.actionPayload = await readJsonBody(req);
+        const actionType = String(state.actionPayload.actionType || "ack");
         return jsonResponse(res, 200, {
           ok: true,
           duplicate: false,
           action: {
-            id: "act-ack",
+            id: `act-${actionType}`,
             sessionId: "sess-actions",
             targetSequenceId: 42,
             targetCursor: "",
-            actionType: "ack",
-            actionKey: "ack",
+            actionType,
+            actionKey: actionType,
             actorKind: "agent",
             actorId: "codex",
             actorRole: "coder",
-            note: "",
+            note: state.actionPayload.note || "",
             createdAt: "2026-05-22T02:00:00.000Z",
             metadata: {},
           },
@@ -106,6 +107,20 @@ function runCli(args, { cwd, env = {} } = {}) {
   });
 }
 
+test("Unit session actions command: lists action vocabulary and examples", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-actions-list-"));
+  try {
+    const result = await runCli(["session", "actions", "--json"], { cwd: tmp });
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "session actions");
+    assert.equal(payload.actions.some((action) => action.type === "view"), true);
+    assert.equal(payload.actions.some((action) => action.alias === "comment"), true);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("Unit session react command: ack posts a message action and appends local event", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-react-ack-"));
   const mock = await startActionMockApi();
@@ -153,6 +168,80 @@ test("Unit session react command: ack posts a message action and appends local e
     assert.equal(stream.length, 1);
     assert.equal(stream[0].event, "session_action");
     assert.equal(stream[0].payload.actionType, "ack");
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session view command: posts read receipt action", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-view-action-"));
+  const mock = await startActionMockApi();
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "view",
+        "sess-actions",
+        "42",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "session view");
+    assert.equal(payload.actionType, "view");
+    assert.equal(payload.event.payload.actionType, "view");
+    assert.equal(mock.state.actionPayload.actionType, "view");
+    assert.equal(mock.state.actionPayload.targetSequenceId, 42);
+    assert.equal(mock.state.actionPayload.metadata.agentId, "codex");
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session comment command: aliases threaded replies", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-comment-action-"));
+  const mock = await startActionMockApi();
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "comment",
+        "sess-actions",
+        "42",
+        "threaded",
+        "comment",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "session comment");
+    assert.equal(payload.actionType, "reply");
+    assert.equal(payload.event.event, "session_reply");
+    assert.equal(payload.event.payload.actionType, "reply");
+    assert.equal(mock.state.actionPayload.actionType, "reply");
+    assert.equal(mock.state.actionPayload.note, "threaded comment");
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });

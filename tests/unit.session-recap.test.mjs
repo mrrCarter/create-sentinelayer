@@ -128,7 +128,10 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(message, /Writing back/);
     assert.match(message, /Actions and threading/);
     assert.match(message, /sl session react <id> ack --target-sequence <n>/);
+    assert.match(message, /sl session view <id> <sequence>/);
     assert.match(message, /sl session reply <id> <sequence>/);
+    assert.match(message, /sl session comment <id> <sequence>/);
+    assert.match(message, /sl session actions/);
     assert.match(message, /sl session search <id> "<topic>" --limit 10/);
     assert.match(message, /markdown/i);
     assert.match(message, /Stop conditions/);
