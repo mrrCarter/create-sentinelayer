@@ -9,6 +9,7 @@ import {
   resolveModel,
   resolveProvider,
 } from "../ai/client.js";
+import { recordCliLlmSessionUsage, usageNumber } from "../billing/llm-session-usage.js";
 import { loadConfig } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
@@ -273,6 +274,7 @@ async function maybeEnhanceSpecWithAi({
     ingest,
   });
 
+  const startedAtIso = new Date().toISOString();
   const startedAtMs = Date.now();
   const client = createMultiProviderApiClient();
   const result = await client.invoke({
@@ -288,13 +290,16 @@ async function maybeEnhanceSpecWithAi({
   const normalizedText = String(result.text || "").trim();
   const enhancedMarkdown = normalizedText || baseSpecMarkdown;
 
-  const inputTokens = estimateTokens(prompt, { model: result.model });
-  const outputTokens = estimateTokens(enhancedMarkdown, { model: result.model });
+  const estimatedInputTokens = estimateTokens(prompt, { model: result.model });
+  const estimatedOutputTokens = estimateTokens(enhancedMarkdown, { model: result.model });
+  const inputTokens = usageNumber(result.usage?.inputTokens, estimatedInputTokens);
+  const outputTokens = usageNumber(result.usage?.outputTokens, estimatedOutputTokens);
   const modelCost = maybeEstimateModelCost({
     modelId: result.model,
     inputTokens,
     outputTokens,
   });
+  const costUsd = usageNumber(result.usage?.costUsd, modelCost.costUsd);
 
   const sessionId = String(options.sessionId || "spec-generate-ai").trim() || "spec-generate-ai";
   const appendedCost = await appendCostEntry(
@@ -312,7 +317,7 @@ async function maybeEnhanceSpecWithAi({
       cacheWriteTokens: 0,
       durationMs,
       toolCalls: 1,
-      costUsd: modelCost.costUsd,
+      costUsd,
       progressScore: normalizedText ? 1 : 0,
     }
   );
@@ -355,7 +360,7 @@ async function maybeEnhanceSpecWithAi({
         outputTokens,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
-        costUsd: modelCost.costUsd,
+        costUsd,
         durationMs,
         toolCalls: 1,
       },
@@ -403,6 +408,24 @@ async function maybeEnhanceSpecWithAi({
     );
   }
 
+  const sessionUsageLedger = await recordCliLlmSessionUsage({
+    sessionId,
+    agentId: "spec-generator",
+    action: "spec_generate_ai",
+    model: result.model,
+    inputTokens,
+    outputTokens,
+    startedAtIso,
+    targetPath,
+    sourceCommand: "spec generate --ai",
+    provider: result.provider,
+    metadata: {
+      template: template?.id || template?.name || "",
+      projectType: template?.projectType || "",
+      pricingFound: modelCost.pricingFound,
+    },
+  });
+
   return {
     markdown: enhancedMarkdown,
     ai: {
@@ -413,10 +436,11 @@ async function maybeEnhanceSpecWithAi({
       usage: {
         inputTokens,
         outputTokens,
-        costUsd: modelCost.costUsd,
+        costUsd,
         durationMs,
         toolCalls: 1,
       },
+      billing: sessionUsageLedger,
       budget,
       cost: {
         filePath: appendedCost.filePath,

@@ -9,7 +9,9 @@ import {
   resolveModel,
   resolveProvider,
 } from "../ai/client.js";
+import { recordCliLlmSessionUsage, usageNumber } from "../billing/llm-session-usage.js";
 import { resolveOutputRoot } from "../config/service.js";
+import { estimateModelCost } from "../cost/tracker.js";
 import { estimateTokens } from "../cost/tokenizer.js";
 
 function shouldEmitJson(options, command) {
@@ -92,7 +94,9 @@ export function registerChatCommand(program) {
       });
 
       const startedAt = Date.now();
+      const startedAtIso = new Date(startedAt).toISOString();
       let responseText = "";
+      let invocation = null;
 
       if (options.dryRun) {
         responseText = `DRY_RUN_RESPONSE: ${prompt.slice(0, 240)}`;
@@ -100,7 +104,7 @@ export function registerChatCommand(program) {
         const streamEnabled = Boolean(options.stream);
         let streamedText = "";
         const client = createMultiProviderApiClient();
-        const invocation = await client.invoke({
+        invocation = await client.invoke({
           provider,
           model,
           prompt,
@@ -125,8 +129,31 @@ export function registerChatCommand(program) {
 
       const durationMs = Date.now() - startedAt;
       const generatedAt = new Date().toISOString();
-      const inputTokens = estimateTokens(prompt, { model });
-      const outputTokens = estimateTokens(responseText, { model });
+      const estimatedInputTokens = estimateTokens(prompt, { model });
+      const estimatedOutputTokens = estimateTokens(responseText, { model });
+      const inputTokens = usageNumber(invocation?.usage?.inputTokens, estimatedInputTokens);
+      const outputTokens = usageNumber(invocation?.usage?.outputTokens, estimatedOutputTokens);
+      const modelCost = estimateModelCost({ modelId: invocation?.model || model, inputTokens, outputTokens });
+      const costUsd = usageNumber(invocation?.usage?.costUsd, modelCost.costUsd);
+
+      const sessionUsageLedger = options.dryRun
+        ? { ok: false, reason: "dry_run" }
+        : await recordCliLlmSessionUsage({
+            sessionId,
+            agentId: "chat-cli",
+            action: "chat_ask",
+            model: invocation?.model || model,
+            inputTokens,
+            outputTokens,
+            startedAtIso,
+            targetPath,
+            sourceCommand: "chat ask",
+            provider: invocation?.provider || provider,
+            metadata: {
+              streamed: Boolean(options.stream),
+              pricingFound: modelCost.pricingFound,
+            },
+          });
 
       await appendTranscriptEntries({
         transcriptPath,
@@ -154,8 +181,8 @@ export function registerChatCommand(program) {
       const payload = {
         command: "chat ask",
         sessionId,
-        provider,
-        model,
+        provider: invocation?.provider || provider,
+        model: invocation?.model || model,
         dryRun: Boolean(options.dryRun),
         streamed: Boolean(options.stream),
         transcriptPath,
@@ -165,8 +192,10 @@ export function registerChatCommand(program) {
           inputTokens,
           outputTokens,
           totalTokens: inputTokens + outputTokens,
+          costUsd,
           durationMs,
         },
+        billing: sessionUsageLedger,
       };
 
       if (emitJson) {
@@ -179,6 +208,6 @@ export function registerChatCommand(program) {
       }
       console.log(pc.gray(`session: ${sessionId}`));
       console.log(pc.gray(`transcript: ${transcriptPath}`));
-      console.log(pc.gray(`usage: input=${inputTokens} output=${outputTokens} duration_ms=${durationMs}`));
+      console.log(pc.gray(`usage: input=${inputTokens} output=${outputTokens} cost_usd=${costUsd.toFixed(6)} duration_ms=${durationMs}`));
     });
 }

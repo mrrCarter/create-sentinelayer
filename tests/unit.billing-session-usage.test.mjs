@@ -11,6 +11,7 @@ import {
   buildLedgerEntry,
   countPricedUsageEvents,
 } from "../src/billing/ledger-entry.js";
+import { recordCliLlmSessionUsage } from "../src/billing/llm-session-usage.js";
 import { recordSessionUsage } from "../src/billing/session-usage.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
@@ -164,6 +165,52 @@ test("Unit billing session usage: persists billing/v1 events without raw prompt 
     assert.equal(usageEvents[0].payload.response, undefined);
     assert.equal(usageEvents[0].payload.metadata.prompt, undefined);
     assert.equal(countPricedUsageEvents(events), 2);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Unit billing session usage: CLI LLM helper emits priced command actions", async () => {
+  const root = await makeRoot();
+  try {
+    const createdAt = "2026-05-22T08:00:00.000Z";
+    await createSession({
+      targetPath: root,
+      sessionId: "sess-cli-llm",
+      createdAt,
+    });
+
+    const result = await recordCliLlmSessionUsage({
+      sessionId: "sess-cli-llm",
+      agentId: "chat-cli",
+      action: "chat_ask",
+      model: "gpt-5.3-codex",
+      inputTokens: 500,
+      outputTokens: 120,
+      startedAtIso: createdAt,
+      targetPath: root,
+      sourceCommand: "chat ask",
+      provider: "openai",
+      metadata: {
+        prompt: "raw prompt must not persist",
+        response: "raw response must not persist",
+        safe: "keep",
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ledgerEntry.action, "chat_ask");
+    assert.equal(result.ledgerEntry.agentId, "chat-cli");
+    assert.equal(result.ledgerEntry.metadata.safe, "keep");
+    assert.equal(result.ledgerEntry.metadata.prompt, undefined);
+    assert.equal(result.ledgerEntry.metadata.response, undefined);
+
+    const events = await readStream("sess-cli-llm", { targetPath: root, tail: 0 });
+    const usageEvents = events.filter((event) => event.event === "session_usage");
+    assert.equal(usageEvents.length, 1);
+    assert.equal(usageEvents[0].payload.action, "chat_ask");
+    assert.equal(usageEvents[0].payload.usage.totalTokens, 620);
+    assert.equal(countPricedUsageEvents(events), 1);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
