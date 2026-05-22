@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.3...v0.12.4) (2026-05-22)
+
+
+### Bug Fixes
+
+* emit billing usage for CLI LLM commands ([#511](https://github.com/mrrCarter/create-sentinelayer/issues/511)) ([9ba6dfc](https://github.com/mrrCarter/create-sentinelayer/commit/9ba6dfc668267e497b55b249f976d49815f2b92f))
+
 ## [0.12.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.2...v0.12.3) (2026-05-22)
 
 
