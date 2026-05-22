@@ -1853,7 +1853,7 @@ export function registerSessionCommand(program) {
 
   session
     .command("react <sessionId> <reaction>")
-    .description("React to a target session event with like or dislike")
+    .description("React to or acknowledge a target session event with ack, like, or dislike")
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
@@ -1862,8 +1862,8 @@ export function registerSessionCommand(program) {
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, reaction, options, command) => {
       const normalizedReaction = normalizeSessionMessageActionType(reaction);
-      if (normalizedReaction !== "like" && normalizedReaction !== "dislike") {
-        throw new Error("reaction must be one of: like, dislike.");
+      if (!["ack", "like", "dislike"].includes(normalizedReaction)) {
+        throw new Error("reaction must be one of: ack, like, dislike.");
       }
       await runMessageActionCommand({
         sessionId,
