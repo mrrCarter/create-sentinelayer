@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.0...v0.12.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* document session etiquette and Omar direct surface ([9b2fb93](https://github.com/mrrCarter/create-sentinelayer/commit/9b2fb935409441af11871531f619e72843ceb737))
+
 ## [0.12.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.11.4...v0.12.0) (2026-05-21)
 
 
