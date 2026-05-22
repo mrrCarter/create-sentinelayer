@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.1...v0.12.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* allow session react ack ([93b1905](https://github.com/mrrCarter/create-sentinelayer/commit/93b19052e1fc916189a5625dc00fcbad16e76e43))
+
 ## [0.12.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.0...v0.12.1) (2026-05-22)
 
 
