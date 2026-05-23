@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.16.0...v0.17.0) (2026-05-23)
+
+
+### Features
+
+* **session:** show checkpoint grades in CLI ([d1683c6](https://github.com/mrrCarter/create-sentinelayer/commit/d1683c662e11a6ac90f98a0b9633688d02d1d4aa))
+
 ## [0.16.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.15.0...v0.16.0) (2026-05-23)
 
 
