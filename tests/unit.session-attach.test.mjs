@@ -156,11 +156,100 @@ test("Unit session join: GETs singleton, materializes local, prints summary", as
     assert.equal(payload.materializedLocalSession, true);
     assert.equal(payload.verificationSource, "singleton");
     assert.equal(payload.agentJoinRelayed, false);
+    assert.equal(payload.joinHydration.ok, false);
+    assert.equal(payload.joinHydration.reason, "api_404");
     const singletonCalls = calls.filter((call) =>
       call.url.endsWith(`/api/v1/sessions/${remoteSessionId}`),
     );
     assert.equal(singletonCalls.length, 1);
     assert.equal(singletonCalls[0].method, "GET");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session join: hydrates remote tail before emitting context briefing", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-recap-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedWorkspace(tempRoot);
+    const remoteSessionId = "sess-web-recap-abcdef01";
+    const remoteEvent = {
+      event: "session_message",
+      cursor: "1713474000044:remote",
+      sequenceId: 42,
+      ts: "2026-05-20T12:00:00.000Z",
+      agent: { id: "claude-peer", model: "claude-opus", role: "reviewer" },
+      payload: { message: "checkpoint card works after the web navigation fix" },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      const method = String(options.method || "GET").toUpperCase();
+      const urlString = String(url);
+      if (method === "GET" && urlString.endsWith(`/api/v1/sessions/${remoteSessionId}`)) {
+        return fakeJsonResponse(200, {
+          session: {
+            sessionId: remoteSessionId,
+            title: "Dogfood recap room",
+            eventCount: 1,
+            agentCount: 1,
+            createdAt: "2026-05-20T11:00:00.000Z",
+            lastInteractionAt: "2026-05-20T12:00:00.000Z",
+          },
+        });
+      }
+      if (
+        method === "GET" &&
+        urlString.endsWith(`/api/v1/sessions/${remoteSessionId}/events/before?limit=100`)
+      ) {
+        return fakeJsonResponse(200, { events: [remoteEvent] });
+      }
+      return fakeJsonResponse(404, {});
+    };
+
+    const { stdout } = await runSessionCommand([
+      "session",
+      "join",
+      remoteSessionId,
+      "--name",
+      "codex-joiner",
+      "--role",
+      "coder",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.command, "session join");
+    assert.equal(payload.joinHydration.ok, true);
+    assert.equal(payload.joinHydration.remoteEvents, 1);
+    assert.equal(payload.joinHydration.appended, 1);
+
+    const local = await readStream(remoteSessionId, { targetPath: tempRoot, tail: 20 });
+    const remoteIndex = local.findIndex(
+      (event) =>
+        event.event === "session_message" &&
+        event.agent?.id === "claude-peer" &&
+        event.payload?.message === remoteEvent.payload.message,
+    );
+    const briefingIndex = local.findIndex(
+      (event) =>
+        event.event === "context_briefing" &&
+        event.agent?.id === "senti" &&
+        event.payload?.forAgent === "codex-joiner",
+    );
+    assert.notEqual(remoteIndex, -1, "remote tail event should be appended locally");
+    assert.notEqual(briefingIndex, -1, "join should still emit a context briefing");
+    assert.equal(remoteIndex < briefingIndex, true, "briefing should be built after hydration");
+    assert.match(
+      String(local[briefingIndex].payload?.recap || ""),
+      /claude-peer: checkpoint card works/,
+    );
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv();
@@ -331,6 +420,11 @@ test("Unit session join: spawned CLI does not emit process-exit agent_leave", as
           return;
         }
         if (req.method === "GET" && requestUrl === `/api/v1/sessions/${remoteSessionId}/events?limit=1`) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ events: [] }));
+          return;
+        }
+        if (req.method === "GET" && requestUrl === `/api/v1/sessions/${remoteSessionId}/events/before?limit=100`) {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ events: [] }));
           return;
