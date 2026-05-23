@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -148,6 +149,36 @@ export function buildGhReleaseArgs(tag, options) {
   return args;
 }
 
+export function normalizeSshPublicKey(value) {
+  const parts = String(value || "")
+    .replace(/\r/g, "")
+    .replace(/^key::/, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const keyTypeIndex = parts.findIndex((part) =>
+    /^(?:ssh-|ecdsa-|sk-ssh-|sk-ecdsa-)/.test(part)
+  );
+  if (keyTypeIndex < 0 || !parts[keyTypeIndex + 1]) return "";
+  return `${parts[keyTypeIndex]} ${parts[keyTypeIndex + 1]}`;
+}
+
+export function assertRegisteredSshSigningKey({ viewer, signingKey, githubKeys }) {
+  const normalizedSigningKey = normalizeSshPublicKey(signingKey);
+  if (!normalizedSigningKey) {
+    throw new Error("Git SSH signing key could not be normalized.");
+  }
+
+  const normalizedGithubKeys = normalizeList(githubKeys, normalizeSshPublicKey);
+  if (!normalizedGithubKeys.includes(normalizedSigningKey)) {
+    throw new Error(
+      `GitHub user '${viewer}' does not expose the configured SSH signing key. Add the public key as an SSH signing key in GitHub before publishing this release.`
+    );
+  }
+
+  return normalizedSigningKey;
+}
+
 function requireValue(argv, index, optionName) {
   const value = argv[index + 1];
   if (!value || value.startsWith("--")) {
@@ -194,6 +225,55 @@ function tryRun(command, args) {
     return null;
   }
   return result.stdout || "";
+}
+
+function resolvePathFromGitConfig(value) {
+  const trimmed = String(value || "").trim();
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\") || trimmed === "~") {
+    return path.join(os.homedir(), trimmed.slice(2));
+  }
+  return path.resolve(ROOT, trimmed);
+}
+
+function resolveConfiguredSshSigningKey() {
+  const configured = tryRun("git", ["config", "--get", "user.signingkey"])?.trim() || "";
+  if (!configured) {
+    throw new Error("Git SSH tag signing is enabled, but user.signingkey is not configured.");
+  }
+
+  const inlineKey = normalizeSshPublicKey(configured);
+  if (inlineKey) return inlineKey;
+
+  const configuredPath = resolvePathFromGitConfig(configured);
+  const candidates = configuredPath.endsWith(".pub")
+    ? [configuredPath]
+    : [configuredPath, `${configuredPath}.pub`];
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const key = normalizeSshPublicKey(fs.readFileSync(candidate, "utf8"));
+    if (key) return key;
+  }
+
+  throw new Error(`Configured SSH signing key '${configured}' is not a readable public key.`);
+}
+
+function githubSshSigningKeys(viewer) {
+  return JSON.parse(
+    run("gh", ["api", `users/${viewer}/ssh_signing_keys`, "--jq", "[.[].key]"], {
+      capture: true,
+    }) || "[]"
+  );
+}
+
+function assertGitHubCanVerifyConfiguredSigningKey(viewer) {
+  const signingFormat = tryRun("git", ["config", "--get", "gpg.format"])?.trim() || "";
+  if (signingFormat !== "ssh") return;
+
+  assertRegisteredSshSigningKey({
+    viewer,
+    signingKey: resolveConfiguredSshSigningKey(),
+    githubKeys: githubSshSigningKeys(viewer),
+  });
 }
 
 function resolveRepository(explicitRepository) {
@@ -305,6 +385,7 @@ export function main(argv = process.argv.slice(2)) {
       `Remote tag ${tag} already exists as a verified annotated tag signed by ${trusted.signerEmail}.`
     );
   } else {
+    assertGitHubCanVerifyConfiguredSigningKey(viewer);
     ensureLocalSignedTag(tag);
     run("git", ["push", "origin", tag]);
 
