@@ -948,6 +948,50 @@ async function hydrateAfterCheckpointMutation(sessionId, { targetPath } = {}) {
   }));
 }
 
+async function hydrateJoinBriefingContext(sessionId, { targetPath, limit = 100 } = {}) {
+  const normalizedLimit = Math.max(1, Math.min(200, parsePositiveInteger(limit, "limit", 100)));
+  try {
+    const remoteTail = await pollSessionEventsBefore(sessionId, {
+      targetPath,
+      limit: normalizedLimit,
+      timeoutMs: 15_000,
+      forceCircuitProbe: true,
+    });
+    if (!remoteTail?.ok) {
+      return {
+        ok: false,
+        reason: normalizeString(remoteTail?.reason) || "remote_tail_unavailable",
+        remoteEvents: 0,
+        appended: 0,
+        skipped: 0,
+        failed: 0,
+      };
+    }
+    const appended = await appendMissingRemoteEvents(sessionId, remoteTail.events, {
+      targetPath,
+    });
+    return {
+      ok: true,
+      reason: "",
+      remoteEvents: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
+      appended: appended.appended,
+      skipped: appended.skipped,
+      failed: appended.failed,
+      cursor: remoteTail.cursor || null,
+      beforeSequence: remoteTail.beforeSequence || null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "join_context_hydrate_failed",
+      remoteEvents: 0,
+      appended: 0,
+      skipped: 0,
+      failed: 0,
+    };
+  }
+}
+
 async function appendMissingRemoteEvents(sessionId, remoteEvents = [], { targetPath } = {}) {
   const events = Array.isArray(remoteEvents) ? remoteEvents : [];
   if (events.length === 0) {
@@ -1577,6 +1621,9 @@ export function registerSessionCommand(program) {
         skipRemoteProbe: true,
         remoteSession,
       });
+      const joinHydration = await hydrateJoinBriefingContext(normalizedSessionId, {
+        targetPath,
+      });
 
       const explicitAgent = normalizeString(options.agent);
       const agentSeed = explicitAgent || normalizeString(options.name);
@@ -1630,6 +1677,7 @@ export function registerSessionCommand(program) {
         materializedLocalSession: localSession.materialized,
         refreshedLocalSession: Boolean(localSession.refreshed),
         verificationSource: verification.source,
+        joinHydration,
         eventCount: Number.isFinite(eventCount) ? eventCount : 0,
         agentCount: Number.isFinite(agentCount) ? agentCount : 0,
         lastActivityAt: lastActivityIso || null,
