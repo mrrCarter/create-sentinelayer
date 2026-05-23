@@ -55,6 +55,14 @@ export function sessionEventIdentityKeys(event = {}) {
   if (messageId) {
     keys.push(`message:${messageId}`);
   }
+  const actionId = typeof payload.actionId === "string"
+    ? payload.actionId.trim()
+    : typeof payload.action_id === "string"
+      ? payload.action_id.trim()
+      : "";
+  if (actionId) {
+    keys.push(`action:${actionId}`);
+  }
   const timestamp = timestampKey(event.ts, event.timestamp, event.at);
   const hasPayloadSignal = Object.keys(payload).length > 0;
   const hasFingerprintSignal =
