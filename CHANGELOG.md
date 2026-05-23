@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.13.0...v0.13.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* dedupe session action read events ([#517](https://github.com/mrrCarter/create-sentinelayer/issues/517)) ([a8c8a9c](https://github.com/mrrCarter/create-sentinelayer/commit/a8c8a9c2334f65ce4d683708c18b3b213349e1c7))
+
 ## [0.13.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.4...v0.13.0) (2026-05-23)
 
 
