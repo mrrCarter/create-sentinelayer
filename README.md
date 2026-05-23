@@ -914,13 +914,20 @@ Prerequisites:
   - repository secret `NPM_TOKEN` with publish access, or
   - npm trusted publishing for this repository/tag workflow
 
-Release options:
+Release flow:
 
-1. Merge to `main` and let `Release Please` open/update the release PR and tag.
-2. Push a tag like `v0.1.1` to publish automatically (or via release-please tag creation).
-3. Run `Release` manually (`workflow_dispatch`) to validate gates and rollback readiness without publishing.
-4. Tag-triggered publish resolves auth mode at runtime (`NPM_TOKEN` first, otherwise trusted publishing OIDC).
-5. If neither auth mode is available, publish fails closed with an explicit workflow error.
+1. Merge to `main` and let `Release Please` open/update the release PR.
+2. Merge the release PR after Omar, Quality Gates, and Attestation are green.
+3. From a clean checkout of the release commit, run the guarded release command:
+   ```bash
+   git fetch origin main --tags
+   git checkout main && git pull --ff-only
+   npm run release:publish -- --tag v0.1.1 --notes-file release-notes.md
+   ```
+4. The guarded command creates the tag with `git tag -s`, verifies it with `git tag -v`, pushes it, confirms the remote GitHub tag object is annotated and cryptographically verified by an allowlisted signer, then creates the GitHub release with `gh release create --verify-tag`.
+5. The tag push triggers `Release`, which re-verifies upstream checks, release artifact attestations, rollback readiness, protected `package-release` approval, and npm trusted publishing OIDC before publishing.
+
+Do not run `gh release create v0.1.1` before pushing the signed tag. GitHub release creation creates a lightweight tag when the tag does not already exist, and the Release workflow intentionally fails closed for lightweight tags. If a remote tag already exists as a lightweight tag, `npm run release:publish` refuses to create the GitHub release.
 
 Release publish now enforces tarball checksum-manifest validation and attestation verification bound to `.github/workflows/release.yml` before `npm publish`.
 
