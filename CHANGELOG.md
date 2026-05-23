@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.14.0...v0.15.0) (2026-05-23)
+
+
+### Features
+
+* **session:** hydrate join recaps from remote tail ([#521](https://github.com/mrrCarter/create-sentinelayer/issues/521)) ([2f46c5d](https://github.com/mrrCarter/create-sentinelayer/commit/2f46c5d21750b1564dec831965db5aba93c83627))
+
 ## [0.14.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.13.1...v0.14.0) (2026-05-23)
 
 
