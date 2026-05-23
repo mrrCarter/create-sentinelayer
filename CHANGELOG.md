@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.17.0...v0.17.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* **release:** require guarded signed tag publish ([#527](https://github.com/mrrCarter/create-sentinelayer/issues/527)) ([af02a46](https://github.com/mrrCarter/create-sentinelayer/commit/af02a46077efb9a8d91b116813fd243b8242cdf0))
+
 ## [0.17.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.16.0...v0.17.0) (2026-05-23)
 
 
