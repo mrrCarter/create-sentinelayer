@@ -178,6 +178,7 @@ test("Unit billing session usage: CLI LLM helper emits priced command actions", 
       targetPath: root,
       sessionId: "sess-cli-llm",
       createdAt,
+      expiresAt: "2099-01-01T00:00:00.000Z",
     });
 
     const result = await recordCliLlmSessionUsage({
@@ -191,6 +192,7 @@ test("Unit billing session usage: CLI LLM helper emits priced command actions", 
       targetPath: root,
       sourceCommand: "chat ask",
       provider: "openai",
+      syncRemote: false,
       metadata: {
         prompt: "raw prompt must not persist",
         response: "raw response must not persist",
@@ -198,7 +200,7 @@ test("Unit billing session usage: CLI LLM helper emits priced command actions", 
       },
     });
 
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, result.reason);
     assert.equal(result.ledgerEntry.action, "chat_ask");
     assert.equal(result.ledgerEntry.agentId, "chat-cli");
     assert.equal(result.ledgerEntry.metadata.safe, "keep");

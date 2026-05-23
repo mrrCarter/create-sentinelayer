@@ -50,8 +50,9 @@ async function startActionMockApi() {
           action: {
             id: `act-${actionType}`,
             sessionId: "sess-actions",
-            targetSequenceId: 42,
+            targetSequenceId: state.actionPayload.targetSequenceId || null,
             targetCursor: "",
+            targetActionId: state.actionPayload.targetActionId || null,
             actionType,
             actionKey: actionType,
             actorKind: "agent",
@@ -85,6 +86,9 @@ function runCli(args, { cwd, env = {} } = {}) {
       cwd,
       env: {
         ...process.env,
+        HOME: cwd,
+        USERPROFILE: cwd,
+        XDG_CONFIG_HOME: path.join(cwd, ".config"),
         NODE_ENV: "test",
         SENTINELAYER_CLI_TEST_MODE: "1",
         SENTINELAYER_CLI_SKIP_AUTH: "1",
@@ -204,6 +208,44 @@ test("Unit session view command: posts read receipt action", async () => {
     assert.equal(mock.state.actionPayload.actionType, "view");
     assert.equal(mock.state.actionPayload.targetSequenceId, 42);
     assert.equal(mock.state.actionPayload.metadata.agentId, "codex");
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session react command: can target a threaded reply action", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-react-reply-action-"));
+  const mock = await startActionMockApi();
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "react",
+        "sess-actions",
+        "like",
+        "--target-action-id",
+        "6f6238a9-f035-4a8f-b05b-ac33507f772a",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "session react");
+    assert.equal(payload.actionType, "like");
+    assert.equal(payload.action.targetActionId, "6f6238a9-f035-4a8f-b05b-ac33507f772a");
+    assert.equal(payload.event.payload.targetActionId, "6f6238a9-f035-4a8f-b05b-ac33507f772a");
+    assert.equal(mock.state.actionPayload.targetActionId, "6f6238a9-f035-4a8f-b05b-ac33507f772a");
+    assert.equal(mock.state.actionPayload.targetSequenceId, undefined);
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });
