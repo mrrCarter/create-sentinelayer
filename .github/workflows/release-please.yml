@@ -181,141 +181,26 @@ jobs:
           manifest-file: .release-please-manifest.json
           skip-github-release: true
 
-      - name: Track Release workflow triggered by generated release tag
-        if: steps.release_please.outputs.release_created == 'true' || steps.release_please.outputs.releases_created == 'true'
+      - name: Emit signed-tag release handoff
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_PLEASE_OUTPUTS_JSON: ${{ toJson(steps.release_please.outputs) }}
-          EXPECTED_RELEASE_SHA: ${{ github.sha }}
-          WATCH_TIMEOUT_SECONDS: "1800"
         run: |
           set -euo pipefail
-          case "${WATCH_TIMEOUT_SECONDS}" in ''|*[!0-9]*) echo "::error::Invalid WATCH_TIMEOUT_SECONDS value: ${WATCH_TIMEOUT_SECONDS}" ; exit 1 ;; esac
-          current_run_created_at="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at')"
-          if [ -z "${current_run_created_at}" ] || [ "${current_run_created_at}" = "null" ]; then
-            echo "::error::Unable to resolve current workflow run created_at timestamp."
-            exit 1
-          fi
-          tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '.tag_name // empty')"
-          if [ -z "${tag_name}" ]; then
-            tag_name="$(echo "${RELEASE_PLEASE_OUTPUTS_JSON}" | jq -r '
-              to_entries
-              | map(select(.key | endswith("--tag_name")))
-              | .[0].value // empty
-            ')"
-          fi
-          if [ -z "${tag_name}" ]; then
-            echo "::error::release-please reported release creation but no tag output was found."
-            echo "${RELEASE_PLEASE_OUTPUTS_JSON}"
-            exit 1
-          fi
-
-          tag_object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag_name}" --jq '.object.type')"
-          tag_object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag_name}" --jq '.object.sha')"
-          if [ -z "${tag_object_type}" ] || [ -z "${tag_object_sha}" ]; then
-            echo "::error::Unable to resolve tag object for ${tag_name}."
-            exit 1
-          fi
-          if [ "${tag_object_type}" = "commit" ]; then
-            resolved_release_sha="${tag_object_sha}"
-          elif [ "${tag_object_type}" = "tag" ]; then
-            resolved_release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.sha')"
-          else
-            echo "::error::Unsupported tag object type '${tag_object_type}' for ${tag_name}."
-            exit 1
-          fi
-          if [ -z "${resolved_release_sha}" ]; then
-            echo "::error::Unable to resolve release commit SHA for tag ${tag_name}."
-            exit 1
-          fi
-          if [ "${resolved_release_sha}" != "${EXPECTED_RELEASE_SHA}" ]; then
-            echo "::error::Release tag commit mismatch for ${tag_name}. Expected ${EXPECTED_RELEASE_SHA}, got ${resolved_release_sha}."
-            exit 1
-          fi
-
-          release_run_id=""
-          for attempt in $(seq 1 40); do
-            run_list_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?event=push&per_page=100")"
-            candidate_count="$(echo "${run_list_json}" | jq -r \
-              --arg tag "${tag_name}" \
-              --arg sha "${resolved_release_sha}" \
-              --arg min_created_at "${current_run_created_at}" \
-              '
-                [
-                  (.workflow_runs // [])[]
-                  | select(
-                      .event == "push"
-                      and .head_branch == $tag
-                      and .head_sha == $sha
-                      and (.created_at >= $min_created_at)
-                      and .path == ".github/workflows/release.yml"
-                      and (.actor.login == "github-actions" or .actor.login == "github-actions[bot]")
-                    )
-                ]
-                | length
-              ')"
-            case "${candidate_count}" in ''|*[!0-9]*) echo "::error::Invalid release run candidate count: ${candidate_count}" ; exit 1 ;; esac
-            if [ "${candidate_count}" -gt 1 ]; then
-              echo "::error::Multiple Release workflow candidates detected for tag ${tag_name}; refusing nondeterministic selection."
-              echo "::error::candidate_count=${candidate_count}"
-              exit 1
-            fi
-            if [ "${candidate_count}" -eq 1 ]; then
-              release_run_id="$(echo "${run_list_json}" | jq -r \
-                --arg tag "${tag_name}" \
-                --arg sha "${resolved_release_sha}" \
-                --arg min_created_at "${current_run_created_at}" \
-                '
-                  [
-                    (.workflow_runs // [])[]
-                    | select(
-                        .event == "push"
-                        and .head_branch == $tag
-                        and .head_sha == $sha
-                        and (.created_at >= $min_created_at)
-                        and .path == ".github/workflows/release.yml"
-                        and (.actor.login == "github-actions" or .actor.login == "github-actions[bot]")
-                      )
-                  ]
-                  | sort_by(.run_number, .run_attempt, .created_at, .updated_at)
-                  | last
-                  | .id // empty
-                ')"
-            fi
-            if [ -n "${release_run_id}" ] && [ "${release_run_id}" != "null" ]; then
-              break
-            fi
-            sleep 10
-          done
-
-          if [ -z "${release_run_id}" ] || [ "${release_run_id}" = "null" ]; then
-            echo "::error::Unable to resolve Release workflow run id for tag ${tag_name} (push event, sha=${resolved_release_sha})."
-            exit 1
-          fi
-
-          set +e
-          timeout "${WATCH_TIMEOUT_SECONDS}"s gh run watch "${release_run_id}" --exit-status
-          watch_exit="$?"
-          set -e
-          if [ "${watch_exit}" -ne 0 ]; then
-            if [ "${watch_exit}" -eq 124 ]; then
-              echo "::error::Timed out after ${WATCH_TIMEOUT_SECONDS}s while waiting for Release workflow run ${release_run_id}."
-              echo "::error::Rerun guidance: gh run watch ${release_run_id} --exit-status"
-            else
-              echo "::error::gh run watch failed for Release workflow run ${release_run_id} (exit=${watch_exit})."
-            fi
-            exit 1
-          fi
-          release_conclusion="$(gh run view "${release_run_id}" --json conclusion --jq '.conclusion')"
-          if [ "${release_conclusion}" != "success" ]; then
-            echo "::error::Release workflow failed for ${tag_name} (run_id=${release_run_id}, conclusion=${release_conclusion})."
-            exit 1
-          fi
-
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
           {
-            echo "## Release Workflow Tracking"
-            echo "- tag: \`${tag_name}\`"
-            echo "- run_id: \`${release_run_id}\`"
-            echo "- conclusion: \`${release_conclusion}\`"
+            echo "## Release Publish Handoff"
+            echo
+            echo "Release Please only manages the version/changelog PR. Publishing is triggered by a signed annotated release tag."
+            echo
+            echo "Use the guarded release command so the process fails before a lightweight GitHub tag can be created:"
+            echo
+            echo "\`\`\`bash"
+            echo "git fetch origin main --tags"
+            echo "git checkout main && git pull --ff-only"
+            echo "npm run release:publish -- --tag ${tag} --notes-file <release-notes.md>"
+            echo "\`\`\`"
+            echo
+            echo "The command creates \`${tag}\` with \`git tag -s\`, verifies it with \`git tag -v\`, pushes it, verifies the remote GitHub tag object is annotated and signed by an allowlisted identity, then runs \`gh release create --verify-tag\`."
+            echo
+            echo "Do not run \`gh release create ${tag}\` before pushing the signed tag; GitHub would create a lightweight tag and the Release workflow will fail closed."
           } >> "$GITHUB_STEP_SUMMARY"
