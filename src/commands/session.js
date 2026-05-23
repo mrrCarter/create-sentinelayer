@@ -913,13 +913,33 @@ function checkpointSequenceRange(checkpoint = {}) {
   return "anchor pending";
 }
 
-function formatCheckpointLine(checkpoint = {}) {
+function checkpointGradeLabel(checkpoint = {}) {
+  const grade = normalizeString(checkpoint.grade || checkpoint.gradeLetter || checkpoint.grade_letter).toUpperCase();
+  if (!["A", "B", "C", "D", "F"].includes(grade)) {
+    return "";
+  }
+  const score = Number(checkpoint.gradeScore ?? checkpoint.grade_score);
+  const scoreLabel = Number.isFinite(score) ? ` ${Math.max(0, Math.min(100, Math.floor(score)))}/100` : "";
+  const rawReasons = Array.isArray(checkpoint.gradeReasons)
+    ? checkpoint.gradeReasons
+    : Array.isArray(checkpoint.grade_reasons)
+      ? checkpoint.grade_reasons
+      : [];
+  const reasons = rawReasons
+    .map((reason) => normalizeString(reason?.message || reason?.code || reason))
+    .filter(Boolean)
+    .slice(0, 2);
+  const reasonLabel = reasons.length ? `: ${reasons.join("; ")}` : "";
+  return ` grade ${grade}${scoreLabel}${reasonLabel}`;
+}
+
+export function formatCheckpointLine(checkpoint = {}) {
   const id = normalizeString(checkpoint.checkpointId) || "checkpoint";
   const kind = normalizeString(checkpoint.kind) || "summary";
   const title = normalizeString(checkpoint.title) || "Untitled checkpoint";
   const byline = normalizeString(checkpoint.createdByAgentId || checkpoint.createdBy);
   const by = byline ? ` by ${byline}` : "";
-  return `${checkpointSequenceRange(checkpoint)} ${id} [${kind}] ${title}${by}`;
+  return `${checkpointSequenceRange(checkpoint)} ${id} [${kind}] ${title}${by}${checkpointGradeLabel(checkpoint)}`;
 }
 
 async function readCheckpointSummaryOption(options = {}, { targetPath } = {}) {

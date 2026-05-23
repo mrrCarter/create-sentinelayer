@@ -14,7 +14,7 @@ import { registerSwarmCommand } from "../src/commands/swarm.js";
 import { registerSpecCommand } from "../src/commands/spec.js";
 import { registerPromptCommand } from "../src/commands/prompt.js";
 import { registerAuditCommand } from "../src/commands/audit.js";
-import { registerSessionCommand } from "../src/commands/session.js";
+import { formatCheckpointLine, registerSessionCommand } from "../src/commands/session.js";
 import { registerOmarGateCommand } from "../src/commands/omargate.js";
 
 function buildProgram(registerFn) {
@@ -404,6 +404,43 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(checkpointGenerate, "--operation-id <key>");
   assertCommandHasOption(checkpointGenerate, "--agent <id>");
   assertCommandHasOption(checkpointGenerate, "--json");
+});
+
+test("Unit command contracts: checkpoint lines include deterministic grade labels", () => {
+  assert.equal(
+    formatCheckpointLine({
+      checkpointId: "cp_1",
+      kind: "handoff",
+      startSequence: 3,
+      endSequence: 9,
+      title: "PR-C1 handoff",
+      createdByAgentId: "codex",
+      grade: "B",
+      gradeScore: 84,
+      gradeReasons: [
+        { code: "brief_summary", message: "Checkpoint summary is under 200 characters." },
+      ],
+    }),
+    "#3-9 cp_1 [handoff] PR-C1 handoff by codex grade B 84/100: Checkpoint summary is under 200 characters.",
+  );
+
+  assert.equal(
+    formatCheckpointLine({
+      checkpointId: "cp_2",
+      title: "Legacy summary",
+      grade: "F",
+      grade_score: 41,
+    }),
+    "anchor pending cp_2 [summary] Legacy summary grade F 41/100",
+  );
+
+  assert.equal(
+    formatCheckpointLine({
+      checkpointId: "cp_3",
+      title: "Ungraded summary",
+    }),
+    "anchor pending cp_3 [summary] Ungraded summary",
+  );
 });
 
 test("Unit command contracts: review rejects conflicting diff and staged flags", async () => {
