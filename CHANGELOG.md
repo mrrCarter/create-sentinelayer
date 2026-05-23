@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.15.0...v0.16.0) (2026-05-23)
+
+
+### Features
+
+* **session:** surface usage totals in recaps ([ae2bf7c](https://github.com/mrrCarter/create-sentinelayer/commit/ae2bf7ccca80ddeac17bd9b49adfadb0514b1567))
+
 ## [0.15.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.14.0...v0.15.0) (2026-05-23)
 
 
