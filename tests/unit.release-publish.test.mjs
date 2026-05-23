@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 
 import {
   assertAllowedActor,
+  assertRegisteredSshSigningKey,
   assertSemverTag,
   assertTagMatchesVersion,
   assertTrustedRemoteTag,
   buildGhReleaseArgs,
+  normalizeSshPublicKey,
   parseArgs,
   versionToTag,
 } from "../scripts/release-publish.mjs";
@@ -158,4 +160,40 @@ test("Release publish helper creates GitHub releases with --verify-tag only", ()
     "v0.17.0",
     "--generate-notes",
   ]);
+});
+
+test("Release publish helper normalizes SSH public keys for GitHub verification", () => {
+  const key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCdemo carter@example.com";
+  assert.equal(
+    normalizeSshPublicKey(`32074640+mrrCarter@users.noreply.github.com ${key}`),
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCdemo"
+  );
+  assert.equal(normalizeSshPublicKey(`\r\n${key}\r\n`), "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCdemo");
+  assert.equal(
+    normalizeSshPublicKey("key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIdemo"),
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIdemo"
+  );
+  assert.equal(normalizeSshPublicKey("not-a-key"), "");
+});
+
+test("Release publish helper requires configured SSH signing key to be registered with GitHub", () => {
+  const signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIdemo";
+  assert.equal(
+    assertRegisteredSshSigningKey({
+      viewer: "mrrCarter",
+      signingKey,
+      githubKeys: [`${signingKey} github-web-key`],
+    }),
+    signingKey
+  );
+
+  assert.throws(
+    () =>
+      assertRegisteredSshSigningKey({
+        viewer: "mrrCarter",
+        signingKey,
+        githubKeys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIother"],
+      }),
+    /does not expose the configured SSH signing key/
+  );
 });
