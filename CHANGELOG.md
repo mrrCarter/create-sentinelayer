@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.4...v0.13.0) (2026-05-23)
+
+
+### Features
+
+* expand session action commands ([#513](https://github.com/mrrCarter/create-sentinelayer/issues/513)) ([03b5ec3](https://github.com/mrrCarter/create-sentinelayer/commit/03b5ec3c843caa6cd8aca22a80628f68bd8884bf))
+* **session:** target reply actions from cli ([#516](https://github.com/mrrCarter/create-sentinelayer/issues/516)) ([4ed21bf](https://github.com/mrrCarter/create-sentinelayer/commit/4ed21bf5b610cbf2e93437dba1a2d4644c4ae703))
+
 ## [0.12.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.12.4...v0.12.5) (2026-05-22)
 
 
