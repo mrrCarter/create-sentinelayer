@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import process from "node:process";
 
-import { requestJson, requestJsonMutation } from "../auth/http.js";
+import { SentinelayerApiError, requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 
 const DEFAULT_API_BASE_URL = "https://api.sentinelayer.com";
@@ -9,6 +9,7 @@ const DEFAULT_CHECKPOINT_LIMIT = 100;
 const MAX_CHECKPOINT_LIMIT = 200;
 const DEFAULT_MIN_EVENTS = 20;
 const DEFAULT_MAX_EVENTS = 80;
+const DEFAULT_CREATED_BY_AGENT_ID = "senti";
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -94,6 +95,28 @@ function buildInvocationIdempotencyKey(operation) {
     suffix = crypto.randomBytes(16).toString("hex");
   }
   return `sl_cli_session_checkpoint_${normalizeString(operation) || "mutation"}_${suffix}`;
+}
+
+function normalizeReason(value, fallbackValue = "checkpoint_generate_failed") {
+  return (
+    normalizeString(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9_:-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || fallbackValue
+  );
+}
+
+function buildCheckpointNoop(reason, extra = {}) {
+  return {
+    ok: false,
+    created: false,
+    duplicate: false,
+    reason: normalizeReason(reason),
+    checkpoint: null,
+    checkpointId: null,
+    eventCount: null,
+    ...extra,
+  };
 }
 
 function normalizeTokenRange({ tokenStart, tokenEnd } = {}) {
@@ -195,6 +218,35 @@ export function buildGenerateCheckpointPayload(sessionId, {
   };
 }
 
+export function normalizeCheckpointGenerationResult(payload = {}) {
+  const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const checkpoint =
+    source.checkpoint && typeof source.checkpoint === "object" && !Array.isArray(source.checkpoint)
+      ? source.checkpoint
+      : null;
+  const checkpointId = normalizeString(
+    source.checkpointId ||
+      source.checkpoint_id ||
+      checkpoint?.checkpointId ||
+      checkpoint?.checkpoint_id,
+  ) || null;
+  const eventCount = Number(source.eventCount ?? source.event_count);
+  const minEvents = Number(source.minEvents ?? source.min_events ?? DEFAULT_MIN_EVENTS);
+  const maxEvents = Number(source.maxEvents ?? source.max_events ?? DEFAULT_MAX_EVENTS);
+  return {
+    ...source,
+    ok: source.ok !== false,
+    created: Boolean(source.created || checkpoint),
+    duplicate: Boolean(source.duplicate),
+    reason: normalizeReason(source.reason, ""),
+    checkpoint,
+    checkpointId,
+    eventCount: Number.isFinite(eventCount) ? Math.max(0, Math.floor(eventCount)) : null,
+    minEvents: Number.isFinite(minEvents) ? Math.max(1, Math.floor(minEvents)) : DEFAULT_MIN_EVENTS,
+    maxEvents: Number.isFinite(maxEvents) ? Math.max(1, Math.floor(maxEvents)) : DEFAULT_MAX_EVENTS,
+  };
+}
+
 async function resolveCheckpointApi({
   targetPath = process.cwd(),
   resolveAuthSession = resolveActiveAuthSession,
@@ -292,3 +344,37 @@ export async function generateSessionCheckpoint(sessionId, options = {}) {
     idempotencyKey,
   };
 }
+
+export async function generateSessionCheckpointBestEffort(sessionId, options = {}) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return buildCheckpointNoop("invalid_session_id");
+  }
+  if (normalizeString(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "") === "1") {
+    return buildCheckpointNoop("remote_sync_disabled_env");
+  }
+  try {
+    const result = await generateSessionCheckpoint(normalizedSessionId, {
+      ...options,
+      createdByAgentId: normalizeString(options.createdByAgentId) || DEFAULT_CREATED_BY_AGENT_ID,
+    });
+    return normalizeCheckpointGenerationResult(result);
+  } catch (error) {
+    if (error instanceof SentinelayerApiError) {
+      return buildCheckpointNoop(`api_${error.status || error.code || "error"}`, {
+        status: error.status || null,
+        code: error.code || null,
+        requestId: error.requestId || null,
+      });
+    }
+    const message = normalizeString(error?.message);
+    const reason = /auth|login|token/i.test(message) ? "not_authenticated" : message;
+    return buildCheckpointNoop(reason || "checkpoint_generate_failed");
+  }
+}
+
+export {
+  DEFAULT_CREATED_BY_AGENT_ID,
+  DEFAULT_MAX_EVENTS,
+  DEFAULT_MIN_EVENTS,
+};

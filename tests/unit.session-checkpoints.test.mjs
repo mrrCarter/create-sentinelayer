@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { SentinelayerApiError } from "../src/auth/http.js";
 import {
   buildGenerateCheckpointPayload,
   buildManualCheckpointPayload,
   createSessionCheckpoint,
   generateSessionCheckpoint,
+  generateSessionCheckpointBestEffort,
   listSessionCheckpoints,
+  normalizeCheckpointGenerationResult,
 } from "../src/session/checkpoints.js";
 
 const fakeAuthValue = ["local", "checkpoint", "auth"].join("-");
@@ -15,6 +18,22 @@ const fakeAuth = async () => ({
   token: fakeAuthValue,
   apiUrl: "https://api.example.com/",
 });
+
+function withRemoteSyncEnabled(fn) {
+  return async () => {
+    const previous = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    try {
+      await fn();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+      } else {
+        process.env.SENTINELAYER_SKIP_REMOTE_SYNC = previous;
+      }
+    }
+  };
+}
 
 test("Unit session checkpoints: manual payload is stable and validates ranges", () => {
   const first = buildManualCheckpointPayload("sess-1", {
@@ -204,4 +223,96 @@ test("Unit session checkpoints: generate posts bounded request body", async () =
     createdByAgentId: "senti",
   });
   assert.equal(result.checkpoint.checkpointId, "cp_auto_1");
+});
+
+test("Unit session checkpoints: best-effort generate is safe for daemon ticks", withRemoteSyncEnabled(async () => {
+  const calls = [];
+  const result = await generateSessionCheckpointBestEffort("sess-123", {
+    targetPath: "/repo",
+    minEvents: 25,
+    maxEvents: 90,
+    resolveAuthSession: fakeAuth,
+    requestMutation: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        created: true,
+        duplicate: false,
+        checkpoint: { checkpoint_id: "cp_auto_2" },
+        event_count: 25,
+        min_events: 25,
+        max_events: 90,
+      };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.example.com/api/v1/sessions/sess-123/checkpoints/generate");
+  assert.deepEqual(calls[0].options.body, {
+    minEvents: 25,
+    maxEvents: 90,
+    createdByAgentId: "senti",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.created, true);
+  assert.equal(result.checkpointId, "cp_auto_2");
+  assert.equal(result.eventCount, 25);
+}));
+
+test("Unit session checkpoints: best-effort generate normalizes disabled, auth, and API failures", async () => {
+  const previous = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+  try {
+    const skipped = await generateSessionCheckpointBestEffort("sess-123");
+    assert.equal(skipped.ok, false);
+    assert.equal(skipped.reason, "remote_sync_disabled_env");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    } else {
+      process.env.SENTINELAYER_SKIP_REMOTE_SYNC = previous;
+    }
+  }
+
+  await withRemoteSyncEnabled(async () => {
+    const noAuth = await generateSessionCheckpointBestEffort("sess-123", {
+      resolveAuthSession: async () => ({ token: "" }),
+    });
+    assert.equal(noAuth.ok, false);
+    assert.equal(noAuth.reason, "not_authenticated");
+
+    const apiFailure = await generateSessionCheckpointBestEffort("sess-123", {
+      resolveAuthSession: fakeAuth,
+      requestMutation: async () => {
+        throw new SentinelayerApiError("temporarily unavailable", {
+          status: 503,
+          code: "SERVICE_UNAVAILABLE",
+          requestId: "req-1",
+        });
+      },
+    });
+    assert.equal(apiFailure.ok, false);
+    assert.equal(apiFailure.reason, "api_503");
+    assert.equal(apiFailure.status, 503);
+    assert.equal(apiFailure.code, "SERVICE_UNAVAILABLE");
+    assert.equal(apiFailure.requestId, "req-1");
+  })();
+});
+
+test("Unit session checkpoints: generation result normalization handles API casing", () => {
+  const normalized = normalizeCheckpointGenerationResult({
+    ok: true,
+    created: false,
+    duplicate: true,
+    reason: "checkpoint range already covered",
+    checkpoint: { checkpoint_id: "cp_existing" },
+    event_count: "33",
+    min_events: "20",
+    max_events: "80",
+  });
+  assert.equal(normalized.reason, "checkpoint_range_already_covered");
+  assert.equal(normalized.checkpointId, "cp_existing");
+  assert.equal(normalized.eventCount, 33);
+  assert.equal(normalized.minEvents, 20);
+  assert.equal(normalized.maxEvents, 80);
 });

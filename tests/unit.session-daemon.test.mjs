@@ -122,6 +122,99 @@ test("Unit session daemon: welcome event includes codebase synopsis and health t
   }
 });
 
+test("Unit session daemon: health tick requests durable checkpoints with cadence", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-checkpoint-daemon-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    await registerAgent(session.sessionId, {
+      agentId: "codex-c3d4",
+      model: "gpt-5.4",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+
+    const calls = [];
+    const checkpointGenerator = async (generatedSessionId, options) => {
+      calls.push({ generatedSessionId, options });
+      return {
+        ok: true,
+        created: true,
+        duplicate: false,
+        checkpointId: "cp_auto_daemon",
+        checkpoint: { checkpointId: "cp_auto_daemon" },
+        eventCount: 24,
+      };
+    };
+    const startedAt = new Date().toISOString();
+    const senti = await startSenti(session.sessionId, {
+      targetPath: tempRoot,
+      autoStart: false,
+      checkpointGenerator,
+      checkpointIntervalMs: 60_000,
+      checkpointMinEvents: 20,
+      checkpointMaxEvents: 80,
+    });
+
+    const first = await senti.runTick(startedAt);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].generatedSessionId, session.sessionId);
+    assert.equal(calls[0].options.targetPath, tempRoot);
+    assert.equal(calls[0].options.minEvents, 20);
+    assert.equal(calls[0].options.maxEvents, 80);
+    assert.equal(calls[0].options.createdByAgentId, "senti");
+    assert.equal(first.checkpoint.attempted, true);
+    assert.equal(first.checkpoint.created, true);
+    assert.equal(first.checkpoint.checkpointId, "cp_auto_daemon");
+
+    const second = await senti.runTick(new Date(Date.parse(startedAt) + 1_000).toISOString());
+    assert.equal(calls.length, 1);
+    assert.equal(second.checkpoint.attempted, false);
+    assert.equal(second.checkpoint.reason, "checkpoint_cadence_wait");
+
+    const third = await senti.runTick(new Date(Date.parse(startedAt) + 61_000).toISOString());
+    assert.equal(calls.length, 2);
+    assert.equal(third.checkpoint.created, true);
+  } finally {
+    if (sessionId) {
+      await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session daemon: checkpoint generator failure is non-blocking", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-checkpoint-failure-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    const senti = await startSenti(session.sessionId, {
+      targetPath: tempRoot,
+      autoStart: false,
+      checkpointGenerator: async () => {
+        throw new Error("checkpoint api down");
+      },
+      checkpointIntervalMs: 1,
+    });
+
+    const summary = await senti.runTick(new Date().toISOString());
+    assert.equal(senti.isRunning(), true);
+    assert.equal(summary.checkpoint.attempted, true);
+    assert.equal(summary.checkpoint.ok, false);
+    assert.equal(summary.checkpoint.created, false);
+    assert.equal(summary.checkpoint.reason, "checkpoint api down");
+  } finally {
+    if (sessionId) {
+      await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session daemon: unanswered help_request gets auto-response within timeout", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-help-"));
   let sessionId = "";
