@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.13.1...v0.14.0) (2026-05-23)
+
+
+### Features
+
+* let senti daemon create durable checkpoints ([#519](https://github.com/mrrCarter/create-sentinelayer/issues/519)) ([ef74bcc](https://github.com/mrrCarter/create-sentinelayer/commit/ef74bcc0acfe730e5580c50f95512c61642f71c5))
+
 ## [0.13.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.13.0...v0.13.1) (2026-05-23)
 
 
