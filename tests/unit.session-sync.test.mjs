@@ -453,6 +453,7 @@ test("Unit session sync: listSessionMessageActions hits actions endpoint", async
   const calls = [];
   const result = await listSessionMessageActions("sess-actions", {
     targetSequenceId: 42,
+    targetActionId: "6f6238a9-f035-4a8f-b05b-ac33507f772a",
     limit: 999,
     resolveAuthSession: async () => ({
       token: "tok_actions",
@@ -478,7 +479,7 @@ test("Unit session sync: listSessionMessageActions hits actions endpoint", async
   assert.equal(result.actions.length, 1);
   assert.equal(
     calls[0].url,
-    "https://api.sentinelayer.com/api/v1/sessions/sess-actions/actions?targetSequenceId=42&limit=500",
+    "https://api.sentinelayer.com/api/v1/sessions/sess-actions/actions?targetSequenceId=42&targetActionId=6f6238a9-f035-4a8f-b05b-ac33507f772a&limit=500",
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_actions");
@@ -490,6 +491,7 @@ test("Unit session sync: createSessionMessageAction posts idempotent action payl
   const result = await createSessionMessageAction("sess-actions", {
     actionType: "reply",
     targetSequenceId: 42,
+    targetActionId: "6f6238a9-f035-4a8f-b05b-ac33507f772a",
     note: "taking this",
     idempotencyKey: "reply-42",
     metadata: { source: "unit" },
@@ -523,6 +525,7 @@ test("Unit session sync: createSessionMessageAction posts idempotent action payl
   assert.deepEqual(body, {
     actionType: "reply",
     targetSequenceId: 42,
+    targetActionId: "6f6238a9-f035-4a8f-b05b-ac33507f772a",
     note: "taking this",
     metadata: { source: "unit" },
     idempotencyKey: "reply-42",

@@ -134,12 +134,12 @@ const SESSION_MESSAGE_ACTION_DESCRIPTIONS = Object.freeze([
   {
     type: "like",
     command: "sl session react <id> like --target-sequence <n>",
-    description: "Positive lightweight feedback.",
+    description: "Positive lightweight feedback. Use --target-action-id <uuid> to react to a threaded reply.",
   },
   {
     type: "dislike",
     command: "sl session react <id> dislike --target-sequence <n>",
-    description: "Negative lightweight feedback.",
+    description: "Negative lightweight feedback. Use --target-action-id <uuid> to react to a threaded reply.",
   },
   {
     type: "disregard",
@@ -190,6 +190,10 @@ function actionTargetCursor(action = {}) {
   return normalizeString(action.targetCursor ?? action.target_cursor);
 }
 
+function actionTargetActionId(action = {}) {
+  return normalizeString(action.targetActionId ?? action.target_action_id);
+}
+
 function actionActorId(action = {}) {
   return normalizeString(action.actorId ?? action.actor_id) || "unknown";
 }
@@ -201,7 +205,11 @@ function actionCreatedAt(action = {}) {
 function actionDisplayMessage(action = {}) {
   const actionType = normalizeString(action.actionType ?? action.action_type).toLowerCase();
   const targetSequence = actionTargetSequence(action);
-  const targetLabel = targetSequence ? `#${targetSequence}` : actionTargetCursor(action) || "target";
+  const targetActionId = actionTargetActionId(action);
+  const parentLabel = targetSequence ? `#${targetSequence}` : actionTargetCursor(action) || "";
+  const targetLabel = targetActionId
+    ? `action:${targetActionId}${parentLabel ? ` (${parentLabel})` : ""}`
+    : parentLabel || "target";
   const note = normalizeString(action.note);
   if (note) return `${actionType} ${targetLabel}: ${note}`;
   return `${actionType} ${targetLabel}`;
@@ -217,6 +225,7 @@ function buildSessionActionEvent(sessionId, action = {}) {
         actionType,
         targetSequenceId: actionTargetSequence(action),
         targetCursor: actionTargetCursor(action),
+        targetActionId: actionTargetActionId(action),
         actorId: actionActorId(action),
         note: normalizeString(action.note),
         createdAt: actionCreatedAt(action),
@@ -237,6 +246,7 @@ function buildSessionActionEvent(sessionId, action = {}) {
       actionType,
       targetSequenceId: actionTargetSequence(action),
       targetCursor: actionTargetCursor(action) || null,
+      targetActionId: actionTargetActionId(action) || null,
       note: normalizeString(action.note) || null,
       message: actionDisplayMessage(action),
       source: "session_action",
@@ -304,10 +314,15 @@ function defaultActionIdempotencyKey({
   actionType,
   targetSequenceId,
   targetCursor,
+  targetActionId,
   note,
   agentId,
 } = {}) {
-  const target = targetSequenceId ? `seq:${targetSequenceId}` : `cursor:${normalizeString(targetCursor)}`;
+  const target = normalizeString(targetActionId)
+    ? `action:${normalizeString(targetActionId)}`
+    : targetSequenceId
+      ? `seq:${targetSequenceId}`
+      : `cursor:${normalizeString(targetCursor)}`;
   const noteHash = note ? shortSha256(note) : "none";
   const actor = normalizeString(agentId) || "user";
   return `cli:${normalizeString(actionType).toLowerCase()}:${target}:${actor}:${noteHash}`;
@@ -1813,6 +1828,7 @@ export function registerSessionCommand(program) {
     commandName = "session action",
     targetSequenceId: targetSequenceIdOverride = null,
     targetCursor: targetCursorOverride = "",
+    targetActionId: targetActionIdOverride = "",
     note: noteOverride = "",
   } = {}) {
     const normalizedSessionId = normalizeString(sessionId);
@@ -1825,8 +1841,9 @@ export function registerSessionCommand(program) {
       targetSequenceIdOverride ||
       parseOptionalPositiveInteger(options.targetSequence, "target-sequence");
     const targetCursor = normalizeString(targetCursorOverride) || normalizeString(options.targetCursor);
-    if (!targetSequenceId && !targetCursor) {
-      throw new Error("Provide --target-sequence or --target-cursor.");
+    const targetActionId = normalizeString(targetActionIdOverride) || normalizeString(options.targetActionId);
+    if (!targetSequenceId && !targetCursor && !targetActionId) {
+      throw new Error("Provide --target-sequence, --target-cursor, or --target-action-id.");
     }
     await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
     const note = normalizeString(noteOverride) || normalizeString(options.note);
@@ -1837,6 +1854,7 @@ export function registerSessionCommand(program) {
         actionType: normalizedActionType,
         targetSequenceId,
         targetCursor,
+        targetActionId,
         note,
         agentId,
       });
@@ -1846,6 +1864,7 @@ export function registerSessionCommand(program) {
       targetPath,
       targetSequenceId,
       targetCursor,
+      targetActionId,
       note,
       metadata: {
         source: "cli",
@@ -1912,6 +1931,7 @@ export function registerSessionCommand(program) {
     )
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
+    .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
     .option("--note <text>", "Optional action note or reply body")
     .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
     .option("--idempotency-key <key>", "Explicit idempotency key")
@@ -1926,6 +1946,7 @@ export function registerSessionCommand(program) {
     .description("React to or acknowledge a target session event with ack, like, or dislike")
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
+    .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
     .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")

@@ -31,6 +31,7 @@ export async function recordCliLlmSessionUsage({
   sourceCommand = "",
   provider = "",
   metadata = {},
+  syncRemote = true,
 } = {}) {
   const normalizedSessionId = normalizeString(sessionId);
   const normalizedAgentId = normalizeString(agentId);
@@ -80,7 +81,7 @@ export async function recordCliLlmSessionUsage({
           ...metadata,
         },
       },
-      { targetPath },
+      { targetPath, syncRemote },
     );
   } catch (error) {
     return {

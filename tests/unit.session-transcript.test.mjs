@@ -168,8 +168,9 @@ test("buildTranscriptMarkdown: session action/reply/reaction events render in co
         ts: "2026-04-25T10:00:31.000Z",
         payload: {
           actionType: "working_on",
+          actionId: "act-work-10",
           targetSequenceId: 10,
-          message: "working_on #10",
+          note: "taking this",
         },
       }),
       ev({
@@ -178,8 +179,9 @@ test("buildTranscriptMarkdown: session action/reply/reaction events render in co
         ts: "2026-04-25T10:00:32.000Z",
         payload: {
           actionType: "reply",
+          actionId: "act-reply-10",
           targetSequenceId: 10,
-          message: "reply #10: patched",
+          note: "patched",
         },
       }),
       ev({
@@ -189,15 +191,19 @@ test("buildTranscriptMarkdown: session action/reply/reaction events render in co
         payload: {
           actionType: "like",
           targetSequenceId: 10,
-          message: "like #10",
+          targetActionId: "act-reply-10",
         },
       }),
     ],
   });
 
-  assert.match(markdown, /^working_on #10$/m);
-  assert.match(markdown, /^reply #10: patched$/m);
-  assert.match(markdown, /^like #10$/m);
+  assert.match(markdown, /\*\*Session action:\*\* `working_on` on `#10`/);
+  assert.match(markdown, /^Action ID: `act-work-10`$/m);
+  assert.match(markdown, /^taking this$/m);
+  assert.match(markdown, /\*\*Reply to:\*\* `#10`/);
+  assert.match(markdown, /^Action ID: `act-reply-10`$/m);
+  assert.match(markdown, /^patched$/m);
+  assert.match(markdown, /\*\*Reaction:\*\* `like` on `reply action act-reply-10 under #10`/);
 });
 
 test("buildTranscriptMarkdown: system events render as italic dash-bullets", () => {

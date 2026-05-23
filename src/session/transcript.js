@@ -155,7 +155,63 @@ function eventTimestamp(event) {
   return normalize(event?.ts || event?.timestamp);
 }
 
+function actionTargetLabel(payload = {}) {
+  const targetActionId = normalize(payload.targetActionId || payload.target_action_id);
+  const targetSequence = Number(payload.targetSequenceId || payload.target_sequence_id || 0);
+  const targetCursor = normalize(payload.targetCursor || payload.target_cursor);
+  const parent =
+    Number.isFinite(targetSequence) && targetSequence > 0
+      ? `#${Math.floor(targetSequence)}`
+      : targetCursor
+        ? `cursor ${targetCursor}`
+        : "";
+  if (targetActionId) {
+    return parent ? `reply action ${targetActionId} under ${parent}` : `reply action ${targetActionId}`;
+  }
+  return parent || "target";
+}
+
+function actionBody(event) {
+  const payload = event && typeof event.payload === "object" ? event.payload : {};
+  const kind = normalize(event?.event || event?.type);
+  const actionType = normalize(payload.actionType || payload.action_type || kind.replace(/^session_/, ""));
+  const target = actionTargetLabel(payload);
+  const actionId = normalize(payload.actionId || payload.action_id);
+  const note = normalize(payload.note);
+  const metadata = [];
+  if (actionId) metadata.push(`Action ID: \`${actionId}\``);
+  if (actionType) metadata.push(`Action: \`${actionType}\``);
+  if (kind === "session_reply") {
+    return [
+      `**Reply to:** \`${target}\``,
+      ...metadata,
+      note ? "" : null,
+      note || normalize(payload.message),
+    ].filter((line) => line !== null && line !== "").join("\n");
+  }
+  if (kind === "session_reaction") {
+    return [
+      `**Reaction:** \`${actionType || "reaction"}\` on \`${target}\``,
+      ...metadata,
+      note ? `Note: ${note}` : null,
+    ].filter(Boolean).join("\n");
+  }
+  if (kind === "session_action") {
+    return [
+      `**Session action:** \`${actionType || "action"}\` on \`${target}\``,
+      ...metadata,
+      note ? "" : null,
+      note,
+    ].filter((line) => line !== null && line !== "").join("\n");
+  }
+  return "";
+}
+
 function eventBody(event) {
+  const kind = normalize(event?.event || event?.type);
+  if (kind === "session_action" || kind === "session_reply" || kind === "session_reaction") {
+    return actionBody(event);
+  }
   const payload = event && typeof event.payload === "object" ? event.payload : {};
   // session_usage carries the response inside payload.response.text
   const responseText =

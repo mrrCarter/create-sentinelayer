@@ -1245,6 +1245,7 @@ export async function listSessionMessageActions(
   {
     targetPath = process.cwd(),
     targetSequenceId = null,
+    targetActionId = "",
     limit = SESSION_ACTION_FETCH_LIMIT,
     timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
     forceCircuitProbe = false,
@@ -1293,6 +1294,10 @@ export async function listSessionMessageActions(
   const normalizedTargetSequence = Number(targetSequenceId);
   if (Number.isFinite(normalizedTargetSequence) && normalizedTargetSequence > 0) {
     query.set("targetSequenceId", String(Math.floor(normalizedTargetSequence)));
+  }
+  const normalizedTargetActionId = normalizeString(targetActionId);
+  if (normalizedTargetActionId) {
+    query.set("targetActionId", normalizedTargetActionId);
   }
   query.set(
     "limit",
@@ -1351,6 +1356,7 @@ export async function createSessionMessageAction(
     targetPath = process.cwd(),
     targetSequenceId = null,
     targetCursor = "",
+    targetActionId = "",
     note = "",
     metadata = {},
     idempotencyKey = "",
@@ -1401,6 +1407,10 @@ export async function createSessionMessageAction(
   const normalizedTargetCursor = normalizeString(targetCursor);
   if (normalizedTargetCursor) {
     body.targetCursor = normalizedTargetCursor;
+  }
+  const normalizedTargetActionId = normalizeString(targetActionId);
+  if (normalizedTargetActionId) {
+    body.targetActionId = normalizedTargetActionId;
   }
   const normalizedNote = normalizeString(note);
   if (normalizedNote) {
