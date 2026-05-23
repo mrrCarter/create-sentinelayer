@@ -235,6 +235,74 @@ test("Unit session recap: includes task ownership ledger in recap text", async (
   }
 });
 
+test("Unit session recap: includes token and cost usage ledger", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      ttlSeconds: 120,
+      createdAt: "2026-05-19T08:00:00.000Z",
+      expiresAt: "2027-05-19T08:00:00.000Z",
+    });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_usage",
+        agentId: "claude-mythos",
+        ts: "2026-05-19T08:01:00.000Z",
+        payload: {
+          agentId: "claude-mythos",
+          model: "claude-opus-4-7",
+          usage: {
+            totalTokens: 1000,
+            inputTokens: 700,
+            outputTokens: 300,
+            costUsd: 0.02,
+          },
+        },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_usage",
+        agentId: "codex",
+        ts: "2026-05-19T08:02:00.000Z",
+        payload: {
+          agentId: "codex",
+          model: "gpt-5.3-codex",
+          usage: {
+            input_tokens: 300,
+            output_tokens: 200,
+            provider_cost_usd: 0.01,
+          },
+        },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      maxEvents: 1,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T08:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Usage: 1,500 tokens \/ \$0\.0300/);
+    assert.match(recap.text, /Top agents: claude-mythos 1,000 tokens\/\$0\.0200; codex 500 tokens\/\$0\.0100/);
+    assert.equal(recap.summary.usageTotals.totalTokens, 1500);
+    assert.equal(recap.summary.usageTotals.inputTokens, 1000);
+    assert.equal(recap.summary.usageTotals.outputTokens, 500);
+    assert.equal(recap.summary.usageTotals.costUsd, 0.03);
+    assert.equal(recap.summary.usageTopAgents[0].agentId, "claude-mythos");
+    assert.equal(recap.summary.usageTopAgents[1].agentId, "codex");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: CLI recap now emits deterministic JSON", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-now-"));
   try {
@@ -434,6 +502,25 @@ test("Unit session recap: periodic recap emits while active and stops after inac
       },
       { targetPath: tempRoot }
     );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_usage",
+        agentId: "codex-a1",
+        ts: new Date(baseTime + 10).toISOString(),
+        payload: {
+          agentId: "codex-a1",
+          model: "gpt-5.4",
+          usage: {
+            totalTokens: 600,
+            inputTokens: 400,
+            outputTokens: 200,
+            costUsd: 0.006,
+          },
+        },
+      },
+      { targetPath: tempRoot },
+    );
 
     emitter = emitPeriodicRecap(session.sessionId, {
       targetPath: tempRoot,
@@ -452,6 +539,9 @@ test("Unit session recap: periodic recap emits while active and stops after inac
     assert.equal(recaps.length >= 1, true);
     assert.equal(recaps[0].payload.ephemeral, true);
     assert.equal(recaps[0].payload.style, "italic-grey");
+    assert.match(recaps[0].payload.recap, /Usage: 600 tokens \/ \$0\.0060/);
+    assert.equal(recaps[0].payload.summary.usageTotals.totalTokens, 600);
+    assert.equal(recaps[0].payload.summary.usageTopAgents[0].agentId, "codex-a1");
 
     nowOffsetMs = 220;
     await emitter.tickNow();

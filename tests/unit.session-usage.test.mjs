@@ -126,6 +126,47 @@ test("aggregateSessionUsage rolls up per-agent + global totals", () => {
   assert.equal(codex.interactions, 1);
 });
 
+test("aggregateSessionUsage accepts nested payload.usage-only billing shapes", () => {
+  const events = [
+    {
+      event: "session_usage",
+      agent: { id: "audit-orchestrator", model: "gpt-5.3-codex" },
+      payload: {
+        schema: "billing/v1",
+        agentId: "audit-orchestrator",
+        model: "gpt-5.3-codex",
+        usage: {
+          total_tokens: 321,
+          input_tokens: 200,
+          output_tokens: 121,
+          provider_cost_usd: 0.004321,
+        },
+      },
+    },
+    {
+      event: "session_usage",
+      agent: { id: "claude-reviewer" },
+      payload: {
+        agentId: "claude-reviewer",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          costUsd: 0.0015,
+        },
+      },
+    },
+  ];
+
+  const agg = aggregateSessionUsage(events);
+  assert.equal(agg.totals.totalTokens, 471);
+  assert.equal(agg.totals.inputTokens, 300);
+  assert.equal(agg.totals.outputTokens, 171);
+  assert.equal(agg.totals.costUsd, 0.005821);
+  assert.equal(agg.totals.interactions, 2);
+  assert.equal(agg.perAgent.get("audit-orchestrator").model, "gpt-5.3-codex");
+  assert.equal(agg.perAgent.get("claude-reviewer").totalTokens, 150);
+});
+
 test("transcript renders session_usage as agent response + rolls up tokens", async () => {
   const root = await makeRoot();
   try {

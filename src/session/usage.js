@@ -55,6 +55,21 @@ function num(value) {
   return Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function firstUsageNumber(payload = {}, keys = []) {
+  const usage = plainObject(payload.usage);
+  for (const key of keys) {
+    const direct = num(payload[key]);
+    if (direct > 0) return direct;
+    const nested = num(usage[key]);
+    if (nested > 0) return nested;
+  }
+  return 0;
+}
+
 function clipText(text, max = 4000) {
   const s = n(text);
   if (s.length <= max) return s;
@@ -179,10 +194,36 @@ export function aggregateSessionUsage(events = []) {
     const payload = event.payload || {};
     const agentId = n(payload.agentId || event.agent?.id);
     if (!agentId) continue;
+    const model = n(payload.model || event.agent?.model) || "unknown";
+    const inputTokens = firstUsageNumber(payload, [
+      "inputTokens",
+      "input_tokens",
+      "tokensIn",
+      "tokens_in",
+    ]);
+    const outputTokens = firstUsageNumber(payload, [
+      "outputTokens",
+      "output_tokens",
+      "tokensOut",
+      "tokens_out",
+    ]);
+    const explicitTotalTokens = firstUsageNumber(payload, [
+      "totalTokens",
+      "total_tokens",
+      "tokens",
+    ]);
+    const totalTokens = explicitTotalTokens || inputTokens + outputTokens;
+    const costUsd = firstUsageNumber(payload, [
+      "costUsd",
+      "cost_usd",
+      "providerCostUsd",
+      "provider_cost_usd",
+      "cost",
+    ]);
     if (!perAgent.has(agentId)) {
       perAgent.set(agentId, {
         agentId,
-        model: n(payload.model || event.agent?.model) || "unknown",
+        model,
         totalTokens: 0,
         inputTokens: 0,
         outputTokens: 0,
@@ -191,16 +232,19 @@ export function aggregateSessionUsage(events = []) {
       });
     }
     const record = perAgent.get(agentId);
-    record.totalTokens += num(payload.totalTokens);
-    record.inputTokens += num(payload.inputTokens);
-    record.outputTokens += num(payload.outputTokens);
-    record.costUsd += num(payload.costUsd);
+    if (record.model === "unknown" && model !== "unknown") {
+      record.model = model;
+    }
+    record.totalTokens += totalTokens;
+    record.inputTokens += inputTokens;
+    record.outputTokens += outputTokens;
+    record.costUsd += costUsd;
     record.interactions += 1;
 
-    totals.totalTokens += num(payload.totalTokens);
-    totals.inputTokens += num(payload.inputTokens);
-    totals.outputTokens += num(payload.outputTokens);
-    totals.costUsd += num(payload.costUsd);
+    totals.totalTokens += totalTokens;
+    totals.inputTokens += inputTokens;
+    totals.outputTokens += outputTokens;
+    totals.costUsd += costUsd;
     totals.interactions += 1;
   }
   totals.costUsd = Math.round(totals.costUsd * 1_000_000) / 1_000_000;

@@ -7,6 +7,7 @@ import { dedupeSessionEvents } from "./event-identity.js";
 import { resolveSessionPaths } from "./paths.js";
 import { appendToStream, readStream } from "./stream.js";
 import { getSession } from "./store.js";
+import { aggregateSessionUsage } from "./usage.js";
 
 const SENTI_AGENT_ID = "senti";
 const SENTI_MODEL = "gpt-5.4-mini";
@@ -349,6 +350,7 @@ function buildRecapText({
   activeLocks = 0,
   pendingTasks = 0,
   taskLedger = emptyTaskLedgerSummary(),
+  usageSummary = normalizeUsageSummary(),
   snippets = [],
 } = {}) {
   const agentText =
@@ -360,8 +362,9 @@ function buildRecapText({
   const pendingText =
     pendingTasks > 0 ? `You have ${pendingTasks} pending task${pendingTasks === 1 ? "" : "s"}.` : "";
   const taskText = buildTaskLedgerText(taskLedger);
+  const usageText = buildUsageLedgerText(usageSummary);
   const snippetText = snippets.length > 0 ? `Recent: ${snippets.join(" | ")}` : "";
-  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${snippetText}`.replace(
+  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${usageText} ${snippetText}`.replace(
     /\s+/g,
     " "
   ).trim();
@@ -400,6 +403,70 @@ function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
   return [`Tasks: ${active} active of ${total} total (${counts})`, ownerText, recentText]
     .filter(Boolean)
     .join(". ");
+}
+
+function roundCurrency(value) {
+  const normalized = Number(value || 0);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return 0;
+  }
+  return Math.round(normalized * 1_000_000) / 1_000_000;
+}
+
+function normalizeUsageSummary(events = []) {
+  const aggregate = aggregateSessionUsage(events);
+  const totals = {
+    totalTokens: Number(aggregate.totals.totalTokens || 0),
+    inputTokens: Number(aggregate.totals.inputTokens || 0),
+    outputTokens: Number(aggregate.totals.outputTokens || 0),
+    costUsd: roundCurrency(aggregate.totals.costUsd),
+    interactions: Number(aggregate.totals.interactions || 0),
+  };
+  const topAgents = [...aggregate.perAgent.values()]
+    .filter(
+      (agent) =>
+        Number(agent.totalTokens || 0) > 0 ||
+        Number(agent.costUsd || 0) > 0 ||
+        Number(agent.interactions || 0) > 0,
+    )
+    .sort((left, right) => {
+      const costDelta = Number(right.costUsd || 0) - Number(left.costUsd || 0);
+      if (costDelta !== 0) return costDelta;
+      const tokenDelta = Number(right.totalTokens || 0) - Number(left.totalTokens || 0);
+      if (tokenDelta !== 0) return tokenDelta;
+      return normalizeString(left.agentId).localeCompare(normalizeString(right.agentId));
+    })
+    .slice(0, 3)
+    .map((agent) => ({
+      agentId: normalizeString(agent.agentId) || "unknown",
+      model: normalizeString(agent.model) || "unknown",
+      totalTokens: Number(agent.totalTokens || 0),
+      inputTokens: Number(agent.inputTokens || 0),
+      outputTokens: Number(agent.outputTokens || 0),
+      costUsd: roundCurrency(agent.costUsd),
+      interactions: Number(agent.interactions || 0),
+    }));
+  return { totals, topAgents };
+}
+
+function buildUsageLedgerText(usageSummary = {}) {
+  const totals = usageSummary.totals && typeof usageSummary.totals === "object" ? usageSummary.totals : {};
+  const totalTokens = Number(totals.totalTokens || 0);
+  const costUsd = roundCurrency(totals.costUsd);
+  if (totalTokens <= 0 && costUsd <= 0) {
+    return "";
+  }
+  const topAgents = Array.isArray(usageSummary.topAgents) ? usageSummary.topAgents : [];
+  const topText =
+    topAgents.length > 0
+      ? ` Top agents: ${topAgents
+          .map(
+            (agent) =>
+              `${agent.agentId} ${Number(agent.totalTokens || 0).toLocaleString("en-US")} tokens/$${roundCurrency(agent.costUsd).toFixed(4)}`,
+          )
+          .join("; ")}.`
+      : "";
+  return `Usage: ${totalTokens.toLocaleString("en-US")} tokens / $${costUsd.toFixed(4)}.${topText}`;
 }
 
 // Multi-agent session etiquette + read-path rules surfaced in the
@@ -444,7 +511,14 @@ function buildPeriodicText(recap = {}) {
   const lastActor = normalizeString(summary.lastActorId);
   const actorText = lastActor ? `${lastActor} active` : "no active actor";
   const taskText = buildTaskLedgerText(summary.taskLedger);
-  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${actorText}.`;
+  const usageText = buildUsageLedgerText({
+    totals: summary.usageTotals,
+    topAgents: summary.usageTopAgents,
+  });
+  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${usageText} ${actorText}.`.replace(
+    /\s+/g,
+    " ",
+  ).trim();
 }
 
 export async function buildSessionRecap(
@@ -475,9 +549,9 @@ export async function buildSessionRecap(
   } catch {
     sessionMetadata = null;
   }
-  const events = sortEventsByConversationTime(dedupeSessionEvents(allEvents), normalizedNow).slice(
-    -normalizedMaxEvents,
-  );
+  const sortedEvents = sortEventsByConversationTime(dedupeSessionEvents(allEvents), normalizedNow);
+  const usageSummary = normalizeUsageSummary(sortedEvents);
+  const events = sortedEvents.slice(-normalizedMaxEvents);
   const visibleEvents = (Array.isArray(events) ? events : []).filter((event) => {
     const agentId = normalizeString(event.agent?.id || event.agentId);
     if (!agentId) {
@@ -524,6 +598,7 @@ export async function buildSessionRecap(
     activeLocks,
     pendingTasks,
     taskLedger,
+    usageSummary,
     snippets,
   });
 
@@ -543,6 +618,8 @@ export async function buildSessionRecap(
       activeLocks,
       pendingTasksForAgent: pendingTasks,
       taskLedger,
+      usageTotals: usageSummary.totals,
+      usageTopAgents: usageSummary.topAgents,
       snippets,
       elapsedMinutes,
       windowElapsedMinutes,
@@ -589,6 +666,7 @@ export async function emitContextBriefing(
       ephemeral: true,
       style: RECAP_STYLE,
       generatedAt: recap.generatedAt,
+      summary: recap.summary,
     },
   });
   const persisted = await appendToStream(sessionId, event, {
@@ -773,6 +851,7 @@ export function emitPeriodicRecap(
         ephemeral: true,
         style: RECAP_STYLE,
         generatedAt: nowIso,
+        summary: recap.summary,
       },
     });
     const persisted = await appendToStream(state.sessionId, event, {
