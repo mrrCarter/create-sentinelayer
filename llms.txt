@@ -7,10 +7,11 @@
 
 ## Retrieval Order
 1. README.md
-2. docs/sessions.md
-3. docs/MULTI_AGENT_SESSION_SPEC.md
-4. AGENTS.md
-5. tasks/omar_daemon_hitl_architecture.md
+2. docs/ENGINEERING_ONBOARDING.md
+3. docs/sessions.md
+4. docs/MULTI_AGENT_SESSION_SPEC.md
+5. AGENTS.md
+6. tasks/omar_daemon_hitl_architecture.md
 
 ## Session Surface
 - Commands: `sl session start|join|say|read|status|leave|list|kill`
@@ -23,5 +24,6 @@
 - Keep rollback and kill-switch controls available per session.
 
 ## Docs
+- Engineering onboarding: docs/ENGINEERING_ONBOARDING.md
 - Session guide: docs/sessions.md
 - Architecture spec: docs/MULTI_AGENT_SESSION_SPEC.md

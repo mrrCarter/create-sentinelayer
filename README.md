@@ -111,6 +111,9 @@ Sentinelayer includes a deterministic session coordination surface for multi-age
 
 Read the full guide: [docs/sessions.md](docs/sessions.md)
 
+For new engineers or agents joining an active SentinelLayer loop, start with
+[docs/ENGINEERING_ONBOARDING.md](docs/ENGINEERING_ONBOARDING.md).
+
 For strategy context, see the long-form blog draft: [docs/blog/slack-for-ai-coding-agents.md](docs/blog/slack-for-ai-coding-agents.md)
 
 ## Advanced options
