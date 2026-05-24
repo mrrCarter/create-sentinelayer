@@ -373,6 +373,11 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--replay");
   assertCommandHasOption(listen, "--max-polls <n>");
 
+  assertCommandHasOption(say, "--agent <id>");
+  assertCommandHasOption(say, "--model <model>");
+  assertCommandHasOption(say, "--display-name <name>");
+  assertCommandHasOption(say, "--role <role>");
+
   const recapNow = getCommandByPath(program, "session recap now");
   assertCommandHasOption(recapNow, "--session <id>");
   assertCommandHasOption(recapNow, "--remote");

@@ -848,6 +848,42 @@ async function defaultAgentId(value, _targetPath) {
   return resolveSessionSayAgentId(value);
 }
 
+async function resolveSessionAgentEnvelope(
+  sessionId,
+  agentId,
+  {
+    targetPath = process.cwd(),
+    model = "",
+    role = "",
+    displayName = "",
+    clientKind = "cli",
+  } = {}
+) {
+  const normalizedAgentId = normalizeAgentId(agentId, "cli-user");
+  let registeredAgent = null;
+  try {
+    const agents = await listAgents(sessionId, { targetPath, includeInactive: true });
+    registeredAgent = agents.find(
+      (agent) => normalizeString(agent.agentId).toLowerCase() === normalizedAgentId.toLowerCase(),
+    );
+  } catch {
+    registeredAgent = null;
+  }
+
+  const resolvedModel = normalizeString(model) || normalizeString(registeredAgent?.model);
+  const resolvedRole = normalizeString(role) || normalizeString(registeredAgent?.role);
+  const resolvedDisplayName =
+    normalizeString(displayName) || normalizeString(registeredAgent?.displayName);
+  const envelope = {
+    id: normalizedAgentId,
+    model: resolvedModel || undefined,
+    role: resolvedRole || undefined,
+    displayName: resolvedDisplayName || undefined,
+    clientKind: normalizeString(clientKind) || undefined,
+  };
+  return Object.fromEntries(Object.entries(envelope).filter(([, value]) => value !== undefined));
+}
+
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
   const normalizedItems = Array.isArray(items) ? items : [];
   const normalizedConcurrency = Math.max(
@@ -1721,6 +1757,21 @@ export function registerSessionCommand(program) {
     .command("say <sessionId> <message>")
     .description("Send a message to the session")
     .option("--agent <id>", "Agent id to emit from", "cli-user")
+    .option(
+      "--model <model>",
+      "Agent model/provider hint; defaults to local joined agent metadata or SENTINELAYER_AGENT_MODEL",
+      process.env.SENTINELAYER_AGENT_MODEL || "",
+    )
+    .option(
+      "--display-name <name>",
+      "Human-readable agent display name",
+      process.env.SENTINELAYER_AGENT_DISPLAY_NAME || process.env.SENTINELAYER_AGENT_NAME || "",
+    )
+    .option(
+      "--role <role>",
+      "Agent role metadata; defaults to local joined agent metadata or SENTINELAYER_AGENT_ROLE",
+      process.env.SENTINELAYER_AGENT_ROLE || "",
+    )
     .option("--to <agent>", "Direct the message to a specific agent id")
     .option("--reply-to <sequence>", "Mark this message as a reply to a target sequence id")
     .option("--reply-cursor <cursor>", "Mark this message as a reply to a target event cursor")
@@ -1757,9 +1808,15 @@ export function registerSessionCommand(program) {
         eventPayload.replyToCursor = replyToCursor;
       }
       const clientMessageId = `cli-${randomUUID()}`;
+      const agent = await resolveSessionAgentEnvelope(normalizedSessionId, agentId, {
+        targetPath,
+        model: options.model,
+        role: options.role,
+        displayName: options.displayName,
+      });
       const event = createAgentEvent({
         event: "session_message",
-        agentId,
+        agent,
         sessionId: normalizedSessionId,
         payload: eventPayload,
       });
