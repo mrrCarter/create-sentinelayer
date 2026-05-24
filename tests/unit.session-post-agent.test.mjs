@@ -358,6 +358,116 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
   }
 });
 
+test("Unit session listen: publishes bounded listener presence for real agent ids", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [], cursor: null }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen",
+      "--agent",
+      "Codex",
+      "--model",
+      "gpt-5.3-codex",
+      "--display-name",
+      "Codex Listener",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+      "--presence-interval",
+      "60",
+    ]);
+
+    assert.equal(output, "");
+    const pollCalls = calls.filter((call) => call.options.method === "GET");
+    assert.equal(pollCalls.length, 1);
+    const postCalls = calls.filter((call) => call.options.method === "POST");
+    assert.equal(postCalls.length, 3);
+    const events = postCalls.map((call) => JSON.parse(call.options.body).event);
+    assert.deepEqual(
+      events.map((event) => event.event),
+      ["session_listener_started", "session_listener_heartbeat", "session_listener_stopped"],
+    );
+    assert.ok(events.every((event) => event.agent.id === "codex"));
+    assert.ok(events.every((event) => event.agent.model === "gpt-5.3-codex"));
+    assert.ok(events.every((event) => event.agent.displayName === "Codex Listener"));
+    assert.ok(events.every((event) => event.agent.role === "listener"));
+    assert.ok(events.every((event) => event.agent.clientKind === "cli"));
+    assert.ok(events.every((event) => event.payload.listenerId.startsWith("listener-codex-")));
+    assert.equal(events[1].payload.lifecycle, "heartbeat");
+    assert.equal(events[1].payload.state, "idle");
+    assert.equal(events[1].payload.stopping, true);
+    assert.equal(events[1].payload.nextPollMs, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session listen: keeps placeholder listener presence local-only", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-cli-user-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [], cursor: null }),
+      };
+    };
+
+    await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+    ]);
+
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 1);
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session post-agent: remote rejection does not write local transcript", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-reject-"));
@@ -735,6 +845,15 @@ test("Unit session read: --remote --json reports remote verification and tail pr
           json: async () => ({
             events: [
               {
+                event: "session_listener_heartbeat",
+                sessionId: session.sessionId,
+                cursor: "1779364717000:000026d3",
+                sequenceId: 9939,
+                ts: "2026-05-21T12:19:59.000Z",
+                agent: { id: "codex", role: "listener" },
+                payload: { source: "session_listen", lifecycle: "heartbeat" },
+              },
+              {
                 event: "session_message",
                 sessionId: session.sessionId,
                 cursor: "1779364717000:000026d4",
@@ -777,12 +896,15 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.displaySource, "remote_verified_tail");
     assert.equal(payload.remoteVerified, true);
     assert.equal(payload.remote.tailProbe.verified, true);
-    assert.equal(payload.remote.tailProbe.appended, 1);
+    assert.equal(payload.remote.tailProbe.appended, 2);
     assert.equal(payload.remote.tailProbe.displayedOnly, 0);
+    assert.equal(payload.includeControlEvents, false);
+    assert.equal(payload.hiddenControlEventCount, 1);
+    assert.equal(payload.events.length, 1);
     assert.equal(payload.events[0].payload.message, "remote verified tail");
     assert.equal(payload.events[0].sequenceId, 9940);
     assert.equal(payload.events[0].cursor, "1779364717000:000026d4");
-    assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=5")));
+    assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=25")));
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();

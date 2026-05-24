@@ -357,6 +357,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const read = getCommandByPath(program, "session read");
   assertCommandHasOption(read, "--before-sequence <n>");
   assertCommandHasOption(read, "--no-actions");
+  assertCommandHasOption(read, "--include-control-events");
 
   const search = getCommandByPath(program, "session search");
   assertCommandHasOption(search, "--before-sequence <n>");
@@ -368,6 +369,9 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--interval <seconds>");
   assertCommandHasOption(listen, "--active-interval <seconds>");
   assertCommandHasOption(listen, "--active-window <seconds>");
+  assertCommandHasOption(listen, "--presence-interval <seconds>");
+  assertCommandHasOption(listen, "--model <model>");
+  assertCommandHasOption(listen, "--display-name <name>");
   assertCommandHasOption(listen, "--emit <format>");
   assertCommandHasOption(listen, "--limit <n>");
   assertCommandHasOption(listen, "--since <cursor>");
