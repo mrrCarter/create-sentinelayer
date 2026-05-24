@@ -1901,10 +1901,7 @@ export async function probeSessionAccess(
 }
 
 export function resetSessionSyncStateForTests() {
-  outboundCircuit.consecutiveFailures = 0;
-  outboundCircuit.openedAtMs = 0;
-  inboundCircuit.consecutiveFailures = 0;
-  inboundCircuit.openedAtMs = 0;
+  __resetCircuitStateForTests();
   sessionIngestWindowBySessionId.clear();
   humanRelayWindowBySessionId.clear();
   autoGrantAttemptedAgentIds.clear();
