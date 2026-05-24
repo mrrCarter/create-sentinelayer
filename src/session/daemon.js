@@ -34,6 +34,7 @@ import {
 } from "./checkpoints.js";
 import { resolveSessionPaths } from "./paths.js";
 import {
+  DEFAULT_RECAP_ACTIVITY_THRESHOLD,
   DEFAULT_RECAP_INACTIVITY_MS,
   DEFAULT_RECAP_INTERVAL_MS,
   emitPeriodicRecap,
@@ -58,7 +59,34 @@ const RENEWAL_LEAD_MS = 60 * 60 * 1000;
 const DEFAULT_STALE_AGENT_SECONDS = 90;
 const DEFAULT_RECAP_INTERVAL_MS_OVERRIDE = DEFAULT_RECAP_INTERVAL_MS;
 const DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE = DEFAULT_RECAP_INACTIVITY_MS;
+const DEFAULT_RECAP_ACTIVITY_THRESHOLD_OVERRIDE = DEFAULT_RECAP_ACTIVITY_THRESHOLD;
 const DEFAULT_CHECKPOINT_INTERVAL_MS = 60_000;
+const DEFAULT_CHECKPOINT_EVENT_THRESHOLD = DEFAULT_CHECKPOINT_MIN_EVENTS;
+const DEFAULT_CHECKPOINT_IDLE_MS = DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE;
+const CHECKPOINT_MEANINGFUL_EVENT_NAMES = new Set([
+  "file_lock",
+  "file_unlock",
+  "finding",
+  "help_request",
+  "help_response",
+  "session_admin_kill",
+  "session_message",
+  "task_accepted",
+  "task_assign",
+  "task_blocked",
+  "task_completed",
+]);
+const CHECKPOINT_IGNORED_EVENT_NAMES = new Set([
+  "agent_heartbeat",
+  "agent_join",
+  "agent_status",
+  "context_briefing",
+  "daemon_alert",
+  "session_checkpoint",
+  "session_listen_error",
+  "session_recap",
+  "session_usage",
+]);
 
 const SENTI_MODEL = "gpt-5.4-mini";
 const SENTI_IDENTITY = Object.freeze({
@@ -176,10 +204,14 @@ function createSentiState({
   tickIntervalMs,
   recapIntervalMs,
   recapInactivityMs,
+  recapActivityThreshold,
   checkpointGenerator,
   checkpointIntervalMs,
   checkpointMinEvents,
   checkpointMaxEvents,
+  checkpointEventThreshold,
+  checkpointIdleMs,
+  checkpointCloseoutOnStop,
   helpResponder,
   llmInvoker,
   telemetrySessionId,
@@ -195,12 +227,19 @@ function createSentiState({
     tickIntervalMs,
     recapIntervalMs,
     recapInactivityMs,
+    recapActivityThreshold,
     checkpointGenerator,
     checkpointIntervalMs,
     checkpointMinEvents,
     checkpointMaxEvents,
+    checkpointEventThreshold,
+    checkpointIdleMs,
+    checkpointCloseoutOnStop,
     checkpointGenerationInFlight: false,
     lastCheckpointAttemptAt: null,
+    lastCheckpointSourceEventAt: null,
+    lastCheckpointSourceSequenceId: null,
+    lastCheckpointSourceCursor: null,
     lastCheckpointResult: null,
     helpResponder,
     llmInvoker,
@@ -840,6 +879,169 @@ function parseEpoch(value, fallbackIso = new Date().toISOString()) {
   return Date.parse(normalizeIsoTimestamp(value, fallbackIso)) || 0;
 }
 
+function eventSequenceId(event = {}) {
+  const parsed = Number(event.sequenceId ?? event.sequence_id);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+}
+
+function eventCursor(event = {}) {
+  return normalizeString(event.cursor || event.eventId || event.idempotencyToken || event.ts);
+}
+
+function isMeaningfulCheckpointSourceEvent(event = {}) {
+  const eventName = normalizeString(event.event).toLowerCase();
+  if (!eventName || CHECKPOINT_IGNORED_EVENT_NAMES.has(eventName)) {
+    return false;
+  }
+  if (CHECKPOINT_MEANINGFUL_EVENT_NAMES.has(eventName) || eventName.startsWith("task_")) {
+    return true;
+  }
+  return false;
+}
+
+function isEventAfterCheckpointAnchor(event = {}, daemonState = {}) {
+  const anchorSequence = Number(daemonState.lastCheckpointSourceSequenceId);
+  const sequence = eventSequenceId(event);
+  if (Number.isFinite(anchorSequence) && anchorSequence > 0 && sequence !== null) {
+    return sequence > anchorSequence;
+  }
+
+  const anchorAt = normalizeString(daemonState.lastCheckpointSourceEventAt);
+  if (!anchorAt) {
+    return true;
+  }
+  const anchorEpoch = parseEpoch(anchorAt, anchorAt);
+  const eventEpoch = parseEpoch(event.ts, anchorAt);
+  if (eventEpoch > anchorEpoch) {
+    return true;
+  }
+  if (eventEpoch < anchorEpoch) {
+    return false;
+  }
+
+  const anchorCursor = normalizeString(daemonState.lastCheckpointSourceCursor);
+  if (!anchorCursor) {
+    return true;
+  }
+  return eventCursor(event) !== anchorCursor;
+}
+
+function rememberCheckpointSource(daemonState, event = {}, nowIso = new Date().toISOString()) {
+  daemonState.lastCheckpointSourceEventAt = normalizeIsoTimestamp(event.ts, nowIso);
+  daemonState.lastCheckpointSourceSequenceId = eventSequenceId(event);
+  daemonState.lastCheckpointSourceCursor = eventCursor(event);
+}
+
+async function resolveCheckpointTrigger(
+  daemonState,
+  nowIso = new Date().toISOString(),
+  { force = false, forceReason = "" } = {}
+) {
+  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const nowEpoch = parseEpoch(normalizedNow, normalizedNow);
+  const eventThreshold = Math.min(
+    200,
+    normalizePositiveInteger(
+      daemonState.checkpointEventThreshold,
+      DEFAULT_CHECKPOINT_EVENT_THRESHOLD
+    )
+  );
+  const idleMs = normalizePositiveInteger(
+    daemonState.checkpointIdleMs,
+    DEFAULT_CHECKPOINT_IDLE_MS
+  );
+  const tail = Math.min(
+    200,
+    Math.max(
+      eventThreshold,
+      normalizePositiveInteger(daemonState.checkpointMaxEvents, DEFAULT_CHECKPOINT_MAX_EVENTS)
+    )
+  );
+  const events = await readStream(daemonState.sessionId, {
+    targetPath: daemonState.targetPath,
+    tail,
+  });
+  const sourceEvents = events.filter(isMeaningfulCheckpointSourceEvent);
+  const uncheckpointedSourceEvents = sourceEvents.filter((event) =>
+    isEventAfterCheckpointAnchor(event, daemonState)
+  );
+  const latestSourceEvent = sourceEvents.length > 0 ? sourceEvents[sourceEvents.length - 1] : null;
+  const latestUncheckpointedSourceEvent =
+    uncheckpointedSourceEvents.length > 0
+      ? uncheckpointedSourceEvents[uncheckpointedSourceEvents.length - 1]
+      : null;
+  const latestSourceEventAt = latestSourceEvent
+    ? normalizeIsoTimestamp(latestSourceEvent.ts, normalizedNow)
+    : null;
+  const latestUncheckpointedSourceEventAt = latestUncheckpointedSourceEvent
+    ? normalizeIsoTimestamp(latestUncheckpointedSourceEvent.ts, normalizedNow)
+    : null;
+  const sourceIdleMs = latestUncheckpointedSourceEvent
+    ? Math.max(0, nowEpoch - parseEpoch(latestUncheckpointedSourceEvent.ts, normalizedNow))
+    : null;
+  const policy = {
+    eventThreshold,
+    idleMs,
+    sourceEventCount: uncheckpointedSourceEvents.length,
+    totalSourceEventCount: sourceEvents.length,
+    latestSourceEventAt,
+    latestUncheckpointedSourceEventAt,
+    lastCheckpointSourceEventAt: daemonState.lastCheckpointSourceEventAt || null,
+    sourceIdleMs,
+  };
+
+  if (!latestUncheckpointedSourceEvent) {
+    return {
+      shouldAttempt: false,
+      trigger: "",
+      reason: force ? "checkpoint_closeout_no_new_source_events" : "checkpoint_no_new_source_events",
+      sourceEvent: null,
+      policy,
+    };
+  }
+
+  if (force) {
+    return {
+      shouldAttempt: true,
+      trigger: normalizeString(forceReason) || "closeout",
+      reason: "",
+      sourceEvent: latestUncheckpointedSourceEvent,
+      policy,
+    };
+  }
+
+  if (uncheckpointedSourceEvents.length >= eventThreshold) {
+    return {
+      shouldAttempt: true,
+      trigger: "event_threshold",
+      reason: "",
+      sourceEvent: latestUncheckpointedSourceEvent,
+      policy,
+    };
+  }
+
+  if (sourceIdleMs !== null && sourceIdleMs >= idleMs) {
+    return {
+      shouldAttempt: true,
+      trigger: "inactivity",
+      reason: "",
+      sourceEvent: latestUncheckpointedSourceEvent,
+      policy,
+    };
+  }
+
+  return {
+    shouldAttempt: false,
+    trigger: "",
+    reason: "checkpoint_event_count_wait",
+    sourceEvent: latestUncheckpointedSourceEvent,
+    policy,
+  };
+}
+
 function createHealthSummaryBase(nowIso, session, agents) {
   return {
     sessionId: session.sessionId,
@@ -854,6 +1056,13 @@ function createHealthSummaryBase(nowIso, session, agents) {
       dropped: 0,
       cursor: null,
       reason: "",
+    },
+    recap: {
+      emitted: false,
+      mode: "",
+      reason: "",
+      eventId: null,
+      sourceEventCount: 0,
     },
     checkpoint: {
       attempted: false,
@@ -1090,7 +1299,8 @@ async function pollAndRelayHumanMessages(
 async function maybeGenerateSessionCheckpoint(
   daemonState,
   summary,
-  nowIso = new Date().toISOString()
+  nowIso = new Date().toISOString(),
+  { force = false, forceReason = "" } = {}
 ) {
   const generator = daemonState.checkpointGenerator;
   if (typeof generator !== "function") {
@@ -1103,6 +1313,16 @@ async function maybeGenerateSessionCheckpoint(
   }
 
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
+  const trigger = await resolveCheckpointTrigger(daemonState, normalizedNow, {
+    force,
+    forceReason,
+  });
+  summary.checkpoint.policy = trigger.policy;
+  if (!trigger.shouldAttempt) {
+    summary.checkpoint.reason = trigger.reason;
+    return;
+  }
+
   const nowEpoch = parseEpoch(normalizedNow, normalizedNow);
   const lastAttemptAt = normalizeString(daemonState.lastCheckpointAttemptAt);
   const lastAttemptEpoch = lastAttemptAt ? parseEpoch(lastAttemptAt, normalizedNow) : 0;
@@ -1110,7 +1330,7 @@ async function maybeGenerateSessionCheckpoint(
     daemonState.checkpointIntervalMs,
     DEFAULT_CHECKPOINT_INTERVAL_MS
   );
-  if (lastAttemptEpoch > 0 && nowEpoch - lastAttemptEpoch < intervalMs) {
+  if (!force && lastAttemptEpoch > 0 && nowEpoch - lastAttemptEpoch < intervalMs) {
     summary.checkpoint.reason = "checkpoint_cadence_wait";
     return;
   }
@@ -1135,9 +1355,16 @@ async function maybeGenerateSessionCheckpoint(
       reason: normalizeString(result?.reason),
       checkpointId: normalizeString(result?.checkpointId || checkpoint?.checkpointId || checkpoint?.checkpoint_id) || null,
       eventCount: Number.isFinite(Number(result?.eventCount)) ? Math.max(0, Math.floor(Number(result.eventCount))) : null,
+      trigger: trigger.trigger,
+      sourceEventCount: trigger.policy.sourceEventCount,
+      latestSourceEventAt: trigger.policy.latestUncheckpointedSourceEventAt,
+      policy: trigger.policy,
     };
     summary.checkpoint = normalizedResult;
     daemonState.lastCheckpointResult = normalizedResult;
+    if (result?.ok !== false || result?.created || result?.duplicate) {
+      rememberCheckpointSource(daemonState, trigger.sourceEvent, normalizedNow);
+    }
   } catch (error) {
     const failure = {
       attempted: true,
@@ -1147,11 +1374,51 @@ async function maybeGenerateSessionCheckpoint(
       reason: normalizeString(error?.message) || "checkpoint_generation_failed",
       checkpointId: null,
       eventCount: null,
+      trigger: trigger.trigger,
+      sourceEventCount: trigger.policy.sourceEventCount,
+      latestSourceEventAt: trigger.policy.latestUncheckpointedSourceEventAt,
+      policy: trigger.policy,
     };
     summary.checkpoint = failure;
     daemonState.lastCheckpointResult = failure;
   } finally {
     daemonState.checkpointGenerationInFlight = false;
+  }
+}
+
+async function maybeEmitPeriodicRecap(
+  daemonState,
+  summary,
+  nowIso = new Date().toISOString()
+) {
+  const emitter = daemonState.recapEmitter;
+  if (!emitter || typeof emitter.tickNow !== "function") {
+    summary.recap.reason = "disabled";
+    return;
+  }
+  try {
+    const emitted = await emitter.tickNow(nowIso);
+    const emitterState =
+      typeof emitter.getState === "function" ? emitter.getState() : {};
+    const decision =
+      emitterState.lastDecision && typeof emitterState.lastDecision === "object"
+        ? emitterState.lastDecision
+        : null;
+    if (!emitted) {
+      summary.recap.mode = normalizeString(decision?.mode);
+      summary.recap.reason = normalizeString(decision?.reason);
+      summary.recap.sourceEventCount = Number(decision?.policy?.sourceEventCount || 0);
+      return;
+    }
+    summary.recap.emitted = true;
+    summary.recap.mode = normalizeString(emitted.payload?.mode || decision?.mode);
+    summary.recap.reason = "";
+    summary.recap.eventId = normalizeString(emitted.eventId) || null;
+    summary.recap.sourceEventCount = Number(
+      emitted.payload?.sourceEventCount || decision?.sourceEventCount || 0
+    );
+  } catch (error) {
+    summary.recap.reason = normalizeString(error?.message) || "recap_emit_failed";
   }
 }
 
@@ -1189,10 +1456,14 @@ export async function runSentiHealthTick(
       tickIntervalMs: DAEMON_TICK_INTERVAL_MS,
       recapIntervalMs: DEFAULT_RECAP_INTERVAL_MS_OVERRIDE,
       recapInactivityMs: DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE,
+      recapActivityThreshold: DEFAULT_RECAP_ACTIVITY_THRESHOLD_OVERRIDE,
       checkpointGenerator: null,
       checkpointIntervalMs: DEFAULT_CHECKPOINT_INTERVAL_MS,
       checkpointMinEvents: DEFAULT_CHECKPOINT_MIN_EVENTS,
       checkpointMaxEvents: DEFAULT_CHECKPOINT_MAX_EVENTS,
+      checkpointEventThreshold: DEFAULT_CHECKPOINT_EVENT_THRESHOLD,
+      checkpointIdleMs: DEFAULT_CHECKPOINT_IDLE_MS,
+      checkpointCloseoutOnStop: true,
       helpResponder: null,
       llmInvoker: invokeViaProxy,
       telemetrySessionId: null,
@@ -1216,6 +1487,7 @@ export async function runSentiHealthTick(
   await emitConflictAlerts(resolvedDaemonState, summary, filteredAgents, normalizedNow);
   await maybeRenewActiveSession(resolvedDaemonState, summary, session, normalizedNow);
   await pollAndRelayHumanMessages(resolvedDaemonState, summary, normalizedNow);
+  await maybeEmitPeriodicRecap(resolvedDaemonState, summary, normalizedNow);
   await maybeGenerateSessionCheckpoint(resolvedDaemonState, summary, normalizedNow);
   return summary;
 }
@@ -1231,10 +1503,14 @@ export async function startSenti(
     helpRequestTimeoutMs = HELP_REQUEST_TIMEOUT_MS,
     recapIntervalMs = DEFAULT_RECAP_INTERVAL_MS_OVERRIDE,
     recapInactivityMs = DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE,
+    recapActivityThreshold = DEFAULT_RECAP_ACTIVITY_THRESHOLD_OVERRIDE,
     checkpointGenerator = generateSessionCheckpointBestEffort,
     checkpointIntervalMs = DEFAULT_CHECKPOINT_INTERVAL_MS,
     checkpointMinEvents = DEFAULT_CHECKPOINT_MIN_EVENTS,
     checkpointMaxEvents = DEFAULT_CHECKPOINT_MAX_EVENTS,
+    checkpointEventThreshold = DEFAULT_CHECKPOINT_EVENT_THRESHOLD,
+    checkpointIdleMs = DEFAULT_CHECKPOINT_IDLE_MS,
+    checkpointCloseoutOnStop = true,
     helpResponder = null,
     llmInvoker = invokeViaProxy,
   } = {}
@@ -1274,6 +1550,10 @@ export async function startSenti(
     recapInactivityMs,
     DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE
   );
+  const normalizedRecapActivityThreshold = Math.min(
+    200,
+    normalizePositiveInteger(recapActivityThreshold, DEFAULT_RECAP_ACTIVITY_THRESHOLD_OVERRIDE)
+  );
   const normalizedCheckpointIntervalMs = normalizePositiveInteger(
     checkpointIntervalMs,
     DEFAULT_CHECKPOINT_INTERVAL_MS
@@ -1285,6 +1565,14 @@ export async function startSenti(
   const normalizedCheckpointMaxEvents = Math.max(
     normalizedCheckpointMinEvents,
     Math.min(200, normalizePositiveInteger(checkpointMaxEvents, DEFAULT_CHECKPOINT_MAX_EVENTS))
+  );
+  const normalizedCheckpointEventThreshold = Math.min(
+    200,
+    normalizePositiveInteger(checkpointEventThreshold, DEFAULT_CHECKPOINT_EVENT_THRESHOLD)
+  );
+  const normalizedCheckpointIdleMs = normalizePositiveInteger(
+    checkpointIdleMs,
+    DEFAULT_CHECKPOINT_IDLE_MS
   );
   const nowIso = new Date().toISOString();
   const telemetrySession = startTelemetrySession(`session daemon ${normalizedSessionId}`);
@@ -1299,10 +1587,14 @@ export async function startSenti(
     tickIntervalMs: normalizedTickIntervalMs,
     recapIntervalMs: normalizedRecapIntervalMs,
     recapInactivityMs: normalizedRecapInactivityMs,
+    recapActivityThreshold: normalizedRecapActivityThreshold,
     checkpointGenerator: typeof checkpointGenerator === "function" ? checkpointGenerator : null,
     checkpointIntervalMs: normalizedCheckpointIntervalMs,
     checkpointMinEvents: normalizedCheckpointMinEvents,
     checkpointMaxEvents: normalizedCheckpointMaxEvents,
+    checkpointEventThreshold: normalizedCheckpointEventThreshold,
+    checkpointIdleMs: normalizedCheckpointIdleMs,
+    checkpointCloseoutOnStop: checkpointCloseoutOnStop !== false,
     helpResponder,
     llmInvoker: typeof llmInvoker === "function" ? llmInvoker : invokeViaProxy,
     telemetrySessionId: telemetrySession?.id || null,
@@ -1377,6 +1669,45 @@ export async function startSenti(
       daemonState.recapEmitter = null;
     }
 
+    let checkpointCloseout = null;
+    if (daemonState.checkpointCloseoutOnStop) {
+      const checkpointNowIso = new Date().toISOString();
+      try {
+        const closeoutSession = await getSession(normalizedSessionId, {
+          targetPath: normalizedTargetPath,
+        });
+        const closeoutAgents = await listAgents(normalizedSessionId, {
+          targetPath: normalizedTargetPath,
+          includeInactive: false,
+        });
+        const closeoutSummary = createHealthSummaryBase(
+          checkpointNowIso,
+          closeoutSession || session,
+          closeoutAgents
+        );
+        await maybeGenerateSessionCheckpoint(
+          daemonState,
+          closeoutSummary,
+          checkpointNowIso,
+          {
+            force: true,
+            forceReason: "closeout",
+          }
+        );
+        checkpointCloseout = closeoutSummary.checkpoint;
+      } catch (error) {
+        checkpointCloseout = {
+          attempted: true,
+          ok: false,
+          created: false,
+          duplicate: false,
+          reason: normalizeString(error?.message) || "checkpoint_closeout_failed",
+          checkpointId: null,
+          eventCount: null,
+        };
+      }
+    }
+
     let runtimeStopSummary = null;
     try {
       runtimeStopSummary = await stopRuntimeRunsForSession(normalizedSessionId, {
@@ -1408,6 +1739,7 @@ export async function startSenti(
         target: SENTI_IDENTITY.id,
         reason: normalizeString(reason) || "manual_stop",
         runtimeStops: runtimeStopSummary?.stoppedCount || 0,
+        checkpointCloseout,
       },
       {
         targetPath: normalizedTargetPath,
@@ -1424,6 +1756,7 @@ export async function startSenti(
       sessionId: normalizedSessionId,
       targetPath: normalizedTargetPath,
       reason: normalizeString(reason) || "manual_stop",
+      checkpointCloseout,
       runtimeStopSummary,
       event: killedEvent,
     };
@@ -1448,10 +1781,15 @@ export async function startSenti(
       staleAlertedAgents: [...daemonState.staleAlertedAgents],
       pendingHelpRequests: daemonState.pendingHelpTimers.size,
       recapRunning: Boolean(daemonState.recapEmitter?.isRunning?.()),
+      recapActivityThreshold: daemonState.recapActivityThreshold,
       checkpointIntervalMs: daemonState.checkpointIntervalMs,
       checkpointMinEvents: daemonState.checkpointMinEvents,
       checkpointMaxEvents: daemonState.checkpointMaxEvents,
+      checkpointEventThreshold: daemonState.checkpointEventThreshold,
+      checkpointIdleMs: daemonState.checkpointIdleMs,
       lastCheckpointAttemptAt: daemonState.lastCheckpointAttemptAt,
+      lastCheckpointSourceEventAt: daemonState.lastCheckpointSourceEventAt,
+      lastCheckpointSourceSequenceId: daemonState.lastCheckpointSourceSequenceId,
       lastCheckpointResult: daemonState.lastCheckpointResult,
       humanMessageCursor: daemonState.humanMessageCursor,
     }),
@@ -1466,6 +1804,7 @@ export async function startSenti(
     targetPath: normalizedTargetPath,
     intervalMs: daemonState.recapIntervalMs,
     inactivityMs: daemonState.recapInactivityMs,
+    newEventThreshold: daemonState.recapActivityThreshold,
   });
 
   if (autoStart) {

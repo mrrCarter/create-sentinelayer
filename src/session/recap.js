@@ -17,6 +17,19 @@ const DEFAULT_RECAP_INTERVAL_MS = 300_000;
 const DEFAULT_RECAP_INACTIVITY_MS = 600_000;
 const DEFAULT_RECAP_ACTIVITY_THRESHOLD = 5;
 const DEFAULT_TASK_SUMMARY_LIMIT = 3;
+const RECAP_SOURCE_IGNORED_EVENTS = new Set([
+  "agent_heartbeat",
+  "agent_join",
+  "agent_status",
+  "context_briefing",
+  "daemon_alert",
+  "session_ack",
+  "session_checkpoint",
+  "session_reaction",
+  "session_recap",
+  "session_usage",
+  "session_view",
+]);
 const ACTIVE_TASK_STATUSES = new Set(["PENDING", "ACCEPTED", "BLOCKED"]);
 const TASK_STATUS_KEYS = {
   PENDING: "pending",
@@ -62,6 +75,184 @@ function isRecapEvent(event = {}) {
   }
   const payload = event && typeof event.payload === "object" ? event.payload : {};
   return payload.ephemeral === true && normalizeString(payload.style) === RECAP_STYLE;
+}
+
+function eventSequenceId(event = {}) {
+  const parsed = Number(event.sequenceId ?? event.sequence_id);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+}
+
+function eventCursor(event = {}) {
+  return normalizeString(event.cursor || event.eventId || event.idempotencyToken || event.ts);
+}
+
+function isMeaningfulRecapSourceEvent(event = {}) {
+  if (isRecapEvent(event)) {
+    return false;
+  }
+  const eventName = normalizeString(event.event).toLowerCase();
+  if (!eventName || RECAP_SOURCE_IGNORED_EVENTS.has(eventName)) {
+    return false;
+  }
+  return true;
+}
+
+function isEventAfterRecapAnchor(event = {}, state = {}) {
+  const anchorSequence = Number(state.lastSourceSequenceId);
+  const sequence = eventSequenceId(event);
+  if (Number.isFinite(anchorSequence) && anchorSequence > 0 && sequence !== null) {
+    return sequence > anchorSequence;
+  }
+
+  const anchorAt = normalizeString(state.lastSourceEventAt);
+  if (!anchorAt) {
+    return true;
+  }
+  const anchorEpoch = toEpoch(anchorAt, anchorAt);
+  const eventEpoch = toEpoch(event.ts, anchorAt);
+  if (eventEpoch > anchorEpoch) {
+    return true;
+  }
+  if (eventEpoch < anchorEpoch) {
+    return false;
+  }
+
+  const anchorCursor = normalizeString(state.lastSourceCursor);
+  if (!anchorCursor) {
+    return true;
+  }
+  return eventCursor(event) !== anchorCursor;
+}
+
+function rememberRecapSource(state, event = {}, nowIso = new Date().toISOString()) {
+  state.lastSourceEventAt = normalizeIsoTimestamp(event.ts, nowIso);
+  state.lastSourceSequenceId = eventSequenceId(event);
+  state.lastSourceCursor = eventCursor(event);
+}
+
+function resolvePeriodicRecapTrigger(state, events = [], nowIso = new Date().toISOString()) {
+  const sortedEvents = sortEventsByConversationTime(events, nowIso);
+  const sourceEvents = sortedEvents.filter(isMeaningfulRecapSourceEvent);
+  const unrecappedSourceEvents = sourceEvents.filter((event) => isEventAfterRecapAnchor(event, state));
+  const latestSourceEvent = sourceEvents.length > 0 ? sourceEvents[sourceEvents.length - 1] : null;
+  const latestUnrecappedSourceEvent =
+    unrecappedSourceEvents.length > 0
+      ? unrecappedSourceEvents[unrecappedSourceEvents.length - 1]
+      : null;
+  const nowEpoch = toEpoch(nowIso, nowIso);
+  const latestSourceEventAt = latestSourceEvent
+    ? normalizeIsoTimestamp(latestSourceEvent.ts, nowIso)
+    : null;
+  const latestUnrecappedSourceEventAt = latestUnrecappedSourceEvent
+    ? normalizeIsoTimestamp(latestUnrecappedSourceEvent.ts, nowIso)
+    : null;
+  const sourceIdleMs = latestSourceEvent
+    ? Math.max(0, nowEpoch - toEpoch(latestSourceEvent.ts, nowIso))
+    : null;
+  const unrecappedSourceIdleMs = latestUnrecappedSourceEvent
+    ? Math.max(0, nowEpoch - toEpoch(latestUnrecappedSourceEvent.ts, nowIso))
+    : null;
+  const sinceLastRecapMs = state.lastRecapAt
+    ? Math.max(0, nowEpoch - toEpoch(state.lastRecapAt, nowIso))
+    : null;
+  const policy = {
+    intervalMs: state.intervalMs,
+    inactivityMs: state.inactivityMs,
+    activityThreshold: state.newEventThreshold,
+    sourceEventCount: unrecappedSourceEvents.length,
+    totalSourceEventCount: sourceEvents.length,
+    latestSourceEventAt,
+    latestUnrecappedSourceEventAt,
+    sourceIdleMs,
+    unrecappedSourceIdleMs,
+    lastRecapAt: state.lastRecapAt,
+    lastSourceEventAt: state.lastSourceEventAt,
+  };
+
+  if (!latestSourceEvent) {
+    return {
+      shouldEmit: false,
+      shouldStop: false,
+      stopAfterEmit: false,
+      mode: "",
+      reason: "recap_no_source_events",
+      sourceEvent: null,
+      policy,
+    };
+  }
+
+  if (!latestUnrecappedSourceEvent) {
+    return {
+      shouldEmit: false,
+      shouldStop: sourceIdleMs !== null && sourceIdleMs >= state.inactivityMs,
+      stopAfterEmit: false,
+      mode: "",
+      reason: "recap_no_new_source_events",
+      sourceEvent: null,
+      policy,
+    };
+  }
+
+  if (unrecappedSourceIdleMs !== null && unrecappedSourceIdleMs >= state.inactivityMs) {
+    return {
+      shouldEmit: true,
+      shouldStop: false,
+      stopAfterEmit: true,
+      mode: "inactivity",
+      reason: "",
+      sourceEvent: latestUnrecappedSourceEvent,
+      policy,
+    };
+  }
+
+  if (!state.lastRecapAt) {
+    return {
+      shouldEmit: true,
+      shouldStop: false,
+      stopAfterEmit: false,
+      mode: "initial",
+      reason: "",
+      sourceEvent: latestUnrecappedSourceEvent,
+      policy,
+    };
+  }
+
+  if (unrecappedSourceEvents.length >= state.newEventThreshold) {
+    return {
+      shouldEmit: true,
+      shouldStop: false,
+      stopAfterEmit: false,
+      mode: "activity_threshold",
+      reason: "",
+      sourceEvent: latestUnrecappedSourceEvent,
+      policy,
+    };
+  }
+
+  if (sinceLastRecapMs !== null && sinceLastRecapMs >= state.intervalMs) {
+    return {
+      shouldEmit: true,
+      shouldStop: false,
+      stopAfterEmit: false,
+      mode: "periodic",
+      reason: "",
+      sourceEvent: latestUnrecappedSourceEvent,
+      policy,
+    };
+  }
+
+  return {
+    shouldEmit: false,
+    shouldStop: false,
+    stopAfterEmit: false,
+    mode: "",
+    reason: "recap_cadence_wait",
+    sourceEvent: latestUnrecappedSourceEvent,
+    policy,
+  };
 }
 
 function parseFindingSeverity(text = "") {
@@ -704,8 +895,8 @@ export async function shouldEmitRecap(
     tail: 0,
     since: normalizeString(lastReadAt) || null,
   });
-  const relevantSinceRead = eventsSinceRead.filter((event) => {
-    if (isRecapEvent(event)) {
+  const isRelevantSourceEvent = (event = {}) => {
+    if (!isMeaningfulRecapSourceEvent(event)) {
       return false;
     }
     const sourceAgent = normalizeString(event.agent?.id || event.agentId).toLowerCase();
@@ -713,20 +904,23 @@ export async function shouldEmitRecap(
       return true;
     }
     return sourceAgent !== normalizedAgentId;
-  });
-  if (relevantSinceRead.length > threshold) {
+  };
+  const relevantSinceRead = eventsSinceRead.filter(isRelevantSourceEvent);
+  if (relevantSinceRead.length >= threshold) {
     return true;
   }
 
   const latest = await readStream(normalizedSessionId, {
     targetPath,
-    tail: 1,
+    tail: 200,
   });
-  const latestEvent = latest.length > 0 ? latest[latest.length - 1] : null;
-  if (!latestEvent || isRecapEvent(latestEvent)) {
+  const latestRelevant = sortEventsByConversationTime(latest, normalizedNow)
+    .filter(isRelevantSourceEvent)
+    .at(-1);
+  if (!latestRelevant) {
     return false;
   }
-  const idleMs = Math.max(0, toEpoch(normalizedNow, normalizedNow) - toEpoch(latestEvent.ts, normalizedNow));
+  const idleMs = Math.max(0, toEpoch(normalizedNow, normalizedNow) - toEpoch(latestRelevant.ts, normalizedNow));
   return idleMs >= normalizedInactivityMs;
 }
 
@@ -735,6 +929,7 @@ export function emitPeriodicRecap(
   {
     intervalMs = DEFAULT_RECAP_INTERVAL_MS,
     inactivityMs = DEFAULT_RECAP_INACTIVITY_MS,
+    newEventThreshold = DEFAULT_RECAP_ACTIVITY_THRESHOLD,
     maxEvents = DEFAULT_RECAP_MAX_EVENTS,
     targetPath = process.cwd(),
     nowProvider = () => new Date().toISOString(),
@@ -751,6 +946,10 @@ export function emitPeriodicRecap(
     inactivityMs,
     DEFAULT_RECAP_INACTIVITY_MS
   );
+  const normalizedNewEventThreshold = normalizePositiveInteger(
+    newEventThreshold,
+    DEFAULT_RECAP_ACTIVITY_THRESHOLD
+  );
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_RECAP_MAX_EVENTS);
   const key = buildRecapKey(normalizedSessionId, normalizedTargetPath);
   const existing = ACTIVE_RECAP_EMITTERS.get(key);
@@ -764,13 +963,18 @@ export function emitPeriodicRecap(
     startedAt: normalizeIsoTimestamp(nowProvider(), new Date().toISOString()),
     intervalMs: normalizedIntervalMs,
     inactivityMs: normalizedInactivityMs,
+    newEventThreshold: normalizedNewEventThreshold,
     maxEvents: normalizedMaxEvents,
     targetPath: normalizedTargetPath,
     sessionId: normalizedSessionId,
     timer: null,
+    inFlight: false,
     lastRecapAt: null,
     lastSourceEventAt: null,
+    lastSourceSequenceId: null,
+    lastSourceCursor: null,
     lastRecapEvent: null,
+    lastDecision: null,
     stoppedReason: null,
   };
 
@@ -794,77 +998,87 @@ export function emitPeriodicRecap(
       sessionId: state.sessionId,
       reason: state.stoppedReason,
       lastRecapAt: state.lastRecapAt,
+      lastDecision: state.lastDecision,
     };
   };
 
-  const tickNow = async () => {
-    if (!state.running) {
+  const tickNow = async (overrideNowIso = "") => {
+    if (!state.running || state.inFlight) {
       return null;
     }
-    const nowIso = normalizeIsoTimestamp(nowProvider(), new Date().toISOString());
-    const nowEpoch = toEpoch(nowIso, nowIso);
-    const events = await readStream(state.sessionId, {
-      targetPath: state.targetPath,
-      tail: state.maxEvents,
-    });
-    const nonRecapEvents = events.filter((event) => !isRecapEvent(event));
-    const latestSourceEvent = nonRecapEvents.length > 0 ? nonRecapEvents[nonRecapEvents.length - 1] : null;
-    if (!latestSourceEvent) {
-      return null;
-    }
-
-    const latestSourceEpoch = toEpoch(latestSourceEvent.ts, nowIso);
-    const idleMs = Math.max(0, nowEpoch - latestSourceEpoch);
-    if (idleMs >= state.inactivityMs) {
-      stop("inactive");
-      return null;
-    }
-
-    if (state.lastRecapAt) {
-      const sinceLastRecapMs = Math.max(0, nowEpoch - toEpoch(state.lastRecapAt, nowIso));
-      if (sinceLastRecapMs < state.intervalMs) {
+    state.inFlight = true;
+    try {
+      const nowIso = normalizeIsoTimestamp(
+        overrideNowIso || nowProvider(),
+        new Date().toISOString()
+      );
+      const events = await readStream(state.sessionId, {
+        targetPath: state.targetPath,
+        tail: state.maxEvents,
+      });
+      const trigger = resolvePeriodicRecapTrigger(state, events, nowIso);
+      state.lastDecision = {
+        emitted: false,
+        mode: trigger.mode,
+        reason: trigger.reason,
+        policy: trigger.policy,
+      };
+      if (!trigger.shouldEmit) {
+        if (trigger.shouldStop) {
+          stop("inactive");
+        }
         return null;
       }
-    }
-    if (state.lastSourceEventAt) {
-      const previousSourceEpoch = toEpoch(state.lastSourceEventAt, nowIso);
-      if (latestSourceEpoch <= previousSourceEpoch) {
-        return null;
+
+      const recap = await buildSessionRecap(state.sessionId, {
+        targetPath: state.targetPath,
+        maxEvents: state.maxEvents,
+        nowIso,
+      });
+      const text = buildPeriodicText(recap);
+      const event = createAgentEvent({
+        event: "session_recap",
+        agentId: SENTI_AGENT_ID,
+        agentModel: SENTI_MODEL,
+        sessionId: state.sessionId,
+        ts: nowIso,
+        payload: {
+          mode: trigger.mode,
+          recap: text,
+          ephemeral: true,
+          style: RECAP_STYLE,
+          generatedAt: nowIso,
+          sourceEventCount: trigger.policy.sourceEventCount,
+          latestSourceEventAt: trigger.policy.latestUnrecappedSourceEventAt,
+          policy: trigger.policy,
+          summary: recap.summary,
+        },
+      });
+      const persisted = await appendToStream(state.sessionId, event, {
+        targetPath: state.targetPath,
+      });
+      state.lastRecapAt = nowIso;
+      rememberRecapSource(state, trigger.sourceEvent, nowIso);
+      state.lastRecapEvent = persisted;
+      state.lastDecision = {
+        emitted: true,
+        mode: trigger.mode,
+        reason: "",
+        eventId: persisted.eventId || null,
+        sourceEventCount: trigger.policy.sourceEventCount,
+        policy: trigger.policy,
+      };
+
+      if (typeof onEmit === "function") {
+        await onEmit(persisted, recap);
       }
+      if (trigger.stopAfterEmit) {
+        stop("inactive");
+      }
+      return persisted;
+    } finally {
+      state.inFlight = false;
     }
-
-    const recap = await buildSessionRecap(state.sessionId, {
-      targetPath: state.targetPath,
-      maxEvents: state.maxEvents,
-      nowIso,
-    });
-    const text = buildPeriodicText(recap);
-    const event = createAgentEvent({
-      event: "session_recap",
-      agentId: SENTI_AGENT_ID,
-      agentModel: SENTI_MODEL,
-      sessionId: state.sessionId,
-      ts: nowIso,
-      payload: {
-        mode: "periodic",
-        recap: text,
-        ephemeral: true,
-        style: RECAP_STYLE,
-        generatedAt: nowIso,
-        summary: recap.summary,
-      },
-    });
-    const persisted = await appendToStream(state.sessionId, event, {
-      targetPath: state.targetPath,
-    });
-    state.lastRecapAt = nowIso;
-    state.lastSourceEventAt = normalizeIsoTimestamp(latestSourceEvent.ts, nowIso);
-    state.lastRecapEvent = persisted;
-
-    if (typeof onEmit === "function") {
-      await onEmit(persisted, recap);
-    }
-    return persisted;
   };
 
   const handle = {
@@ -880,8 +1094,12 @@ export function emitPeriodicRecap(
       running: state.running,
       intervalMs: state.intervalMs,
       inactivityMs: state.inactivityMs,
+      newEventThreshold: state.newEventThreshold,
+      inFlight: state.inFlight,
       lastRecapAt: state.lastRecapAt,
       lastSourceEventAt: state.lastSourceEventAt,
+      lastSourceSequenceId: state.lastSourceSequenceId,
+      lastDecision: state.lastDecision,
       stoppedReason: state.stoppedReason,
     }),
   };
@@ -906,6 +1124,7 @@ export function getPeriodicRecapEmitter(sessionId, { targetPath = process.cwd() 
 
 export {
   ACTIVE_RECAP_EMITTERS,
+  DEFAULT_RECAP_ACTIVITY_THRESHOLD,
   DEFAULT_RECAP_INACTIVITY_MS,
   DEFAULT_RECAP_INTERVAL_MS,
   DEFAULT_RECAP_MAX_EVENTS,
