@@ -557,8 +557,8 @@ jobs:
           if-no-files-found: error
 
   e2e-packaging:
-    name: Package Smoke (Node ${{ matrix.node }})
-    runs-on: ubuntu-22.04
+    name: Package Smoke (${{ matrix.label }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     needs: [eval-gate-terminal, unit-coverage]
     if: >-
@@ -570,7 +570,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["22"]
+        include:
+          - os: ubuntu-22.04
+            label: ubuntu
+            node: "22"
+          - os: macos-14
+            label: macos
+            node: "22"
+          - os: windows-2022
+            label: windows
+            node: "22"
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -591,9 +600,29 @@ jobs:
           git update-index -q --refresh
           git diff --exit-code -- package-lock.json package.json
 
-      - name: Validate package tarball
-        if: ${{ matrix.node == '22' }}
-        run: npm pack --dry-run
+      - name: Validate package tarball and CLI shims
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          cleanup_smoke() {
+            rm -rf "${smoke_dir}"
+          }
+          trap cleanup_smoke EXIT
+
+          npm pack --ignore-scripts --json > pack.json
+          tarball="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('pack.json','utf8')); console.log(p[0].filename)")"
+          test -n "${tarball}"
+          test -f "${tarball}"
+
+          npm install --prefix "${smoke_dir}" --ignore-scripts "./${tarball}"
+          export PATH="${smoke_dir}/node_modules/.bin:${PATH}"
+
+          for cli in sentinelayer-cli create-sentinelayer sl; do
+            command -v "${cli}" >/dev/null
+            "${cli}" --version
+            "${cli}" --help >/dev/null
+          done
 
   reproducible-build:
     name: Reproducible Build Check
