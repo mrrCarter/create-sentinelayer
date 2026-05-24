@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.18.0...v0.18.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **session:** distinguish local usage from billing ledger ([#546](https://github.com/mrrCarter/create-sentinelayer/issues/546)) ([0997998](https://github.com/mrrCarter/create-sentinelayer/commit/099799860e555aecc1a585caf4bf7080bac4d204))
+
 ## [0.18.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.17.1...v0.18.0) (2026-05-24)
 
 
