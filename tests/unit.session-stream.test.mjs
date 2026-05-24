@@ -68,6 +68,45 @@ test("Unit session stream: append and read events preserves canonical envelope",
   }
 });
 
+test("Unit session stream: remote durable metadata survives local normalization", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-stream-durable-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const appended = await appendToStream(
+      session.sessionId,
+      {
+        stream: "sl_event",
+        event: "session_message",
+        sessionId: session.sessionId,
+        eventId: "event-42",
+        idempotencyToken: "client:event-42",
+        cursor: "1779364717000:0000002a",
+        sequenceId: 42,
+        ts: "2026-05-21T12:20:00.000Z",
+        agent: { id: "codex", model: "gpt-5-codex" },
+        payload: { message: "remote durable row" },
+      },
+      { targetPath: tempRoot, syncRemote: false },
+    );
+
+    assert.equal(appended.eventId, "event-42");
+    assert.equal(appended.idempotencyToken, "client:event-42");
+    assert.equal(appended.cursor, "1779364717000:0000002a");
+    assert.equal(appended.sequenceId, 42);
+    assert.equal(validateAgentEvent(appended, { allowLegacy: false }), true);
+
+    const events = await readStream(session.sessionId, { tail: 1, targetPath: tempRoot });
+    assert.equal(events[0].eventId, "event-42");
+    assert.equal(events[0].idempotencyToken, "client:event-42");
+    assert.equal(events[0].cursor, "1779364717000:0000002a");
+    assert.equal(events[0].sequenceId, 42);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session stream: concurrent append from 3 workers writes corruption-free NDJSON", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-concurrent-"));
   try {

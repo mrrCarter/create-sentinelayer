@@ -54,6 +54,14 @@ function normalizeTimestamp(value, fallbackTimestamp) {
   return new Date(epoch).toISOString();
 }
 
+function normalizePositiveInteger(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return undefined;
+  }
+  return Math.floor(normalized);
+}
+
 function stripUndefinedEntries(record) {
   const cleaned = {};
   for (const [key, value] of Object.entries(record || {})) {
@@ -112,6 +120,11 @@ export function createAgentEvent({
   agent,
   ts,
   timestamp,
+  eventId,
+  idempotencyToken,
+  cursor,
+  sequenceId,
+  sequence_id,
 } = {}) {
   const normalizedEvent = normalizeNonEmptyString(event);
   const normalizedAgent = normalizeAgentShape({
@@ -135,6 +148,10 @@ export function createAgentEvent({
     runId: normalizeOptionalString(runId),
     workItemId: normalizeOptionalString(workItemId),
     requestId: normalizeOptionalString(requestId),
+    eventId: normalizeOptionalString(eventId),
+    idempotencyToken: normalizeOptionalString(idempotencyToken),
+    cursor: normalizeOptionalString(cursor),
+    sequenceId: normalizePositiveInteger(sequenceId ?? sequence_id),
     ts: canonicalTs,
     // Keep legacy timestamp key for existing consumers while PR0 migrates envelope usage.
     timestamp: canonicalTs,
@@ -202,6 +219,10 @@ export function normalizeAgentEvent(evt, { allowLegacy = true } = {}) {
       runId: evt.runId,
       workItemId: evt.workItemId,
       requestId: evt.requestId,
+      eventId: evt.eventId,
+      idempotencyToken: evt.idempotencyToken,
+      cursor: evt.cursor,
+      sequenceId: evt.sequenceId ?? evt.sequence_id,
       ts: normalizedTs,
     });
   } catch {
