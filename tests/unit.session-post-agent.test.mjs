@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Command } from "commander";
 
 import { registerSessionCommand, resolveSessionSayAgentId } from "../src/commands/session.js";
+import { registerAgent } from "../src/session/agent-registry.js";
 import { resetSessionSyncStateForTests } from "../src/session/sync.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
@@ -101,6 +102,86 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
         event.payload?.message === "default author should stay placeholder",
     );
     assert.equal(persistedMessages.length, 1, "session say must append exactly one local message");
+  } finally {
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say identity: explicit metadata is persisted on the event envelope", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-metadata-"));
+  const restoreEnv = installAuthEnv();
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const output = await runSessionCommand([
+      "session",
+      "say",
+      session.sessionId,
+      "status: metadata is explicit",
+      "--agent",
+      "codex",
+      "--model",
+      "gpt-5-codex",
+      "--display-name",
+      "Codex",
+      "--role",
+      "coder",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.command, "session say");
+    assert.equal(payload.agentId, "codex");
+    assert.equal(payload.event.agent.id, "codex");
+    assert.equal(payload.event.agent.model, "gpt-5-codex");
+    assert.equal(payload.event.agent.displayName, "Codex");
+    assert.equal(payload.event.agent.role, "coder");
+    assert.equal(payload.event.agent.clientKind, "cli");
+  } finally {
+    restoreEnv();
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say identity: joined agent metadata enriches later messages", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-registry-"));
+  const restoreEnv = installAuthEnv();
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await registerAgent(session.sessionId, {
+      targetPath: tempRoot,
+      agentId: "claude-mythos",
+      model: "claude-opus-4.1",
+      role: "reviewer",
+      trackProcessExit: false,
+    });
+
+    const output = await runSessionCommand([
+      "session",
+      "say",
+      session.sessionId,
+      "review: joined metadata should carry forward",
+      "--agent",
+      "claude-mythos",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.event.agent.id, "claude-mythos");
+    assert.equal(payload.event.agent.model, "claude-opus-4.1");
+    assert.equal(payload.event.agent.role, "reviewer");
+    assert.equal(payload.event.agent.clientKind, "cli");
   } finally {
     restoreEnv();
     resetSessionSyncStateForTests();
