@@ -537,6 +537,7 @@ test("Unit session recap: periodic recap emits while active and stops after inac
     });
     const recaps = firstPass.filter((event) => event.event === "session_recap");
     assert.equal(recaps.length >= 1, true);
+    assert.equal(recaps[0].payload.mode, "initial");
     assert.equal(recaps[0].payload.ephemeral, true);
     assert.equal(recaps[0].payload.style, "italic-grey");
     assert.match(recaps[0].payload.recap, /Usage: 600 tokens \/ \$0\.0060/);
@@ -561,7 +562,132 @@ test("Unit session recap: periodic recap emits while active and stops after inac
   }
 });
 
-test("Unit session recap: shouldEmitRecap triggers on >5 new events or inactivity", async () => {
+test("Unit session recap: periodic emitter ignores interval when activity threshold is reached", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-threshold-"));
+  let emitter = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const baseTime = Date.parse("2026-05-19T13:00:00.000Z");
+    let nowOffsetMs = 100;
+    const nowProvider = () => new Date(baseTime + nowOffsetMs).toISOString();
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "codex-a1",
+        ts: new Date(baseTime).toISOString(),
+        payload: { message: "initial recap source" },
+      },
+      { targetPath: tempRoot },
+    );
+
+    emitter = emitPeriodicRecap(session.sessionId, {
+      targetPath: tempRoot,
+      intervalMs: 60_000,
+      inactivityMs: 600_000,
+      newEventThreshold: 2,
+      maxEvents: 50,
+      nowProvider,
+    });
+    await emitter.tickNow();
+
+    for (let index = 0; index < 2; index += 1) {
+      await appendToStream(
+        session.sessionId,
+        {
+          event: "session_message",
+          agentId: "claude-reviewer",
+          ts: new Date(baseTime + 1_000 + index * 1_000).toISOString(),
+          payload: { message: `threshold source ${index + 1}` },
+        },
+        { targetPath: tempRoot },
+      );
+    }
+
+    nowOffsetMs = 3_000;
+    await emitter.tickNow();
+
+    const events = await readStream(session.sessionId, {
+      tail: 50,
+      targetPath: tempRoot,
+    });
+    const recaps = events.filter((event) => event.event === "session_recap");
+    assert.equal(recaps.length, 2);
+    assert.equal(recaps[1].payload.mode, "activity_threshold");
+    assert.equal(recaps[1].payload.sourceEventCount, 2);
+    assert.equal(emitter.isRunning(), true);
+  } finally {
+    if (emitter && emitter.isRunning()) {
+      emitter.stop("test_cleanup");
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: periodic emitter writes inactivity closeout before stopping", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-closeout-"));
+  let emitter = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const baseTime = Date.parse("2026-05-19T14:00:00.000Z");
+    let nowOffsetMs = 20;
+    const nowProvider = () => new Date(baseTime + nowOffsetMs).toISOString();
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "codex-a1",
+        ts: new Date(baseTime).toISOString(),
+        payload: { message: "initial recap source" },
+      },
+      { targetPath: tempRoot },
+    );
+
+    emitter = emitPeriodicRecap(session.sessionId, {
+      targetPath: tempRoot,
+      intervalMs: 60_000,
+      inactivityMs: 100,
+      newEventThreshold: 5,
+      maxEvents: 50,
+      nowProvider,
+    });
+    await emitter.tickNow();
+
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        ts: new Date(baseTime + 40).toISOString(),
+        payload: { message: "below-threshold handoff should close out on idle" },
+      },
+      { targetPath: tempRoot },
+    );
+
+    nowOffsetMs = 200;
+    await emitter.tickNow();
+
+    const events = await readStream(session.sessionId, {
+      tail: 50,
+      targetPath: tempRoot,
+    });
+    const recaps = events.filter((event) => event.event === "session_recap");
+    assert.equal(recaps.length, 2);
+    assert.equal(recaps[1].payload.mode, "inactivity");
+    assert.equal(recaps[1].payload.sourceEventCount, 1);
+    assert.equal(emitter.isRunning(), false);
+    assert.equal(emitter.getState().stoppedReason, "inactive");
+  } finally {
+    if (emitter && emitter.isRunning()) {
+      emitter.stop("test_cleanup");
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: shouldEmitRecap triggers on >=5 meaningful source events or inactivity", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-should-recap-"));
   try {
     await seedWorkspace(tempRoot);
@@ -586,7 +712,6 @@ test("Unit session recap: shouldEmitRecap triggers on >5 new events or inactivit
       "status update three",
       "status update four",
       "status update five",
-      "status update six",
     ];
     for (const message of statusMessages) {
       await appendToStream(

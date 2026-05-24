@@ -135,6 +135,23 @@ test("Unit session daemon: health tick requests durable checkpoints with cadence
       role: "coder",
       targetPath: tempRoot,
     });
+    const startedAt = "2026-05-24T00:00:30.000Z";
+    const baseEpoch = Date.parse("2026-05-24T00:00:00.000Z");
+    for (let index = 0; index < 20; index += 1) {
+      await appendToStream(
+        session.sessionId,
+        createAgentEvent({
+          event: "session_message",
+          agentId: "codex-c3d4",
+          sessionId: session.sessionId,
+          ts: new Date(baseEpoch + (index + 1) * 1000).toISOString(),
+          payload: {
+            message: `checkpoint source event ${index + 1}`,
+          },
+        }),
+        { targetPath: tempRoot },
+      );
+    }
 
     const calls = [];
     const checkpointGenerator = async (generatedSessionId, options) => {
@@ -148,7 +165,6 @@ test("Unit session daemon: health tick requests durable checkpoints with cadence
         eventCount: 24,
       };
     };
-    const startedAt = new Date().toISOString();
     const senti = await startSenti(session.sessionId, {
       targetPath: tempRoot,
       autoStart: false,
@@ -156,6 +172,7 @@ test("Unit session daemon: health tick requests durable checkpoints with cadence
       checkpointIntervalMs: 60_000,
       checkpointMinEvents: 20,
       checkpointMaxEvents: 80,
+      checkpointEventThreshold: 20,
     });
 
     const first = await senti.runTick(startedAt);
@@ -168,15 +185,164 @@ test("Unit session daemon: health tick requests durable checkpoints with cadence
     assert.equal(first.checkpoint.attempted, true);
     assert.equal(first.checkpoint.created, true);
     assert.equal(first.checkpoint.checkpointId, "cp_auto_daemon");
+    assert.equal(first.checkpoint.trigger, "event_threshold");
+    assert.equal(first.checkpoint.sourceEventCount, 20);
 
-    const second = await senti.runTick(new Date(Date.parse(startedAt) + 1_000).toISOString());
+    for (let index = 0; index < 20; index += 1) {
+      await appendToStream(
+        session.sessionId,
+        createAgentEvent({
+          event: "session_message",
+          agentId: "codex-c3d4",
+          sessionId: session.sessionId,
+          ts: new Date(baseEpoch + (31 + index) * 1000).toISOString(),
+          payload: {
+            message: `next checkpoint source event ${index + 1}`,
+          },
+        }),
+        { targetPath: tempRoot },
+      );
+    }
+
+    const second = await senti.runTick("2026-05-24T00:00:55.000Z");
     assert.equal(calls.length, 1);
     assert.equal(second.checkpoint.attempted, false);
     assert.equal(second.checkpoint.reason, "checkpoint_cadence_wait");
 
-    const third = await senti.runTick(new Date(Date.parse(startedAt) + 61_000).toISOString());
+    const third = await senti.runTick("2026-05-24T00:01:31.000Z");
     assert.equal(calls.length, 2);
     assert.equal(third.checkpoint.created, true);
+  } finally {
+    if (sessionId) {
+      await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session daemon: checkpoint policy triggers on inactivity after meaningful source event", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-checkpoint-idle-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    await registerAgent(session.sessionId, {
+      agentId: "codex-c3d4",
+      model: "gpt-5.4",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    await appendToStream(
+      session.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex-c3d4",
+        sessionId: session.sessionId,
+        ts: "2026-05-24T00:00:00.000Z",
+        payload: {
+          message: "single source event should checkpoint after idle",
+        },
+      }),
+      { targetPath: tempRoot },
+    );
+
+    const calls = [];
+    const checkpointGenerator = async (generatedSessionId, options) => {
+      calls.push({ generatedSessionId, options });
+      return {
+        ok: true,
+        created: true,
+        duplicate: false,
+        checkpointId: "cp_idle_daemon",
+        checkpoint: { checkpointId: "cp_idle_daemon" },
+        eventCount: 1,
+      };
+    };
+    const senti = await startSenti(session.sessionId, {
+      targetPath: tempRoot,
+      autoStart: false,
+      checkpointGenerator,
+      checkpointIntervalMs: 1,
+      checkpointEventThreshold: 5,
+      checkpointIdleMs: 1_000,
+    });
+
+    const first = await senti.runTick("2026-05-24T00:00:00.500Z");
+    assert.equal(calls.length, 0);
+    assert.equal(first.checkpoint.reason, "checkpoint_event_count_wait");
+    assert.equal(first.checkpoint.policy.sourceEventCount, 1);
+
+    const second = await senti.runTick("2026-05-24T00:00:01.500Z");
+    assert.equal(calls.length, 1);
+    assert.equal(second.checkpoint.attempted, true);
+    assert.equal(second.checkpoint.trigger, "inactivity");
+    assert.equal(second.checkpoint.sourceEventCount, 1);
+  } finally {
+    if (sessionId) {
+      await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session daemon: stop performs closeout checkpoint for uncheckpointed source events", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-checkpoint-closeout-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    await registerAgent(session.sessionId, {
+      agentId: "codex-c3d4",
+      model: "gpt-5.4",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    const calls = [];
+    const checkpointGenerator = async (generatedSessionId, options) => {
+      calls.push({ generatedSessionId, options });
+      return {
+        ok: true,
+        created: true,
+        duplicate: false,
+        checkpointId: "cp_closeout_daemon",
+        checkpoint: { checkpointId: "cp_closeout_daemon" },
+        eventCount: 1,
+      };
+    };
+    await startSenti(session.sessionId, {
+      targetPath: tempRoot,
+      autoStart: false,
+      checkpointGenerator,
+      checkpointEventThreshold: 20,
+      checkpointIdleMs: 600_000,
+    });
+    await appendToStream(
+      session.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex-c3d4",
+        sessionId: session.sessionId,
+        ts: "2026-05-24T00:00:00.000Z",
+        payload: {
+          message: "closeout should checkpoint this unfinished handoff",
+        },
+      }),
+      { targetPath: tempRoot },
+    );
+
+    const stopped = await stopSenti(session.sessionId, {
+      targetPath: tempRoot,
+      reason: "operator_closeout",
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].generatedSessionId, session.sessionId);
+    assert.equal(calls[0].options.createdByAgentId, "senti");
+    assert.equal(stopped.checkpointCloseout.attempted, true);
+    assert.equal(stopped.checkpointCloseout.trigger, "closeout");
+    assert.equal(stopped.checkpointCloseout.checkpointId, "cp_closeout_daemon");
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
@@ -192,6 +358,18 @@ test("Unit session daemon: checkpoint generator failure is non-blocking", async 
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
     sessionId = session.sessionId;
+    await appendToStream(
+      session.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex-c3d4",
+        sessionId: session.sessionId,
+        payload: {
+          message: "source event for failed checkpoint generation",
+        },
+      }),
+      { targetPath: tempRoot },
+    );
     const senti = await startSenti(session.sessionId, {
       targetPath: tempRoot,
       autoStart: false,
@@ -199,6 +377,7 @@ test("Unit session daemon: checkpoint generator failure is non-blocking", async 
         throw new Error("checkpoint api down");
       },
       checkpointIntervalMs: 1,
+      checkpointEventThreshold: 1,
     });
 
     const summary = await senti.runTick(new Date().toISOString());
