@@ -43,6 +43,7 @@ import { listSessionTasks } from "../session/tasks.js";
 import {
   createSession,
   DEFAULT_TTL_SECONDS,
+  expireSession,
   getSession,
   isSessionCacheExpired,
   listActiveSessions,
@@ -86,7 +87,7 @@ import {
   generateSessionCheckpoint,
   listSessionCheckpoints,
 } from "../session/checkpoints.js";
-import { authLoginHint } from "../ui/command-hints.js";
+import { authLoginHint, preferredCliCommand } from "../ui/command-hints.js";
 import { parseCsvTokens } from "./ai/shared.js";
 
 function shouldEmitJson(options, command) {
@@ -425,6 +426,63 @@ function sentiAutostartDisabled() {
   return String(process.env.SENTINELAYER_SKIP_SENTI_AUTOSTART || "").trim() === "1";
 }
 
+function buildResumeContext(candidate, { reuseWindowSeconds = 3600 } = {}) {
+  if (!candidate) return null;
+  const source = normalizeString(candidate._source) || "unknown";
+  const lastActivityAt =
+    normalizeString(candidate.lastInteractionAt) ||
+    normalizeString(candidate.lastActivityAt) ||
+    normalizeString(candidate.updatedAt) ||
+    normalizeString(candidate.createdAt) ||
+    null;
+  return {
+    source,
+    reuseWindowSeconds,
+    lastActivityAt,
+    reason: `recent_${source}_session`,
+  };
+}
+
+async function resolveSessionRemoteSyncState({ dashboardUrl } = {}) {
+  if (remoteSessionLookupDisabled()) {
+    return {
+      status: "disabled",
+      attempted: false,
+      reason: "remote_sync_disabled",
+      dashboardUrl,
+    };
+  }
+
+  let storedSession = null;
+  try {
+    storedSession = await readStoredSession();
+  } catch {
+    storedSession = null;
+  }
+  const apiUrl =
+    normalizeString(storedSession?.apiUrl) ||
+    normalizeString(process.env.SENTINELAYER_API_URL) ||
+    "https://api.sentinelayer.com";
+  const hasToken = Boolean(
+    normalizeString(storedSession?.token) || normalizeString(process.env.SENTINELAYER_TOKEN),
+  );
+  if (!hasToken) {
+    return {
+      status: "auth_required",
+      attempted: false,
+      reason: "not_authenticated",
+      apiUrl,
+      dashboardUrl,
+    };
+  }
+  return {
+    status: "background_sync_queued",
+    attempted: true,
+    apiUrl,
+    dashboardUrl,
+  };
+}
+
 function mergeResumeCandidate(existing, incoming) {
   if (!existing) return incoming;
   const existingActivity = Number(existing._activityMs || 0);
@@ -614,6 +672,69 @@ async function verifyRemoteSession(sessionId, { targetPath } = {}) {
   return { ok: false, reason: lastReason };
 }
 
+function normalizeRemoteResumeStatus(session = {}) {
+  return normalizeString(session?.archiveStatus || session?.status).toLowerCase();
+}
+
+function remoteStatusAllowsResume(status) {
+  if (!status) return true;
+  return status === "active" || status === "pending";
+}
+
+async function reconcileLocalResumeCandidate(candidate, { targetPath } = {}) {
+  if (!candidate || candidate._source !== "local" || remoteSessionLookupDisabled()) {
+    return { candidate, staleResume: null };
+  }
+  const verification = await verifyRemoteSession(candidate.sessionId, { targetPath }).catch((error) => ({
+    ok: false,
+    reason: normalizeString(error?.message) || "probe_failed",
+  }));
+
+  if (verification.ok) {
+    const remoteStatus = normalizeRemoteResumeStatus(verification.session);
+    if (remoteStatusAllowsResume(remoteStatus)) {
+      return { candidate, staleResume: null };
+    }
+    await expireSession(candidate.sessionId, { targetPath }).catch(() => null);
+    return {
+      candidate: null,
+      staleResume: {
+        sessionId: candidate.sessionId,
+        source: "remote",
+        reason: "remote_not_active",
+        remoteStatus,
+        action: "expired_local_and_created_new",
+      },
+    };
+  }
+
+  if (verification.reason === "not_found" || verification.reason === "forbidden") {
+    await expireSession(candidate.sessionId, { targetPath }).catch(() => null);
+    return {
+      candidate: null,
+      staleResume: {
+        sessionId: candidate.sessionId,
+        source: "remote",
+        reason: verification.reason,
+        remoteStatus: verification.reason,
+        status: verification.status || null,
+        action: "expired_local_and_created_new",
+      },
+    };
+  }
+
+  return {
+    candidate,
+    staleResume: {
+      sessionId: candidate.sessionId,
+      source: "remote",
+      reason: verification.reason || "probe_failed",
+      status: verification.status || null,
+      action: "kept_local_resume",
+    },
+  };
+}
+
 // Render an absolute ISO timestamp as a coarse "Nm ago" / "Nh ago" / "Nd ago"
 // label for human-readable join output. Returns `"never"` for missing input
 // and `"just now"` for sub-minute deltas.
@@ -737,12 +858,15 @@ async function ensureWorkspaceSession({
   const titleArg = normalizeString(title);
   const fallbackTitle = deriveSessionTitle(targetPath);
   const startedAt = Date.now();
-  const resumedCandidate = await findReusableSessionCandidate({
+  let resumedCandidate = await findReusableSessionCandidate({
     targetPath,
     reuseWindowSeconds,
     resume,
     forceNew,
   });
+  const reconciliation = await reconcileLocalResumeCandidate(resumedCandidate, { targetPath });
+  resumedCandidate = reconciliation.candidate;
+  const staleResume = reconciliation.staleResume;
   let created;
   const resumeTitle =
     titleArg || normalizeString(resumedCandidate?.title) || fallbackTitle;
@@ -825,6 +949,7 @@ async function ensureWorkspaceSession({
     title: effectiveTitle || null,
     titleAuto,
     titleSync,
+    staleResume,
   };
 }
 
@@ -1340,6 +1465,9 @@ export function registerSessionCommand(program) {
       const launchPlan = template ? buildTemplateLaunchPlan(created.sessionId, template) : [];
       const dashboardUrl = buildDashboardUrl(created.sessionId);
       const effectiveTitle = ensured.title;
+      const cliCommand = preferredCliCommand();
+      const resumeContext = buildResumeContext(ensured.resumedCandidate, { reuseWindowSeconds });
+      const remoteSync = await resolveSessionRemoteSyncState({ dashboardUrl });
 
       const payload = {
         command: "session start",
@@ -1361,23 +1489,29 @@ export function registerSessionCommand(program) {
         launchPlan,
         dashboardUrl,
         resumed,
+        resumeSource: resumeContext?.source || null,
+        resumeContext: resumeContext || undefined,
+        staleResume: ensured.staleResume || undefined,
+        remoteSync,
         title: effectiveTitle || null,
         titleAuto: Boolean(ensured.titleAuto),
         titleSync: ensured.titleSync || undefined,
       };
 
       // Best-effort admin visibility sync. Session creation remains local-first.
-      void syncSessionMetadataToApi(created.sessionId, {
-        targetPath,
-        sessionId: created.sessionId,
-        status: created.status,
-        createdAt: created.createdAt,
-        expiresAt: created.expiresAt,
-        title: effectiveTitle || null,
-        ttlSeconds,
-        template: created.template,
-        codebaseContext: created.codebaseContext,
-      }).catch(() => {});
+      if (remoteSync.attempted) {
+        void syncSessionMetadataToApi(created.sessionId, {
+          targetPath,
+          sessionId: created.sessionId,
+          status: created.status,
+          createdAt: created.createdAt,
+          expiresAt: created.expiresAt,
+          title: effectiveTitle || null,
+          ttlSeconds,
+          template: created.template,
+          codebaseContext: created.codebaseContext,
+        }).catch(() => {});
+      }
 
       // Auto-start the Senti orchestrator daemon. Without this, every
       // session ran with `Senti actions: 1` (just the welcome alert)
@@ -1419,15 +1553,38 @@ export function registerSessionCommand(program) {
       console.log(pc.bold(resumed ? "Session resumed" : "Session created"));
       console.log(pc.gray(`Session: ${created.sessionId}`));
       if (titleArg) console.log(pc.gray(`Title: ${titleArg}`));
+      if (resumeContext) {
+        console.log(
+          pc.gray(
+            `Resume source: ${resumeContext.source} (last activity ${resumeContext.lastActivityAt || "unknown"}; window ${reuseWindowSeconds}s)`,
+          ),
+        );
+      }
+      if (ensured.staleResume?.action === "expired_local_and_created_new") {
+        console.log(
+          pc.yellow(
+            `Skipped stale local session ${ensured.staleResume.sessionId}: remote status is ${ensured.staleResume.remoteStatus || ensured.staleResume.reason}.`,
+          ),
+        );
+      }
       if (created.streamPath) console.log(pc.gray(`Stream: ${created.streamPath}`));
       console.log(pc.gray(`${resumed ? "Resumed" : "Created"} in ${durationMs}ms`));
       console.log(
         `status=${created.status} created_at=${created.createdAt} expires_at=${created.expiresAt} ttl_seconds=${ttlSeconds}`,
       );
+      if (remoteSync.status === "auth_required") {
+        console.log(
+          pc.yellow(
+            `Dashboard sync pending: run \`${authLoginHint()}\`, then rerun \`${cliCommand} session start\` in this workspace to publish local metadata.`,
+          ),
+        );
+      } else if (remoteSync.status === "disabled") {
+        console.log(pc.gray("Dashboard sync disabled by SENTINELAYER_SKIP_REMOTE_SYNC=1."));
+      }
       if (!resumed) {
         console.log(
           pc.gray(
-            "Tip: subsequent `slc session start` in this workspace within an hour will resume this session. Pass --force-new to override.",
+            `Tip: subsequent \`${cliCommand} session start\` in this workspace within an hour will resume this session. Pass --force-new to override.`,
           ),
         );
       }
@@ -1547,13 +1704,20 @@ export function registerSessionCommand(program) {
         forceNew: Boolean(options.forceNew),
         reuseWindowSeconds,
       });
+      const dashboardUrl = buildDashboardUrl(ensured.created.sessionId);
+      const resumeContext = buildResumeContext(ensured.resumedCandidate, { reuseWindowSeconds });
+      const remoteSync = await resolveSessionRemoteSyncState({ dashboardUrl });
       const payload = {
         command: "session ensure",
         targetPath,
         sessionId: ensured.created.sessionId,
         title: ensured.title || null,
         resumed: Boolean(ensured.resumedCandidate),
-        dashboardUrl: buildDashboardUrl(ensured.created.sessionId),
+        resumeSource: resumeContext?.source || null,
+        resumeContext: resumeContext || undefined,
+        staleResume: ensured.staleResume || undefined,
+        dashboardUrl,
+        remoteSync,
         titleSync: ensured.titleSync || undefined,
       };
       console.log(JSON.stringify(payload, null, 2));
