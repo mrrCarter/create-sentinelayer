@@ -63,6 +63,26 @@ function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
   };
 }
 
+function installLocalOnlyEnv() {
+  const previous = {
+    SENTINELAYER_SKIP_REMOTE_SYNC: process.env.SENTINELAYER_SKIP_REMOTE_SYNC,
+    SENTINELAYER_TOKEN: process.env.SENTINELAYER_TOKEN,
+    SENTINELAYER_API_URL: process.env.SENTINELAYER_API_URL,
+  };
+  process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+  delete process.env.SENTINELAYER_TOKEN;
+  delete process.env.SENTINELAYER_API_URL;
+  return () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
 test("Unit session say identity: default placeholder is not rewritten to human auth identity", () => {
   assert.equal(resolveSessionSayAgentId(undefined), "cli-user");
   assert.equal(resolveSessionSayAgentId(""), "cli-user");
@@ -73,7 +93,7 @@ test("Unit session say identity: default placeholder is not rewritten to human a
 test("Unit session say identity: omitted --agent persists cli-user visibly", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-default-"));
-  const restoreEnv = installAuthEnv();
+  const restoreEnv = installLocalOnlyEnv();
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
@@ -103,8 +123,8 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
     );
     assert.equal(persistedMessages.length, 1, "session say must append exactly one local message");
   } finally {
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -112,7 +132,7 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
 test("Unit session say identity: explicit metadata is persisted on the event envelope", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-metadata-"));
-  const restoreEnv = installAuthEnv();
+  const restoreEnv = installLocalOnlyEnv();
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
@@ -144,8 +164,8 @@ test("Unit session say identity: explicit metadata is persisted on the event env
     assert.equal(payload.event.agent.role, "coder");
     assert.equal(payload.event.agent.clientKind, "cli");
   } finally {
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -153,7 +173,7 @@ test("Unit session say identity: explicit metadata is persisted on the event env
 test("Unit session say identity: joined agent metadata enriches later messages", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-registry-"));
-  const restoreEnv = installAuthEnv();
+  const restoreEnv = installLocalOnlyEnv();
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
@@ -183,8 +203,8 @@ test("Unit session say identity: joined agent metadata enriches later messages",
     assert.equal(payload.event.agent.role, "reviewer");
     assert.equal(payload.event.agent.clientKind, "cli");
   } finally {
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -252,8 +272,8 @@ test("Unit session say: materialized remote sessions post once then append local
     assert.equal(readPayload.events[0].payload.message, "status: materialized remote should not double post");
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -332,8 +352,8 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
     assert.equal(posted.agent.id, "codex");
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -378,8 +398,8 @@ test("Unit session post-agent: remote rejection does not write local transcript"
     assert.equal(events.some((event) => event.event === "session_message"), false);
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -438,8 +458,8 @@ test("Unit session post-agent: refreshes expired local cache after remote accept
     assert.equal(events[0].payload.message, "status: remote accepted before local append");
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -517,8 +537,8 @@ test("Unit session post-agent: refreshes locally expired status when remote sess
     assert.equal(refreshedMetadata.title, "remote still active");
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -599,8 +619,8 @@ test("Unit session join: refreshes expired local cache after remote verification
     assert.equal(joinEvent.agent.id, "codex");
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -636,8 +656,8 @@ test("Unit session post-agent: rejects human and placeholder identities before r
     assert.equal(called, false);
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -648,6 +668,7 @@ test("Unit session read: --remote requires the same active auth surface as write
   const previous = {
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
+    SENTINELAYER_SKIP_REMOTE_SYNC: process.env.SENTINELAYER_SKIP_REMOTE_SYNC,
     SENTINELAYER_TOKEN: process.env.SENTINELAYER_TOKEN,
     SENTINELAYER_API_URL: process.env.SENTINELAYER_API_URL,
     SENTINELAYER_DISABLE_KEYRING: process.env.SENTINELAYER_DISABLE_KEYRING,
@@ -676,6 +697,7 @@ test("Unit session read: --remote requires the same active auth surface as write
       /Remote session read requires authentication/,
     );
   } finally {
+    resetSessionSyncStateForTests();
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) {
         delete process.env[key];
@@ -683,7 +705,6 @@ test("Unit session read: --remote requires the same active auth surface as write
         process.env[key] = value;
       }
     }
-    resetSessionSyncStateForTests();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -764,8 +785,8 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=5")));
   } finally {
     globalThis.fetch = originalFetch;
-    restoreEnv();
     resetSessionSyncStateForTests();
+    restoreEnv();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
