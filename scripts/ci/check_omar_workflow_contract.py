@@ -19,11 +19,11 @@ BRIDGE_OR_BROKEN_MARKERS = (
 )
 
 
-def _line_has_managed_llm_enabled(line: str) -> bool:
+def _line_has_byok_llm_enabled(line: str) -> bool:
     normalized = line.split("#", 1)[0].strip().lower().replace("'", '"')
     return normalized in {
-        'sentinelayer_managed_llm: "true"',
-        "sentinelayer_managed_llm: true",
+        'sentinelayer_managed_llm: "false"',
+        "sentinelayer_managed_llm: false",
     }
 
 
@@ -93,7 +93,6 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
             )
         if stripped.startswith(
             (
-                "openai_api_key:",
                 "anthropic_api_key:",
                 "google_api_key:",
                 "xai_api_key:",
@@ -114,13 +113,13 @@ def validate_omar_contract(workflow_text: str) -> None:
         raise OmarWorkflowContractError(
             "Omar workflow must call sentinelayer-v1-action directly, not a local wrapper"
         )
-    if "mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4" not in workflow_text:
+    if "mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07" not in workflow_text:
         raise OmarWorkflowContractError(
             "Omar workflow must use the pinned sentinelayer-v1-action directly"
         )
-    if not any(_line_has_managed_llm_enabled(line) for line in workflow_text.splitlines()):
+    if not any(_line_has_byok_llm_enabled(line) for line in workflow_text.splitlines()):
         raise OmarWorkflowContractError(
-            'Omar workflow must configure sentinelayer_managed_llm: "true"'
+            'Omar workflow must configure sentinelayer_managed_llm: "false"'
         )
 
     workflow_lines = workflow_text.splitlines()
@@ -155,12 +154,17 @@ def validate_omar_contract(workflow_text: str) -> None:
         "check_omar_workflow_contract.py --self-test",
         "check_forbidden_omar_surface.py --self-test",
         "check_forbidden_omar_surface.py",
+        "Verify BYOK Omar secrets",
         "Run Omar Gate",
-        "Assert Omar LLM model contract is active",
-        'REQUESTED_MANAGED_LLM: "true"',
+        "Assert Omar BYOK model contract is active",
+        'REQUESTED_MANAGED_LLM: "false"',
         "REQUESTED_FAILURE_POLICY: block",
-        "Omar LLM model outputs missing",
-        "Omar LLM model contract active",
+        "REQUESTED_MODEL: gpt-5.3-codex",
+        "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
+        "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
+        "model_fallback: gpt-5.2-codex",
+        "Omar BYOK model contract active",
+        "Omar Gate did not pass",
         "Stage Omar artifacts",
         "Upload Omar artifacts",
         "actions/upload-artifact",
@@ -226,16 +230,22 @@ jobs:
           echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4
+        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07
         with:
-          sentinelayer_managed_llm: "true"
-      - name: Assert Omar LLM model contract is active
+          sentinelayer_managed_llm: "false"
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          model_fallback: gpt-5.2-codex
+      - name: Assert Omar BYOK model contract is active
         env:
-          REQUESTED_MANAGED_LLM: "true"
+          REQUESTED_MODEL: gpt-5.3-codex
+          REQUESTED_CODEX_MODEL: gpt-5.3-codex
+          REQUESTED_MANAGED_LLM: "false"
           REQUESTED_FAILURE_POLICY: block
         run: |
-          echo "Omar LLM model outputs missing"
-          echo "Omar LLM model contract active"
+          echo "Omar BYOK model contract active"
+          echo "Omar Gate did not pass"
+      - name: Verify BYOK Omar secrets
+        run: echo "OPENAI_API_KEY is required because create-sentinelayer Omar Gate runs in BYOK real-LLM mode."
       - name: Stage Omar artifacts
         run: echo stage
       - name: Upload Omar artifacts
@@ -254,7 +264,7 @@ jobs:
     validate_omar_contract(valid_workflow)
 
     _assert_fails(
-        valid_workflow.replace('sentinelayer_managed_llm: "true"', ""),
+        valid_workflow.replace('sentinelayer_managed_llm: "false"', ""),
     )
     _assert_fails(
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
@@ -264,7 +274,7 @@ jobs:
     _assert_fails(valid_workflow.replace("mrrCarter/sentinelayer-v1-action@", "./.github/actions/omar-gate # "))
     _assert_fails(
         valid_workflow.replace(
-            'sentinelayer_managed_llm: "true"',
+            'sentinelayer_managed_llm: "false"',
             "google_api_key: ${{ secrets.GOOGLE_API_KEY }}\n          sentinelayer_managed_llm: \"false\"",
         )
     )
