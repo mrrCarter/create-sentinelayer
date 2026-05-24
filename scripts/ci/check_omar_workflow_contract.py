@@ -156,6 +156,11 @@ def validate_omar_contract(workflow_text: str) -> None:
         "check_forbidden_omar_surface.py --self-test",
         "check_forbidden_omar_surface.py",
         "Run Omar Gate",
+        "Assert Omar LLM model contract is active",
+        'REQUESTED_MANAGED_LLM: "true"',
+        "REQUESTED_FAILURE_POLICY: block",
+        "Omar LLM model outputs missing",
+        "Omar LLM model contract active",
         "Stage Omar artifacts",
         "Upload Omar artifacts",
         "actions/upload-artifact",
@@ -224,6 +229,13 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4
         with:
           sentinelayer_managed_llm: "true"
+      - name: Assert Omar LLM model contract is active
+        env:
+          REQUESTED_MANAGED_LLM: "true"
+          REQUESTED_FAILURE_POLICY: block
+        run: |
+          echo "Omar LLM model outputs missing"
+          echo "Omar LLM model contract active"
       - name: Stage Omar artifacts
         run: echo stage
       - name: Upload Omar artifacts
