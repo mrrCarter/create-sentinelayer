@@ -32,6 +32,10 @@ Carter wants the CLI to deliver three outcomes that today are partially shipped:
 
 Everything must be live-streamable in the terminal. Token counters must tick in real time. Every actor must emit start AND end events. False positives must drop. `/omargate` must remain provably stronger locally than its GitHub Action sibling.
 
+## 1.1 2026-05-24 status note
+
+This file remains the execution spec, but it is not proof that every sellable-DD requirement is done. The Investor-DD runner now emits `.sentinelayer/runs/<runId>/investor-dd/progress.json` plus `summary.ddProgress`; treat that generated ledger as the source of truth for shipped, partial, deferred, and not-configured capabilities. A run is not sellable-ready unless `summary.ddProgress.sellableReady === true`.
+
 ---
 
 ## 2. State of the enterprise (with evidence)
