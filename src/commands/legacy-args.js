@@ -61,6 +61,7 @@ export function buildLegacyArgs(baseArgs, { commandOptions = {}, command } = {})
   appendPassthroughFlag(args, "--notify-email", commandOptions.notifyEmail);
   appendPassthroughFlag(args, "--email-on-complete", commandOptions.emailOnComplete);
   appendPassthroughFlag(args, "--notify-session", commandOptions.notifySession);
+  appendBooleanFlag(args, "--require-usage-ledger", commandOptions.requireUsageLedger);
   appendPassthroughFlag(args, "--devtestbot-base-url", commandOptions.devtestbotBaseUrl);
   appendPassthroughFlag(args, "--devtestbot-scope", commandOptions.devtestbotScope);
   appendNegatedBooleanFlag(args, "--no-devtestbot", commandOptions.devtestbot);

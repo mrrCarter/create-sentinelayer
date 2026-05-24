@@ -292,6 +292,7 @@ test("Unit command contracts: omargate investor-dd exposes devTestBot controls",
   assertCommandHasOption(investorDd, "--devtestbot-scope <scope>");
   assertCommandHasOption(investorDd, "--no-devtestbot");
   assertCommandHasOption(investorDd, "--email-on-complete <addr>");
+  assertCommandHasOption(investorDd, "--require-usage-ledger");
 });
 
 test("Unit command contracts: session exposes D2 ensure and resume controls", () => {

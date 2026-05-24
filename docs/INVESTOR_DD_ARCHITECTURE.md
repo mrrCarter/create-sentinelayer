@@ -53,7 +53,7 @@ Under `.sentinelayer/runs/<runId>/investor-dd/`:
 
 `progress.json` is intentionally stricter than the historical landing table. It keeps `sellableReady=false` until the run proves required DD capabilities, including persona roster parity, Senti/session streaming evidence, per-agent token/time/LOC/margin telemetry, live reconciliation, devTestBot/AIdenID runtime proof, report-email delivery, and a portable artifact bundle.
 
-Local `budgetState` counters are treated as a run governor only. They do not satisfy billing-grade token or margin telemetry until DD calls emit durable `session_usage` entries.
+Local `budgetState` counters are treated as a run governor only. They do not satisfy billing-grade token or margin telemetry. Optional DD planner paths now emit durable `session_usage` when a Senti session context is supplied, and `sl omargate investor-dd --notify-session <id> --require-usage-ledger` fails closed if those LLM planner calls cannot be recorded. Deterministic persona scans do not fabricate token usage.
 
 The current main roster is 12 personas, so generated progress will flag the missing frontend/Jules persona until that gap is closed or the expected roster is deliberately changed with tests.
 

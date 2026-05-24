@@ -14,6 +14,12 @@ import crypto from "node:crypto";
 import { recordProvisionedIdentity } from "../ai/identity-store.js";
 import { runDevTestBotSession } from "../agents/devtestbot/tool.js";
 import { checkBudget } from "./investor-dd-file-loop.js";
+import {
+  INVESTOR_DD_USAGE_ACTIONS,
+  assertInvestorDdUsageContextReady,
+  isInvestorDdUsageLedgerError,
+  recordInvestorDdLlmUsage,
+} from "./investor-dd-usage.js";
 
 export const DEVTESTBOT_PHASE_MAX_CONCURRENT = 4;
 export const DEVTESTBOT_PHASE_DEFAULT_SCOPE = "smoke";
@@ -80,23 +86,69 @@ function buildPlannerPrompt({ rootPath, files = [], findings = [], budget = {} }
   ].join("\n");
 }
 
-async function callPlannerClient({ plannerClient, rootPath, files, findings, budget }) {
-  if (!plannerClient) return {};
+async function callPlannerClient({ plannerClient, rootPath, files, findings, budget, sessionUsage }) {
+  if (!plannerClient) return { planned: {}, usageLedger: null };
   const prompt = buildPlannerPrompt({ rootPath, files, findings, budget });
   if (typeof plannerClient.decideDevTestBotPhase === "function") {
-    return plannerClient.decideDevTestBotPhase({ rootPath, files, findings, budget, prompt });
+    return {
+      planned: await plannerClient.decideDevTestBotPhase({ rootPath, files, findings, budget, prompt }),
+      usageLedger: null,
+    };
   }
+  if (sessionUsage) {
+    assertInvestorDdUsageContextReady({
+      usageContext: sessionUsage,
+      action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
+      agentId: "investor-dd-devtestbot-planner",
+      targetPath: rootPath,
+    });
+  }
+  const startedAtIso = new Date().toISOString();
   if (typeof plannerClient.invoke === "function") {
     const response = await plannerClient.invoke({ prompt, stream: false });
-    return parsePlannerJson(response?.text || response);
+    const usageLedger = sessionUsage
+      ? await recordInvestorDdLlmUsage({
+          usageContext: sessionUsage,
+          action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
+          agentId: "investor-dd-devtestbot-planner",
+          phase: "devtestbot_planner",
+          prompt,
+          response,
+          model: response?.model,
+          provider: response?.provider,
+          startedAtIso,
+          targetPath: rootPath,
+          metadata: {
+            plannerClient: "invoke",
+          },
+        })
+      : null;
+    return { planned: parsePlannerJson(response?.text || response), usageLedger };
   }
   if (typeof plannerClient.generatePlan === "function") {
     const response = await plannerClient.generatePlan([{ role: "user", content: prompt }], {
       phase: "devtestbot",
     });
-    return parsePlannerJson(response?.text || response?.content || response);
+    const usageLedger = sessionUsage
+      ? await recordInvestorDdLlmUsage({
+          usageContext: sessionUsage,
+          action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
+          agentId: "investor-dd-devtestbot-planner",
+          phase: "devtestbot_planner",
+          messages: [{ role: "user", content: prompt }],
+          response,
+          model: response?.model,
+          provider: response?.provider,
+          startedAtIso,
+          targetPath: rootPath,
+          metadata: {
+            plannerClient: "generatePlan",
+          },
+        })
+      : null;
+    return { planned: parsePlannerJson(response?.text || response?.content || response), usageLedger };
   }
-  return {};
+  return { planned: {}, usageLedger: null };
 }
 
 function chooseScope({ requestedScope, files = [], findings = [], plannedScope }) {
@@ -135,6 +187,7 @@ function normalizePhaseOptions(options = {}) {
     runner: source.runner || null,
     provisionIdentity: source.provisionIdentity || null,
     maxConcurrentAgents: source.maxConcurrentAgents,
+    sessionUsage: source.sessionUsage || null,
   };
 }
 
@@ -178,15 +231,22 @@ export async function planDevTestBotPhase({
   }
 
   let planned = {};
+  let usageLedger = null;
   try {
-    planned = await callPlannerClient({
+    const plannerResult = await callPlannerClient({
       plannerClient: normalized.plannerClient,
       rootPath,
       files,
       findings,
       budget,
+      sessionUsage: normalized.sessionUsage,
     });
-  } catch {
+    planned = plannerResult.planned || {};
+    usageLedger = plannerResult.usageLedger || null;
+  } catch (error) {
+    if (isInvestorDdUsageLedgerError(error)) {
+      throw error;
+    }
     planned = {};
   }
   const swarmCount = clampInt(normalized.swarmCount ?? planned.swarmCount, {
@@ -236,6 +296,7 @@ export async function planDevTestBotPhase({
     baseUrl: normalized.baseUrl,
     recordVideo: normalized.recordVideo !== false,
     maxConcurrentAgents,
+    usageLedger,
   };
 }
 
@@ -415,6 +476,20 @@ export async function runDevTestBotPhase({
       maxConcurrentAgents: plan.maxConcurrentAgents,
     },
   });
+  if (plan.usageLedger?.ok) {
+    onEvent({
+      type: "devtestbot_planner_usage_recorded",
+      phase: "devtestbot",
+      action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
+      ledgerEntryId: plan.usageLedger.ledgerEntry?.ledgerEntryId || "",
+    });
+  } else if (plan.usageLedger?.ok === false) {
+    onEvent({
+      type: "devtestbot_planner_usage_unrecorded",
+      phase: "devtestbot",
+      reason: plan.usageLedger.reason || "unknown",
+    });
+  }
 
   if (!plan.enabled) {
     const skipped = {

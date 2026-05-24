@@ -1135,6 +1135,10 @@ async function runLocalOmarGateCommand(args) {
     const devTestBotBaseUrl = getCommandOptionValue(args, "--devtestbot-base-url") || "";
     const devTestBotScope = getCommandOptionValue(args, "--devtestbot-scope") || "";
     const emailOnComplete = getCommandOptionValue(args, "--email-on-complete") || "";
+    const notifySession = getCommandOptionValue(args, "--notify-session") || "";
+    const requireUsageLedger = hasCommandOption(args, "--require-usage-ledger");
+    const model = getCommandOptionValue(args, "--model") || "gpt-5.3-codex";
+    const provider = getCommandOptionValue(args, "--provider") || "sentinelayer";
 
     const targetPath = path.resolve(process.cwd(), pathArg);
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
@@ -1163,6 +1167,18 @@ async function runLocalOmarGateCommand(args) {
         baseUrl: devTestBotBaseUrl,
         scope: devTestBotScope,
       },
+      sessionUsage: notifySession || requireUsageLedger
+        ? {
+            sessionId: notifySession,
+            agentId: "investor-dd",
+            model,
+            provider,
+            targetPath,
+            billingTier: "internal",
+            sourceCommand: "omargate investor-dd",
+            required: requireUsageLedger,
+          }
+        : null,
       reportEmail: emailOnComplete
         ? {
             to: emailOnComplete,

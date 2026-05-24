@@ -18,6 +18,11 @@
  */
 
 import { runEnvelopeLoop } from "../agents/envelope/index.js";
+import {
+  INVESTOR_DD_USAGE_ACTIONS,
+  assertInvestorDdUsageContextReady,
+  recordInvestorDdLlmUsage,
+} from "./investor-dd-usage.js";
 
 export const INVESTOR_DD_DEFAULT_MAX_TURNS_PER_FILE = 6;
 export const INVESTOR_DD_DEFAULT_STUCK_THRESHOLD = 2;
@@ -122,21 +127,75 @@ function meterTools(tools, budget, onToolCall) {
   }));
 }
 
+function rememberUsageLedgerEntry(budget, entry) {
+  if (!budget || typeof budget !== "object" || !entry?.ok) return;
+  if (!Array.isArray(budget.sessionUsageLedgerEntries)) {
+    budget.sessionUsageLedgerEntries = [];
+  }
+  budget.sessionUsageLedgerEntries.push(entry);
+}
+
 /**
  * Wrap the caller's LLM client so every generatePlan call increments the
- * llmCalls counter. Cost accounting for LLM calls is the client's
- * responsibility (it knows the model and tokens), so the client adds to
- * `budget.spentUsd` directly.
+ * llmCalls counter. Billing-grade token accounting is recorded only from
+ * provider-returned usage after the planner returns.
  *
  * @param {object} client
  * @param {InvestorDdBudgetState} budget
  */
-function meterClient(client, budget) {
+function meterClient(client, budget, { personaId, sessionUsage, onEvent }) {
   return {
     ...client,
     generatePlan: async (messages, options) => {
+      const startedAtIso = new Date().toISOString();
+      if (sessionUsage) {
+        try {
+          assertInvestorDdUsageContextReady({
+            usageContext: sessionUsage,
+            action: INVESTOR_DD_USAGE_ACTIONS.filePlanner,
+            agentId: `investor-dd-${personaId}`,
+          });
+        } catch (error) {
+          budget.usageLedgerError = error;
+          throw error;
+        }
+      }
       budget.llmCalls += 1;
-      return client.generatePlan(messages, options);
+      const response = await client.generatePlan(messages, options);
+      if (!sessionUsage) {
+        return response;
+      }
+      const usageResult = await recordInvestorDdLlmUsage({
+        usageContext: sessionUsage,
+        action: INVESTOR_DD_USAGE_ACTIONS.filePlanner,
+        agentId: `investor-dd-${personaId}`,
+        phase: "persona_file_loop",
+        messages,
+        response,
+        startedAtIso,
+        metadata: {
+          personaId,
+          turn: options?.turn || 0,
+        },
+      }).catch((error) => {
+        budget.usageLedgerError = error;
+        throw error;
+      });
+      if (usageResult?.ok === false) {
+        onEvent({
+          type: "persona_llm_usage_unrecorded",
+          personaId,
+          reason: usageResult.reason || "unknown",
+        });
+      } else if (usageResult?.ok) {
+        rememberUsageLedgerEntry(budget, usageResult);
+        onEvent({
+          type: "persona_llm_usage_recorded",
+          personaId,
+          action: INVESTOR_DD_USAGE_ACTIONS.filePlanner,
+        });
+      }
+      return response;
     },
   };
 }
@@ -157,6 +216,7 @@ function meterClient(client, budget) {
  * @param {object} [params.options]
  * @param {number} [params.options.maxTurnsPerFile]
  * @param {number} [params.options.stuckThreshold]
+ * @param {object} [params.sessionUsage]         - Optional billing-grade Senti usage context.
  * @returns {Promise<InvestorDdFileLoopResult>}
  */
 export async function runPerFileReviewLoop({
@@ -167,6 +227,7 @@ export async function runPerFileReviewLoop({
   buildInitialMessages,
   budget,
   onEvent = () => {},
+  sessionUsage = null,
   options = {},
 } = {}) {
   if (!personaId || typeof personaId !== "string") {
@@ -193,7 +254,9 @@ export async function runPerFileReviewLoop({
     : INVESTOR_DD_DEFAULT_STUCK_THRESHOLD;
 
   const safeBudget = budget || createBudgetState();
-  const meteredClient = meterClient(client, safeBudget);
+  const initialUsageLedgerEntryCount = Array.isArray(safeBudget.sessionUsageLedgerEntries)
+    ? safeBudget.sessionUsageLedgerEntries.length
+    : 0;
 
   const perFile = [];
   const allFindings = [];
@@ -225,6 +288,11 @@ export async function runPerFileReviewLoop({
       emit({ type: "persona_file_tool_call", personaId, file, tool, input });
     });
     const initialMessages = buildInitialMessages(file);
+    const meteredClient = meterClient(client, safeBudget, {
+      personaId,
+      sessionUsage,
+      onEvent: emit,
+    });
 
     let loopResult;
     try {
@@ -256,7 +324,13 @@ export async function runPerFileReviewLoop({
           },
         },
       });
+      if (safeBudget.usageLedgerError) {
+        throw safeBudget.usageLedgerError;
+      }
     } catch (err) {
+      if (safeBudget.usageLedgerError && err === safeBudget.usageLedgerError) {
+        throw err;
+      }
       terminationReason = "client-error";
       emit({
         type: "persona_file_error",
@@ -298,6 +372,9 @@ export async function runPerFileReviewLoop({
     findings: allFindings,
     visited,
     skipped,
+    usageLedgerEntries: Array.isArray(safeBudget.sessionUsageLedgerEntries)
+      ? safeBudget.sessionUsageLedgerEntries.slice(initialUsageLedgerEntryCount).filter((entry) => entry?.ok)
+      : [],
     terminationReason,
   };
 }
