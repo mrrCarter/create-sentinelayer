@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.18.1...v0.18.2) (2026-05-24)
+
+
+### Bug Fixes
+
+* **session:** hydrate daemon from durable events ([#548](https://github.com/mrrCarter/create-sentinelayer/issues/548)) ([d58629c](https://github.com/mrrCarter/create-sentinelayer/commit/d58629c08c305cacd6f3cb097c246f5eb463116e))
+
 ## [0.18.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.18.0...v0.18.1) (2026-05-24)
 
 
