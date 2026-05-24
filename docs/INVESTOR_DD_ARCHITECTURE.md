@@ -1,6 +1,6 @@
 # Investor-DD Audit Architecture
 
-**Status**: CORE IMPLEMENTATION COMPLETE — 10 PRs merged (2026-04-21), all 32 planned work items landed across collapsed merges. Further PRs are polish only (partial-report UX, resume-from-partial, eval-regression suite).
+**Status**: CORE DATA PLANE PRESENT, SELLABLE-DD READINESS IS GENERATED PER RUN. The orchestrator, artifact bundle, compliance pack, live-validator adapters, HTML report, notification hooks, and reproducibility chain exist, but the source of truth for whether a run is sellable-ready is now `progress.json` plus `summary.ddProgress`. Do not claim a DD run is complete from this prose alone.
 
 ## Landed in main (2026-04-21)
 
@@ -41,6 +41,7 @@ Under `.sentinelayer/runs/<runId>/investor-dd/`:
 - `persona-<id>.json` — per-persona findings + coverage proof
 - `findings.json` — flat list, each finding carries `.reproducibility` block
 - `summary.json` — run metadata + compliance + reconciliation flags
+- `progress.json` — generated sellable-readiness ledger; complete/partial/deferred/not-configured capability status and blocking gaps
 - `compliance.json` — SOC 2 / ISO 27001 / GDPR/CCPA / HIPAA / license / DR gap tables
 - `interaction-plan.json` — discovered interactive elements (when live validator runs)
 - `live-observations.json` — per-interaction observations + identity (when live validator runs)
@@ -48,7 +49,15 @@ Under `.sentinelayer/runs/<runId>/investor-dd/`:
 - `report.html` — self-contained HTML report (inlined CSS)
 - `manifest.json` — SHA-256 chain of every artifact file
 
-## Remaining polish (optional)
+## Remaining sellable-readiness gaps
+
+`progress.json` is intentionally stricter than the historical landing table. It keeps `sellableReady=false` until the run proves required DD capabilities, including persona roster parity, Senti/session streaming evidence, per-agent token/time/LOC/margin telemetry, live reconciliation, devTestBot/AIdenID runtime proof, report-email delivery, and a portable artifact bundle.
+
+Local `budgetState` counters are treated as a run governor only. They do not satisfy billing-grade token or margin telemetry until DD calls emit durable `session_usage` entries.
+
+The current main roster is 12 personas, so generated progress will flag the missing frontend/Jules persona until that gap is closed or the expected roster is deliberately changed with tests.
+
+## Remaining polish
 
 | PR | Spec Slot | Notes |
 |---:|-----------|-------|
@@ -167,6 +176,7 @@ Under `.sentinelayer/runs/<run-id>/investor-dd/`:
 - `reproducibility.json` — per-finding replay commands
 - `report.md` — human-readable final report
 - `report.html` — operator dashboard variant
+- `progress.json` — machine-readable sellable-readiness and blocking-gap ledger
 - `report.pdf` — emailable variant (if pandoc / headless-chrome available)
 - `manifest.json` — SHA-256 chain of every artifact
 

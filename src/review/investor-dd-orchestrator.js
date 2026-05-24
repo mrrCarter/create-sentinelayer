@@ -10,6 +10,7 @@
  *   persona-<id>.json  — per-persona findings + coverage proof
  *   findings.json      — flat list across all personas (dedup in PR-29)
  *   summary.json       — run metadata (timings, cost, terminationReason)
+ *   progress.json      — truthful sellable-readiness capability ledger
  *   report.md          — human-readable summary
  *   manifest.json      — SHA-256 chain of every artifact
  *
@@ -39,6 +40,7 @@ import { attachReproducibilityChain } from "./reproducibility-chain.js";
 import { renderInvestorDdHtml } from "./investor-dd-html-report.js";
 import { runDevTestBotPhase } from "./investor-dd-devtestbot.js";
 import { redactDdEmailError } from "./dd-report-email-client.js";
+import { buildInvestorDdProgress } from "./investor-dd-progress.js";
 
 const INVESTOR_DD_PERSONAS = Object.freeze([
   "security",
@@ -502,6 +504,38 @@ export async function runInvestorDd({
       emit,
     });
   }
+
+  const artifactFilesBeforeManifest = await fsp.readdir(artifactBase);
+  const ddProgress = buildInvestorDdProgress({
+    runId,
+    personas,
+    dryRun,
+    routing,
+    byPersona,
+    findings,
+    compliance,
+    reconciliationAvailable,
+    liveValidator,
+    devTestBotPhase,
+    reportEmailConfigured: Boolean(reportEmail),
+    reportEmailResult: runResult.reportEmail || null,
+    notification,
+    artifactFiles: artifactFilesBeforeManifest,
+    budgetState,
+  });
+  summary.ddProgress = {
+    version: ddProgress.version,
+    overallStatus: ddProgress.overallStatus,
+    sellableReady: ddProgress.sellableReady,
+    complete: ddProgress.summary.complete,
+    requiredComplete: ddProgress.summary.requiredComplete,
+    requiredTotal: ddProgress.summary.requiredTotal,
+    blockingGapCount: ddProgress.summary.blockingGapCount,
+    artifact: "progress.json",
+  };
+  runResult.progress = ddProgress;
+  await writeJson(path.join(artifactBase, "progress.json"), ddProgress);
+  await writeJson(path.join(artifactBase, "summary.json"), summary);
 
   await streamHandle.close();
 

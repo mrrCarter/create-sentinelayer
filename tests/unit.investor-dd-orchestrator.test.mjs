@@ -50,6 +50,7 @@ test("runInvestorDd: produces full artifact bundle", async () => {
     assert.ok(files.includes("plan.json"));
     assert.ok(files.includes("stream.ndjson"));
     assert.ok(files.includes("summary.json"));
+    assert.ok(files.includes("progress.json"));
     assert.ok(files.includes("report.md"));
     assert.ok(files.includes("manifest.json"));
     assert.ok(files.includes("findings.json"));
@@ -62,8 +63,19 @@ test("runInvestorDd: produces full artifact bundle", async () => {
     const summary = await readJson(path.join(result.artifactDir, "summary.json"));
     assert.equal(summary.runId, result.runId);
     assert.ok(summary.durationSeconds >= 0);
+    assert.equal(summary.ddProgress.version, "investor_dd_progress_v1");
+    assert.equal(summary.ddProgress.sellableReady, false);
+    assert.equal(summary.ddProgress.artifact, "progress.json");
+
+    const progress = await readJson(path.join(result.artifactDir, "progress.json"));
+    assert.equal(progress.runId, result.runId);
+    assert.equal(progress.truthfulClaim, "not_sellable_ready");
+    assert.equal(progress.sellableReady, false);
+    assert.ok(progress.missingPersonas.includes("frontend"));
+    assert.ok(progress.summary.blockingGapCount > 0);
 
     const manifest = await readJson(path.join(result.artifactDir, "manifest.json"));
+    assert.ok(manifest["progress.json"]);
     for (const [file, entry] of Object.entries(manifest)) {
       assert.ok(/^[0-9a-f]{64}$/.test(entry.sha256), `bad sha for ${file}`);
       assert.ok(entry.bytes > 0);
@@ -95,8 +107,18 @@ test("runInvestorDd: dryRun skips persona execution + still emits plan", async (
     assert.ok(events.some((e) => e.type === "investor_dd_dry_run"));
     const files = await fsp.readdir(result.artifactDir);
     assert.ok(files.includes("plan.json"));
+    assert.ok(files.includes("progress.json"));
     assert.equal(files.includes("findings.json"), false);
     assert.equal(files.includes("devtestbot-summary.json"), false);
+
+    const progress = await readJson(path.join(result.artifactDir, "progress.json"));
+    assert.equal(progress.sellableReady, false);
+    assert.equal(progress.overallStatus, "partial");
+    const roster = progress.capabilities.find((entry) => entry.id === "persona_roster");
+    const loops = progress.capabilities.find((entry) => entry.id === "persona_agentic_loops");
+    assert.equal(roster.status, "partial");
+    assert.equal(loops.status, "deferred");
+    assert.ok(progress.summary.blockingGaps.some((gap) => gap.capabilityId === "persona_agentic_loops"));
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
@@ -338,6 +360,11 @@ test("runInvestorDd: triggers DD report email after completion and streams queue
 
     const stream = await fsp.readFile(path.join(result.artifactDir, "stream.ndjson"), "utf-8");
     assert.match(stream, /"type":"dd_email_queued"/);
+
+    const progress = await readJson(path.join(result.artifactDir, "progress.json"));
+    const reportEmail = progress.capabilities.find((entry) => entry.id === "report_email");
+    assert.equal(reportEmail.status, "complete");
+    assert.equal(result.summary.ddProgress.artifact, "progress.json");
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
