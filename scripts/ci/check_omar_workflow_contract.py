@@ -94,7 +94,6 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
         if stripped.startswith(
             (
                 "anthropic_api_key:",
-                "google_api_key:",
                 "xai_api_key:",
                 "llm_provider:",
             )
@@ -113,7 +112,7 @@ def validate_omar_contract(workflow_text: str) -> None:
         raise OmarWorkflowContractError(
             "Omar workflow must call sentinelayer-v1-action directly, not a local wrapper"
         )
-    if "mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07" not in workflow_text:
+    if "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493" not in workflow_text:
         raise OmarWorkflowContractError(
             "Omar workflow must use the pinned sentinelayer-v1-action directly"
         )
@@ -161,8 +160,10 @@ def validate_omar_contract(workflow_text: str) -> None:
         "REQUESTED_FAILURE_POLICY: block",
         "REQUESTED_MODEL: gpt-5.3-codex",
         "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
+        "REQUESTED_FALLBACK_MODEL: gemini-2.5-flash",
         "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
-        "model_fallback: gpt-5.2-codex",
+        "google_api_key: ${{ secrets.GOOGLE_API_KEY }}",
+        "model_fallback: gemini-2.5-flash",
         "Omar BYOK model contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
@@ -230,15 +231,17 @@ jobs:
           echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07
+        uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
           sentinelayer_managed_llm: "false"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          model_fallback: gpt-5.2-codex
+          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
+          model_fallback: gemini-2.5-flash
       - name: Assert Omar BYOK model contract is active
         env:
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
+          REQUESTED_FALLBACK_MODEL: gemini-2.5-flash
           REQUESTED_MANAGED_LLM: "false"
           REQUESTED_FAILURE_POLICY: block
         run: |
@@ -273,10 +276,10 @@ jobs:
     _assert_fails(valid_workflow.replace("actions/upload-artifact", "actions/cache"))
     _assert_fails(valid_workflow.replace("mrrCarter/sentinelayer-v1-action@", "./.github/actions/omar-gate # "))
     _assert_fails(
-        valid_workflow.replace(
-            'sentinelayer_managed_llm: "false"',
-            "google_api_key: ${{ secrets.GOOGLE_API_KEY }}\n          sentinelayer_managed_llm: \"false\"",
-        )
+        valid_workflow.replace("google_api_key: ${{ secrets.GOOGLE_API_KEY }}", "")
+    )
+    _assert_fails(
+        valid_workflow.replace("model_fallback: gemini-2.5-flash", "model_fallback: gpt-5.2-codex")
     )
 
 

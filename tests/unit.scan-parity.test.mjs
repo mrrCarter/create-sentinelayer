@@ -41,6 +41,9 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.match(workflow, /- audit/);
   assert.match(workflow, /- full-depth/);
   assert.match(workflow, new RegExp(`uses: ${SENTINELAYER_ACTION_REF}`));
+  assert.match(workflow, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
+  assert.match(workflow, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
+  assert.match(workflow, /model_fallback:\s*gemini-2\.5-flash/);
 });
 
 test("Unit scan parity: local baseline/deep/full-depth persona contracts are stable", () => {

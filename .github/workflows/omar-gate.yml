@@ -433,6 +433,7 @@ jobs:
         env:
           SENTINELAYER_TOKEN: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${SENTINELAYER_TOKEN:-}" ]; then
@@ -443,21 +444,26 @@ jobs:
             echo "::error::OPENAI_API_KEY is required because create-sentinelayer Omar Gate runs in BYOK real-LLM mode."
             exit 1
           fi
+          if [ -z "${GOOGLE_API_KEY:-}" ]; then
+            echo "::error::GOOGLE_API_KEY is required for the Gemini BYOK fallback when OpenAI quota is unavailable."
+            exit 1
+          fi
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07
+        uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
           github_token: ${{ github.token }}
           sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
           sentinelayer_managed_llm: "false"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
           codex_model: gpt-5.3-codex
-          model_fallback: gpt-5.2-codex
+          model_fallback: gemini-2.5-flash
           llm_failure_policy: block
       - name: Assert Omar BYOK model contract is active
         if: steps.trust_boundary.outputs.trusted_context == 'true'
@@ -466,20 +472,21 @@ jobs:
           GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
+          REQUESTED_FALLBACK_MODEL: gemini-2.5-flash
           REQUESTED_MANAGED_LLM: "false"
           REQUESTED_FAILURE_POLICY: block
         run: |
           set -euo pipefail
           gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
-          if [ "${REQUESTED_MANAGED_LLM}" != "false" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ]; then
-            echo "::error::Omar BYOK policy drifted (managed='${REQUESTED_MANAGED_LLM}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
+          if [ "${REQUESTED_MANAGED_LLM}" != "false" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-flash" ]; then
+            echo "::error::Omar BYOK policy drifted (managed='${REQUESTED_MANAGED_LLM}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
             exit 1
           fi
           if [ "${gate_status}" != "passed" ]; then
             echo "::error::Omar Gate did not pass (gate_status='${gate_status}'). Blocking merge."
             exit 1
           fi
-          echo "Omar BYOK model contract active: model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' gate='${gate_status}'"
+          echo "Omar BYOK model contract active: model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' gate='${gate_status}'"
       - name: Validate Omar output contract
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash

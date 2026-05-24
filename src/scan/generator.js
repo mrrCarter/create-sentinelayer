@@ -2,7 +2,7 @@ import YAML from "yaml";
 
 export const DEFAULT_SCAN_WORKFLOW_PATH = ".github/workflows/omar-gate.yml";
 export const DEFAULT_SCAN_SECRET_NAME = "SENTINELAYER_TOKEN";
-export const SENTINELAYER_ACTION_REF = "mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07";
+export const SENTINELAYER_ACTION_REF = "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493";
 export const SUPPORTED_E2E_HINTS = Object.freeze(["auto", "yes", "no"]);
 export const SUPPORTED_PLAYWRIGHT_MODES = Object.freeze(["auto", "off", "baseline", "audit"]);
 
@@ -228,11 +228,12 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
               sentinelayer_token: `\${{ secrets.${normalizedSecret} }}`,
               sentinelayer_managed_llm: "false",
               openai_api_key: "${{ secrets.OPENAI_API_KEY }}",
+              google_api_key: "${{ secrets.GOOGLE_API_KEY }}",
               scan_mode: profile.scanMode || "deep",
               severity_gate: profile.severityGate || "P1",
               model: "gpt-5.3-codex",
               codex_model: "gpt-5.3-codex",
-              model_fallback: "gpt-5.2-codex",
+              model_fallback: "gemini-2.5-flash",
               llm_failure_policy: "block",
               playwright_mode: profile.playwrightMode || "off",
               sbom_mode: profile.sbomMode || "off",
