@@ -50,6 +50,7 @@ export function registerOmarGateCommand(program, invokeLegacy) {
     .option("--notify-email <addr>", "Send final report to this email (default: account email)")
     .option("--email-on-complete <addr>", "Trigger the API-side DD report email after the run completes")
     .option("--notify-session <session-id>", "Stream progress into this Senti session (default: auto-start)")
+    .option("--require-usage-ledger", "Fail if Investor-DD LLM planner calls cannot write session_usage")
     .option("--no-email", "Skip email dispatch")
     .option("--no-dashboard", "Skip dashboard card persistence")
     .option("--devtestbot-base-url <url>", "Approved absolute URL for devTestBot browser lanes")

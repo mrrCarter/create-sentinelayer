@@ -273,6 +273,7 @@ async function triggerReportEmail({ reportEmail, runResult, dryRun, emit }) {
  * @param {object} [params.liveValidator.aidenid]       - AIdenID client.
  * @param {number} [params.liveValidator.maxInteractions]
  * @param {object|false} [params.devTestBot]     - Automated devTestBot phase config.
+ * @param {object|null} [params.sessionUsage]    - Optional Senti session_usage context for DD LLM calls.
  * @param {object|null} [params.reportEmail]     - Optional API-side report email trigger.
  * @param {string} [params.reportEmail.to]
  * @param {object} [params.reportEmail.client]   - { send({ runId, to, run }) }.
@@ -292,6 +293,7 @@ export async function runInvestorDd({
   compliancePacks = COMPLIANCE_PACK_CATALOG,
   liveValidator = null,
   devTestBot = {},
+  sessionUsage = null,
   reportEmail = null,
   notification = null,
 } = {}) {
@@ -384,7 +386,12 @@ export async function runInvestorDd({
       files,
       findings,
       budget: budgetState,
-      options: devTestBot === false ? { enabled: false } : devTestBot || {},
+      options: devTestBot === false
+        ? { enabled: false }
+        : {
+            ...(devTestBot || {}),
+            sessionUsage,
+          },
       onEvent: emit,
     });
     findings.push(...(devTestBotPhase.findings || []));

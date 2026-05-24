@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { runInvestorDd } from "../src/review/investor-dd-orchestrator.js";
+import { InvestorDdUsageLedgerError } from "../src/review/investor-dd-usage.js";
 
 async function makeTempRepo() {
   return fsp.mkdtemp(path.join(os.tmpdir(), "senti-invdd-orch-"));
@@ -416,6 +417,8 @@ test("runInvestorDd: runs devTestBot phase and merges artifact findings", async 
     await writeFile(root, "src/app.js", "export const ok = true;\n");
     const events = [];
     const runnerCalls = [];
+    const plannerCalls = [];
+    const usageCalls = [];
 
     const result = await runInvestorDd({
       rootPath: root,
@@ -423,7 +426,40 @@ test("runInvestorDd: runs devTestBot phase and merges artifact findings", async 
       personas: ["security"],
       compliancePacks: ["license"],
       onEvent: (e) => events.push(e),
+      sessionUsage: {
+        sessionId: "sess-dd",
+        targetPath: root,
+        model: "gpt-5.3-codex",
+        provider: "sentinelayer",
+        syncRemote: false,
+        recorder: async (payload) => {
+          usageCalls.push(payload);
+          return {
+            ok: true,
+            ledgerEntry: { ledgerEntryId: "bill_devtestbot_planner" },
+          };
+        },
+      },
       devTestBot: {
+        plannerClient: {
+          generatePlan: async (messages, options) => {
+            plannerCalls.push({ messages, options });
+            return {
+              text: JSON.stringify({
+                identityCount: 1,
+                swarmCount: 1,
+                perSwarmBudget: 0.05,
+                scope: "auth",
+              }),
+              usage: {
+                inputTokens: 80,
+                outputTokens: 20,
+                model: "gpt-5.3-codex",
+                provider: "sentinelayer",
+              },
+            };
+          },
+        },
         runner: async (input) => {
           runnerCalls.push(input);
           await fsp.mkdir(input.outputDir, { recursive: true });
@@ -465,9 +501,19 @@ test("runInvestorDd: runs devTestBot phase and merges artifact findings", async 
     });
 
     assert.equal(runnerCalls.length, 1);
+    assert.equal(plannerCalls.length, 1);
+    assert.equal(usageCalls.length, 1);
+    assert.equal(usageCalls[0].sessionId, "sess-dd");
+    assert.equal(usageCalls[0].action, "investor_dd_devtestbot_planner");
+    assert.equal(usageCalls[0].agentId, "investor-dd-devtestbot-planner");
+    assert.equal(usageCalls[0].inputTokens, 80);
+    assert.equal(usageCalls[0].outputTokens, 20);
+    assert.equal(usageCalls[0].metadata.phase, "devtestbot_planner");
     assert.equal(runnerCalls[0].execute, false);
+    assert.equal(runnerCalls[0].scope, "auth");
     assert.match(runnerCalls[0].outputDir, /[\\/]devtestbot[\\/]devtestbot-1$/);
     assert.ok(events.some((e) => e.type === "devtestbot_start"));
+    assert.ok(events.some((e) => e.type === "devtestbot_planner_usage_recorded"));
     assert.ok(events.some((e) => e.type === "devtestbot_agent_start"));
     assert.ok(events.some((e) => e.type === "devtestbot_complete"));
 
@@ -476,6 +522,14 @@ test("runInvestorDd: runs devTestBot phase and merges artifact findings", async 
     assert.equal(summary.devTestBot.swarmCount, 1);
     assert.equal(summary.devTestBot.findingCount, 1);
     assert.match(summary.devTestBot.artifactRoot, /[\\/]devtestbot$/);
+    const usageCapability = result.progress.capabilities.find(
+      (capability) => capability.id === "usage_margin_telemetry",
+    );
+    assert.equal(usageCapability.status, "partial");
+    assert.equal(
+      usageCapability.evidence.some((item) => item === "sessionUsageLedger=true"),
+      true,
+    );
 
     const devTestBotSummary = await readJson(path.join(result.artifactDir, "devtestbot-summary.json"));
     assert.equal(devTestBotSummary.subagents.length, 1);
@@ -552,6 +606,98 @@ test("runInvestorDd: devTestBot subagent errors are redacted and non-fatal", asy
     const devTestBotSummary = JSON.parse(devTestBotText);
     assert.equal(devTestBotSummary.subagents.length, 2);
     assert.equal(devTestBotSummary.subagents.some((entry) => entry.completed === false), true);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: required DD usage ledger recording failure blocks devTestBot execution", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "export const ok = true;\n");
+    let runnerCalled = false;
+
+    await assert.rejects(
+      () => runInvestorDd({
+        rootPath: root,
+        outputDir: root,
+        personas: ["security"],
+        compliancePacks: ["license"],
+        sessionUsage: {
+          sessionId: "sess-dd",
+          required: true,
+          model: "gpt-5.3-codex",
+          syncRemote: false,
+          recorder: async () => ({ ok: false, reason: "quota_projection_down" }),
+        },
+        devTestBot: {
+          plannerClient: {
+            generatePlan: async () => ({
+              text: JSON.stringify({ identityCount: 1, swarmCount: 1, scope: "smoke" }),
+              usage: { inputTokens: 10, outputTokens: 5, model: "gpt-5.3-codex" },
+            }),
+          },
+          runner: async () => {
+            runnerCalled = true;
+            return { completed: true, findings: [], artifactBundle: {} };
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof InvestorDdUsageLedgerError, true);
+        assert.match(error.message, /quota_projection_down/);
+        return true;
+      },
+    );
+    assert.equal(runnerCalled, false);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runInvestorDd: required DD usage context fails before devTestBot planner spend", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/app.js", "export const ok = true;\n");
+    let plannerCalled = false;
+    let runnerCalled = false;
+
+    await assert.rejects(
+      () => runInvestorDd({
+        rootPath: root,
+        outputDir: root,
+        personas: ["security"],
+        compliancePacks: ["license"],
+        sessionUsage: {
+          required: true,
+          model: "gpt-5.3-codex",
+          syncRemote: false,
+          recorder: async () => ({ ok: true }),
+        },
+        devTestBot: {
+          plannerClient: {
+            generatePlan: async () => {
+              plannerCalled = true;
+              return {
+                text: JSON.stringify({ identityCount: 1, swarmCount: 1, scope: "smoke" }),
+                usage: { inputTokens: 10, outputTokens: 5, model: "gpt-5.3-codex" },
+              };
+            },
+          },
+          runner: async () => {
+            runnerCalled = true;
+            return { completed: true, findings: [], artifactBundle: {} };
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof InvestorDdUsageLedgerError, true);
+        assert.equal(error.result?.reason, "missing_session_usage_context");
+        return true;
+      },
+    );
+    assert.equal(plannerCalled, false);
+    assert.equal(runnerCalled, false);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

@@ -10,6 +10,7 @@ import {
   INVESTOR_DD_DEFAULT_MAX_TURNS_PER_FILE,
   INVESTOR_DD_DEFAULT_STUCK_THRESHOLD,
 } from "../src/review/investor-dd-file-loop.js";
+import { InvestorDdUsageLedgerError } from "../src/review/investor-dd-usage.js";
 
 /**
  * Stub LLM client that returns a scripted plan per invocation. Supports
@@ -170,6 +171,93 @@ test("runPerFileReviewLoop meters tool calls against budget", async () => {
   assert.equal(budget.toolCalls, 1);
   assert.ok(budget.llmCalls >= 1);
   assert.equal(budget.spentUsd, 0.25);
+});
+
+test("runPerFileReviewLoop records planner session usage when context is supplied", async () => {
+  const client = scriptedClient({
+    "*": [{
+      stopReason: "end-turn",
+      content: "done",
+      toolCalls: [],
+      findings: [],
+      usage: {
+        inputTokens: 25,
+        outputTokens: 7,
+        model: "gpt-5.3-codex",
+      },
+    }],
+  });
+  const usageCalls = [];
+  const budget = createBudgetState({ maxUsd: 10 });
+
+  const result = await runPerFileReviewLoop({
+    personaId: "security",
+    files: ["x.js"],
+    client,
+    buildTools: () => [],
+    buildInitialMessages: () => [{ role: "user", content: "FILE:x.js" }],
+    budget,
+    sessionUsage: {
+      sessionId: "sess-dd",
+      model: "gpt-5.3-codex",
+      syncRemote: false,
+      recorder: async (payload) => {
+        usageCalls.push(payload);
+        return { ok: true, ledgerEntry: { ledgerEntryId: "bill_file" } };
+      },
+    },
+  });
+
+  assert.equal(usageCalls.length, 1);
+  assert.equal(usageCalls[0].sessionId, "sess-dd");
+  assert.equal(usageCalls[0].agentId, "investor-dd-security");
+  assert.equal(usageCalls[0].action, "investor_dd_file_planner");
+  assert.equal(usageCalls[0].inputTokens, 25);
+  assert.equal(usageCalls[0].outputTokens, 7);
+  assert.equal(usageCalls[0].metadata.personaId, "security");
+  assert.equal(budget.sessionUsageLedgerEntries.length, 1);
+  assert.equal(result.usageLedgerEntries.length, 1);
+  assert.equal(result.usageLedgerEntries[0].ledgerEntry.ledgerEntryId, "bill_file");
+});
+
+test("runPerFileReviewLoop required usage ledger context fails before planner spend", async () => {
+  let clientCalls = 0;
+  const budget = createBudgetState({ maxUsd: 10 });
+
+  await assert.rejects(
+    () => runPerFileReviewLoop({
+      personaId: "security",
+      files: ["x.js"],
+      client: {
+        generatePlan: async () => {
+          clientCalls += 1;
+          return {
+            stopReason: "end-turn",
+            content: "done",
+            toolCalls: [],
+            findings: [],
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      },
+      buildTools: () => [],
+      buildInitialMessages: () => [{ role: "user", content: "FILE:x.js" }],
+      budget,
+      sessionUsage: {
+        required: true,
+        model: "gpt-5.3-codex",
+        syncRemote: false,
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof InvestorDdUsageLedgerError, true);
+      assert.equal(error.result?.reason, "missing_session_usage_context");
+      return true;
+    },
+  );
+
+  assert.equal(clientCalls, 0);
+  assert.equal(budget.llmCalls, 0);
 });
 
 test("runPerFileReviewLoop records client error and continues", async () => {

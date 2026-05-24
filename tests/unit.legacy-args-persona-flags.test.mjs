@@ -107,13 +107,14 @@ test("buildLegacyArgs: negated and dry-run flags pass through", () => {
       notifyEmail: "ops@example.com",
       emailOnComplete: "investor@example.com",
       notifySession: "session-123",
+      requireUsageLedger: true,
       devtestbot: false,
       devtestbotBaseUrl: "https://app.example.test",
       devtestbotScope: "smoke",
     },
   });
 
-  for (const flag of ["--no-ai", "--dry-run", "--no-email", "--no-dashboard", "--no-devtestbot"]) {
+  for (const flag of ["--no-ai", "--dry-run", "--no-email", "--no-dashboard", "--no-devtestbot", "--require-usage-ledger"]) {
     assert.ok(args.includes(flag), `expected ${flag}`);
   }
   for (const [flag, value] of [

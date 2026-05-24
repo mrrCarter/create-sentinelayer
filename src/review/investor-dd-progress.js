@@ -41,6 +41,33 @@ function compactBudgetState(budgetState) {
   };
 }
 
+function usageLedgerKey(entry) {
+  return [
+    entry?.ledgerEntry?.ledgerEntryId,
+    entry?.action,
+    entry?.ledgerEntry?.idempotencyKey,
+    entry?.inputTokens,
+    entry?.outputTokens,
+  ].map((value) => String(value || "")).join(":");
+}
+
+function collectSessionUsageLedgerEntries({ budgetState = null, devTestBotPhase = null, usageLedgerEntries = [] }) {
+  const candidates = [
+    ...(Array.isArray(usageLedgerEntries) ? usageLedgerEntries : []),
+    ...(Array.isArray(budgetState?.sessionUsageLedgerEntries) ? budgetState.sessionUsageLedgerEntries : []),
+    devTestBotPhase?.plan?.usageLedger,
+  ].filter((entry) => entry?.ok);
+  const seen = new Set();
+  const entries = [];
+  for (const entry of candidates) {
+    const key = usageLedgerKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push(entry);
+  }
+  return entries;
+}
+
 function byId(capabilities, id) {
   return capabilities.find((capability) => capability.id === id);
 }
@@ -94,6 +121,7 @@ export function buildInvestorDdProgress({
   notification = null,
   artifactFiles = [],
   budgetState = null,
+  usageLedgerEntries = [],
 } = {}) {
   const activePersonas = uniqueStrings(personas);
   const missingPersonas = INVESTOR_DD_EXPECTED_PERSONAS.filter(
@@ -148,22 +176,37 @@ export function buildInvestorDdProgress({
   });
 
   const compactBudget = compactBudgetState(budgetState);
+  const sessionUsageLedgerEntries = collectSessionUsageLedgerEntries({
+    budgetState,
+    devTestBotPhase,
+    usageLedgerEntries,
+  });
+  const hasSessionUsageLedger = sessionUsageLedgerEntries.length > 0;
   addCapability(capabilities, {
     id: "usage_margin_telemetry",
     label: "Billing-grade per-agent usage, token, time, LOC, and margin telemetry",
-    status: compactBudget ? "partial" : dryRun ? "deferred" : "not_configured",
-    evidence: compactBudget
+    status: compactBudget || hasSessionUsageLedger ? "partial" : dryRun ? "deferred" : "not_configured",
+    evidence: compactBudget || hasSessionUsageLedger
       ? [
-          `localBudgetSpentUsd=${compactBudget.spentUsd}`,
-          `localBudgetToolCalls=${compactBudget.toolCalls}`,
-          `localBudgetLlmCalls=${compactBudget.llmCalls}`,
-          "sessionUsageLedger=false",
+          ...(compactBudget
+            ? [
+                `localBudgetSpentUsd=${compactBudget.spentUsd}`,
+                `localBudgetToolCalls=${compactBudget.toolCalls}`,
+                `localBudgetLlmCalls=${compactBudget.llmCalls}`,
+              ]
+            : []),
+          `sessionUsageLedger=${hasSessionUsageLedger}`,
+          ...sessionUsageLedgerEntries.map((entry) =>
+            `usageLedgerEntry=${entry.ledgerEntry?.ledgerEntryId || "recorded"}`
+          ),
         ]
       : dryRun
         ? ["dryRun=true"]
         : [],
     gaps: [
-      "budgetState is a local run governor, not the billing-grade session_usage ledger",
+      hasSessionUsageLedger
+        ? "only optional DD planner calls are wired to billing-grade session_usage"
+        : "budgetState is a local run governor, not the billing-grade session_usage ledger",
       "summary does not include per-agent token totals",
       "summary does not include per-agent runtime, LOC scanned, customer price, or margin",
     ],
