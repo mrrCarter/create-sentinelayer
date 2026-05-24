@@ -112,7 +112,7 @@ def validate_omar_contract(workflow_text: str) -> None:
         raise OmarWorkflowContractError(
             "Omar workflow must call sentinelayer-v1-action directly, not a local wrapper"
         )
-    if "mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07" not in workflow_text:
+    if "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493" not in workflow_text:
         raise OmarWorkflowContractError(
             "Omar workflow must use the pinned sentinelayer-v1-action directly"
         )
@@ -231,7 +231,7 @@ jobs:
           echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07
+        uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
           sentinelayer_managed_llm: "false"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}

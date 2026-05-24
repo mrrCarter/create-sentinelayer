@@ -9,16 +9,15 @@ test("Unit Omar workflow: BYOK real LLM keeps Omar in fail-closed direct-action 
   const workflowText = await readFile(path.join(repoRoot, ".github", "workflows", "omar-gate.yml"), "utf8");
 
   assert.doesNotMatch(workflowText, /Validate Google key secret for Omar LLM scan/);
-  assert.doesNotMatch(workflowText, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
-  assert.match(workflowText, /uses:\s*mrrCarter\/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07/);
+  assert.match(workflowText, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
+  assert.match(workflowText, /uses:\s*mrrCarter\/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493/);
   assert.doesNotMatch(workflowText, /uses:\s*\.\/\.github\/actions\/omar-gate/);
   assert.doesNotMatch(workflowText, /llm_provider:/);
-  assert.doesNotMatch(workflowText, /google_api_key:/);
   assert.match(workflowText, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
   assert.match(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.match(workflowText, /model:\s*gpt-5\.3-codex/);
   assert.match(workflowText, /codex_model:\s*gpt-5\.3-codex/);
-  assert.match(workflowText, /model_fallback:\s*gpt-5\.2-codex/);
+  assert.match(workflowText, /model_fallback:\s*gemini-2\.5-pro/);
   assert.doesNotMatch(workflowText, /use_codex:/);
   assert.doesNotMatch(workflowText, /codex_only:/);
   assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"true"/);
