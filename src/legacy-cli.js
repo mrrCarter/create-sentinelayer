@@ -194,6 +194,7 @@ function parseCliArgs(argv) {
 }
 
 function printUsage() {
+  const writeUsageLine = (line = "") => process.stdout.write(`${line}\n`);
   console.log(`sentinelayer-cli v${CLI_VERSION}`);
   console.log("");
   console.log("Usage: sl <command> [options]");
@@ -253,13 +254,13 @@ function printUsage() {
   console.log("  sl audit frontend --path . --json  Jules frontend audit (--stream for NDJSON, --url for runtime)");
   console.log("  sl audit security --path . --json  Security-focused audit");
   console.log("");
-  console.log("AIdenID (Identity Testing):");
-  console.log("  sl ai identity provision --execute  Provision ephemeral test email (auto-credentials after login)");
-  console.log("  sl ai identity wait-for-otp <id>   Poll for OTP extraction from provisioned email");
-  console.log("  sl ai identity list                List tracked identities");
-  console.log("  sl ai identity lineage <id>        Show identity parent/child tree");
-  console.log("  sl ai identity revoke <id>         Revoke a provisioned identity");
-  console.log("");
+  writeUsageLine("AIdenID (Identity Testing):");
+  writeUsageLine("  sl ai identity provision --execute  Provision ephemeral test email (auto-credentials after login)");
+  writeUsageLine("  sl ai identity wait-for-otp <id>   Poll for OTP extraction from provisioned email");
+  writeUsageLine("  sl ai identity list                List tracked identities");
+  writeUsageLine("  sl ai identity lineage <id>        Show identity parent/child tree");
+  writeUsageLine("  sl ai identity revoke <id>         Revoke a provisioned identity");
+  writeUsageLine("");
   console.log("Cost & Policy:");
   console.log("  sl cost show --json                Show accumulated cost tracking");
   console.log("  sl policy list                     List available policy packs");
@@ -2338,17 +2339,18 @@ jobs:
           fi
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07
+        uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
           github_token: \${{ github.token }}
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
           sentinelayer_managed_llm: "false"
           openai_api_key: \${{ secrets.OPENAI_API_KEY }}
+          google_api_key: \${{ secrets.GOOGLE_API_KEY }}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
           codex_model: gpt-5.3-codex
-          model_fallback: gpt-5.2-codex
+          model_fallback: gemini-2.5-flash
           llm_failure_policy: block
       - name: Enforce Omar reviewer merge thresholds
         shell: bash

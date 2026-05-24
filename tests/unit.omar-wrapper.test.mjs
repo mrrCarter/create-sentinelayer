@@ -17,7 +17,7 @@ test("Unit Omar workflow: BYOK real LLM keeps Omar in fail-closed direct-action 
   assert.match(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.match(workflowText, /model:\s*gpt-5\.3-codex/);
   assert.match(workflowText, /codex_model:\s*gpt-5\.3-codex/);
-  assert.match(workflowText, /model_fallback:\s*gemini-2\.5-pro/);
+  assert.match(workflowText, /model_fallback:\s*gemini-2\.5-flash/);
   assert.doesNotMatch(workflowText, /use_codex:/);
   assert.doesNotMatch(workflowText, /codex_only:/);
   assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"true"/);

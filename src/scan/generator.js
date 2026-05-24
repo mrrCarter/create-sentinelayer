@@ -2,7 +2,7 @@ import YAML from "yaml";
 
 export const DEFAULT_SCAN_WORKFLOW_PATH = ".github/workflows/omar-gate.yml";
 export const DEFAULT_SCAN_SECRET_NAME = "SENTINELAYER_TOKEN";
-export const SENTINELAYER_ACTION_REF = "mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07";
+export const SENTINELAYER_ACTION_REF = "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493";
 export const SUPPORTED_E2E_HINTS = Object.freeze(["auto", "yes", "no"]);
 export const SUPPORTED_PLAYWRIGHT_MODES = Object.freeze(["auto", "off", "baseline", "audit"]);
 

@@ -160,10 +160,10 @@ def validate_omar_contract(workflow_text: str) -> None:
         "REQUESTED_FAILURE_POLICY: block",
         "REQUESTED_MODEL: gpt-5.3-codex",
         "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
-        "REQUESTED_FALLBACK_MODEL: gemini-2.5-pro",
+        "REQUESTED_FALLBACK_MODEL: gemini-2.5-flash",
         "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
         "google_api_key: ${{ secrets.GOOGLE_API_KEY }}",
-        "model_fallback: gemini-2.5-pro",
+        "model_fallback: gemini-2.5-flash",
         "Omar BYOK model contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
@@ -236,12 +236,12 @@ jobs:
           sentinelayer_managed_llm: "false"
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           google_api_key: ${{ secrets.GOOGLE_API_KEY }}
-          model_fallback: gemini-2.5-pro
+          model_fallback: gemini-2.5-flash
       - name: Assert Omar BYOK model contract is active
         env:
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: gemini-2.5-pro
+          REQUESTED_FALLBACK_MODEL: gemini-2.5-flash
           REQUESTED_MANAGED_LLM: "false"
           REQUESTED_FAILURE_POLICY: block
         run: |
@@ -279,7 +279,7 @@ jobs:
         valid_workflow.replace("google_api_key: ${{ secrets.GOOGLE_API_KEY }}", "")
     )
     _assert_fails(
-        valid_workflow.replace("model_fallback: gemini-2.5-pro", "model_fallback: gpt-5.2-codex")
+        valid_workflow.replace("model_fallback: gemini-2.5-flash", "model_fallback: gpt-5.2-codex")
     )
 
 

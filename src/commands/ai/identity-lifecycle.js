@@ -39,6 +39,16 @@ import {
   writeArtifact,
 } from "./shared.js";
 
+function maskEmailForDisplay(value) {
+  const email = String(value || "").trim();
+  if (!email) return "unknown-email";
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0 || atIndex === email.length - 1) return "[redacted-email]";
+  const local = email.slice(0, atIndex);
+  const domain = email.slice(atIndex + 1);
+  return `${local.slice(0, 1)}***@${domain}`;
+}
+
 export function registerAiIdentityLifecycleCommands({ identity, legalHold }) {
 identity
   .command("list")
@@ -75,8 +85,9 @@ identity
       return;
     }
     for (const item of identities) {
+      const displayAddress = maskEmailForDisplay(item.emailAddress);
       console.log(
-        `- ${item.identityId} | ${item.emailAddress || "unknown-email"} | ${item.status} | ${
+        `- ${item.identityId} | ${displayAddress} | ${item.status} | ${
           item.projectId || "no-project"
         }`
       );
@@ -118,7 +129,8 @@ identity
 
     console.log(pc.bold("AIdenID identity"));
     console.log(pc.gray(`Registry: ${registryPath}`));
-    console.log(`${identityRecord.identityId} | ${identityRecord.emailAddress || "unknown-email"}`);
+    const displayAddress = maskEmailForDisplay(identityRecord.emailAddress);
+    console.log(`${identityRecord.identityId} | ${displayAddress}`);
     console.log(`status=${identityRecord.status} project=${identityRecord.projectId || "n/a"}`);
   });
 

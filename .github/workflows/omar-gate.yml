@@ -463,7 +463,7 @@ jobs:
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
           codex_model: gpt-5.3-codex
-          model_fallback: gemini-2.5-pro
+          model_fallback: gemini-2.5-flash
           llm_failure_policy: block
       - name: Assert Omar BYOK model contract is active
         if: steps.trust_boundary.outputs.trusted_context == 'true'
@@ -472,13 +472,13 @@ jobs:
           GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: gemini-2.5-pro
+          REQUESTED_FALLBACK_MODEL: gemini-2.5-flash
           REQUESTED_MANAGED_LLM: "false"
           REQUESTED_FAILURE_POLICY: block
         run: |
           set -euo pipefail
           gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
-          if [ "${REQUESTED_MANAGED_LLM}" != "false" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-pro" ]; then
+          if [ "${REQUESTED_MANAGED_LLM}" != "false" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-flash" ]; then
             echo "::error::Omar BYOK policy drifted (managed='${REQUESTED_MANAGED_LLM}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
             exit 1
           fi
