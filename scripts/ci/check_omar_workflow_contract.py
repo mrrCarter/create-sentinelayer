@@ -128,6 +128,10 @@ def validate_omar_contract(workflow_text: str) -> None:
         raise OmarWorkflowContractError("top-level permissions must include id-token: write")
 
     omar_scan_lines = _find_job_lines(workflow_lines, "omar_scan")
+    if "    name: Omar Gate (Deep Scan)" not in "\n".join(omar_scan_lines):
+        raise OmarWorkflowContractError(
+            "jobs.omar_scan.name must be 'Omar Gate (Deep Scan)' for GitHub visibility"
+        )
     if not _permissions_block_has(omar_scan_lines, "    permissions:", "      ", "id-token: write"):
         raise OmarWorkflowContractError("jobs.omar_scan.permissions must include id-token: write")
 
@@ -202,6 +206,7 @@ permissions:
   id-token: write
 jobs:
   omar_scan:
+    name: Omar Gate (Deep Scan)
     permissions:
       contents: read
       id-token: write
@@ -242,6 +247,7 @@ jobs:
     _assert_fails(
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
     )
+    _assert_fails(valid_workflow.replace("Omar Gate (Deep Scan)", "Omar Gate Scan"))
     _assert_fails(valid_workflow.replace("actions/upload-artifact", "actions/cache"))
     _assert_fails(valid_workflow.replace("mrrCarter/sentinelayer-v1-action@", "./.github/actions/omar-gate # "))
     _assert_fails(
