@@ -39,8 +39,8 @@ import {
   DEFAULT_RECAP_INTERVAL_MS,
   emitPeriodicRecap,
 } from "./recap.js";
+import { hydrateSessionFromRemote } from "./remote-hydrate.js";
 import { stopRuntimeRunsForSession } from "./runtime-bridge.js";
-import { pollHumanMessages } from "./sync.js";
 import { getSession, renewSession } from "./store.js";
 import { appendToStream, readStream, tailStream } from "./stream.js";
 import { handleTaskDirective } from "./tasks.js";
@@ -214,6 +214,7 @@ function createSentiState({
   checkpointCloseoutOnStop,
   helpResponder,
   llmInvoker,
+  remoteHydrator,
   telemetrySessionId,
 }) {
   return {
@@ -243,6 +244,7 @@ function createSentiState({
     lastCheckpointResult: null,
     helpResponder,
     llmInvoker,
+    remoteHydrator,
     telemetrySessionId,
     running: true,
     tickTimer: null,
@@ -255,6 +257,7 @@ function createSentiState({
     lastTickSummary: null,
     recapEmitter: null,
     humanMessageCursor: null,
+    sessionEventsCursor: null,
     humanMessagePollInFlight: false,
   };
 }
@@ -1055,6 +1058,9 @@ function createHealthSummaryBase(nowIso, session, agents) {
       relayed: 0,
       dropped: 0,
       cursor: null,
+      sessionEventsRelayed: 0,
+      sessionEventsCursor: null,
+      eventsBackfillComplete: null,
       reason: "",
     },
     recap: {
@@ -1236,7 +1242,7 @@ async function maybeRenewActiveSession(
   };
 }
 
-async function pollAndRelayHumanMessages(
+async function hydrateRemoteSessionEvents(
   daemonState,
   summary,
   nowIso = new Date().toISOString()
@@ -1248,37 +1254,44 @@ async function pollAndRelayHumanMessages(
 
   daemonState.humanMessagePollInFlight = true;
   try {
-    const polled = await pollHumanMessages(daemonState.sessionId, {
+    const hydrated = await daemonState.remoteHydrator({
+      sessionId: daemonState.sessionId,
       targetPath: daemonState.targetPath,
-      since: daemonState.humanMessageCursor,
     });
-    if (!polled.ok) {
-      summary.humanMessages.reason = normalizeString(polled.reason) || "poll_failed";
+    if (!hydrated.ok) {
+      summary.humanMessages.reason = normalizeString(hydrated.reason) || "poll_failed";
       summary.humanMessages.cursor = daemonState.humanMessageCursor;
+      summary.humanMessages.sessionEventsCursor = daemonState.sessionEventsCursor;
       return;
     }
 
-    const relayedEvents = [];
-    for (const event of polled.events || []) {
-      const persisted = await appendToStream(daemonState.sessionId, event, {
-        targetPath: daemonState.targetPath,
-      });
-      relayedEvents.push(persisted);
-    }
-    daemonState.humanMessageCursor = normalizeString(polled.cursor) || daemonState.humanMessageCursor;
+    const relayed = Math.max(0, Math.floor(Number(hydrated.relayed || 0)));
+    const humanRelayed = Math.max(0, Math.floor(Number(hydrated.humanRelayed || 0)));
+    const sessionEventsRelayed = Math.max(0, Math.floor(Number(hydrated.eventsRelayed || 0)));
+    daemonState.humanMessageCursor = normalizeString(hydrated.cursor) || daemonState.humanMessageCursor;
+    daemonState.sessionEventsCursor =
+      normalizeString(hydrated.eventsCursor) || daemonState.sessionEventsCursor;
 
-    summary.humanMessages.relayed = relayedEvents.length;
-    summary.humanMessages.dropped = Array.isArray(polled.dropped) ? polled.dropped.length : 0;
+    summary.humanMessages.relayed = relayed;
+    summary.humanMessages.dropped = Math.max(0, Math.floor(Number(hydrated.dropped || 0)));
     summary.humanMessages.cursor = daemonState.humanMessageCursor;
+    summary.humanMessages.sessionEventsRelayed = sessionEventsRelayed;
+    summary.humanMessages.sessionEventsCursor = daemonState.sessionEventsCursor;
+    summary.humanMessages.humanEventsRelayed = humanRelayed;
+    summary.humanMessages.eventsBackfillComplete = Boolean(hydrated.eventsBackfillComplete);
+    summary.humanMessages.eventsPageCount = Math.max(0, Math.floor(Number(hydrated.eventsPageCount || 0)));
+    summary.humanMessages.localAppendComplete = hydrated.localAppendComplete !== false;
     summary.humanMessages.reason = "";
 
-    if (relayedEvents.length > 0) {
+    if (humanRelayed > 0) {
       await emitSentiEvent(
         daemonState.sessionId,
         "daemon_alert",
         {
           alert: "human_directive_received",
-          relayedCount: relayedEvents.length,
+          relayedCount: relayed,
+          humanEventsRelayed: humanRelayed,
+          sessionEventsRelayed,
           droppedCount: summary.humanMessages.dropped,
         },
         {
@@ -1291,6 +1304,7 @@ async function pollAndRelayHumanMessages(
     summary.humanMessages.reason =
       normalizeString(error?.message) || "poll_relay_failed";
     summary.humanMessages.cursor = daemonState.humanMessageCursor;
+    summary.humanMessages.sessionEventsCursor = daemonState.sessionEventsCursor;
   } finally {
     daemonState.humanMessagePollInFlight = false;
   }
@@ -1466,6 +1480,7 @@ export async function runSentiHealthTick(
       checkpointCloseoutOnStop: true,
       helpResponder: null,
       llmInvoker: invokeViaProxy,
+      remoteHydrator: hydrateSessionFromRemote,
       telemetrySessionId: null,
     });
   const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
@@ -1486,7 +1501,7 @@ export async function runSentiHealthTick(
   await emitStaleAndRecoveryAlerts(resolvedDaemonState, summary, staleAgents, normalizedNow);
   await emitConflictAlerts(resolvedDaemonState, summary, filteredAgents, normalizedNow);
   await maybeRenewActiveSession(resolvedDaemonState, summary, session, normalizedNow);
-  await pollAndRelayHumanMessages(resolvedDaemonState, summary, normalizedNow);
+  await hydrateRemoteSessionEvents(resolvedDaemonState, summary, normalizedNow);
   await maybeEmitPeriodicRecap(resolvedDaemonState, summary, normalizedNow);
   await maybeGenerateSessionCheckpoint(resolvedDaemonState, summary, normalizedNow);
   return summary;
@@ -1513,6 +1528,7 @@ export async function startSenti(
     checkpointCloseoutOnStop = true,
     helpResponder = null,
     llmInvoker = invokeViaProxy,
+    remoteHydrator = hydrateSessionFromRemote,
   } = {}
 ) {
   const normalizedSessionId = normalizeString(sessionId);
@@ -1597,6 +1613,7 @@ export async function startSenti(
     checkpointCloseoutOnStop: checkpointCloseoutOnStop !== false,
     helpResponder,
     llmInvoker: typeof llmInvoker === "function" ? llmInvoker : invokeViaProxy,
+    remoteHydrator: typeof remoteHydrator === "function" ? remoteHydrator : hydrateSessionFromRemote,
     telemetrySessionId: telemetrySession?.id || null,
   });
 
@@ -1792,6 +1809,7 @@ export async function startSenti(
       lastCheckpointSourceSequenceId: daemonState.lastCheckpointSourceSequenceId,
       lastCheckpointResult: daemonState.lastCheckpointResult,
       humanMessageCursor: daemonState.humanMessageCursor,
+      sessionEventsCursor: daemonState.sessionEventsCursor,
     }),
   };
 

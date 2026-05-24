@@ -394,6 +394,83 @@ test("Unit session daemon: checkpoint generator failure is non-blocking", async 
   }
 });
 
+test("Unit session daemon: health tick hydrates remote durable agent events", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-daemon-remote-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    let hydrated = false;
+    const remoteHydrator = async ({ sessionId: hydrateSessionId, targetPath }) => {
+      if (!hydrated) {
+        hydrated = true;
+        await appendToStream(
+          hydrateSessionId,
+          createAgentEvent({
+            event: "session_message",
+            agentId: "claude-remote",
+            agentModel: "Claude 3.7 Sonnet",
+            sessionId: hydrateSessionId,
+            payload: {
+              message: "Remote durable agent update for recap and checkpoint context.",
+            },
+          }),
+          { targetPath, syncRemote: false }
+        );
+        return {
+          ok: true,
+          relayed: 1,
+          humanRelayed: 0,
+          eventsRelayed: 1,
+          eventsCursor: "event-cursor-1",
+          eventsBackfillComplete: true,
+          eventsPageCount: 1,
+          localAppendComplete: true,
+          dropped: 0,
+          cursor: null,
+        };
+      }
+      return {
+        ok: true,
+        relayed: 0,
+        humanRelayed: 0,
+        eventsRelayed: 0,
+        eventsCursor: "event-cursor-1",
+        eventsBackfillComplete: true,
+        eventsPageCount: 1,
+        localAppendComplete: true,
+        dropped: 0,
+        cursor: null,
+      };
+    };
+
+    const senti = await startSenti(session.sessionId, {
+      targetPath: tempRoot,
+      autoStart: false,
+      remoteHydrator,
+    });
+    const summary = await senti.runTick(new Date(Date.parse(session.createdAt) + 5_000).toISOString());
+
+    assert.equal(summary.humanMessages.relayed, 1);
+    assert.equal(summary.humanMessages.sessionEventsRelayed, 1);
+    assert.equal(summary.humanMessages.sessionEventsCursor, "event-cursor-1");
+    assert.equal(senti.getState().sessionEventsCursor, "event-cursor-1");
+
+    const stream = await readStream(session.sessionId, { tail: 30, targetPath: tempRoot });
+    const remoteEvent = stream.find(
+      (event) => event.event === "session_message" && event.agent?.id === "claude-remote"
+    );
+    assert.ok(remoteEvent);
+    assert.match(String(remoteEvent.payload?.message || ""), /Remote durable agent update/);
+  } finally {
+    if (sessionId) {
+      await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session daemon: unanswered help_request gets auto-response within timeout", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-help-"));
   let sessionId = "";
