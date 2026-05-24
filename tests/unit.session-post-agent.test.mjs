@@ -754,6 +754,8 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.remote.tailProbe.appended, 1);
     assert.equal(payload.remote.tailProbe.displayedOnly, 0);
     assert.equal(payload.events[0].payload.message, "remote verified tail");
+    assert.equal(payload.events[0].sequenceId, 9940);
+    assert.equal(payload.events[0].cursor, "1779364717000:000026d4");
     assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=5")));
   } finally {
     globalThis.fetch = originalFetch;
