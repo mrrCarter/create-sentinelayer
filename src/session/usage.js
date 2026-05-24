@@ -41,6 +41,12 @@ import process from "node:process";
 import { randomUUID } from "node:crypto";
 
 import { createAgentEvent } from "../events/schema.js";
+import { estimateModelCost } from "../cost/tracker.js";
+import {
+  DEFAULT_PRICE_BOOK_VERSION,
+  buildSessionUsageLedger,
+  createSessionUsageLedgerId,
+} from "./pricing-ledger.js";
 import { resolveSessionPaths } from "./paths.js";
 import { appendToStream } from "./stream.js";
 
@@ -55,25 +61,25 @@ function num(value) {
   return Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
-function plainObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
-function firstUsageNumber(payload = {}, keys = []) {
-  const usage = plainObject(payload.usage);
-  for (const key of keys) {
-    const direct = num(payload[key]);
-    if (direct > 0) return direct;
-    const nested = num(usage[key]);
-    if (nested > 0) return nested;
-  }
-  return 0;
+function money(value) {
+  return Math.round(num(value) * 1_000_000) / 1_000_000;
 }
 
 function clipText(text, max = 4000) {
   const s = n(text);
   if (s.length <= max) return s;
   return `${s.slice(0, max)}…`;
+}
+
+function computedCost({ model, inputTokens, outputTokens }) {
+  try {
+    return {
+      costUsd: estimateModelCost({ modelId: model, inputTokens, outputTokens }),
+      unpriced: false,
+    };
+  } catch {
+    return { costUsd: 0, unpriced: inputTokens + outputTokens > 0 };
+  }
 }
 
 /**
@@ -87,7 +93,12 @@ function clipText(text, max = 4000) {
  * @param {number} [params.inputTokens]
  * @param {number} [params.outputTokens]
  * @param {number} [params.costUsd]
+ * @param {number} [params.customerCostUsd]
  * @param {number} [params.durationMs]
+ * @param {string} [params.action]
+ * @param {string} [params.provider]
+ * @param {string} [params.billingTier]
+ * @param {string} [params.priceBookVersion]
  * @param {string} [params.prompt]            full prompt text (clipped)
  * @param {string} [params.response]          full response text (clipped)
  * @param {string} [params.interactionId]     opaque id for cross-event correlation
@@ -102,8 +113,13 @@ export async function emitLLMInteraction(
     role = "",
     inputTokens = 0,
     outputTokens = 0,
-    costUsd = 0,
+    costUsd = undefined,
+    customerCostUsd = undefined,
     durationMs = 0,
+    action = "agent_message",
+    provider = "",
+    billingTier = "unknown",
+    priceBookVersion = DEFAULT_PRICE_BOOK_VERSION,
     prompt = "",
     response = "",
     interactionId = "",
@@ -121,20 +137,44 @@ export async function emitLLMInteraction(
   const inT = Math.floor(num(inputTokens));
   const outT = Math.floor(num(outputTokens));
   const totalT = inT + outT;
-  const cost = Math.round(num(costUsd) * 1_000_000) / 1_000_000;
+  const model = n(agentModel) || "unknown";
+  const providedCost = costUsd != null && costUsd !== "";
+  const estimate = providedCost
+    ? { costUsd: num(costUsd), unpriced: false }
+    : computedCost({ model, inputTokens: inT, outputTokens: outT });
+  const cost = money(estimate.costUsd);
+  const customerCost = customerCostUsd == null || customerCostUsd === "" ? null : money(customerCostUsd);
+  const actionName = n(action) || "agent_message";
+  const tier = n(billingTier) || "unknown";
+  const priceBook = n(priceBookVersion) || DEFAULT_PRICE_BOOK_VERSION;
+  const ledgerEntryId = createSessionUsageLedgerId({
+    sessionId: paths.sessionId,
+    agentId: aid,
+    action: actionName,
+    idempotencyKey: id,
+  });
 
   const promptText = clipText(prompt);
   const responseText = clipText(response);
 
   const payload = {
     interactionId: id,
+    idempotencyKey: id,
+    ledgerEntryId,
     agentId: aid,
-    model: n(agentModel) || "unknown",
+    model,
     role: n(role) || "observer",
+    action: actionName,
+    provider: n(provider) || undefined,
+    billingTier: tier,
+    priceBookVersion: priceBook,
     inputTokens: inT,
     outputTokens: outT,
     totalTokens: totalT,
     costUsd: cost,
+    providerCostUsd: cost,
+    customerCostUsd: customerCost ?? undefined,
+    unpriced: estimate.unpriced,
     durationMs: Math.max(0, Math.floor(num(durationMs))),
     prompt: { tokens: inT, chars: promptText.length },
     response: {
@@ -147,15 +187,24 @@ export async function emitLLMInteraction(
     usage: {
       totalTokens: totalT,
       costUsd: cost,
+      providerCostUsd: cost,
+      customerCostUsd: customerCost ?? undefined,
       inputTokens: inT,
       outputTokens: outT,
+      action: actionName,
+      provider: n(provider) || undefined,
+      billingTier: tier,
+      priceBookVersion: priceBook,
+      ledgerEntryId,
+      idempotencyKey: id,
+      unpriced: estimate.unpriced,
     },
   };
 
   const envelope = createAgentEvent({
     event: SESSION_USAGE_EVENT,
     agentId: aid,
-    agentModel: n(agentModel) || "unknown",
+    agentModel: model,
     sessionId: paths.sessionId,
     payload,
     ts,
@@ -165,6 +214,7 @@ export async function emitLLMInteraction(
   return {
     event: SESSION_USAGE_EVENT,
     interactionId: id,
+    ledgerEntryId,
     totalTokens: totalT,
     costUsd: cost,
   };
@@ -181,6 +231,7 @@ export async function emitLLMInteraction(
  * }}
  */
 export function aggregateSessionUsage(events = []) {
+  const ledger = buildSessionUsageLedger(events);
   const perAgent = new Map();
   const totals = {
     totalTokens: 0,
@@ -189,37 +240,8 @@ export function aggregateSessionUsage(events = []) {
     costUsd: 0,
     interactions: 0,
   };
-  for (const event of events) {
-    if (!event || event.event !== SESSION_USAGE_EVENT) continue;
-    const payload = event.payload || {};
-    const agentId = n(payload.agentId || event.agent?.id);
-    if (!agentId) continue;
-    const model = n(payload.model || event.agent?.model) || "unknown";
-    const inputTokens = firstUsageNumber(payload, [
-      "inputTokens",
-      "input_tokens",
-      "tokensIn",
-      "tokens_in",
-    ]);
-    const outputTokens = firstUsageNumber(payload, [
-      "outputTokens",
-      "output_tokens",
-      "tokensOut",
-      "tokens_out",
-    ]);
-    const explicitTotalTokens = firstUsageNumber(payload, [
-      "totalTokens",
-      "total_tokens",
-      "tokens",
-    ]);
-    const totalTokens = explicitTotalTokens || inputTokens + outputTokens;
-    const costUsd = firstUsageNumber(payload, [
-      "costUsd",
-      "cost_usd",
-      "providerCostUsd",
-      "provider_cost_usd",
-      "cost",
-    ]);
+  for (const entry of ledger.entries) {
+    const { agentId, model, inputTokens, outputTokens, totalTokens, providerCostUsd } = entry;
     if (!perAgent.has(agentId)) {
       perAgent.set(agentId, {
         agentId,
@@ -238,13 +260,13 @@ export function aggregateSessionUsage(events = []) {
     record.totalTokens += totalTokens;
     record.inputTokens += inputTokens;
     record.outputTokens += outputTokens;
-    record.costUsd += costUsd;
+    record.costUsd += providerCostUsd;
     record.interactions += 1;
 
     totals.totalTokens += totalTokens;
     totals.inputTokens += inputTokens;
     totals.outputTokens += outputTokens;
-    totals.costUsd += costUsd;
+    totals.costUsd += providerCostUsd;
     totals.interactions += 1;
   }
   totals.costUsd = Math.round(totals.costUsd * 1_000_000) / 1_000_000;
