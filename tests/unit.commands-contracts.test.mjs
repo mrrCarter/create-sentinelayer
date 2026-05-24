@@ -412,7 +412,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(checkpointGenerate, "--json");
 });
 
-test("Unit command contracts: checkpoint lines include deterministic grade labels", () => {
+test("Unit command contracts: checkpoint lines include deterministic completeness labels", () => {
   assert.equal(
     formatCheckpointLine({
       checkpointId: "cp_1",
@@ -426,8 +426,24 @@ test("Unit command contracts: checkpoint lines include deterministic grade label
       gradeReasons: [
         { code: "brief_summary", message: "Checkpoint summary is under 200 characters." },
       ],
+      summarySections: {
+        workCompleted: ["Opened PR #535 and captured verification evidence."],
+        agentContributions: [
+          {
+            agentId: "codex",
+            summary: "contributed 2 source events; implementation; verification.",
+          },
+          {
+            agentId: "claude-mythos",
+            summary: "contributed 1 source event; review/audit.",
+          },
+        ],
+        evidence: [{ kind: "pull_request", label: "PR #535", value: "#535" }],
+        risks: ["Release still blocked by signing-key visibility."],
+        nextSteps: ["Merge after green gates and audit."],
+      },
     }),
-    "#3-9 cp_1 [handoff] PR-C1 handoff by codex grade B 84/100: Checkpoint summary is under 200 characters.",
+    "#3-9 cp_1 [handoff] PR-C1 handoff by codex completeness B 84/100: Checkpoint summary is under 200 characters. | work: Opened PR #535 and captured verification evidence. | agents: codex: contributed 2 source events; implementation; verification.; claude-mythos: contributed 1 source event; review/audit. | evidence: PR #535 | risks: Release still blocked by signing-key visibility. | next: Merge after green gates and audit.",
   );
 
   assert.equal(
@@ -437,7 +453,7 @@ test("Unit command contracts: checkpoint lines include deterministic grade label
       grade: "F",
       grade_score: 41,
     }),
-    "anchor pending cp_2 [summary] Legacy summary grade F 41/100",
+    "anchor pending cp_2 [summary] Legacy summary completeness F 41/100",
   );
 
   assert.equal(

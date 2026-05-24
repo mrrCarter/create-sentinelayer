@@ -966,7 +966,67 @@ function checkpointGradeLabel(checkpoint = {}) {
     .filter(Boolean)
     .slice(0, 2);
   const reasonLabel = reasons.length ? `: ${reasons.join("; ")}` : "";
-  return ` grade ${grade}${scoreLabel}${reasonLabel}`;
+  return ` completeness ${grade}${scoreLabel}${reasonLabel}`;
+}
+
+function checkpointSummarySections(checkpoint = {}) {
+  const sections = checkpoint.summarySections || checkpoint.summary_sections;
+  return sections && typeof sections === "object" && !Array.isArray(sections) ? sections : null;
+}
+
+function normalizeCheckpointTextItems(value, limit = 3) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => normalizeString(item))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function formatCheckpointSectionPreview(checkpoint = {}) {
+  const sections = checkpointSummarySections(checkpoint);
+  if (!sections) {
+    return "";
+  }
+  const parts = [];
+  const work = normalizeCheckpointTextItems(sections.workCompleted || sections.work_completed, 1)[0];
+  if (work) {
+    parts.push(`work: ${work}`);
+  }
+  const agents = Array.isArray(sections.agentContributions)
+    ? sections.agentContributions
+    : Array.isArray(sections.agent_contributions)
+      ? sections.agent_contributions
+      : [];
+  const agentLabels = agents
+    .map((item) => {
+      const agentId = normalizeString(item?.agentId || item?.agent_id);
+      const summary = normalizeString(item?.summary);
+      return agentId && summary ? `${agentId}: ${summary}` : "";
+    })
+    .filter(Boolean)
+    .slice(0, 2);
+  if (agentLabels.length) {
+    parts.push(`agents: ${agentLabels.join("; ")}`);
+  }
+  const evidence = Array.isArray(sections.evidence) ? sections.evidence : [];
+  const evidenceLabels = evidence
+    .map((item) => normalizeString(item?.label || item?.value))
+    .filter(Boolean)
+    .slice(0, 3);
+  if (evidenceLabels.length) {
+    parts.push(`evidence: ${evidenceLabels.join(", ")}`);
+  }
+  const risks = normalizeCheckpointTextItems(sections.risks, 1);
+  if (risks.length) {
+    parts.push(`risks: ${risks.join("; ")}`);
+  }
+  const nextSteps = normalizeCheckpointTextItems(sections.nextSteps || sections.next_steps, 1);
+  if (nextSteps.length) {
+    parts.push(`next: ${nextSteps.join("; ")}`);
+  }
+  return parts.length ? ` | ${parts.join(" | ")}` : "";
 }
 
 export function formatCheckpointLine(checkpoint = {}) {
@@ -975,7 +1035,7 @@ export function formatCheckpointLine(checkpoint = {}) {
   const title = normalizeString(checkpoint.title) || "Untitled checkpoint";
   const byline = normalizeString(checkpoint.createdByAgentId || checkpoint.createdBy);
   const by = byline ? ` by ${byline}` : "";
-  return `${checkpointSequenceRange(checkpoint)} ${id} [${kind}] ${title}${by}${checkpointGradeLabel(checkpoint)}`;
+  return `${checkpointSequenceRange(checkpoint)} ${id} [${kind}] ${title}${by}${checkpointGradeLabel(checkpoint)}${formatCheckpointSectionPreview(checkpoint)}`;
 }
 
 async function readCheckpointSummaryOption(options = {}, { targetPath } = {}) {
