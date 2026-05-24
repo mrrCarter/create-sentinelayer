@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.18.2...v0.19.0) (2026-05-24)
+
+
+### Features
+
+* **session:** ground recaps in workspace plan ([#550](https://github.com/mrrCarter/create-sentinelayer/issues/550)) ([a5cd96c](https://github.com/mrrCarter/create-sentinelayer/commit/a5cd96c340c261763337dc3f16092637544fa7d7))
+
+
+### Bug Fixes
+
+* **session:** preserve before pagination cursor metadata ([#551](https://github.com/mrrCarter/create-sentinelayer/issues/551)) ([2798eea](https://github.com/mrrCarter/create-sentinelayer/commit/2798eea5e7dc269fd7fed299019efaa13eb3e3e3))
+
 ## [0.18.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.18.1...v0.18.2) (2026-05-24)
 
 
