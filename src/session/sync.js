@@ -243,6 +243,23 @@ function eventSequenceNumber(event = {}) {
   return 0;
 }
 
+function nextBeforeSequenceFromPayload(payload = {}, events = []) {
+  const explicit = Number(payload?.next_before_sequence ?? payload?.nextBeforeSequence);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+
+  let minimumSequence = 0;
+  for (const event of Array.isArray(events) ? events : []) {
+    const sequence = eventSequenceNumber(event);
+    if (sequence <= 0) continue;
+    if (minimumSequence === 0 || sequence < minimumSequence) {
+      minimumSequence = sequence;
+    }
+  }
+  return minimumSequence || null;
+}
+
 function chronologicalSessionEvents(events = []) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => ({ event, index }))
@@ -1219,13 +1236,12 @@ export async function pollSessionEventsBefore(
 
     const events = chronologicalSessionEvents(payload?.events || []);
     const lastEvent = events[events.length - 1] || null;
-    const firstEvent = events[0] || null;
     return {
       ok: true,
       reason: "",
       events,
       cursor: normalizeString(lastEvent?.cursor) || null,
-      beforeSequence: eventSequenceNumber(firstEvent) || null,
+      beforeSequence: nextBeforeSequenceFromPayload(payload, payload?.events || []),
     };
   } catch (error) {
     recordCircuitFailure(inboundCircuit, normalizedNowMs);

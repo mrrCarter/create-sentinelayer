@@ -448,6 +448,75 @@ test("Unit session sync: pollSessionEventsBefore fetches latest tail chronologic
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${apiToken}`);
 });
 
+test("Unit session sync: pollSessionEventsBefore keeps API before-sequence metadata across timestamp skew", async () => {
+  resetSessionSyncStateForTests();
+  const result = await pollSessionEventsBefore("sess-skewed", {
+    beforeSequence: 100,
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: [
+          {
+            cursor: "cursor-99",
+            sequenceId: 99,
+            ts: "2026-05-08T06:00:00.000Z",
+            event: "session_message",
+            payload: { message: "newer sequence with older clock" },
+          },
+          {
+            cursor: "cursor-98",
+            sequenceId: 98,
+            ts: "2026-05-08T06:00:10.000Z",
+            event: "session_message",
+            payload: { message: "older sequence with later clock" },
+          },
+        ],
+        next_before_sequence: 98,
+      }),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.events.map((event) => event.sequenceId),
+    [99, 98],
+  );
+  assert.equal(result.beforeSequence, 98);
+});
+
+test("Unit session sync: pollSessionEventsBefore falls back to minimum sequence when metadata is absent", async () => {
+  resetSessionSyncStateForTests();
+  const result = await pollSessionEventsBefore("sess-skewed-no-meta", {
+    beforeSequence: 100,
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: [
+          { cursor: "cursor-99", sequenceId: 99, ts: "2026-05-08T06:00:00.000Z" },
+          { cursor: "cursor-98", sequenceId: 98, ts: "2026-05-08T06:00:10.000Z" },
+        ],
+      }),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.events.map((event) => event.sequenceId),
+    [99, 98],
+  );
+  assert.equal(result.beforeSequence, 98);
+});
+
 test("Unit session sync: listSessionMessageActions hits actions endpoint", async () => {
   resetSessionSyncStateForTests();
   const calls = [];
