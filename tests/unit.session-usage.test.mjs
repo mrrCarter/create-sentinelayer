@@ -9,7 +9,9 @@ import path from "node:path";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
 import {
+  BILLING_SESSION_USAGE_SCHEMA,
   DEFAULT_PRICE_BOOK_VERSION,
+  LOCAL_SESSION_USAGE_SCHEMA,
   buildSessionUsageLedger,
 } from "../src/session/pricing-ledger.js";
 import { aggregateSessionUsage, emitLLMInteraction } from "../src/session/usage.js";
@@ -42,6 +44,8 @@ test("emitLLMInteraction writes a session_usage event with mirrored payload.usag
     const events = await readStream(created.sessionId, { targetPath: root, tail: 0 });
     const usage = events.find((e) => e.event === "session_usage");
     assert.ok(usage, "session_usage event must be appended");
+    assert.equal(usage.payload.schema, LOCAL_SESSION_USAGE_SCHEMA);
+    assert.notEqual(usage.payload.schema, BILLING_SESSION_USAGE_SCHEMA);
     assert.equal(usage.payload.totalTokens, 2000);
     assert.equal(usage.payload.usage.totalTokens, 2000);
     assert.equal(usage.payload.usage.costUsd, 0.0156);
@@ -174,6 +178,7 @@ test("buildSessionUsageLedger dedupes idempotent retries and flags unpriced mode
       ts: "2026-05-24T14:00:00.000Z",
       agent: { id: "codex-1", model: "gpt-5.4-mini" },
       payload: {
+        schema: LOCAL_SESSION_USAGE_SCHEMA,
         idempotencyKey: "same-call",
         ledgerEntryId: "bill_same_retry_target",
         agentId: "codex-1",
@@ -190,6 +195,7 @@ test("buildSessionUsageLedger dedupes idempotent retries and flags unpriced mode
       ts: "2026-05-24T14:00:00.000Z",
       agent: { id: "codex-1", model: "gpt-5.4-mini" },
       payload: {
+        schema: LOCAL_SESSION_USAGE_SCHEMA,
         idempotencyKey: "same-call-second-delivery",
         ledgerEntryId: "bill_same_retry_target",
         agentId: "codex-1",
@@ -206,6 +212,7 @@ test("buildSessionUsageLedger dedupes idempotent retries and flags unpriced mode
       ts: "2026-05-24T14:01:00.000Z",
       agent: { id: "mystery-1", model: "unknown-llm" },
       payload: {
+        schema: LOCAL_SESSION_USAGE_SCHEMA,
         interactionId: "unknown-model-call",
         agentId: "mystery-1",
         action: "audit_run",
@@ -227,6 +234,61 @@ test("buildSessionUsageLedger dedupes idempotent retries and flags unpriced mode
   assert.equal(ledger.entries[0].billingTier, "internal");
   assert.equal(ledger.entries[1].billingTier, "team");
   assert.deepEqual(ledger.priceBookVersions, [DEFAULT_PRICE_BOOK_VERSION]);
+});
+
+test("buildSessionUsageLedger separates local stats from API billing/v1 and skips unsupported schemas", () => {
+  const events = [
+    {
+      event: "session_usage",
+      sequenceId: 1,
+      payload: {
+        schema: LOCAL_SESSION_USAGE_SCHEMA,
+        idempotencyKey: "local-recap",
+        agentId: "senti",
+        action: "session_recap",
+        model: "gpt-5.4-mini",
+        inputTokens: 100,
+        outputTokens: 50,
+      },
+    },
+    {
+      event: "session_usage",
+      sequenceId: 2,
+      payload: {
+        schema: BILLING_SESSION_USAGE_SCHEMA,
+        idempotencyKey: "billable-chat",
+        agentId: "chat-cli",
+        action: "chat_ask",
+        model: "gpt-5.3-codex",
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    },
+    {
+      event: "session_usage",
+      sequenceId: 3,
+      payload: {
+        schema: "billing/v2",
+        idempotencyKey: "future-schema",
+        agentId: "future-agent",
+        action: "chat_ask",
+        model: "gpt-5.3-codex",
+        inputTokens: 999_999,
+        outputTokens: 999_999,
+      },
+    },
+  ];
+
+  const ledger = buildSessionUsageLedger(events, { sessionId: "session-usage-contract" });
+  assert.equal(ledger.entries.length, 2);
+  assert.deepEqual(
+    ledger.entries.map((entry) => entry.schema),
+    [LOCAL_SESSION_USAGE_SCHEMA, BILLING_SESSION_USAGE_SCHEMA],
+  );
+  assert.equal(ledger.totals.inputTokens, 300);
+  assert.equal(ledger.totals.outputTokens, 150);
+  assert.equal(ledger.perAction.has("chat_ask"), true);
+  assert.equal(ledger.perAgent.has("future-agent"), false);
 });
 
 test("aggregateSessionUsage accepts nested payload.usage-only billing shapes", () => {
