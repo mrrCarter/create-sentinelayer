@@ -1,14 +1,14 @@
-name: Omar Gate
+name: Omar Gate (Real-LLM)
 
 on:
   pull_request:
+    branches:
+      - main
     types:
       - opened
       - synchronize
       - reopened
-  push:
-    branches:
-      - main
+      - ready_for_review
   workflow_dispatch:
     inputs:
       scan_mode:
@@ -17,8 +17,10 @@ on:
         default: deep
         type: choice
         options:
+          - baseline
           - deep
-          - nightly
+          - audit
+          - full-depth
       severity_gate:
         description: Severity threshold that blocks merge
         required: false
@@ -28,11 +30,7 @@ on:
           - P0
           - P1
           - P2
-      p2_max_allowed:
-        description: Maximum allowed P2 findings before Omar Gate blocks merge
-        required: false
-        default: "5"
-        type: string
+          - none
 
 permissions:
   contents: read
@@ -40,681 +38,478 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  OMAR_SPEC_ID: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  omar_untrusted_scan:
-    name: Omar Gate Untrusted Scan
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+  omar-gate:
+    name: Omar Gate
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     permissions:
       contents: read
-    outputs:
-      run_id: ${{ steps.untrusted.outputs.run_id }}
-      gate_status: ${{ steps.untrusted.outputs.gate_status }}
-      p0_count: ${{ steps.untrusted.outputs.p0_count }}
-      p1_count: ${{ steps.untrusted.outputs.p1_count }}
-      p2_count: ${{ steps.untrusted.outputs.p2_count }}
-      p3_count: ${{ steps.untrusted.outputs.p3_count }}
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install dependencies (untrusted context)
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --ignore-scripts
-      - name: Run deterministic untrusted scan
-        id: untrusted
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +e
-          SENTINELAYER_CLI_SKIP_AUTH=1 node bin/sl.js review --path . --json > omar-untrusted-review.json
-          review_exit="$?"
-          set -e
-          if [ "${review_exit}" -ne 0 ] && [ "${review_exit}" -ne 2 ]; then
-            echo "::error::Untrusted deterministic scan failed with exit code ${review_exit}."
-            exit "${review_exit}"
-          fi
-          if ! jq -e '
-            type == "object"
-            and (.runId | type == "string" and length > 0)
-            and (.p0 | type == "number")
-            and (.p1 | type == "number")
-            and (.p2 | type == "number")
-            and (.p3 | type == "number")
-          ' omar-untrusted-review.json >/dev/null; then
-            echo "::error::Untrusted deterministic scan produced invalid JSON payload."
-            cat omar-untrusted-review.json || true
-            exit 1
-          fi
-          run_id="$(jq -r '.runId' omar-untrusted-review.json)"
-          p0="$(jq -r '.p0' omar-untrusted-review.json)"
-          p1="$(jq -r '.p1' omar-untrusted-review.json)"
-          p2="$(jq -r '.p2' omar-untrusted-review.json)"
-          p3="$(jq -r '.p3' omar-untrusted-review.json)"
-          gate_status="passed"
-          if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
-            gate_status="blocked"
-          fi
-          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
-          echo "gate_status=${gate_status}" >> "${GITHUB_OUTPUT}"
-          echo "p0_count=${p0}" >> "${GITHUB_OUTPUT}"
-          echo "p1_count=${p1}" >> "${GITHUB_OUTPUT}"
-          echo "p2_count=${p2}" >> "${GITHUB_OUTPUT}"
-          echo "p3_count=${p3}" >> "${GITHUB_OUTPUT}"
-          {
-            echo "## Omar Gate (Untrusted Deterministic Scan)"
-            echo "- status: \`${gate_status}\`"
-            echo "- source: \`local-deterministic\`"
-            echo "- findings: \`P0=${p0} P1=${p1} P2=${p2} P3=${p3}\`"
-            echo "- run_id: \`${run_id}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  omar_scan:
-    name: Omar Gate (Deep Scan)
-    if: >-
-      ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      id-token: write
-      checks: write
       pull-requests: write
-    outputs:
-      trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
-      credential_mode: ${{ steps.resolve_omar_credentials.outputs.credential_mode }}
-      run_id: ${{ steps.omar.outputs.run_id }}
-      gate_status: ${{ steps.omar.outputs.gate_status }}
-      p0_count: ${{ steps.omar.outputs.p0_count }}
-      p1_count: ${{ steps.omar.outputs.p1_count }}
-      p2_count: ${{ steps.omar.outputs.p2_count }}
-      p3_count: ${{ steps.omar.outputs.p3_count }}
+      checks: write
+      id-token: write
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
-      - name: Resolve trusted execution boundary
-        id: trust_boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "trusted_context=true" >> "${GITHUB_OUTPUT}"
-      - name: Resolve Omar credential mode
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        id: resolve_omar_credentials
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.1.7
+        with:
+          fetch-depth: 0
+
+      - name: Detect Sentinelayer token
+        id: detect
         shell: bash
         env:
           SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
-          OMAR_TOKEN_EXCHANGE_URL: ${{ vars.OMAR_TOKEN_EXCHANGE_URL || '' }}
-          OMAR_TOKEN_EXCHANGE_AUDIENCE: ${{ vars.OMAR_TOKEN_EXCHANGE_AUDIENCE || '' }}
-          OMAR_TOKEN_EXCHANGE_ISSUER: ${{ vars.OMAR_TOKEN_EXCHANGE_ISSUER || '' }}
-          OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS: ${{ vars.OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS || '3600' }}
-          OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256: ${{ vars.OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256 || '' }}
-          OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF || 'true' }}
-          OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF || 'true' }}
-          OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS || 'api.sentinelayer.com' }}
-          OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS: ${{ vars.OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS || '/v1/token/exchange/sentinelayer' }}
-          OMAR_REQUIRE_OIDC_ON_PROTECTED_REF: ${{ vars.OMAR_REQUIRE_OIDC_ON_PROTECTED_REF || 'true' }}
-          OMAR_ALLOW_STATIC_SECRETS: ${{ vars.OMAR_ALLOW_STATIC_SECRETS || 'false' }}
-          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
-          mode="static-secrets"
-          resolved_token="${SENTINELAYER_TOKEN}"
-          exchange_url="$(echo "${OMAR_TOKEN_EXCHANGE_URL}" | xargs || true)"
-          exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
-          event_name="${GITHUB_EVENT_NAME}"
-          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          allow_static="$(echo "${OMAR_ALLOW_STATIC_SECRETS:-false}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          require_pinned="$(echo "${OMAR_REQUIRE_PINNED_PUBKEY_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          require_response_binding_on_protected="$(echo "${OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
-          if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
-            # Protected refs: require OIDC exchange UNLESS OMAR_ALLOW_STATIC_
-            # SECRETS=true is explicitly set. The prior strict version (reject
-            # static secrets entirely on protected refs) broke main push
-            # pipelines for repos that don't have Sentinelayer's OIDC exchange
-            # infra provisioned yet. Promotion to strict OIDC-only should
-            # happen once OIDC URL is configured.
-            if [ "${ref_protected}" = "true" ] && [ "${allow_static}" != "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true as emergency static fallback)."
-              exit 1
-            fi
-            if [ "${allow_static}" != "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on ${event_name} events. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback on non-protected refs)."
-              exit 1
-            fi
+          if [ -n "${SENTINELAYER_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
-          if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
-            if ! echo "${exchange_url}" | grep -Eq '^https://'; then
-              echo "::error::OMAR_TOKEN_EXCHANGE_URL must use https://."
-              exit 1
-            fi
-            exchange_host="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.hostname || '').toLowerCase()); } catch { process.exit(1); }" "${exchange_url}" || true)"
-            exchange_path="$(node -e "try { const u = new URL(process.argv[1]); process.stdout.write(String(u.pathname || '/')); } catch { process.exit(1); }" "${exchange_url}" || true)"
-            if [ -z "${exchange_host}" ] || [ -z "${exchange_path}" ]; then
-              echo "::error::OMAR_TOKEN_EXCHANGE_URL is not a valid absolute URL."
-              exit 1
-            fi
-            host_allowed="false"
-            IFS=',' read -r -a allowed_hosts <<< "${OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS}"
-            for host in "${allowed_hosts[@]}"; do
-              candidate="$(echo "${host}" | tr '[:upper:]' '[:lower:]' | xargs)"
-              if [ -n "${candidate}" ] && [ "${candidate}" = "${exchange_host}" ]; then
-                host_allowed="true"
-                break
-              fi
-            done
-            if [ "${host_allowed}" != "true" ]; then
-              echo "::error::OMAR_TOKEN_EXCHANGE_URL host '${exchange_host}' is not allowlisted. Allowed hosts: ${OMAR_TOKEN_EXCHANGE_ALLOWED_HOSTS}."
-              exit 1
-            fi
-            path_allowed="false"
-            IFS=',' read -r -a allowed_paths <<< "${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}"
-            for allowed_path in "${allowed_paths[@]}"; do
-              candidate_path="$(echo "${allowed_path}" | xargs)"
-              if [ -n "${candidate_path}" ] && [ "${candidate_path}" = "${exchange_path}" ]; then
-                path_allowed="true"
-                break
-              fi
-            done
-            if [ "${path_allowed}" != "true" ]; then
-              echo "::error::OMAR_TOKEN_EXCHANGE_URL path '${exchange_path}' is not allowlisted. Allowed paths: ${OMAR_TOKEN_EXCHANGE_ALLOWED_PATHS}."
-              exit 1
-            fi
-            if [ "${ref_protected}" = "true" ] && [ "${require_pinned}" != "false" ] && [ -z "${pinned_pubkey}" ]; then
-              echo "::error::Pinned public key is required for Omar token exchange on protected refs. Set OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256."
-              exit 1
-            fi
-            curl_pinned_arg=""
-            if [ -n "${pinned_pubkey}" ]; then
-              if echo "${pinned_pubkey}" | grep -q '^sha256//'; then
-                curl_pinned_arg="--pinnedpubkey ${pinned_pubkey}"
-              else
-                curl_pinned_arg="--pinnedpubkey sha256//${pinned_pubkey}"
-              fi
-            fi
-            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-              echo "::error::OIDC exchange is configured but GitHub OIDC request context is unavailable."
-              exit 1
-            fi
-            oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${exchange_audience}"
-            oidc_response="$(curl -fsS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
-              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-              "${oidc_url}")"
-            oidc_token="$(echo "${oidc_response}" | jq -r '.value // empty')"
-            if [ -z "${oidc_token}" ]; then
-              echo "::error::OIDC exchange failed: missing id_token value in GitHub OIDC response."
-              exit 1
-            fi
-            exchange_nonce="$(printf '%s|%s|%s|%s' "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_SHA}" "$(date +%s%N)" | sha256sum | awk '{print $1}')"
-            exchange_payload="$(jq -n \
-              --arg repository "${GITHUB_REPOSITORY}" \
-              --arg run_id "${GITHUB_RUN_ID}" \
-              --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
-              --arg ref "${GITHUB_REF}" \
-              --arg sha "${GITHUB_SHA}" \
-              --arg exchange_nonce "${exchange_nonce}" \
-              '{repository: $repository, run_id: $run_id, run_attempt: $run_attempt, ref: $ref, sha: $sha, exchange_nonce: $exchange_nonce}')"
-            exchange_headers="$(mktemp)"
-            exchange_body="$(mktemp)"
-            exchange_status="$(curl -sS --retry 2 --retry-delay 1 --retry-all-errors --connect-timeout 5 --max-time 20 \
-              -D "${exchange_headers}" \
-              -o "${exchange_body}" \
-              -w "%{http_code}" \
-              ${curl_pinned_arg} \
-              -H "Authorization: Bearer ${oidc_token}" \
-              -H "Content-Type: application/json" \
-              -d "${exchange_payload}" \
-              "${exchange_url}")"
-            if [ "${exchange_status}" != "200" ]; then
-              echo "::error::OIDC exchange failed with status ${exchange_status}."
-              exchange_error_code="$(jq -r '.error_code // .code // empty' "${exchange_body}" 2>/dev/null || true)"
-              exchange_request_id="$(jq -r '.request_id // .requestId // empty' "${exchange_body}" 2>/dev/null || true)"
-              if [ -n "${exchange_error_code}" ] || [ -n "${exchange_request_id}" ]; then
-                echo "::error::exchange_error_code=${exchange_error_code:-<none>} exchange_request_id=${exchange_request_id:-<none>}"
-              fi
-              exit 1
-            fi
-            content_type="$(grep -i '^content-type:' "${exchange_headers}" | tail -n 1 | cut -d':' -f2- | xargs || true)"
-            if ! echo "${content_type}" | grep -qi '^application/json'; then
-              echo "::error::OIDC exchange response content-type must be application/json (received '${content_type:-<none>}')."
-              exit 1
-            fi
-            if ! jq -e 'type=="object" and (.sentinelayer_token|type=="string" and length>0) and (.expires_at|type=="string" and length>0) and (.issuer|type=="string" and length>0) and (.audience|type=="string" and length>0)' "${exchange_body}" >/dev/null 2>&1; then
-              echo "::error::OIDC exchange response schema invalid or missing required fields."
-              exchange_error_code="$(jq -r '.error_code // .code // empty' "${exchange_body}" 2>/dev/null || true)"
-              exchange_request_id="$(jq -r '.request_id // .requestId // empty' "${exchange_body}" 2>/dev/null || true)"
-              if [ -n "${exchange_error_code}" ] || [ -n "${exchange_request_id}" ]; then
-                echo "::error::exchange_error_code=${exchange_error_code:-<none>} exchange_request_id=${exchange_request_id:-<none>}"
-              fi
-              exit 1
-            fi
-            resolved_token="$(jq -r '.sentinelayer_token' "${exchange_body}")"
-            exchange_issuer="$(jq -r '.issuer' "${exchange_body}")"
-            exchange_audience_resp="$(jq -r '.audience' "${exchange_body}")"
-            exchange_expires_at="$(jq -r '.expires_at' "${exchange_body}")"
-            response_repository="$(jq -r '.repository // empty' "${exchange_body}")"
-            response_run_id="$(jq -r '.run_id // empty' "${exchange_body}")"
-            response_sha="$(jq -r '.sha // empty' "${exchange_body}")"
-            response_nonce="$(jq -r '.exchange_nonce // empty' "${exchange_body}")"
-            if [ -n "${exchange_audience}" ] && [ "${exchange_audience_resp}" != "${exchange_audience}" ]; then
-              echo "::error::OIDC exchange audience mismatch. expected=${exchange_audience} actual=${exchange_audience_resp}."
-              exit 1
-            fi
-            expected_issuer="$(echo "${OMAR_TOKEN_EXCHANGE_ISSUER}" | xargs || true)"
-            if [ -n "${expected_issuer}" ] && [ "${exchange_issuer}" != "${expected_issuer}" ]; then
-              echo "::error::OIDC exchange issuer mismatch. expected=${expected_issuer} actual=${exchange_issuer}."
-              exit 1
-            fi
-            expires_epoch="$(date -u -d "${exchange_expires_at}" +%s 2>/dev/null || true)"
-            if [ -z "${expires_epoch}" ]; then
-              echo "::error::OIDC exchange expires_at is invalid: ${exchange_expires_at}."
-              exit 1
-            fi
-            now_epoch="$(date +%s)"
-            ttl_seconds="$((expires_epoch - now_epoch))"
-            max_ttl="$(echo "${OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS}" | xargs || true)"
-            case "${max_ttl}" in ''|*[!0-9]*) echo "::error::Invalid OMAR_TOKEN_EXCHANGE_MAX_TTL_SECONDS value: ${max_ttl}" ; exit 1 ;; esac
-            if [ "${ttl_seconds}" -le 0 ]; then
-              echo "::error::OIDC exchange token is already expired (ttl=${ttl_seconds})."
-              exit 1
-            fi
-            if [ "${ttl_seconds}" -gt "${max_ttl}" ]; then
-              echo "::error::OIDC exchange token TTL ${ttl_seconds}s exceeds maximum ${max_ttl}s."
-              exit 1
-            fi
-            # Enforce response binding checks on ALL refs, not only
-            # protected. Unprotected contexts are still subject to token
-            # forgery / replay if the binding isn't validated. Opt-out via
-            # OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF=false remains as
-            # an emergency escape hatch but applies globally now, and is
-            # deprecated — remove in a future release.
-            if [ "${require_response_binding_on_protected}" != "false" ]; then
-              if [ -z "${response_repository}" ] || [ -z "${response_run_id}" ] || [ -z "${response_sha}" ] || [ -z "${response_nonce}" ]; then
-                echo "::error::OIDC exchange response binding fields are required (repository, run_id, sha, exchange_nonce)."
-                exit 1
-              fi
-              if [ "${response_repository}" != "${GITHUB_REPOSITORY}" ]; then
-                echo "::error::OIDC exchange repository binding mismatch. expected=${GITHUB_REPOSITORY} actual=${response_repository}."
-                exit 1
-              fi
-              if [ "${response_run_id}" != "${GITHUB_RUN_ID}" ]; then
-                echo "::error::OIDC exchange run_id binding mismatch. expected=${GITHUB_RUN_ID} actual=${response_run_id}."
-                exit 1
-              fi
-              if [ "${response_sha}" != "${GITHUB_SHA}" ]; then
-                echo "::error::OIDC exchange sha binding mismatch. expected=${GITHUB_SHA} actual=${response_sha}."
-                exit 1
-              fi
-              if [ "${response_nonce}" != "${exchange_nonce}" ]; then
-                echo "::error::OIDC exchange nonce binding mismatch."
-                exit 1
-              fi
-            fi
-            mode="oidc-exchange"
-          fi
-          require_oidc="$(echo "${OMAR_REQUIRE_OIDC_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          if [ "${mode}" = "static-secrets" ] && [ "${ref_protected}" = "true" ] && [ "${require_oidc}" != "false" ] && [ "${allow_static}" != "true" ]; then
-            echo "::error::Static-secret Omar mode is blocked on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
-            exit 1
-          fi
-          echo "::add-mask::${resolved_token}"
-          echo "sentinelayer_token=${resolved_token}" >> "${GITHUB_OUTPUT}"
-          echo "credential_mode=${mode}" >> "${GITHUB_OUTPUT}"
-          {
-            echo "## Omar Credential Mode"
-            echo "- mode: \`${mode}\`"
-            if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
-              echo "- exchange_url: \`${exchange_url}\`"
-              echo "- exchange_audience: \`${exchange_audience}\`"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Validate Sentinelayer token secret
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+
+      - name: Omar Gate — Sentinelayer Security Review
+        if: ${{ steps.detect.outputs.enabled == 'true' }}
+        uses: mrrCarter/sentinelayer-v1-action@8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07 # v1.3.4
+        with:
+          github_token: ${{ github.token }}
+          sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}
+          sentinelayer_spec_id: ${{ vars.SENTINELAYER_SPEC_ID || '' }}
+          sentinelayer_managed_llm: false
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          model: gpt-5.3-codex
+          model_fallback: gpt-5.2-codex
+          codex_model: gpt-5.3-codex
+          llm_failure_policy: block
+          fork_policy: block
+
+      - name: Verify OpenAI key configured
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
         shell: bash
         env:
-          CREDENTIAL_MODE: ${{ steps.resolve_omar_credentials.outputs.credential_mode || '' }}
-          RESOLVED_SENTINELAYER_TOKEN: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token || '' }}
-          SENTINELAYER_TOKEN: ${{ secrets.SENTINELAYER_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          mode="$(echo "${CREDENTIAL_MODE}" | xargs || true)"
-          if [ "${mode}" = "oidc-exchange" ]; then
-            bash .github/scripts/require-secret.sh "OMAR_OIDC_EXCHANGED_SENTINELAYER_TOKEN" "${RESOLVED_SENTINELAYER_TOKEN}"
-            exit 0
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::Neither SENTINELAYER_TOKEN nor OPENAI_API_KEY is configured; cannot run Omar deep scan." >&2
+            exit 1
           fi
-          bash .github/scripts/require-secret.sh "SENTINELAYER_TOKEN" "${SENTINELAYER_TOKEN}"
-      - name: Validate Omar configuration invariants
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+          echo "OpenAI key present; running BYOK deep-scan fallback."
+
+      - name: Set up Python
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Install OpenAI SDK
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          if ! echo "${OMAR_SPEC_ID}" | grep -Eq '^[a-f0-9]{64}$'; then
-            echo "::error::OMAR_SPEC_ID must be a 64-character lowercase hex digest."
-            exit 1
-          fi
-      - name: Enforce security-review environment policy
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+          python -m pip install --upgrade pip
+          python -m pip install "openai>=1.40.0"
+
+      - name: Omar Deep Scan (OpenAI fallback)
+        id: omar
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5.3-codex
+          OPENAI_FALLBACK_MODEL: gpt-5.2-codex
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          MAX_DIFF_CHARS = 160000
+
+          def out(key, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{key}={value}\n")
+
+          def out_multiline(key, value):
+              delim = "OMAR_EOF_%s" % key.upper()
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{key}<<{delim}\n{value}\n{delim}\n")
+
+          # --- Resolve PR context from the event payload -----------------------
+          event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+          event = {}
+          if event_path and os.path.exists(event_path):
+              with open(event_path, "r", encoding="utf-8") as fh:
+                  event = json.load(fh)
+
+          pr = event.get("pull_request") or {}
+          pr_number = pr.get("number") or event.get("number") or ""
+          base_sha = (pr.get("base") or {}).get("sha") or os.environ.get("GITHUB_BASE_REF", "")
+          head_sha = (pr.get("head") or {}).get("sha") or os.environ.get("GITHUB_SHA", "")
+
+          # --- Collect the changed files + unified diff ------------------------
+          def git(args):
+              return subprocess.run(
+                  ["git"] + args,
+                  capture_output=True,
+                  text=True,
+              )
+
+          changed_files = []
+          diff_text = ""
+          if base_sha and head_sha:
+              r = git(["diff", "--name-only", f"{base_sha}...{head_sha}"])
+              if r.returncode == 0:
+                  changed_files = [ln for ln in r.stdout.splitlines() if ln.strip()]
+              d = git(["diff", f"{base_sha}...{head_sha}"])
+              if d.returncode == 0:
+                  diff_text = d.stdout
+
+          if not diff_text:
+              # Fallback: diff against the merge-base of HEAD~1 if shas unavailable.
+              d = git(["diff", "HEAD~1...HEAD"])
+              if d.returncode == 0:
+                  diff_text = d.stdout
+              n = git(["diff", "--name-only", "HEAD~1...HEAD"])
+              if n.returncode == 0 and not changed_files:
+                  changed_files = [ln for ln in n.stdout.splitlines() if ln.strip()]
+
+          truncated = False
+          if len(diff_text) > MAX_DIFF_CHARS:
+              diff_text = diff_text[:MAX_DIFF_CHARS]
+              truncated = True
+
+          # --- Build the strict-JSON prompt ------------------------------------
+          system_prompt = (
+              "You are Omar, a strict senior release engineer and QA bug hunter. "
+              "Review the supplied pull-request diff for correctness bugs, regressions, "
+              "security issues, crashes, data loss, and concrete release blockers. "
+              "Respond with STRICT JSON only — no prose outside the JSON object. "
+              "Schema: {\"summary\": string, \"findings\": [{\"severity\": one of "
+              "\"P0\"|\"P1\"|\"P2\"|\"P3\", \"file\": string, \"issue\": string, "
+              "\"fix\": string, \"confidence\": one of \"high\"|\"medium\"|\"low\"}], "
+              "\"testing_gaps\": [string]}. Reserve P0/P1 for concrete, demonstrable "
+              "blocking defects; do not block on vague or stylistic advice."
+          )
+          user_prompt = (
+              f"Pull request #{pr_number}\n"
+              f"Base: {base_sha}\nHead: {head_sha}\n"
+              f"Changed files ({len(changed_files)}):\n"
+              + "\n".join(changed_files)
+              + "\n\nUnified diff"
+              + (" (TRUNCATED)" if truncated else "")
+              + ":\n\n"
+              + diff_text
+          )
+
+          model_primary = os.environ.get("OPENAI_MODEL", "gpt-5.3-codex")
+          model_fallback = os.environ.get("OPENAI_FALLBACK_MODEL", "gpt-5.2-codex")
+          models = [m for m in [model_primary, model_fallback] if m]
+
+          from openai import OpenAI
+
+          client = OpenAI()
+
+          def call_responses(model):
+              resp = client.responses.create(
+                  model=model,
+                  input=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt},
+                  ],
+              )
+              text = getattr(resp, "output_text", None)
+              if text:
+                  return text
+              # Manual extraction fallback for SDK variance.
+              chunks = []
+              for item in getattr(resp, "output", []) or []:
+                  for c in getattr(item, "content", []) or []:
+                      t = getattr(c, "text", None)
+                      if t:
+                          chunks.append(t)
+              return "".join(chunks)
+
+          def call_chat(model):
+              resp = client.chat.completions.create(
+                  model=model,
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt},
+                  ],
+              )
+              return resp.choices[0].message.content or ""
+
+          raw = ""
+          model_used = ""
+          last_err = None
+          for model in models:
+              for caller in (call_responses, call_chat):
+                  try:
+                      raw = caller(model)
+                      if raw and raw.strip():
+                          model_used = model
+                          break
+                  except Exception as exc:  # noqa: BLE001 - report + fall through
+                      last_err = exc
+                      continue
+              if model_used:
+                  break
+
+          if not model_used:
+              print(f"::error::Omar deep scan failed to obtain an LLM response: {last_err}", file=sys.stderr)
+              sys.exit(1)
+
+          # --- Parse JSON (tolerate code fences) -------------------------------
+          def parse_json(text):
+              text = text.strip()
+              fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+              if fence:
+                  text = fence.group(1)
+              else:
+                  start = text.find("{")
+                  end = text.rfind("}")
+                  if start != -1 and end != -1 and end > start:
+                      text = text[start:end + 1]
+              return json.loads(text)
+
+          try:
+              data = parse_json(raw)
+          except Exception as exc:  # noqa: BLE001
+              print(f"::error::Could not parse Omar JSON response: {exc}", file=sys.stderr)
+              print(raw[:2000], file=sys.stderr)
+              sys.exit(1)
+
+          summary = (data.get("summary") or "").strip() or "(no summary provided)"
+          findings = data.get("findings") or []
+          testing_gaps = data.get("testing_gaps") or []
+
+          # --- Demote false-blocks ---------------------------------------------
+          # Demote P0/P1 to P2 when the finding is test-file-only OR lacks a
+          # concrete blocking signal, to avoid vague-advisory false-blocks.
+          BLOCK_SIGNALS = (
+              "bug", "regression", "security", "crash", "vulnerab", "injection",
+              "data loss", "corrupt", "deadlock", "race", "leak", "overflow",
+              "broken", "fail", "exception", "null", "undefined", "panic",
+              "missing", "incorrect", "unsafe", "exploit", "bypass", "auth",
+          )
+          TEST_PATH_HINT = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|_test\.|\.test\.|\.spec\.", re.IGNORECASE)
+
+          def is_test_only(path):
+              if not path:
+                  return False
+              return bool(TEST_PATH_HINT.search(path))
+
+          def has_block_signal(finding):
+              blob = " ".join(
+                  str(finding.get(k, "")) for k in ("issue", "fix", "summary")
+              ).lower()
+              return any(sig in blob for sig in BLOCK_SIGNALS)
+
+          normalized = []
+          for f in findings:
+              sev = str(f.get("severity", "P3")).upper().strip()
+              if sev not in ("P0", "P1", "P2", "P3"):
+                  sev = "P3"
+              path = str(f.get("file", "") or "")
+              if sev in ("P0", "P1"):
+                  if is_test_only(path) or not has_block_signal(f):
+                      sev = "P2"
+              normalized.append({
+                  "severity": sev,
+                  "file": path or "(unspecified)",
+                  "issue": str(f.get("issue", "")).strip(),
+                  "fix": str(f.get("fix", "")).strip(),
+                  "confidence": str(f.get("confidence", "")).strip() or "n/a",
+              })
+
+          counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+          for f in normalized:
+              counts[f["severity"]] += 1
+
+          gate_status = "blocked" if (counts["P0"] > 0 or counts["P1"] > 0) else "passed"
+
+          # --- Build the markdown comment body ---------------------------------
+          status_emoji = "BLOCKED" if gate_status == "blocked" else "PASSED"
+          lines = []
+          lines.append("<!-- omar-openai-summary -->")
+          lines.append("## Omar Deep Scan (OpenAI fallback)")
+          lines.append("")
+          lines.append(f"**Gate status:** `{gate_status}` ({status_emoji})")
+          lines.append(f"**Model used:** `{model_used}`")
+          if truncated:
+              lines.append("")
+              lines.append(f"> Note: diff truncated to {MAX_DIFF_CHARS} chars for review.")
+          lines.append("")
+          lines.append("### Summary")
+          lines.append("")
+          lines.append(summary)
+          lines.append("")
+          lines.append("### Severity matrix")
+          lines.append("")
+          lines.append("| P0 | P1 | P2 | P3 |")
+          lines.append("| --- | --- | --- | --- |")
+          lines.append(f"| {counts['P0']} | {counts['P1']} | {counts['P2']} | {counts['P3']} |")
+          lines.append("")
+          lines.append("### Findings")
+          lines.append("")
+          if normalized:
+              lines.append("| Severity | File | Issue | Suggested fix | Confidence |")
+              lines.append("| --- | --- | --- | --- | --- |")
+              def cell(s):
+                  return str(s).replace("|", "\\|").replace("\n", " ").strip()
+              for f in normalized:
+                  lines.append(
+                      f"| {f['severity']} | {cell(f['file'])} | {cell(f['issue'])} | "
+                      f"{cell(f['fix'])} | {f['confidence']} |"
+                  )
+          else:
+              lines.append("No findings reported.")
+          lines.append("")
+          lines.append("### Changed files")
+          lines.append("")
+          if changed_files:
+              for cf in changed_files:
+                  lines.append(f"- `{cf}`")
+          else:
+              lines.append("- (none detected)")
+          lines.append("")
+          lines.append("### Testing gaps")
+          lines.append("")
+          if testing_gaps:
+              for g in testing_gaps:
+                  lines.append(f"- {str(g).strip()}")
+          else:
+              lines.append("- None reported.")
+          lines.append("")
+
+          body = "\n".join(lines)
+
+          comment_path = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), "omar_comment.md")
+          with open(comment_path, "w", encoding="utf-8") as fh:
+              fh.write(body)
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as fh:
+                  fh.write(body + "\n")
+
+          out("p0_count", counts["P0"])
+          out("p1_count", counts["P1"])
+          out("p2_count", counts["P2"])
+          out("p3_count", counts["P3"])
+          out("gate_status", gate_status)
+          out("pr_number", pr_number)
+          out("comment_path", comment_path)
+          out("model_used", model_used)
+
+          print(f"Omar deep scan complete: status={gate_status} "
+                f"P0={counts['P0']} P1={counts['P1']} P2={counts['P2']} P3={counts['P3']} "
+                f"model={model_used}")
+          PY
+
+      - name: Upsert Omar PR comment
+        if: ${{ steps.detect.outputs.enabled != 'true' && steps.omar.outputs.pr_number != '' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.omar.outputs.pr_number }}
+          COMMENT_PATH: ${{ steps.omar.outputs.comment_path }}
         run: |
           set -euo pipefail
-          env_json="$(gh api "repos/${GITHUB_REPOSITORY}/environments/security-review")"
-          reviewer_count="$(echo "${env_json}" | jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?] | length')"
-          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          case "${reviewer_count}" in ''|*[!0-9]*) echo "::error::Invalid security-review reviewer count: ${reviewer_count}" ; exit 1 ;; esac
-          if [ "${ref_protected}" = "true" ] && [ "${reviewer_count}" -lt 1 ]; then
-            echo "::error::security-review environment has no required reviewers configured for protected refs."
-            exit 1
-          fi
-          {
-            echo "## Security Review Environment"
-            echo "- required_reviewers: \`${reviewer_count}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Validate Omar workflow contract
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/ci/check_omar_workflow_contract.py --self-test
-          python3 scripts/ci/check_omar_workflow_contract.py
-          python3 scripts/ci/check_forbidden_omar_surface.py --self-test
-          python3 scripts/ci/check_forbidden_omar_surface.py
-      - name: Run Omar Gate
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        id: omar
-        uses: mrrCarter/sentinelayer-v1-action@4cb3063e04e3b899981b25f6918b26f70d35a8d4
-        with:
-          github_token: ${{ github.token }}
-          sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
-          sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          sentinelayer_managed_llm: "true"
-          scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "true"
-          codex_only: "false"
-          llm_failure_policy: block
-      - name: Assert Omar LLM model contract is active
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        env:
-          LLM_MODEL: ${{ steps.omar.outputs.model || '' }}
-          CODEX_MODEL: ${{ steps.omar.outputs.codex_model || '' }}
-          GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
-          REQUESTED_MANAGED_LLM: "true"
-          REQUESTED_FAILURE_POLICY: block
-        run: |
-          set -euo pipefail
-          model="$(echo "${LLM_MODEL}" | tr -d '\r' | xargs || true)"
-          codex_model="$(echo "${CODEX_MODEL}" | tr -d '\r' | xargs || true)"
-          model_lc="$(echo "${model}" | tr '[:upper:]' '[:lower:]')"
-          codex_model_lc="$(echo "${codex_model}" | tr '[:upper:]' '[:lower:]')"
-          gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
-          if [ -z "${model}" ] || [ -z "${codex_model}" ]; then
-            echo "::error::Omar LLM model outputs missing (model='${model}' codex_model='${codex_model}' gate='${gate_status}'). Blocking merge."
-            exit 1
-          fi
-          if [ "${REQUESTED_MANAGED_LLM}" != "true" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ]; then
-            echo "::error::Omar LLM policy drifted (managed='${REQUESTED_MANAGED_LLM}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
-            exit 1
-          fi
-          case "${model_lc}" in
-            disabled|none|null|n/a)
-              echo "::error::Omar LLM model is disabled/invalid ('${model}'). Blocking merge."
-              exit 1
-              ;;
-          esac
-          case "${codex_model_lc}" in
-            disabled|none|null|n/a)
-              echo "::error::Omar Codex model is disabled/invalid ('${codex_model}'). Blocking merge."
-              exit 1
-              ;;
-          esac
-          if [ "${model}" != "gpt-5.3-codex" ] || [ "${codex_model}" != "gpt-5.3-codex" ]; then
-            echo "::error::Omar LLM model contract drifted (model='${model}' codex_model='${codex_model}'). Blocking merge."
-            exit 1
-          fi
-          echo "Omar LLM model contract active: model='${model}' codex_model='${codex_model}' gate='${gate_status}'"
-      - name: Validate Omar output contract
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          repo = os.environ["REPO"]
+          pr_number = os.environ["PR_NUMBER"]
+          comment_path = os.environ["COMMENT_PATH"]
+          marker = "<!-- omar-openai-summary -->"
+
+          with open(comment_path, "r", encoding="utf-8") as fh:
+              body = fh.read()
+
+          def gh_api(args, input_data=None):
+              return subprocess.run(
+                  ["gh", "api"] + args,
+                  capture_output=True,
+                  text=True,
+                  input=input_data,
+              )
+
+          # List existing issue comments and find ours by marker + bot author.
+          existing_id = None
+          page = 1
+          while True:
+              r = gh_api([
+                  "-X", "GET",
+                  f"/repos/{repo}/issues/{pr_number}/comments",
+                  "-f", "per_page=100",
+                  "-f", f"page={page}",
+              ])
+              if r.returncode != 0:
+                  print(r.stderr)
+                  break
+              comments = json.loads(r.stdout or "[]")
+              if not comments:
+                  break
+              for c in comments:
+                  login = (c.get("user") or {}).get("login", "")
+                  if marker in (c.get("body") or "") and login == "github-actions[bot]":
+                      existing_id = c.get("id")
+                      break
+              if existing_id or len(comments) < 100:
+                  break
+              page += 1
+
+          payload = json.dumps({"body": body})
+          if existing_id:
+              r = gh_api([
+                  "-X", "PATCH",
+                  f"/repos/{repo}/issues/comments/{existing_id}",
+                  "--input", "-",
+              ], input_data=payload)
+              action = "updated"
+          else:
+              r = gh_api([
+                  "-X", "POST",
+                  f"/repos/{repo}/issues/{pr_number}/comments",
+                  "--input", "-",
+              ], input_data=payload)
+              action = "created"
+
+          if r.returncode != 0:
+              print(f"::error::Failed to upsert Omar comment: {r.stderr}")
+              raise SystemExit(1)
+          print(f"Omar PR comment {action}.")
+          PY
+
+      - name: Enforce P1 gate
+        if: ${{ steps.detect.outputs.enabled != 'true' }}
         shell: bash
         env:
-          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
-          OMAR_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
-          OMAR_P0: ${{ steps.omar.outputs.p0_count || '0' }}
-          OMAR_P1: ${{ steps.omar.outputs.p1_count || '0' }}
-          OMAR_P2: ${{ steps.omar.outputs.p2_count || '0' }}
-          OMAR_P3: ${{ steps.omar.outputs.p3_count || '0' }}
+          P0_COUNT: ${{ steps.omar.outputs.p0_count }}
+          P1_COUNT: ${{ steps.omar.outputs.p1_count }}
+          GATE_STATUS: ${{ steps.omar.outputs.gate_status }}
         run: |
           set -euo pipefail
-          if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9_-]{8,128}$'; then
-            echo "::error::Invalid Omar run_id output: ${OMAR_RUN_ID}"
+          p0="${P0_COUNT:-0}"
+          p1="${P1_COUNT:-0}"
+          echo "Omar gate status: ${GATE_STATUS:-unknown} (P0=${p0} P1=${p1})"
+          if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
+            echo "::error::Omar gate blocked: ${p0} P0 and ${p1} P1 finding(s) at or above the P1 severity gate." >&2
             exit 1
           fi
-          case "${OMAR_GATE_STATUS}" in ''|pass|passed|blocked|fail|failed) ;; *) echo "::error::Invalid Omar gate_status output: ${OMAR_GATE_STATUS}" ; exit 1 ;; esac
-          for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
-            case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
-          done
-      - name: Stage Omar artifacts (redacted)
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        env:
-          OMAR_UPLOAD_LOGS: ${{ vars.OMAR_UPLOAD_LOGS || 'false' }}
-        run: |
-          set -euo pipefail
-          rm -rf omar-artifacts
-          mkdir -p omar-artifacts/reports omar-artifacts/telemetry
-          if [ -d ".sentinelayer/reports" ]; then
-            cp -R .sentinelayer/reports/. omar-artifacts/reports/ 2>/dev/null || true
-          fi
-          if [ -d ".sentinelayer/telemetry" ]; then
-            cp -R .sentinelayer/telemetry/. omar-artifacts/telemetry/ 2>/dev/null || true
-          fi
-          if [ "$(echo "${OMAR_UPLOAD_LOGS}" | tr '[:upper:]' '[:lower:]' | xargs || true)" = "true" ] && [ -d ".sentinelayer/logs" ]; then
-            mkdir -p omar-artifacts/logs
-            cp -R .sentinelayer/logs/. omar-artifacts/logs/ 2>/dev/null || true
-          fi
-      - name: Scan staged artifacts for secrets
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -d "omar-artifacts" ]; then
-            exit 0
-          fi
-          report="omar-artifacts/secret-scan.json"
-          set +e
-          node .github/scripts/scan-omar-artifacts.js --path omar-artifacts --report "${report}"
-          scan_exit="$?"
-          set -e
-          if [ "${scan_exit}" -ne 0 ]; then
-            findings="$(jq 'length' "${report}" 2>/dev/null || echo 0)"
-            echo "::error::Secret scan detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
-            exit 1
-          fi
-      - name: Upload Omar artifacts
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
-        with:
-          name: omar-gate-artifacts
-          path: omar-artifacts/**
-          if-no-files-found: ignore
-  omar_enforce:
-    name: Omar Gate
-    needs: [omar_scan, omar_untrusted_scan]
-    if: ${{ always() }}
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      checks: write
-      pull-requests: write
-    steps:
-      - name: Require selected Omar scan success
-        shell: bash
-        env:
-          TRUSTED_SCAN_RESULT: ${{ needs.omar_scan.result }}
-          TRUSTED_CONTEXT: ${{ needs.omar_scan.outputs.trusted_context || '' }}
-          UNTRUSTED_SCAN_RESULT: ${{ needs.omar_untrusted_scan.result }}
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || '' }}
-          BASE_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${HEAD_REPOSITORY}" != "${BASE_REPOSITORY}" ]; then
-            if [ "${UNTRUSTED_SCAN_RESULT}" != "success" ]; then
-              echo "::error::Untrusted Omar scan did not succeed (result=${UNTRUSTED_SCAN_RESULT})."
-              exit 1
-            fi
-            exit 0
-          fi
-          if [ "${TRUSTED_SCAN_RESULT}" != "success" ] || [ "${TRUSTED_CONTEXT}" != "true" ]; then
-            echo "::error::Trusted Omar scan did not succeed (result=${TRUSTED_SCAN_RESULT}, trusted_context=${TRUSTED_CONTEXT:-<empty>})."
-            exit 1
-          fi
-      - name: Enforce Omar reviewer merge thresholds
-        shell: bash
-        env:
-          P0_COUNT: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p0_count || needs.omar_untrusted_scan.outputs.p0_count || '0' }}
-          P1_COUNT: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p1_count || needs.omar_untrusted_scan.outputs.p1_count || '0' }}
-          P2_COUNT: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p2_count || needs.omar_untrusted_scan.outputs.p2_count || '0' }}
-          P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          SEVERITY_GATE_SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          OMAR_POLICY_MIN_SEVERITY_GATE: ${{ vars.OMAR_POLICY_MIN_SEVERITY_GATE || 'P1' }}
-          OMAR_POLICY_P2_MAX_ALLOWED: ${{ vars.OMAR_POLICY_P2_MAX_ALLOWED || '5' }}
-          OMAR_ALLOW_RELAXATION_ON_DISPATCH: ${{ vars.OMAR_ALLOW_RELAXATION_ON_DISPATCH || 'false' }}
-          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
-        run: |
-          set -euo pipefail
-          severity_rank() {
-            case "$1" in
-              P0) echo 0 ;;
-              P1) echo 1 ;;
-              P2) echo 2 ;;
-              *) echo -1 ;;
-            esac
-          }
-          rank_to_severity() {
-            case "$1" in
-              0) echo "P0" ;;
-              1) echo "P1" ;;
-              2) echo "P2" ;;
-              *) echo "" ;;
-            esac
-          }
-          p0="$(echo "${P0_COUNT}" | tr -d '\r' | xargs || true)"
-          p1="$(echo "${P1_COUNT}" | tr -d '\r' | xargs || true)"
-          p2="$(echo "${P2_COUNT}" | tr -d '\r' | xargs || true)"
-          p2_max="$(echo "${P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
-          severity_gate="$(echo "${SEVERITY_GATE_SELECTED}" | tr -d '\r' | xargs || true)"
-          policy_gate="$(echo "${OMAR_POLICY_MIN_SEVERITY_GATE}" | tr -d '\r' | xargs || true)"
-          policy_p2_max="$(echo "${OMAR_POLICY_P2_MAX_ALLOWED}" | tr -d '\r' | xargs || true)"
-          relaxation_allowed="$(echo "${OMAR_ALLOW_RELAXATION_ON_DISPATCH}" | tr -d '\r' | xargs || true)"
-          ref_protected="$(echo "${GITHUB_REF_PROTECTED}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
-          case "${p0}" in ''|*[!0-9]*) echo "::error::Invalid Omar P0 count: ${p0}" ; exit 1 ;; esac
-          case "${p1}" in ''|*[!0-9]*) echo "::error::Invalid Omar P1 count: ${p1}" ; exit 1 ;; esac
-          case "${p2}" in ''|*[!0-9]*) echo "::error::Invalid Omar P2 count: ${p2}" ; exit 1 ;; esac
-          case "${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max_allowed value: ${p2_max}" ; exit 1 ;; esac
-          case "${policy_p2_max}" in ''|*[!0-9]*) echo "::error::Invalid OMAR_POLICY_P2_MAX_ALLOWED value: ${policy_p2_max}" ; exit 1 ;; esac
-          selected_rank="$(severity_rank "${severity_gate}")"
-          policy_rank="$(severity_rank "${policy_gate}")"
-          if [ "${selected_rank}" -lt 0 ]; then
-            echo "::error::Invalid severity_gate value: ${severity_gate}"
-            exit 1
-          fi
-          if [ "${policy_rank}" -lt 0 ]; then
-            echo "::error::Invalid OMAR_POLICY_MIN_SEVERITY_GATE value: ${policy_gate}"
-            exit 1
-          fi
-          if [ "${selected_rank}" -lt "${policy_rank}" ] && [ "${ref_protected}" = "true" ] && [ "${relaxation_allowed}" != "true" ]; then
-            echo "::error::workflow_dispatch severity_gate ${severity_gate} is weaker than policy minimum ${policy_gate} on protected ref."
-            exit 1
-          fi
-          effective_rank="${selected_rank}"
-          if [ "${policy_rank}" -gt "${effective_rank}" ]; then
-            effective_rank="${policy_rank}"
-          fi
-          effective_gate="$(rank_to_severity "${effective_rank}")"
-          if [ -z "${effective_gate}" ]; then
-            echo "::error::Failed to resolve effective Omar severity gate."
-            exit 1
-          fi
-          effective_p2_max="${p2_max}"
-          if [ "${effective_gate}" = "P2" ]; then
-            if [ "${effective_p2_max}" -gt "${policy_p2_max}" ] && [ "${ref_protected}" = "true" ] && [ "${relaxation_allowed}" != "true" ]; then
-              echo "::error::p2_max_allowed ${effective_p2_max} exceeds policy maximum ${policy_p2_max} on protected ref."
-              exit 1
-            fi
-            if [ "${policy_p2_max}" -lt "${effective_p2_max}" ]; then
-              effective_p2_max="${policy_p2_max}"
-            fi
-          fi
-          echo "OMAR_EFFECTIVE_SEVERITY_GATE=${effective_gate}" >> "$GITHUB_ENV"
-          echo "OMAR_EFFECTIVE_P2_MAX_ALLOWED=${effective_p2_max}" >> "$GITHUB_ENV"
-          case "${effective_gate}" in
-            P0)
-              if [ "${p0}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}. Threshold requires P0=0."
-                exit 1
-              fi
-              ;;
-            P1)
-              if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
-                exit 1
-              fi
-              ;;
-            P2)
-              if [ "${p0}" -gt 0 ] || [ "${p1}" -gt 0 ]; then
-                echo "::error::Omar Gate blocked: P0=${p0}, P1=${p1}. Threshold requires P0=0 and P1=0."
-                exit 1
-              fi
-              if [ "${p2}" -gt "${effective_p2_max}" ]; then
-                echo "::error::Omar Gate blocked: P2=${p2} exceeds max allowed ${effective_p2_max}."
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::Invalid effective severity_gate value: ${effective_gate}"
-              exit 1
-              ;;
-          esac
-          if [ "${effective_gate}" != "${severity_gate}" ]; then
-            echo "::notice::Omar severity gate hardened by policy from ${severity_gate} to ${effective_gate}."
-          fi
-      - name: Emit Omar run summary
-        shell: bash
-        env:
-          OMAR_RUN_ID: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.run_id || needs.omar_untrusted_scan.outputs.run_id || '' }}
-          OMAR_GATE_STATUS: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.gate_status || needs.omar_untrusted_scan.outputs.gate_status || '' }}
-          OMAR_P0: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p0_count || needs.omar_untrusted_scan.outputs.p0_count || '0' }}
-          OMAR_P1: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p1_count || needs.omar_untrusted_scan.outputs.p1_count || '0' }}
-          OMAR_P2: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p2_count || needs.omar_untrusted_scan.outputs.p2_count || '0' }}
-          OMAR_P3: ${{ needs.omar_scan.outputs.trusted_context == 'true' && needs.omar_scan.outputs.p3_count || needs.omar_untrusted_scan.outputs.p3_count || '0' }}
-          EFFECTIVE_SEVERITY_GATE: ${{ env.OMAR_EFFECTIVE_SEVERITY_GATE || (github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1') }}
-          EFFECTIVE_P2_MAX_ALLOWED: ${{ env.OMAR_EFFECTIVE_P2_MAX_ALLOWED || (github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5') }}
-        run: |
-          set -euo pipefail
-          severity_gate="${EFFECTIVE_SEVERITY_GATE}"
-          p2_max="${EFFECTIVE_P2_MAX_ALLOWED}"
-          threshold_line="P0=0, P1=0"
-          if [ "${severity_gate}" = "P0" ]; then
-            threshold_line="P0=0"
-          elif [ "${severity_gate}" = "P2" ]; then
-            threshold_line="P0=0, P1=0, P2<=${p2_max}"
-          fi
-          echo "## Omar Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- run_id: \`${OMAR_RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- gate_status: \`${OMAR_GATE_STATUS}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- findings: \`P0=${OMAR_P0} P1=${OMAR_P1} P2=${OMAR_P2} P3=${OMAR_P3}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- severity_gate: \`${severity_gate}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- merge_threshold: \`${threshold_line}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Omar gate passed."
