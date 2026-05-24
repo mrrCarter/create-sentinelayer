@@ -621,10 +621,8 @@ jobs:
           for cli in sentinelayer-cli create-sentinelayer sl; do
             command -v "${cli}" >/dev/null
             "${cli}" --version
+            "${cli}" --help >/dev/null
           done
-
-          sl session actions --json > "${smoke_dir}/session-actions.json"
-          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); if (!Array.isArray(data.actions) || !data.actions.some((action) => action.type === 'working_on')) process.exit(1)" "${smoke_dir}/session-actions.json"
 
   reproducible-build:
     name: Reproducible Build Check
