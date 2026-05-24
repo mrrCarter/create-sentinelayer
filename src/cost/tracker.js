@@ -1,6 +1,8 @@
 import { estimateTokens } from "./tokenizer.js";
 
-const DEFAULT_MODEL_PRICING = Object.freeze({
+export const DEFAULT_PRICE_BOOK_VERSION = "2026-05-24";
+
+export const DEFAULT_MODEL_PRICING = Object.freeze({
   "gpt-4o": Object.freeze({
     inputPerMillionUsd: 2.5,
     outputPerMillionUsd: 10.0,

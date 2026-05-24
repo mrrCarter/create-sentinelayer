@@ -11,7 +11,11 @@ import {
   estimateTokens,
   estimateTokensForMessages,
 } from "../src/cost/tokenizer.js";
-import { estimateCostForText } from "../src/cost/tracker.js";
+import {
+  DEFAULT_PRICE_BOOK_VERSION,
+  estimateCostForText,
+  listKnownModelPricing,
+} from "../src/cost/tracker.js";
 
 test("PROVIDER_FAMILIES covers the providers we ship", () => {
   assert.ok(PROVIDER_FAMILIES.includes("anthropic"));
@@ -155,6 +159,14 @@ test("estimateCostForText: combines tokenizer + pricing table", () => {
   assert.ok(result.inputTokens > 0);
   assert.ok(result.outputTokens > 0);
   assert.ok(result.costUsd > 0);
+});
+
+test("listKnownModelPricing exposes the active price book catalog", () => {
+  assert.match(DEFAULT_PRICE_BOOK_VERSION, /^\d{4}-\d{2}-\d{2}$/);
+  const pricing = listKnownModelPricing();
+  assert.equal(Array.isArray(pricing), true);
+  assert.ok(pricing.some((entry) => entry.modelId === "gpt-5.4-mini"));
+  assert.ok(pricing.some((entry) => entry.modelId === "claude-opus-4-7"));
 });
 
 test("estimateCostForText: rejects empty modelId", () => {
