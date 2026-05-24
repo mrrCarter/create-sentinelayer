@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.17.1...v0.18.0) (2026-05-24)
+
+
+### Features
+
+* **session:** add usage pricing ledger ([#544](https://github.com/mrrCarter/create-sentinelayer/issues/544)) ([998d4d7](https://github.com/mrrCarter/create-sentinelayer/commit/998d4d77f4c1d6fae561e865169e662ececbf545))
+
 ## [0.17.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.17.0...v0.17.1) (2026-05-23)
 
 
