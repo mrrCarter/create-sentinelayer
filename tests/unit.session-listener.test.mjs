@@ -40,6 +40,73 @@ test("Unit session listener: cursor suffix is stable and file-safe", () => {
   assert.equal(listenCursorSuffix(""), "listen-agent");
 });
 
+test("Unit session listener: emits bounded lifecycle snapshots", async () => {
+  let nowMs = Date.parse("2026-05-24T20:00:00.000Z");
+  const lifecycle = [];
+  const sleeps = [];
+  const batches = [
+    { ok: true, events: [], cursor: null },
+    { ok: true, events: [evt("c1", { to: "codex-1" })], cursor: "c1" },
+  ];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-life",
+    agentId: "codex-1",
+    intervalSeconds: 60,
+    maxPolls: 2,
+    _nowMs: () => nowMs,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => batches.shift(),
+    _sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+    onEvent: async () => {},
+    onLifecycle: async (event) => lifecycle.push(event),
+  });
+
+  assert.deepEqual(
+    lifecycle.map((event) => event.type),
+    ["started", "heartbeat", "heartbeat", "stopped"],
+  );
+  assert.equal(lifecycle[0].sessionId, "sess-life");
+  assert.equal(lifecycle[0].agentId, "codex-1");
+  assert.equal(lifecycle[0].cursorSuffix, "listen-codex-1");
+  assert.equal(lifecycle[1].nextPollMs, 60_000);
+  assert.equal(lifecycle[2].cursor, "c1");
+  assert.equal(lifecycle[2].stopping, true);
+  assert.equal(lifecycle[3].cursor, "c1");
+  assert.deepEqual(sleeps, [60_000]);
+  assert.equal(result.cursor, "c1");
+});
+
+test("Unit session listener: advances across listener presence without emitting it", async () => {
+  const emitted = [];
+  const presenceEvent = evt(
+    "c1",
+    { source: "session_listen", listenerId: "listener-codex-1" },
+    { event: "session_listener_heartbeat", agent: { id: "codex-1" } },
+  );
+  const messageEvent = evt("c2", { to: "codex-1" });
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-presence-noise",
+    agentId: "codex-1",
+    replay: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => ({ ok: true, events: [presenceEvent, messageEvent], cursor: "c2" }),
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event.event),
+  });
+
+  assert.deepEqual(emitted, ["session_message"]);
+  assert.equal(result.cursor, "c2");
+  assert.equal(result.emitted, 1);
+});
+
 test("Unit session listener: advances cursor across nonmatching first poll and emits later matches", async () => {
   const writes = [];
   const emitted = [];

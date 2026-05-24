@@ -961,6 +961,81 @@ function normalizeAgentId(value, fallbackValue = "cli-user") {
   return normalized || fallbackValue;
 }
 
+function canPublishListenerPresence(agentId) {
+  const normalized = normalizeAgentId(agentId, "");
+  if (!normalized) return false;
+  if (["cli-user", "unknown", "human", "user", "operator"].includes(normalized)) return false;
+  return !(
+    normalized.startsWith("human-") ||
+    normalized.startsWith("user-") ||
+    normalized.startsWith("guest-")
+  );
+}
+
+function listenerLifecycleEventName(type = "") {
+  const normalized = normalizeString(type).toLowerCase();
+  if (normalized === "started") return "session_listener_started";
+  if (normalized === "stopped") return "session_listener_stopped";
+  return "session_listener_heartbeat";
+}
+
+function compactPayload(record = {}) {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined)
+  );
+}
+
+async function publishListenerPresenceEvent({
+  sessionId,
+  targetPath,
+  agentId,
+  agentModel = "cli",
+  displayName = "",
+  listenerId,
+  lifecycle = {},
+} = {}) {
+  const normalizedType = normalizeString(lifecycle.type) || "heartbeat";
+  const eventName = listenerLifecycleEventName(normalizedType);
+  const event = createAgentEvent({
+    event: eventName,
+    sessionId,
+    agent: {
+      id: agentId,
+      model: normalizeString(agentModel) || "cli",
+      role: "listener",
+      displayName: normalizeString(displayName) || agentId,
+      clientKind: "cli",
+    },
+    eventId: `session-listener-${listenerId}-${normalizedType}-${lifecycle.pollCount ?? 0}`,
+    idempotencyToken: `session-listener:${listenerId}:${normalizedType}:${lifecycle.pollCount ?? 0}`,
+    payload: compactPayload({
+      source: "session_listen",
+      listenerId,
+      lifecycle: normalizedType,
+      state: normalizeString(lifecycle.state) || normalizedType,
+      active: lifecycle.active,
+      cursor: lifecycle.cursor || null,
+      cursorSuffix: lifecycle.cursorSuffix,
+      pollCount: lifecycle.pollCount,
+      matched: lifecycle.matched,
+      emitted: lifecycle.emitted,
+      persistedCursor: lifecycle.persistedCursor,
+      idleIntervalSeconds: lifecycle.idleIntervalSeconds,
+      activeIntervalSeconds: lifecycle.activeIntervalSeconds,
+      activeWindowSeconds: lifecycle.activeWindowSeconds,
+      lastHumanActivityAt: lifecycle.lastHumanActivityAt,
+      lastSleepMs: lifecycle.lastSleepMs,
+      nextPollMs: lifecycle.nextPollMs,
+      reason: lifecycle.reason || null,
+      startedAt: lifecycle.startedAt,
+      stoppedAt: lifecycle.stoppedAt,
+      aborted: lifecycle.aborted,
+      stopping: lifecycle.stopping,
+    }),
+  });
+  return syncSessionEventToApi(sessionId, event, { targetPath });
+}
+
 // Preserve the literal default identity for `session say`. This command is
 // often used by agents as a low-friction relay; silently rewriting the default
 // `cli-user` to the authenticated human makes a forgotten --agent flag look
@@ -1060,6 +1135,13 @@ function formatEventLine(event = {}) {
     return `${ts} ${agentId} ${type}: ${message}`;
   }
   return `${ts} ${agentId} ${type}`;
+}
+
+function isSessionControlEvent(event = {}) {
+  const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
+  const type = normalizeString(event.event || event.type).toLowerCase();
+  if (type.startsWith("session_listener_")) return true;
+  return normalizeString(payload.source).toLowerCase() === "session_listen";
 }
 
 function checkpointSequenceRange(checkpoint = {}) {
@@ -2388,6 +2470,17 @@ export function registerSessionCommand(program) {
       "Seconds after a human message to keep the active interval (default 300)",
       "300",
     )
+    .option(
+      "--presence-interval <seconds>",
+      "Minimum seconds between remote listener heartbeat events (default 60)",
+      "60",
+    )
+    .option(
+      "--model <model>",
+      "Model/provider label to publish with listener presence",
+      process.env.SENTINELAYER_AGENT_MODEL || process.env.SENTINELAYER_MODEL || "cli",
+    )
+    .option("--display-name <name>", "Human-readable listener name for presence")
     .option("--emit <format>", "Output format: ndjson or text", "ndjson")
     .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -2405,6 +2498,13 @@ export function registerSessionCommand(program) {
         5,
       );
       const activeWindowSeconds = parsePositiveInteger(options.activeWindow, "active-window", 300);
+      const presenceIntervalSeconds = parsePositiveInteger(
+        options.presenceInterval,
+        "presence-interval",
+        60,
+      );
+      const agentModel = normalizeString(options.model) || "cli";
+      const displayName = normalizeString(options.displayName) || agentId;
       const limit = parsePositiveInteger(options.limit, "limit", 200);
       const emitFormat = normalizeString(options.emit).toLowerCase() || "ndjson";
       if (!["ndjson", "text"].includes(emitFormat)) {
@@ -2418,6 +2518,10 @@ export function registerSessionCommand(program) {
       const ac = new AbortController();
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
+      const listenerId = `listener-${agentId}-${randomUUID()}`;
+      const publishPresence = canPublishListenerPresence(agentId);
+      const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
+      let lastPresenceHeartbeatMs = 0;
 
       if (emitFormat === "text") {
         console.log(
@@ -2425,6 +2529,13 @@ export function registerSessionCommand(program) {
             `Listening to session ${normalizedSessionId} as ${agentId}; idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
           ),
         );
+        if (!publishPresence) {
+          console.log(
+            pc.gray(
+              "Listener presence is local-only for placeholder, human, and guest agent ids.",
+            ),
+          );
+        }
       }
 
       try {
@@ -2466,6 +2577,26 @@ export function registerSessionCommand(program) {
             } else {
               console.log(pc.yellow(`Listen poll skipped (${reason}).`));
             }
+          },
+          onLifecycle: async (lifecycle) => {
+            if (!publishPresence) return;
+            const lifecycleType = normalizeString(lifecycle?.type);
+            if (lifecycleType === "heartbeat") {
+              const nowMs = Date.now();
+              if (lastPresenceHeartbeatMs > 0 && nowMs - lastPresenceHeartbeatMs < presenceIntervalMs) {
+                return;
+              }
+              lastPresenceHeartbeatMs = nowMs;
+            }
+            await publishListenerPresenceEvent({
+              sessionId: normalizedSessionId,
+              targetPath,
+              agentId,
+              agentModel,
+              displayName,
+              listenerId,
+              lifecycle,
+            });
           },
         });
       } finally {
@@ -2574,6 +2705,7 @@ export function registerSessionCommand(program) {
     )
     .option("--before-sequence <n>", "Remote page ending before this sequence id")
     .option("--no-actions", "Do not include remote message actions/replies/reactions")
+    .option("--include-control-events", "Include listener lifecycle/control-plane events in transcript output")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -2585,6 +2717,10 @@ export function registerSessionCommand(program) {
       const tail = parsePositiveInteger(options.tail, "tail", 20);
       const beforeSequence = parseOptionalPositiveInteger(options.beforeSequence, "before-sequence");
       const emitJson = shouldEmitJson(options, command);
+      const includeControlEvents = Boolean(options.includeControlEvents);
+      const remoteTailLimit = includeControlEvents
+        ? tail
+        : Math.min(200, Math.max(tail, tail + 20));
 
       let hydration = null;
       let remoteTail = null;
@@ -2605,7 +2741,7 @@ export function registerSessionCommand(program) {
         remoteTail = await pollSessionEventsBefore(normalizedSessionId, {
           targetPath,
           beforeSequence,
-          limit: tail,
+          limit: remoteTailLimit,
           timeoutMs: 15_000,
         });
         if (options.actions !== false) {
@@ -2681,7 +2817,11 @@ export function registerSessionCommand(program) {
         const actionEvents = remoteActions?.ok
           ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
           : [];
-        const events = mergeSessionActionEvents(displayEvents, actionEvents).slice(-tail);
+        const transcriptEvents = includeControlEvents
+          ? displayEvents
+          : displayEvents.filter((event) => !isSessionControlEvent(event));
+        const hiddenControlEventCount = displayEvents.length - transcriptEvents.length;
+        const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
         const remoteVerified = Boolean(
           options.remote &&
             ((hydration && hydration.ok) || (remoteTail && remoteTail.ok))
@@ -2694,6 +2834,8 @@ export function registerSessionCommand(program) {
           beforeSequence,
           count: events.length,
           events,
+          includeControlEvents,
+          hiddenControlEventCount,
           displaySource: !options.remote
             ? "local"
             : remoteTail?.ok

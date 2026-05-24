@@ -208,6 +208,14 @@ function isRecentActivity(activityMs, nowMs, windowMs) {
   );
 }
 
+function isListenerLifecycleEvent(event = {}) {
+  if (!isPlainObject(event)) return false;
+  const payload = isPlainObject(event.payload) ? event.payload : {};
+  const eventType = normalizeString(event.event || event.type).toLowerCase();
+  if (eventType.startsWith("session_listener_")) return true;
+  return normalizeString(payload.source).toLowerCase() === "session_listen";
+}
+
 /**
  * Poll session events in the background and emit only events addressed to
  * the current agent or broadcast to everyone. The loop advances its cursor
@@ -228,6 +236,7 @@ export async function listenSessionEvents({
   signal,
   onEvent = async () => {},
   onError = async () => {},
+  onLifecycle = async () => {},
   _poll = pollSessionEvents,
   _readCursor = readSyncCursor,
   _writeCursor = writeSyncCursor,
@@ -265,78 +274,138 @@ export async function listenSessionEvents({
   let lastHumanActivityMs = 0;
   let lastSleepMs = 0;
 
-  while (!signal?.aborted) {
-    pollCount += 1;
-    const result = await _poll(normalizedSessionId, {
-      targetPath,
-      since: cursor,
-      limit: pollLimit,
-    });
+  const lifecycleSnapshot = (type, extra = {}) => ({
+    type,
+    sessionId: normalizedSessionId,
+    agentId: normalizedAgentId,
+    cursor: cursor || null,
+    cursorSuffix,
+    pollCount,
+    matched,
+    emitted,
+    persistedCursor,
+    idleIntervalSeconds: Math.round(idleSleepMs / 1000),
+    activeIntervalSeconds: Math.round(activeSleepMs / 1000),
+    activeWindowSeconds: Math.round(activeWindowMs / 1000),
+    lastHumanActivityAt: lastHumanActivityMs
+      ? new Date(lastHumanActivityMs).toISOString()
+      : null,
+    lastSleepMs,
+    reason: lastReason,
+    ...extra,
+  });
 
-    if (result?.ok) {
-      lastReason = "";
-      const events = Array.isArray(result.events) ? result.events : [];
-      const nextCursor = normalizeString(result.cursor) || cursorFromEvents(events, cursor);
-      const cursorDidNotAdvance = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
-      const cursorFault = cursorDidNotAdvance && (nextCursor !== cursor || events.length > 0);
-      if (cursorFault) {
-        lastReason = "cursor_not_advanced";
+  async function notifyLifecycle(payload) {
+    try {
+      await onLifecycle(payload);
+    } catch (error) {
+      await onError({
+        ok: false,
+        reason: `lifecycle_${payload.type}_failed`,
+        cursor: payload.cursor || cursor || null,
+        detail: normalizeString(error?.message),
+      });
+    }
+  }
+
+  await notifyLifecycle(
+    lifecycleSnapshot("started", {
+      startedAt: new Date(startedAtMs).toISOString(),
+    }),
+  );
+
+  try {
+    while (!signal?.aborted) {
+      pollCount += 1;
+      const result = await _poll(normalizedSessionId, {
+        targetPath,
+        since: cursor,
+        limit: pollLimit,
+      });
+
+      if (result?.ok) {
+        lastReason = "";
+        const events = Array.isArray(result.events) ? result.events : [];
+        const nextCursor = normalizeString(result.cursor) || cursorFromEvents(events, cursor);
+        const cursorDidNotAdvance = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
+        const cursorFault = cursorDidNotAdvance && (nextCursor !== cursor || events.length > 0);
+        if (cursorFault) {
+          lastReason = "cursor_not_advanced";
+          await onError({
+            ok: false,
+            reason: lastReason,
+            cursor: cursor || null,
+            candidateCursor: nextCursor,
+          });
+        } else {
+          const observedAtMs = Number(_nowMs()) || Date.now();
+          for (const event of events) {
+            const activityMs = humanActivityTimestampMs(event, observedAtMs);
+            if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
+              lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
+            }
+          }
+          const shouldEmitBatch = primed || Boolean(replay);
+          for (const event of events) {
+            if (isListenerLifecycleEvent(event)) continue;
+            if (!eventMatchesAgent(event, normalizedAgentId)) continue;
+            const key = eventIdentityKey(event);
+            if (emittedKeys.has(key)) continue;
+            matched += 1;
+            if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
+            await onEvent(event);
+            emittedKeys.add(key);
+            emitted += 1;
+          }
+
+          if (nextCursor && nextCursor !== cursor) {
+            const writeResult = await _writeCursor(normalizedSessionId, nextCursor, {
+              targetPath,
+              suffix: cursorSuffix,
+            }).catch(() => null);
+            persistedCursor = Boolean(writeResult?.written) || persistedCursor;
+            cursor = nextCursor;
+          }
+          primed = true;
+        }
+      } else {
+        lastReason = normalizeString(result?.reason) || "poll_failed";
         await onError({
           ok: false,
           reason: lastReason,
-          cursor: cursor || null,
-          candidateCursor: nextCursor,
+          cursor: result?.cursor || cursor || null,
         });
-      } else {
-        const observedAtMs = Number(_nowMs()) || Date.now();
-        for (const event of events) {
-          const activityMs = humanActivityTimestampMs(event, observedAtMs);
-          if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
-            lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
-          }
-        }
-        const shouldEmitBatch = primed || Boolean(replay);
-        for (const event of events) {
-          if (!eventMatchesAgent(event, normalizedAgentId)) continue;
-          const key = eventIdentityKey(event);
-          if (emittedKeys.has(key)) continue;
-          matched += 1;
-          if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
-          await onEvent(event);
-          emittedKeys.add(key);
-          emitted += 1;
-        }
-
-        if (nextCursor && nextCursor !== cursor) {
-          const writeResult = await _writeCursor(normalizedSessionId, nextCursor, {
-            targetPath,
-            suffix: cursorSuffix,
-          }).catch(() => null);
-          persistedCursor = Boolean(writeResult?.written) || persistedCursor;
-          cursor = nextCursor;
-        }
-        primed = true;
       }
-    } else {
-      lastReason = normalizeString(result?.reason) || "poll_failed";
-      await onError({
-        ok: false,
-        reason: lastReason,
-        cursor: result?.cursor || cursor || null,
-      });
-    }
 
-    if (maxPollCount > 0 && pollCount >= maxPollCount) break;
-    const sleepAtMs = Number(_nowMs()) || Date.now();
-    const humanActive = isRecentActivity(lastHumanActivityMs, sleepAtMs, activeWindowMs);
-    const nextSleepMs = humanActive ? Math.min(idleSleepMs, activeSleepMs) : idleSleepMs;
-    lastSleepMs = nextSleepMs;
-    try {
-      await _sleep(nextSleepMs, { signal });
-    } catch (error) {
-      if (shouldAbort(error, signal)) break;
-      throw error;
+      const sleepAtMs = Number(_nowMs()) || Date.now();
+      const humanActive = isRecentActivity(lastHumanActivityMs, sleepAtMs, activeWindowMs);
+      const willStop = maxPollCount > 0 && pollCount >= maxPollCount;
+      const nextSleepMs = humanActive ? Math.min(idleSleepMs, activeSleepMs) : idleSleepMs;
+      await notifyLifecycle(
+        lifecycleSnapshot("heartbeat", {
+          active: humanActive,
+          state: humanActive ? "active" : "idle",
+          nextPollMs: willStop ? null : nextSleepMs,
+          stopping: willStop,
+        }),
+      );
+
+      if (willStop) break;
+      lastSleepMs = nextSleepMs;
+      try {
+        await _sleep(nextSleepMs, { signal });
+      } catch (error) {
+        if (shouldAbort(error, signal)) break;
+        throw error;
+      }
     }
+  } finally {
+    await notifyLifecycle(
+      lifecycleSnapshot("stopped", {
+        stoppedAt: new Date(Number(_nowMs()) || Date.now()).toISOString(),
+        aborted: Boolean(signal?.aborted),
+      }),
+    );
   }
 
   return {
