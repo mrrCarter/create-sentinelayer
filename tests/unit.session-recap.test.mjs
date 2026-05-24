@@ -235,6 +235,49 @@ test("Unit session recap: includes task ownership ledger in recap text", async (
   }
 });
 
+test("Unit session recap: includes workspace todo plan grounding", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-plan-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "tasks", "todo.md"),
+      [
+        "# Dogfood Work",
+        "",
+        "## Completed",
+        "- [x] Ship checkpoint UX",
+        "",
+        "## Active Shipment",
+        "- [ ] Build Senti auto recap",
+        "- [ ] Verify npm release",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Plan: 2 open \/ 1 done in tasks\/todo\.md/);
+    assert.match(recap.text, /Current: Active Shipment/);
+    assert.match(recap.text, /Active Shipment - Build Senti auto recap/);
+    assert.match(recap.text, /Active Shipment - Verify npm release/);
+    assert.equal(recap.summary.workPlan.exists, true);
+    assert.equal(recap.summary.workPlan.total, 3);
+    assert.equal(recap.summary.workPlan.open, 2);
+    assert.equal(recap.summary.workPlan.completed, 1);
+    assert.equal(recap.summary.workPlan.currentSection, "Active Shipment");
+    assert.equal(recap.summary.workPlan.recentOpen[0].task, "Build Senti auto recap");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: includes token and cost usage ledger", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-recap-"));
   try {
