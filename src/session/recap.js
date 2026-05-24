@@ -17,6 +17,9 @@ const DEFAULT_RECAP_INTERVAL_MS = 300_000;
 const DEFAULT_RECAP_INACTIVITY_MS = 600_000;
 const DEFAULT_RECAP_ACTIVITY_THRESHOLD = 5;
 const DEFAULT_TASK_SUMMARY_LIMIT = 3;
+const DEFAULT_WORK_PLAN_SUMMARY_LIMIT = 5;
+const MAX_WORK_PLAN_BYTES = 128_000;
+const WORK_PLAN_RELATIVE_PATH = "tasks/todo.md";
 const RECAP_SOURCE_IGNORED_EVENTS = new Set([
   "agent_heartbeat",
   "agent_join",
@@ -399,6 +402,105 @@ function emptyTaskLedgerSummary() {
   };
 }
 
+function emptyWorkPlanSummary() {
+  return {
+    path: WORK_PLAN_RELATIVE_PATH,
+    exists: false,
+    truncated: false,
+    total: 0,
+    open: 0,
+    completed: 0,
+    currentSection: "",
+    recentOpen: [],
+    recent: [],
+  };
+}
+
+function shortWorkPlanText(value) {
+  const text = normalizeString(value)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ");
+  if (text.length <= 100) {
+    return text;
+  }
+  return `${text.slice(0, 97)}...`;
+}
+
+function summarizeWorkPlanMarkdown(raw = "", { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT, truncated = false } = {}) {
+  const summary = emptyWorkPlanSummary();
+  summary.exists = true;
+  summary.truncated = Boolean(truncated);
+
+  const records = [];
+  let section = "";
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const headingMatch = /^(#{1,4})\s+(.+?)\s*$/.exec(line);
+    if (headingMatch) {
+      section = shortWorkPlanText(headingMatch[2]);
+      continue;
+    }
+
+    const taskMatch = /^\s*[-*]\s+\[([ xX])\]\s+(.+?)\s*$/.exec(line);
+    if (!taskMatch) {
+      continue;
+    }
+    const completed = taskMatch[1].toLowerCase() === "x";
+    const record = {
+      status: completed ? "completed" : "open",
+      section,
+      task: shortWorkPlanText(taskMatch[2]),
+    };
+    if (!record.task) {
+      continue;
+    }
+    records.push(record);
+    summary.total += 1;
+    if (completed) {
+      summary.completed += 1;
+    } else {
+      summary.open += 1;
+    }
+    summary.currentSection = section || summary.currentSection;
+  }
+
+  const normalizedLimit = Math.max(1, normalizePositiveInteger(limit, DEFAULT_WORK_PLAN_SUMMARY_LIMIT));
+  summary.recentOpen = records
+    .filter((record) => record.status === "open")
+    .slice(-normalizedLimit);
+  summary.recent = records.slice(-normalizedLimit);
+  return summary;
+}
+
+async function readWorkPlanSummary({ targetPath = process.cwd(), limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT } = {}) {
+  const filePath = path.join(path.resolve(String(targetPath || ".")), WORK_PLAN_RELATIVE_PATH);
+  try {
+    const stats = await fsp.stat(filePath);
+    let source = "";
+    let truncated = false;
+    if (stats.size > MAX_WORK_PLAN_BYTES) {
+      truncated = true;
+      const handle = await fsp.open(filePath, "r");
+      try {
+        const buffer = Buffer.alloc(MAX_WORK_PLAN_BYTES);
+        const position = Math.max(0, stats.size - MAX_WORK_PLAN_BYTES);
+        const { bytesRead } = await handle.read(buffer, 0, MAX_WORK_PLAN_BYTES, position);
+        source = buffer.subarray(0, bytesRead).toString("utf-8");
+      } finally {
+        await handle.close();
+      }
+    } else {
+      source = await fsp.readFile(filePath, "utf-8");
+    }
+    return summarizeWorkPlanMarkdown(source, { limit, truncated });
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT") {
+      return emptyWorkPlanSummary();
+    }
+    return emptyWorkPlanSummary();
+  }
+}
+
 function summarizeTaskLedger(tasks = [], { limit = DEFAULT_TASK_SUMMARY_LIMIT } = {}) {
   const summary = emptyTaskLedgerSummary();
   const owners = new Map();
@@ -541,6 +643,7 @@ function buildRecapText({
   activeLocks = 0,
   pendingTasks = 0,
   taskLedger = emptyTaskLedgerSummary(),
+  workPlan = emptyWorkPlanSummary(),
   usageSummary = normalizeUsageSummary(),
   snippets = [],
 } = {}) {
@@ -554,8 +657,9 @@ function buildRecapText({
     pendingTasks > 0 ? `You have ${pendingTasks} pending task${pendingTasks === 1 ? "" : "s"}.` : "";
   const taskText = buildTaskLedgerText(taskLedger);
   const usageText = buildUsageLedgerText(usageSummary);
+  const workPlanText = buildWorkPlanText(workPlan);
   const snippetText = snippets.length > 0 ? `Recent: ${snippets.join(" | ")}` : "";
-  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${usageText} ${snippetText}`.replace(
+  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${workPlanText} ${usageText} ${snippetText}`.replace(
     /\s+/g,
     " "
   ).trim();
@@ -594,6 +698,31 @@ function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
   return [`Tasks: ${active} active of ${total} total (${counts})`, ownerText, recentText]
     .filter(Boolean)
     .join(". ");
+}
+
+function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
+  if (!workPlan || typeof workPlan !== "object" || !workPlan.exists) {
+    return "";
+  }
+  const open = Number(workPlan.open || 0);
+  const completed = Number(workPlan.completed || 0);
+  const pathText = normalizeString(workPlan.path) || WORK_PLAN_RELATIVE_PATH;
+  const currentSection = normalizeString(workPlan.currentSection);
+  const currentText = currentSection ? ` Current: ${currentSection}.` : "";
+  const recentOpen = Array.isArray(workPlan.recentOpen) ? workPlan.recentOpen : [];
+  const nextText =
+    recentOpen.length > 0
+      ? ` Next: ${recentOpen
+          .map((item) => {
+            const section = normalizeString(item.section);
+            const task = normalizeString(item.task);
+            return section ? `${section} - ${task}` : task;
+          })
+          .filter(Boolean)
+          .join("; ")}.`
+      : "";
+  const truncatedText = workPlan.truncated ? " Recent window only." : "";
+  return `Plan: ${open} open / ${completed} done in ${pathText}.${currentText}${nextText}${truncatedText}`;
 }
 
 function roundCurrency(value) {
@@ -702,11 +831,12 @@ function buildPeriodicText(recap = {}) {
   const lastActor = normalizeString(summary.lastActorId);
   const actorText = lastActor ? `${lastActor} active` : "no active actor";
   const taskText = buildTaskLedgerText(summary.taskLedger);
+  const workPlanText = buildWorkPlanText(summary.workPlan);
   const usageText = buildUsageLedgerText({
     totals: summary.usageTotals,
     topAgents: summary.usageTopAgents,
   });
-  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${usageText} ${actorText}.`.replace(
+  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${workPlanText} ${usageText} ${actorText}.`.replace(
     /\s+/g,
     " ",
   ).trim();
@@ -774,6 +904,9 @@ export async function buildSessionRecap(
   const taskLedger = await readTaskLedgerSummary(normalizedSessionId, {
     targetPath: normalizedTargetPath,
   });
+  const workPlan = await readWorkPlanSummary({
+    targetPath: normalizedTargetPath,
+  });
   const snippets = summarizeRecentActivity(visibleEvents, {
     forAgentId: normalizedForAgentId,
     limit: 2,
@@ -789,6 +922,7 @@ export async function buildSessionRecap(
     activeLocks,
     pendingTasks,
     taskLedger,
+    workPlan,
     usageSummary,
     snippets,
   });
@@ -809,6 +943,7 @@ export async function buildSessionRecap(
       activeLocks,
       pendingTasksForAgent: pendingTasks,
       taskLedger,
+      workPlan,
       usageTotals: usageSummary.totals,
       usageTopAgents: usageSummary.topAgents,
       snippets,
