@@ -26,6 +26,7 @@ import { createAgentEvent } from "../events/schema.js";
 import {
   detectStaleAgents,
   listAgents,
+  rememberAgentIdentity,
   registerAgent,
   unregisterAgent,
 } from "../session/agent-registry.js";
@@ -1048,6 +1049,121 @@ async function defaultAgentId(value, _targetPath) {
   return resolveSessionSayAgentId(value);
 }
 
+function formatAgentIdList(agentIds = []) {
+  const normalized = agentIds.map((agentId) => normalizeString(agentId)).filter(Boolean);
+  if (!normalized.length) return "";
+  if (normalized.length <= 3) return normalized.join(", ");
+  return `${normalized.slice(0, 3).join(", ")} +${normalized.length - 3} more`;
+}
+
+export function sessionSayRegistryRole(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (["coder", "reviewer", "tester", "daemon", "observer", "persona"].includes(normalized)) {
+    return normalized;
+  }
+  return "coder";
+}
+
+export async function resolveSessionSayIdentity({
+  sessionId,
+  agentId = "",
+  targetPath = process.cwd(),
+  env = process.env,
+} = {}) {
+  const explicitAgentId = normalizeString(agentId);
+  if (explicitAgentId) {
+    return {
+      agentId: resolveSessionSayAgentId(explicitAgentId),
+      source: "option",
+      identityWarning: "",
+      candidateAgentIds: [],
+    };
+  }
+
+  const envAgentId = normalizeString(env?.SENTINELAYER_AGENT_ID || env?.SENTI_AGENT_ID);
+  if (envAgentId && canPublishListenerPresence(envAgentId)) {
+    return {
+      agentId: resolveSessionSayAgentId(envAgentId),
+      source: "env",
+      identityWarning: "",
+      candidateAgentIds: [],
+    };
+  }
+
+  let candidateAgentIds = [];
+  try {
+    const agents = await listAgents(sessionId, { targetPath, includeInactive: false });
+    candidateAgentIds = agents
+      .map((agent) => normalizeString(agent.agentId))
+      .filter((candidate) => canPublishListenerPresence(candidate));
+  } catch {
+    candidateAgentIds = [];
+  }
+
+  if (candidateAgentIds.length === 1) {
+    return {
+      agentId: resolveSessionSayAgentId(candidateAgentIds[0]),
+      source: "local-agent",
+      identityWarning: "",
+      candidateAgentIds,
+    };
+  }
+
+  const warningReason = candidateAgentIds.length > 1
+    ? `multiple local joined agents are active (${formatAgentIdList(candidateAgentIds)})`
+    : envAgentId && !canPublishListenerPresence(envAgentId)
+      ? `configured SENTINELAYER_AGENT_ID '${envAgentId}' is reserved or human-scoped`
+      : "no agent identity is configured";
+
+  return {
+    agentId: "cli-user",
+    source: "fallback",
+    identityWarning: `session say is sending as cli-user because ${warningReason}; pass --agent <id>, set SENTINELAYER_AGENT_ID, or run session join --agent <id> before posting.`,
+    candidateAgentIds,
+  };
+}
+
+export function shouldBlockImplicitCliUserSessionSay(identity = {}) {
+  return identity?.source === "fallback" && normalizeString(identity?.agentId) === "cli-user";
+}
+
+async function ensureSessionSayAgentRegistered(
+  sessionId,
+  agent = {},
+  { targetPath = process.cwd() } = {},
+) {
+  const agentId = normalizeString(agent.id);
+  if (!canPublishListenerPresence(agentId)) {
+    return { persisted: false, reason: "placeholder_agent" };
+  }
+
+  try {
+    const activeAgents = await listAgents(sessionId, { targetPath, includeInactive: false });
+    if (
+      activeAgents.some(
+        (existing) => normalizeString(existing.agentId).toLowerCase() === agentId.toLowerCase(),
+      )
+    ) {
+      return { persisted: false, reason: "already_registered" };
+    }
+  } catch {
+    // If the local registry is unreadable, let rememberAgentIdentity surface the
+    // filesystem problem with its normal error message.
+  }
+
+  const registered = await rememberAgentIdentity(sessionId, {
+    agentId,
+    model: normalizeString(agent.model) || "cli",
+    role: sessionSayRegistryRole(agent.role),
+    targetPath,
+  });
+
+  return {
+    persisted: true,
+    agentId: registered.agentId,
+  };
+}
+
 async function resolveSessionAgentEnvelope(
   sessionId,
   agentId,
@@ -2062,7 +2178,10 @@ export function registerSessionCommand(program) {
   session
     .command("say <sessionId> <message>")
     .description("Send a message to the session")
-    .option("--agent <id>", "Agent id to emit from", "cli-user")
+    .option(
+      "--agent <id>",
+      "Agent id to emit from; defaults to SENTINELAYER_AGENT_ID, then the sole local joined agent, then cli-user",
+    )
     .option(
       "--model <model>",
       "Agent model/provider hint; defaults to local joined agent metadata or SENTINELAYER_AGENT_MODEL",
@@ -2081,6 +2200,7 @@ export function registerSessionCommand(program) {
     .option("--to <agent>", "Direct the message to a specific agent id")
     .option("--reply-to <sequence>", "Mark this message as a reply to a target sequence id")
     .option("--reply-cursor <cursor>", "Mark this message as a reply to a target event cursor")
+    .option("--force-cli-user", "Allow fallback sends as cli-user when no agent identity can be resolved")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, message, options, command) => {
@@ -2093,7 +2213,17 @@ export function registerSessionCommand(program) {
         throw new Error("message is required.");
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
-      const agentId = await defaultAgentId(options.agent, targetPath);
+      const identity = await resolveSessionSayIdentity({
+        sessionId: normalizedSessionId,
+        agentId: options.agent,
+        targetPath,
+      });
+      const agentId = identity.agentId;
+      if (shouldBlockImplicitCliUserSessionSay(identity) && !options.forceCliUser) {
+        throw new Error(
+          `${identity.identityWarning} Re-run with --force-cli-user only for intentional anonymous/operator relay posts.`,
+        );
+      }
       const localSession = await ensureLocalSessionForRemoteCommand(normalizedSessionId, {
         targetPath,
       });
@@ -2119,6 +2249,9 @@ export function registerSessionCommand(program) {
         model: options.model,
         role: options.role,
         displayName: options.displayName,
+      });
+      const agentRegistration = await ensureSessionSayAgentRegistered(normalizedSessionId, agent, {
+        targetPath,
       });
       const event = createAgentEvent({
         event: "session_message",
@@ -2154,11 +2287,17 @@ export function registerSessionCommand(program) {
         event: persisted,
         materializedLocalSession: localSession.materialized,
         refreshedLocalSession: Boolean(localSession.refreshed),
+        identitySource: identity.source,
+        identityWarning: identity.identityWarning || undefined,
+        agentRegistration,
         remoteSync: remoteSync || undefined,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
         return;
+      }
+      if (identity.identityWarning) {
+        console.error(pc.yellow(`Identity warning: ${identity.identityWarning}`));
       }
       console.log(formatEventLine(persisted));
     });

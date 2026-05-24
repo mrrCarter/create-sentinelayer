@@ -334,6 +334,51 @@ export async function registerAgent(
   };
 }
 
+export async function rememberAgentIdentity(
+  sessionId,
+  {
+    agentId = "",
+    model = "",
+    role = "observer",
+    targetPath = process.cwd(),
+  } = {}
+) {
+  const paths = resolveSessionPaths(sessionId, { targetPath });
+  const nowIso = new Date().toISOString();
+  const resolvedAgentId = normalizeString(agentId);
+  if (!resolvedAgentId) {
+    throw new Error("agentId is required.");
+  }
+
+  const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
+  const existing = await readAgentSnapshot(snapshotPath);
+  const snapshot = normalizeAgentSnapshot(
+    {
+      ...(existing || {}),
+      sessionId: paths.sessionId,
+      agentId: resolvedAgentId,
+      model: normalizeString(model) || normalizeString(existing?.model) || "unknown",
+      role: normalizeString(role) || normalizeString(existing?.role) || "observer",
+      status: normalizeString(existing?.status) || "idle",
+      detail: normalizeString(existing?.detail) || "",
+      file: normalizeString(existing?.file) || null,
+      joinedAt: normalizeString(existing?.joinedAt) || nowIso,
+      lastActivityAt: nowIso,
+      leftAt: null,
+      leaveReason: null,
+      active: true,
+      updatedAt: nowIso,
+    },
+    nowIso
+  );
+
+  await writeAgentSnapshot(snapshotPath, snapshot);
+  return {
+    ...snapshot,
+    snapshotPath,
+  };
+}
+
 async function listAgentsInternal(paths) {
   try {
     const entries = await fsp.readdir(paths.agentsDir, { withFileTypes: true });

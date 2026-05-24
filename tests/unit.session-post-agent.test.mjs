@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Command } from "commander";
 
 import { registerSessionCommand, resolveSessionSayAgentId } from "../src/commands/session.js";
-import { registerAgent } from "../src/session/agent-registry.js";
+import { listAgents, registerAgent } from "../src/session/agent-registry.js";
 import { resetSessionSyncStateForTests } from "../src/session/sync.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
@@ -90,7 +90,7 @@ test("Unit session say identity: default placeholder is not rewritten to human a
   assert.equal(resolveSessionSayAgentId("Claude Mythos"), "claude-mythos");
 });
 
-test("Unit session say identity: omitted --agent persists cli-user visibly", async () => {
+test("Unit session say identity: omitted --agent requires force before cli-user fallback", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-default-"));
   const restoreEnv = installLocalOnlyEnv();
@@ -98,11 +98,33 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
 
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "say",
+          session.sessionId,
+          "default author should fail loud",
+          "--path",
+          tempRoot,
+          "--json",
+        ]),
+      /Re-run with --force-cli-user/,
+    );
+
+    const rejectedLocal = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(
+      rejectedLocal.filter((event) => event.event === "session_message").length,
+      0,
+      "implicit cli-user fallback must not append before force is supplied",
+    );
+
     const output = await runSessionCommand([
       "session",
       "say",
       session.sessionId,
       "default author should stay placeholder",
+      "--force-cli-user",
       "--path",
       tempRoot,
       "--json",
@@ -113,6 +135,8 @@ test("Unit session say identity: omitted --agent persists cli-user visibly", asy
     assert.equal(payload.agentId, "cli-user");
     assert.equal(payload.event.agent.id, "cli-user");
     assert.equal(payload.event.payload.message, "default author should stay placeholder");
+    assert.equal(payload.agentRegistration.persisted, false);
+    assert.equal(payload.agentRegistration.reason, "placeholder_agent");
 
     const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
     const persistedMessages = local.filter(
@@ -163,6 +187,19 @@ test("Unit session say identity: explicit metadata is persisted on the event env
     assert.equal(payload.event.agent.displayName, "Codex");
     assert.equal(payload.event.agent.role, "coder");
     assert.equal(payload.event.agent.clientKind, "cli");
+    assert.equal(payload.agentRegistration.persisted, true);
+
+    const agents = await listAgents(session.sessionId, { targetPath: tempRoot, includeInactive: false });
+    const codex = agents.find((agent) => agent.agentId === "codex");
+    assert.equal(codex?.model, "gpt-5-codex");
+    assert.equal(codex?.role, "coder");
+
+    const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(
+      local.filter((event) => event.event === "agent_join" && event.agent?.id === "codex").length,
+      0,
+      "identity persistence must not emit a synthetic join event",
+    );
   } finally {
     resetSessionSyncStateForTests();
     restoreEnv();
