@@ -1,12 +1,19 @@
 /**
- * Session usage emitter — records every LLM interaction inside a session
- * as a `session_usage` event so consumers (web dashboard, transcript
- * download, telemetry sync) can surface live, accurate token + cost
- * counters per-agent + session-wide.
+ * Session usage emitter — records local transcript/live-stats LLM
+ * interactions inside a session as `session_usage` events so consumers
+ * (web dashboard, transcript download, local recap) can surface live token
+ * + cost counters per-agent + session-wide.
  *
  * Senti orchestrator philosophy: "tokens on point every time any LLM
  * interacts." Every persona / Jules / Codex / Claude call inside a
  * session should land here so the running tally is authoritative.
+ *
+ * Important contract split: this module is NOT the API billing ledger.
+ * API-durable billable rows must go through `src/billing/session-usage.js`
+ * and emit `payload.schema = "billing/v1"` with the API-supported price
+ * book. This module emits `session_usage/local-v1`, which is intentionally
+ * ignored by API quota/billing projection while still remaining visible in
+ * transcripts and local aggregate counters.
  *
  * Event shape:
  *
@@ -44,6 +51,7 @@ import { createAgentEvent } from "../events/schema.js";
 import { estimateModelCost } from "../cost/tracker.js";
 import {
   DEFAULT_PRICE_BOOK_VERSION,
+  LOCAL_SESSION_USAGE_SCHEMA,
   buildSessionUsageLedger,
   createSessionUsageLedgerId,
 } from "./pricing-ledger.js";
@@ -158,6 +166,7 @@ export async function emitLLMInteraction(
   const responseText = clipText(response);
 
   const payload = {
+    schema: LOCAL_SESSION_USAGE_SCHEMA,
     interactionId: id,
     idempotencyKey: id,
     ledgerEntryId,

@@ -6,6 +6,14 @@ import {
 } from "../cost/tracker.js";
 
 const SESSION_USAGE_EVENT = "session_usage";
+export const BILLING_SESSION_USAGE_SCHEMA = "billing/v1";
+export const LOCAL_SESSION_USAGE_SCHEMA = "session_usage/local-v1";
+const LEGACY_SESSION_USAGE_SCHEMAS = new Set(["", "session_usage/v0"]);
+const SUPPORTED_SESSION_USAGE_SCHEMAS = new Set([
+  BILLING_SESSION_USAGE_SCHEMA,
+  LOCAL_SESSION_USAGE_SCHEMA,
+  ...LEGACY_SESSION_USAGE_SCHEMAS,
+]);
 
 function n(value) {
   return String(value == null ? "" : value).trim();
@@ -104,6 +112,9 @@ export function buildUsageLedgerEntry(
   if (kind !== SESSION_USAGE_EVENT) return null;
 
   const payload = object(event?.payload);
+  const schema = n(payload.schema);
+  if (!SUPPORTED_SESSION_USAGE_SCHEMAS.has(schema)) return null;
+
   const usage = object(payload.usage);
   const prompt = object(payload.prompt);
   const response = object(payload.response);
@@ -157,6 +168,7 @@ export function buildUsageLedgerEntry(
   return {
     ledgerEntryId,
     idempotencyKey,
+    schema: schema || "legacy",
     sessionId: n(sessionId),
     agentId,
     action,
