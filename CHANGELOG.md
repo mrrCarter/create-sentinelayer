@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.19.0...v0.20.0) (2026-05-24)
+
+
+### Features
+
+* **session:** publish listener presence events ([#553](https://github.com/mrrCarter/create-sentinelayer/issues/553)) ([a8cf3dc](https://github.com/mrrCarter/create-sentinelayer/commit/a8cf3dc61e008cf35c6ba9b9b93b3b7255d39270))
+
 ## [0.19.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.18.2...v0.19.0) (2026-05-24)
 
 
