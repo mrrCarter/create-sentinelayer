@@ -1911,13 +1911,9 @@ export function registerSessionCommand(program) {
       event.eventId = clientMessageId;
       event.idempotencyToken = clientMessageId;
 
-      let remoteSync = null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
-          targetPath,
-        });
-        if (remoteSync?.synced) break;
-      }
+      const remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
+        targetPath,
+      });
       if (!remoteSync?.synced) {
         throw new Error(
           `Agent post failed (${remoteSync?.reason || "unknown"}). Ensure this user has an active grant for '${agentId}'.`,

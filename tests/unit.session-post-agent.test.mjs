@@ -346,12 +346,16 @@ test("Unit session post-agent: remote rejection does not write local transcript"
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 403,
-      text: async () => "",
-      json: async () => ({}),
-    });
+    let fetchCount = 0;
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return {
+        ok: false,
+        status: 403,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
 
     await assert.rejects(
       () =>
@@ -368,6 +372,7 @@ test("Unit session post-agent: remote rejection does not write local transcript"
         ]),
       /Agent post failed \(api_403\).*active grant/,
     );
+    assert.equal(fetchCount, 1);
 
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
     assert.equal(events.some((event) => event.event === "session_message"), false);
