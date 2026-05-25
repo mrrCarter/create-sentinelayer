@@ -465,6 +465,15 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(checkpointGenerate, "--json");
 });
 
+test("Unit command contracts: wake daemon requires an explicit host resume session", async () => {
+  const program = buildProgram(registerSessionCommand);
+  await expectParseError(
+    program,
+    ["session", "wake", "daemon", "senti-session-1", "--agent", "claude-mythos", "--once"],
+    /requires --resume-session/
+  );
+});
+
 test("Unit command contracts: session list lines include bounded title and codebase context", () => {
   const line = formatSessionListLine({
     sessionId: "6d7ade0b-7d1e-47ba-8f18-bcf162be5672",
