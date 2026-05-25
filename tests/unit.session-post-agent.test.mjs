@@ -949,3 +949,101 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit session read: --remote surfaces unacknowledged human asks from action projection", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-human-asks-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, sessionId: "remote-read-human-asks", ttlSeconds: 120 });
+    globalThis.fetch = async (url) => {
+      const textUrl = String(url);
+      if (textUrl.includes("/human-messages?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [], cursor: null }),
+        };
+      }
+      if (textUrl.includes("/events/before?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: [
+              {
+                event: "session_message",
+                sessionId: session.sessionId,
+                cursor: "1779364717000:000026d4",
+                sequenceId: 9940,
+                ts: "2026-05-21T12:20:00.000Z",
+                agent: { id: "codex" },
+                payload: { message: "latest agent update" },
+              },
+            ],
+          }),
+        };
+      }
+      if (textUrl.includes("/actions?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sessionId: session.sessionId,
+            actions: [],
+            count: 0,
+            projection: {
+              byTarget: [],
+              unacknowledgedHumanMessages: [
+                {
+                  event: "session_message",
+                  sessionId: session.sessionId,
+                  cursor: "1779364700000:000026d3",
+                  sequenceId: 9939,
+                  ts: "2026-05-21T12:19:00.000Z",
+                  agent: { id: "human-mrrcarter", model: "human" },
+                  payload: { message: "please check the message I just sent" },
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (textUrl.includes("/events?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [], cursor: null }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--tail",
+      "1",
+      "--path",
+      tempRoot,
+    ]);
+
+    assert.match(output, /Unacknowledged human asks: 1/);
+    assert.match(output, /#9939 human-mrrcarter/);
+    assert.match(output, /please check the message I just sent/);
+    assert.match(output, /latest agent update/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

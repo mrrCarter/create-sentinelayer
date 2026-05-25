@@ -266,6 +266,46 @@ function buildSessionActionEvents(sessionId, actions = []) {
     .filter(Boolean);
 }
 
+function readProjectionUnacknowledgedHumanMessages(remoteActions = null) {
+  const messages = remoteActions?.projection?.unacknowledgedHumanMessages;
+  return Array.isArray(messages)
+    ? messages
+        .filter((event) => event && typeof event === "object")
+        .sort((left, right) => humanAskSortValue(right) - humanAskSortValue(left))
+    : [];
+}
+
+function humanAskSequence(event = {}) {
+  const value = Number(event.sequenceId ?? event.sequence_id ?? event.sequence ?? 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
+function humanAskAgentId(event = {}) {
+  return normalizeString(event.agent?.id || event.agentId || event.agent_id) || "human";
+}
+
+function humanAskMessage(event = {}) {
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  return normalizeString(payload.message || payload.note || payload.reason || "");
+}
+
+function humanAskSortValue(event = {}) {
+  const sequence = humanAskSequence(event);
+  if (sequence) return sequence;
+  const epoch = Date.parse(normalizeString(event.ts || event.timestamp || event.createdAt || event.created_at));
+  return Number.isFinite(epoch) ? epoch : 0;
+}
+
+function formatHumanAskLine(event = {}) {
+  const sequence = humanAskSequence(event);
+  const sequenceLabel = sequence ? `#${sequence}` : normalizeString(event.cursor) || "unsequenced";
+  const ts = normalizeString(event.ts || event.timestamp || event.createdAt || event.created_at);
+  const message = humanAskMessage(event);
+  const shortMessage = message.length > 220 ? `${message.slice(0, 217)}...` : message;
+  const suffix = shortMessage ? `: ${shortMessage}` : "";
+  return `${sequenceLabel} ${humanAskAgentId(event)}${ts ? ` ${ts}` : ""}${suffix}`;
+}
+
 function eventTimestampMs(event = {}) {
   for (const key of ["ts", "timestamp", "createdAt", "at"]) {
     const epoch = Date.parse(normalizeString(event?.[key]));
@@ -2956,6 +2996,9 @@ export function registerSessionCommand(program) {
         const actionEvents = remoteActions?.ok
           ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
           : [];
+        const unacknowledgedHumanMessages = remoteActions?.ok
+          ? readProjectionUnacknowledgedHumanMessages(remoteActions)
+          : [];
         const transcriptEvents = includeControlEvents
           ? displayEvents
           : displayEvents.filter((event) => !isSessionControlEvent(event));
@@ -2975,6 +3018,8 @@ export function registerSessionCommand(program) {
           events,
           includeControlEvents,
           hiddenControlEventCount,
+          unacknowledgedHumanMessageCount: unacknowledgedHumanMessages.length,
+          unacknowledgedHumanMessages,
           displaySource: !options.remote
             ? "local"
             : remoteTail?.ok
@@ -3017,6 +3062,12 @@ export function registerSessionCommand(program) {
         if (emitJson) {
           console.log(JSON.stringify(payload, null, 2));
           return;
+        }
+        if (unacknowledgedHumanMessages.length > 0) {
+          console.log(pc.yellow(`Unacknowledged human asks: ${unacknowledgedHumanMessages.length}`));
+          for (const event of unacknowledgedHumanMessages.slice(0, 3)) {
+            console.log(pc.yellow(`- ${formatHumanAskLine(event)}`));
+          }
         }
         for (const event of events) {
           console.log(formatEventLine(event));
