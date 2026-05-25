@@ -86,6 +86,7 @@ import {
 import {
   createSessionCheckpoint,
   generateSessionCheckpoint,
+  generateSessionCheckpointBatch,
   listSessionCheckpoints,
 } from "../session/checkpoints.js";
 import { authLoginHint, preferredCliCommand } from "../ui/command-hints.js";
@@ -3466,6 +3467,8 @@ export function registerSessionCommand(program) {
     .description("Generate a checkpoint from the next uncheckpointed durable event window")
     .option("--min-events <n>", "Minimum source events required before creating (default 20)", "20")
     .option("--max-events <n>", "Maximum source events to summarize (default 80, max 200)", "80")
+    .option("--catch-up", "Generate multiple consecutive checkpoint windows until caught up or capped")
+    .option("--max-checkpoints <n>", "Maximum checkpoint windows to create with --catch-up (default 5, max 50)", "5")
     .option("--operation-id <key>", "Explicit retry key for this generate invocation")
     .option("--agent <id>", "Optional agent id recorded as checkpoint creator")
     .option("--path <path>", "Workspace path for auth/session context", ".")
@@ -3479,6 +3482,49 @@ export function registerSessionCommand(program) {
       const agentId = normalizeString(options.agent)
         ? await defaultAgentId(options.agent, targetPath)
         : "";
+      if (options.catchUp) {
+        const result = await generateSessionCheckpointBatch(normalizedSessionId, {
+          targetPath,
+          minEvents: options.minEvents,
+          maxEvents: options.maxEvents,
+          maxCheckpoints: options.maxCheckpoints,
+          idempotencyKey: options.operationId,
+          createdByAgentId: agentId,
+        });
+        const hydration = result.createdCount > 0
+          ? await hydrateAfterCheckpointMutation(normalizedSessionId, { targetPath })
+          : null;
+        const payload = {
+          command: "session checkpoint generate",
+          targetPath,
+          ...result,
+          hydration: hydration || undefined,
+        };
+        if (shouldEmitJson(options, command)) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        if (result.createdCount > 0) {
+          console.log(pc.bold(`checkpoint catch-up generated ${result.createdCount} checkpoint${result.createdCount === 1 ? "" : "s"}`));
+          for (const item of result.results) {
+            if (item.checkpoint) {
+              console.log(formatCheckpointLine(item.checkpoint));
+            }
+          }
+          console.log(pc.gray(`Stopped: ${result.stoppedReason || "complete"} after ${result.attemptedCount} attempt${result.attemptedCount === 1 ? "" : "s"}.`));
+          if (hydration && !hydration.ok) {
+            console.log(pc.gray(`Local hydrate skipped: ${hydration.reason || "unknown"}`));
+          }
+          return;
+        }
+        const last = result.lastResult || {};
+        console.log(
+          pc.gray(
+            `No checkpoint created: ${normalizeString(last.reason || result.stoppedReason) || "not_needed"} (${Number(last.eventCount || 0)} events, min ${Number(last.minEvents || options.minEvents || 0)}).`,
+          ),
+        );
+        return;
+      }
       const result = await generateSessionCheckpoint(normalizedSessionId, {
         targetPath,
         minEvents: options.minEvents,

@@ -7,6 +7,7 @@ import {
   buildManualCheckpointPayload,
   createSessionCheckpoint,
   generateSessionCheckpoint,
+  generateSessionCheckpointBatch,
   generateSessionCheckpointBestEffort,
   listSessionCheckpoints,
   normalizeCheckpointGenerationResult,
@@ -223,6 +224,89 @@ test("Unit session checkpoints: generate posts bounded request body", async () =
     createdByAgentId: "senti",
   });
   assert.equal(result.checkpoint.checkpointId, "cp_auto_1");
+});
+
+test("Unit session checkpoints: batch generate stops on first skipped window", async () => {
+  const calls = [];
+  const responses = [
+    {
+      ok: true,
+      created: true,
+      duplicate: false,
+      checkpoint: { checkpointId: "cp_auto_1", title: "Auto 1", summary: "Generated." },
+      eventCount: 80,
+    },
+    {
+      ok: true,
+      created: true,
+      duplicate: false,
+      checkpoint: { checkpointId: "cp_auto_2", title: "Auto 2", summary: "Generated." },
+      eventCount: 80,
+    },
+    {
+      ok: true,
+      created: false,
+      duplicate: false,
+      reason: "insufficient_events",
+      eventCount: 12,
+      minEvents: 20,
+    },
+  ];
+  const result = await generateSessionCheckpointBatch("sess-123", {
+    targetPath: "/repo",
+    minEvents: 20,
+    maxEvents: 80,
+    maxCheckpoints: 5,
+    idempotencyKey: "checkpoint-catchup",
+    createdByAgentId: "codex",
+    resolveAuthSession: fakeAuth,
+    requestMutation: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    },
+  });
+
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    calls.map((call) => call.options.idempotencyKey),
+    ["checkpoint-catchup:1", "checkpoint-catchup:2", "checkpoint-catchup:3"],
+  );
+  assert.deepEqual(calls[0].options.body, {
+    minEvents: 20,
+    maxEvents: 80,
+    createdByAgentId: "codex",
+  });
+  assert.equal(result.createdCount, 2);
+  assert.equal(result.attemptedCount, 3);
+  assert.equal(result.stoppedReason, "insufficient_events");
+  assert.deepEqual(result.checkpointIds, ["cp_auto_1", "cp_auto_2"]);
+  assert.equal(result.lastResult.reason, "insufficient_events");
+});
+
+test("Unit session checkpoints: batch generate is capped and rejects invalid caps", async () => {
+  const calls = [];
+  const result = await generateSessionCheckpointBatch("sess-123", {
+    targetPath: "/repo",
+    maxCheckpoints: 2,
+    resolveAuthSession: fakeAuth,
+    requestMutation: async () => {
+      calls.push(true);
+      return {
+        ok: true,
+        created: true,
+        duplicate: false,
+        checkpoint: { checkpointId: `cp_auto_${calls.length}` },
+      };
+    },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.createdCount, 2);
+  assert.equal(result.stoppedReason, "max_checkpoints");
+  await assert.rejects(
+    () => generateSessionCheckpointBatch("sess-123", { maxCheckpoints: 0 }),
+    /max-checkpoints must be a positive integer/i,
+  );
 });
 
 test("Unit session checkpoints: best-effort generate is safe for daemon ticks", withRemoteSyncEnabled(async () => {

@@ -9,10 +9,12 @@ const DEFAULT_CHECKPOINT_LIMIT = 100;
 const MAX_CHECKPOINT_LIMIT = 200;
 const DEFAULT_MIN_EVENTS = 20;
 const DEFAULT_MAX_EVENTS = 80;
+const DEFAULT_BATCH_MAX_CHECKPOINTS = 5;
+const MAX_BATCH_MAX_CHECKPOINTS = 50;
 const DEFAULT_CREATED_BY_AGENT_ID = "senti";
 
 function normalizeString(value) {
-  return String(value || "").trim();
+  return String(value ?? "").trim();
 }
 
 function normalizeApiUrl(value) {
@@ -34,6 +36,15 @@ function parsePositiveInteger(value, field, fallbackValue = null) {
 function normalizeLimit(value) {
   const parsed = parsePositiveInteger(value, "limit", DEFAULT_CHECKPOINT_LIMIT);
   return Math.max(1, Math.min(MAX_CHECKPOINT_LIMIT, parsed));
+}
+
+function normalizeBatchMaxCheckpoints(value) {
+  const parsed = parsePositiveInteger(
+    value,
+    "max-checkpoints",
+    DEFAULT_BATCH_MAX_CHECKPOINTS,
+  );
+  return Math.max(1, Math.min(MAX_BATCH_MAX_CHECKPOINTS, parsed));
 }
 
 function stableHash(value) {
@@ -95,6 +106,12 @@ function buildInvocationIdempotencyKey(operation) {
     suffix = crypto.randomBytes(16).toString("hex");
   }
   return `sl_cli_session_checkpoint_${normalizeString(operation) || "mutation"}_${suffix}`;
+}
+
+function buildBatchIdempotencyKey(baseKey, index) {
+  const normalizedBase = normalizeString(baseKey);
+  if (!normalizedBase) return "";
+  return `${normalizedBase}:${Number(index) + 1}`;
 }
 
 function normalizeReason(value, fallbackValue = "checkpoint_generate_failed") {
@@ -345,6 +362,57 @@ export async function generateSessionCheckpoint(sessionId, options = {}) {
   };
 }
 
+export async function generateSessionCheckpointBatch(sessionId, options = {}) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    throw new Error("session id is required.");
+  }
+  const maxCheckpoints = normalizeBatchMaxCheckpoints(options.maxCheckpoints);
+  const results = [];
+  const seenCheckpointIds = new Set();
+  let stoppedReason = "max_checkpoints";
+
+  for (let index = 0; index < maxCheckpoints; index += 1) {
+    const result = await generateSessionCheckpoint(normalizedSessionId, {
+      ...options,
+      idempotencyKey: buildBatchIdempotencyKey(options.idempotencyKey, index),
+    });
+    const normalized = normalizeCheckpointGenerationResult(result);
+    results.push(normalized);
+
+    if (!normalized.checkpoint || normalized.duplicate || !normalized.created) {
+      stoppedReason = normalized.reason || (normalized.duplicate ? "duplicate_checkpoint" : "not_created");
+      break;
+    }
+
+    if (normalized.checkpointId) {
+      if (seenCheckpointIds.has(normalized.checkpointId)) {
+        stoppedReason = "repeated_checkpoint";
+        break;
+      }
+      seenCheckpointIds.add(normalized.checkpointId);
+    }
+  }
+
+  const created = results.filter((result) => result.created && !result.duplicate && result.checkpoint);
+  const duplicates = results.filter((result) => result.duplicate);
+  const lastResult = results.at(-1) || null;
+  return {
+    ok: results.every((result) => result.ok !== false),
+    sessionId: normalizedSessionId,
+    apiUrl: results.find((result) => result.apiUrl)?.apiUrl || null,
+    catchUp: true,
+    maxCheckpoints,
+    attemptedCount: results.length,
+    createdCount: created.length,
+    duplicateCount: duplicates.length,
+    checkpointIds: created.map((result) => result.checkpointId).filter(Boolean),
+    stoppedReason,
+    lastResult,
+    results,
+  };
+}
+
 export async function generateSessionCheckpointBestEffort(sessionId, options = {}) {
   const normalizedSessionId = normalizeString(sessionId);
   if (!normalizedSessionId) {
@@ -375,6 +443,8 @@ export async function generateSessionCheckpointBestEffort(sessionId, options = {
 
 export {
   DEFAULT_CREATED_BY_AGENT_ID,
+  DEFAULT_BATCH_MAX_CHECKPOINTS,
   DEFAULT_MAX_EVENTS,
   DEFAULT_MIN_EVENTS,
+  MAX_BATCH_MAX_CHECKPOINTS,
 };

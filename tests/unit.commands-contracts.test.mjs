@@ -411,6 +411,8 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const checkpointGenerate = getCommandByPath(program, "session checkpoint generate");
   assertCommandHasOption(checkpointGenerate, "--min-events <n>");
   assertCommandHasOption(checkpointGenerate, "--max-events <n>");
+  assertCommandHasOption(checkpointGenerate, "--catch-up");
+  assertCommandHasOption(checkpointGenerate, "--max-checkpoints <n>");
   assertCommandHasOption(checkpointGenerate, "--operation-id <key>");
   assertCommandHasOption(checkpointGenerate, "--agent <id>");
   assertCommandHasOption(checkpointGenerate, "--json");
