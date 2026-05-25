@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent } from "../events/schema.js";
 import { appendToStream } from "../session/stream.js";
 import { eventMatchesAgent } from "../session/listener.js";
-import { listSessionMessageActions, pollSessionEvents, syncSessionEventToApi } from "../session/sync.js";
+import {
+  listSessionMessageActions,
+  pollSessionEvents,
+  pollSessionEventsBefore,
+  syncSessionEventToApi,
+} from "../session/sync.js";
 
 export const SESSION_MCP_SERVER_NAME = "sentinelayer-session-mcp";
 export const SESSION_MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -12,6 +18,10 @@ export const SESSION_MCP_PROTOCOL_VERSION = "2025-06-18";
 const MAX_MESSAGE_CHARS = 16_000;
 const MAX_TOOL_LIMIT = 200;
 const DEFAULT_TOOL_LIMIT = 50;
+const SESSION_MCP_CONFIRM_ATTEMPTS = 3;
+const SESSION_MCP_CONFIRM_DELAY_MS = 250;
+const SESSION_MCP_CONFIRM_PAGE_LIMIT = 200;
+const SESSION_MCP_CONFIRM_MAX_PAGES = 10;
 const JSON_RPC_VERSION = "2.0";
 const CONTENT_LENGTH_PREFIX = "content-length:";
 
@@ -132,6 +142,127 @@ function summarizeSessionEvent(event = {}) {
   });
 }
 
+function sessionEventMatchesClientMessageId(event, clientMessageId) {
+  const normalizedClientMessageId = normalizeString(clientMessageId);
+  if (!normalizedClientMessageId || !isPlainObject(event)) {
+    return false;
+  }
+  const payload = isPlainObject(event.payload) ? event.payload : {};
+  const candidates = [
+    event.id,
+    event.eventId,
+    event.event_id,
+    event.idempotencyToken,
+    event.idempotency_token,
+    event.clientMessageId,
+    event.client_message_id,
+    payload.id,
+    payload.messageId,
+    payload.message_id,
+    payload.eventId,
+    payload.event_id,
+    payload.idempotencyToken,
+    payload.idempotency_token,
+    payload.clientMessageId,
+    payload.client_message_id,
+  ];
+  return candidates.some((candidate) => normalizeString(candidate) === normalizedClientMessageId);
+}
+
+async function readSessionConfirmationAnchor(sessionId, { targetPath, pollSessionEventsBeforeFn = pollSessionEventsBefore } = {}) {
+  const result = await pollSessionEventsBeforeFn(sessionId, {
+    targetPath,
+    limit: 1,
+    forceCircuitProbe: true,
+  });
+  if (!result?.ok) {
+    return {
+      ok: false,
+      reason: normalizeString(result?.reason) || "confirmation_anchor_failed",
+      cursor: null,
+    };
+  }
+  const events = Array.isArray(result.events) ? result.events : [];
+  const lastEvent = events[events.length - 1] || null;
+  return {
+    ok: true,
+    reason: "",
+    cursor: normalizeString(lastEvent?.cursor) || normalizeString(result.cursor) || null,
+    sequenceId: normalizePositiveInteger(lastEvent?.sequenceId ?? lastEvent?.sequence_id, null),
+  };
+}
+
+async function confirmSessionEventVisible(
+  sessionId,
+  clientMessageId,
+  {
+    targetPath,
+    anchorCursor = null,
+    pollSessionEventsFn = pollSessionEvents,
+    sleepFn = sleep,
+    attempts = SESSION_MCP_CONFIRM_ATTEMPTS,
+    delayMs = SESSION_MCP_CONFIRM_DELAY_MS,
+    pageLimit = SESSION_MCP_CONFIRM_PAGE_LIMIT,
+    maxPages = SESSION_MCP_CONFIRM_MAX_PAGES,
+  } = {},
+) {
+  let lastReason = "not_visible";
+  let checked = 0;
+  let pages = 0;
+  const normalizedAnchorCursor = normalizeString(anchorCursor) || null;
+  const normalizedAttempts = normalizePositiveInteger(attempts, SESSION_MCP_CONFIRM_ATTEMPTS);
+  const normalizedDelayMs = normalizePositiveInteger(delayMs, SESSION_MCP_CONFIRM_DELAY_MS);
+  const normalizedPageLimit = normalizeLimit(pageLimit);
+  const normalizedMaxPages = normalizePositiveInteger(maxPages, SESSION_MCP_CONFIRM_MAX_PAGES);
+
+  for (let attempt = 1; attempt <= normalizedAttempts; attempt += 1) {
+    let pageCursor = normalizedAnchorCursor;
+    for (let page = 1; page <= normalizedMaxPages; page += 1) {
+      pages += 1;
+      const result = await pollSessionEventsFn(sessionId, {
+        targetPath,
+        since: pageCursor,
+        limit: normalizedPageLimit,
+        forceCircuitProbe: true,
+      });
+      if (!result?.ok) {
+        lastReason = normalizeString(result?.reason) || "confirmation_poll_failed";
+        break;
+      }
+      const events = Array.isArray(result.events) ? result.events : [];
+      checked += events.length;
+      const confirmedEvent = events.find((candidate) => sessionEventMatchesClientMessageId(candidate, clientMessageId));
+      if (confirmedEvent) {
+        return {
+          confirmed: true,
+          reason: "",
+          checked,
+          pages,
+          anchorCursor: normalizedAnchorCursor,
+          event: confirmedEvent,
+        };
+      }
+      lastReason = "not_visible";
+      const nextCursor = normalizeString(result.cursor);
+      if (!events.length || !nextCursor || nextCursor === pageCursor) {
+        break;
+      }
+      pageCursor = nextCursor;
+    }
+    if (attempt < normalizedAttempts) {
+      await sleepFn(normalizedDelayMs);
+    }
+  }
+
+  return {
+    confirmed: false,
+    reason: lastReason,
+    checked,
+    pages,
+    anchorCursor: normalizedAnchorCursor,
+  };
+}
+
 function messageActionActorId(action = {}) {
   return normalizeAgentId(action.actorId || action.actor_id || action.agentId || action.agent_id, "unknown");
 }
@@ -224,6 +355,7 @@ function buildSessionMessageEvent({
     throw new Error("message is required.");
   }
 
+  const eventId = normalizeString(idempotencyKey) || `mcp-${event}-${uuid()}`;
   const payload = cleanObject({
     message: messageShape.text,
     channel: "session",
@@ -233,8 +365,8 @@ function buildSessionMessageEvent({
     priority: normalizeString(priority) || undefined,
     truncated: messageShape.truncated || undefined,
     ...extraPayload,
+    clientMessageId: eventId,
   });
-  const eventId = normalizeString(idempotencyKey) || `mcp-${event}-${uuid()}`;
   return createAgentEvent({
     event,
     agent,
@@ -252,7 +384,12 @@ async function persistSessionEvent({
   targetPath,
   dryRun = false,
   syncSessionEventToApiFn = syncSessionEventToApi,
+  pollSessionEventsBeforeFn = pollSessionEventsBefore,
+  pollSessionEventsFn = pollSessionEvents,
   appendToStreamFn = appendToStream,
+  sleepFn = sleep,
+  confirmationAttempts = SESSION_MCP_CONFIRM_ATTEMPTS,
+  confirmationDelayMs = SESSION_MCP_CONFIRM_DELAY_MS,
 } = {}) {
   if (dryRun) {
     return {
@@ -264,13 +401,58 @@ async function persistSessionEvent({
     };
   }
 
+  const clientMessageId = normalizeString(event?.payload?.clientMessageId || event?.idempotencyToken || event?.eventId);
+  const remoteConfirmationAnchor = await readSessionConfirmationAnchor(sessionId, {
+    targetPath,
+    pollSessionEventsBeforeFn,
+  });
+  if (!remoteConfirmationAnchor?.ok) {
+    return {
+      ok: false,
+      reason: remoteConfirmationAnchor?.reason || "confirmation_anchor_failed",
+      remoteSync: { synced: false, reason: "not_attempted" },
+      remoteConfirmationAnchor,
+      remoteConfirmation: {
+        confirmed: false,
+        reason: remoteConfirmationAnchor?.reason || "confirmation_anchor_failed",
+        checked: 0,
+        pages: 0,
+        anchorCursor: null,
+      },
+      localCache: { cached: false, reason: "confirmation_anchor_failed" },
+      event: summarizeSessionEvent(event),
+    };
+  }
+
   const remoteSync = await syncSessionEventToApiFn(sessionId, event, { targetPath });
   if (!remoteSync?.synced) {
     return {
       ok: false,
       reason: remoteSync?.reason || "remote_sync_failed",
       remoteSync,
+      remoteConfirmationAnchor,
+      remoteConfirmation: { confirmed: false, reason: "remote_sync_failed", checked: 0, pages: 0, anchorCursor: remoteConfirmationAnchor.cursor },
       localCache: { cached: false, reason: "remote_sync_failed" },
+      event: summarizeSessionEvent(event),
+    };
+  }
+
+  const remoteConfirmation = await confirmSessionEventVisible(sessionId, clientMessageId, {
+    targetPath,
+    anchorCursor: remoteConfirmationAnchor.cursor,
+    pollSessionEventsFn,
+    sleepFn,
+    attempts: confirmationAttempts,
+    delayMs: confirmationDelayMs,
+  });
+  if (!remoteConfirmation?.confirmed) {
+    return {
+      ok: false,
+      reason: remoteConfirmation?.reason || "remote_not_visible",
+      remoteSync,
+      remoteConfirmationAnchor,
+      remoteConfirmation,
+      localCache: { cached: false, reason: "remote_not_visible" },
       event: summarizeSessionEvent(event),
     };
   }
@@ -296,6 +478,8 @@ async function persistSessionEvent({
     ok: true,
     reason: "",
     remoteSync,
+    remoteConfirmationAnchor,
+    remoteConfirmation,
     localCache,
     event: summarizeSessionEvent(event),
   };
@@ -304,9 +488,11 @@ async function persistSessionEvent({
 export function createSessionMcpToolHandlers({
   targetPath = process.cwd(),
   pollSessionEventsFn = pollSessionEvents,
+  pollSessionEventsBeforeFn = pollSessionEventsBefore,
   listSessionMessageActionsFn = listSessionMessageActions,
   syncSessionEventToApiFn = syncSessionEventToApi,
   appendToStreamFn = appendToStream,
+  sleepFn = sleep,
   uuidFn = randomUUID,
   now = () => new Date().toISOString(),
 } = {}) {
@@ -399,7 +585,10 @@ export function createSessionMcpToolHandlers({
         targetPath,
         dryRun: Boolean(input.dryRun || input.dry_run),
         syncSessionEventToApiFn,
+        pollSessionEventsBeforeFn,
+        pollSessionEventsFn,
         appendToStreamFn,
+        sleepFn,
       });
     },
 
@@ -432,7 +621,10 @@ export function createSessionMcpToolHandlers({
         targetPath,
         dryRun: Boolean(input.dryRun || input.dry_run),
         syncSessionEventToApiFn,
+        pollSessionEventsBeforeFn,
+        pollSessionEventsFn,
         appendToStreamFn,
+        sleepFn,
       });
     },
   };

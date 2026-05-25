@@ -5,6 +5,7 @@ Deliver a deterministic, security-first CLI that scaffolds Sentinelayer artifact
 
 ## Scope
 - Stable command surface for scaffold + local governance commands.
+- Authenticated Senti session coordination surfaces, including CLI/MCP inbox polling and durable message writes.
 - Reproducible output artifacts under configurable output roots.
 - CI workflows enforcing quality and Omar gate checks.
 - Senti session coordination commands and generated agent guidance, including quiet/background listener behavior and durable presence controls.
