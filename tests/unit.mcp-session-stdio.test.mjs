@@ -114,17 +114,40 @@ test("Unit MCP session stdio: poll_inbox surfaces recent human action activity",
 });
 
 test("Unit MCP session stdio: send_message persists remote first and caches local second", async () => {
+  const calls = [];
   const synced = [];
   const cached = [];
   const handlers = createSessionMcpToolHandlers({
     targetPath: "workspace",
     uuidFn: () => "uuid-1",
     now: () => "2026-05-25T00:00:00.000Z",
+    pollSessionEventsBeforeFn: async (sessionId, options) => {
+      calls.push("anchor");
+      return {
+        ok: true,
+        sessionId,
+        cursor: "cursor-anchor",
+        events: [evt("cursor-anchor", "claude", { message: "prior" })],
+        options,
+      };
+    },
     syncSessionEventToApiFn: async (sessionId, event, options) => {
+      calls.push("sync");
       synced.push({ sessionId, event, options });
       return { synced: true, status: 202 };
     },
+    pollSessionEventsFn: async (sessionId, options) => {
+      calls.push("confirm");
+      return {
+        ok: true,
+        sessionId,
+        cursor: "cursor-post",
+        events: [evt("cursor-post", "codex", { message: "shipping L3", clientMessageId: "idem-1" })],
+        options,
+      };
+    },
     appendToStreamFn: async (sessionId, event, options) => {
+      calls.push("cache");
       cached.push({ sessionId, event, options });
       return { ...event, cursor: "remote-cursor-1", sequenceId: 10 };
     },
@@ -139,13 +162,109 @@ test("Unit MCP session stdio: send_message persists remote first and caches loca
   });
 
   assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["anchor", "sync", "confirm", "cache"]);
   assert.equal(synced.length, 1);
   assert.equal(cached.length, 1);
   assert.equal(synced[0].event.event, "session_message");
   assert.equal(synced[0].event.agent.id, "codex");
   assert.deepEqual(synced[0].event.payload.to, ["claude", "carter"]);
+  assert.equal(synced[0].event.eventId, "idem-1");
   assert.equal(synced[0].event.idempotencyToken, "idem-1");
+  assert.equal(synced[0].event.payload.clientMessageId, "idem-1");
+  assert.equal(result.remoteConfirmationAnchor.cursor, "cursor-anchor");
+  assert.equal(result.remoteConfirmation.confirmed, true);
+  assert.equal(result.remoteConfirmation.event.payload.clientMessageId, "idem-1");
   assert.equal(cached[0].options.syncRemote, false);
+});
+
+test("Unit MCP session stdio: send_message skips local cache when canonical confirmation fails", async () => {
+  let syncCount = 0;
+  let cacheCount = 0;
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    uuidFn: () => "uuid-missing",
+    pollSessionEventsBeforeFn: async () => ({
+      ok: true,
+      cursor: "cursor-anchor",
+      events: [evt("cursor-anchor", "claude", { message: "prior" })],
+    }),
+    syncSessionEventToApiFn: async () => {
+      syncCount += 1;
+      return { synced: true, status: 202 };
+    },
+    pollSessionEventsFn: async (_sessionId, options) => ({
+      ok: true,
+      cursor: options.since,
+      events: [],
+    }),
+    appendToStreamFn: async () => {
+      cacheCount += 1;
+      throw new Error("must not cache");
+    },
+    sleepFn: async () => {},
+  });
+
+  const result = await handlers.send_message({
+    sessionId: "sess-1",
+    agentId: "codex",
+    message: "this should not be locally cached",
+    idempotencyKey: "idem-missing",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "not_visible");
+  assert.equal(result.remoteSync.synced, true);
+  assert.equal(result.remoteConfirmation.confirmed, false);
+  assert.equal(result.localCache.cached, false);
+  assert.equal(result.localCache.reason, "remote_not_visible");
+  assert.equal(syncCount, 1);
+  assert.equal(cacheCount, 0);
+});
+
+test("Unit MCP session stdio: send_message confirmation forward-paginates in busy rooms", async () => {
+  const pollCursors = [];
+  const cached = [];
+  const busyEvents = Array.from({ length: 200 }, (_, index) =>
+    evt(`busy-${index + 1}`, "claude", { message: `intervening ${index + 1}`, clientMessageId: `other-${index + 1}` }),
+  );
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsBeforeFn: async () => ({
+      ok: true,
+      cursor: "cursor-anchor",
+      events: [evt("cursor-anchor", "claude", { message: "prior" })],
+    }),
+    syncSessionEventToApiFn: async () => ({ synced: true, status: 202 }),
+    pollSessionEventsFn: async (_sessionId, options) => {
+      pollCursors.push(options.since);
+      if (options.since === "cursor-anchor") {
+        return { ok: true, cursor: "cursor-page-1", events: busyEvents };
+      }
+      return {
+        ok: true,
+        cursor: "cursor-page-2",
+        events: [evt("cursor-page-2", "codex", { message: "buried but visible", clientMessageId: "idem-busy" })],
+      };
+    },
+    appendToStreamFn: async (sessionId, event, options) => {
+      cached.push({ sessionId, event, options });
+      return event;
+    },
+  });
+
+  const result = await handlers.send_message({
+    sessionId: "sess-1",
+    agentId: "codex",
+    message: "buried but visible",
+    idempotencyKey: "idem-busy",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(pollCursors, ["cursor-anchor", "cursor-page-1"]);
+  assert.equal(result.remoteConfirmation.confirmed, true);
+  assert.equal(result.remoteConfirmation.pages, 2);
+  assert.equal(result.remoteConfirmation.checked, 201);
+  assert.equal(cached.length, 1);
 });
 
 test("Unit MCP session stdio: attention_request emits help_request with high-signal payload", async () => {
@@ -153,10 +272,20 @@ test("Unit MCP session stdio: attention_request emits help_request with high-sig
   const handlers = createSessionMcpToolHandlers({
     targetPath: "workspace",
     uuidFn: () => "uuid-2",
+    pollSessionEventsBeforeFn: async () => ({
+      ok: true,
+      cursor: "cursor-anchor",
+      events: [evt("cursor-anchor", "claude", { message: "prior" })],
+    }),
     syncSessionEventToApiFn: async (_sessionId, event) => {
       capturedEvent = event;
       return { synced: true, status: 202 };
     },
+    pollSessionEventsFn: async () => ({
+      ok: true,
+      cursor: "cursor-help",
+      events: [evt("cursor-help", "codex", { message: "Need audit on MCP tool surface", clientMessageId: "mcp-help_request-uuid-2" })],
+    }),
     appendToStreamFn: async (_sessionId, event) => event,
   });
 
@@ -170,9 +299,13 @@ test("Unit MCP session stdio: attention_request emits help_request with high-sig
 
   assert.equal(result.ok, true);
   assert.equal(capturedEvent.event, "help_request");
+  assert.equal(capturedEvent.eventId, "mcp-help_request-uuid-2");
+  assert.equal(capturedEvent.idempotencyToken, "mcp-help_request-uuid-2");
+  assert.equal(capturedEvent.payload.clientMessageId, "mcp-help_request-uuid-2");
   assert.equal(capturedEvent.payload.requestType, "attention");
   assert.equal(capturedEvent.payload.priority, "high");
   assert.deepEqual(capturedEvent.payload.to, ["claude-mythos"]);
+  assert.equal(result.remoteConfirmation.confirmed, true);
 });
 
 test("Unit MCP session stdio: JSON-RPC initialize, list, and call return MCP tool results", async () => {
