@@ -11,6 +11,7 @@ import {
   buildAidenIdRegistryTemplate,
   buildMcpToolRegistrySchema,
   buildMcpServerConfigTemplate,
+  buildSentinelayerSessionRegistryTemplate,
   buildVsCodeMcpBridgeTemplate,
   readJsonFile,
   resolveDefaultAidenIdAdapterContractPath,
@@ -23,6 +24,7 @@ import {
   validateMcpToolRegistry,
   writeJsonFile,
 } from "../mcp/registry.js";
+import { runMcpStdioServer } from "../mcp/session-stdio-server.js";
 import { resolveOutputRoot } from "../config/service.js";
 
 function shouldEmitJson(options, command) {
@@ -218,6 +220,38 @@ export function registerMcpCommand(program) {
       }
       console.log(pc.green(`Wrote AIdenID adapter contract template: ${writtenPath}`));
       console.log(pc.gray("Next: validate with registry cross-check before runtime wiring."));
+    });
+
+  registry
+    .command("init-session")
+    .description("Write the built-in SentinelLayer session MCP tool registry")
+    .option("--path <path>", "Destination file path override")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--force", "Overwrite destination file if it already exists")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const defaultPath = await resolveDefaultMcpOutputPath({
+        cwd: process.cwd(),
+        outputDir: options.outputDir,
+        env: process.env,
+      });
+      const outputPath = normalizeOutputPath(options.path, defaultPath.replace(".schema", ".session-tools"));
+      const template = buildSentinelayerSessionRegistryTemplate();
+      validateMcpToolRegistry(template);
+      const writtenPath = await writeJsonFile(outputPath, template, { force: Boolean(options.force) });
+      const payload = {
+        command: "mcp registry init-session",
+        outputPath: writtenPath,
+        toolCount: template.tools.length,
+        tools: template.tools.map((tool) => tool.name),
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Wrote SentinelLayer session MCP registry template: ${writtenPath}`));
+      console.log(pc.gray("Next: run 'sl mcp server init --id sentinelayer-session --registry-file <path>'."));
     });
 
   registry
@@ -420,6 +454,32 @@ export function registerMcpCommand(program) {
       }
       console.log(pc.green(`Server config valid (${parsed.server_id})`));
       console.log(pc.gray(`File: ${loaded.path}`));
+    });
+
+  server
+    .command("run")
+    .description("Run the SentinelLayer MCP stdio server")
+    .option("--config <path>", "MCP server config JSON to validate before startup")
+    .option("--path <path>", "Workspace path used for session auth and local caches", ".")
+    .option("--framing <mode>", "stdio framing: newline or content-length", "newline")
+    .action(async (options) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const configPath = String(options.config || "").trim();
+      if (configPath) {
+        const loaded = await readJsonFile(path.resolve(process.cwd(), configPath));
+        const parsed = validateMcpServerConfig(loaded.data);
+        if (parsed.transport.mode !== "stdio") {
+          throw new Error("mcp server run requires a stdio server config.");
+        }
+      }
+      const framing = String(options.framing || "newline").trim().toLowerCase();
+      if (!["newline", "content-length"].includes(framing)) {
+        throw new Error("framing must be 'newline' or 'content-length'.");
+      }
+      await runMcpStdioServer({
+        targetPath,
+        framing,
+      });
     });
 
   const bridge = mcp.command("bridge").description("Generate MCP bridge configuration wrappers");
