@@ -175,16 +175,16 @@ jobs:
           require_response_binding_on_protected="$(echo "${OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
-            # Protected refs must use the OIDC token exchange. Static secrets
-            # are only allowed as an explicit emergency fallback on
-            # non-protected refs.
-            if [ "${ref_protected}" = "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE; static secret fallback is limited to non-protected refs."
+            if [ "${allow_static}" != "true" ]; then
+              if [ "${ref_protected}" = "true" ]; then
+                echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE, or set OMAR_ALLOW_STATIC_SECRETS=true only as a documented emergency fallback until exchange is provisioned."
+              else
+                echo "::error::OIDC exchange is required for Omar Gate on ${event_name} events. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE, or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback."
+              fi
               exit 1
             fi
-            if [ "${allow_static}" != "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on ${event_name} events. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true for emergency static fallback on non-protected refs)."
-              exit 1
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::warning::Protected ref is using explicit OMAR_ALLOW_STATIC_SECRETS=true fallback because Omar OIDC exchange is not configured. Provision OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE, then unset OMAR_ALLOW_STATIC_SECRETS."
             fi
           fi
           if [ -n "${exchange_url}" ] && [ -n "${exchange_audience}" ]; then
