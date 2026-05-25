@@ -85,6 +85,30 @@ function installLocalOnlyEnv() {
   };
 }
 
+function projectApiSessionEvent(event, { cursor = "cursor-confirmed" } = {}) {
+  const projected = JSON.parse(JSON.stringify(event));
+  delete projected.eventId;
+  delete projected.idempotencyToken;
+  if (cursor && !projected.cursor) projected.cursor = cursor;
+  return projected;
+}
+
+function anchorSessionEvent(cursor = "cursor-anchor") {
+  return {
+    event: "session_message",
+    cursor,
+    payload: { message: "anchor" },
+  };
+}
+
+function busySessionEvents(count, { prefix = "busy" } = {}) {
+  return Array.from({ length: count }, (_, index) => ({
+    event: "session_message",
+    cursor: `${prefix}-${index + 1}`,
+    payload: { message: `${prefix} event ${index + 1}` },
+  }));
+}
+
 test("Unit session say identity: default placeholder is not rewritten to human auth identity", () => {
   assert.equal(resolveSessionSayAgentId(undefined), "cli-user");
   assert.equal(resolveSessionSayAgentId(""), "cli-user");
@@ -254,18 +278,36 @@ test("Unit session say: materialized remote sessions post once then append local
   const restoreEnv = installAuthEnv();
   const originalFetch = globalThis.fetch;
   const calls = [];
+  let postedEvent = null;
   try {
     await seedWorkspace(tempRoot);
     globalThis.fetch = async (url, options = {}) => {
       calls.push({ url: String(url), options });
       if (options.method === "GET") {
-        assert.ok(String(url).endsWith("/api/v1/sessions/remote-say/events?limit=1"));
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ events: [] }),
-        };
+        if (String(url).endsWith("/api/v1/sessions/remote-say/events?limit=1")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ events: [] }),
+          };
+        }
+        if (String(url).includes("/api/v1/sessions/remote-say/events/before?")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ events: [anchorSessionEvent()] }),
+          };
+        }
+        if (String(url).includes("/api/v1/sessions/remote-say/events?after=cursor-anchor&limit=200")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ events: postedEvent ? [projectApiSessionEvent(postedEvent)] : [] }),
+          };
+        }
+        assert.fail(`unexpected GET ${url}`);
       }
+      postedEvent = JSON.parse(options.body).event;
       return {
         ok: true,
         status: 202,
@@ -289,6 +331,8 @@ test("Unit session say: materialized remote sessions post once then append local
     const payload = JSON.parse(output);
     assert.equal(payload.materializedLocalSession, true);
     assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    assert.equal(payload.localOnly, false);
     assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
 
     const events = await readStream("remote-say", { targetPath: tempRoot, tail: 20 });
@@ -317,17 +361,95 @@ test("Unit session say: materialized remote sessions post once then append local
   }
 });
 
+test("Unit session say: accepted remote write must be canonically visible before local append", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-unconfirmed-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let postedEvent = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [] }),
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
+
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "say",
+          session.sessionId,
+          "status: do not cache an unconfirmed remote post",
+          "--agent",
+          "codex",
+          "--path",
+          tempRoot,
+          "--json",
+        ]),
+      /Remote send was accepted but not visible/,
+    );
+
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 4);
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session post-agent: posts canonical agent event and persists only after remote acceptance", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-"));
   const restoreEnv = installAuthEnv();
   const originalFetch = globalThis.fetch;
   const calls = [];
+  let postedEvent = null;
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
     globalThis.fetch = async (url, options = {}) => {
       calls.push({ url: String(url), options });
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: postedEvent ? [projectApiSessionEvent(postedEvent)] : [] }),
+        };
+      }
+      postedEvent = JSON.parse(options.body).event;
       return {
         ok: true,
         status: 202,
@@ -360,6 +482,7 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
     assert.equal(payload.command, "session post-agent");
     assert.equal(payload.agentId, "codex");
     assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
     assert.equal(calls.some((call) => call.url.includes("human-message")), false);
     const postCalls = calls.filter((call) => call.options.method === "POST");
     assert.equal(postCalls.length, 1);
@@ -389,6 +512,230 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
     );
     assert.ok(posted);
     assert.equal(posted.agent.id, "codex");
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session post-agent: confirmation pages forward from the pre-send cursor in busy rooms", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-busy-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let postedEvent = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      const urlText = String(url);
+      calls.push({ url: urlText, options });
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: busySessionEvents(200), cursor: "busy-200" }),
+        };
+      }
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events?after=busy-200&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: postedEvent ? [projectApiSessionEvent(postedEvent, { cursor: "posted-cursor" })] : [],
+            cursor: "posted-cursor",
+          }),
+        };
+      }
+      if (options.method === "POST") {
+        postedEvent = JSON.parse(options.body).event;
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      assert.fail(`unexpected request ${options.method || "GET"} ${urlText}`);
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "post-agent",
+      session.sessionId,
+      "status: busy room confirmation should page forward",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    assert.equal(payload.remoteConfirmation.pages, 2);
+    assert.equal(payload.remoteConfirmation.checked, 201);
+    assert.equal(payload.remoteConfirmation.anchorCursor, "cursor-anchor");
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.clientMessageId, payload.event.payload.clientMessageId);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session post-agent: confirmation retries tolerate delayed canonical visibility", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-delayed-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let postedEvent = null;
+  let visibilityPolls = 0;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      const urlText = String(url);
+      calls.push({ url: urlText, options });
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        visibilityPolls += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events:
+              visibilityPolls >= 2 && postedEvent
+                ? [projectApiSessionEvent(postedEvent, { cursor: "posted-after-delay" })]
+                : [],
+            cursor: visibilityPolls >= 2 ? "posted-after-delay" : "cursor-anchor",
+          }),
+        };
+      }
+      if (options.method === "POST") {
+        postedEvent = JSON.parse(options.body).event;
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      assert.fail(`unexpected request ${options.method || "GET"} ${urlText}`);
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "post-agent",
+      session.sessionId,
+      "status: delayed visibility should still confirm",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    assert.equal(payload.remoteConfirmation.pages, 2);
+    assert.equal(payload.remoteConfirmation.checked, 1);
+    assert.equal(visibilityPolls, 2);
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.clientMessageId, payload.event.payload.clientMessageId);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session post-agent: accepted remote write must be canonically visible before local append", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-unconfirmed-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let postedEvent = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [] }),
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
+
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "post-agent",
+          session.sessionId,
+          "status: do not cache an unconfirmed agent post",
+          "--agent",
+          "Codex",
+          "--model",
+          "gpt-5-codex",
+          "--display-name",
+          "Codex",
+          "--role",
+          "coder",
+          "--path",
+          tempRoot,
+          "--json",
+        ]),
+      /Agent post was accepted but not visible/,
+    );
+
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 4);
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
@@ -725,6 +1072,7 @@ test("Unit session post-agent: refreshes expired local cache after remote accept
   const restoreEnv = installAuthEnv();
   const originalFetch = globalThis.fetch;
   const calls = [];
+  let postedEvent = null;
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({
@@ -736,6 +1084,23 @@ test("Unit session post-agent: refreshes expired local cache after remote accept
     });
     globalThis.fetch = async (url, options = {}) => {
       calls.push({ url: String(url), options });
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: postedEvent ? [projectApiSessionEvent(postedEvent)] : [] }),
+        };
+      }
+      if (options.method === "POST") {
+        postedEvent = JSON.parse(options.body).event;
+      }
       return {
         ok: true,
         status: options.method === "GET" ? 200 : 202,
@@ -758,6 +1123,7 @@ test("Unit session post-agent: refreshes expired local cache after remote accept
 
     const payload = JSON.parse(output);
     assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
     assert.equal(payload.refreshedLocalSession, true);
     assert.ok(
       calls.some(
@@ -785,6 +1151,7 @@ test("Unit session post-agent: refreshes locally expired status when remote sess
   const restoreEnv = installAuthEnv();
   const originalFetch = globalThis.fetch;
   const calls = [];
+  let postedEvent = null;
   try {
     await seedWorkspace(tempRoot);
     const session = await createSession({
@@ -803,6 +1170,20 @@ test("Unit session post-agent: refreshes locally expired status when remote sess
     globalThis.fetch = async (url, options = {}) => {
       calls.push({ url: String(url), options });
       if (options.method === "GET") {
+        if (String(url).includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ events: [anchorSessionEvent()] }),
+          };
+        }
+        if (String(url).includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ events: postedEvent ? [projectApiSessionEvent(postedEvent)] : [] }),
+          };
+        }
         assert.ok(String(url).endsWith(`/api/v1/sessions/${session.sessionId}`));
         return {
           ok: true,
@@ -819,6 +1200,7 @@ test("Unit session post-agent: refreshes locally expired status when remote sess
           }),
         };
       }
+      postedEvent = JSON.parse(options.body).event;
       return {
         ok: true,
         status: 202,
@@ -841,8 +1223,9 @@ test("Unit session post-agent: refreshes locally expired status when remote sess
 
     const payload = JSON.parse(output);
     assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
     assert.equal(payload.refreshedLocalSession, true);
-    assert.equal(calls.filter((call) => call.options.method === "GET").length, 1);
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 3);
     assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
 
     const refreshedMetadata = JSON.parse(await readFile(metadataPath, "utf-8"));

@@ -1,6 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 
 import pc from "picocolors";
@@ -65,6 +66,7 @@ import {
   listSessionMessageActions,
   listSessionsFromApi,
   probeSessionAccess,
+  pollSessionEvents,
   pollSessionEventsBefore,
   searchSessionEvents,
   syncSessionEventToApi,
@@ -108,6 +110,122 @@ function shouldEmitJson(options, command) {
 
 function normalizeString(value) {
   return String(value || "").trim();
+}
+
+const SESSION_SAY_CONFIRM_ATTEMPTS = 3;
+const SESSION_SAY_CONFIRM_DELAY_MS = 250;
+const SESSION_SAY_CONFIRM_PAGE_LIMIT = 200;
+const SESSION_SAY_CONFIRM_MAX_PAGES = 10;
+const SESSION_SAY_LOCAL_ONLY_REASONS = new Set([
+  "no_session",
+  "not_authenticated",
+  "remote_sync_disabled_env",
+]);
+
+function isLocalOnlySessionSayReason(reason) {
+  return SESSION_SAY_LOCAL_ONLY_REASONS.has(normalizeString(reason));
+}
+
+function sessionEventMatchesClientMessageId(event, clientMessageId) {
+  const normalizedClientMessageId = normalizeString(clientMessageId);
+  if (!normalizedClientMessageId || !event || typeof event !== "object") {
+    return false;
+  }
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  const candidates = [
+    event.id,
+    event.eventId,
+    event.event_id,
+    event.idempotencyToken,
+    event.idempotency_token,
+    event.clientMessageId,
+    event.client_message_id,
+    payload.id,
+    payload.messageId,
+    payload.message_id,
+    payload.eventId,
+    payload.event_id,
+    payload.idempotencyToken,
+    payload.idempotency_token,
+    payload.clientMessageId,
+    payload.client_message_id,
+  ];
+  return candidates.some((candidate) => normalizeString(candidate) === normalizedClientMessageId);
+}
+
+async function readSessionConfirmationAnchor(sessionId, { targetPath } = {}) {
+  const result = await pollSessionEventsBefore(sessionId, {
+    targetPath,
+    limit: 1,
+    forceCircuitProbe: true,
+  });
+  if (!result?.ok) {
+    return {
+      ok: false,
+      reason: normalizeString(result?.reason) || "confirmation_anchor_failed",
+      cursor: null,
+    };
+  }
+  const events = Array.isArray(result.events) ? result.events : [];
+  const lastEvent = events[events.length - 1] || null;
+  return {
+    ok: true,
+    reason: "",
+    cursor: normalizeString(lastEvent?.cursor) || normalizeString(result.cursor) || null,
+    sequenceId: Number(lastEvent?.sequenceId ?? lastEvent?.sequence_id) || null,
+  };
+}
+
+async function confirmSessionEventVisible(sessionId, clientMessageId, { targetPath, anchorCursor = null } = {}) {
+  let lastReason = "not_visible";
+  let checked = 0;
+  let pages = 0;
+  const normalizedAnchorCursor = normalizeString(anchorCursor) || null;
+  for (let attempt = 1; attempt <= SESSION_SAY_CONFIRM_ATTEMPTS; attempt += 1) {
+    let pageCursor = normalizedAnchorCursor;
+    for (let page = 1; page <= SESSION_SAY_CONFIRM_MAX_PAGES; page += 1) {
+      pages += 1;
+      const result = await pollSessionEvents(sessionId, {
+        targetPath,
+        since: pageCursor,
+        limit: SESSION_SAY_CONFIRM_PAGE_LIMIT,
+        forceCircuitProbe: true,
+      });
+      if (!result?.ok) {
+        lastReason = normalizeString(result?.reason) || "confirmation_poll_failed";
+        break;
+      }
+      const events = Array.isArray(result.events) ? result.events : [];
+      checked += events.length;
+      const confirmedEvent = events.find((candidate) => sessionEventMatchesClientMessageId(candidate, clientMessageId));
+      if (confirmedEvent) {
+        return {
+          confirmed: true,
+          reason: "",
+          checked,
+          pages,
+          anchorCursor: normalizedAnchorCursor,
+          event: confirmedEvent,
+        };
+      }
+      lastReason = "not_visible";
+      const nextCursor = normalizeString(result.cursor);
+      if (!events.length || !nextCursor || nextCursor === pageCursor) {
+        break;
+      }
+      pageCursor = nextCursor;
+    }
+    if (attempt < SESSION_SAY_CONFIRM_ATTEMPTS) {
+      await sleep(SESSION_SAY_CONFIRM_DELAY_MS);
+    }
+  }
+  return {
+    confirmed: false,
+    reason: lastReason,
+    checked,
+    pages,
+    anchorCursor: normalizedAnchorCursor,
+  };
 }
 
 function formatSessionListText(value, { maxLength = 80 } = {}) {
@@ -2399,6 +2517,7 @@ export function registerSessionCommand(program) {
     .option("--reply-to <sequence>", "Mark this message as a reply to a target sequence id")
     .option("--reply-cursor <cursor>", "Mark this message as a reply to a target event cursor")
     .option("--force-cli-user", "Allow fallback sends as cli-user when no agent identity can be resolved")
+    .option("--local-only", "Append only to the local session cache without remote send confirmation")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, message, options, command) => {
@@ -2428,9 +2547,11 @@ export function registerSessionCommand(program) {
       const to = normalizeString(options.to);
       const replyToSequenceId = parseOptionalPositiveInteger(options.replyTo, "reply-to");
       const replyToCursor = normalizeString(options.replyCursor);
+      const clientMessageId = `cli-${randomUUID()}`;
       const eventPayload = {
         message: normalizedMessage,
         channel: "session",
+        clientMessageId,
       };
       if (to) {
         eventPayload.to = to;
@@ -2441,7 +2562,6 @@ export function registerSessionCommand(program) {
       if (replyToCursor) {
         eventPayload.replyToCursor = replyToCursor;
       }
-      const clientMessageId = `cli-${randomUUID()}`;
       const agent = await resolveSessionAgentEnvelope(normalizedSessionId, agentId, {
         targetPath,
         model: options.model,
@@ -2460,7 +2580,22 @@ export function registerSessionCommand(program) {
       event.eventId = clientMessageId;
       event.idempotencyToken = clientMessageId;
       let remoteSync = null;
-      if (localSession.materialized) {
+      let remoteConfirmation = null;
+      let remoteConfirmationAnchor = null;
+      let localOnly = Boolean(options.localOnly) || remoteSessionLookupDisabled();
+      if (!localOnly) {
+        remoteConfirmationAnchor = await readSessionConfirmationAnchor(normalizedSessionId, { targetPath });
+        if (!remoteConfirmationAnchor?.ok) {
+          if (!localSession.materialized && isLocalOnlySessionSayReason(remoteConfirmationAnchor?.reason)) {
+            localOnly = true;
+          } else {
+            throw new Error(
+              `Remote send confirmation anchor failed (${remoteConfirmationAnchor?.reason || "unknown"}); local cache was not updated. Use --local-only only when you intentionally want an offline local note.`,
+            );
+          }
+        }
+      }
+      if (!localOnly) {
         for (let attempt = 0; attempt < 2; attempt += 1) {
           remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
             targetPath,
@@ -2469,13 +2604,23 @@ export function registerSessionCommand(program) {
         }
         if (!remoteSync?.synced) {
           throw new Error(
-            `Remote send failed (${remoteSync?.reason || "unknown"}); local cache was not updated.`,
+            `Remote send failed (${remoteSync?.reason || "unknown"}); local cache was not updated. Use --local-only only when you intentionally want an offline local note.`,
           );
+        } else {
+          remoteConfirmation = await confirmSessionEventVisible(normalizedSessionId, clientMessageId, {
+            targetPath,
+            anchorCursor: remoteConfirmationAnchor?.cursor,
+          });
+          if (!remoteConfirmation?.confirmed) {
+            throw new Error(
+              `Remote send was accepted but not visible in canonical session events (${remoteConfirmation?.reason || "not_visible"}); local cache was not updated.`,
+            );
+          }
         }
       }
       const persisted = await appendToStream(normalizedSessionId, event, {
         targetPath,
-        syncRemote: !localSession.materialized,
+        syncRemote: false,
       });
       const payload = {
         command: "session say",
@@ -2489,6 +2634,9 @@ export function registerSessionCommand(program) {
         identityWarning: identity.identityWarning || undefined,
         agentRegistration,
         remoteSync: remoteSync || undefined,
+        remoteConfirmationAnchor: remoteConfirmationAnchor || undefined,
+        remoteConfirmation: remoteConfirmation || undefined,
+        localOnly,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -2528,11 +2676,13 @@ export function registerSessionCommand(program) {
         targetPath,
       });
       const to = normalizeString(options.to);
+      const clientMessageId = `cli-agent-${randomUUID()}`;
       const eventPayload = {
         message: normalizedMessage,
         channel: "session",
         source: "agent",
         clientKind: "cli",
+        clientMessageId,
       };
       if (to) {
         eventPayload.to = to;
@@ -2544,7 +2694,6 @@ export function registerSessionCommand(program) {
         role: normalizeString(options.role) || "coder",
         clientKind: "cli",
       };
-      const clientMessageId = `cli-agent-${randomUUID()}`;
       const event = createAgentEvent({
         event: "session_message",
         agent,
@@ -2554,12 +2703,34 @@ export function registerSessionCommand(program) {
       event.eventId = clientMessageId;
       event.idempotencyToken = clientMessageId;
 
+      const remoteConfirmationAnchor = await readSessionConfirmationAnchor(normalizedSessionId, {
+        targetPath,
+      });
+      if (!remoteConfirmationAnchor?.ok) {
+        if (remoteConfirmationAnchor?.reason === "api_403") {
+          throw new Error(
+            `Agent post failed (api_403). Ensure this user has an active grant for '${agentId}'.`,
+          );
+        }
+        throw new Error(
+          `Agent post confirmation anchor failed (${remoteConfirmationAnchor?.reason || "unknown"}); local cache was not updated.`,
+        );
+      }
       const remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
         targetPath,
       });
       if (!remoteSync?.synced) {
         throw new Error(
           `Agent post failed (${remoteSync?.reason || "unknown"}). Ensure this user has an active grant for '${agentId}'.`,
+        );
+      }
+      const remoteConfirmation = await confirmSessionEventVisible(normalizedSessionId, clientMessageId, {
+        targetPath,
+        anchorCursor: remoteConfirmationAnchor?.cursor,
+      });
+      if (!remoteConfirmation?.confirmed) {
+        throw new Error(
+          `Agent post was accepted but not visible in canonical session events (${remoteConfirmation?.reason || "not_visible"}); local cache was not updated.`,
         );
       }
 
@@ -2576,6 +2747,8 @@ export function registerSessionCommand(program) {
         materializedLocalSession: localSession.materialized,
         refreshedLocalSession: Boolean(localSession.refreshed),
         remoteSync,
+        remoteConfirmationAnchor,
+        remoteConfirmation,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
