@@ -103,6 +103,48 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
+function formatSessionListText(value, { maxLength = 80 } = {}) {
+  const normalized = normalizeString(value)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/"/g, "'");
+  if (!normalized) {
+    return "";
+  }
+  const limit = Math.max(8, Number(maxLength) || 80);
+  return normalized.length > limit
+    ? `${normalized.slice(0, Math.max(0, limit - 3)).trimEnd()}...`
+    : normalized;
+}
+
+function sessionListCodebaseLabel(value) {
+  const normalized = formatSessionListText(value, { maxLength: 120 });
+  if (!normalized) {
+    return "";
+  }
+  const segments = normalized.split(/[\\/]+/).filter(Boolean);
+  if (segments.length <= 2) {
+    return formatSessionListText(normalized, { maxLength: 80 });
+  }
+  return formatSessionListText(`.../${segments.slice(-2).join("/")}`, {
+    maxLength: 80,
+  });
+}
+
+export function formatSessionListLine(item = {}) {
+  const sessionId = normalizeString(item.sessionId) || "unknown-session";
+  const status = normalizeString(item.status) || "unknown";
+  const archiveStatus = normalizeString(item.archiveStatus);
+  const archive = archiveStatus ? ` archive=${archiveStatus}` : "";
+  const title = formatSessionListText(item.title || item.summaryText, { maxLength: 72 });
+  const codebase = sessionListCodebaseLabel(item.codebasePath);
+  const titlePart = title ? ` title="${title}"` : "";
+  const codebasePart = codebase ? ` codebase="${codebase}"` : "";
+  const created = item.createdAt || "?";
+  const lastActivity = item.lastActivityAt ? ` last=${item.lastActivityAt}` : "";
+  return `${sessionId} status=${status}${archive}${titlePart}${codebasePart} created=${created}${lastActivity}`;
+}
+
 const SESSION_MESSAGE_ACTION_TYPES = new Set([
   "ack",
   "working_on",
@@ -4046,14 +4088,7 @@ export function registerSessionCommand(program) {
           return;
         }
         for (const item of trimmed) {
-          const archive = item.archiveStatus ? ` archive=${item.archiveStatus}` : "";
-          const created = item.createdAt || "?";
-          const lastActivity = item.lastActivityAt
-            ? ` last=${item.lastActivityAt}`
-            : "";
-          console.log(
-            `${item.sessionId} status=${item.status}${archive} created=${created}${lastActivity}`,
-          );
+          console.log(formatSessionListLine(item));
         }
         if (remote.count > trimmed.length || remote.hasMore) {
           console.log(
@@ -4101,10 +4136,9 @@ export function registerSessionCommand(program) {
         return;
       }
       for (const item of trimmed) {
-        const archive = item.archiveStatus ? ` archive=${item.archiveStatus}` : "";
-        console.log(
-          `${item.sessionId} status=${item.status}${archive} created=${item.createdAt} expires=${item.expiresAt}`,
-        );
+        const line = formatSessionListLine(item);
+        const expires = item.expiresAt ? ` expires=${item.expiresAt}` : "";
+        console.log(`${line}${expires}`);
       }
       if (sessions.length > trimmed.length) {
         console.log(
