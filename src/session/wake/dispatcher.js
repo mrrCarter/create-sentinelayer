@@ -138,7 +138,7 @@ export function createWakeDispatcher({
     const wrote = await toDeadLetter({ kind: "wake_failure", host, sessionId, seq, reason: result?.reason, attempts: n });
     // Advance past a poison event only if durably dead-lettered; else wedge loud.
     return finalize(
-      { ...result, ok: false, skipped: false, seq, retryable: false, attempts: n, deadLettered: wrote },
+      { ...result, ok: false, skipped: false, seq, retryable: !wrote, attempts: n, deadLettered: wrote },
       event,
       { advanceSeq: wrote, seq }
     );
@@ -157,9 +157,13 @@ export function createWakeDispatcher({
     });
     const results = [];
     for (const event of ordered) {
+      const seq = seqOf(event);
+      const beforeCursor = lastSeq;
       const r = await dispatchEvent(event, deps);
       results.push(r);
-      if (r.retryable) break; // preserve ordering; do not skip ahead of an unacked failure
+      const uncommittedSeq = seq !== null && seq > beforeCursor && lastSeq < seq;
+      const uncommittedUnsequencedFailure = seq === null && r?.ok === false && !r?.skipped;
+      if (r.retryable || uncommittedSeq || uncommittedUnsequencedFailure) break; // do not skip ahead of unacked work
     }
     return results;
   }

@@ -114,7 +114,7 @@ test("Unit wake dispatcher: exhausting retries WITHOUT a sink wedges loud (no ad
   const failing = fakeAdapter("claude", { throwAlways: true });
   const d = createWakeDispatcher({ registry: createWakeRegistry([failing]), resolveTarget: targetForMythos, maxAttempts: 1 });
   const out = await d.dispatchEvent(ev(6));
-  assert.equal(out.retryable, false);
+  assert.equal(out.retryable, true);
   assert.equal(out.deadLettered, false);
   assert.equal(d.getCursor(), 0, "no DLQ -> never silently advance past a lost wake");
 });
@@ -152,6 +152,42 @@ test("Unit wake dispatcher: batch stops at the first retryable failure to preser
   assert.equal(results.length, 1);
   assert.equal(results[0].seq, 1);
   assert.equal(results[0].retryable, true);
+  assert.equal(d.getCursor(), 0);
+});
+
+test("Unit wake dispatcher: batch stops if exhausted failure cannot be dead-lettered", async () => {
+  const claude = fakeAdapter("claude", { throwAlways: true });
+  const codex = fakeAdapter("codex");
+  const d = createWakeDispatcher({
+    registry: createWakeRegistry([claude, codex]),
+    resolveTarget: (event) => ({ host: event.payload.host, sessionId: "s", message: "m" }),
+    maxAttempts: 1,
+  });
+
+  const results = await d.dispatchBatch([
+    { sequenceId: 1, payload: { host: "claude" } },
+    { sequenceId: 2, payload: { host: "codex" } },
+  ]);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].deadLettered, false);
+  assert.equal(codex.calls.length, 0, "later seq must not wake after an uncommitted failure");
+  assert.equal(d.getCursor(), 0, "later seq must not advance cursor past the failed wake");
+});
+
+test("Unit wake dispatcher: batch stops if unknown host cannot be dead-lettered", async () => {
+  const codex = fakeAdapter("codex");
+  const d = createWakeDispatcher({
+    registry: createWakeRegistry([codex]),
+    resolveTarget: (event) => ({ host: event.payload.host, sessionId: "s", message: "m" }),
+  });
+
+  const results = await d.dispatchBatch([
+    { sequenceId: 1, payload: { host: "claude" } },
+    { sequenceId: 2, payload: { host: "codex" } },
+  ]);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].reason, "unknown_host");
+  assert.equal(codex.calls.length, 0, "later seq must not wake after an uncommitted config failure");
   assert.equal(d.getCursor(), 0);
 });
 
