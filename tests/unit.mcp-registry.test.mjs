@@ -62,7 +62,10 @@ test("Unit MCP registry: SentinelLayer session registry exposes inbox and write 
   assert.equal(tools.has("poll_inbox"), true);
   assert.equal(tools.has("send_message"), true);
   assert.equal(tools.has("attention_request"), true);
-  assert.equal(parsed.tools.find((tool) => tool.name === "poll_inbox").transport.type, "internal");
+  const pollInbox = parsed.tools.find((tool) => tool.name === "poll_inbox");
+  assert.equal(pollInbox.transport.type, "internal");
+  assert.equal(pollInbox.input_schema.properties.includeActions.type, "boolean");
+  assert.equal(pollInbox.input_schema.properties.actionLimit.maximum, 200);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "send_message").security.scopes, ["session:write"]);
 });
 

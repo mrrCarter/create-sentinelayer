@@ -1164,6 +1164,23 @@ test("Unit session read: --remote surfaces unacknowledged human asks from action
             count: 0,
             projection: {
               byTarget: [],
+              recentActivity: [
+                {
+                  id: "action-old-reply",
+                  sessionId: session.sessionId,
+                  targetSequenceId: 4,
+                  targetCursor: "1779364600000:00000004",
+                  targetActionId: null,
+                  actionType: "reply",
+                  actorKind: "human",
+                  actorId: "human-mrrcarter",
+                  actorRole: "human",
+                  note: "this reply is newest even though the parent is old",
+                  createdAt: "2026-05-21T12:21:00.000Z",
+                  activityType: "message_action",
+                  isHumanActivity: true,
+                },
+              ],
               unacknowledgedHumanMessages: [
                 {
                   event: "session_message",
@@ -1207,6 +1224,9 @@ test("Unit session read: --remote surfaces unacknowledged human asks from action
     assert.match(output, /Unacknowledged human asks: 1/);
     assert.match(output, /#9939 human-mrrcarter/);
     assert.match(output, /please check the message I just sent/);
+    assert.match(output, /Recent human activity: 1/);
+    assert.match(output, /reply #4 by human-mrrcarter/);
+    assert.match(output, /this reply is newest even though the parent is old/);
     assert.match(output, /latest agent update/);
   } finally {
     globalThis.fetch = originalFetch;

@@ -426,6 +426,8 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
             agentId: { type: "string" },
             cursor: { type: "string" },
             limit: { type: "integer", minimum: 1, maximum: 200 },
+            actionLimit: { type: "integer", minimum: 1, maximum: 200 },
+            includeActions: { type: "boolean" },
             includeSelf: { type: "boolean" },
             includeControlEvents: { type: "boolean" },
           },

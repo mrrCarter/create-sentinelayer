@@ -4,7 +4,7 @@ import process from "node:process";
 import { createAgentEvent } from "../events/schema.js";
 import { appendToStream } from "../session/stream.js";
 import { eventMatchesAgent } from "../session/listener.js";
-import { pollSessionEvents, syncSessionEventToApi } from "../session/sync.js";
+import { listSessionMessageActions, pollSessionEvents, syncSessionEventToApi } from "../session/sync.js";
 
 export const SESSION_MCP_SERVER_NAME = "sentinelayer-session-mcp";
 export const SESSION_MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -132,6 +132,55 @@ function summarizeSessionEvent(event = {}) {
   });
 }
 
+function messageActionActorId(action = {}) {
+  return normalizeAgentId(action.actorId || action.actor_id || action.agentId || action.agent_id, "unknown");
+}
+
+function messageActionCreatedMs(action = {}) {
+  const epoch = Date.parse(normalizeString(action.createdAt || action.created_at || action.ts || action.timestamp));
+  return Number.isFinite(epoch) ? epoch : 0;
+}
+
+function isHumanMessageAction(action = {}) {
+  if (action?.isHumanActivity === true) return true;
+  if (normalizeString(action.actorKind || action.actor_kind).toLowerCase() === "human") return true;
+  return messageActionActorId(action).startsWith("human-");
+}
+
+function summarizeMessageActionActivity(action = {}) {
+  return cleanObject({
+    id: normalizeString(action.id),
+    sessionId: normalizeString(action.sessionId || action.session_id),
+    targetSequenceId: normalizePositiveInteger(action.targetSequenceId ?? action.target_sequence_id, null),
+    targetCursor: normalizeString(action.targetCursor || action.target_cursor),
+    targetActionId: normalizeString(action.targetActionId || action.target_action_id),
+    actionType: normalizeString(action.actionType || action.action_type),
+    actorKind: normalizeString(action.actorKind || action.actor_kind),
+    actorId: normalizeString(action.actorId || action.actor_id),
+    actorRole: normalizeString(action.actorRole || action.actor_role),
+    note: truncateText(action.note || action.message || "").text,
+    createdAt: normalizeString(action.createdAt || action.created_at || action.ts || action.timestamp),
+    activityType: normalizeString(action.activityType || action.activity_type) || "message_action",
+    isHumanActivity: isHumanMessageAction(action),
+  });
+}
+
+function recentHumanActivityFromActions(remoteActions = null, { limit = DEFAULT_TOOL_LIMIT } = {}) {
+  const projected = remoteActions?.projection?.recentActivity;
+  const source = Array.isArray(projected) && projected.length > 0 ? projected : remoteActions?.actions;
+  return Array.isArray(source)
+    ? source
+        .filter((action) => action && typeof action === "object" && isHumanMessageAction(action))
+        .sort((left, right) => {
+          const timeDiff = messageActionCreatedMs(right) - messageActionCreatedMs(left);
+          if (timeDiff !== 0) return timeDiff;
+          return normalizeString(right.id).localeCompare(normalizeString(left.id));
+        })
+        .slice(0, normalizeLimit(limit))
+        .map((action) => summarizeMessageActionActivity(action))
+    : [];
+}
+
 function requireSessionId(input = {}) {
   const sessionId = normalizeString(input.sessionId || input.session_id || input.session);
   if (!sessionId) {
@@ -255,6 +304,7 @@ async function persistSessionEvent({
 export function createSessionMcpToolHandlers({
   targetPath = process.cwd(),
   pollSessionEventsFn = pollSessionEvents,
+  listSessionMessageActionsFn = listSessionMessageActions,
   syncSessionEventToApiFn = syncSessionEventToApi,
   appendToStreamFn = appendToStream,
   uuidFn = randomUUID,
@@ -266,6 +316,8 @@ export function createSessionMcpToolHandlers({
       const agentId = requireAgentId(input);
       const cursor = normalizeString(input.cursor || input.after || input.since) || null;
       const limit = normalizeLimit(input.limit);
+      const actionLimit = normalizeLimit(input.actionLimit || input.action_limit || limit);
+      const includeActions = input.includeActions !== false && input.include_actions !== false;
       const includeSelf = Boolean(input.includeSelf || input.include_self);
       const includeControlEvents = Boolean(input.includeControlEvents || input.include_control_events);
       const includeRaw = Boolean(input.includeRaw || input.include_raw);
@@ -294,6 +346,16 @@ export function createSessionMcpToolHandlers({
         if (!includeSelf && eventAgentId(event) === agentId) return false;
         return eventMatchesAgent(event, agentId);
       });
+      const actionResult = includeActions
+        ? await listSessionMessageActionsFn(sessionId, {
+            targetPath,
+            limit: actionLimit,
+            forceCircuitProbe: Boolean(input.forceCircuitProbe || input.force_circuit_probe),
+          })
+        : null;
+      const recentHumanActivity = actionResult?.ok
+        ? recentHumanActivityFromActions(actionResult, { limit: actionLimit })
+        : [];
 
       return {
         ok: true,
@@ -303,6 +365,15 @@ export function createSessionMcpToolHandlers({
         cursor: normalizeString(result.cursor) || cursor,
         eventCount: Array.isArray(result.events) ? result.events.length : 0,
         inboxCount: events.length,
+        recentHumanActivityCount: recentHumanActivity.length,
+        recentHumanActivity,
+        actionProjection: actionResult
+          ? {
+              ok: Boolean(actionResult.ok),
+              reason: actionResult.reason || "",
+              count: Array.isArray(actionResult.actions) ? actionResult.actions.length : 0,
+            }
+          : null,
         events: includeRaw ? events : events.map((event) => summarizeSessionEvent(event)),
       };
     },
@@ -382,6 +453,8 @@ export const SESSION_MCP_TOOLS = Object.freeze([
         agentId: { type: "string", minLength: 1 },
         cursor: { type: "string" },
         limit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
+        actionLimit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
+        includeActions: { type: "boolean", default: true },
         includeSelf: { type: "boolean", default: false },
         includeControlEvents: { type: "boolean", default: false },
         includeRaw: { type: "boolean", default: false },
