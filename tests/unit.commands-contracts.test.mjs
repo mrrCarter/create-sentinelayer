@@ -14,7 +14,11 @@ import { registerSwarmCommand } from "../src/commands/swarm.js";
 import { registerSpecCommand } from "../src/commands/spec.js";
 import { registerPromptCommand } from "../src/commands/prompt.js";
 import { registerAuditCommand } from "../src/commands/audit.js";
-import { formatCheckpointLine, registerSessionCommand } from "../src/commands/session.js";
+import {
+  formatCheckpointLine,
+  formatSessionListLine,
+  registerSessionCommand,
+} from "../src/commands/session.js";
 import { registerOmarGateCommand } from "../src/commands/omargate.js";
 
 function buildProgram(registerFn) {
@@ -416,6 +420,24 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(checkpointGenerate, "--operation-id <key>");
   assertCommandHasOption(checkpointGenerate, "--agent <id>");
   assertCommandHasOption(checkpointGenerate, "--json");
+});
+
+test("Unit command contracts: session list lines include bounded title and codebase context", () => {
+  const line = formatSessionListLine({
+    sessionId: "6d7ade0b-7d1e-47ba-8f18-bcf162be5672",
+    status: "active",
+    archiveStatus: "active",
+    title: "senti-dogfood-overhaul\nquoted \"room\"",
+    codebasePath: "C:\\Users\\carther\\Desktop\\Projects_2025\\PlexAura Inc\\SentinelLayer",
+    createdAt: "2026-05-03T07:36:08.905Z",
+    lastActivityAt: "2026-05-25T02:58:28.260Z",
+  });
+
+  assert.match(line, /^6d7ade0b-7d1e-47ba-8f18-bcf162be5672 status=active archive=active /);
+  assert.match(line, /title="senti-dogfood-overhaul quoted 'room'"/);
+  assert.match(line, /codebase=".*PlexAura Inc\/SentinelLayer"/);
+  assert.match(line, /created=2026-05-03T07:36:08\.905Z/);
+  assert.match(line, /last=2026-05-25T02:58:28\.260Z/);
 });
 
 test("Unit command contracts: checkpoint lines include deterministic completeness labels", () => {
