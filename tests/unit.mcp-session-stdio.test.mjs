@@ -39,6 +39,7 @@ test("Unit MCP session stdio: poll_inbox filters recipients and advances returne
       ],
       options,
     }),
+    listSessionMessageActionsFn: async () => ({ ok: true, actions: [], projection: { recentActivity: [] } }),
   });
 
   const result = await handlers.poll_inbox({
@@ -53,6 +54,63 @@ test("Unit MCP session stdio: poll_inbox filters recipients and advances returne
   assert.equal(result.eventCount, 4);
   assert.equal(result.inboxCount, 1);
   assert.equal(result.events[0].payload.message, "broadcast");
+});
+
+test("Unit MCP session stdio: poll_inbox surfaces recent human action activity", async () => {
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsFn: async (sessionId) => ({
+      ok: true,
+      sessionId,
+      cursor: "c9",
+      events: [],
+    }),
+    listSessionMessageActionsFn: async (sessionId, options) => ({
+      ok: true,
+      sessionId,
+      actions: [],
+      options,
+      projection: {
+        recentActivity: [
+          {
+            id: "reply-old-thread",
+            sessionId,
+            targetSequenceId: 4,
+            targetCursor: "1779364600000:00000004",
+            actionType: "reply",
+            actorKind: "human",
+            actorId: "human-mrrcarter",
+            actorRole: "human",
+            note: "new reply on an old parent",
+            createdAt: "2026-05-25T05:00:00.000Z",
+            activityType: "message_action",
+            isHumanActivity: true,
+          },
+          {
+            id: "codex-view",
+            sessionId,
+            targetSequenceId: 5,
+            actionType: "view",
+            actorKind: "agent",
+            actorId: "codex",
+            createdAt: "2026-05-25T05:01:00.000Z",
+          },
+        ],
+      },
+    }),
+  });
+
+  const result = await handlers.poll_inbox({
+    sessionId: "sess-1",
+    agentId: "codex",
+    actionLimit: 10,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recentHumanActivityCount, 1);
+  assert.equal(result.recentHumanActivity[0].targetSequenceId, 4);
+  assert.equal(result.recentHumanActivity[0].actionType, "reply");
+  assert.equal(result.recentHumanActivity[0].note, "new reply on an old parent");
 });
 
 test("Unit MCP session stdio: send_message persists remote first and caches local second", async () => {

@@ -325,6 +325,51 @@ function readProjectionUnacknowledgedHumanMessages(remoteActions = null) {
     : [];
 }
 
+function messageActionCreatedMs(action = {}) {
+  const epoch = Date.parse(normalizeString(action.createdAt || action.created_at || action.ts || action.timestamp));
+  return Number.isFinite(epoch) ? epoch : 0;
+}
+
+function messageActionActorId(action = {}) {
+  return normalizeString(action.actorId || action.actor_id || action.agentId || action.agent_id) || "unknown";
+}
+
+function isHumanMessageAction(action = {}) {
+  if (action?.isHumanActivity === true) return true;
+  if (normalizeString(action.actorKind || action.actor_kind).toLowerCase() === "human") return true;
+  return messageActionActorId(action).startsWith("human-");
+}
+
+function readProjectionRecentHumanActivity(remoteActions = null) {
+  const projected = remoteActions?.projection?.recentActivity;
+  const source = Array.isArray(projected) && projected.length > 0 ? projected : remoteActions?.actions;
+  return Array.isArray(source)
+    ? source
+        .filter((action) => action && typeof action === "object" && isHumanMessageAction(action))
+        .sort((left, right) => {
+          const timeDiff = messageActionCreatedMs(right) - messageActionCreatedMs(left);
+          if (timeDiff !== 0) return timeDiff;
+          return normalizeString(right.id).localeCompare(normalizeString(left.id));
+        })
+    : [];
+}
+
+function formatMessageActionActivityLine(action = {}) {
+  const actionType = normalizeString(action.actionType || action.action_type) || "action";
+  const targetSequence = Number(action.targetSequenceId ?? action.target_sequence_id ?? 0);
+  const targetActionId = normalizeString(action.targetActionId || action.target_action_id);
+  const target = targetActionId
+    ? `action:${targetActionId}`
+    : targetSequence > 0
+      ? `#${Math.floor(targetSequence)}`
+      : normalizeString(action.targetCursor || action.target_cursor) || "unknown-target";
+  const ts = normalizeString(action.createdAt || action.created_at || action.ts || action.timestamp);
+  const note = normalizeString(action.note || action.message || "");
+  const shortNote = note.length > 220 ? `${note.slice(0, 217)}...` : note;
+  const suffix = shortNote ? `: ${shortNote}` : "";
+  return `${actionType} ${target} by ${messageActionActorId(action)}${ts ? ` ${ts}` : ""}${suffix}`;
+}
+
 function humanAskSequence(event = {}) {
   const value = Number(event.sequenceId ?? event.sequence_id ?? event.sequence ?? 0);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
@@ -3350,6 +3395,9 @@ export function registerSessionCommand(program) {
         const unacknowledgedHumanMessages = remoteActions?.ok
           ? readProjectionUnacknowledgedHumanMessages(remoteActions)
           : [];
+        const recentHumanActivity = remoteActions?.ok
+          ? readProjectionRecentHumanActivity(remoteActions)
+          : [];
         const transcriptEvents = includeControlEvents
           ? displayEvents
           : displayEvents.filter((event) => !isSessionControlEvent(event));
@@ -3371,6 +3419,8 @@ export function registerSessionCommand(program) {
           hiddenControlEventCount,
           unacknowledgedHumanMessageCount: unacknowledgedHumanMessages.length,
           unacknowledgedHumanMessages,
+          recentHumanActivityCount: recentHumanActivity.length,
+          recentHumanActivity,
           displaySource: !options.remote
             ? "local"
             : remoteTail?.ok
@@ -3418,6 +3468,12 @@ export function registerSessionCommand(program) {
           console.log(pc.yellow(`Unacknowledged human asks: ${unacknowledgedHumanMessages.length}`));
           for (const event of unacknowledgedHumanMessages.slice(0, 3)) {
             console.log(pc.yellow(`- ${formatHumanAskLine(event)}`));
+          }
+        }
+        if (recentHumanActivity.length > 0) {
+          console.log(pc.yellow(`Recent human activity: ${recentHumanActivity.length}`));
+          for (const action of recentHumanActivity.slice(0, 3)) {
+            console.log(pc.yellow(`- ${formatMessageActionActivityLine(action)}`));
           }
         }
         for (const event of events) {
