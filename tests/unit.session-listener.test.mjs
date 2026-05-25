@@ -81,6 +81,76 @@ test("Unit session listener: emits bounded lifecycle snapshots", async () => {
   assert.equal(result.cursor, "c1");
 });
 
+test("Unit session listener: auto transport consumes stream before polling fallback", async () => {
+  const emitted = [];
+  const writes = [];
+  const pollCalls = [];
+  const streamCalls = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-first",
+    agentId: "codex-1",
+    transport: "auto",
+    replay: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _stream: async (sessionId, options) => {
+      streamCalls.push({ sessionId, since: options.since });
+      await options.onHeartbeat();
+      await options.onEvent(evt("c1", { to: "codex-1" }));
+      return { ok: true, reason: "", cursor: "c1", eventCount: 1, errorCount: 0 };
+    },
+    _poll: async (sessionId, options) => {
+      pollCalls.push({ sessionId, since: options.since });
+      return { ok: true, events: [], cursor: "c1" };
+    },
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(streamCalls, [{ sessionId: "sess-stream-first", since: null }]);
+  assert.deepEqual(pollCalls, [{ sessionId: "sess-stream-first", since: "c1" }]);
+  assert.deepEqual(emitted, ["c1"]);
+  assert.deepEqual(writes.map((write) => write.cursor), ["c1"]);
+  assert.equal(result.streamAttempted, true);
+  assert.equal(result.streamFallbackReason, "stream_closed");
+  assert.equal(result.transport, "poll");
+  assert.equal(result.cursor, "c1");
+});
+
+test("Unit session listener: auto transport falls back to durable polling when stream fails", async () => {
+  const emitted = [];
+  const errors = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-fallback",
+    agentId: "codex-1",
+    transport: "auto",
+    replay: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _stream: async () => ({ ok: false, reason: "api_404", cursor: null, eventCount: 0, errorCount: 0 }),
+    _poll: async (sessionId, options) => {
+      assert.equal(options.since, null);
+      return { ok: true, events: [evt("c1", { to: "codex-1" })], cursor: "c1" };
+    },
+    _sleep: async () => {},
+    onError: async (error) => errors.push(error.reason),
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(emitted, ["c1"]);
+  assert.equal(result.streamAttempted, true);
+  assert.equal(result.streamFallbackReason, "api_404");
+  assert.equal(result.cursor, "c1");
+});
+
 test("Unit session listener: advances across listener presence without emitting it", async () => {
   const emitted = [];
   const presenceEvent = evt(

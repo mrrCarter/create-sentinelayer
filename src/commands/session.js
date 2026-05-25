@@ -2763,6 +2763,7 @@ export function registerSessionCommand(program) {
     )
     .option("--display-name <name>", "Human-readable listener name for presence")
     .option("--emit <format>", "Output format: ndjson or text", "ndjson")
+    .option("--transport <mode>", "Listen transport: auto, stream, or poll (default auto)", "auto")
     .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--since <cursor>", "Override the persisted listen cursor")
@@ -2792,10 +2793,17 @@ export function registerSessionCommand(program) {
       if (!["ndjson", "text"].includes(emitFormat)) {
         throw new Error("--emit must be one of: ndjson, text.");
       }
+      const requestedTransport = normalizeString(options.transport).toLowerCase() || "auto";
+      if (!["auto", "stream", "poll"].includes(requestedTransport)) {
+        throw new Error("--transport must be one of: auto, stream, poll.");
+      }
       const maxPolls =
         options.maxPolls === undefined
           ? null
           : parsePositiveInteger(options.maxPolls, "max-polls", 1);
+      const listenTransport = requestedTransport === "auto" && maxPolls !== null
+        ? "poll"
+        : requestedTransport;
       const since = options.since === undefined ? undefined : String(options.since);
       if (options.fromNow && options.since !== undefined) {
         throw new Error("Use either --from-now or --since, not both.");
@@ -2811,7 +2819,7 @@ export function registerSessionCommand(program) {
       if (emitFormat === "text") {
         console.log(
           pc.gray(
-            `Listening to session ${normalizedSessionId} as ${agentId}; idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
+            `Listening to session ${normalizedSessionId} as ${agentId}; transport=${listenTransport} idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
           ),
         );
         if (!publishPresence) {
@@ -2839,6 +2847,7 @@ export function registerSessionCommand(program) {
           replay: Boolean(options.replay),
           fromNow: Boolean(options.fromNow),
           persistStartCursor: Boolean(options.fromNow),
+          transport: listenTransport,
           maxPolls,
           signal: ac.signal,
           onCatchup: async (catchup) => {
