@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { pollSessionEvents } from "./sync.js";
+import { pollSessionEvents, pollSessionEventsBefore } from "./sync.js";
 import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 
 const BROADCAST_RECIPIENTS = new Set([
@@ -199,6 +199,21 @@ function humanActivityTimestampMs(event = {}, nowMs = Date.now()) {
   return eventTimestampMs(event) || nowMs;
 }
 
+function eventTimeRange(events = []) {
+  let oldestMs = 0;
+  let newestMs = 0;
+  for (const event of Array.isArray(events) ? events : []) {
+    const timeMs = eventTimestampMs(event);
+    if (!timeMs) continue;
+    if (!oldestMs || timeMs < oldestMs) oldestMs = timeMs;
+    if (!newestMs || timeMs > newestMs) newestMs = timeMs;
+  }
+  return {
+    oldestEventAt: oldestMs ? new Date(oldestMs).toISOString() : null,
+    newestEventAt: newestMs ? new Date(newestMs).toISOString() : null,
+  };
+}
+
 function isRecentActivity(activityMs, nowMs, windowMs) {
   return (
     Number.isFinite(activityMs) &&
@@ -232,12 +247,16 @@ export async function listenSessionEvents({
   limit = 200,
   since = undefined,
   replay = false,
+  fromNow = false,
+  persistStartCursor = false,
   maxPolls = null,
   signal,
   onEvent = async () => {},
   onError = async () => {},
+  onCatchup = async () => {},
   onLifecycle = async () => {},
   _poll = pollSessionEvents,
+  _pollLatest = pollSessionEventsBefore,
   _readCursor = readSyncCursor,
   _writeCursor = writeSyncCursor,
   _sleep = defaultSleep,
@@ -249,17 +268,25 @@ export async function listenSessionEvents({
     throw new Error("session id is required.");
   }
 
+  if (fromNow && since !== undefined) {
+    throw new Error("Use either fromNow or since, not both.");
+  }
+
   const cursorSuffix = listenCursorSuffix(normalizedAgentId);
-  let cursor =
-    typeof since === "string" || since === null
-      ? normalizeString(since) || null
-      : await _readCursor(normalizedSessionId, { targetPath, suffix: cursorSuffix });
+  const explicitSince = typeof since === "string" || since === null;
+  let cursor = explicitSince
+    ? normalizeString(since) || null
+    : await _readCursor(normalizedSessionId, { targetPath, suffix: cursorSuffix });
+  let cursorSource = explicitSince ? "explicit" : cursor ? "stored" : "none";
   let primed = Boolean(cursor) || Boolean(replay);
   let pollCount = 0;
   let emitted = 0;
   let matched = 0;
   let persistedCursor = false;
   let lastReason = "";
+  let catchupNotified = false;
+  let catchupEventCount = 0;
+  let catchupMatchingEventCount = 0;
   const emittedKeys = new Set();
   const maxPollCount = normalizePositiveInteger(maxPolls, 0);
   const pollLimit = normalizePositiveInteger(limit, 200);
@@ -270,6 +297,27 @@ export async function listenSessionEvents({
   const activeWindowMs =
     Math.max(1, normalizePositiveInteger(activeWindowSeconds, DEFAULT_ACTIVE_WINDOW_SECONDS)) *
     1000;
+
+  if (fromNow) {
+    const latest = await _pollLatest(normalizedSessionId, {
+      targetPath,
+      limit: 1,
+    });
+    if (!latest?.ok) {
+      throw new Error(`Unable to start listener from the latest event (${latest?.reason || "unknown"}).`);
+    }
+    cursor = normalizeString(latest.cursor) || null;
+    cursorSource = cursor ? "from_now" : "none";
+    primed = Boolean(cursor) || Boolean(replay);
+    if (cursor && persistStartCursor) {
+      const writeResult = await _writeCursor(normalizedSessionId, cursor, {
+        targetPath,
+        suffix: cursorSuffix,
+      }).catch(() => null);
+      persistedCursor = Boolean(writeResult?.written) || persistedCursor;
+    }
+  }
+
   const startedAtMs = Number(_nowMs()) || Date.now();
   let lastHumanActivityMs = 0;
   let lastSleepMs = 0;
@@ -284,6 +332,7 @@ export async function listenSessionEvents({
     matched,
     emitted,
     persistedCursor,
+    cursorSource,
     idleIntervalSeconds: Math.round(idleSleepMs / 1000),
     activeIntervalSeconds: Math.round(activeSleepMs / 1000),
     activeWindowSeconds: Math.round(activeWindowMs / 1000),
@@ -294,6 +343,19 @@ export async function listenSessionEvents({
     reason: lastReason,
     ...extra,
   });
+
+  async function notifyCatchup(payload) {
+    try {
+      await onCatchup(payload);
+    } catch (error) {
+      await onError({
+        ok: false,
+        reason: "catchup_notice_failed",
+        cursor: payload.cursor || cursor || null,
+        detail: normalizeString(error?.message),
+      });
+    }
+  }
 
   async function notifyLifecycle(payload) {
     try {
@@ -339,16 +401,50 @@ export async function listenSessionEvents({
           });
         } else {
           const observedAtMs = Number(_nowMs()) || Date.now();
+          const visibleEvents = [];
+          let preStartEventCount = 0;
           for (const event of events) {
+            const timestampMs = eventTimestampMs(event);
+            if (!timestampMs || timestampMs < startedAtMs) {
+              preStartEventCount += 1;
+            }
             const activityMs = humanActivityTimestampMs(event, observedAtMs);
             if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
               lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
             }
-          }
-          const shouldEmitBatch = primed || Boolean(replay);
-          for (const event of events) {
             if (isListenerLifecycleEvent(event)) continue;
             if (!eventMatchesAgent(event, normalizedAgentId)) continue;
+            visibleEvents.push(event);
+          }
+          if (
+            !catchupNotified &&
+            cursorSource === "stored" &&
+            Boolean(cursor) &&
+            events.length > 0 &&
+            preStartEventCount > 0
+          ) {
+            catchupNotified = true;
+            catchupEventCount = events.length;
+            catchupMatchingEventCount = visibleEvents.length;
+            await notifyCatchup({
+              type: "catchup",
+              sessionId: normalizedSessionId,
+              agentId: normalizedAgentId,
+              cursor: cursor || null,
+              candidateCursor: nextCursor || null,
+              cursorSuffix,
+              cursorSource,
+              pollCount,
+              eventCount: events.length,
+              matchingEventCount: visibleEvents.length,
+              preStartEventCount,
+              limit: pollLimit,
+              replay: Boolean(replay),
+              ...eventTimeRange(events),
+            });
+          }
+          const shouldEmitBatch = primed || Boolean(replay);
+          for (const event of visibleEvents) {
             const key = eventIdentityKey(event);
             if (emittedKeys.has(key)) continue;
             matched += 1;
@@ -414,10 +510,14 @@ export async function listenSessionEvents({
     agentId: normalizedAgentId,
     cursor,
     cursorSuffix,
+    cursorSource,
     pollCount,
     matched,
     emitted,
     persistedCursor,
+    catchupNotified,
+    catchupEventCount,
+    catchupMatchingEventCount,
     idleIntervalSeconds: Math.round(idleSleepMs / 1000),
     activeIntervalSeconds: Math.round(activeSleepMs / 1000),
     activeWindowSeconds: Math.round(activeWindowMs / 1000),

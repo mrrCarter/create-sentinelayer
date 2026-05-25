@@ -1057,6 +1057,7 @@ async function publishListenerPresenceEvent({
       active: lifecycle.active,
       cursor: lifecycle.cursor || null,
       cursorSuffix: lifecycle.cursorSuffix,
+      cursorSource: lifecycle.cursorSource,
       pollCount: lifecycle.pollCount,
       matched: lifecycle.matched,
       emitted: lifecycle.emitted,
@@ -1075,6 +1076,64 @@ async function publishListenerPresenceEvent({
     }),
   });
   return syncSessionEventToApi(sessionId, event, { targetPath });
+}
+
+function formatListenerCatchupNotice(catchup = {}) {
+  const eventCount = Number(catchup.eventCount || 0);
+  const matchingEventCount = Number(catchup.matchingEventCount || 0);
+  const range = catchup.oldestEventAt && catchup.newestEventAt
+    ? ` (${catchup.oldestEventAt} -> ${catchup.newestEventAt})`
+    : "";
+  return [
+    `Listener catch-up from stored cursor ${catchup.cursor || "<none>"}:`,
+    `${eventCount} event${eventCount === 1 ? "" : "s"} in this page`,
+    `${matchingEventCount} addressed/broadcast to this agent${range}.`,
+    "Use --from-now only when you intentionally want to skip old backlog.",
+  ].join(" ");
+}
+
+function buildListenerCatchupEvent({
+  sessionId,
+  agentId,
+  agentModel = "cli",
+  displayName = "",
+  listenerId,
+  catchup = {},
+} = {}) {
+  const message = formatListenerCatchupNotice(catchup);
+  const pollCount = Number(catchup.pollCount || 0);
+  return createAgentEvent({
+    event: "session_listen_catchup",
+    sessionId,
+    agent: {
+      id: agentId,
+      model: normalizeString(agentModel) || "cli",
+      role: "listener",
+      displayName: normalizeString(displayName) || agentId,
+      clientKind: "cli",
+    },
+    eventId: `session-listener-${listenerId}-catchup-${pollCount}`,
+    idempotencyToken: `session-listener:${listenerId}:catchup:${pollCount}`,
+    payload: compactPayload({
+      source: "session_listen",
+      listenerId,
+      lifecycle: "catchup",
+      state: "catching_up",
+      message,
+      cursor: catchup.cursor || null,
+      candidateCursor: catchup.candidateCursor || null,
+      cursorSuffix: catchup.cursorSuffix,
+      cursorSource: catchup.cursorSource,
+      pollCount,
+      eventCount: Number(catchup.eventCount || 0),
+      matchingEventCount: Number(catchup.matchingEventCount || 0),
+      preStartEventCount: Number(catchup.preStartEventCount || 0),
+      limit: Number(catchup.limit || 0) || undefined,
+      replay: Boolean(catchup.replay),
+      oldestEventAt: catchup.oldestEventAt || null,
+      newestEventAt: catchup.newestEventAt || null,
+    }),
+  });
 }
 
 // Preserve the literal default identity for `session say`. This command is
@@ -2664,6 +2723,7 @@ export function registerSessionCommand(program) {
     .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--since <cursor>", "Override the persisted listen cursor")
+    .option("--from-now", "Advance the listen cursor to the latest durable event before polling")
     .option("--replay", "Emit matching historical events on the first poll")
     .option("--max-polls <n>", "Stop after N poll cycles (useful for tests and smoke checks)")
     .action(async (options) => {
@@ -2694,6 +2754,9 @@ export function registerSessionCommand(program) {
           ? null
           : parsePositiveInteger(options.maxPolls, "max-polls", 1);
       const since = options.since === undefined ? undefined : String(options.since);
+      if (options.fromNow && options.since !== undefined) {
+        throw new Error("Use either --from-now or --since, not both.");
+      }
       const ac = new AbortController();
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
@@ -2715,6 +2778,9 @@ export function registerSessionCommand(program) {
             ),
           );
         }
+        if (options.fromNow) {
+          console.log(pc.gray("Priming listener from the latest durable event; old backlog will be skipped."));
+        }
       }
 
       try {
@@ -2728,8 +2794,28 @@ export function registerSessionCommand(program) {
           limit,
           since,
           replay: Boolean(options.replay),
+          fromNow: Boolean(options.fromNow),
+          persistStartCursor: Boolean(options.fromNow),
           maxPolls,
           signal: ac.signal,
+          onCatchup: async (catchup) => {
+            if (emitFormat === "ndjson") {
+              console.log(
+                JSON.stringify(
+                  buildListenerCatchupEvent({
+                    sessionId: normalizedSessionId,
+                    agentId,
+                    agentModel,
+                    displayName,
+                    listenerId,
+                    catchup,
+                  }),
+                ),
+              );
+            } else {
+              console.log(pc.yellow(formatListenerCatchupNotice(catchup)));
+            }
+          },
           onEvent: async (event) => {
             if (emitFormat === "ndjson") {
               console.log(JSON.stringify(event));
