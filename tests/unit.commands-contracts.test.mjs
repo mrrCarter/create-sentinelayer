@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import { Command } from "commander";
 
@@ -21,6 +21,8 @@ import {
   registerSessionCommand,
 } from "../src/commands/session.js";
 import { registerOmarGateCommand } from "../src/commands/omargate.js";
+import { createSession } from "../src/session/store.js";
+import { readStream } from "../src/session/stream.js";
 
 function buildProgram(registerFn) {
   const program = new Command();
@@ -382,6 +384,19 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(read, "--no-actions");
   assertCommandHasOption(read, "--include-control-events");
 
+  const daemon = getCommandByPath(program, "session daemon");
+  assertCommandHasOption(daemon, "--session <id>");
+  assertCommandHasOption(daemon, "--tick-interval <seconds>");
+  assertCommandHasOption(daemon, "--recap-interval <seconds>");
+  assertCommandHasOption(daemon, "--recap-inactivity <seconds>");
+  assertCommandHasOption(daemon, "--recap-event-threshold <n>");
+  assertCommandHasOption(daemon, "--checkpoint-interval <seconds>");
+  assertCommandHasOption(daemon, "--checkpoint-event-threshold <n>");
+  assertCommandHasOption(daemon, "--no-checkpoints");
+  assertCommandHasOption(daemon, "--no-checkpoint-closeout");
+  assertCommandHasOption(daemon, "--once");
+  assertCommandHasOption(daemon, "--json");
+
   const search = getCommandByPath(program, "session search");
   assertCommandHasOption(search, "--before-sequence <n>");
   assertCommandHasOption(search, "--limit <n>");
@@ -472,6 +487,58 @@ test("Unit command contracts: wake daemon requires an explicit host resume sessi
     ["session", "wake", "daemon", "senti-session-1", "--agent", "claude-mythos", "--once"],
     /requires --resume-session/
   );
+});
+
+test("Unit command contracts: session daemon once runs a Senti tick and exits", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-daemon-cli-"));
+  const originalLog = console.log;
+  const output = [];
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({ name: "session-daemon-cli-fixture", version: "1.0.0" }, null, 2),
+      "utf-8",
+    );
+    await writeFile(path.join(tempRoot, "src", "index.js"), "export const ok = true;\n", "utf-8");
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const program = buildProgram(registerSessionCommand);
+    console.log = (line = "") => {
+      output.push(String(line));
+    };
+
+    await program.parseAsync(
+      [
+        "session",
+        "daemon",
+        session.sessionId,
+        "--path",
+        tempRoot,
+        "--once",
+        "--no-checkpoints",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    assert.equal(output.length, 1);
+    const payload = JSON.parse(output[0]);
+    assert.equal(payload.command, "session daemon");
+    assert.equal(payload.sessionId, session.sessionId);
+    assert.equal(payload.once, true);
+    assert.equal(payload.running, false);
+    assert.equal(payload.stopped.stopped, true);
+    assert.equal(payload.summary.checkpoint.reason, "disabled");
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.ok(
+      events.some((event) => event.event === "daemon_alert" && event.payload?.alert === "senti_online"),
+    );
+    assert.ok(events.some((event) => event.event === "agent_killed" && event.payload?.target === "senti"));
+  } finally {
+    console.log = originalLog;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("Unit command contracts: session list lines include bounded title and codebase context", () => {

@@ -538,6 +538,10 @@ function parsePositiveInteger(rawValue, field, fallbackValue) {
   return Math.floor(normalized);
 }
 
+function parsePositiveMillisecondsFromSeconds(rawValue, field, fallbackSeconds) {
+  return parsePositiveInteger(rawValue, field, fallbackSeconds) * 1000;
+}
+
 function normalizeComparablePath(value) {
   return String(value || "")
     .trim()
@@ -2970,6 +2974,162 @@ export function registerSessionCommand(program) {
         });
       } finally {
         process.removeListener("SIGINT", onSigint);
+      }
+    });
+
+  session
+    .command("daemon [sessionId]")
+    .description("Run the Senti session daemon: hydrate events, emit recaps, and generate checkpoints")
+    .option("--session <id>", "Session id to monitor")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--tick-interval <seconds>", "Seconds between health ticks (default 30)", "30")
+    .option("--stale-agent-seconds <seconds>", "Seconds before an inactive agent is flagged stale (default 90)", "90")
+    .option("--recap-interval <seconds>", "Seconds between periodic recaps when activity continues (default 300)", "300")
+    .option("--recap-inactivity <seconds>", "Seconds of inactivity before a recap closeout (default 600)", "600")
+    .option("--recap-event-threshold <n>", "Meaningful events required to force a recap before interval (default 5)", "5")
+    .option("--checkpoint-interval <seconds>", "Minimum seconds between checkpoint attempts (default 60)", "60")
+    .option("--checkpoint-min-events <n>", "Minimum events for generated checkpoint windows (default 20)", "20")
+    .option("--checkpoint-max-events <n>", "Maximum events per generated checkpoint window (default 80)", "80")
+    .option("--checkpoint-event-threshold <n>", "Meaningful events required to attempt a checkpoint (default 20)", "20")
+    .option("--checkpoint-idle <seconds>", "Seconds after latest source event before idle checkpoint attempt (default 600)", "600")
+    .option("--no-checkpoints", "Disable durable checkpoint generation")
+    .option("--no-checkpoint-closeout", "Skip the final closeout checkpoint when the daemon stops")
+    .option("--once", "Run one Senti health tick and exit (CI/dogfood smoke)")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const normalizedSessionId = normalizeString(sessionId) || resolveSessionIdOption(options);
+      if (!normalizedSessionId) {
+        throw new Error("session daemon requires a session id (positional or --session).");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const tickIntervalMs = parsePositiveMillisecondsFromSeconds(
+        options.tickInterval,
+        "tick-interval",
+        30,
+      );
+      const daemon = await startSenti(normalizedSessionId, {
+        targetPath,
+        autoStart: false,
+        tickIntervalMs,
+        staleAgentSeconds: parsePositiveInteger(options.staleAgentSeconds, "stale-agent-seconds", 90),
+        recapIntervalMs: parsePositiveMillisecondsFromSeconds(options.recapInterval, "recap-interval", 300),
+        recapInactivityMs: parsePositiveMillisecondsFromSeconds(options.recapInactivity, "recap-inactivity", 600),
+        recapActivityThreshold: parsePositiveInteger(options.recapEventThreshold, "recap-event-threshold", 5),
+        checkpointGenerator: options.checkpoints === false ? null : undefined,
+        checkpointIntervalMs: parsePositiveMillisecondsFromSeconds(options.checkpointInterval, "checkpoint-interval", 60),
+        checkpointMinEvents: parsePositiveInteger(options.checkpointMinEvents, "checkpoint-min-events", 20),
+        checkpointMaxEvents: parsePositiveInteger(options.checkpointMaxEvents, "checkpoint-max-events", 80),
+        checkpointEventThreshold: parsePositiveInteger(options.checkpointEventThreshold, "checkpoint-event-threshold", 20),
+        checkpointIdleMs: parsePositiveMillisecondsFromSeconds(options.checkpointIdle, "checkpoint-idle", 600),
+        checkpointCloseoutOnStop: options.once ? false : options.checkpointCloseout !== false,
+      });
+
+      const runTickAndBuildPayload = async () => {
+        const summary = await daemon.runTick(new Date().toISOString());
+        return {
+          command: "session daemon",
+          sessionId: normalizedSessionId,
+          targetPath,
+          once: Boolean(options.once),
+          running: daemon.isRunning(),
+          summary,
+          state: daemon.getState(),
+        };
+      };
+
+      if (options.once) {
+        const payload = await runTickAndBuildPayload();
+        const stopped = await daemon.stop("once_complete");
+        payload.running = false;
+        payload.stopped = {
+          stopped: Boolean(stopped?.stopped),
+          reason: stopped?.reason || "once_complete",
+          checkpointCloseout: stopped?.checkpointCloseout || null,
+        };
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        const checkpoint = payload.summary?.checkpoint || {};
+        const recap = payload.summary?.recap || {};
+        console.log(
+          pc.green(
+            `senti tick: relayed=${Number(payload.summary?.humanMessages?.relayed || 0)} recap=${recap.emitted ? recap.mode || "emitted" : recap.reason || "none"} checkpoint=${checkpoint.created ? checkpoint.checkpointId || "created" : checkpoint.reason || "none"}`,
+          ),
+        );
+        return;
+      }
+
+      const controller = new AbortController();
+      const stop = () => controller.abort();
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      const waitForNextTick = () =>
+        new Promise((resolve) => {
+          let timer = null;
+          const cleanup = () => {
+            controller.signal.removeEventListener("abort", onAbort);
+            if (timer) {
+              clearTimeout(timer);
+              timer = null;
+            }
+          };
+          const finish = () => {
+            cleanup();
+            resolve();
+          };
+          const onAbort = () => {
+            finish();
+          };
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+          timer = setTimeout(finish, tickIntervalMs);
+        });
+
+      try {
+        if (!emitJson) {
+          console.log(
+            pc.green(
+              `senti daemon: monitoring session ${normalizedSessionId}; tick=${Math.round(tickIntervalMs / 1000)}s. Ctrl-C to stop.`,
+            ),
+          );
+        }
+        let payload = await runTickAndBuildPayload();
+        if (emitJson) {
+          console.log(JSON.stringify(payload));
+        } else {
+          console.log(pc.gray(`tick ${payload.summary.generatedAt}: recap=${payload.summary.recap.reason || payload.summary.recap.mode || "ok"} checkpoint=${payload.summary.checkpoint.reason || payload.summary.checkpoint.checkpointId || "ok"}`));
+        }
+        while (!controller.signal.aborted) {
+          await waitForNextTick();
+          if (controller.signal.aborted) break;
+          payload = await runTickAndBuildPayload();
+          if (emitJson) {
+            console.log(JSON.stringify(payload));
+          } else {
+            console.log(pc.gray(`tick ${payload.summary.generatedAt}: recap=${payload.summary.recap.reason || payload.summary.recap.mode || "ok"} checkpoint=${payload.summary.checkpoint.reason || payload.summary.checkpoint.checkpointId || "ok"}`));
+          }
+        }
+      } finally {
+        process.removeListener("SIGINT", stop);
+        process.removeListener("SIGTERM", stop);
+        const stopped = await daemon.stop("signal");
+        if (emitJson) {
+          console.log(
+            JSON.stringify({
+              command: "session daemon",
+              sessionId: normalizedSessionId,
+              targetPath,
+              stopped: {
+                stopped: Boolean(stopped?.stopped),
+                reason: stopped?.reason || "signal",
+                checkpointCloseout: stopped?.checkpointCloseout || null,
+              },
+            }),
+          );
+        } else {
+          console.log(pc.gray(`senti daemon stopped (${stopped?.reason || "signal"}).`));
+        }
       }
     });
 
