@@ -14,6 +14,7 @@ import { registerSwarmCommand } from "../src/commands/swarm.js";
 import { registerSpecCommand } from "../src/commands/spec.js";
 import { registerPromptCommand } from "../src/commands/prompt.js";
 import { registerAuditCommand } from "../src/commands/audit.js";
+import { registerMcpCommand } from "../src/commands/mcp.js";
 import {
   formatCheckpointLine,
   formatSessionListLine,
@@ -297,6 +298,24 @@ test("Unit command contracts: omargate investor-dd exposes devTestBot controls",
   assertCommandHasOption(investorDd, "--no-devtestbot");
   assertCommandHasOption(investorDd, "--email-on-complete <addr>");
   assertCommandHasOption(investorDd, "--require-usage-ledger");
+});
+
+test("Unit command contracts: mcp exposes session registry and stdio server runtime", () => {
+  const program = buildProgram(registerMcpCommand);
+
+  getCommandByPath(program, "mcp registry init-session");
+  getCommandByPath(program, "mcp server run");
+
+  const initSession = getCommandByPath(program, "mcp registry init-session");
+  assertCommandHasOption(initSession, "--path <path>");
+  assertCommandHasOption(initSession, "--output-dir <path>");
+  assertCommandHasOption(initSession, "--force");
+  assertCommandHasOption(initSession, "--json");
+
+  const serverRun = getCommandByPath(program, "mcp server run");
+  assertCommandHasOption(serverRun, "--config <path>");
+  assertCommandHasOption(serverRun, "--path <path>");
+  assertCommandHasOption(serverRun, "--framing <mode>");
 });
 
 test("Unit command contracts: session exposes D2 ensure and resume controls", () => {
