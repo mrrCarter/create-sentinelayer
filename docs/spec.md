@@ -7,6 +7,7 @@ Deliver a deterministic, security-first CLI that scaffolds Sentinelayer artifact
 - Stable command surface for scaffold + local governance commands.
 - Reproducible output artifacts under configurable output roots.
 - CI workflows enforcing quality and Omar gate checks.
+- Senti session coordination commands and generated agent guidance, including quiet/background listener behavior and durable presence controls.
 
 ## Guardrails
 - Preserve backward-compatible binary aliases (`create-sentinelayer`, `sentinel`).

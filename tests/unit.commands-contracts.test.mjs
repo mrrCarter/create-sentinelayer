@@ -409,6 +409,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--active-interval <seconds>");
   assertCommandHasOption(listen, "--active-window <seconds>");
   assertCommandHasOption(listen, "--presence-interval <seconds>");
+  assertCommandHasOption(listen, "--no-presence");
   assertCommandHasOption(listen, "--model <model>");
   assertCommandHasOption(listen, "--display-name <name>");
   assertCommandHasOption(listen, "--emit <format>");

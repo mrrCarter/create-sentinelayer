@@ -816,6 +816,56 @@ test("Unit session listen: publishes bounded listener presence for real agent id
   }
 });
 
+test("Unit session listen: --no-presence keeps real agent listener remote-quiet", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-no-presence-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [], cursor: null }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+      "--no-presence",
+    ]);
+
+    assert.equal(output, "");
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 1);
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session listen: keeps placeholder listener presence local-only", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-cli-user-"));
