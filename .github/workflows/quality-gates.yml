@@ -226,6 +226,10 @@ jobs:
         shell: bash
         run: bash .github/scripts/verify-workflow-action-pins.sh
 
+      - name: Validate release provenance policy manifest
+        shell: bash
+        run: bash .github/scripts/validate-release-provenance-policy.sh
+
   lint:
     name: Lint
     runs-on: ubuntu-22.04
@@ -765,6 +769,8 @@ jobs:
           toolchain_fingerprint="$(printf '%s|%s|%s|%s' "${node_version}" "${npm_version}" "${RUNNER_OS}" "${RUNNER_ARCH}" | sha256sum | awk '{print $1}')"
           workflow_path=".github/workflows/quality-gates.yml"
           workflow_sha256="$(sha256sum "${workflow_path}" | awk '{print $1}')"
+          policy_path=".github/policies/release-provenance-policy.json"
+          policy_sha256="$(sha256sum "${policy_path}" | awk '{print $1}')"
           jq -n \
             --arg tarball "${tarball}" \
             --arg sha256 "${sha256}" \
@@ -783,6 +789,8 @@ jobs:
             --arg workflow_name "${GITHUB_WORKFLOW}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg release_provenance_policy_path "${policy_path}" \
+            --arg release_provenance_policy_sha256 "${policy_sha256}" \
             '{
               tarball: $tarball,
               sha256: $sha256,
@@ -800,7 +808,9 @@ jobs:
               workflow_ref: $workflow_ref,
               workflow_name: $workflow_name,
               run_id: $run_id,
-              run_attempt: $run_attempt
+              run_attempt: $run_attempt,
+              release_provenance_policy_path: $release_provenance_policy_path,
+              release_provenance_policy_sha256: $release_provenance_policy_sha256
             }' > quality-build-manifest.json
           cp quality-build-manifest.json quality-package-manifest.json
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
@@ -974,6 +984,12 @@ jobs:
     needs: [eval-gate-terminal, action-pin-policy, lint, syntax-matrix, test, security-scan, rollback-readiness-gate, unit-coverage, e2e-packaging, reproducible-build, build-package, deploy-readiness, promote-candidate, deploy-candidate]
     if: ${{ always() }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
       - name: Confirm all quality gates passed
         shell: bash
         env:
@@ -1083,6 +1099,8 @@ jobs:
             echo "::error::Missing security scan outputs for summary manifest."
             exit 1
           fi
+          policy_path=".github/policies/release-provenance-policy.json"
+          policy_sha256="$(sha256sum "${policy_path}" | awk '{print $1}')"
           jq -n \
             --arg commit_sha "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}" \
             --arg tarball "${TAR_BALL}" \
@@ -1095,6 +1113,8 @@ jobs:
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg release_provenance_policy_path "${policy_path}" \
+            --arg release_provenance_policy_sha256 "${policy_sha256}" \
             '{
               commit_sha: $commit_sha,
               tarball: $tarball,
@@ -1106,7 +1126,9 @@ jobs:
               deploy_result: $deploy_result,
               run_id: $run_id,
               run_attempt: $run_attempt,
-              workflow_ref: $workflow_ref
+              workflow_ref: $workflow_ref,
+              release_provenance_policy_path: $release_provenance_policy_path,
+              release_provenance_policy_sha256: $release_provenance_policy_sha256
             }' > quality-summary-manifest.json
       - name: Upload quality summary manifest
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0

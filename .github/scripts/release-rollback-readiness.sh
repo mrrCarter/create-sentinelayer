@@ -11,6 +11,7 @@ NPM_QUERY_MAX_ATTEMPTS="${NPM_QUERY_MAX_ATTEMPTS:-3}"
 NPM_SMOKE_TIMEOUT_SECONDS="${NPM_SMOKE_TIMEOUT_SECONDS:-90}"
 NPM_SMOKE_MAX_ATTEMPTS="${NPM_SMOKE_MAX_ATTEMPTS:-3}"
 NPM_RETRY_BACKOFF_BASE_SECONDS="${NPM_RETRY_BACKOFF_BASE_SECONDS:-2}"
+NPM_RETRY_MAX_BACKOFF_SECONDS="${NPM_RETRY_MAX_BACKOFF_SECONDS:-30}"
 
 resolve_timeout_bin() {
   if command -v timeout >/dev/null 2>&1; then
@@ -25,6 +26,42 @@ resolve_timeout_bin() {
 }
 
 TIMEOUT_BIN="$(resolve_timeout_bin)"
+
+retry_sleep_seconds() {
+  local attempt="$1"
+  local backoff_base="$2"
+  local max_backoff="${NPM_RETRY_MAX_BACKOFF_SECONDS}"
+  local delay_seconds
+  local exponent
+  local i
+  local jitter_ms
+
+  if ! [[ "${attempt}" =~ ^[0-9]+$ ]] || [ "${attempt}" -lt 1 ]; then
+    attempt=1
+  fi
+  if ! [[ "${backoff_base}" =~ ^[0-9]+$ ]] || [ "${backoff_base}" -lt 1 ]; then
+    backoff_base=2
+  fi
+  if ! [[ "${max_backoff}" =~ ^[0-9]+$ ]] || [ "${max_backoff}" -lt 1 ]; then
+    max_backoff=30
+  fi
+
+  delay_seconds="${backoff_base}"
+  exponent=$(( attempt - 1 ))
+  for i in $(seq 1 "${exponent}"); do
+    delay_seconds=$(( delay_seconds * 2 ))
+    if [ "${delay_seconds}" -ge "${max_backoff}" ]; then
+      delay_seconds="${max_backoff}"
+      break
+    fi
+  done
+  if [ "${delay_seconds}" -gt "${max_backoff}" ]; then
+    delay_seconds="${max_backoff}"
+  fi
+
+  jitter_ms=$(( RANDOM % 1000 ))
+  printf '%d.%03d' "${delay_seconds}" "${jitter_ms}"
+}
 
 npm_view_json() {
   local package_spec="$1"
@@ -63,12 +100,9 @@ npm_view_json() {
       exit_code=$?
     fi
     if [ "${attempt}" -lt "${max_attempts}" ]; then
-      # Exponential backoff with jitter (0-999ms). Linear + no jitter syncs
-      # concurrent incident responses into a thundering herd against npm.
-      base_ms=$(( attempt * backoff_base * 1000 ))
-      jitter_ms=$(( RANDOM % 1000 ))
-      sleep_ms=$(( base_ms + jitter_ms ))
-      sleep_seconds_formatted="$(printf '%d.%03d' "$(( sleep_ms / 1000 ))" "$(( sleep_ms % 1000 ))")"
+      # Exponential backoff with jitter. Linear + no jitter syncs concurrent
+      # incident responses into a thundering herd against npm.
+      sleep_seconds_formatted="$(retry_sleep_seconds "${attempt}" "${backoff_base}")"
       echo "::warning::npm query failed for ${label} (attempt ${attempt}/${max_attempts}, exit=${exit_code}); retrying in ${sleep_seconds_formatted}s (with jitter)."
       sleep "${sleep_seconds_formatted}"
     fi
@@ -176,8 +210,8 @@ run_rollback_smoke_check() {
       break
     fi
     if [ "${install_attempt}" -lt "${install_max_attempts}" ]; then
-      sleep_seconds=$(( install_attempt * backoff_base ))
-      echo "::warning::Rollback smoke npm install failed for ${PACKAGE_NAME}@${rollback_target} (attempt ${install_attempt}/${install_max_attempts}, exit=${install_exit_code}); retrying in ${sleep_seconds}s."
+      sleep_seconds="$(retry_sleep_seconds "${install_attempt}" "${backoff_base}")"
+      echo "::warning::Rollback smoke npm install failed for ${PACKAGE_NAME}@${rollback_target} (attempt ${install_attempt}/${install_max_attempts}, exit=${install_exit_code}); retrying in ${sleep_seconds}s (with jitter)."
       sleep "${sleep_seconds}"
     fi
   done
