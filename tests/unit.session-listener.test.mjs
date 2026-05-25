@@ -259,6 +259,81 @@ test("Unit session listener: stale cursors are not persisted or re-emitted", asy
   assert.equal(result.cursor, "1779369999000:000026d3");
 });
 
+test("Unit session listener: reports stored-cursor catch-up before replaying old backlog", async () => {
+  const catchups = [];
+  const emitted = [];
+  const oldEvent = evt(
+    "1779364717000:000026d4",
+    { to: "codex-1" },
+    { ts: "2026-05-24T20:00:00.000Z" },
+  );
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-catchup",
+    agentId: "codex-1",
+    maxPolls: 1,
+    _nowMs: () => Date.parse("2026-05-24T21:00:00.000Z"),
+    _readCursor: async () => "1779364717000:000026d3",
+    _writeCursor: async () => ({ written: true }),
+    _poll: async (sessionId, options) => {
+      assert.equal(options.since, "1779364717000:000026d3");
+      return { ok: true, events: [oldEvent], cursor: "1779364717000:000026d4" };
+    },
+    _sleep: async () => {},
+    onCatchup: async (catchup) => catchups.push(catchup),
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(emitted, ["1779364717000:000026d4"]);
+  assert.equal(catchups.length, 1);
+  assert.equal(catchups[0].cursorSource, "stored");
+  assert.equal(catchups[0].cursor, "1779364717000:000026d3");
+  assert.equal(catchups[0].candidateCursor, "1779364717000:000026d4");
+  assert.equal(catchups[0].eventCount, 1);
+  assert.equal(catchups[0].matchingEventCount, 1);
+  assert.equal(catchups[0].preStartEventCount, 1);
+  assert.equal(catchups[0].oldestEventAt, "2026-05-24T20:00:00.000Z");
+  assert.equal(result.catchupNotified, true);
+  assert.equal(result.catchupEventCount, 1);
+  assert.equal(result.catchupMatchingEventCount, 1);
+});
+
+test("Unit session listener: fromNow primes and persists the latest cursor before polling", async () => {
+  const writes = [];
+  const pollCalls = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-from-now",
+    agentId: "codex-1",
+    fromNow: true,
+    persistStartCursor: true,
+    maxPolls: 1,
+    _readCursor: async () => "1779364717000:000026d3",
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _pollLatest: async (sessionId, options) => {
+      assert.equal(sessionId, "sess-from-now");
+      assert.equal(options.limit, 1);
+      return { ok: true, events: [evt("1779369999000:000026d9")], cursor: "1779369999000:000026d9" };
+    },
+    _poll: async (sessionId, options) => {
+      pollCalls.push({ sessionId, options });
+      return { ok: true, events: [], cursor: "1779369999000:000026d9" };
+    },
+    _sleep: async () => {},
+  });
+
+  assert.deepEqual(writes.map((write) => write.cursor), ["1779369999000:000026d9"]);
+  assert.equal(writes[0].options.suffix, "listen-codex-1");
+  assert.deepEqual(pollCalls.map((call) => call.options.since), ["1779369999000:000026d9"]);
+  assert.equal(result.cursorSource, "from_now");
+  assert.equal(result.cursor, "1779369999000:000026d9");
+  assert.equal(result.persistedCursor, true);
+  assert.equal(result.catchupNotified, false);
+});
+
 test("Unit session listener: first poll emits matching events created after listener start", async () => {
   const emitted = [];
   const oldEvent = evt("old", { to: "codex-1" });

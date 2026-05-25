@@ -7,8 +7,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Command } from "commander";
 
 import { registerSessionCommand, resolveSessionSayAgentId } from "../src/commands/session.js";
+import { listenCursorSuffix } from "../src/session/listener.js";
 import { listAgents, registerAgent } from "../src/session/agent-registry.js";
 import { resetSessionSyncStateForTests } from "../src/session/sync.js";
+import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
 
@@ -497,6 +499,172 @@ test("Unit session listen: keeps placeholder listener presence local-only", asyn
 
     assert.equal(calls.filter((call) => call.options.method === "GET").length, 1);
     assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session listen: emits a bounded catch-up status before stored-cursor backlog", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-catchup-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    await writeSyncCursor("remote-listen-catchup", "1779364717000:000026d3", {
+      targetPath: tempRoot,
+      suffix: listenCursorSuffix("codex"),
+    });
+
+    const backlogEvent = {
+      stream: "sl_event",
+      event: "session_message",
+      agent: { id: "human-mrrcarter", model: "human" },
+      payload: {
+        message: "old ask that should be labeled as catch-up",
+        to: "codex",
+        source: "human",
+      },
+      sessionId: "remote-listen-catchup",
+      cursor: "1779364717000:000026d4",
+      ts: "2026-05-24T20:00:00.000Z",
+      timestamp: "2026-05-24T20:00:00.000Z",
+    };
+
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      assert.match(String(url), /\/api\/v1\/sessions\/remote-listen-catchup\/events\?after=1779364717000%3A000026d3&limit=200$/);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [backlogEvent], cursor: "1779364717000:000026d4" }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen-catchup",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+      "--emit",
+      "ndjson",
+    ]);
+
+    const lines = output.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].event, "session_listen_catchup");
+    assert.equal(lines[0].agent.id, "codex");
+    assert.equal(lines[0].payload.cursorSource, "stored");
+    assert.equal(lines[0].payload.eventCount, 1);
+    assert.equal(lines[0].payload.matchingEventCount, 1);
+    assert.match(lines[0].payload.message, /Listener catch-up from stored cursor/);
+    assert.equal(lines[1].event, "session_message");
+    assert.equal(lines[1].cursor, "1779364717000:000026d4");
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session listen: --from-now primes and persists latest cursor without replaying backlog", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-from-now-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    await writeSyncCursor("remote-listen-from-now", "1779364717000:000026d3", {
+      targetPath: tempRoot,
+      suffix: listenCursorSuffix("codex"),
+    });
+
+    const latestEvent = {
+      stream: "sl_event",
+      event: "session_message",
+      agent: { id: "claude-mythos" },
+      payload: { message: "latest already-seen tail" },
+      sessionId: "remote-listen-from-now",
+      cursor: "1779369999000:000026d9",
+      ts: "2026-05-24T21:00:00.000Z",
+      timestamp: "2026-05-24T21:00:00.000Z",
+    };
+
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      const rawUrl = String(url);
+      if (rawUrl.includes("/events/before?limit=1")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [latestEvent] }),
+        };
+      }
+      assert.match(rawUrl, /\/api\/v1\/sessions\/remote-listen-from-now\/events\?after=1779369999000%3A000026d9&limit=200$/);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [], cursor: "1779369999000:000026d9" }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen-from-now",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+      "--from-now",
+      "--emit",
+      "ndjson",
+    ]);
+
+    assert.equal(output, "");
+    assert.deepEqual(
+      calls.filter((call) => call.options.method === "GET").map((call) => String(call.url).includes("/events/before?limit=1")),
+      [true, false],
+    );
+    assert.equal(
+      await readSyncCursor("remote-listen-from-now", {
+        targetPath: tempRoot,
+        suffix: listenCursorSuffix("codex"),
+      }),
+      "1779369999000:000026d9",
+    );
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
