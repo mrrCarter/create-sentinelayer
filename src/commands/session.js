@@ -3067,7 +3067,7 @@ export function registerSessionCommand(program) {
     .option("--session <id>", "Senti session id")
     .option("--agent <id>", "Local agent this daemon wakes", process.env.SENTINELAYER_AGENT_ID || "")
     .option("--host <name>", "Host adapter to wake (claude|codex)", "claude")
-    .option("--resume-session <id>", "Host session id to resume on wake (default: the Senti session id)")
+    .option("--resume-session <id>", "Host session id to resume on wake")
     .option("--cwd <path>", "Workspace cwd", ".")
     .option("--idle-ms <n>", "Idle poll backoff in milliseconds", "1500")
     .option("--max-attempts <n>", "Wake retries before dead-letter", "5")
@@ -3084,7 +3084,10 @@ export function registerSessionCommand(program) {
         throw new Error("session wake daemon requires --agent (the local agent to wake).");
       }
       const host = normalizeString(options.host) || "claude";
-      const resumeSessionId = normalizeString(options.resumeSession) || normalizedSessionId;
+      const resumeSessionId = normalizeString(options.resumeSession);
+      if (!resumeSessionId) {
+        throw new Error("session wake daemon requires --resume-session (the host session id to resume).");
+      }
       const targetPath = path.resolve(process.cwd(), String(options.cwd || "."));
       const sentid = createSentid({
         sessionId: normalizedSessionId,

@@ -112,12 +112,12 @@ export function createWakePump({
   }
 
   /** Run the fetch loop until `signal` aborts. */
-  async function start({ signal, fetchCursor = null } = {}) {
+  async function start({ signal, fetchCursor = null, deps = {} } = {}) {
     let cursor = fetchCursor;
     while (!signal?.aborted) {
       let idle = true;
       try {
-        const tick = await tickOnce({ fetchCursor: cursor });
+        const tick = await tickOnce({ fetchCursor: cursor, deps });
         cursor = tick.fetchCursor;
         idle = tick.idle;
       } catch (error) {
