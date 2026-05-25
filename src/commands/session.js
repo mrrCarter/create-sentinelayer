@@ -89,6 +89,12 @@ import {
   generateSessionCheckpointBatch,
   listSessionCheckpoints,
 } from "../session/checkpoints.js";
+import {
+  buildCodexExecResumeInvocation,
+  buildCodexWakePrompt,
+  recordCodexWakeRegistration,
+  runCodexExecResume,
+} from "../session/wake/codex.js";
 import { authLoginHint, preferredCliCommand } from "../ui/command-hints.js";
 import { parseCsvTokens } from "./ai/shared.js";
 
@@ -2919,6 +2925,139 @@ export function registerSessionCommand(program) {
       } finally {
         process.removeListener("SIGINT", onSigint);
       }
+    });
+
+  const wake = session
+    .command("wake")
+    .description("Wake or register host CLI sessions for the Senti notification bus");
+
+  wake
+    .command("codex [sessionId]")
+    .description("Resume a Codex CLI session with a Senti wake prompt")
+    .option("--session <id>", "Senti session id")
+    .option("--codex-session <id>", "Codex rollout/session id to resume")
+    .option("--last", "Resume the most recent Codex session instead of a specific id")
+    .option("--message <text>", "Senti message body to inject into Codex")
+    .option("--message-file <path>", "Read Senti message body from a file")
+    .option("--from <id>", "Senti sender id", "senti")
+    .option("--sequence <n>", "Senti source sequence id")
+    .option("--cursor <cursor>", "Senti source cursor")
+    .option("--priority <level>", "Senti source priority")
+    .option("--dashboard-url <url>", "Dashboard URL for the Senti session")
+    .option("--cwd <path>", "Workspace cwd for codex exec", ".")
+    .option("--codex-bin <path>", "Codex executable", "codex")
+    .option("--model <model>", "Optional Codex model override")
+    .option("--codex-json", "Pass --json through to codex exec resume")
+    .option("--skip-git-repo-check", "Pass --skip-git-repo-check through to codex")
+    .option(
+      "--dangerously-bypass-approvals-and-sandbox",
+      "Pass Codex's dangerous no-approval/no-sandbox flag through to the resumed process",
+    )
+    .option("--timeout-ms <n>", "Wake process timeout in milliseconds", "600000")
+    .option("--dry-run", "Print the resume invocation without spawning Codex")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const normalizedSessionId = normalizeString(sessionId) || resolveSessionIdOption(options);
+      const targetPath = path.resolve(process.cwd(), String(options.cwd || "."));
+      if (options.message && options.messageFile) {
+        throw new Error("Use either --message or --message-file, not both.");
+      }
+      const message = options.messageFile
+        ? await fsp.readFile(path.resolve(process.cwd(), String(options.messageFile)), "utf-8")
+        : normalizeString(options.message);
+      const prompt = buildCodexWakePrompt({
+        sentiSessionId: normalizedSessionId,
+        message,
+        from: options.from,
+        sequenceId: parseOptionalPositiveInteger(options.sequence, "sequence"),
+        cursor: options.cursor,
+        priority: options.priority,
+        dashboardUrl: options.dashboardUrl,
+      });
+      const invocation = buildCodexExecResumeInvocation({
+        codexSessionId: options.codexSession,
+        prompt,
+        cwd: targetPath,
+        codexBin: options.codexBin,
+        useLast: Boolean(options.last),
+        json: Boolean(options.codexJson),
+        model: options.model,
+        skipGitRepoCheck: Boolean(options.skipGitRepoCheck),
+        dangerouslyBypassApprovalsAndSandbox: Boolean(options.dangerouslyBypassApprovalsAndSandbox),
+      });
+      const payload = {
+        command: "session wake codex",
+        sessionId: normalizedSessionId,
+        dryRun: Boolean(options.dryRun),
+        invocation,
+        prompt,
+      };
+      if (options.dryRun) {
+        if (emitJson) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        console.log(pc.green("Codex wake dry run"));
+        console.log(`${payload.invocation.command} ${payload.invocation.args.map((arg) => JSON.stringify(arg)).join(" ")}`);
+        return;
+      }
+      const result = await runCodexExecResume({
+        invocation,
+        timeoutMs: parsePositiveInteger(options.timeoutMs, "timeout-ms", 600000),
+      });
+      const output = {
+        ...payload,
+        result,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(output, null, 2));
+        return;
+      }
+      const color = result.exitCode === 0 ? pc.green : pc.yellow;
+      console.log(color(`Codex wake completed with exit code ${result.exitCode}.`));
+      if (normalizeString(result.stderr)) {
+        console.log(pc.gray(result.stderr.trim()));
+      }
+      if (result.exitCode !== 0) {
+        process.exitCode = Number(result.exitCode) || 1;
+      }
+    });
+
+  wake
+    .command("codex-notify [sessionId] [notificationJson]")
+    .description("Record Codex notify payloads so sentid can resume the correct Codex rollout")
+    .option("--session <id>", "Senti session id")
+    .option("--agent <id>", "Senti agent id", process.env.SENTINELAYER_AGENT_ID || "codex")
+    .option("--notification <json>", "Notification JSON override")
+    .option("--path <path>", "Workspace path for the Senti session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, notificationJson, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const normalizedSessionId = normalizeString(sessionId) || resolveSessionIdOption(options);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const payload = normalizeString(options.notification) || normalizeString(notificationJson);
+      const result = await recordCodexWakeRegistration({
+        sessionId: normalizedSessionId,
+        agentId: options.agent,
+        notificationPayload: payload,
+        targetPath,
+      });
+      const output = {
+        command: "session wake codex-notify",
+        sessionId: normalizedSessionId,
+        agentId: normalizeString(options.agent) || "codex",
+        ...result,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(output, null, 2));
+        return;
+      }
+      if (!result.registered) {
+        console.log(pc.gray(`Ignored Codex notification: ${result.reason}.`));
+        return;
+      }
+      console.log(pc.green(`Registered Codex wake target: ${result.registryPath}`));
     });
 
   const recap = session
