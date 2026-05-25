@@ -2986,6 +2986,10 @@ export function registerSessionCommand(program) {
       "60",
     )
     .option(
+      "--no-presence",
+      "Do not publish durable listener lifecycle/heartbeat events",
+    )
+    .option(
       "--model <model>",
       "Model/provider label to publish with listener presence",
       process.env.SENTINELAYER_AGENT_MODEL || process.env.SENTINELAYER_MODEL || "cli",
@@ -3041,7 +3045,8 @@ export function registerSessionCommand(program) {
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
       const listenerId = `listener-${agentId}-${randomUUID()}`;
-      const publishPresence = canPublishListenerPresence(agentId);
+      const durablePresenceEnabled = options.presence !== false;
+      const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
       let lastPresenceHeartbeatMs = 0;
 
@@ -3051,7 +3056,13 @@ export function registerSessionCommand(program) {
             `Listening to session ${normalizedSessionId} as ${agentId}; transport=${listenTransport} idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
           ),
         );
-        if (!publishPresence) {
+        if (!durablePresenceEnabled) {
+          console.log(
+            pc.gray(
+              "Remote listener presence is disabled; no durable lifecycle events will be written.",
+            ),
+          );
+        } else if (!publishPresence) {
           console.log(
             pc.gray(
               "Listener presence is local-only for placeholder, human, and guest agent ids.",
