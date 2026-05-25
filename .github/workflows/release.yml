@@ -5,33 +5,19 @@ name: Release
 # runs with `environment: package-release`. That environment is configured
 # in repo settings with required reviewers + restricted to protected refs.
 # Jobs with this gate (verifiable via `grep "environment: package-release"`):
-#   release-authorize, release-approval, publish-approval, publish-candidate,
-#   promote-latest. Jobs before those gates (policy-precheck, tag-preflight,
+#   release-authorize, release-approval, publish-approval, publish-candidate.
+#   Jobs before those gates (policy-precheck, tag-preflight,
 #   build-release-artifact, rollback-readiness-tag, pre-publish-gates) are
 #   read-only audits that cannot affect shipped artifacts.
 #
-# Trigger model: `push` on semver tag OR `workflow_dispatch` with explicit
-# tag input. Both flow through the same gated environments; workflow_dispatch
-# does NOT bypass the environment reviewer gate.
+# Trigger model: `push` on semver tag only. Manual workflow_dispatch is
+# intentionally disabled so release runs cannot bypass tag actor/signature
+# policy.
 
 on:
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. v0.5.0)"
-        required: true
-        type: string
-      canary:
-        description: "Publish to `next` first and require Promote Latest (legacy behavior). Default false → publish directly to `latest`."
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
 
 concurrency:
   group: release-state-prod
@@ -47,17 +33,20 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   GLOBAL_MAX_SECONDS: "3600"
-  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   policy-precheck:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate release provenance policy manifest
+        shell: bash
+        run: bash .github/scripts/validate-release-provenance-policy.sh
       - name: Enforce trusted tag trigger policy
         shell: bash
         env:
@@ -138,11 +127,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # Skip stale/policy checks for manual dispatch
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "::notice::Skipping stale-run and tag-policy checks for workflow_dispatch."
-            exit 0
-          fi
           max_minutes="$(echo "${STALE_RUN_MAX_MINUTES}" | xargs || true)"
           case "${max_minutes}" in ''|*[!0-9]*) echo "::error::Invalid RELEASE_STALE_RUN_MAX_MINUTES value: ${max_minutes}" ; exit 1 ;; esac
           run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
@@ -177,17 +161,6 @@ jobs:
           required_release_workflow_actor="$(jq -r '.required_release_workflow_actor' "${policy_file}")"
           export required_release_workflow_path required_release_workflow_name required_release_workflow_actor
           actor="${GITHUB_ACTOR}"
-          # Skip actor/signing checks for manual workflow_dispatch (explicit human action)
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "::notice::Skipping actor/signing policy checks for workflow_dispatch trigger (actor=${actor})."
-            {
-              echo "## Release Trigger Policy (workflow_dispatch bypass)"
-              echo "- actor: \`${actor}\`"
-              echo "- event: \`${EVENT_NAME}\`"
-              echo "- tag: \`${RELEASE_TAG}\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           if [ -z "$(echo "${allowed_csv}" | xargs || true)" ]; then
             echo "::error::allowed_tag_actors is empty in ${policy_file}."
             exit 1
@@ -329,7 +302,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   tag-preflight:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [policy-precheck]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -433,7 +406,7 @@ jobs:
           echo "- ref: \`${GITHUB_REF}\`" >> "$GITHUB_STEP_SUMMARY"
 
   release-authorize:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [tag-preflight]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -479,7 +452,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-release-artifact:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [release-authorize]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -665,6 +638,8 @@ jobs:
           fi
           SOURCE_WORKFLOW_REF="$(jq -r '.workflow_ref // empty' "${SOURCE_MANIFEST}")"
           SOURCE_WORKFLOW_NAME="$(jq -r '.workflow_name // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_WORKFLOW_PATH="$(jq -r '.workflow_path // empty' "${SOURCE_MANIFEST}")"
+          SOURCE_WORKFLOW_SHA256="$(jq -r '.workflow_sha256 // empty' "${SOURCE_MANIFEST}")"
           SOURCE_RUN_ID="$(jq -r '.run_id // empty' "${SOURCE_MANIFEST}")"
           if [ -z "${SOURCE_WORKFLOW_REF}" ] || ! echo "${SOURCE_WORKFLOW_REF}" | grep -Eq "^${GITHUB_REPOSITORY}/\\.github/workflows/attestations\\.yml@"; then
             echo "::error::Canonical artifact workflow_ref is missing or invalid: ${SOURCE_WORKFLOW_REF:-<none>}."
@@ -674,8 +649,24 @@ jobs:
             echo "::error::Canonical artifact workflow_name mismatch: ${SOURCE_WORKFLOW_NAME:-<none>}."
             exit 1
           fi
+          if [ "${SOURCE_WORKFLOW_PATH}" != ".github/workflows/attestations.yml" ]; then
+            echo "::error::Canonical artifact workflow_path mismatch: ${SOURCE_WORKFLOW_PATH:-<none>}."
+            exit 1
+          fi
+          expected_source_workflow_sha256="$(sha256sum .github/workflows/attestations.yml | awk '{print $1}')"
+          if [ -z "${SOURCE_WORKFLOW_SHA256}" ] || [ "${SOURCE_WORKFLOW_SHA256}" != "${expected_source_workflow_sha256}" ]; then
+            echo "::error::Canonical artifact workflow sha256 mismatch. expected=${expected_source_workflow_sha256} source=${SOURCE_WORKFLOW_SHA256:-<none>}."
+            exit 1
+          fi
           if [ -z "${SOURCE_RUN_ID}" ] || [ "${SOURCE_RUN_ID}" != "${{ steps.attested_source.outputs.run_id }}" ]; then
             echo "::error::Canonical artifact run_id mismatch. expected=${{ steps.attested_source.outputs.run_id }} source=${SOURCE_RUN_ID:-<none>}."
+            exit 1
+          fi
+          SOURCE_POLICY_SHA256="$(jq -r '.release_provenance_policy_sha256 // empty' "${SOURCE_MANIFEST}")"
+          POLICY_PATH=".github/policies/release-provenance-policy.json"
+          POLICY_SHA256="$(sha256sum "${POLICY_PATH}" | awk '{print $1}')"
+          if [ -z "${SOURCE_POLICY_SHA256}" ] || [ "${SOURCE_POLICY_SHA256}" != "${POLICY_SHA256}" ]; then
+            echo "::error::Canonical artifact release provenance policy mismatch. expected=${POLICY_SHA256} source=${SOURCE_POLICY_SHA256:-<none>}."
             exit 1
           fi
           SOURCE_SHA256="$(jq -r '.sha256 // empty' "${SOURCE_MANIFEST}")"
@@ -692,6 +683,8 @@ jobs:
           INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
           PACKAGE_NAME="$(node -p 'require("./package.json").name')"
           PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          RELEASE_WORKFLOW_PATH=".github/workflows/release.yml"
+          RELEASE_WORKFLOW_SHA256="$(sha256sum "${RELEASE_WORKFLOW_PATH}" | awk '{print $1}')"
           if [ -n "${SOURCE_SHA256}" ] && [ "${SOURCE_SHA256}" != "${SHA256}" ]; then
             echo "::error::Canonical artifact digest mismatch. source=${SOURCE_SHA256} actual=${SHA256}."
             exit 1
@@ -704,6 +697,15 @@ jobs:
             --arg package_version "${PACKAGE_VERSION}" \
             --arg commit_sha "${GITHUB_SHA}" \
             --arg workflow_ref "${GITHUB_WORKFLOW_REF}" \
+            --arg release_workflow_path "${RELEASE_WORKFLOW_PATH}" \
+            --arg release_workflow_sha256 "${RELEASE_WORKFLOW_SHA256}" \
+            --arg release_provenance_policy_path "${POLICY_PATH}" \
+            --arg release_provenance_policy_sha256 "${POLICY_SHA256}" \
+            --arg source_workflow_name "${SOURCE_WORKFLOW_NAME}" \
+            --arg source_workflow_ref "${SOURCE_WORKFLOW_REF}" \
+            --arg source_workflow_path "${SOURCE_WORKFLOW_PATH}" \
+            --arg source_run_id "${SOURCE_RUN_ID}" \
+            --arg source_commit_sha "${SOURCE_COMMIT_SHA}" \
             --arg attestation_run_id "${{ steps.attested_source.outputs.run_id }}" \
             '{
               package_name: $package_name,
@@ -713,6 +715,15 @@ jobs:
               integrity: $integrity,
               commit_sha: $commit_sha,
               workflow_ref: $workflow_ref,
+              release_workflow_path: $release_workflow_path,
+              release_workflow_sha256: $release_workflow_sha256,
+              release_provenance_policy_path: $release_provenance_policy_path,
+              release_provenance_policy_sha256: $release_provenance_policy_sha256,
+              source_workflow_name: $source_workflow_name,
+              source_workflow_ref: $source_workflow_ref,
+              source_workflow_path: $source_workflow_path,
+              source_run_id: $source_run_id,
+              source_commit_sha: $source_commit_sha,
               source_attestation_run_id: ($attestation_run_id | if length > 0 then . else null end)
             }' > release-artifact-manifest.json
           echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
@@ -773,7 +784,7 @@ jobs:
           retention-days: 7
 
   rollback-readiness-tag:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-release-artifact]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -799,7 +810,7 @@ jobs:
           RELEASE_VERSION="${release_version}" bash .github/scripts/release-rollback-readiness.sh
 
   release-approval:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-release-artifact, rollback-readiness-tag]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -811,7 +822,7 @@ jobs:
           echo "Release approval gate satisfied for ${GITHUB_REF}."
 
   pre-publish-gates:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-release-artifact, rollback-readiness-tag, release-approval]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -840,7 +851,7 @@ jobs:
 
   publish-approval:
     name: Publish Approval
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [pre-publish-gates]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -1016,6 +1027,13 @@ jobs:
           MANIFEST_PACKAGE_VERSION="$(jq -r '.package_version // empty' "${MANIFEST}")"
           MANIFEST_COMMIT_SHA="$(jq -r '.commit_sha // empty' "${MANIFEST}")"
           MANIFEST_SOURCE_ATTEST_RUN_ID="$(jq -r '.source_attestation_run_id // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_RUN_ID="$(jq -r '.source_run_id // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_COMMIT_SHA="$(jq -r '.source_commit_sha // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_WORKFLOW_NAME="$(jq -r '.source_workflow_name // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_WORKFLOW_REF="$(jq -r '.source_workflow_ref // empty' "${MANIFEST}")"
+          MANIFEST_SOURCE_WORKFLOW_PATH="$(jq -r '.source_workflow_path // empty' "${MANIFEST}")"
+          MANIFEST_RELEASE_WORKFLOW_SHA256="$(jq -r '.release_workflow_sha256 // empty' "${MANIFEST}")"
+          MANIFEST_POLICY_SHA256="$(jq -r '.release_provenance_policy_sha256 // empty' "${MANIFEST}")"
           ACTUAL_SHA256="$(sha256sum "${TARBALL}" | awk '{print $1}')"
           ACTUAL_INTEGRITY="sha512-$(openssl dgst -sha512 -binary "${TARBALL}" | openssl base64 -A)"
           if [ -z "${MANIFEST_TARBALL}" ]; then
@@ -1050,12 +1068,50 @@ jobs:
             echo "::error::Manifest missing source_attestation_run_id."
             exit 1
           fi
+          if [ -z "${MANIFEST_SOURCE_RUN_ID}" ] || [ "${MANIFEST_SOURCE_RUN_ID}" = "null" ]; then
+            echo "::error::Manifest missing source_run_id."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_SOURCE_COMMIT_SHA}" ] || [ "${MANIFEST_SOURCE_COMMIT_SHA}" = "null" ]; then
+            echo "::error::Manifest missing source_commit_sha."
+            exit 1
+          fi
+          if [ "${MANIFEST_SOURCE_WORKFLOW_NAME}" != "Build Attestation" ]; then
+            echo "::error::Manifest source_workflow_name mismatch: ${MANIFEST_SOURCE_WORKFLOW_NAME:-<none>}."
+            exit 1
+          fi
+          if [ "${MANIFEST_SOURCE_WORKFLOW_PATH}" != ".github/workflows/attestations.yml" ]; then
+            echo "::error::Manifest source_workflow_path mismatch: ${MANIFEST_SOURCE_WORKFLOW_PATH:-<none>}."
+            exit 1
+          fi
+          if [ -z "${MANIFEST_SOURCE_WORKFLOW_REF}" ] || ! echo "${MANIFEST_SOURCE_WORKFLOW_REF}" | grep -Eq "^${GITHUB_REPOSITORY}/\\.github/workflows/attestations\\.yml@"; then
+            echo "::error::Manifest source_workflow_ref is invalid: ${MANIFEST_SOURCE_WORKFLOW_REF:-<none>}."
+            exit 1
+          fi
+          expected_release_workflow_sha256="$(sha256sum .github/workflows/release.yml | awk '{print $1}')"
+          if [ -z "${MANIFEST_RELEASE_WORKFLOW_SHA256}" ] || [ "${MANIFEST_RELEASE_WORKFLOW_SHA256}" != "${expected_release_workflow_sha256}" ]; then
+            echo "::error::Manifest release_workflow_sha256 mismatch. expected=${expected_release_workflow_sha256} manifest=${MANIFEST_RELEASE_WORKFLOW_SHA256:-<none>}."
+            exit 1
+          fi
+          expected_policy_sha256="$(sha256sum .github/policies/release-provenance-policy.json | awk '{print $1}')"
+          if [ -z "${MANIFEST_POLICY_SHA256}" ] || [ "${MANIFEST_POLICY_SHA256}" != "${expected_policy_sha256}" ]; then
+            echo "::error::Manifest release provenance policy mismatch. expected=${expected_policy_sha256} manifest=${MANIFEST_POLICY_SHA256:-<none>}."
+            exit 1
+          fi
           if ! echo "${MANIFEST_SOURCE_ATTEST_RUN_ID}" | grep -Eq '^[0-9]+$'; then
             echo "::error::Manifest source_attestation_run_id is invalid: ${MANIFEST_SOURCE_ATTEST_RUN_ID}."
             exit 1
           fi
+          if [ "${MANIFEST_SOURCE_RUN_ID}" != "${MANIFEST_SOURCE_ATTEST_RUN_ID}" ]; then
+            echo "::error::Manifest source_run_id and source_attestation_run_id diverge."
+            exit 1
+          fi
           if [ "${MANIFEST_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
             echo "::error::Manifest commit mismatch. expected=${MANIFEST_COMMIT_SHA} actual=${GITHUB_SHA}"
+            exit 1
+          fi
+          if [ "${MANIFEST_SOURCE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Manifest source commit mismatch. expected=${GITHUB_SHA} actual=${MANIFEST_SOURCE_COMMIT_SHA}"
             exit 1
           fi
           if [ "${EXPECTED_SHA256}" != "${ACTUAL_SHA256}" ]; then
@@ -1256,12 +1312,11 @@ jobs:
           echo "ISOLATED_NPM=${HOME}/.npm-isolated/node_modules/.bin/npm" >> "$GITHUB_ENV"
           "${HOME}/.npm-isolated/node_modules/.bin/npm" --version
 
-      - name: Publish release to npm (latest by default, next when canary=true)
+      - name: Publish release to npm (latest)
         if: steps.publish_guard.outputs.already_published != 'true'
         env:
           PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
           PACKAGE_VERSION: ${{ steps.publish_guard.outputs.package_version }}
-          RELEASE_CANARY_MODE: ${{ github.event.inputs.canary || 'false' }}
         run: |
           set -euo pipefail
           test -f "${VERIFIED_TARBALL}"
@@ -1274,15 +1329,9 @@ jobs:
           printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "${HOME}/.npmrc"
           echo "Using npm at: ${ISOLATED_NPM}"
           "${ISOLATED_NPM}" --version
-          # Default: publish directly to `latest` so OIDC trusted publishing
-          # carries the whole flow with no separate Promote Latest step
-          # (which currently needs a classic NPM_TOKEN that lives outside
-          # OIDC). Pass `canary=true` on workflow_dispatch to opt back into
-          # the canary→soak→promote pattern.
+          # Publish directly to `latest` so OIDC trusted publishing carries
+          # the whole flow without a classic NPM_TOKEN promotion step.
           PUBLISH_TAG="latest"
-          if [ "${RELEASE_CANARY_MODE:-false}" = "true" ]; then
-            PUBLISH_TAG="next"
-          fi
           echo "Publishing to dist-tag: ${PUBLISH_TAG}"
           "${ISOLATED_NPM}" publish "./${VERIFIED_TARBALL}" --provenance --access public --tag "${PUBLISH_TAG}"
           # Registry replication is eventually-consistent; the read-back
@@ -1315,7 +1364,7 @@ jobs:
             fi
           fi
 
-      - name: Validate canary install from npm registry
+      - name: Validate published install from npm registry
         if: steps.publish_guard.outputs.already_published != 'true'
         env:
           PACKAGE_NAME: ${{ steps.publish_guard.outputs.package_name }}
@@ -1324,10 +1373,10 @@ jobs:
           set -euo pipefail
           prefix_dir="$(mktemp -d)"
           npm install --prefix "${prefix_dir}" --ignore-scripts "${PACKAGE_NAME}@${PACKAGE_VERSION}"
-          "${prefix_dir}/node_modules/.bin/sentinelayer-cli" --version > /tmp/canary-version.out
-          canary_version="$(tr -d '\r\n ' < /tmp/canary-version.out | sed 's/^v//')"
-          if [ "${canary_version}" != "${PACKAGE_VERSION}" ]; then
-            echo "::error::Canary runtime validation failed. CLI version=${canary_version:-<none>} expected=${PACKAGE_VERSION}."
+          "${prefix_dir}/node_modules/.bin/sentinelayer-cli" --version > /tmp/published-version.out
+          published_version="$(tr -d '\r\n ' < /tmp/published-version.out | sed 's/^v//')"
+          if [ "${published_version}" != "${PACKAGE_VERSION}" ]; then
+            echo "::error::Published runtime validation failed. CLI version=${published_version:-<none>} expected=${PACKAGE_VERSION}."
             exit 1
           fi
 
@@ -1340,10 +1389,10 @@ jobs:
           set -euo pipefail
           smoke_dir="$(mktemp -d)"
           npm install --prefix "${smoke_dir}" --ignore-scripts "${PACKAGE_NAME}@${PACKAGE_VERSION}"
-          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" --help > /tmp/canary-help.out
-          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" auth --help > /tmp/canary-auth-help.out
-          if ! grep -qi "sentinelayer" /tmp/canary-help.out; then
-            echo "::error::Canary smoke check failed: help output missing sentinelayer signature."
+          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" --help > /tmp/published-help.out
+          "${smoke_dir}/node_modules/.bin/sentinelayer-cli" auth --help > /tmp/published-auth-help.out
+          if ! grep -qi "sentinelayer" /tmp/published-help.out; then
+            echo "::error::Published smoke check failed: help output missing sentinelayer signature."
             exit 1
           fi
 
@@ -1353,92 +1402,19 @@ jobs:
         run: |
           set -euo pipefail
           npm config delete //registry.npmjs.org/:_authToken || true
-          residual_token="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
-          if [ -n "${residual_token}" ] && [ "${residual_token}" != "undefined" ] && [ "${residual_token}" != "null" ]; then
+          residual_auth_value="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
+          if [ -n "${residual_auth_value}" ] && [ "${residual_auth_value}" != "undefined" ] && [ "${residual_auth_value}" != "null" ]; then
             echo "::error::Residual npm auth token detected after publish finalization."
             exit 1
           fi
           echo "No residual npm auth token remains after publish."
 
-  promote-latest:
-    name: Promote Latest
+  rollback-readiness:
     needs: [publish-candidate]
     if: >-
       ${{
         startsWith(github.ref, 'refs/tags/v') &&
-        needs.publish-candidate.result == 'success' &&
-        needs.publish-candidate.outputs.already_published != 'true' &&
-        github.event.inputs.canary == 'true'
-      }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-    environment: package-release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      # Checkout is required for setup-node's `cache: npm` to locate
-      # package-lock.json. Without it the step fails before we can reach
-      # the dist-tag promotion. The job only needs read-only access to
-      # the tagged tree, so a shallow fetch at the target tag is enough.
-      - name: Checkout release tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ github.ref }}
-          fetch-depth: 1
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-          cache: npm
-
-      - name: Enforce soak window before promotion
-        shell: bash
-        env:
-          NPM_PROMOTION_SOAK_SECONDS: ${{ vars.NPM_PROMOTION_SOAK_SECONDS || '300' }}
-        run: |
-          set -euo pipefail
-          soak_seconds="$(echo "${NPM_PROMOTION_SOAK_SECONDS}" | xargs || true)"
-          case "${soak_seconds}" in ''|*[!0-9]*) echo "::error::Invalid NPM_PROMOTION_SOAK_SECONDS value: ${soak_seconds}" ; exit 1 ;; esac
-          if [ "${soak_seconds}" -gt 0 ]; then
-            echo "Waiting ${soak_seconds}s before promoting to latest."
-            sleep "${soak_seconds}"
-          fi
-
-      - name: Promote canary to stable (`latest`) dist-tag
-        env:
-          PACKAGE_NAME: ${{ needs.publish-candidate.outputs.package_name }}
-          PACKAGE_VERSION: ${{ needs.publish-candidate.outputs.package_version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PACKAGE_NAME}" ] || [ -z "${PACKAGE_VERSION}" ]; then
-            echo "::error::Missing package identity from publish-candidate outputs."
-            exit 1
-          fi
-          npm dist-tag add "${PACKAGE_NAME}@${PACKAGE_VERSION}" latest
-          latest_tag="$(npm view "${PACKAGE_NAME}" dist-tags.latest --json 2>/tmp/npm-latest.err || true)"
-          latest_tag="$(echo "${latest_tag}" | tr -d '\r\n\"[:space:]' | xargs || true)"
-          if [ "${latest_tag}" != "${PACKAGE_VERSION}" ]; then
-            echo "::error::Stable promotion failed. dist-tags.latest=${latest_tag:-<none>} expected=${PACKAGE_VERSION}."
-            cat /tmp/npm-latest.err || true
-            exit 1
-          fi
-          {
-            echo "### Progressive rollout"
-            echo "- canary_tag: \`next\`"
-            echo "- stable_tag: \`latest\`"
-            echo "- promoted_version: \`${PACKAGE_VERSION}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  rollback-readiness:
-    needs: [publish-candidate, promote-latest]
-    if: >-
-      ${{
-        startsWith(github.ref, 'refs/tags/v') &&
-        needs.publish-candidate.result == 'success' &&
-        (needs.promote-latest.result == 'success' || needs.promote-latest.result == 'skipped')
+        needs.publish-candidate.result == 'success'
       }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15

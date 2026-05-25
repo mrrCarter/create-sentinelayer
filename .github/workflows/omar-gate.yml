@@ -164,7 +164,8 @@ jobs:
         run: |
           set -euo pipefail
           mode="static-secrets"
-          resolved_token="${SENTINELAYER_TOKEN}"
+          credential_env_name="SENTINELAYER_TOKEN"
+          resolved_credential="${!credential_env_name}"
           exchange_url="$(echo "${OMAR_TOKEN_EXCHANGE_URL}" | xargs || true)"
           exchange_audience="$(echo "${OMAR_TOKEN_EXCHANGE_AUDIENCE}" | xargs || true)"
           event_name="${GITHUB_EVENT_NAME}"
@@ -174,14 +175,11 @@ jobs:
           require_response_binding_on_protected="$(echo "${OMAR_REQUIRE_RESPONSE_BINDING_ON_PROTECTED_REF}" | tr '[:upper:]' '[:lower:]' | xargs || true)"
           pinned_pubkey="$(echo "${OMAR_TOKEN_EXCHANGE_PINNED_PUBKEY_SHA256}" | xargs || true)"
           if [ -z "${exchange_url}" ] || [ -z "${exchange_audience}" ]; then
-            # Protected refs: require OIDC exchange UNLESS OMAR_ALLOW_STATIC_
-            # SECRETS=true is explicitly set. The prior strict version (reject
-            # static secrets entirely on protected refs) broke main push
-            # pipelines for repos that don't have Sentinelayer's OIDC exchange
-            # infra provisioned yet. Promotion to strict OIDC-only should
-            # happen once OIDC URL is configured.
-            if [ "${ref_protected}" = "true" ] && [ "${allow_static}" != "true" ]; then
-              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE (or set OMAR_ALLOW_STATIC_SECRETS=true as emergency static fallback)."
+            # Protected refs must use the OIDC token exchange. Static secrets
+            # are only allowed as an explicit emergency fallback on
+            # non-protected refs.
+            if [ "${ref_protected}" = "true" ]; then
+              echo "::error::OIDC exchange is required for Omar Gate on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE; static secret fallback is limited to non-protected refs."
               exit 1
             fi
             if [ "${allow_static}" != "true" ]; then
@@ -294,7 +292,7 @@ jobs:
               fi
               exit 1
             fi
-            resolved_token="$(jq -r '.sentinelayer_token' "${exchange_body}")"
+            resolved_credential="$(jq -r '.sentinelayer_token' "${exchange_body}")"
             exchange_issuer="$(jq -r '.issuer' "${exchange_body}")"
             exchange_audience_resp="$(jq -r '.audience' "${exchange_body}")"
             exchange_expires_at="$(jq -r '.expires_at' "${exchange_body}")"
@@ -363,8 +361,8 @@ jobs:
             echo "::error::Static-secret Omar mode is blocked on protected refs. Configure OMAR_TOKEN_EXCHANGE_URL and OMAR_TOKEN_EXCHANGE_AUDIENCE."
             exit 1
           fi
-          echo "::add-mask::${resolved_token}"
-          echo "sentinelayer_token=${resolved_token}" >> "${GITHUB_OUTPUT}"
+          echo "::add-mask::${resolved_credential}"
+          echo "sentinelayer_token=${resolved_credential}" >> "${GITHUB_OUTPUT}"
           echo "credential_mode=${mode}" >> "${GITHUB_OUTPUT}"
           {
             echo "## Omar Credential Mode"
