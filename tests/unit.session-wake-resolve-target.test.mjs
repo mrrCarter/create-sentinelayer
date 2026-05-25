@@ -38,6 +38,8 @@ test("Unit resolve-target: self-authored events never self-wake", () => {
   assert.equal(r(msg({ agentId: "claude-mythos" })), null);
   assert.equal(r(msg({ agentId: { id: "claude-mythos" } })), null);
   assert.equal(r({ event: "session_message", agent_id: "claude-mythos", payload: { message: "snake self" } }), null);
+  // Loop-guard must normalize a non-canonical author id (@-prefix / casing).
+  assert.equal(r(msg({ agentId: "@Claude-Mythos" })), null);
 });
 
 test("Unit resolve-target: message directed at a different agent is unroutable (null)", () => {
