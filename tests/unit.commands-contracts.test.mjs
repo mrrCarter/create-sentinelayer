@@ -418,6 +418,13 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(wakeCodexNotify, "--notification <json>");
   assertCommandHasOption(wakeCodexNotify, "--path <path>");
 
+  const wakeDaemon = getCommandByPath(program, "session wake daemon");
+  assertCommandHasOption(wakeDaemon, "--agent <id>");
+  assertCommandHasOption(wakeDaemon, "--host <name>");
+  assertCommandHasOption(wakeDaemon, "--resume-session <id>");
+  assertCommandHasOption(wakeDaemon, "--once");
+  assertCommandHasOption(wakeDaemon, "--json");
+
   assertCommandHasOption(say, "--agent <id>");
   assertCommandHasOption(say, "--model <model>");
   assertCommandHasOption(say, "--display-name <name>");

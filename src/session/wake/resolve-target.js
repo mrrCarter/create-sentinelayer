@@ -129,9 +129,11 @@ export function createResolveTarget({
     const type = eventTypeOf(event);
     if (!type || !wakeEventTypes.has(type)) return null;
 
-    // No self-wake: never wake the agent on its own message.
+    // No self-wake: never wake the agent on its own message. Normalize both
+    // sides (handles @-prefix / casing / punctuation) so the loop-guard can't
+    // be slipped by a non-canonical author id.
     const author = agentIdOf(event);
-    if (author && author.toLowerCase() === selfLower) return null;
+    if (author && normalizeComparableId(author) === selfLower) return null;
 
     // Routing: directed-to-me / broadcast / untargeted-room wakes us; a message
     // aimed at a different specific agent is intentionally unroutable.

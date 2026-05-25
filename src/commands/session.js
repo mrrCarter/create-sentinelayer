@@ -95,6 +95,7 @@ import {
   recordCodexWakeRegistration,
   runCodexExecResume,
 } from "../session/wake/codex.js";
+import createSentid from "../session/wake/sentid.js";
 import { authLoginHint, preferredCliCommand } from "../ui/command-hints.js";
 import { parseCsvTokens } from "./ai/shared.js";
 
@@ -3058,6 +3059,76 @@ export function registerSessionCommand(program) {
         return;
       }
       console.log(pc.green(`Registered Codex wake target: ${result.registryPath}`));
+    });
+
+  wake
+    .command("daemon [sessionId]")
+    .description("Run the sentid wake daemon: watch the session stream and wake this agent on new messages")
+    .option("--session <id>", "Senti session id")
+    .option("--agent <id>", "Local agent this daemon wakes", process.env.SENTINELAYER_AGENT_ID || "")
+    .option("--host <name>", "Host adapter to wake (claude|codex)", "claude")
+    .option("--resume-session <id>", "Host session id to resume on wake (default: the Senti session id)")
+    .option("--cwd <path>", "Workspace cwd", ".")
+    .option("--idle-ms <n>", "Idle poll backoff in milliseconds", "1500")
+    .option("--max-attempts <n>", "Wake retries before dead-letter", "5")
+    .option("--once", "Run a single fetch/dispatch tick and exit (dogfood/CI)")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const normalizedSessionId = normalizeString(sessionId) || resolveSessionIdOption(options);
+      if (!normalizedSessionId) {
+        throw new Error("session wake daemon requires a Senti session id (positional or --session).");
+      }
+      const agentId = normalizeString(options.agent);
+      if (!agentId) {
+        throw new Error("session wake daemon requires --agent (the local agent to wake).");
+      }
+      const host = normalizeString(options.host) || "claude";
+      const resumeSessionId = normalizeString(options.resumeSession) || normalizedSessionId;
+      const targetPath = path.resolve(process.cwd(), String(options.cwd || "."));
+      const sentid = createSentid({
+        sessionId: normalizedSessionId,
+        agentId,
+        host,
+        resumeSessionId,
+        targetPath,
+        idleMs: parseOptionalPositiveInteger(options.idleMs, "idle-ms") || 1500,
+        maxAttempts: parseOptionalPositiveInteger(options.maxAttempts, "max-attempts") || 5,
+        logger: emitJson
+          ? undefined
+          : (level, msg, meta) => console.error(`[sentid:${level}] ${msg}${meta ? ` ${JSON.stringify(meta)}` : ""}`),
+      });
+
+      if (options.once) {
+        const tick = await sentid.tickOnce({ fetchCursor: null });
+        const out = {
+          command: "session wake daemon",
+          once: true,
+          sessionId: normalizedSessionId,
+          agent: agentId,
+          host,
+          cursor: sentid.getCursor(),
+          dispatched: Array.isArray(tick.results) ? tick.results.length : 0,
+          idle: Boolean(tick.idle),
+        };
+        console.log(
+          emitJson
+            ? JSON.stringify(out, null, 2)
+            : pc.green(`sentid tick: cursor=${out.cursor} dispatched=${out.dispatched}${out.idle ? " (idle)" : ""}`),
+        );
+        return;
+      }
+
+      const ac = new AbortController();
+      const stop = () => ac.abort();
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      if (!emitJson) {
+        console.log(
+          pc.green(`sentid daemon: waking ${agentId} (host=${host}) on session ${normalizedSessionId}. Ctrl-C to stop.`),
+        );
+      }
+      await sentid.start({ signal: ac.signal });
     });
 
   const recap = session
