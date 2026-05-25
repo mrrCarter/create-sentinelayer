@@ -17,7 +17,7 @@
 // here is small enough to own.
 
 const BROADCAST_RECIPIENTS = new Set(["*", "all", "broadcast", "everyone", "anyone", "agents", "all-agents"]);
-const DEFAULT_WAKE_EVENT_TYPES = new Set(["session_message"]);
+const DEFAULT_WAKE_EVENT_TYPES = new Set(["session_message", "help_request"]);
 const MAX_WAKE_MESSAGE_CHARS = 16_000;
 
 function requireNonEmptyString(value, label) {
@@ -28,7 +28,8 @@ function requireNonEmptyString(value, label) {
 }
 
 function agentIdOf(event) {
-  const a = event?.agentId ?? event?.agent;
+  const payload = event && typeof event.payload === "object" && event.payload ? event.payload : {};
+  const a = event?.agentId ?? event?.agent_id ?? event?.agent ?? payload.agentId ?? payload.agent_id;
   if (a && typeof a === "object") return typeof a.id === "string" ? a.id : null;
   return typeof a === "string" ? a : null;
 }
@@ -37,13 +38,48 @@ function eventTypeOf(event) {
   return event?.event || event?.type || event?.payload?.event || null;
 }
 
+function normalizeComparableId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function addRecipientValue(out, value) {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) addRecipientValue(out, item);
+    return;
+  }
+  if (value && typeof value === "object") {
+    addRecipientValue(out, value.id ?? value.agentId ?? value.agent_id ?? value.name);
+    return;
+  }
+  for (const token of String(value).split(/[\s,;]+/g)) {
+    const normalized = normalizeComparableId(token);
+    if (normalized) out.push(normalized);
+  }
+}
+
 // Collect recipient tokens from the shapes the session stream uses.
 function recipientsOf(event) {
   const payload = event && typeof event.payload === "object" && event.payload ? event.payload : {};
   const out = [];
-  for (const src of [event?.to, event?.recipient, event?.recipients, payload.to, payload.recipient, payload.recipients]) {
-    if (typeof src === "string" && src.trim()) out.push(src.trim().toLowerCase());
-    else if (Array.isArray(src)) for (const v of src) if (typeof v === "string" && v.trim()) out.push(v.trim().toLowerCase());
+  for (const src of [
+    event?.to,
+    event?.recipient,
+    event?.recipients,
+    event?.targetAgent,
+    event?.targetAgentId,
+    payload.to,
+    payload.recipient,
+    payload.recipients,
+    payload.targetAgent,
+    payload.targetAgentId,
+  ]) {
+    addRecipientValue(out, src);
   }
   return out;
 }
@@ -86,7 +122,7 @@ export function createResolveTarget({
   const selfId = requireNonEmptyString(agentId, "agentId");
   const hostName = requireNonEmptyString(host, "host");
   const resumeId = requireNonEmptyString(sessionId, "sessionId");
-  const selfLower = selfId.toLowerCase();
+  const selfLower = normalizeComparableId(selfId);
 
   return function resolveTarget(event) {
     // Only wake on real message events; acks/reactions/views/system are skips.

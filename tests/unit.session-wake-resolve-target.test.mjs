@@ -37,11 +37,27 @@ test("Unit resolve-target: self-authored events never self-wake", () => {
   const r = createResolveTarget(base);
   assert.equal(r(msg({ agentId: "claude-mythos" })), null);
   assert.equal(r(msg({ agentId: { id: "claude-mythos" } })), null);
+  assert.equal(r({ event: "session_message", agent_id: "claude-mythos", payload: { message: "snake self" } }), null);
 });
 
 test("Unit resolve-target: message directed at a different agent is unroutable (null)", () => {
   const r = createResolveTarget(base);
   assert.equal(r(msg({ payload: { to: "codex", message: "for codex" } })), null);
+  assert.equal(r(msg({ payload: { targetAgent: "codex", message: "for codex" } })), null);
+  assert.equal(r(msg({ targetAgentId: "codex", payload: { message: "for codex" } })), null);
+});
+
+test("Unit resolve-target: targetAgent fields and @handles match this agent", () => {
+  const r = createResolveTarget(base);
+  assert.ok(r(msg({ payload: { targetAgent: "@claude-mythos", message: "ping" } })) !== null);
+  assert.ok(r(msg({ targetAgentId: { id: "claude-mythos" }, payload: { message: "ping" } })) !== null);
+});
+
+test("Unit resolve-target: help_request wakes by default for attention tools", () => {
+  const r = createResolveTarget(base);
+  const t = r({ event: "help_request", agentId: "codex", payload: { to: "claude-mythos", message: "audit needed" } });
+  assert.equal(t.host, "claude");
+  assert.match(t.message, /audit needed/);
 });
 
 test("Unit resolve-target: non-message event types do not wake (acks/reactions/views)", () => {
