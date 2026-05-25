@@ -10,6 +10,7 @@ export const hostName = "codex";
 const DEFAULT_CODEX_BIN = "codex";
 const DEFAULT_WAKE_TIMEOUT_MS = 10 * 60 * 1000;
 const CODEX_NOTIFY_EVENT_TYPE = "agent-turn-complete";
+const MAX_WAKE_MESSAGE_CHARS = 16_000;
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -169,7 +170,7 @@ export function buildCodexWakePrompt({
   instruction = "",
 } = {}) {
   const normalizedSessionId = requireNonEmptyString(sentiSessionId, "sentiSessionId");
-  const normalizedMessage = requireNonEmptyString(message, "message");
+  const normalizedMessage = requireNonEmptyString(message, "message").slice(0, MAX_WAKE_MESSAGE_CHARS);
   const payload = {
     source: "sentinelayer.senti.wake",
     sessionId: normalizedSessionId,
