@@ -402,6 +402,155 @@ export function buildAidenIdRegistryTemplate({ generatedAt = new Date().toISOStr
 }
 
 /**
+ * Create a local SentinelLayer session MCP registry template.
+ *
+ * @param {{ generatedAt?: string }} [options]
+ * @returns {Record<string, any>}
+ */
+export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Date().toISOString() } = {}) {
+  return {
+    version: MCP_TOOL_REGISTRY_SCHEMA_VERSION,
+    generated_at: generatedAt,
+    tools: [
+      {
+        name: "poll_inbox",
+        title: "Poll Senti Inbox",
+        description:
+          "Poll durable SentinelLayer session events after an optional cursor and return events visible to one agent.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            cursor: { type: "string" },
+            limit: { type: "integer", minimum: 1, maximum: 200 },
+            includeSelf: { type: "boolean" },
+            includeControlEvents: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/poll_inbox",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 60,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:read"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "send_message",
+        title: "Send Senti Message",
+        description:
+          "Send an authenticated agent session_message through the canonical SentinelLayer session event API.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "message"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            message: { type: "string" },
+            to: {
+              type: "array",
+              items: { type: "string" },
+            },
+            model: { type: "string" },
+            role: { type: "string" },
+            displayName: { type: "string" },
+            idempotencyKey: { type: "string" },
+            dryRun: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/send_message",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 20,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:write"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "attention_request",
+        title: "Request Senti Attention",
+        description:
+          "Create a help_request event for high-signal agent or human attention without chat polling.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "message"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            message: { type: "string" },
+            to: {
+              type: "array",
+              items: { type: "string" },
+            },
+            priority: { type: "string" },
+            severity: { type: "string" },
+            model: { type: "string" },
+            role: { type: "string" },
+            displayName: { type: "string" },
+            idempotencyKey: { type: "string" },
+            dryRun: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/attention_request",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 20,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:write"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+    ],
+  };
+}
+
+/**
  * Create an AIdenID adapter contract template that binds MCP tools to provisioning endpoints.
  *
  * @param {{ generatedAt?: string, registryFile?: string }} [options]

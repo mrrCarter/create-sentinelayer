@@ -5,7 +5,9 @@ import {
   buildAidenIdProvisioningAdapterTemplate,
   buildAidenIdRegistryTemplate,
   buildMcpServerConfigTemplate,
+  buildSentinelayerSessionRegistryTemplate,
   validateAidenIdAdapterContract,
+  validateMcpToolRegistry,
   validateMcpServerConfig,
 } from "../src/mcp/registry.js";
 
@@ -48,6 +50,20 @@ test("Unit MCP registry: AIdenID templates require human approval by default", (
 
   assert.equal(registry.tools[0].security.requires_human_approval, true);
   assert.equal(adapter.tool_bindings[0].security.requires_human_approval, true);
+});
+
+test("Unit MCP registry: SentinelLayer session registry exposes inbox and write tools", () => {
+  const registry = buildSentinelayerSessionRegistryTemplate({
+    generatedAt: "2026-05-25T00:00:00.000Z",
+  });
+  const parsed = validateMcpToolRegistry(registry);
+  const tools = new Set(parsed.tools.map((tool) => tool.name));
+
+  assert.equal(tools.has("poll_inbox"), true);
+  assert.equal(tools.has("send_message"), true);
+  assert.equal(tools.has("attention_request"), true);
+  assert.equal(parsed.tools.find((tool) => tool.name === "poll_inbox").transport.type, "internal");
+  assert.deepEqual(parsed.tools.find((tool) => tool.name === "send_message").security.scopes, ["session:write"]);
 });
 
 test("Unit MCP registry: MCP server config rejects bearer auth without audience", () => {
