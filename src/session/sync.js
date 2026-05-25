@@ -428,6 +428,95 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+function isAbortLike(error) {
+  return Boolean(error?.name === "AbortError" || error?.code === "ABORT_ERR");
+}
+
+async function* readResponseTextChunks(response) {
+  const body = response?.body;
+  if (!body) return;
+
+  if (typeof body.getReader === "function") {
+    const reader = body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) yield value;
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+    return;
+  }
+
+  if (typeof body[Symbol.asyncIterator] === "function") {
+    for await (const chunk of body) {
+      if (chunk) yield chunk;
+    }
+  }
+}
+
+function extractSseErrorReason(parsed) {
+  const error = parsed?.error && typeof parsed.error === "object" ? parsed.error : {};
+  return (
+    normalizeString(error.code) ||
+    normalizeString(error.message) ||
+    normalizeString(error.detail) ||
+    "session_stream_error"
+  );
+}
+
+async function processSseBlock(block, handlers) {
+  const normalizedBlock = normalizeString(block);
+  if (!normalizedBlock) return;
+
+  const dataLines = [];
+  let commentOnly = true;
+  for (const rawLine of String(block).split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line) continue;
+    if (line.startsWith(":")) continue;
+    commentOnly = false;
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    if (commentOnly && typeof handlers.onHeartbeat === "function") {
+      await handlers.onHeartbeat();
+    }
+    return;
+  }
+
+  const rawData = dataLines.join("\n").trim();
+  if (!rawData) return;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawData);
+  } catch {
+    await handlers.onError?.({ reason: "malformed_stream_event", cursor: handlers.cursor() });
+    return;
+  }
+
+  if (parsed?.type === "error") {
+    await handlers.onError?.({
+      reason: extractSseErrorReason(parsed),
+      cursor: handlers.cursor(),
+      error: parsed.error || null,
+    });
+    return;
+  }
+
+  await handlers.onEvent?.(parsed);
+}
+
 function sanitizeHumanMessage(rawMessage) {
   const stripped = String(rawMessage || "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
@@ -1129,6 +1218,195 @@ export async function pollSessionEvents(
       cursor: normalizedSince || null,
     };
   }
+}
+
+/**
+ * Consume the API's durable session SSE stream.
+ *
+ * This is the wakeup-first companion to `pollSessionEvents`: the stream uses
+ * Redis wakeups server-side, while the listener can still fall back to durable
+ * `/events` polling if the stream is unavailable or closes.
+ *
+ * @param {string} sessionId
+ * @param {object} [options]
+ * @param {string|null} [options.since] - durable cursor to resume after
+ * @param {AbortSignal} [options.signal]
+ * @param {(event: object) => Promise<void>|void} [options.onEvent]
+ * @param {(payload: object) => Promise<void>|void} [options.onError]
+ * @param {() => Promise<void>|void} [options.onHeartbeat]
+ * @returns {Promise<{ok: boolean, reason: string, cursor: string|null, eventCount: number, errorCount: number, status?: number, aborted?: boolean}>}
+ */
+export async function streamSessionEvents(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    since = null,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    signal = undefined,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetch,
+    onEvent = async () => {},
+    onError = async () => {},
+    onHeartbeat = async () => {},
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const normalizedSince = normalizeString(since) || null;
+  if (!normalizedSessionId) {
+    return {
+      ok: false,
+      reason: "invalid_session_id",
+      cursor: normalizedSince,
+      eventCount: 0,
+      errorCount: 0,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "no_session",
+      cursor: normalizedSince,
+      eventCount: 0,
+      errorCount: 0,
+    };
+  }
+  if (!session || !session.token) {
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      cursor: normalizedSince,
+      eventCount: 0,
+      errorCount: 0,
+    };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const query = new URLSearchParams();
+  if (normalizedSince) {
+    query.set("after", normalizedSince);
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/stream${suffix}`;
+  const controller = new AbortController();
+  const normalizedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
+  const timeoutHandle = setTimeout(() => controller.abort(), normalizedTimeoutMs);
+  if (typeof timeoutHandle.unref === "function") {
+    timeoutHandle.unref();
+  }
+  const forwardAbort = () => controller.abort(signal?.reason);
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(
+      endpoint,
+      {
+        method: "GET",
+        headers: {
+          Accept: "text/event-stream",
+          Authorization: `Bearer ${session.token}`,
+        },
+        signal: controller.signal,
+      },
+      normalizedTimeoutMs
+    );
+  } catch (error) {
+    clearTimeout(timeoutHandle);
+    if (signal) signal.removeEventListener("abort", forwardAbort);
+    return {
+      ok: false,
+      reason: isAbortLike(error) || signal?.aborted ? "aborted" : normalizeString(error?.message) || "stream_failed",
+      cursor: normalizedSince,
+      eventCount: 0,
+      errorCount: 0,
+      aborted: Boolean(signal?.aborted || isAbortLike(error)),
+    };
+  }
+  clearTimeout(timeoutHandle);
+
+  let cursor = normalizedSince;
+  let eventCount = 0;
+  let errorCount = 0;
+  let lastErrorReason = "";
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const handlers = {
+    cursor: () => cursor,
+    onHeartbeat,
+    onError: async (payload) => {
+      errorCount += 1;
+      lastErrorReason = normalizeString(payload?.reason) || "session_stream_error";
+      await onError(payload);
+    },
+    onEvent: async (event) => {
+      const eventCursor = normalizeString(event?.cursor);
+      if (eventCursor) cursor = eventCursor;
+      eventCount += 1;
+      await onEvent(event);
+    },
+  };
+
+  try {
+    if (!response || !response.ok || !response.body) {
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        cursor,
+        eventCount,
+        errorCount,
+        status: response?.status,
+      };
+    }
+
+    for await (const chunk of readResponseTextChunks(response)) {
+      buffer += decoder.decode(chunk, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        await processSseBlock(block, handlers);
+      }
+    }
+    buffer += decoder.decode();
+    if (normalizeString(buffer)) {
+      await processSseBlock(buffer, handlers);
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: isAbortLike(error) || signal?.aborted ? "aborted" : normalizeString(error?.message) || "stream_failed",
+      cursor,
+      eventCount,
+      errorCount,
+      aborted: Boolean(signal?.aborted || isAbortLike(error)),
+    };
+  } finally {
+    if (signal) signal.removeEventListener("abort", forwardAbort);
+  }
+
+  return {
+    ok: !lastErrorReason,
+    reason: lastErrorReason,
+    cursor,
+    eventCount,
+    errorCount,
+    aborted: Boolean(signal?.aborted),
+  };
 }
 
 /**

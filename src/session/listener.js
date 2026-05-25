@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { pollSessionEvents, pollSessionEventsBefore } from "./sync.js";
+import { pollSessionEvents, pollSessionEventsBefore, streamSessionEvents } from "./sync.js";
 import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 
 const BROADCAST_RECIPIENTS = new Set([
@@ -255,8 +255,10 @@ export async function listenSessionEvents({
   onError = async () => {},
   onCatchup = async () => {},
   onLifecycle = async () => {},
+  transport = "poll",
   _poll = pollSessionEvents,
   _pollLatest = pollSessionEventsBefore,
+  _stream = streamSessionEvents,
   _readCursor = readSyncCursor,
   _writeCursor = writeSyncCursor,
   _sleep = defaultSleep,
@@ -271,6 +273,10 @@ export async function listenSessionEvents({
   if (fromNow && since !== undefined) {
     throw new Error("Use either fromNow or since, not both.");
   }
+  const normalizedTransport = normalizeLower(transport) || "poll";
+  if (!["auto", "poll", "stream"].includes(normalizedTransport)) {
+    throw new Error("transport must be one of: auto, poll, stream.");
+  }
 
   const cursorSuffix = listenCursorSuffix(normalizedAgentId);
   const explicitSince = typeof since === "string" || since === null;
@@ -284,6 +290,9 @@ export async function listenSessionEvents({
   let matched = 0;
   let persistedCursor = false;
   let lastReason = "";
+  let activeTransport = normalizedTransport === "poll" ? "poll" : "stream";
+  let streamAttempted = false;
+  let streamFallbackReason = "";
   let catchupNotified = false;
   let catchupEventCount = 0;
   let catchupMatchingEventCount = 0;
@@ -333,6 +342,7 @@ export async function listenSessionEvents({
     emitted,
     persistedCursor,
     cursorSource,
+    transport: activeTransport,
     idleIntervalSeconds: Math.round(idleSleepMs / 1000),
     activeIntervalSeconds: Math.round(activeSleepMs / 1000),
     activeWindowSeconds: Math.round(activeWindowMs / 1000),
@@ -370,14 +380,149 @@ export async function listenSessionEvents({
     }
   }
 
+  async function processEventBatch(eventsInput = [], resultCursor = null) {
+    const events = Array.isArray(eventsInput) ? eventsInput : [];
+    const nextCursor = normalizeString(resultCursor) || cursorFromEvents(events, cursor);
+    const cursorDidNotAdvance = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
+    const cursorFault = cursorDidNotAdvance && (nextCursor !== cursor || events.length > 0);
+    if (cursorFault) {
+      lastReason = "cursor_not_advanced";
+      await onError({
+        ok: false,
+        reason: lastReason,
+        cursor: cursor || null,
+        candidateCursor: nextCursor,
+      });
+      return false;
+    }
+
+    const observedAtMs = Number(_nowMs()) || Date.now();
+    const visibleEvents = [];
+    let preStartEventCount = 0;
+    for (const event of events) {
+      const timestampMs = eventTimestampMs(event);
+      if (!timestampMs || timestampMs < startedAtMs) {
+        preStartEventCount += 1;
+      }
+      const activityMs = humanActivityTimestampMs(event, observedAtMs);
+      if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
+        lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
+      }
+      if (isListenerLifecycleEvent(event)) continue;
+      if (!eventMatchesAgent(event, normalizedAgentId)) continue;
+      visibleEvents.push(event);
+    }
+
+    if (
+      !catchupNotified &&
+      cursorSource === "stored" &&
+      Boolean(cursor) &&
+      events.length > 0 &&
+      preStartEventCount > 0
+    ) {
+      catchupNotified = true;
+      catchupEventCount = events.length;
+      catchupMatchingEventCount = visibleEvents.length;
+      await notifyCatchup({
+        type: "catchup",
+        sessionId: normalizedSessionId,
+        agentId: normalizedAgentId,
+        cursor: cursor || null,
+        candidateCursor: nextCursor || null,
+        cursorSuffix,
+        cursorSource,
+        pollCount,
+        eventCount: events.length,
+        matchingEventCount: visibleEvents.length,
+        preStartEventCount,
+        limit: pollLimit,
+        replay: Boolean(replay),
+        ...eventTimeRange(events),
+      });
+    }
+
+    const shouldEmitBatch = primed || Boolean(replay);
+    for (const event of visibleEvents) {
+      const key = eventIdentityKey(event);
+      if (emittedKeys.has(key)) continue;
+      matched += 1;
+      if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
+      await onEvent(event);
+      emittedKeys.add(key);
+      emitted += 1;
+    }
+
+    if (nextCursor && nextCursor !== cursor) {
+      const writeResult = await _writeCursor(normalizedSessionId, nextCursor, {
+        targetPath,
+        suffix: cursorSuffix,
+      }).catch(() => null);
+      persistedCursor = Boolean(writeResult?.written) || persistedCursor;
+      cursor = nextCursor;
+    }
+    primed = true;
+    return true;
+  }
+
+  async function notifyHeartbeat({ stopping = false, nextPollMs = null } = {}) {
+    const heartbeatAtMs = Number(_nowMs()) || Date.now();
+    const humanActive = isRecentActivity(lastHumanActivityMs, heartbeatAtMs, activeWindowMs);
+    await notifyLifecycle(
+      lifecycleSnapshot("heartbeat", {
+        active: humanActive,
+        state: humanActive ? "active" : "idle",
+        nextPollMs,
+        stopping,
+        transport: activeTransport,
+      }),
+    );
+    return humanActive;
+  }
+
   await notifyLifecycle(
     lifecycleSnapshot("started", {
       startedAt: new Date(startedAtMs).toISOString(),
+      transport: activeTransport,
     }),
   );
 
   try {
-    while (!signal?.aborted) {
+    if (normalizedTransport !== "poll") {
+      streamAttempted = true;
+      activeTransport = "stream";
+      const streamResult = await _stream(normalizedSessionId, {
+        targetPath,
+        since: cursor,
+        signal,
+        onEvent: async (event) => {
+          await processEventBatch([event], normalizeString(event?.cursor) || cursor);
+        },
+        onError: async (error) => {
+          lastReason = `stream_${normalizeString(error?.reason) || "error"}`;
+          await onError({
+            ok: false,
+            reason: lastReason,
+            cursor: error?.cursor || cursor || null,
+          });
+        },
+        onHeartbeat: async () => {
+          await notifyHeartbeat({ nextPollMs: null });
+        },
+      });
+      if (!streamResult?.ok) {
+        streamFallbackReason = normalizeString(streamResult?.reason) || lastReason || "stream_failed";
+        lastReason = `stream_${streamFallbackReason}`;
+      } else if (!signal?.aborted) {
+        streamFallbackReason = "stream_closed";
+      }
+    }
+
+    const shouldPoll =
+      !signal?.aborted && (normalizedTransport === "poll" || normalizedTransport === "auto");
+    if (shouldPoll) {
+      activeTransport = "poll";
+    }
+    while (shouldPoll && !signal?.aborted) {
       pollCount += 1;
       const result = await _poll(normalizedSessionId, {
         targetPath,
@@ -387,83 +532,7 @@ export async function listenSessionEvents({
 
       if (result?.ok) {
         lastReason = "";
-        const events = Array.isArray(result.events) ? result.events : [];
-        const nextCursor = normalizeString(result.cursor) || cursorFromEvents(events, cursor);
-        const cursorDidNotAdvance = Boolean(nextCursor && cursor && !cursorAdvances(nextCursor, cursor));
-        const cursorFault = cursorDidNotAdvance && (nextCursor !== cursor || events.length > 0);
-        if (cursorFault) {
-          lastReason = "cursor_not_advanced";
-          await onError({
-            ok: false,
-            reason: lastReason,
-            cursor: cursor || null,
-            candidateCursor: nextCursor,
-          });
-        } else {
-          const observedAtMs = Number(_nowMs()) || Date.now();
-          const visibleEvents = [];
-          let preStartEventCount = 0;
-          for (const event of events) {
-            const timestampMs = eventTimestampMs(event);
-            if (!timestampMs || timestampMs < startedAtMs) {
-              preStartEventCount += 1;
-            }
-            const activityMs = humanActivityTimestampMs(event, observedAtMs);
-            if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
-              lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
-            }
-            if (isListenerLifecycleEvent(event)) continue;
-            if (!eventMatchesAgent(event, normalizedAgentId)) continue;
-            visibleEvents.push(event);
-          }
-          if (
-            !catchupNotified &&
-            cursorSource === "stored" &&
-            Boolean(cursor) &&
-            events.length > 0 &&
-            preStartEventCount > 0
-          ) {
-            catchupNotified = true;
-            catchupEventCount = events.length;
-            catchupMatchingEventCount = visibleEvents.length;
-            await notifyCatchup({
-              type: "catchup",
-              sessionId: normalizedSessionId,
-              agentId: normalizedAgentId,
-              cursor: cursor || null,
-              candidateCursor: nextCursor || null,
-              cursorSuffix,
-              cursorSource,
-              pollCount,
-              eventCount: events.length,
-              matchingEventCount: visibleEvents.length,
-              preStartEventCount,
-              limit: pollLimit,
-              replay: Boolean(replay),
-              ...eventTimeRange(events),
-            });
-          }
-          const shouldEmitBatch = primed || Boolean(replay);
-          for (const event of visibleEvents) {
-            const key = eventIdentityKey(event);
-            if (emittedKeys.has(key)) continue;
-            matched += 1;
-            if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
-            await onEvent(event);
-            emittedKeys.add(key);
-            emitted += 1;
-          }
-
-          if (nextCursor && nextCursor !== cursor) {
-            const writeResult = await _writeCursor(normalizedSessionId, nextCursor, {
-              targetPath,
-              suffix: cursorSuffix,
-            }).catch(() => null);
-            persistedCursor = Boolean(writeResult?.written) || persistedCursor;
-            cursor = nextCursor;
-          }
-          primed = true;
-        }
+        await processEventBatch(result.events, result.cursor);
       } else {
         lastReason = normalizeString(result?.reason) || "poll_failed";
         await onError({
@@ -473,18 +542,11 @@ export async function listenSessionEvents({
         });
       }
 
-      const sleepAtMs = Number(_nowMs()) || Date.now();
-      const humanActive = isRecentActivity(lastHumanActivityMs, sleepAtMs, activeWindowMs);
       const willStop = maxPollCount > 0 && pollCount >= maxPollCount;
+      const heartbeatAtMs = Number(_nowMs()) || Date.now();
+      const humanActive = isRecentActivity(lastHumanActivityMs, heartbeatAtMs, activeWindowMs);
       const nextSleepMs = humanActive ? Math.min(idleSleepMs, activeSleepMs) : idleSleepMs;
-      await notifyLifecycle(
-        lifecycleSnapshot("heartbeat", {
-          active: humanActive,
-          state: humanActive ? "active" : "idle",
-          nextPollMs: willStop ? null : nextSleepMs,
-          stopping: willStop,
-        }),
-      );
+      await notifyHeartbeat({ nextPollMs: willStop ? null : nextSleepMs, stopping: willStop });
 
       if (willStop) break;
       lastSleepMs = nextSleepMs;
@@ -511,6 +573,9 @@ export async function listenSessionEvents({
     cursor,
     cursorSuffix,
     cursorSource,
+    transport: activeTransport,
+    streamAttempted,
+    streamFallbackReason,
     pollCount,
     matched,
     emitted,
