@@ -130,3 +130,29 @@ test("Unit wake pump: re-fetched failed event succeeds on the next tick and adva
   assert.equal(dispatcher.getCursor(), 2, "retry of seq1 succeeds, then seq2 commits");
   assert.equal(t2.fetchCursor, "LATEST");
 });
+
+test("Unit wake pump: start forwards wake deps into dispatch", async () => {
+  const controller = new AbortController();
+  const seenDeps = [];
+  const dispatcher = {
+    dispatchBatch: async (_events, deps) => {
+      seenDeps.push(deps);
+      return [{ ok: true, skipped: false, retryable: false, seq: 1 }];
+    },
+    getCursor: () => 1,
+    setCursor: () => {},
+  };
+  const marker = { injected: true };
+  const pump = createWakePump({
+    sessionId: "s",
+    dispatcher,
+    pollEvents: async () => ({ events: [evt(1, "c1", "wake")], cursor: "c1" }),
+    readCursor: async () => 0,
+    writeCursor: async () => {},
+    sleep: async () => { controller.abort(); },
+  });
+
+  await pump.start({ signal: controller.signal, deps: { marker } });
+  assert.equal(seenDeps.length, 1);
+  assert.equal(seenDeps[0].marker, marker);
+});
