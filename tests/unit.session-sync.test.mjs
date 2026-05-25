@@ -10,6 +10,7 @@ import {
   pollSessionEventsBefore,
   resetSessionSyncStateForTests,
   searchSessionEvents,
+  streamSessionEvents,
   syncSessionErrorToApi,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
@@ -392,6 +393,92 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");
+});
+
+test("Unit session sync: streamSessionEvents consumes SSE events from stream endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const seen = [];
+  let heartbeats = 0;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(": keep-alive\n\n"));
+      controller.enqueue(
+        encoder.encode(
+          'data: {"event":"session_message","cursor":"cursor-2","payload":{"message":"wake"}}\n\n',
+        ),
+      );
+      controller.close();
+    },
+  });
+
+  const result = await streamSessionEvents("sess-stream", {
+    since: "cursor-1",
+    resolveAuthSession: async () => ({
+      token: "tok_stream",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        body,
+      };
+    },
+    onHeartbeat: async () => {
+      heartbeats += 1;
+    },
+    onEvent: async (event) => {
+      seen.push(event);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.cursor, "cursor-2");
+  assert.equal(result.eventCount, 1);
+  assert.equal(result.errorCount, 0);
+  assert.equal(heartbeats, 1);
+  assert.equal(seen[0].payload.message, "wake");
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-stream/stream?after=cursor-1",
+  );
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.headers.Accept, "text/event-stream");
+  assert.equal(calls[0].options.headers.Authorization, "Bearer tok_stream");
+});
+
+test("Unit session sync: streamSessionEvents reports SSE error frames", async () => {
+  resetSessionSyncStateForTests();
+  const errors = [];
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          'data: {"type":"error","error":{"code":"SESSION_STREAM_TIMEOUT","message":"done"}}\n\n',
+        ),
+      );
+      controller.close();
+    },
+  });
+
+  const result = await streamSessionEvents("sess-stream-timeout", {
+    resolveAuthSession: async () => ({
+      token: "tok_stream",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async () => ({ ok: true, status: 200, body }),
+    onError: async (error) => errors.push(error.reason),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "SESSION_STREAM_TIMEOUT");
+  assert.equal(result.eventCount, 0);
+  assert.equal(result.errorCount, 1);
+  assert.deepEqual(errors, ["SESSION_STREAM_TIMEOUT"]);
 });
 
 test("Unit session sync: pollSessionEventsBefore fetches latest tail chronologically", async () => {

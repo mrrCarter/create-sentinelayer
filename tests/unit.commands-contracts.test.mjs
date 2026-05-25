@@ -377,6 +377,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--model <model>");
   assertCommandHasOption(listen, "--display-name <name>");
   assertCommandHasOption(listen, "--emit <format>");
+  assertCommandHasOption(listen, "--transport <mode>");
   assertCommandHasOption(listen, "--limit <n>");
   assertCommandHasOption(listen, "--since <cursor>");
   assertCommandHasOption(listen, "--replay");
