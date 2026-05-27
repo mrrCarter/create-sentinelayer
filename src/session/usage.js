@@ -39,9 +39,9 @@
  *   }
  *
  * Design choice: emit BOTH the convenient flat fields AND a
- * `payload.usage` block, so transcript.js's existing usage roll-up
- * picks it up without changes, while web UIs can display the structured
- * fields directly without re-parsing.
+ * `payload.usage` block. Transcript/download totals flow through
+ * pricing-ledger idempotency semantics, while web UIs can display the
+ * structured fields directly without re-parsing.
  */
 
 import process from "node:process";
@@ -191,8 +191,8 @@ export async function emitLLMInteraction(
       chars: responseText.length,
       text: responseText || undefined,
     },
-    // Mirror into payload.usage so transcript.js + telemetry sync pick
-    // it up via the same code path used for ad-hoc agent_response usage.
+    // Mirror into payload.usage for legacy readers and telemetry sync;
+    // transcript/download totals use the canonical pricing-ledger fields.
     usage: {
       totalTokens: totalT,
       costUsd: cost,

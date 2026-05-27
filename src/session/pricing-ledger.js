@@ -14,6 +14,30 @@ const SUPPORTED_SESSION_USAGE_SCHEMAS = new Set([
   LOCAL_SESSION_USAGE_SCHEMA,
   ...LEGACY_SESSION_USAGE_SCHEMAS,
 ]);
+const USAGE_HINT_KEYS = [
+  "totalTokens",
+  "total_tokens",
+  "tokens",
+  "tokenTotal",
+  "token_total",
+  "inputTokens",
+  "input_tokens",
+  "tokensIn",
+  "tokens_in",
+  "promptTokens",
+  "prompt_tokens",
+  "outputTokens",
+  "output_tokens",
+  "tokensOut",
+  "tokens_out",
+  "completionTokens",
+  "completion_tokens",
+  "providerCostUsd",
+  "provider_cost_usd",
+  "costUsd",
+  "cost_usd",
+  "cost",
+];
 
 function n(value) {
   return String(value == null ? "" : value).trim();
@@ -51,6 +75,11 @@ function pick(sources, keys) {
 
 function pickText(sources, keys) {
   return n(pick(sources, keys));
+}
+
+function hasUsageHints(value) {
+  const bag = object(value);
+  return USAGE_HINT_KEYS.some((key) => bag[key] != null && bag[key] !== "");
 }
 
 function pickInt(sources, keys) {
@@ -109,13 +138,14 @@ export function buildUsageLedgerEntry(
   { sessionId = "", priceBookVersion = DEFAULT_PRICE_BOOK_VERSION, billingTier = "unknown" } = {},
 ) {
   const kind = n(event?.event || event?.type);
-  if (kind !== SESSION_USAGE_EVENT) return null;
-
   const payload = object(event?.payload);
   const schema = n(payload.schema);
-  if (!SUPPORTED_SESSION_USAGE_SCHEMAS.has(schema)) return null;
-
   const usage = object(payload.usage);
+  const legacyUsageEvent = kind !== SESSION_USAGE_EVENT && hasUsageHints(usage);
+  if (!legacyUsageEvent) {
+    if (kind !== SESSION_USAGE_EVENT) return null;
+    if (!SUPPORTED_SESSION_USAGE_SCHEMAS.has(schema)) return null;
+  }
   const prompt = object(payload.prompt);
   const response = object(payload.response);
   const agent = object(event?.agent);

@@ -103,9 +103,12 @@ Ship a deterministic CLI feature.
 `,
   });
   assert.match(prompt, /Find the recent Senti session for this codebase/);
+  assert.match(prompt, /session listen` is only a delivery cursor, not a grounding command/);
   assert.match(prompt, /plan: <scope>; files: <paths>/);
+  assert.match(prompt, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
+  assert.match(prompt, /sl session recap now <id> --remote --agent <your-name> --json/);
   assert.match(prompt, /sl session react <id> ack --target-sequence <n>/);
-  assert.match(prompt, /sl session view <id> <sequence>/);
+  assert.match(prompt, /sl session read <id> --remote --agent <your-name>/);
   assert.match(prompt, /sl session search <id> "<topic>" --limit 10/);
   assert.match(prompt, /sl review --diff/);
   assert.match(prompt, /sl --help/);
@@ -172,6 +175,8 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   assert.match(handoff, /sl session join <id> --name <your-name> --role coder/);
   assert.match(handoff, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson --no-presence/);
   assert.match(handoff, /sl session sync <id> --json/);
+  assert.match(handoff, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
+  assert.match(handoff, /sl session recap now <id> --remote --agent <your-name> --json/);
   assert.match(handoff, /sl session react <id> ack --target-sequence <n>/);
   assert.match(handoff, /sl --help/);
 

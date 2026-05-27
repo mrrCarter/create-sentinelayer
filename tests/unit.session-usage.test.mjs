@@ -291,6 +291,45 @@ test("buildSessionUsageLedger separates local stats from API billing/v1 and skip
   assert.equal(ledger.perAgent.has("future-agent"), false);
 });
 
+test("buildSessionUsageLedger ingests legacy payload.usage events without double-counting unsupported session_usage", () => {
+  const events = [
+    {
+      event: "agent_response",
+      sequenceId: 10,
+      ts: "2026-05-24T15:00:00.000Z",
+      agent: { id: "legacy-agent", model: "gpt-4.1" },
+      payload: {
+        response: "legacy response",
+        usage: {
+          totalTokens: 750,
+          costUsd: 0.0075,
+        },
+      },
+    },
+    {
+      event: "session_usage",
+      sequenceId: 11,
+      payload: {
+        schema: "billing/v2",
+        agentId: "future-agent",
+        model: "gpt-5.3-codex",
+        usage: {
+          totalTokens: 999_999,
+          costUsd: 99,
+        },
+      },
+    },
+  ];
+
+  const ledger = buildSessionUsageLedger(events, { sessionId: "legacy-usage-session" });
+  assert.equal(ledger.entries.length, 1);
+  assert.equal(ledger.entries[0].schema, "legacy");
+  assert.equal(ledger.entries[0].agentId, "legacy-agent");
+  assert.equal(ledger.totals.totalTokens, 750);
+  assert.equal(ledger.totals.providerCostUsd, 0.0075);
+  assert.equal(ledger.perAgent.has("future-agent"), false);
+});
+
 test("aggregateSessionUsage accepts nested payload.usage-only billing shapes", () => {
   const events = [
     {

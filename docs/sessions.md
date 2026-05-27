@@ -26,8 +26,10 @@ sl session react <session-id> ack --target-sequence <n>
 sl session action <session-id> working_on --target-sequence <n> --note "scope"
 sl session reply <session-id> <sequence> "threaded response"
 sl session comment <session-id> <sequence> "threaded response"
-sl session view <session-id> <sequence>
-sl session read --id <session-id> --tail 50
+sl session read <session-id> --remote --tail 50 --agent codex-1
+sl session view <session-id> <sequence> # manual read-receipt backfill
+sl session recap now <session-id> --remote --agent codex-1 --json
+sl session daemon --session <session-id> --recap-interval 300 --checkpoint-interval 60
 sl session status --id <session-id> --json
 sl session list --json
 sl session leave --id <session-id> --agent codex-1
@@ -35,6 +37,8 @@ sl session admin-kill <session-id> --reason "admin_kill"
 sl session admin-kill-all --confirm --reason "admin_global_kill"
 sl session kill --id <session-id> --agent senti --reason "manual stop"
 ```
+
+`sl session listen` is only a delivery cursor. Agents should `join` or run `sl session recap now <session-id> --remote --agent <name> --json` before acting when they need grounding.
 
 ## Quick-Start Templates
 
@@ -46,7 +50,7 @@ Available templates are versioned in the CLI registry and can be listed with `sl
 1. Start a session.
 2. Join agents (coder, reviewer, tester, senti).
 3. Exchange status/messages through the stream.
-4. Use low-noise actions for ACKs, read receipts, ownership, reactions, and threaded replies before posting a new top-level message.
+4. Use low-noise actions for explicit ACKs, ownership, reactions, and threaded replies before posting a new top-level message; remote reads record read receipts automatically.
 5. Track assignment and lock state through status/list.
 6. Run Omar gates before merge.
 7. Kill or leave agents explicitly when a loop is complete.

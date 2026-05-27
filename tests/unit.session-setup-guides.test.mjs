@@ -80,9 +80,13 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.match(firstAgents, /sl session reply <id> <sequence>/);
     assert.match(firstAgents, /sl session search <id> "<topic>" --limit 10/);
     assert.match(firstGuide, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson --no-presence/);
+    assert.match(firstGuide, /session listen` is only a delivery cursor, not a grounding command/);
+    assert.match(firstGuide, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
+    assert.match(firstGuide, /sl session recap now <id> --remote --agent <your-name> --json/);
     assert.match(firstGuide, /sl session sync <id> --json/);
     assert.match(firstGuide, /sl session react <id> ack --target-sequence <n>/);
-    assert.match(firstGuide, /sl session view <id> <sequence>/);
+    assert.match(firstGuide, /sl session read <id> --remote --agent <your-name>/);
+    assert.match(firstGuide, /reserve `sl session view <id> <sequence>` for repair\/backfill/);
     assert.match(firstGuide, /sl session reply <id> <sequence>/);
     assert.match(firstGuide, /sl session comment <id> <sequence>/);
     assert.match(firstGuide, /sl session actions/);

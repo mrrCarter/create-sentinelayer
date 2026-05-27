@@ -87,6 +87,103 @@ test("Unit session agent registry: register/heartbeat/list/stale detection", asy
   }
 });
 
+test("Unit session agent registry: active re-register refreshes without join or briefing spam", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-agents-idempotent-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const first = await registerAgent(session.sessionId, {
+      agentId: "codex",
+      model: "gpt-5",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    const firstEvents = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
+    assert.equal(first.emittedJoinEvent, true);
+    assert.equal(first.emittedContextBriefing, true);
+    assert.equal(first.refreshedExistingAgent, false);
+    assert.equal(firstEvents.filter((event) => event.event === "agent_join").length, 1);
+    assert.equal(firstEvents.filter((event) => event.event === "context_briefing").length, 1);
+
+    const refreshed = await registerAgent(session.sessionId, {
+      agentId: "codex",
+      model: "gpt-5",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    const refreshedEvents = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
+
+    assert.equal(refreshed.emittedJoinEvent, false);
+    assert.equal(refreshed.emittedContextBriefing, false);
+    assert.equal(refreshed.refreshedExistingAgent, true);
+    assert.equal(
+      Date.parse(refreshed.lastActivityAt) >= Date.parse(first.lastActivityAt),
+      true
+    );
+    assert.equal(refreshedEvents.filter((event) => event.event === "agent_join").length, 1);
+    assert.equal(refreshedEvents.filter((event) => event.event === "context_briefing").length, 1);
+
+    await heartbeatAgent(session.sessionId, "codex", {
+      status: "coding",
+      detail: "working locally",
+      file: "src/session/agent-registry.js",
+      targetPath: tempRoot,
+    });
+    const genericRefresh = await registerAgent(session.sessionId, {
+      agentId: "codex",
+      model: "cli",
+      role: "observer",
+      targetPath: tempRoot,
+    });
+
+    assert.equal(genericRefresh.refreshedExistingAgent, true);
+    assert.equal(genericRefresh.model, "gpt-5");
+    assert.equal(genericRefresh.role, "coder");
+    assert.equal(genericRefresh.status, "coding");
+    assert.equal(genericRefresh.detail, "working locally");
+    assert.equal(genericRefresh.file, "src/session/agent-registry.js");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session agent registry: re-register after leave emits a real rejoin", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-agents-rejoin-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    await registerAgent(session.sessionId, {
+      agentId: "codex",
+      model: "gpt-5",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    await unregisterAgent(session.sessionId, "codex", {
+      reason: "manual",
+      targetPath: tempRoot,
+    });
+
+    const rejoined = await registerAgent(session.sessionId, {
+      agentId: "codex",
+      model: "gpt-5",
+      role: "coder",
+      targetPath: tempRoot,
+    });
+    const events = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
+
+    assert.equal(rejoined.emittedJoinEvent, true);
+    assert.equal(rejoined.emittedContextBriefing, true);
+    assert.equal(rejoined.refreshedExistingAgent, false);
+    assert.equal(events.filter((event) => event.event === "agent_join").length, 2);
+    assert.equal(events.filter((event) => event.event === "context_briefing").length, 2);
+    assert.equal(events.filter((event) => event.event === "agent_leave").length, 1);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session agent registry: unregister emits leave and inactives are filterable", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-leave-"));
   try {

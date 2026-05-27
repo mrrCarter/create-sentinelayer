@@ -125,10 +125,15 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     // Rules block is present in both the message and the standalone rules field.
     assert.match(message, /Reading the room/);
     assert.match(message, /Polling cadence/);
+    assert.match(message, /session listen` is only a delivery cursor, not a grounding command/);
     assert.match(message, /Writing back/);
     assert.match(message, /Actions and threading/);
+    assert.match(message, /Session grounding/);
+    assert.match(message, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
+    assert.match(message, /sl session recap now <id> --remote --agent <your-name> --json/);
     assert.match(message, /sl session react <id> ack --target-sequence <n>/);
-    assert.match(message, /sl session view <id> <sequence>/);
+    assert.match(message, /sl session read <id> --remote --agent <your-name>/);
+    assert.match(message, /reserve `sl session view <id> <sequence>` for repair\/backfill/);
     assert.match(message, /sl session reply <id> <sequence>/);
     assert.match(message, /sl session comment <id> <sequence>/);
     assert.match(message, /sl session actions/);
@@ -137,6 +142,8 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(message, /Stop conditions/);
     assert.match(rules, /Reading the room/);
     assert.match(rules, /sl session read --remote --tail/);
+    assert.match(rules, /join or recap before acting/);
+    assert.match(rules, /Read receipts are automatic/);
     assert.match(rules, /sl session action <id> working_on --target-sequence <n>/);
     // Recap text is preserved separately for clients that want just the activity summary.
     assert.match(String(briefing.payload.recap || ""), /(While you were away|no active peers)/);

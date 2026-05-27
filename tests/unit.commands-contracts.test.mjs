@@ -383,6 +383,8 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const read = getCommandByPath(program, "session read");
   assertCommandHasOption(read, "--before-sequence <n>");
   assertCommandHasOption(read, "--no-actions");
+  assertCommandHasOption(read, "--agent <id>");
+  assertCommandHasOption(read, "--no-view");
   assertCommandHasOption(read, "--include-control-events");
 
   const daemon = getCommandByPath(program, "session daemon");

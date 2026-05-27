@@ -85,26 +85,82 @@ test("computeTranscriptStats: per-agent activeSeconds = first→last event with 
   assert.equal(carter.eventCount, 2);
 });
 
-test("computeTranscriptStats: rolls up tokens + cost from payload.usage", () => {
+test("computeTranscriptStats: rolls up tokens + cost through pricing-ledger semantics", () => {
   const events = [
     ev({
-      event: "agent_response",
+      event: "session_usage",
       agentId: "claude-1",
+      model: "claude-opus-4-7",
       ts: "2026-04-25T10:00:00.000Z",
-      payload: { response: "x", usage: { totalTokens: 1500, costUsd: 0.012 } },
+      payload: {
+        schema: "session_usage/local-v1",
+        idempotencyKey: "claude-call-1",
+        agentId: "claude-1",
+        model: "claude-opus-4-7",
+        inputTokens: 1000,
+        outputTokens: 500,
+        costUsd: 0.012,
+        response: { text: "x" },
+      },
+    }),
+    ev({
+      event: "session_usage",
+      agentId: "claude-1",
+      model: "claude-opus-4-7",
+      ts: "2026-04-25T10:00:01.000Z",
+      payload: {
+        schema: "session_usage/local-v1",
+        idempotencyKey: "claude-call-1",
+        agentId: "claude-1",
+        model: "claude-opus-4-7",
+        inputTokens: 1000,
+        outputTokens: 500,
+        costUsd: 0.012,
+        response: { text: "duplicate" },
+      },
+    }),
+    ev({
+      event: "session_usage",
+      agentId: "codex-2",
+      model: "gpt-5.3-codex",
+      ts: "2026-04-25T10:00:30.000Z",
+      payload: {
+        schema: "billing/v1",
+        idempotencyKey: "codex-call-1",
+        agentId: "codex-2",
+        model: "gpt-5.3-codex",
+        usage: {
+          total_tokens: 2500,
+          input_tokens: 1600,
+          output_tokens: 900,
+          cost_usd: 0.025,
+        },
+        response: { text: "y" },
+      },
     }),
     ev({
       event: "agent_response",
-      agentId: "codex-2",
-      ts: "2026-04-25T10:00:30.000Z",
-      payload: { response: "y", usage: { total_tokens: 2500, cost_usd: 0.025 } },
+      agentId: "legacy-agent",
+      model: "gpt-4.1",
+      ts: "2026-04-25T10:00:45.000Z",
+      payload: {
+        response: "legacy usage path",
+        usage: {
+          totalTokens: 600,
+          costUsd: 0.006,
+        },
+      },
     }),
   ];
-  const stats = computeTranscriptStats({ sessionMeta: {}, events });
-  assert.equal(stats.totals.tokenTotal, 4000);
-  assert.equal(stats.totals.costTotalUsd.toFixed(4), "0.0370");
+  const stats = computeTranscriptStats({ sessionMeta: { sessionId: "ledger-session" }, events });
+  assert.equal(stats.totals.tokenTotal, 4600);
+  assert.equal(stats.totals.costTotalUsd.toFixed(4), "0.0430");
+  assert.equal(stats.totals.usageEntries, 3);
+  assert.equal(stats.totals.duplicatesSkipped, 1);
   const claude = stats.agents.find((a) => a.agentId === "claude-1");
   assert.equal(claude.tokens, 1500);
+  const legacy = stats.agents.find((a) => a.agentId === "legacy-agent");
+  assert.equal(legacy.tokens, 600);
 });
 
 test("computeTranscriptStats: counts senti orchestrator actions", () => {
@@ -240,11 +296,20 @@ test("buildTranscriptMarkdown: scales to 20 distinct speakers without dropping r
   for (let i = 0; i < 20; i += 1) {
     events.push(
       ev({
-        event: "agent_response",
+        event: "session_usage",
         agentId: `agent-${i}`,
         model: i % 2 === 0 ? "claude" : "codex",
         ts: `2026-04-25T10:${String(i).padStart(2, "0")}:00.000Z`,
-        payload: { response: `msg ${i}`, usage: { totalTokens: 100, costUsd: 0.001 } },
+        payload: {
+          schema: "session_usage/local-v1",
+          idempotencyKey: `scale-${i}`,
+          agentId: `agent-${i}`,
+          model: i % 2 === 0 ? "claude" : "codex",
+          inputTokens: 70,
+          outputTokens: 30,
+          costUsd: 0.001,
+          response: { text: `msg ${i}` },
+        },
       }),
     );
   }
