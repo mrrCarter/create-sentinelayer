@@ -185,6 +185,43 @@ export function generateAgentId(modelName) {
   return `${prefix}-${suffix}`;
 }
 
+function isActiveAgentSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
+  }
+  if (snapshot.active === false) {
+    return false;
+  }
+  if (normalizeString(snapshot.leftAt)) {
+    return false;
+  }
+  return true;
+}
+
+function chooseAgentRefreshModel(value, existingModel) {
+  const candidate = normalizeString(value);
+  const existing = normalizeString(existingModel);
+  if (!candidate) {
+    return existing || "unknown";
+  }
+  if (existing && ["cli", "unknown"].includes(candidate.toLowerCase())) {
+    return existing;
+  }
+  return candidate;
+}
+
+function chooseAgentRefreshRole(value, existingRole) {
+  const candidate = normalizeString(value);
+  const existing = normalizeString(existingRole);
+  if (!candidate) {
+    return existing || "observer";
+  }
+  if (existing && candidate.toLowerCase() === "observer") {
+    return existing;
+  }
+  return candidate;
+}
+
 // In-process registry of agents registered by *this* CLI process. The
 // dashboard treats any participant without a terminal agent_leave /
 // agent_killed / session_killed event as "active". When a CLI exits via
@@ -275,6 +312,39 @@ export async function registerAgent(
   }
 
   const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
+  const existing = await readAgentSnapshot(snapshotPath);
+
+  if (isActiveAgentSnapshot(existing)) {
+    const snapshot = normalizeAgentSnapshot(
+      {
+        ...existing,
+        sessionId: paths.sessionId,
+        agentId: resolvedAgentId,
+        model: chooseAgentRefreshModel(model, existing.model),
+        role: chooseAgentRefreshRole(role, existing.role),
+        status: normalizeString(existing.status) || "idle",
+        detail: normalizeString(existing.detail) || "",
+        file: normalizeString(existing.file) || null,
+        lastActivityAt: nowIso,
+        leftAt: null,
+        leaveReason: null,
+        active: true,
+        updatedAt: nowIso,
+      },
+      nowIso
+    );
+    await writeAgentSnapshot(snapshotPath, snapshot);
+    if (trackProcessExit) {
+      _trackLocalAgent(paths.sessionId, snapshot.agentId, targetPath);
+    }
+    return {
+      ...snapshot,
+      snapshotPath,
+      emittedJoinEvent: false,
+      emittedContextBriefing: false,
+      refreshedExistingAgent: true,
+    };
+  }
 
   const snapshot = normalizeAgentSnapshot(
     {
@@ -331,6 +401,9 @@ export async function registerAgent(
   return {
     ...snapshot,
     snapshotPath,
+    emittedJoinEvent: true,
+    emittedContextBriefing: normalizeString(snapshot.agentId).toLowerCase() !== "senti",
+    refreshedExistingAgent: false,
   };
 }
 

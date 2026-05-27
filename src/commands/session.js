@@ -319,7 +319,7 @@ const SESSION_MESSAGE_ACTION_DESCRIPTIONS = Object.freeze([
   {
     type: "view",
     command: "sl session view <id> <sequence>",
-    description: "Record a read receipt for a target message.",
+    description: "Manually backfill a read receipt for a target message; remote reads record views automatically.",
   },
 ]);
 
@@ -388,6 +388,7 @@ function actionDisplayMessage(action = {}) {
 function buildSessionActionEvent(sessionId, action = {}) {
   const actionType = normalizeString(action.actionType ?? action.action_type).toLowerCase();
   if (!SESSION_MESSAGE_ACTION_TYPES.has(actionType)) return null;
+  if (actionType === "view") return null;
   const id =
     normalizeString(action.id) ||
     shortSha256(
@@ -581,6 +582,99 @@ function defaultActionIdempotencyKey({
   const noteHash = note ? shortSha256(note) : "none";
   const actor = normalizeString(agentId) || "user";
   return `cli:${normalizeString(actionType).toLowerCase()}:${target}:${actor}:${noteHash}`;
+}
+
+function sessionReadViewTarget(event = {}) {
+  const eventType = normalizeString(event.event || event.type).toLowerCase();
+  if (eventType !== "session_message" || isSessionControlEvent(event)) {
+    return null;
+  }
+  const targetSequenceId = eventSequenceNumber(event);
+  const targetCursor = normalizeString(event.cursor);
+  if (!targetSequenceId && !targetCursor) {
+    return null;
+  }
+  return {
+    key: targetSequenceId ? `seq:${targetSequenceId}` : `cursor:${targetCursor}`,
+    targetSequenceId: targetSequenceId || null,
+    targetCursor,
+  };
+}
+
+async function recordSessionReadViews(sessionId, events = [], {
+  targetPath,
+  agentId,
+  enabled = false,
+  maxTargets = 50,
+} = {}) {
+  const maxAutoViewTargets = Math.max(0, Math.min(200, Number(maxTargets) || 0));
+  const summary = {
+    enabled: Boolean(enabled),
+    agentId: normalizeString(agentId) || "cli-user",
+    targetCount: 0,
+    attempted: 0,
+    recorded: 0,
+    duplicates: 0,
+    failed: 0,
+    skipped: 0,
+    reason: "",
+  };
+  if (!summary.enabled) {
+    summary.reason = "disabled";
+    return summary;
+  }
+
+  const seenTargets = new Set();
+  const targets = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    const target = sessionReadViewTarget(event);
+    if (!target || seenTargets.has(target.key)) {
+      continue;
+    }
+    seenTargets.add(target.key);
+    targets.push(target);
+  }
+  summary.targetCount = targets.length;
+
+  const writeTargets = maxAutoViewTargets > 0 ? targets.slice(-maxAutoViewTargets) : [];
+  summary.skipped = Math.max(0, targets.length - writeTargets.length);
+  if (summary.skipped > 0) {
+    summary.reason = "target_cap_reached";
+  }
+
+  for (const target of writeTargets) {
+    const result = await createSessionMessageAction(sessionId, {
+      actionType: "view",
+      targetPath,
+      targetSequenceId: target.targetSequenceId,
+      targetCursor: target.targetCursor,
+      metadata: {
+        source: "cli_read",
+        agentId: summary.agentId,
+      },
+      idempotencyKey: defaultActionIdempotencyKey({
+        actionType: "view",
+        targetSequenceId: target.targetSequenceId,
+        targetCursor: target.targetCursor,
+        agentId: summary.agentId,
+      }),
+      timeoutMs: 15_000,
+    });
+    summary.attempted += 1;
+    if (result?.ok && result.action) {
+      summary.recorded += 1;
+      if (result.duplicate) {
+        summary.duplicates += 1;
+      }
+      continue;
+    }
+    summary.failed += 1;
+    summary.reason = normalizeString(result?.reason) || "view_write_failed";
+    summary.skipped = Math.max(0, targets.length - summary.attempted);
+    break;
+  }
+
+  return summary;
 }
 
 function compareIsoDesc(left = "", right = "") {
@@ -2440,6 +2534,7 @@ export function registerSessionCommand(program) {
         awaitRemoteSync: Boolean(explicitAgent),
       });
       const agentJoinRelayed =
+        joined.emittedJoinEvent !== false &&
         Boolean(explicitAgent) &&
         Boolean(resolvedAgentId) &&
         resolvedAgentId !== "cli-user" &&
@@ -2834,7 +2929,12 @@ export function registerSessionCommand(program) {
       console.log(JSON.stringify(payload, null, 2));
       return payload;
     }
-    console.log(formatEventLine(localAppend.event || actionEvent));
+    if (localAppend.event || actionEvent) {
+      console.log(formatEventLine(localAppend.event || actionEvent));
+    } else {
+      const targetLabel = targetSequenceId ? `#${targetSequenceId}` : targetCursor || targetActionId || "target";
+      console.log(pc.green(`Recorded ${normalizedActionType} on ${targetLabel}.`));
+    }
     return payload;
   }
 
@@ -2944,7 +3044,7 @@ export function registerSessionCommand(program) {
 
   session
     .command("view <sessionId> <targetSequenceId>")
-    .description("Record a read receipt for a target session event")
+    .description("Manually backfill a read receipt for a target session event")
     .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -3624,6 +3724,8 @@ export function registerSessionCommand(program) {
     )
     .option("--before-sequence <n>", "Remote page ending before this sequence id")
     .option("--no-actions", "Do not include remote message actions/replies/reactions")
+    .option("--agent <id>", "Agent id for automatic view receipts", process.env.SENTINELAYER_AGENT_ID || "cli-user")
+    .option("--no-view", "Do not record automatic view receipts for displayed remote messages")
     .option("--include-control-events", "Include listener lifecycle/control-plane events in transcript output")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -3640,6 +3742,7 @@ export function registerSessionCommand(program) {
       const remoteTailLimit = includeControlEvents
         ? tail
         : Math.min(200, Math.max(tail, tail + 20));
+      const readAgentId = await defaultAgentId(options.agent, targetPath);
 
       let hydration = null;
       let remoteTail = null;
@@ -3747,6 +3850,12 @@ export function registerSessionCommand(program) {
           : displayEvents.filter((event) => !isSessionControlEvent(event));
         const hiddenControlEventCount = displayEvents.length - transcriptEvents.length;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
+        const autoView = await recordSessionReadViews(normalizedSessionId, events, {
+          targetPath,
+          agentId: readAgentId,
+          enabled: Boolean(options.remote && options.view !== false),
+          maxTargets: process.env.SENTINELAYER_SESSION_READ_VIEW_MAX_TARGETS || 50,
+        });
         const remoteVerified = Boolean(
           options.remote &&
             ((hydration && hydration.ok) || (remoteTail && remoteTail.ok))
@@ -3765,6 +3874,7 @@ export function registerSessionCommand(program) {
           unacknowledgedHumanMessages,
           recentHumanActivityCount: recentHumanActivity.length,
           recentHumanActivity,
+          autoView,
           displaySource: !options.remote
             ? "local"
             : remoteTail?.ok

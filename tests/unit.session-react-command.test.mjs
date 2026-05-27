@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
+const ACTION_TEST_TOKEN = ["api", "token", "unit", "session", "action"].join("_");
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -27,22 +28,74 @@ async function readJsonBody(req) {
   return raw.trim() ? JSON.parse(raw) : {};
 }
 
-async function startActionMockApi() {
+async function startActionMockApi({ actions = [] } = {}) {
+  const sessionEvents = [
+    {
+      stream: "sl_event",
+      event: "session_message",
+      agent: { id: "human-mrrcarter", model: "human" },
+      payload: { message: "first readable message" },
+      sessionId: "sess-actions",
+      cursor: "cursor-41",
+      sequenceId: 41,
+      ts: "2026-05-22T01:59:00.000Z",
+      timestamp: "2026-05-22T01:59:00.000Z",
+    },
+    {
+      stream: "sl_event",
+      event: "session_message",
+      agent: { id: "claude-mythos", role: "reviewer" },
+      payload: { message: "second readable message" },
+      sessionId: "sess-actions",
+      cursor: "cursor-42",
+      sequenceId: 42,
+      ts: "2026-05-22T02:00:00.000Z",
+      timestamp: "2026-05-22T02:00:00.000Z",
+    },
+  ];
   const state = {
     eventsProbeCount: 0,
     actionPayload: null,
+    actionPayloads: [],
     actionAuthHeader: "",
   };
 
   const server = createServer(async (req, res) => {
     try {
-      if (req.method === "GET" && req.url === "/api/v1/sessions/sess-actions/events?limit=1") {
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      if (req.method === "GET" && url.pathname === "/api/v1/sessions") {
+        return jsonResponse(res, 200, {
+          sessions: [{ sessionId: "sess-actions", status: "active", title: "Actions session" }],
+          count: 1,
+        });
+      }
+      if (req.method === "GET" && url.pathname === "/api/v1/sessions/sess-actions/human-messages") {
+        return jsonResponse(res, 200, { sessionId: "sess-actions", messages: [], cursor: null });
+      }
+      if (req.method === "GET" && url.pathname === "/api/v1/sessions/sess-actions/events") {
         state.eventsProbeCount += 1;
         return jsonResponse(res, 200, { sessionId: "sess-actions", events: [], count: 0 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/v1/sessions/sess-actions/events/before") {
+        return jsonResponse(res, 200, {
+          sessionId: "sess-actions",
+          events: [...sessionEvents].reverse(),
+          count: sessionEvents.length,
+          next_before_sequence: 41,
+        });
+      }
+      if (req.method === "GET" && url.pathname === "/api/v1/sessions/sess-actions/actions") {
+        return jsonResponse(res, 200, {
+          sessionId: "sess-actions",
+          actions,
+          count: actions.length,
+          projection: { unacknowledgedHumanMessages: [], recentActivity: [] },
+        });
       }
       if (req.method === "POST" && req.url === "/api/v1/sessions/sess-actions/actions") {
         state.actionAuthHeader = String(req.headers.authorization || "");
         state.actionPayload = await readJsonBody(req);
+        state.actionPayloads.push(state.actionPayload);
         const actionType = String(state.actionPayload.actionType || "ack");
         return jsonResponse(res, 200, {
           ok: true,
@@ -56,11 +109,12 @@ async function startActionMockApi() {
             actionType,
             actionKey: actionType,
             actorKind: "agent",
-            actorId: "codex",
+            actorId: state.actionPayload.metadata?.agentId || "codex",
             actorRole: "coder",
             note: state.actionPayload.note || "",
             createdAt: "2026-05-22T02:00:00.000Z",
-            metadata: {},
+            metadata: state.actionPayload.metadata || {},
+            idempotencyKey: state.actionPayload.idempotencyKey || "",
           },
         });
       }
@@ -94,7 +148,7 @@ function runCli(args, { cwd, env = {} } = {}) {
         SENTINELAYER_CLI_SKIP_AUTH: "1",
         SENTINELAYER_SKIP_SENTI_AUTOSTART: "1",
         SENTINELAYER_SKIP_REMOTE_SYNC: "0",
-        SENTINELAYER_TOKEN: "api_token_unit_session_action",
+        SENTINELAYER_TOKEN: ACTION_TEST_TOKEN,
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -159,7 +213,7 @@ test("Unit session react command: ack posts a message action and appends local e
     assert.equal(payload.event.payload.actionType, "ack");
 
     assert.equal(mock.state.eventsProbeCount, 1);
-    assert.equal(mock.state.actionAuthHeader, "Bearer api_token_unit_session_action");
+    assert.equal(mock.state.actionAuthHeader, `Bearer ${ACTION_TEST_TOKEN}`);
     assert.equal(mock.state.actionPayload.actionType, "ack");
     assert.equal(mock.state.actionPayload.targetSequenceId, 42);
     assert.equal(mock.state.actionPayload.metadata.agentId, "codex");
@@ -204,10 +258,217 @@ test("Unit session view command: posts read receipt action", async () => {
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.command, "session view");
     assert.equal(payload.actionType, "view");
-    assert.equal(payload.event.payload.actionType, "view");
+    assert.equal(payload.event, null);
+    assert.equal(payload.localAppend.appended, false);
+    assert.equal(payload.localAppend.reason, "no_event");
     assert.equal(mock.state.actionPayload.actionType, "view");
     assert.equal(mock.state.actionPayload.targetSequenceId, 42);
     assert.equal(mock.state.actionPayload.metadata.agentId, "codex");
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read --remote: records automatic view receipts for displayed messages", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-auto-view-"));
+  const mock = await startActionMockApi();
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "read",
+        "sess-actions",
+        "--remote",
+        "--tail",
+        "2",
+        "--no-actions",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "session read");
+    assert.equal(payload.count, 2);
+    assert.deepEqual(
+      payload.events.map((event) => event.sequenceId),
+      [41, 42],
+    );
+    assert.deepEqual(payload.autoView, {
+      enabled: true,
+      agentId: "codex",
+      targetCount: 2,
+      attempted: 2,
+      recorded: 2,
+      duplicates: 0,
+      failed: 0,
+      skipped: 0,
+      reason: "",
+    });
+
+    assert.equal(mock.state.actionPayloads.length, 2);
+    assert.deepEqual(
+      mock.state.actionPayloads.map((body) => body.targetSequenceId),
+      [41, 42],
+    );
+    assert.equal(mock.state.actionPayloads[0].actionType, "view");
+    assert.equal(mock.state.actionPayloads[0].targetCursor, "cursor-41");
+    assert.equal(mock.state.actionPayloads[0].metadata.source, "cli_read");
+    assert.equal(mock.state.actionPayloads[0].metadata.agentId, "codex");
+    assert.equal(mock.state.actionPayloads[0].idempotencyKey, "cli:view:seq:41:codex:none");
+    assert.equal(mock.state.actionPayloads[1].idempotencyKey, "cli:view:seq:42:codex:none");
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read --remote: --no-view suppresses automatic view receipts", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-no-view-"));
+  const mock = await startActionMockApi();
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "read",
+        "sess-actions",
+        "--remote",
+        "--tail",
+        "2",
+        "--no-actions",
+        "--no-view",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.autoView.enabled, false);
+    assert.equal(payload.autoView.reason, "disabled");
+    assert.equal(payload.autoView.targetCount, 0);
+    assert.equal(mock.state.actionPayloads.length, 0);
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read --remote: caps automatic view writes per read", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-auto-view-cap-"));
+  const mock = await startActionMockApi();
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "read",
+        "sess-actions",
+        "--remote",
+        "--tail",
+        "2",
+        "--no-actions",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: {
+          SENTINELAYER_API_URL: mock.apiUrl,
+          SENTINELAYER_SESSION_READ_VIEW_MAX_TARGETS: "1",
+        },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.autoView, {
+      enabled: true,
+      agentId: "codex",
+      targetCount: 2,
+      attempted: 1,
+      recorded: 1,
+      duplicates: 0,
+      failed: 0,
+      skipped: 1,
+      reason: "target_cap_reached",
+    });
+    assert.equal(mock.state.actionPayloads.length, 1);
+    assert.equal(mock.state.actionPayloads[0].targetSequenceId, 42);
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read --remote: view actions stay out of visible transcript events", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-view-actions-hidden-"));
+  const mock = await startActionMockApi({
+    actions: [
+      {
+        id: "act-view-41",
+        actionType: "view",
+        targetSequenceId: 41,
+        actorKind: "agent",
+        actorId: "codex",
+        createdAt: "2026-05-22T02:00:01.000Z",
+      },
+      {
+        id: "act-ack-41",
+        actionType: "ack",
+        targetSequenceId: 41,
+        actorKind: "agent",
+        actorId: "claude",
+        createdAt: "2026-05-22T02:00:02.000Z",
+      },
+    ],
+  });
+  try {
+    const result = await runCli(
+      [
+        "session",
+        "read",
+        "sess-actions",
+        "--remote",
+        "--tail",
+        "5",
+        "--no-view",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(
+      payload.events.some((event) => event.payload?.actionType === "view"),
+      false,
+    );
+    assert.equal(
+      payload.events.some((event) => event.payload?.actionType === "ack"),
+      true,
+    );
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });

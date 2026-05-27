@@ -7,7 +7,8 @@
  * Adds at render time:
  *   - Per-agent active duration (first → last event with that agent id)
  *   - Total session live-for (createdAt → last event)
- *   - Token + cost roll-up if events carry usage payloads
+ *   - Token + cost roll-up from session_usage events through the
+ *     pricing ledger, including idempotency dedupe
  *   - Avatar per speaker, picked from PERSONA_VISUALS / CLIENT_FAMILY_AVATARS,
  *     or a deterministic letter-tile fallback
  *   - Senti-orchestrator events tagged with the orchestrator avatar so
@@ -18,6 +19,7 @@
  */
 
 import { PERSONA_VISUALS, ORCHESTRATOR_VISUALS } from "../agents/persona-visuals.js";
+import { buildSessionUsageLedger } from "./pricing-ledger.js";
 
 /**
  * Avatar map for client families (the OUTSIDE-the-persona-set agents
@@ -232,16 +234,52 @@ function eventBody(event) {
  * Compute deterministic activity stats from the event log:
  *  - sessionLiveSeconds: created → last event
  *  - perAgent[agentId]: { firstSeen, lastSeen, eventCount, activeSeconds, family, displayName, model }
- *  - totals: { tokenTotal, costTotalUsd } summed from any payload.usage hints
+ *  - totals: { tokenTotal, costTotalUsd } summed through the pricing ledger
  *  - sentiActions: count of orchestrator events
  */
 export function computeTranscriptStats({ sessionMeta = {}, events = [], speakerProfiles = new Map() } = {}) {
   const perAgent = new Map();
   let firstEventTs = null;
   let lastEventTs = null;
-  let tokenTotal = 0;
-  let costTotalUsd = 0;
   let sentiActions = 0;
+
+  const ensureAgentRecord = ({
+    agentId,
+    agentModel = "",
+    epoch,
+  } = {}) => {
+    const normalizedAgentId = normalize(agentId);
+    if (!normalizedAgentId || !Number.isFinite(epoch)) {
+      return null;
+    }
+    if (!perAgent.has(normalizedAgentId)) {
+      const profile = speakerProfiles.get(normalizedAgentId) || null;
+      const identity = resolveSpeakerIdentity({
+        agentId: normalizedAgentId,
+        agentModel,
+        profile,
+      });
+      perAgent.set(normalizedAgentId, {
+        agentId: normalizedAgentId,
+        family: identity.family,
+        displayName: identity.displayName,
+        avatar: identity.avatar,
+        avatarUrl: identity.avatarUrl,
+        color: identity.color,
+        model: agentModel,
+        firstSeenMs: epoch,
+        lastSeenMs: epoch,
+        eventCount: 0,
+        tokens: 0,
+        costUsd: 0,
+      });
+    }
+    const record = perAgent.get(normalizedAgentId);
+    if (!record.model && agentModel) {
+      record.model = agentModel;
+    }
+    return record;
+  };
 
   for (const event of events) {
     const ts = eventTimestamp(event);
@@ -256,43 +294,39 @@ export function computeTranscriptStats({ sessionMeta = {}, events = [], speakerP
     const lowerId = agentId.toLowerCase();
     if (lowerId === "senti" || lowerId === "kai-chen") sentiActions += 1;
 
-    if (!perAgent.has(agentId)) {
-      const profile = speakerProfiles.get(agentId) || null;
-      const identity = resolveSpeakerIdentity({
-        agentId,
-        agentModel: event.agent?.model || event.agentModel || "",
-        profile,
-      });
-      perAgent.set(agentId, {
-        agentId,
-        family: identity.family,
-        displayName: identity.displayName,
-        avatar: identity.avatar,
-        avatarUrl: identity.avatarUrl,
-        color: identity.color,
-        model: event.agent?.model || event.agentModel || "",
-        firstSeenMs: epoch,
-        lastSeenMs: epoch,
-        eventCount: 0,
-        tokens: 0,
-        costUsd: 0,
-      });
-    }
-    const record = perAgent.get(agentId);
+    const record = ensureAgentRecord({
+      agentId,
+      agentModel: event.agent?.model || event.agentModel || "",
+      epoch,
+    });
+    if (!record) continue;
     record.eventCount += 1;
     if (epoch < record.firstSeenMs) record.firstSeenMs = epoch;
     if (epoch > record.lastSeenMs) record.lastSeenMs = epoch;
+  }
 
-    const usage = event?.payload?.usage;
-    if (usage && typeof usage === "object") {
-      const t =
-        Number(usage.totalTokens || usage.total_tokens || usage.tokens || 0) || 0;
-      const c = Number(usage.costUsd || usage.cost_usd || usage.cost || 0) || 0;
-      record.tokens += t;
-      record.costUsd += c;
-      tokenTotal += t;
-      costTotalUsd += c;
+  const usageLedger = buildSessionUsageLedger(events, {
+    sessionId: normalize(sessionMeta.sessionId),
+  });
+  const fallbackUsageEpoch =
+    lastEventTs ??
+    firstEventTs ??
+    (Number.isFinite(Date.parse(sessionMeta?.createdAt)) ? Date.parse(sessionMeta.createdAt) : 0);
+  for (const entry of usageLedger.entries) {
+    const entryEpoch = Number.isFinite(Date.parse(entry.timestamp))
+      ? Date.parse(entry.timestamp)
+      : fallbackUsageEpoch;
+    const record = ensureAgentRecord({
+      agentId: entry.agentId,
+      agentModel: entry.model,
+      epoch: entryEpoch,
+    });
+    if (!record) continue;
+    if ((!record.model || record.model === "unknown") && entry.model && entry.model !== "unknown") {
+      record.model = entry.model;
     }
+    record.tokens += entry.totalTokens;
+    record.costUsd = Math.round((record.costUsd + entry.providerCostUsd) * 1_000_000) / 1_000_000;
   }
 
   const createdAtMs = sessionMeta?.createdAt
@@ -329,7 +363,19 @@ export function computeTranscriptStats({ sessionMeta = {}, events = [], speakerP
     endedAt: lastEventTs ? new Date(lastEventTs).toISOString() : null,
     sessionLiveSeconds,
     agents,
-    totals: { tokenTotal, costTotalUsd },
+    totals: {
+      tokenTotal: usageLedger.totals.totalTokens,
+      inputTokens: usageLedger.totals.inputTokens,
+      outputTokens: usageLedger.totals.outputTokens,
+      costTotalUsd: usageLedger.totals.providerCostUsd,
+      customerCostTotalUsd: usageLedger.totals.hasCustomerCost
+        ? usageLedger.totals.customerCostUsd
+        : null,
+      usageEntries: usageLedger.entries.length,
+      duplicatesSkipped: usageLedger.duplicatesSkipped,
+      unpriced: usageLedger.totals.unpriced,
+      priceBookVersions: usageLedger.priceBookVersions,
+    },
     sentiActions,
   };
 }
@@ -396,8 +442,12 @@ export function buildTranscriptMarkdown({
   lines.push(`Live for: ${formatDuration(stats.sessionLiveSeconds)}`);
   lines.push(`Senti actions: ${stats.sentiActions}`);
   if (stats.totals.tokenTotal > 0 || stats.totals.costTotalUsd > 0) {
+    const billableText =
+      stats.totals.customerCostTotalUsd == null
+        ? ""
+        : ` · Billable: $${stats.totals.customerCostTotalUsd.toFixed(4)}`;
     lines.push(
-      `Tokens: ${stats.totals.tokenTotal.toLocaleString("en-US")} · Cost: $${stats.totals.costTotalUsd.toFixed(4)}`,
+      `Tokens: ${stats.totals.tokenTotal.toLocaleString("en-US")} · Cost: $${stats.totals.costTotalUsd.toFixed(4)}${billableText}`,
     );
   }
   lines.push("");

@@ -224,8 +224,11 @@ function printUsage() {
   console.log("  sl session action <id> working_on --target-sequence <n>  Claim work on a message");
   console.log("  sl session reply <id> <seq> \"msg\"  Thread a response under a message");
   console.log("  sl session comment <id> <seq> \"msg\"  Alias for threaded reply");
-  console.log("  sl session view <id> <seq>          Record a read receipt");
-  console.log("  sl session read <id> --tail 20     Read session stream events");
+  console.log("  sl session read <id> --remote --agent <id>  Read stream events and auto-record views");
+  console.log("  sl session view <id> <seq>          Manually backfill a read receipt");
+  console.log("  sl session recap now <id> --remote --json  Summarize current owners, locks, and work");
+  console.log("  sl session daemon --session <id>    Run Senti recaps/checkpoints for long rooms");
+  console.log("  sl session read <id> --tail 20      Read local session stream events");
   console.log("  sl session status <id> --json      Show session health, agents, runs, leases");
   console.log("  sl session leave <id>              Leave a session");
   console.log("  sl session list --json             List active sessions");
