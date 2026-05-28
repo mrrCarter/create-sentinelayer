@@ -262,6 +262,7 @@ jobs:
             page_candidates="$(echo "${release_runs_json}" | jq -c --arg sha "${GITHUB_SHA}" '
               [
                 (.workflow_runs // [])[]
+                | (.actor.login // "") as $actor
                 | select(
                     .conclusion == "success"
                     and (.event // "") == "push"
@@ -269,7 +270,7 @@ jobs:
                     and (.head_sha // "") == $sha
                     and (.path // "") == env.required_release_workflow_path
                     and (.name // "") == env.required_release_workflow_name
-                    and ((env.release_workflow_actor_allowlist | split(",") | index(.actor.login // "")) != null)
+                    and ((env.release_workflow_actor_allowlist | split(",") | index($actor)) != null)
                   )
                 | {
                     id: (.id | tostring),
