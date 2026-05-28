@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import {
   assertAllowedActor,
@@ -196,4 +197,17 @@ test("Release publish helper requires configured SSH signing key to be registere
       }),
     /does not expose the configured SSH signing key/
   );
+});
+
+test("Release workflow policy allows the repo-admin release-please actor", async () => {
+  const policy = JSON.parse(
+    await readFile(new URL("../.github/policies/release-tag-policy.json", import.meta.url), "utf8")
+  );
+  const workflowText = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+  assert.deepEqual(policy.required_release_workflow_actors, ["github-actions[bot]", "mrrCarter"]);
+  assert.match(workflowText, /required_release_workflow_actors/);
+  assert.match(workflowText, /release_workflow_actor_allowlist/);
+  assert.match(workflowText, /split\(","\) \| index\(\.actor\.login \/\/ ""\)/);
+  assert.doesNotMatch(workflowText, /\(\.actor\.login \/\/ ""\) == env\.required_release_workflow_actor/);
 });
