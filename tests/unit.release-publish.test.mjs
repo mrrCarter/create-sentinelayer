@@ -208,6 +208,8 @@ test("Release workflow policy allows the repo-admin release-please actor", async
   assert.deepEqual(policy.required_release_workflow_actors, ["github-actions[bot]", "mrrCarter"]);
   assert.match(workflowText, /required_release_workflow_actors/);
   assert.match(workflowText, /release_workflow_actor_allowlist/);
-  assert.match(workflowText, /split\(","\) \| index\(\.actor\.login \/\/ ""\)/);
+  assert.match(workflowText, /\(\.actor\.login \/\/ ""\) as \$actor/);
+  assert.match(workflowText, /split\(","\) \| index\(\$actor\)/);
+  assert.doesNotMatch(workflowText, /split\(","\) \| index\(\.actor\.login \/\/ ""\)/);
   assert.doesNotMatch(workflowText, /\(\.actor\.login \/\/ ""\) == env\.required_release_workflow_actor/);
 });
