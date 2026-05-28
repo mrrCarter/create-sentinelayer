@@ -210,6 +210,7 @@ test("Release workflow policy allows the repo-admin release-please actor", async
   assert.match(workflowText, /release_workflow_actor_allowlist/);
   assert.match(workflowText, /\(\.actor\.login \/\/ ""\) as \$actor/);
   assert.match(workflowText, /split\(","\) \| index\(\$actor\)/);
+  assert.match(workflowText, /- name: Fail stale release runs[\s\S]*EVENT_CREATED: \$\{\{ github\.event\.created \|\| 'true' \}\}/);
   assert.doesNotMatch(workflowText, /split\(","\) \| index\(\.actor\.login \/\/ ""\)/);
   assert.doesNotMatch(workflowText, /\(\.actor\.login \/\/ ""\) == env\.required_release_workflow_actor/);
 });
