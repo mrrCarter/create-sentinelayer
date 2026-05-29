@@ -1744,6 +1744,41 @@ async function resolveSessionAgentEnvelope(
   return Object.fromEntries(Object.entries(envelope).filter(([, value]) => value !== undefined));
 }
 
+// Builds the lock/unlock say-convention directive the session daemon parses
+// into the authoritative file-lock registry. Kept pure + exported for testing.
+export function buildSessionLockDirective(verb, file, intent = "") {
+  const normalizedFile = normalizeString(file);
+  const normalizedIntent = normalizeString(intent);
+  if (verb === "unlock") {
+    return `unlock: ${normalizedFile} - ${normalizedIntent || "done"}`;
+  }
+  return normalizedIntent ? `lock: ${normalizedFile} - ${normalizedIntent}` : `lock: ${normalizedFile}`;
+}
+
+// Posts a coordination directive (e.g. "lock: <file> - <intent>") as a session
+// message so the session daemon processes it into the authoritative file-lock
+// registry. Used by `session lock`/`unlock` as ergonomic sugar over the
+// say-convention; locks are advisory + daemon-enforced with TTL auto-release,
+// so this is a best-effort post.
+async function postSessionDirectiveMessage(sessionId, message, {
+  agentId,
+  targetPath = process.cwd(),
+} = {}) {
+  const clientMessageId = `cli-${randomUUID()}`;
+  const agent = await resolveSessionAgentEnvelope(sessionId, agentId, { targetPath });
+  await ensureSessionSayAgentRegistered(sessionId, agent, { targetPath });
+  const event = createAgentEvent({
+    event: "session_message",
+    agent,
+    sessionId,
+    payload: { message, channel: "session", clientMessageId },
+  });
+  event.eventId = clientMessageId;
+  event.idempotencyToken = clientMessageId;
+  const result = await syncSessionEventToApi(sessionId, event, { targetPath });
+  return { event, result };
+}
+
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
   const normalizedItems = Array.isArray(items) ? items : [];
   const normalizedConcurrency = Math.max(
@@ -3257,6 +3292,121 @@ export function registerSessionCommand(program) {
         } else {
           console.log(pc.gray("  (no readable text content for this pinned event)"));
         }
+      }
+      return payload;
+    });
+
+  const runLockDirectiveCommand = async (verb, sessionId, files, options, command) => {
+    const normalizedSessionId = normalizeString(sessionId);
+    if (!normalizedSessionId) {
+      throw new Error("session id is required.");
+    }
+    const fileList = (Array.isArray(files) ? files : [files])
+      .map((file) => normalizeString(file))
+      .filter(Boolean);
+    if (fileList.length === 0) {
+      throw new Error(`session ${verb} requires at least one file path.`);
+    }
+    const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+    await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+    const identity = await resolveMessageActionIdentity({
+      sessionId: normalizedSessionId,
+      optionAgent: options.agent,
+      targetPath,
+      env: process.env,
+    });
+    if (shouldBlockImplicitCliUserSessionSay(identity)) {
+      throw new Error(
+        identity.identityWarning ||
+          `session ${verb} requires an agent identity; pass --agent <id>, set SENTINELAYER_AGENT_ID, or run session join --agent <id> first.`,
+      );
+    }
+    const intent = normalizeString(options.intent);
+    const processed = [];
+    for (const file of fileList) {
+      const directive = buildSessionLockDirective(verb, file, intent);
+      await postSessionDirectiveMessage(normalizedSessionId, directive, {
+        agentId: identity.agentId,
+        targetPath,
+      });
+      processed.push(file);
+    }
+    const payload = {
+      command: `session ${verb}`,
+      sessionId: normalizedSessionId,
+      agentId: identity.agentId,
+      files: processed,
+    };
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    }
+    const action = verb === "lock" ? "Requested lock on" : "Released";
+    console.log(pc.green(`${action} ${processed.length} file(s) as ${identity.agentId}: ${processed.join(", ")}`));
+    if (verb === "lock") {
+      console.log(
+        pc.gray("Senti enforces fail-closed; locks auto-release on TTL. Release with `sl session unlock`."),
+      );
+    }
+    return payload;
+  };
+
+  session
+    .command("lock <sessionId> <files...>")
+    .description("Claim exclusive file locks via Senti (fail-closed, TTL auto-release)")
+    .option("--intent <text>", "Why you're locking these files (shown to peers)")
+    .option("--agent <id>", "Agent id claiming the lock (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, files, options, command) => {
+      await runLockDirectiveCommand("lock", sessionId, files, options, command);
+    });
+
+  session
+    .command("unlock <sessionId> <files...>")
+    .description("Release file locks you hold (Senti only lets the holder release)")
+    .option("--intent <text>", "Optional note on the release")
+    .option("--agent <id>", "Agent id releasing the lock (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, files, options, command) => {
+      await runLockDirectiveCommand("unlock", sessionId, files, options, command);
+    });
+
+  session
+    .command("locks <sessionId>")
+    .description("List active file locks for the session (who holds what, and when they expire)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+      const locks = await listFileLocks(normalizedSessionId, { targetPath });
+      const lockList = Array.isArray(locks) ? locks : [];
+      const payload = {
+        command: "session locks",
+        sessionId: normalizedSessionId,
+        count: lockList.length,
+        locks: lockList,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return payload;
+      }
+      if (lockList.length === 0) {
+        console.log(pc.gray("No active file locks."));
+        return payload;
+      }
+      console.log(pc.bold(`Active file locks (${lockList.length})`));
+      for (const lock of lockList) {
+        const file = normalizeString(lock.file || lock.filePath) || "(unknown file)";
+        const holder = normalizeString(lock.agentId) || "unknown";
+        const expires = normalizeString(lock.expiresAt);
+        console.log(pc.cyan(`  ${file}`) + pc.gray(`  held by ${holder}${expires ? ` · expires ${expires}` : ""}`));
       }
       return payload;
     });

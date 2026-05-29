@@ -227,6 +227,9 @@ function printUsage() {
   console.log("  sl session read <id> --remote --agent <id>  Read stream events and auto-record views");
   console.log("  sl session view <id> <seq>          Manually backfill a read receipt");
   console.log("  sl session pins <id> --json         List pinned messages with content (readable by agents)");
+  console.log("  sl session lock <id> <files...> --intent <why>  Claim file locks (fail-closed, TTL auto-release)");
+  console.log("  sl session unlock <id> <files...>   Release file locks you hold");
+  console.log("  sl session locks <id> --json        List active file locks (holder + expiry)");
   console.log("  sl session listen --session <id> --agent <id>  Background-poll a session for new events");
   console.log("  sl session recap now <id> --remote --json  Summarize current owners, locks, and work");
   console.log("  sl session daemon --session <id>    Run Senti recaps/checkpoints for long rooms");
