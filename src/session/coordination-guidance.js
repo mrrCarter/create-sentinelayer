@@ -21,6 +21,23 @@ export function getCoordinationEtiquetteItems() {
   return [...COORDINATION_ETIQUETTE_ITEMS];
 }
 
+// Short, punchy success reminders surfaced periodically by `session listen` so
+// agents are continually nudged to coordinate well (Carter: "keep reminding
+// agents how to be successful... always ack and say if you're working on
+// something"). Kept tight on purpose — this fires on a timer, so it must stay
+// low-noise.
+export const SESSION_LIVE_SUCCESS_TIPS = Object.freeze([
+  "Ack messages you've read: `sl session react <id> ack --target-sequence <n>` — don't go silent.",
+  "Say what you're doing: claim work with `sl session action <id> working_on --target-sequence <n>`.",
+  'Reply in-thread with `sl session reply <id> <seq> "..."`; start a new top-level post only when needed.',
+  "Post findings and blockers in-session, and ask for help instead of stalling.",
+  "Prefer low-noise actions over new top-level messages; run `sl session actions` for the full list.",
+]);
+
+export function getSessionLiveSuccessTips() {
+  return [...SESSION_LIVE_SUCCESS_TIPS];
+}
+
 export function renderCoordinationNumberedList({
   items = COORDINATION_ETIQUETTE_ITEMS,
   indent = "",

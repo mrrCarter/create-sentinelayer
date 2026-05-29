@@ -77,6 +77,7 @@ import {
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
+import { SESSION_LIVE_SUCCESS_TIPS } from "../session/coordination-guidance.js";
 import { buildSessionRecap } from "../session/recap.js";
 import { computeTranscriptStats } from "../session/transcript.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
@@ -1403,6 +1404,41 @@ function formatListenerCatchupNotice(catchup = {}) {
     `${matchingEventCount} addressed/broadcast to this agent${range}.`,
     "Use --from-now only when you intentionally want to skip old backlog.",
   ].join(" ");
+}
+
+// Periodic in-session coaching reminder surfaced by `session listen`. Keeps
+// agents continually nudged toward good coordination (ack, claim work, reply
+// in-thread, surface findings). `tick` makes each emission idempotent so the
+// same reminder is not deduped across the run.
+export function buildSessionCoachingEvent({
+  sessionId,
+  agentId,
+  agentModel = "cli",
+  displayName = "",
+  listenerId = "",
+  tick = 0,
+  tips = SESSION_LIVE_SUCCESS_TIPS,
+} = {}) {
+  const tipList = Array.isArray(tips) && tips.length ? tips : SESSION_LIVE_SUCCESS_TIPS;
+  return createAgentEvent({
+    event: "session_coaching",
+    sessionId,
+    agent: {
+      id: agentId,
+      model: normalizeString(agentModel) || "cli",
+      role: "listener",
+      displayName: normalizeString(displayName) || agentId,
+      clientKind: "cli",
+    },
+    eventId: `session-coaching-${listenerId || agentId}-${tick}`,
+    idempotencyToken: `session-coaching:${listenerId || agentId}:${tick}`,
+    payload: compactPayload({
+      source: "session_listen",
+      kind: "coaching",
+      message: "Session success reminders:",
+      tips: [...tipList],
+    }),
+  });
 }
 
 function buildListenerCatchupEvent({
@@ -3272,6 +3308,12 @@ export function registerSessionCommand(program) {
       "--wake <command>",
       "Wake hook: run this shell command on each matched event (notify->resume bridge). Event JSON is piped to stdin; SL_WAKE_* env vars are set.",
     )
+    .option(
+      "--coaching-interval <seconds>",
+      "Seconds between in-session success reminders (ack, claim work, reply in-thread). Default 900; 0 disables.",
+      "900",
+    )
+    .option("--no-coaching", "Do not emit periodic in-session success reminders")
     .action(async (options) => {
       const normalizedSessionId = resolveSessionIdOption(options);
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -3344,6 +3386,44 @@ export function registerSessionCommand(program) {
       const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
       let lastPresenceHeartbeatMs = 0;
+
+      // Periodic in-session success reminders (ack, claim work, reply
+      // in-thread). Long-running interactive listeners only — skipped under
+      // --max-polls (smoke/test) and when --no-coaching is set.
+      const coachingIntervalSeconds =
+        options.coaching === false
+          ? 0
+          : parsePositiveInteger(options.coachingInterval, "coaching-interval", 900);
+      let coachingTick = 0;
+      const emitCoaching = () => {
+        if (emitFormat === "ndjson") {
+          console.log(
+            JSON.stringify(
+              buildSessionCoachingEvent({
+                sessionId: normalizedSessionId,
+                agentId,
+                agentModel,
+                displayName,
+                listenerId,
+                tick: coachingTick++,
+              }),
+            ),
+          );
+        } else {
+          console.log(pc.cyan("Session success reminders:"));
+          for (const tip of SESSION_LIVE_SUCCESS_TIPS) {
+            console.log(pc.gray(`  - ${tip}`));
+          }
+        }
+      };
+      let coachingTimer = null;
+      if (coachingIntervalSeconds > 0 && maxPolls === null) {
+        emitCoaching();
+        coachingTimer = setInterval(emitCoaching, coachingIntervalSeconds * 1000);
+        if (coachingTimer && typeof coachingTimer.unref === "function") {
+          coachingTimer.unref();
+        }
+      }
 
       if (emitFormat === "text") {
         console.log(
@@ -3455,6 +3535,9 @@ export function registerSessionCommand(program) {
           },
         });
       } finally {
+        if (coachingTimer) {
+          clearInterval(coachingTimer);
+        }
         process.removeListener("SIGINT", onSigint);
       }
     });
