@@ -63,6 +63,7 @@ import {
 import { readSessionPreview } from "../session/preview.js";
 import {
   createSessionMessageAction,
+  fetchSessionPinnedMessages,
   listSessionMessageActions,
   listSessionsFromApi,
   probeSessionAccess,
@@ -3092,6 +3093,57 @@ export function registerSessionCommand(program) {
         commandName: "session view",
         targetSequenceId: parsePositiveInteger(targetSequenceId, "targetSequenceId", 0),
       });
+    });
+
+  session
+    .command("pins <sessionId>")
+    .description("List the session's pinned messages with their content so agents can read them")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+      const result = await fetchSessionPinnedMessages(normalizedSessionId, { targetPath });
+      if (!result.ok) {
+        throw new Error(`Could not load pinned messages (${result.reason || "unknown"}).`);
+      }
+      const pinLimit = result.pinLimit || 10;
+      const payload = {
+        command: "session pins",
+        sessionId: normalizedSessionId,
+        pinLimit,
+        count: result.count,
+        pins: result.pins,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return payload;
+      }
+      if (!result.count) {
+        console.log(pc.gray("No pinned messages in this session."));
+        return payload;
+      }
+      console.log(pc.bold(`📌 Pinned messages (${result.count}/${pinLimit})`));
+      for (const pin of result.pins) {
+        const seqLabel = pin.targetSequenceId ? `#${pin.targetSequenceId}` : "(unknown sequence)";
+        const author = pin.author || "unknown";
+        const pinnedBy = pin.pinnedBy ? ` · pinned by ${pin.pinnedBy}` : "";
+        const when = pin.pinnedAt ? ` · ${pin.pinnedAt}` : "";
+        console.log("");
+        console.log(pc.cyan(`${seqLabel}  ${author}${pinnedBy}${when}`));
+        if (pin.content) {
+          for (const line of String(pin.content).split("\n")) {
+            console.log(`  ${line}`);
+          }
+        } else {
+          console.log(pc.gray("  (no readable text content for this pinned event)"));
+        }
+      }
+      return payload;
     });
 
   session

@@ -1643,6 +1643,123 @@ export async function listSessionMessageActions(
   }
 }
 
+function pinnedEventContentText(event = {}) {
+  const payload = event && typeof event === "object" ? event.payload || {} : {};
+  return (
+    normalizeString(payload.note) ||
+    normalizeString(payload.message) ||
+    normalizeString(payload.text) ||
+    normalizeString(payload.content) ||
+    normalizeString(payload.summary) ||
+    ""
+  );
+}
+
+function pinnedEventAuthorId(event = {}) {
+  const agent = event && typeof event === "object" ? event.agent || {} : {};
+  return normalizeString(agent.id || agent.agentId) || normalizeString(event.agentId) || "";
+}
+
+/**
+ * Resolve the session's active pinned messages, enriched with each pinned
+ * message's author and content so a CLI agent can actually read them (not just
+ * see sequence numbers). Pins come from the action projection
+ * (`projection.pinnedMessages`, capped at `projection.pinLimit`); content is
+ * resolved per pinned sequence via `/events/before`. Bounded by the pin cap
+ * (<= 10), so at most ~10 single-event lookups.
+ */
+export async function fetchSessionPinnedMessages(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+    listActions = listSessionMessageActions,
+    fetchEventsBefore = pollSessionEventsBefore,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return { ok: false, reason: "invalid_session_id", pins: [], pinLimit: 0, count: 0 };
+  }
+
+  const actionsResult = await listActions(normalizedSessionId, {
+    targetPath,
+    timeoutMs,
+    resolveAuthSession,
+    fetchImpl,
+    nowMs,
+  });
+  if (!actionsResult || !actionsResult.ok) {
+    return {
+      ok: false,
+      reason: normalizeString(actionsResult?.reason) || "actions_read_failed",
+      pins: [],
+      pinLimit: 0,
+      count: 0,
+    };
+  }
+
+  const projection = actionsResult.projection && typeof actionsResult.projection === "object"
+    ? actionsResult.projection
+    : {};
+  const pinLimit = Number(projection.pinLimit) || 0;
+  const pinnedActions = Array.isArray(projection.pinnedMessages) ? projection.pinnedMessages : [];
+
+  const pins = await Promise.all(
+    pinnedActions.map(async (action) => {
+      const targetSequenceId = Number(action?.targetSequenceId) || 0;
+      const base = {
+        targetSequenceId,
+        targetCursor: normalizeString(action?.targetCursor) || null,
+        pinnedBy: normalizeString(action?.actorId) || "",
+        pinnedByKind: normalizeString(action?.actorKind) || "",
+        pinnedAt: normalizeString(action?.createdAt) || "",
+        author: "",
+        content: "",
+        resolved: false,
+      };
+      if (targetSequenceId <= 0) {
+        return base;
+      }
+      const eventsResult = await fetchEventsBefore(normalizedSessionId, {
+        targetPath,
+        beforeSequence: targetSequenceId + 1,
+        limit: 1,
+        timeoutMs,
+        resolveAuthSession,
+        fetchImpl,
+        nowMs,
+      });
+      if (eventsResult && eventsResult.ok && Array.isArray(eventsResult.events)) {
+        const match =
+          eventsResult.events.find(
+            (event) => Number(event?.sequenceId) === targetSequenceId,
+          ) ||
+          eventsResult.events[eventsResult.events.length - 1] ||
+          null;
+        if (match) {
+          base.author = pinnedEventAuthorId(match);
+          base.content = pinnedEventContentText(match);
+          base.resolved = true;
+        }
+      }
+      return base;
+    }),
+  );
+
+  return {
+    ok: true,
+    reason: "",
+    sessionId: normalizedSessionId,
+    pins,
+    pinLimit,
+    count: pins.length,
+  };
+}
+
 export async function createSessionMessageAction(
   sessionId,
   {
