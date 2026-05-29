@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn as defaultSpawn } from "node:child_process";
 
 import pc from "picocolors";
 
@@ -1535,6 +1536,84 @@ export async function resolveSessionSayIdentity({
 
 export function shouldBlockImplicitCliUserSessionSay(identity = {}) {
   return identity?.source === "fallback" && normalizeString(identity?.agentId) === "cli-user";
+}
+
+/**
+ * Wake hook for `session listen --wake "<command>"`. This is the reusable
+ * notify->resume bridge: when the listener emits an event addressed to this
+ * agent (or broadcast — including low-noise actions like ack/like), it runs a
+ * host command so the host can resume/wake its agent. The event JSON is piped
+ * to the command's stdin and key fields are exposed as SL_WAKE_* env vars.
+ *
+ * Bursts are coalesced: if a wake is already running, the latest event is
+ * queued and fired once when the current one finishes, so a flood of activity
+ * triggers one trailing wake instead of a storm of processes.
+ */
+export function createSessionWakeRunner({
+  command,
+  sessionId,
+  agentId,
+  emit = () => {},
+  spawnImpl = defaultSpawn,
+} = {}) {
+  const wakeCommand = normalizeString(command);
+  let busy = false;
+  let pending = null;
+
+  const run = (event) => {
+    if (!wakeCommand) return;
+    if (busy) {
+      pending = event ?? {};
+      return;
+    }
+    busy = true;
+    const env = {
+      ...process.env,
+      SL_WAKE_SESSION_ID: normalizeString(sessionId),
+      SL_WAKE_AGENT_ID: normalizeString(agentId),
+      SL_WAKE_EVENT_TYPE: normalizeString(event?.event),
+      SL_WAKE_EVENT_CURSOR: normalizeString(event?.cursor),
+      SL_WAKE_EVENT_SEQUENCE: String(event?.sequenceId ?? event?.sequence_id ?? ""),
+      SL_WAKE_ACTOR_ID: normalizeString(event?.agent?.id || event?.agentId),
+    };
+    let child;
+    try {
+      child = spawnImpl(wakeCommand, { shell: true, env, stdio: ["pipe", "ignore", "ignore"] });
+    } catch (error) {
+      busy = false;
+      emit({ status: "error", reason: normalizeString(error?.message) || "spawn_failed" });
+      return;
+    }
+    emit({
+      status: "fired",
+      eventType: env.SL_WAKE_EVENT_TYPE,
+      cursor: env.SL_WAKE_EVENT_CURSOR,
+      actorId: env.SL_WAKE_ACTOR_ID,
+    });
+    try {
+      if (child && child.stdin) {
+        child.stdin.write(JSON.stringify(event ?? {}));
+        child.stdin.end();
+      }
+    } catch {
+      // Broken pipe (command ignored stdin) is non-fatal for a wake hook.
+    }
+    const finish = (reason) => {
+      busy = false;
+      if (reason) emit({ status: "error", reason });
+      const next = pending;
+      pending = null;
+      if (next !== null) run(next);
+    };
+    if (child && typeof child.on === "function") {
+      child.on("error", (error) => finish(normalizeString(error?.message) || "wake_failed"));
+      child.on("exit", (code) => finish(code && code !== 0 ? `exit_${code}` : ""));
+    } else {
+      finish("");
+    }
+  };
+
+  return { trigger: run, hasCommand: Boolean(wakeCommand) };
 }
 
 async function ensureSessionSayAgentRegistered(
@@ -3103,6 +3182,10 @@ export function registerSessionCommand(program) {
     .option("--from-now", "Advance the listen cursor to the latest durable event before polling")
     .option("--replay", "Emit matching historical events on the first poll")
     .option("--max-polls <n>", "Stop after N poll cycles (useful for tests and smoke checks)")
+    .option(
+      "--wake <command>",
+      "Wake hook: run this shell command on each matched event (notify->resume bridge). Event JSON is piped to stdin; SL_WAKE_* env vars are set.",
+    )
     .action(async (options) => {
       const normalizedSessionId = resolveSessionIdOption(options);
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -3126,6 +3209,32 @@ export function registerSessionCommand(program) {
       if (!["ndjson", "text"].includes(emitFormat)) {
         throw new Error("--emit must be one of: ndjson, text.");
       }
+      // Optional wake hook: run a host command on each matched event so the
+      // host can resume/wake its agent (the notify->resume bridge).
+      const emitWakeNotice = (payload = {}) => {
+        if (emitFormat === "ndjson") {
+          console.log(
+            JSON.stringify(
+              createAgentEvent({
+                event: "session_wake_hook",
+                agentId,
+                sessionId: normalizedSessionId,
+                payload,
+              }),
+            ),
+          );
+        } else {
+          const status = normalizeString(payload.status) || "fired";
+          const detail = payload.reason ? ` (${payload.reason})` : payload.eventType ? ` ${payload.eventType}` : "";
+          console.log(pc.cyan(`wake hook ${status}${detail}`));
+        }
+      };
+      const wakeRunner = createSessionWakeRunner({
+        command: options.wake,
+        sessionId: normalizedSessionId,
+        agentId,
+        emit: emitWakeNotice,
+      });
       const requestedTransport = normalizeString(options.transport).toLowerCase() || "auto";
       if (!["auto", "stream", "poll"].includes(requestedTransport)) {
         throw new Error("--transport must be one of: auto, stream, poll.");
@@ -3214,6 +3323,9 @@ export function registerSessionCommand(program) {
             } else {
               console.log(formatEventLine(event));
             }
+            // Fire the wake hook for any matched event (incl. ack/like) so the
+            // host can resume its agent.
+            wakeRunner.trigger(event);
           },
           onError: async (result) => {
             const reason = normalizeString(result?.reason) || "poll_failed";
