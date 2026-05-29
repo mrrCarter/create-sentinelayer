@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.21.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.20.0...v0.21.0) (2026-05-29)
+
+
+### Features
+
+* **session:** `sl session listen --wake "<cmd>"` notify-&gt;resume bridge ([#583](https://github.com/mrrCarter/create-sentinelayer/issues/583)) ([f343289](https://github.com/mrrCarter/create-sentinelayer/commit/f343289cd3659d2c4ea9ea23e860d80509544216))
+* **session:** add `sl session pins` so agents can read pinned messages ([#582](https://github.com/mrrCarter/create-sentinelayer/issues/582)) ([6b885a2](https://github.com/mrrCarter/create-sentinelayer/commit/6b885a2972b3c2de7bc9c29de6325c76b3132de6))
+
+
+### Bug Fixes
+
+* **session:** resolve joined agent for message actions instead of cli-user ([#581](https://github.com/mrrCarter/create-sentinelayer/issues/581)) ([beab4e6](https://github.com/mrrCarter/create-sentinelayer/commit/beab4e6b0f20be9bfab76e21bcf8fe107aabb18f))
+
 ## [0.20.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.19.0...v0.20.0) (2026-05-24)
 
 
