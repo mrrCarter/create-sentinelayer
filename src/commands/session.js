@@ -1537,6 +1537,24 @@ export function shouldBlockImplicitCliUserSessionSay(identity = {}) {
   return identity?.source === "fallback" && normalizeString(identity?.agentId) === "cli-user";
 }
 
+// Message actions (ack/like/dislike/reply/view/working_on) must be authored by
+// a concrete agent identity. The CLI's bare `cli-user` default is a reserved
+// label the API rejects (api_422), so treat it as "unset" and resolve the real
+// agent the same way `session say` does (explicit --agent > SENTINELAYER_AGENT_ID
+// > the single joined agent). Returns the resolved identity; callers should use
+// shouldBlockImplicitCliUserSessionSay() to refuse the implicit cli-user
+// fallback before sending a request that is guaranteed to fail.
+export async function resolveMessageActionIdentity({
+  sessionId,
+  optionAgent = "",
+  targetPath = process.cwd(),
+  env = process.env,
+} = {}) {
+  const explicit = normalizeString(optionAgent);
+  const agentSeed = explicit && explicit.toLowerCase() !== "cli-user" ? explicit : "";
+  return resolveSessionSayIdentity({ sessionId, agentId: agentSeed, targetPath, env });
+}
+
 async function ensureSessionSayAgentRegistered(
   sessionId,
   agent = {},
@@ -2879,7 +2897,23 @@ export function registerSessionCommand(program) {
     }
     await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
     const note = normalizeString(noteOverride) || normalizeString(options.note);
-    const agentId = await defaultAgentId(options.agent, targetPath);
+    // Resolve the authoring agent. The bare `cli-user` default is rejected by
+    // the API (api_422); resolveMessageActionIdentity treats it as unset and
+    // falls back to the joined agent. If no concrete identity resolves, fail
+    // with actionable guidance instead of firing a request guaranteed to 422.
+    const identity = await resolveMessageActionIdentity({
+      sessionId: normalizedSessionId,
+      optionAgent: options.agent,
+      targetPath,
+      env: process.env,
+    });
+    if (shouldBlockImplicitCliUserSessionSay(identity)) {
+      throw new Error(
+        identity.identityWarning ||
+          `${commandName} requires an agent identity; pass --agent <id>, set SENTINELAYER_AGENT_ID, or run session join --agent <id> first.`,
+      );
+    }
+    const agentId = identity.agentId;
     const idempotencyKey =
       normalizeString(options.idempotencyKey) ||
       defaultActionIdempotencyKey({
@@ -2970,7 +3004,7 @@ export function registerSessionCommand(program) {
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
     .option("--note <text>", "Optional action note or reply body")
-    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -2984,7 +3018,7 @@ export function registerSessionCommand(program) {
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
-    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -3005,7 +3039,7 @@ export function registerSessionCommand(program) {
   session
     .command("reply <sessionId> <targetSequenceId> <message...>")
     .description("Reply to a target session event using the message-action channel")
-    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -3025,7 +3059,7 @@ export function registerSessionCommand(program) {
   session
     .command("comment <sessionId> <targetSequenceId> <message...>")
     .description("Alias for `session reply`; add a threaded comment to a target event")
-    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -3045,7 +3079,7 @@ export function registerSessionCommand(program) {
   session
     .command("view <sessionId> <targetSequenceId>")
     .description("Manually backfill a read receipt for a target session event")
-    .option("--agent <id>", "Agent id for local idempotency metadata", "cli-user")
+    .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
     .option("--idempotency-key <key>", "Explicit idempotency key")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
