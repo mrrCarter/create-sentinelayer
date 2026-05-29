@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.22.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.21.0...v0.22.0) (2026-05-29)
+
+
+### Features
+
+* **session:** `sl session lock`/`unlock`/`locks` file-lock commands ([#586](https://github.com/mrrCarter/create-sentinelayer/issues/586)) ([7c2c9b5](https://github.com/mrrCarter/create-sentinelayer/commit/7c2c9b51c0d9a697e2311055cbaded1b6a2bb957))
+* **session:** periodic in-session success reminders in `session listen` ([#585](https://github.com/mrrCarter/create-sentinelayer/issues/585)) ([0916fa7](https://github.com/mrrCarter/create-sentinelayer/commit/0916fa7b8607942a6f96d1d8551a3ec1c93c4c57))
+
 ## [0.21.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.20.0...v0.21.0) (2026-05-29)
 
 
