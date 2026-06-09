@@ -9,6 +9,7 @@ import { writeAuditComparisonArtifact } from "../audit/replay.js";
 import { loadAuditRegistry, selectAuditAgents } from "../audit/registry.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { createAgentEvent } from "../events/schema.js";
+import { createAuditSessionReporter, resolveAuditSessionId } from "../session/audit-reporter.js";
 import { buildLegacyArgs } from "./legacy-args.js";
 
 function shouldEmitJson(options, command) {
@@ -89,6 +90,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--no-seed-from-deterministic", "Run personas without deterministic baseline or specialist seed findings")
     .option("--reuse-omargate <runId>", "Reuse deterministic findings from an OmarGate run id or latest")
     .option("--stream", "Emit NDJSON agent events to stdout")
+    .option(
+      "--session <id>",
+      "Senti session id to relay audit progress into (defaults to the workspace's most recent active session)"
+    )
+    .option("--no-session", "Disable senti session progress relay")
     .option("--json", "Emit machine-readable output")
     .action(async (targetPathArg, options, command) => {
       const emitJson = shouldEmitJson(options, command);
@@ -105,18 +111,49 @@ export function registerAuditCommand(program, invokeLegacy) {
         throw new Error("No agents selected for audit run.");
       }
 
-      const result = await runAuditOrchestrator({
+      const auditSessionId = await resolveAuditSessionId({
         targetPath,
-        agents: selected.selected,
-        maxParallel: parseMaxParallel(options.maxParallel),
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
-        isolation: parseIsolationMode(options.isolation),
-        seedFromDeterministic: options.seedFromDeterministic !== false,
-        reuseOmarGate: options.reuseOmargate,
-        onEvent: buildAuditOrchestratorEventHandler(emitStream),
+        explicitSessionId: typeof options.session === "string" ? options.session : "",
+        disabled: options.session === false,
       });
+      const sessionReporter = createAuditSessionReporter({
+        sessionId: auditSessionId,
+        targetPath,
+      });
+      const streamHandler = buildAuditOrchestratorEventHandler(emitStream);
+      const onEvent =
+        streamHandler || sessionReporter
+          ? (evt) => {
+              if (streamHandler) {
+                streamHandler(evt);
+              }
+              if (sessionReporter) {
+                sessionReporter.handleEvent(evt);
+              }
+            }
+          : null;
+
+      let result;
+      try {
+        result = await runAuditOrchestrator({
+          targetPath,
+          agents: selected.selected,
+          maxParallel: parseMaxParallel(options.maxParallel),
+          outputDir: options.outputDir,
+          dryRun: Boolean(options.dryRun),
+          refreshIngest: Boolean(options.refresh),
+          isolation: parseIsolationMode(options.isolation),
+          seedFromDeterministic: options.seedFromDeterministic !== false,
+          reuseOmarGate: options.reuseOmargate,
+          onEvent,
+        });
+      } catch (error) {
+        if (sessionReporter) {
+          await sessionReporter.failed(error);
+        }
+        throw error;
+      }
+      const sessionRelay = sessionReporter ? await sessionReporter.completed(result) : null;
 
       const payload = {
         command: "audit",
@@ -144,12 +181,23 @@ export function registerAuditCommand(program, invokeLegacy) {
         ddPackageFindingsPath: result.ddPackage?.findingsIndexPath || "",
         ddPackageSummaryPath: result.ddPackage?.executiveSummaryPath || "",
         ingestRefresh: result.ingest?.refresh || null,
+        sessionId: auditSessionId || "",
+        sessionRelay: sessionRelay || null,
       };
 
       if (emitJson) {
         console.log(JSON.stringify(payload, null, 2));
       } else if (!emitStream) {
         printAuditSummary(result);
+        if (auditSessionId) {
+          console.log(
+            pc.gray(
+              `Senti session: ${auditSessionId} (posted ${sessionRelay?.posted ?? 0} update(s)${
+                sessionRelay?.failed ? `, ${sessionRelay.failed} failed` : ""
+              })`
+            )
+          );
+        }
       }
 
       if (result.summary.blocking) {

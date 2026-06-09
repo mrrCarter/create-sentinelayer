@@ -753,6 +753,23 @@ export async function runAuditOrchestrator({
     });
     const agentPath = path.join(agentsDirectory, `${agent.id}.json`);
     await fsp.writeFile(agentPath, `${JSON.stringify(result, null, 2)}\n`, "utf-8");
+    emitAuditLifecycleEvent(
+      onEvent,
+      runId,
+      "agent_complete",
+      {
+        phase: "dispatch",
+        agentId: agent.id,
+        persona: agent.persona,
+        domain: agent.domain,
+        status: agentStatus,
+        findingCount: findings.length,
+        summary,
+        confidence,
+        durationMs: result.durationMs,
+      },
+      `${agent.id} persona complete: ${findings.length} finding(s).`
+    );
     return {
       ...result,
       artifactPath: agentPath,

@@ -2182,6 +2182,7 @@ export function buildHandoffPrompt({
   buildFromExistingRepo,
   authMode,
   codingAgent,
+  sessionId,
 }) {
   const codingAgentProfile = resolveCodingAgent(codingAgent || DEFAULT_CODING_AGENT_ID);
   const codingAgentConfigPath = codingAgentProfile.configFile || "none";
@@ -2245,7 +2246,16 @@ Repo context:
 - Target repo: ${repoSlug || "not provided"}
 - Workspace mode: ${buildFromExistingRepo ? "existing codebase" : "new scaffold"}
 
-## Multi-Agent Coordination (if session active)
+${
+  String(sessionId || "").trim()
+    ? `## Multi-Agent Coordination
+
+Project senti session (auto-created at init): \`${String(sessionId).trim()}\`
+- Join before starting work: \`sl session join ${String(sessionId).trim()} --agent <your-agent-name>\`
+- Post status updates as you work: \`sl session say ${String(sessionId).trim()} "<update>" --agent <your-agent-name>\`
+- Audit runs (\`sentinel /audit\`) relay per-persona progress into this session automatically, so swarm agents can watch each other's findings without losing context.`
+    : `## Multi-Agent Coordination (if session active)`
+}
 
 ${renderCoordinationNumberedList()}
 
@@ -2577,6 +2587,7 @@ async function writeInitConfigLockfile({
   secretName,
   repoSlug,
   workflowPath,
+  sessionId,
 }) {
   const lockDir = path.join(projectDir, ".sentinelayer");
   const configPath = path.join(lockDir, "config.json");
@@ -2588,6 +2599,7 @@ async function writeInitConfigLockfile({
     required_secret_name: String(secretName || "SENTINELAYER_TOKEN").trim() || "SENTINELAYER_TOKEN",
     repo_slug: normalizeRepoSlug(repoSlug || ""),
     workflow_path: path.relative(projectDir, workflowPath).replace(/\\/g, "/"),
+    session_id: String(sessionId || "").trim(),
   };
 
   await fsp.mkdir(lockDir, { recursive: true });
@@ -3145,6 +3157,26 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       expectedSpecId: generatedSpecId || workflowSpecIdFromTemplate,
     });
   }
+  // Project senti session: every new project gets its own coordination room
+  // so agents (audit personas, builders, reviewers) can post progress and see
+  // each other's messages without losing context. Local-first + best-effort:
+  // an offline/unauthenticated init still completes.
+  let projectSession = null;
+  if (!boolFromEnv(process.env.SENTINELAYER_SKIP_PROJECT_SESSION)) {
+    try {
+      const { bootstrapProjectSession } = await import("./session/project-bootstrap.js");
+      projectSession = await bootstrapProjectSession({
+        projectDir,
+        projectName: effectiveProjectName,
+        skipGuides: true,
+      });
+    } catch (error) {
+      console.log(
+        pc.yellow(`! Senti project session bootstrap skipped: ${error?.message || error}`)
+      );
+    }
+  }
+
   const configLockfilePath = await writeInitConfigLockfile({
     projectDir,
     specId: workflowSpecId || generatedSpecId || workflowSpecIdFromTemplate,
@@ -3152,6 +3184,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     secretName,
     repoSlug: interview.repoSlug || detectRepoSlug(projectDir) || "",
     workflowPath,
+    sessionId: projectSession?.sessionId || "",
   });
 
   await writeTextFile(
@@ -3177,6 +3210,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       buildFromExistingRepo: interview.buildFromExistingRepo,
       authMode: effectiveAuthMode,
       codingAgent: interview.codingAgent,
+      sessionId: projectSession?.sessionId || "",
     })
   );
   await writeTextFile(
@@ -3188,6 +3222,19 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     projectName: effectiveProjectName,
     codingAgent: interview.codingAgent,
   });
+
+  // Guides go in after the coding-agent config so the config scaffold above
+  // doesn't see a guide-created AGENTS.md/CLAUDE.md and skip itself.
+  if (projectSession?.sessionId) {
+    try {
+      const { setupSessionGuides } = await import("./session/setup-guides.js");
+      projectSession.guides = await setupSessionGuides(projectSession.sessionId, {
+        targetPath: projectDir,
+      });
+    } catch (error) {
+      console.log(pc.yellow(`! Session coordination guides skipped: ${error?.message || error}`));
+    }
+  }
 
   await ensureSentinelStartScript(projectDir, effectiveProjectName);
 
@@ -3281,6 +3328,21 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   printSection("Complete");
   console.log(pc.green(`✔ Sentinelayer orchestration initialized in ${projectDir}`));
   console.log(pc.green(`✔ Config lockfile written: ${configLockfilePath}`));
+  if (projectSession?.sessionId) {
+    console.log(pc.green(`✔ Senti project session created: ${projectSession.sessionId}`));
+    console.log(pc.green(`  Dashboard: ${projectSession.dashboardUrl}`));
+    console.log(
+      pc.gray(
+        `  Agents coordinate here: sl session join ${projectSession.sessionId} --agent <name>; audit runs post progress automatically.`
+      )
+    );
+  } else {
+    console.log(
+      pc.yellow(
+        "! Senti project session not created. Run `sl session start` inside the project to create the coordination room."
+      )
+    );
+  }
   if (workflowSpecId) {
     console.log(pc.green(`✔ Omar workflow spec binding validated: ${workflowSpecId}`));
   } else {
