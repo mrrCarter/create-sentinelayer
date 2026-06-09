@@ -1201,7 +1201,7 @@ async function ensureLocalSessionForRemoteCommand(
   return { materialized: true, refreshed: false, session: created };
 }
 
-async function ensureWorkspaceSession({
+export async function ensureWorkspaceSession({
   targetPath,
   ttlSeconds = DEFAULT_TTL_SECONDS,
   template = null,
