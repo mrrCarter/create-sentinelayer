@@ -33,6 +33,12 @@ import {
   unregisterAgent,
 } from "../session/agent-registry.js";
 import { startSenti, stopSenti } from "../session/daemon.js";
+import {
+  getDaemonStatus,
+  removeDaemonPidRecord,
+  spawnDetachedSentiDaemon,
+  writeDaemonPidRecord,
+} from "../session/daemon-spawn.js";
 import { listRuntimeRuns } from "../session/runtime-bridge.js";
 import {
   listFileLocks,
@@ -779,6 +785,42 @@ function remoteSessionLookupDisabled() {
 
 function sentiAutostartDisabled() {
   return String(process.env.SENTINELAYER_SKIP_SENTI_AUTOSTART || "").trim() === "1";
+}
+
+export function formatSentiDaemonStatusLine(sentiDaemon = {}, { cliCommand = "sl", sessionId = "" } = {}) {
+  if (sentiDaemon.spawned) {
+    return {
+      tone: "green",
+      text: `Senti: managing this session (daemon pid ${sentiDaemon.pid}, detached — survives this terminal). Log: ${sentiDaemon.logPath}`,
+    };
+  }
+  if (sentiDaemon.reason === "already_running") {
+    return {
+      tone: "green",
+      text: `Senti: already managing this session (daemon pid ${sentiDaemon.pid}).`,
+    };
+  }
+  if (sentiDaemon.reason === "disabled" || sentiDaemon.reason === "opt_out") {
+    return {
+      tone: "gray",
+      text: `Senti daemon skipped (${sentiDaemon.reason === "opt_out" ? "--no-daemon" : "SENTINELAYER_SKIP_SENTI_AUTOSTART=1"}); session is unmanaged. Start manually: ${cliCommand} session daemon ${sessionId}`,
+    };
+  }
+  return {
+    tone: "yellow",
+    text: `! Senti daemon not started (${sentiDaemon.reason || "unknown"}); session is unmanaged. Start manually: ${cliCommand} session daemon ${sessionId}`,
+  };
+}
+
+function printSentiDaemonStatusLine(sentiDaemon, context) {
+  const line = formatSentiDaemonStatusLine(sentiDaemon, context);
+  if (line.tone === "green") {
+    console.log(pc.green(line.text));
+  } else if (line.tone === "yellow") {
+    console.log(pc.yellow(line.text));
+  } else {
+    console.log(pc.gray(line.text));
+  }
 }
 
 function buildResumeContext(candidate, { reuseWindowSeconds = 3600 } = {}) {
@@ -2178,7 +2220,7 @@ export function registerSessionCommand(program) {
   session
     .command("start")
     .description(
-      "Start (or resume) a persistent session. By default reuses the most recent active session for this workspace; pass --force-new to always mint a fresh id.",
+      "Start (or resume) a managed session. Reuses this workspace's most recent active session when it was active within the last hour (--force-new always mints a fresh id), then spawns the detached Senti daemon that manages it — agent greetings, mention routing, recaps, checkpoints — surviving this terminal. Pass --no-daemon for an unmanaged session.",
     )
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--title <title>", "Human-readable label (shown in web sidebar + transcript)")
@@ -2207,6 +2249,10 @@ export function registerSessionCommand(program) {
       "--reuse-window-seconds <seconds>",
       "Window in which an existing active session for this workspace will be reused (default 3600 = 1h)",
       "3600",
+    )
+    .option(
+      "--no-daemon",
+      "Do not spawn the detached Senti daemon (session will be unmanaged: no greetings, recaps, or checkpoints)",
     )
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
@@ -2290,19 +2336,25 @@ export function registerSessionCommand(program) {
         }).catch(() => {});
       }
 
-      // Auto-start the Senti orchestrator daemon. Without this, every
-      // session ran with `Senti actions: 1` (just the welcome alert)
-      // because nothing kicked the daemon ticking — agents joining
-      // never got greeted, mentions never routed, recaps never fired.
-      // Best-effort + non-blocking: the daemon registers itself in an
-      // in-memory map keyed by (sessionId, targetPath) and tolerates
-      // being started for an already-active session (returns the
-      // existing handle). If the daemon fails to start (unauth env,
-      // missing model proxy), the session keeps working — Senti just
-      // stays quiet, same as before this change.
-      if (!sentiAutostartDisabled()) {
-        void startSenti(created.sessionId, { targetPath }).catch(() => {});
+      // Make the session managed by default: spawn the Senti daemon as a
+      // DETACHED process so greetings, mention routing, recaps, and
+      // checkpoints keep running after this CLI command (and terminal)
+      // exits. The old in-process `startSenti` died the moment this
+      // action returned, so every session was effectively unmanaged.
+      // Deduped via the session's pid file; best-effort and never blocks
+      // session creation.
+      let sentiDaemon = { spawned: false, pid: null, reason: "skipped", logPath: "" };
+      if (sentiAutostartDisabled()) {
+        sentiDaemon.reason = "disabled";
+      } else if (options.daemon === false) {
+        sentiDaemon.reason = "opt_out";
+      } else {
+        sentiDaemon = await spawnDetachedSentiDaemon({
+          sessionId: created.sessionId,
+          targetPath,
+        });
       }
+      payload.sentiDaemon = sentiDaemon;
 
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -2324,6 +2376,7 @@ export function registerSessionCommand(program) {
         }
         console.log("");
         console.log(`Dashboard: ${dashboardUrl}`);
+        printSentiDaemonStatusLine(sentiDaemon, { cliCommand, sessionId: created.sessionId });
         return;
       }
 
@@ -2349,6 +2402,13 @@ export function registerSessionCommand(program) {
       console.log(
         `status=${created.status} created_at=${created.createdAt} expires_at=${created.expiresAt} ttl_seconds=${ttlSeconds}`,
       );
+      console.log(pc.gray(`Dashboard: ${dashboardUrl}`));
+      printSentiDaemonStatusLine(sentiDaemon, { cliCommand, sessionId: created.sessionId });
+      console.log(
+        pc.gray(
+          `Agents join with: ${cliCommand} session join ${created.sessionId} --agent <name>`,
+        ),
+      );
       if (remoteSync.status === "auth_required") {
         console.log(
           pc.yellow(
@@ -2361,7 +2421,9 @@ export function registerSessionCommand(program) {
       if (!resumed) {
         console.log(
           pc.gray(
-            `Tip: subsequent \`${cliCommand} session start\` in this workspace within an hour will resume this session. Pass --force-new to override.`,
+            options.forceNew
+              ? `Tip: fresh session minted (--force-new honored). Subsequent \`${cliCommand} session start\` here within an hour will resume this new session.`
+              : `Tip: subsequent \`${cliCommand} session start\` in this workspace within an hour will resume this session. Pass --force-new to override.`,
           ),
         );
       }
@@ -3694,8 +3756,11 @@ export function registerSessionCommand(program) {
 
   session
     .command("daemon [sessionId]")
-    .description("Run the Senti session daemon: hydrate events, emit recaps, and generate checkpoints")
+    .description(
+      "Run the Senti daemon that manages a session: greet joining agents, route mentions, emit recaps, and generate durable checkpoints. `session start` spawns this automatically as a detached background process — run it manually only for foreground monitoring or after --no-daemon. Records its pid in the session dir (senti-daemon.json) and exits when the session expires.",
+    )
     .option("--session <id>", "Session id to monitor")
+    .option("--force", "Take over even if senti-daemon.json reports another live daemon for this session")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--tick-interval <seconds>", "Seconds between health ticks (default 30)", "30")
     .option("--stale-agent-seconds <seconds>", "Seconds before an inactive agent is flagged stale (default 90)", "90")
@@ -3723,6 +3788,18 @@ export function registerSessionCommand(program) {
         "tick-interval",
         30,
       );
+      // One manager per session: refuse to double-run unless --force.
+      // A stale pid file (reboot, hard kill) reads as not-running and is
+      // safely overwritten.
+      if (!options.once) {
+        const existingDaemon = await getDaemonStatus(normalizedSessionId, { targetPath });
+        if (existingDaemon.running && existingDaemon.pid !== process.pid && !options.force) {
+          throw new Error(
+            `A Senti daemon is already managing session ${normalizedSessionId} (pid ${existingDaemon.pid}). Use --force to take over.`,
+          );
+        }
+        await writeDaemonPidRecord(normalizedSessionId, { targetPath, tickIntervalMs });
+      }
       const daemon = await startSenti(normalizedSessionId, {
         targetPath,
         autoStart: false,
@@ -3824,10 +3901,28 @@ export function registerSessionCommand(program) {
           } else {
             console.log(pc.gray(`tick ${payload.summary.generatedAt}: recap=${payload.summary.recap.reason || payload.summary.recap.mode || "ok"} checkpoint=${payload.summary.checkpoint.reason || payload.summary.checkpoint.checkpointId || "ok"}`));
           }
+          // A daemon must not outlive its session: stop cleanly once the
+          // session expires or its local cache disappears.
+          const liveSession = await getSession(normalizedSessionId, { targetPath }).catch(() => null);
+          const expiresAtMs = Date.parse(liveSession?.expiresAt || "");
+          if (
+            !liveSession ||
+            liveSession.status !== "active" ||
+            (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now())
+          ) {
+            if (!emitJson) {
+              console.log(pc.gray("senti daemon: session expired or closed; stopping."));
+            }
+            break;
+          }
         }
       } finally {
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);
+        await removeDaemonPidRecord(normalizedSessionId, {
+          targetPath,
+          onlyForPid: process.pid,
+        }).catch(() => {});
         const stopped = await daemon.stop("signal");
         if (emitJson) {
           console.log(

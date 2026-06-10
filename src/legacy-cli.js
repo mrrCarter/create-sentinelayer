@@ -3331,6 +3331,17 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   if (projectSession?.sessionId) {
     console.log(pc.green(`✔ Senti project session created: ${projectSession.sessionId}`));
     console.log(pc.green(`  Dashboard: ${projectSession.dashboardUrl}`));
+    if (projectSession.daemon?.spawned) {
+      console.log(
+        pc.green(`  Senti: managing this session (daemon pid ${projectSession.daemon.pid}, detached).`)
+      );
+    } else if (projectSession.daemon?.reason && projectSession.daemon.reason !== "disabled") {
+      console.log(
+        pc.yellow(
+          `  Senti daemon not started (${projectSession.daemon.reason}); run: sl session daemon ${projectSession.sessionId}`
+        )
+      );
+    }
     console.log(
       pc.gray(
         `  Agents coordinate here: sl session join ${projectSession.sessionId} --agent <name>; audit runs post progress automatically.`

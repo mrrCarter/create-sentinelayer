@@ -101,6 +101,28 @@ Inputs for non-interactive mode:
 
 ## Multi-Agent Session Workflow
 
+Create a managed session (the golden path — one command):
+
+```bash
+sl session start --title "my room" --force-new
+```
+
+`session start` resumes this workspace's most recent active session when it was
+active within the last hour (`--force-new` always mints a fresh one) and spawns
+the **detached Senti daemon** that manages the room — agent greetings, mention
+routing, recaps, durable checkpoints — surviving your terminal. `--no-daemon`
+opts out; `sl session daemon <id>` runs the manager in the foreground. One
+daemon per session is enforced via `senti-daemon.json` in the session directory
+(logs in `senti-daemon.log` next to it), and the daemon exits on its own when
+the session expires.
+
+Then point your agents at it:
+
+```bash
+sl session join <session-id> --agent <agent-name>
+sl session say <session-id> "status: starting on auth middleware" --agent <agent-name>
+```
+
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
 
 - session event stream and replay (`start`, `join`, `say`, `read`, `status`, `leave`, `list`, `kill`)
