@@ -1,0 +1,245 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+import { Command } from "commander";
+
+import { formatSentiDaemonStatusLine, registerSessionCommand } from "../src/commands/session.js";
+import {
+  getDaemonStatus,
+  isProcessAlive,
+  readDaemonPidRecord,
+  removeDaemonPidRecord,
+  resolveDaemonPidPath,
+  sentiDaemonDisabled,
+  spawnDetachedSentiDaemon,
+  writeDaemonPidRecord,
+} from "../src/session/daemon-spawn.js";
+import { createSession } from "../src/session/store.js";
+
+const CLI_ENTRY = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "bin",
+  "sentinelayer-cli.js"
+);
+
+async function seedWorkspace(rootPath) {
+  await writeFile(
+    path.join(rootPath, "package.json"),
+    JSON.stringify({ name: "daemon-spawn-fixture", version: "1.0.0" }, null, 2),
+    "utf-8"
+  );
+}
+
+async function waitFor(predicate, { timeoutMs = 15000, intervalMs = 200 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
+async function spawnExitedPid() {
+  const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await new Promise((resolve) => child.once("exit", resolve));
+  return child.pid;
+}
+
+async function runSessionCommand(args = []) {
+  const program = new Command();
+  program.name("sl").exitOverride();
+  registerSessionCommand(program);
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...parts) => logs.push(parts.join(" "));
+  try {
+    await program.parseAsync(args, { from: "user" });
+  } finally {
+    console.log = originalLog;
+  }
+  return logs.join("\n");
+}
+
+test("Unit daemon-spawn: pid record round-trip and liveness status", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-pid-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 600 });
+
+    assert.equal(await readDaemonPidRecord(session.sessionId, { targetPath: tempRoot }), null);
+    const noDaemon = await getDaemonStatus(session.sessionId, { targetPath: tempRoot });
+    assert.deepEqual(
+      { running: noDaemon.running, pid: noDaemon.pid, stale: noDaemon.stale },
+      { running: false, pid: null, stale: false }
+    );
+
+    // Our own pid is definitionally alive.
+    await writeDaemonPidRecord(session.sessionId, { targetPath: tempRoot, pid: process.pid });
+    const alive = await getDaemonStatus(session.sessionId, { targetPath: tempRoot });
+    assert.equal(alive.running, true);
+    assert.equal(alive.pid, process.pid);
+
+    // A pid that has exited reads as stale, not running.
+    const deadPid = await spawnExitedPid();
+    assert.equal(isProcessAlive(deadPid), false);
+    await writeDaemonPidRecord(session.sessionId, { targetPath: tempRoot, pid: deadPid });
+    const stale = await getDaemonStatus(session.sessionId, { targetPath: tempRoot });
+    assert.equal(stale.running, false);
+    assert.equal(stale.stale, true);
+
+    // onlyForPid guards cleanup against removing another daemon's record.
+    assert.equal(
+      await removeDaemonPidRecord(session.sessionId, { targetPath: tempRoot, onlyForPid: process.pid }),
+      false
+    );
+    assert.equal(
+      await removeDaemonPidRecord(session.sessionId, { targetPath: tempRoot, onlyForPid: deadPid }),
+      true
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: spawn guards (disabled env, missing id, already running)", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-guards-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 600 });
+
+    assert.equal(sentiDaemonDisabled({ SENTINELAYER_SKIP_SENTI_AUTOSTART: "1" }), true);
+    assert.equal(sentiDaemonDisabled({ SENTINELAYER_SKIP_SENTI_DAEMON: "1" }), true);
+    assert.equal(sentiDaemonDisabled({}), false);
+
+    const missing = await spawnDetachedSentiDaemon({ sessionId: "", targetPath: tempRoot });
+    assert.equal(missing.reason, "missing_session_id");
+
+    const disabled = await spawnDetachedSentiDaemon({
+      sessionId: session.sessionId,
+      targetPath: tempRoot,
+      env: { SENTINELAYER_SKIP_SENTI_AUTOSTART: "1" },
+    });
+    assert.deepEqual({ spawned: disabled.spawned, reason: disabled.reason }, { spawned: false, reason: "disabled" });
+
+    await writeDaemonPidRecord(session.sessionId, { targetPath: tempRoot, pid: process.pid });
+    const dedupe = await spawnDetachedSentiDaemon({
+      sessionId: session.sessionId,
+      targetPath: tempRoot,
+      env: {},
+    });
+    assert.equal(dedupe.spawned, false);
+    assert.equal(dedupe.reason, "already_running");
+    assert.equal(dedupe.pid, process.pid);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: real detached daemon writes pid file, survives, and stops on SIGTERM", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-real-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 600 });
+    const childEnv = {
+      ...process.env,
+      SENTINELAYER_SKIP_REMOTE_SYNC: "1",
+      SENTINELAYER_SKIP_SENTI_AUTOSTART: "",
+    };
+
+    const result = await spawnDetachedSentiDaemon({
+      sessionId: session.sessionId,
+      targetPath: tempRoot,
+      cliPath: CLI_ENTRY,
+      env: childEnv,
+    });
+    assert.equal(result.spawned, true, `expected spawn, got ${result.reason}`);
+    assert.ok(result.pid > 0);
+
+    const pidPath = resolveDaemonPidPath(session.sessionId, { targetPath: tempRoot });
+    const wrotePid = await waitFor(async () => {
+      try {
+        const record = JSON.parse(await readFile(pidPath, "utf-8"));
+        return Number(record.pid) > 0 && isProcessAlive(record.pid);
+      } catch {
+        return false;
+      }
+    });
+    assert.equal(wrotePid, true, "daemon child never wrote a live pid file");
+
+    const status = await getDaemonStatus(session.sessionId, { targetPath: tempRoot });
+    assert.equal(status.running, true);
+
+    process.kill(status.pid, "SIGTERM");
+    const stopped = await waitFor(async () => !isProcessAlive(status.pid));
+    assert.equal(stopped, true, "daemon did not stop after SIGTERM");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: session start output is force-new aware and reports daemon state", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-start-output-"));
+  try {
+    await seedWorkspace(tempRoot);
+    // Test env sets SENTINELAYER_SKIP_SENTI_AUTOSTART=1, so the daemon line
+    // must surface the skip + the manual command instead of staying silent.
+    const output = await runSessionCommand([
+      "session",
+      "start",
+      "--path",
+      tempRoot,
+      "--title",
+      "managed-room",
+      "--force-new",
+    ]);
+
+    assert.ok(!output.includes("Pass --force-new to override"), "tip must not suggest a flag that was already passed");
+    assert.ok(output.includes("fresh session minted (--force-new honored)"));
+    assert.ok(output.includes("Dashboard: "));
+    assert.ok(output.includes("Agents join with: "));
+    assert.ok(output.includes("session is unmanaged"));
+    assert.ok(output.includes("session daemon"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: status line formatting covers all daemon outcomes", () => {
+  const spawned = formatSentiDaemonStatusLine(
+    { spawned: true, pid: 4242, logPath: "/tmp/senti-daemon.log" },
+    { cliCommand: "sl", sessionId: "abc" }
+  );
+  assert.equal(spawned.tone, "green");
+  assert.ok(spawned.text.includes("pid 4242"));
+  assert.ok(spawned.text.includes("survives this terminal"));
+
+  const already = formatSentiDaemonStatusLine(
+    { spawned: false, reason: "already_running", pid: 99 },
+    { cliCommand: "sl", sessionId: "abc" }
+  );
+  assert.equal(already.tone, "green");
+  assert.ok(already.text.includes("already managing"));
+
+  const optOut = formatSentiDaemonStatusLine(
+    { spawned: false, reason: "opt_out" },
+    { cliCommand: "sl", sessionId: "abc" }
+  );
+  assert.equal(optOut.tone, "gray");
+  assert.ok(optOut.text.includes("--no-daemon"));
+  assert.ok(optOut.text.includes("sl session daemon abc"));
+
+  const failed = formatSentiDaemonStatusLine(
+    { spawned: false, reason: "spawn_failed: boom" },
+    { cliCommand: "sl", sessionId: "abc" }
+  );
+  assert.equal(failed.tone, "yellow");
+  assert.ok(failed.text.includes("spawn_failed: boom"));
+});

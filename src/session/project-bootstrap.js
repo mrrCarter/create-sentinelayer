@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { ensureWorkspaceSession } from "../commands/session.js";
 import { createAgentEvent } from "../events/schema.js";
+import { spawnDetachedSentiDaemon } from "./daemon-spawn.js";
 import { setupSessionGuides } from "./setup-guides.js";
 import { appendToStream } from "./stream.js";
 import { syncSessionMetadataToApi } from "./sync.js";
@@ -96,6 +97,12 @@ export async function bootstrapProjectSession({
     welcomePosted = false;
   }
 
+  // Project rooms are managed by default too: the detached Senti daemon
+  // greets joining agents and keeps recaps/checkpoints flowing. Honors
+  // SENTINELAYER_SKIP_SENTI_AUTOSTART / SENTINELAYER_SKIP_SENTI_DAEMON
+  // and never fails the bootstrap.
+  const daemon = await spawnDetachedSentiDaemon({ sessionId, targetPath });
+
   return {
     sessionId,
     title: ensured.title || title,
@@ -103,5 +110,6 @@ export async function bootstrapProjectSession({
     dashboardUrl: buildDashboardUrl(sessionId),
     guides,
     welcomePosted,
+    daemon,
   };
 }
