@@ -163,22 +163,32 @@ test("Unit daemon-spawn: real detached daemon writes pid file, survives, and sto
     assert.equal(result.spawned, true, `expected spawn, got ${result.reason}`);
     assert.ok(result.pid > 0);
 
+    // Generous window: on cold, loaded CI runners the child has to boot the
+    // whole CLI module graph while sibling test processes compete for CPU.
     const pidPath = resolveDaemonPidPath(session.sessionId, { targetPath: tempRoot });
-    const wrotePid = await waitFor(async () => {
-      try {
-        const record = JSON.parse(await readFile(pidPath, "utf-8"));
-        return Number(record.pid) > 0 && isProcessAlive(record.pid);
-      } catch {
-        return false;
-      }
-    });
-    assert.equal(wrotePid, true, "daemon child never wrote a live pid file");
+    const wrotePid = await waitFor(
+      async () => {
+        try {
+          const record = JSON.parse(await readFile(pidPath, "utf-8"));
+          return Number(record.pid) > 0 && isProcessAlive(record.pid);
+        } catch {
+          return false;
+        }
+      },
+      { timeoutMs: 60000 }
+    );
+    const childLog = await readFile(result.logPath, "utf-8").catch(() => "(no log written)");
+    assert.equal(
+      wrotePid,
+      true,
+      `daemon child never wrote a live pid file. spawn=${JSON.stringify(result)} child log:\n${childLog}`
+    );
 
     const status = await getDaemonStatus(session.sessionId, { targetPath: tempRoot });
     assert.equal(status.running, true);
 
     process.kill(status.pid, "SIGTERM");
-    const stopped = await waitFor(async () => !isProcessAlive(status.pid));
+    const stopped = await waitFor(async () => !isProcessAlive(status.pid), { timeoutMs: 30000 });
     assert.equal(stopped, true, "daemon did not stop after SIGTERM");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
