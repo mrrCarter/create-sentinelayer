@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.22.0...v0.23.0) (2026-06-10)
+
+
+### Features
+
+* **session:** managed sessions by default — detached Senti daemon + honest start output ([#589](https://github.com/mrrCarter/create-sentinelayer/issues/589)) ([583b3d1](https://github.com/mrrCarter/create-sentinelayer/commit/583b3d1320fa5cc5dd35fab5cf955699748d66e2))
+* **session:** project senti session at init + audit swarm progress relay ([#588](https://github.com/mrrCarter/create-sentinelayer/issues/588)) ([bcb6c99](https://github.com/mrrCarter/create-sentinelayer/commit/bcb6c99632fba872e54e4368e8eeeaf0b662eae3))
+
 ## [0.22.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.21.0...v0.22.0) (2026-05-29)
 
 
