@@ -152,6 +152,9 @@ test("Unit daemon-spawn: real detached daemon writes pid file, survives, and sto
       ...process.env,
       SENTINELAYER_SKIP_REMOTE_SYNC: "1",
       SENTINELAYER_SKIP_SENTI_AUTOSTART: "",
+      // The real bin runs the auth gate; an env token passes it (same
+      // pattern as the e2e suite) and SKIP_REMOTE_SYNC keeps it offline.
+      SENTINELAYER_TOKEN: "api_token_daemon_spawn_test",
     };
 
     const result = await spawnDetachedSentiDaemon({
