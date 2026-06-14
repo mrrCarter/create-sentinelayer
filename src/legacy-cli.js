@@ -2133,6 +2133,13 @@ Project: ${projectName}
 - [ ] Re-run gate and confirm clean status.
 - [ ] Merge only after quality gates are green.
 
+## Ticket Trail Contract (Per PR — lean, only if the project has a board/Jira)
+- [ ] One ticket = one PR; the PR body carries the ticket id.
+- [ ] On PR open: move the ticket to In-review + comment the PR link.
+- [ ] On merge + green: move the ticket to Done + comment "merged, gate green".
+- [ ] On gate fail: move the ticket to Blocked + the finding.
+- [ ] One update per transition — not every step (same discipline as senti).
+
 ## Command Roadmap (Local Terminal)
 - [ ] \`sentinel /omargate deep --path <repo>\`: local deep scan pipeline
 - [ ] \`sentinel /audit --path <repo>\`: security + quality audit summary
@@ -2218,6 +2225,13 @@ Execution mode:
 - For each PR run Omar loop until P0/P1 are zero and quality checks pass.
 - Keep commits scoped and deterministic.
 - Stop only for blocking secrets/permission gaps.
+
+Ticket trail (lean, only if the project has a board/Jira — do this on every PR, not every step):
+- One ticket = one PR; put the ticket id in the PR body.
+- On PR open -> move the ticket to In-review and comment the PR link.
+- On merge + green -> move the ticket to Done and comment "merged, gate green".
+- On gate fail -> move the ticket to Blocked with the finding.
+- Post one short senti update per transition (same discipline as the ticket).
 
 Coding agent profile:
 - Selected agent: ${codingAgentProfile.name} (${codingAgentProfile.id})
