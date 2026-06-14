@@ -225,6 +225,31 @@ test("Unit daemon-spawn: session start output is force-new aware and reports dae
   }
 });
 
+test("Unit daemon-spawn: --force is an honored alias of --force-new on session start", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-start-force-alias-"));
+  try {
+    await seedWorkspace(tempRoot);
+    // The bug Carter hit: `sl session start --force` silently no-op'd because
+    // only --force-new existed. --force must now behave identically.
+    const output = await runSessionCommand([
+      "session",
+      "start",
+      "--path",
+      tempRoot,
+      "--title",
+      "alias-room",
+      "--force",
+    ]);
+    assert.ok(
+      output.includes("fresh session minted (--force-new honored)"),
+      "--force must mint a fresh session like --force-new",
+    );
+    assert.ok(!output.includes("Pass --force-new to override"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit daemon-spawn: status line formatting covers all daemon outcomes", () => {
   const spawned = formatSentiDaemonStatusLine(
     { spawned: true, pid: 4242, logPath: "/tmp/senti-daemon.log" },
