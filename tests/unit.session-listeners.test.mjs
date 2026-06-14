@@ -1,0 +1,97 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  fetchSessionListeners,
+  formatListenerLine,
+  summarizeListeners,
+} from "../src/session/listeners.js";
+
+function heartbeat(agentId, payload = {}, ts = "2026-06-14T08:00:00.000Z", event = "session_listener_heartbeat") {
+  return {
+    event,
+    agent: { id: agentId, model: "gpt-5.5", displayName: agentId },
+    payload: { source: "session_listen", listenerId: agentId, ...payload },
+    ts,
+  };
+}
+
+const NOW = Date.parse("2026-06-14T08:00:30.000Z");
+
+test("Unit listeners: one row per agent from the latest heartbeat, active vs idle cadence", () => {
+  const rows = summarizeListeners(
+    [
+      heartbeat("api-01-gpt-5.5", { active: true, activeIntervalSeconds: 30, idleIntervalSeconds: 60 }, "2026-06-14T07:59:00Z"),
+      heartbeat("api-01-gpt-5.5", { active: true, activeIntervalSeconds: 30, idleIntervalSeconds: 60 }, "2026-06-14T08:00:20Z"),
+      heartbeat("ui-01-gpt-5.5", { active: false, activeIntervalSeconds: 30, idleIntervalSeconds: 90 }, "2026-06-14T08:00:10Z"),
+    ],
+    { nowMs: NOW },
+  );
+  assert.equal(rows.length, 2);
+  const api = rows.find((r) => r.agentId === "api-01-gpt-5.5");
+  const ui = rows.find((r) => r.agentId === "ui-01-gpt-5.5");
+  assert.equal(api.status, "active");
+  assert.equal(api.cadenceSeconds, 30); // active window → fast interval
+  assert.equal(ui.status, "idle");
+  assert.equal(ui.cadenceSeconds, 90); // idle → idle interval
+  // active listed before idle
+  assert.equal(rows[0].agentId, "api-01-gpt-5.5");
+});
+
+test("Unit listeners: stopped lifecycle and stale heartbeats are classified, not shown live", () => {
+  const rows = summarizeListeners(
+    [
+      heartbeat("infra-gpt5.5", { active: false, idleIntervalSeconds: 60 }, "2026-06-14T07:55:00Z"), // 5.5min old → stale
+      heartbeat("vision-01", { active: true }, "2026-06-14T08:00:25Z", "session_listener_stopped"),
+    ],
+    { nowMs: NOW },
+  );
+  const infra = rows.find((r) => r.agentId === "infra-gpt5.5");
+  const vision = rows.find((r) => r.agentId === "vision-01");
+  assert.equal(infra.status, "stale");
+  assert.equal(vision.status, "stopped");
+});
+
+test("Unit listeners: ignores non-listener events", () => {
+  const rows = summarizeListeners(
+    [
+      { event: "session_message", agent: { id: "human-carter" }, payload: { message: "hi" }, ts: "2026-06-14T08:00:00Z" },
+      heartbeat("api-01", { active: true, activeIntervalSeconds: 30 }, "2026-06-14T08:00:20Z"),
+    ],
+    { nowMs: NOW },
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].agentId, "api-01");
+});
+
+test("Unit listeners: fetchSessionListeners summarizes a poll result", async () => {
+  const fakePoll = async () => ({
+    ok: true,
+    events: [heartbeat("api-01", { active: true, activeIntervalSeconds: 30 }, "2026-06-14T08:00:20Z")],
+  });
+  const result = await fetchSessionListeners("sess-1", { poll: fakePoll, nowMs: () => NOW });
+  assert.equal(result.ok, true);
+  assert.equal(result.listeners.length, 1);
+  assert.equal(result.listeners[0].status, "active");
+});
+
+test("Unit listeners: fetch surfaces a failed poll without throwing", async () => {
+  const fakePoll = async () => ({ ok: false, reason: "auth_required" });
+  const result = await fetchSessionListeners("sess-1", { poll: fakePoll });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "auth_required");
+  assert.deepEqual(result.listeners, []);
+});
+
+test("Unit listeners: formatListenerLine renders status, cadence, last-seen", () => {
+  const line = formatListenerLine({
+    agentId: "api-01-gpt-5.5",
+    status: "active",
+    cadenceSeconds: 30,
+    lastSeenAgoSeconds: 10,
+  });
+  assert.ok(line.includes("active"));
+  assert.ok(line.includes("api-01-gpt-5.5"));
+  assert.ok(line.includes("cadence=30s"));
+  assert.ok(line.includes("last_seen=10s ago"));
+});

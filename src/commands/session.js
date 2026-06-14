@@ -61,6 +61,7 @@ import {
   refreshSessionCacheForRemoteActivity,
   updateSessionTitle,
 } from "../session/store.js";
+import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import {
   addSessionEventIdentityKeys,
@@ -3473,6 +3474,56 @@ export function registerSessionCommand(program) {
         const holder = normalizeString(lock.agentId) || "unknown";
         const expires = normalizeString(lock.expiresAt);
         console.log(pc.cyan(`  ${file}`) + pc.gray(`  held by ${holder}${expires ? ` · expires ${expires}` : ""}`));
+      }
+      return payload;
+    });
+
+  session
+    .command("listeners <sessionId>")
+    .description(
+      "List who is actively listening to the session and at what poll cadence (active/idle/stale/stopped), derived from listener presence heartbeats. Mirrors the web roster.",
+    )
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--limit <n>", "Recent events to scan for heartbeats (default 200)", "200")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+      const limit = parsePositiveInteger(options.limit, "limit", 200);
+      const result = await fetchSessionListeners(normalizedSessionId, { targetPath, limit });
+      const listeners = Array.isArray(result.listeners) ? result.listeners : [];
+      const live = listeners.filter((row) => row.status === "active" || row.status === "idle").length;
+      const payload = {
+        command: "session listeners",
+        sessionId: normalizedSessionId,
+        ok: Boolean(result.ok),
+        reason: result.ok ? undefined : result.reason,
+        count: listeners.length,
+        liveCount: live,
+        listeners,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return payload;
+      }
+      if (!result.ok) {
+        console.log(pc.yellow(`Could not read listeners (${result.reason}).`));
+        return payload;
+      }
+      if (listeners.length === 0) {
+        console.log(pc.gray("No listeners detected (no recent presence heartbeats)."));
+        return payload;
+      }
+      console.log(pc.bold(`Listeners (${live} live / ${listeners.length} seen)`));
+      for (const row of listeners) {
+        const line = formatListenerLine(row);
+        if (row.status === "active") console.log(pc.green(`  ${line}`));
+        else if (row.status === "idle") console.log(pc.cyan(`  ${line}`));
+        else console.log(pc.gray(`  ${line}`));
       }
       return payload;
     });
