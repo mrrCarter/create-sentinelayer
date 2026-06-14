@@ -62,6 +62,7 @@ import {
   updateSessionTitle,
 } from "../session/store.js";
 import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
+import { postFirstSentiMessage } from "../session/first-message.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import {
   addSessionEventIdentityKeys,
@@ -2360,6 +2361,21 @@ export function registerSessionCommand(program) {
         });
       }
       payload.sentiDaemon = sentiDaemon;
+
+      // Pin the deterministic first-Senti-message as the opening event of a
+      // NEW room so every joining agent reads the operating protocol
+      // (identity, mandatory commands, reaction/threading/lock/evidence
+      // rules, cadence). Skipped on resume (already posted) and opt-outable
+      // via SENTINELAYER_SKIP_FIRST_MESSAGE=1. Best-effort, never blocks.
+      let firstMessage = { posted: false, reason: "skipped" };
+      const skipFirstMessage = String(process.env.SENTINELAYER_SKIP_FIRST_MESSAGE || "").trim() === "1";
+      if (!resumed && !skipFirstMessage) {
+        firstMessage = await postFirstSentiMessage({
+          sessionId: created.sessionId,
+          targetPath,
+        }).catch((error) => ({ posted: false, reason: normalizeString(error?.message) || "error" }));
+      }
+      payload.firstMessage = firstMessage;
 
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
