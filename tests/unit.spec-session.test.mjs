@@ -162,6 +162,9 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   });
   assert.match(todo, /join the SentinelLayer session and emit status updates/);
   assert.match(todo, /Update tasks\/lessons\.md with coordination patterns learned during this session/);
+  // Per-PR ticket-trail contract.
+  assert.match(todo, /## Ticket Trail Contract \(Per PR/);
+  assert.match(todo, /On PR open: move the ticket to In-review/);
 
   const handoff = buildHandoffPrompt({
     projectName: "demo-app",
@@ -179,6 +182,9 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   assert.match(handoff, /sl session recap now <id> --remote --agent <your-name> --json/);
   assert.match(handoff, /sl session react <id> ack --target-sequence <n>/);
   assert.match(handoff, /sl --help/);
+  // Per-PR ticket-trail contract in the handoff.
+  assert.match(handoff, /Ticket trail \(lean/);
+  assert.match(handoff, /On merge \+ green -> move the ticket to Done/);
 
   const guide = buildAgentsSessionGuideContent();
   assert.match(guide, /SentinelLayer Session Guide for AI Agents/);

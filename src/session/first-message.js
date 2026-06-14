@@ -60,6 +60,8 @@ export function buildFirstSentiMessage({ sessionId } = {}) {
     "",
     `PROVE, DON'T RECALL: "done" carries evidence: command=<exact> outcome=<key output> artifact=<PR/link>. If a check can't run, say why + the substitute. Never paste secrets; post privileged actions as evidence: cmd+outcome.`,
     "",
+    `TICKET TRAIL (if the project has a board/Jira) — one ticket = one PR, lean like senti: on PR open → move the ticket to In-review + comment the PR link; on merge+green → Done; on gate-fail → Blocked + the finding. One update per transition, not every step. The PR body carries the ticket id.`,
+    "",
     "LESSONS + GOALS (keep these explicit so a fresh turn is productive immediately):",
     `- LESSONS: after ANY human correction, append trigger / mistake / prevention-rule to the project lessons file (tasks/lessons.md or LESSONS.md).`,
     `- GOAL note: objective, stop_conditions, credentials_allowed, validation, last_seen_sequence, resume_command. Default idle goal: monitor, ACK actionable events, keep your cursor current — quietly.`,

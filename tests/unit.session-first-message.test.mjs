@@ -40,6 +40,9 @@ test("Unit first-message: deterministic content covers the approved protocol", (
   assert.ok(msg.includes("LESSONS") && msg.includes("GOAL note"));
   assert.ok(msg.includes("sl session lock"));
   assert.ok(/evidence:/.test(msg));
+  // Per-PR ticket-trail contract (lean), gated on the project having a board.
+  assert.ok(/TICKET TRAIL/.test(msg) && /one ticket = one PR/i.test(msg));
+  assert.ok(/In-review/.test(msg) && /Blocked/.test(msg));
   // Determinism: same input → identical output.
   assert.equal(msg, buildFirstSentiMessage({ sessionId: "sess-xyz" }));
 });
