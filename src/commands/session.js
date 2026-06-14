@@ -3871,7 +3871,7 @@ export function registerSessionCommand(program) {
             wakeRunner.trigger(event);
             // Auto-wake: instantly resume the host on an addressed message.
             if (triggerHostWake) {
-              void Promise.resolve(triggerHostWake(event)).then((outcome) => {
+              void Promise.resolve(triggerHostWake.trigger(event)).then((outcome) => {
                 if (outcome?.woken && emitFormat !== "ndjson") {
                   console.log(pc.green(`auto-wake: resumed ${wakeHost} (${agentId})`));
                 } else if (outcome && !outcome.woken && outcome.reason !== "not_routed" && emitFormat !== "ndjson") {
@@ -3901,6 +3901,29 @@ export function registerSessionCommand(program) {
             }
           },
           onLifecycle: async (lifecycle) => {
+            // Wake-confirmation runs on every heartbeat regardless of presence:
+            // re-resume agents that were woken but never acked within the
+            // window; confirm + retire the ones that did. (Carter's receipt
+            // idea — a wake isn't done until the agent actually reads it.)
+            if (triggerHostWake && normalizeString(lifecycle?.type) === "heartbeat") {
+              const outcome = await triggerHostWake
+                .reconcile({
+                  nowMs: Date.now(),
+                  fetchActions: (seq) =>
+                    listSessionMessageActions(normalizedSessionId, {
+                      targetPath,
+                      targetSequenceId: seq,
+                    }),
+                })
+                .catch(() => null);
+              if (outcome && (outcome.retried > 0 || outcome.deadLettered > 0) && emitFormat !== "ndjson") {
+                console.log(
+                  pc.yellow(
+                    `auto-wake reconcile: re-resumed ${outcome.retried}, gave up on ${outcome.deadLettered} (no ack).`,
+                  ),
+                );
+              }
+            }
             if (!publishPresence) return;
             const lifecycleType = normalizeString(lifecycle?.type);
             if (lifecycleType === "heartbeat") {
