@@ -63,6 +63,7 @@ import {
 } from "../session/store.js";
 import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
+import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import {
   addSessionEventIdentityKeys,
@@ -3644,6 +3645,14 @@ export function registerSessionCommand(program) {
       "Wake hook: run this shell command on each matched event (notify->resume bridge). Event JSON is piped to stdin; SL_WAKE_* env vars are set.",
     )
     .option(
+      "--wake-host <name>",
+      "Auto-wake: resume this host (claude|codex) on each addressed message so listening IS waking. Requires --resume-session.",
+    )
+    .option(
+      "--resume-session <id>",
+      "Host session/rollout id to resume on wake (the claude/codex session id, not the Senti id). Pairs with --wake-host.",
+    )
+    .option(
       "--coaching-interval <seconds>",
       "Seconds between in-session success reminders (ack, claim work, reply in-thread). Default 900; 0 disables.",
       "900",
@@ -3698,6 +3707,25 @@ export function registerSessionCommand(program) {
         agentId,
         emit: emitWakeNotice,
       });
+      // Auto-wake cutover: when --wake-host + --resume-session are given, an
+      // addressed message INSTANTLY resumes the host (claude --resume / codex)
+      // via the built wake bus — turning `listen` into a true waker on the
+      // same poll. resolve-target routing inside ensures real-message-only,
+      // addressed-to-us, never-self.
+      const wakeHost = normalizeString(options.wakeHost);
+      const triggerHostWake = wakeHost
+        ? createListenerHostWake({
+            host: wakeHost,
+            resumeSessionId: options.resumeSession,
+            agentId,
+            sessionId: normalizedSessionId,
+          })
+        : null;
+      if (wakeHost && !triggerHostWake) {
+        throw new Error(
+          "--wake-host requires a valid host (claude|codex) and --resume-session <host-session-id>.",
+        );
+      }
       const requestedTransport = normalizeString(options.transport).toLowerCase() || "auto";
       if (!["auto", "stream", "poll"].includes(requestedTransport)) {
         throw new Error("--transport must be one of: auto, stream, poll.");
@@ -3841,6 +3869,16 @@ export function registerSessionCommand(program) {
             // Fire the wake hook for any matched event (incl. ack/like) so the
             // host can resume its agent.
             wakeRunner.trigger(event);
+            // Auto-wake: instantly resume the host on an addressed message.
+            if (triggerHostWake) {
+              void Promise.resolve(triggerHostWake(event)).then((outcome) => {
+                if (outcome?.woken && emitFormat !== "ndjson") {
+                  console.log(pc.green(`auto-wake: resumed ${wakeHost} (${agentId})`));
+                } else if (outcome && !outcome.woken && outcome.reason !== "not_routed" && emitFormat !== "ndjson") {
+                  console.log(pc.yellow(`auto-wake: ${wakeHost} resume failed (${outcome.reason})`));
+                }
+              });
+            }
           },
           onError: async (result) => {
             const reason = normalizeString(result?.reason) || "poll_failed";
