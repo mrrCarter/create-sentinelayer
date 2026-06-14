@@ -2237,6 +2237,10 @@ export function registerSessionCommand(program) {
       "Always create a new session even if a recent active one exists for this workspace",
     )
     .option(
+      "--force",
+      "Alias of --force-new (both always mint a fresh session)",
+    )
+    .option(
       "--resume",
       "Reuse the most recent active session for this workspace when one is inside the reuse window",
       true,
@@ -2279,7 +2283,7 @@ export function registerSessionCommand(program) {
         template,
         title: titleArg,
         resume: options.resume !== false,
-        forceNew: Boolean(options.forceNew),
+        forceNew: Boolean(options.forceNew || options.force),
         reuseWindowSeconds,
       });
       const created = ensured.created;
@@ -2421,7 +2425,7 @@ export function registerSessionCommand(program) {
       if (!resumed) {
         console.log(
           pc.gray(
-            options.forceNew
+            (options.forceNew || options.force)
               ? `Tip: fresh session minted (--force-new honored). Subsequent \`${cliCommand} session start\` here within an hour will resume this new session.`
               : `Tip: subsequent \`${cliCommand} session start\` in this workspace within an hour will resume this session. Pass --force-new to override.`,
           ),
