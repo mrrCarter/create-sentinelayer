@@ -5,12 +5,53 @@ import path from "node:path";
 import pc from "picocolors";
 
 import {
+  createMultiProviderApiClient,
+  resolveApiKey,
+  resolveModel,
+  resolveProvider,
+} from "../ai/client.js";
+import { enrichGuideTickets } from "../guide/enrich.js";
+import {
   defaultGuideExportFileName,
   generateBuildGuide,
   renderGuideExport,
   SUPPORTED_GUIDE_EXPORT_FORMATS,
 } from "../guide/generator.js";
 import { renderTerminalMarkdown } from "../ui/markdown.js";
+
+// Optionally split each phase into per-PR tickets with an LLM. Best-effort:
+// any failure leaves the deterministic tickets untouched. Returns the number
+// of phases enriched (0 when disabled or unavailable).
+async function maybeEnrichGuide(guideDoc, options) {
+  if (!options || !options.enrich) return 0;
+  try {
+    const provider = resolveProvider({ provider: options.provider });
+    const model = resolveModel({ provider, model: options.model });
+    const apiKey = resolveApiKey({ provider, explicitApiKey: options.apiKey });
+    if (!apiKey) {
+      console.error(
+        pc.yellow(`! --enrich skipped: no API key for provider '${provider}'. Set the provider key or pass --api-key.`)
+      );
+      return 0;
+    }
+    const limits = {};
+    if (options.maxPhases) limits.maxPhases = Number(options.maxPhases);
+    if (options.maxPrsPerPhase) limits.maxTicketsPerPhase = Number(options.maxPrsPerPhase);
+    const { tickets, enrichedPhases } = await enrichGuideTickets({
+      guide: guideDoc,
+      client: createMultiProviderApiClient(),
+      provider,
+      model,
+      apiKey,
+      limits,
+    });
+    if (enrichedPhases > 0) guideDoc.tickets = tickets;
+    return enrichedPhases;
+  } catch (error) {
+    console.error(pc.yellow(`! --enrich failed, using deterministic tickets: ${error?.message || error}`));
+    return 0;
+  }
+}
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -101,6 +142,12 @@ export function registerGuideCommand(program) {
     .option("--path <path>", "Target workspace path", ".")
     .option("--spec-file <path>", "Spec file path relative to --path")
     .option("--output-file <path>", "Output export file path relative to --path")
+    .option("--enrich", "Split each phase into per-PR tickets with an LLM (opt-in, capped)")
+    .option("--provider <provider>", "LLM provider for --enrich (openai|anthropic|google)")
+    .option("--model <model>", "LLM model for --enrich")
+    .option("--api-key <key>", "Explicit API key for --enrich (else from env)")
+    .option("--max-phases <n>", "Cap how many phases --enrich expands")
+    .option("--max-prs-per-phase <n>", "Cap PRs per phase for --enrich")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -116,6 +163,7 @@ export function registerGuideCommand(program) {
         projectPath: targetPath,
         specPath,
       });
+      const enrichedPhases = await maybeEnrichGuide(guideDoc, options);
       const exportBody = renderGuideExport({ format, guide: guideDoc });
 
       await fsp.mkdir(path.dirname(outputPath), { recursive: true });
@@ -128,6 +176,7 @@ export function registerGuideCommand(program) {
         specPath,
         outputPath,
         issueCount: guideDoc.tickets.length,
+        enrichedPhases,
       };
 
       if (shouldEmitJson(options, command)) {
@@ -139,6 +188,9 @@ export function registerGuideCommand(program) {
       console.log(pc.gray(`Format: ${format}`));
       console.log(pc.gray(`Output: ${outputPath}`));
       console.log(pc.gray(`Issues: ${guideDoc.tickets.length}`));
+      if (enrichedPhases > 0) {
+        console.log(pc.gray(`LLM-enriched phases: ${enrichedPhases}`));
+      }
     });
 
   guide
