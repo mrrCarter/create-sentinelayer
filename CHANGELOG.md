@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.24.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.23.0...v0.24.0) (2026-06-15)
+
+
+### Features
+
+* **guide:** opt-in LLM enrichment — split phases into per-PR tickets ([#599](https://github.com/mrrCarter/create-sentinelayer/issues/599))
+* **session:** teach agents the per-PR ticket-trail contract ([#598](https://github.com/mrrCarter/create-sentinelayer/issues/598))
+* **session:** wake-confirmation retry via read receipts (PR6b) ([#596](https://github.com/mrrCarter/create-sentinelayer/issues/596))
+* **session:** auto-wake cutover — listen instantly resumes the host (PR6) ([#595](https://github.com/mrrCarter/create-sentinelayer/issues/595))
+* **session:** cut-listener — listener honors a stop directive + stop-listener command ([#594](https://github.com/mrrCarter/create-sentinelayer/issues/594))
+* **session:** auto-fire the approved first-Senti-message on session start (PR2) ([#593](https://github.com/mrrCarter/create-sentinelayer/issues/593))
+* **session:** `sl session listeners` — who's listening + at what cadence (PR3) ([#592](https://github.com/mrrCarter/create-sentinelayer/issues/592))
+
+
+### Bug Fixes
+
+* **guide:** decomposition captures the builder's phase body, deps, and acceptance ([#597](https://github.com/mrrCarter/create-sentinelayer/issues/597))
+* **session:** add --force as an alias of --force-new on session start ([#591](https://github.com/mrrCarter/create-sentinelayer/issues/591))
+
 ## [0.23.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.22.0...v0.23.0) (2026-06-10)
 
 
