@@ -290,14 +290,32 @@ jobs:
             echo "::error::No successful 'Quality Summary' check-run found for ${TARGET_SHA}."
             exit 1
           fi
-          quality_run_count="$(echo "${quality_candidates}" | jq '[.[].run_id] | unique | length')"
-          quality_run_ids="$(echo "${quality_candidates}" | jq -r '[.[].run_id] | unique | join(",")')"
-          if [ "${quality_run_count}" -gt 1 ]; then
-            echo "::error::Multiple successful quality workflow runs found for ${TARGET_SHA}; refusing nondeterministic selection."
-            echo "::error::quality_run_candidates=${quality_run_ids}"
+          # A release's canonical quality artifact must trace to the integration
+          # build (push / workflow_dispatch), never a nightly `schedule` re-run on
+          # the same pinned commit. Scheduled Quality Gates runs accumulate on an
+          # unchanged main and would otherwise make this selection nondeterministic.
+          # Resolve each candidate run's triggering event and exclude schedule runs.
+          all_run_ids="$(echo "${quality_candidates}" | jq -r '[.[].run_id] | unique | .[]')"
+          release_run_ids=()
+          schedule_run_ids=()
+          for rid in ${all_run_ids}; do
+            run_event="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${rid}" --jq '.event // ""' 2>/dev/null || echo "")"
+            if [ "${run_event}" = "schedule" ]; then
+              schedule_run_ids+=("${rid}")
+            else
+              release_run_ids+=("${rid}")
+            fi
+          done
+          if [ "${#release_run_ids[@]}" -lt 1 ]; then
+            echo "::error::No non-schedule successful 'Quality Summary' run for ${TARGET_SHA}; ignored schedule-only runs: ${schedule_run_ids[*]:-none}."
             exit 1
           fi
-          quality_run_id="$(echo "${quality_candidates}" | jq -r 'first.run_id // empty')"
+          if [ "${#release_run_ids[@]}" -gt 1 ]; then
+            echo "::error::Multiple non-schedule successful quality workflow runs found for ${TARGET_SHA}; refusing nondeterministic selection."
+            echo "::error::quality_run_candidates=$(IFS=,; echo "${release_run_ids[*]}")"
+            exit 1
+          fi
+          quality_run_id="${release_run_ids[0]}"
           if ! [[ "${quality_run_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Failed to resolve quality workflow run id."
             exit 1

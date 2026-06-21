@@ -840,7 +840,7 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(handoffText, /sentinel \/omargate deep --path \./);
     assert.match(handoffText, /Workflow tuning options:/);
     assert.match(handoffText, /scan_mode: baseline \| deep \(default\) \| audit \| full-depth/);
-    assert.match(handoffText, /## Multi-Agent Coordination \(if session active\)/);
+    assert.match(handoffText, /## Multi-Agent Coordination/);
     assert.match(handoffText, /sl session join <id> --name <your-name> --role coder/);
     assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
     assert.match(sessionGuideText, /sl session list/);
@@ -1185,7 +1185,7 @@ test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", 
     assert.match(handoffText, /Sentinelayer token: not configured \(BYOK mode\)/);
     assert.match(handoffText, /sentinel \/apply --plan tasks\/todo\.md --path \./);
     assert.match(handoffText, /BYOK workflow is guidance-only/);
-    assert.match(handoffText, /## Multi-Agent Coordination \(if session active\)/);
+    assert.match(handoffText, /## Multi-Agent Coordination/);
     assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
     assert.match(specText, /## Goal/);
     assert.match(specText, /autonomous secure code review orchestrator/i);
