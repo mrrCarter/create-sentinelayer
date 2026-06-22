@@ -404,6 +404,39 @@ test("Unit session listener: fromNow primes and persists the latest cursor befor
   assert.equal(result.catchupNotified, false);
 });
 
+test("Unit session listener: fromNow force-probes latest cursor through open inbound circuit", async () => {
+  const latestCalls = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-from-now-circuit",
+    agentId: "codex-1",
+    fromNow: true,
+    persistStartCursor: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _pollLatest: async (sessionId, options) => {
+      latestCalls.push({ sessionId, options });
+      if (!options.forceCircuitProbe) {
+        return { ok: false, reason: "circuit_breaker_open", events: [], cursor: null };
+      }
+      return { ok: true, events: [evt("1779369999000:000026e0")], cursor: "1779369999000:000026e0" };
+    },
+    _poll: async (sessionId, options) => {
+      assert.equal(options.since, "1779369999000:000026e0");
+      return { ok: true, events: [], cursor: "1779369999000:000026e0" };
+    },
+    _sleep: async () => {},
+  });
+
+  assert.equal(latestCalls.length, 1);
+  assert.equal(latestCalls[0].sessionId, "sess-from-now-circuit");
+  assert.equal(latestCalls[0].options.forceCircuitProbe, true);
+  assert.equal(result.cursorSource, "from_now");
+  assert.equal(result.cursor, "1779369999000:000026e0");
+  assert.equal(result.reason, "");
+});
+
 test("Unit session listener: first poll emits matching events created after listener start", async () => {
   const emitted = [];
   const oldEvent = evt("old", { to: "codex-1" });
