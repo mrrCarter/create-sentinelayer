@@ -1,3 +1,5 @@
+import { isAuditSourceFile } from "./path-classification.js";
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -21,6 +23,7 @@ function summarizeSeverity(findings = []) {
 function buildRuntimeHotspots(ingest = {}) {
   const indexed = Array.isArray(ingest.indexedFiles?.files) ? ingest.indexedFiles.files : [];
   return indexed
+    .filter((file) => isAuditSourceFile(file))
     .filter((file) => Number(file.loc || 0) >= 280)
     .sort((left, right) => Number(right.loc || 0) - Number(left.loc || 0))
     .slice(0, 20)
@@ -28,7 +31,7 @@ function buildRuntimeHotspots(ingest = {}) {
       path: toPosixPath(file.path),
       loc: Number(file.loc || 0),
       language: file.language,
-      severity: Number(file.loc || 0) >= 900 ? "P1" : "P2",
+      severity: "P2",
     }));
 }
 

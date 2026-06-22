@@ -51,3 +51,31 @@ test("Unit audit testing: markdown renderer emits specialist sections", () => {
   assert.match(markdown, /Coverage inventory:/);
   assert.match(markdown, /Recommendations:/);
 });
+
+test("Unit audit testing: coverage gaps ignore support artifacts and stay non-blocking", () => {
+  const report = runTestingSpecialist({
+    findings: [],
+    ingest: {
+      indexedFiles: {
+        files: [
+          { path: "tests/service.test.mjs", language: "javascript", loc: 1200, sizeBytes: 12000 },
+          { path: "tasks/test-plan.md", language: "markdown", loc: 900, sizeBytes: 10000 },
+          { path: ".github/workflows/test.yml", language: "yaml", loc: 800, sizeBytes: 9000 },
+          { path: "src/generated/types.ts", language: "typescript", loc: 1000, sizeBytes: 10000 },
+          { path: "yarn.lock", language: "text", loc: 3000, sizeBytes: 120000 },
+          { path: "src/service/order.js", language: "javascript", loc: 700, sizeBytes: 11000 },
+        ],
+      },
+    },
+  });
+
+  assert.equal(report.coverageInventory.codeFileCount, 1);
+  assert.equal(report.coverageInventory.testFileCount, 1);
+  assert.deepEqual(
+    report.coverageInventory.likelyGaps.map((item) => item.path),
+    ["src/service/order.js"]
+  );
+  assert.equal(report.summary.P1, 0);
+  assert.equal(report.summary.P2, 1);
+  assert.equal(report.summary.blocking, false);
+});

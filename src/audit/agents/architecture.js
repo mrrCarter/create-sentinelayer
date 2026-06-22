@@ -1,3 +1,5 @@
+import { isAuditSourceFile } from "./path-classification.js";
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -21,6 +23,7 @@ function summarizeSeverity(findings = []) {
 function buildHotspots(ingest = {}) {
   const indexed = Array.isArray(ingest.indexedFiles?.files) ? ingest.indexedFiles.files : [];
   return indexed
+    .filter((file) => isAuditSourceFile(file))
     .filter((file) => Number(file.loc || 0) >= 300)
     .sort((left, right) => Number(right.loc || 0) - Number(left.loc || 0))
     .slice(0, 20)
@@ -50,7 +53,7 @@ function deriveArchitectureFindings({ findings = [], hotspots = [] } = {}) {
       continue;
     }
     derived.push({
-      severity: hotspot.risk === "high" ? "P1" : "P2",
+      severity: "P2",
       file: hotspot.path,
       line: 1,
       message: `Large architectural hotspot detected (${hotspot.loc} LOC).`,
