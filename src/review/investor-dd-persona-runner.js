@@ -1,9 +1,9 @@
 /**
  * Unified per-persona runner for investor-DD (#investor-dd-4..15).
  *
- * Wires the 12 domain personas (security, backend, code-quality, testing,
+ * Wires the 13 domain personas (security, backend, code-quality, testing,
  * data-layer, reliability, release, observability, infrastructure,
- * supply-chain, documentation, ai-governance) into the per-file review
+ * supply-chain, frontend, documentation, ai-governance) into the review
  * loop. Each persona dispatches its declared domain tools against every
  * file the router assigns to it, collects findings, and returns a
  * per-persona coverage proof.
@@ -12,9 +12,8 @@
  * (LLM-driven) layer sits on top in a later PR. Determinism is the
  * investor-DD ground-truth floor; the LLM layer is additive.
  *
- * Frontend (Jules) is excluded here because Jules has its own bespoke
- * envelope with live-web validation; PR-25 routes Jules into investor-DD
- * via a dedicated live-validator dispatcher.
+ * Repo-scoped tools such as Jules' frontend analyzer run once per persona
+ * with the full routed file set; file-scoped tools retain the per-file loop.
  */
 
 import { AI_GOVERNANCE_TOOLS } from "../agents/ai-governance/tools/index.js";
@@ -29,11 +28,12 @@ import { RELIABILITY_TOOLS } from "../agents/reliability/tools/index.js";
 import { SECURITY_TOOLS } from "../agents/security/tools/index.js";
 import { SUPPLY_CHAIN_TOOLS } from "../agents/supply-chain/tools/index.js";
 import { TESTING_TOOLS } from "../agents/testing/tools/index.js";
+import { FRONTEND_TOOLS } from "../agents/jules/tools/investor-dd.js";
 
 import { checkBudget, createBudgetState } from "./investor-dd-file-loop.js";
 
 /**
- * Registry of persona → tool map. Frontend handled separately via Jules.
+ * Registry of persona → tool map.
  */
 export const INVESTOR_DD_PERSONA_TOOL_REGISTRY = Object.freeze({
   security: SECURITY_TOOLS,
@@ -46,6 +46,7 @@ export const INVESTOR_DD_PERSONA_TOOL_REGISTRY = Object.freeze({
   observability: OBSERVABILITY_TOOLS,
   infrastructure: INFRASTRUCTURE_TOOLS,
   "supply-chain": SUPPLY_CHAIN_TOOLS,
+  frontend: FRONTEND_TOOLS,
   documentation: DOCUMENTATION_TOOLS,
   "ai-governance": AI_GOVERNANCE_TOOLS,
 });
@@ -66,31 +67,15 @@ export function getPersonaTools(personaId) {
   return Object.values(map);
 }
 
-/**
- * Dispatch every tool for the persona against a single file scope. Each
- * tool handler is invoked with `{ rootPath, files: [file] }` because
- * every persona's tool contract accepts this shape (see #A13-#A22).
- *
- * @param {object} params
- * @param {string} params.personaId
- * @param {string} params.file            - Single file (relative to rootPath).
- * @param {string} params.rootPath        - Repo root.
- * @param {object} params.budget          - Shared budget state.
- * @param {Function} [params.onEvent]
- * @returns {Promise<{findings: Array, toolInvocations: Array, stoppedEarly: boolean}>}
- */
-export async function runPersonaOnFile({
+async function runTools({
   personaId,
   file,
+  files = null,
   rootPath,
   budget,
+  tools,
   onEvent = () => {},
 } = {}) {
-  if (!personaId) throw new TypeError("runPersonaOnFile requires personaId");
-  if (!file) throw new TypeError("runPersonaOnFile requires file");
-  if (!rootPath) throw new TypeError("runPersonaOnFile requires rootPath");
-
-  const tools = getPersonaTools(personaId);
   const findings = [];
   const toolInvocations = [];
   let stoppedEarly = false;
@@ -112,7 +97,7 @@ export async function runPersonaOnFile({
     onEvent({ type: "persona_file_tool_call", personaId, file, tool: tool.id });
 
     try {
-      const results = await tool.handler({ rootPath, files: [file] });
+      const results = await tool.handler({ rootPath, files: Array.isArray(files) ? files : [file] });
       if (budget) budget.toolCalls = (budget.toolCalls || 0) + 1;
       const normalized = Array.isArray(results) ? results : [];
       for (const f of normalized) {
@@ -143,6 +128,40 @@ export async function runPersonaOnFile({
 }
 
 /**
+ * Dispatch every tool for the persona against a single file scope. Each
+ * tool handler is invoked with `{ rootPath, files: [file] }` because
+ * every persona's tool contract accepts this shape (see #A13-#A22).
+ *
+ * @param {object} params
+ * @param {string} params.personaId
+ * @param {string} params.file            - Single file (relative to rootPath).
+ * @param {string} params.rootPath        - Repo root.
+ * @param {object} params.budget          - Shared budget state.
+ * @param {Function} [params.onEvent]
+ * @returns {Promise<{findings: Array, toolInvocations: Array, stoppedEarly: boolean}>}
+ */
+export async function runPersonaOnFile({
+  personaId,
+  file,
+  rootPath,
+  budget,
+  onEvent = () => {},
+} = {}) {
+  if (!personaId) throw new TypeError("runPersonaOnFile requires personaId");
+  if (!file) throw new TypeError("runPersonaOnFile requires file");
+  if (!rootPath) throw new TypeError("runPersonaOnFile requires rootPath");
+
+  return runTools({
+    personaId,
+    file,
+    rootPath,
+    budget,
+    tools: getPersonaTools(personaId),
+    onEvent,
+  });
+}
+
+/**
  * Run a single persona across its assigned files in the router output.
  *
  * @param {object} params
@@ -167,6 +186,50 @@ export async function runPersonaAcrossFiles({
   const visited = [];
   const skipped = [];
   let terminationReason = "ok";
+  const tools = getPersonaTools(personaId);
+  const repoScopedTools = tools.filter((tool) => tool.scope === "repo");
+  const fileScopedTools = tools.filter((tool) => tool.scope !== "repo");
+
+  if (repoScopedTools.length > 0) {
+    const budgetCheck = checkBudget(safeBudget);
+    if (!budgetCheck.ok) {
+      terminationReason = budgetCheck.reason;
+      skipped.push(...files);
+      onEvent({ type: "persona_file_skipped", personaId, file: "__repo__", stopReason: budgetCheck.reason });
+    } else {
+      onEvent({ type: "persona_file_start", personaId, file: "__repo__", fileCount: files.length });
+      const { findings, toolInvocations, stoppedEarly } = await runTools({
+        personaId,
+        file: "__repo__",
+        files,
+        rootPath,
+        budget: safeBudget,
+        tools: repoScopedTools,
+        onEvent,
+      });
+      perFile.push({ file: "__repo__", scope: "repo", files, findings, toolInvocations, stoppedEarly });
+      allFindings.push(...findings);
+      visited.push(...files);
+      onEvent({
+        type: "persona_file_complete",
+        personaId,
+        file: "__repo__",
+        findingCount: findings.length,
+        toolCount: toolInvocations.length,
+      });
+    }
+  }
+
+  if (fileScopedTools.length === 0) {
+    return {
+      personaId,
+      perFile,
+      findings: allFindings,
+      visited,
+      skipped,
+      terminationReason,
+    };
+  }
 
   for (const file of files) {
     const budgetCheck = checkBudget(safeBudget);
@@ -178,11 +241,12 @@ export async function runPersonaAcrossFiles({
     }
 
     onEvent({ type: "persona_file_start", personaId, file });
-    const { findings, toolInvocations, stoppedEarly } = await runPersonaOnFile({
+    const { findings, toolInvocations, stoppedEarly } = await runTools({
       personaId,
       file,
       rootPath,
       budget: safeBudget,
+      tools: fileScopedTools,
       onEvent,
     });
     perFile.push({ file, findings, toolInvocations, stoppedEarly });

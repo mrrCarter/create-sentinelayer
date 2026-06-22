@@ -34,7 +34,7 @@
 //   frontend / observability / reliability.
 // - "compliance" — cross-cutting; distributed across security / ai-governance /
 //   supply-chain / infrastructure / documentation via subagent dispatch.
-const FULL_DEPTH_PERSONAS = [
+export const FULL_DEPTH_PERSONAS = Object.freeze([
   "security",
   "backend",
   "code-quality",
@@ -48,7 +48,7 @@ const FULL_DEPTH_PERSONAS = [
   "frontend",
   "documentation",
   "ai-governance",
-];
+]);
 
 const SCAN_MODES = {
   baseline: ["security"],

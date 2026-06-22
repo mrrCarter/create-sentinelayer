@@ -89,6 +89,37 @@ test("runInvestorDd: produces full artifact bundle", async () => {
   }
 });
 
+test("runInvestorDd: default roster includes frontend/Jules", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/frontend/App.tsx", "export function App(){ return <button>Go</button>; }\n");
+    await writeFile(root, "package.json", '{"name":"t","version":"1.0.0","dependencies":{"react":"18.2.0"}}');
+
+    const result = await runInvestorDd({
+      rootPath: root,
+      outputDir: root,
+      compliancePacks: ["license"],
+      devTestBot: false,
+    });
+
+    const plan = await readJson(path.join(result.artifactDir, "plan.json"));
+    assert.equal(plan.personas.length, 13);
+    assert.ok(plan.personas.includes("frontend"));
+    assert.ok(Array.isArray(plan.routing.frontend));
+
+    const progress = await readJson(path.join(result.artifactDir, "progress.json"));
+    assert.equal(progress.missingPersonas.includes("frontend"), false);
+    const roster = progress.capabilities.find((entry) => entry.id === "persona_roster");
+    assert.equal(roster.status, "complete");
+
+    const persona = await readJson(path.join(result.artifactDir, "persona-frontend.json"));
+    assert.equal(persona.personaId, "frontend");
+    assert.equal(persona.perFile[0].scope, "repo");
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runInvestorDd: dryRun skips persona execution + still emits plan", async () => {
   const root = await makeTempRepo();
   try {
