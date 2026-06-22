@@ -44,6 +44,12 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.match(workflow, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
   assert.match(workflow, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
   assert.match(workflow, /model_fallback:\s*gemini-2\.5-flash/);
+  assert.match(workflow, /Stage Omar summary artifact/);
+  assert.match(workflow, /omar-artifacts\/summary\.json/);
+  assert.match(workflow, /omar_gate_summary/);
+  assert.match(workflow, /schema_version/);
+  assert.match(workflow, /run_url/);
+  assert.match(workflow, /actions\/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874/);
 });
 
 test("Unit scan parity: local baseline/deep/full-depth persona contracts are stable", () => {

@@ -2164,6 +2164,10 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
     assert.match(workflowText, /playwright_mode: audit/);
     assert.match(workflowText, /sbom_mode: audit/);
     assert.match(workflowText, /sentinelayer_token:\s*\$\{\{\s*secrets\.SENTINELAYER_TOKEN\s*\}\}/);
+    assert.match(workflowText, /Stage Omar summary artifact/);
+    assert.match(workflowText, /omar-artifacts\/summary\.json/);
+    assert.match(workflowText, /omar_gate_summary/);
+    assert.match(workflowText, /Upload Omar summary artifact/);
     await assert.rejects(
       readFile(path.join(tempRoot, ".github", "workflows", "security-review.yml"), "utf-8")
     );

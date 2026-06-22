@@ -2435,6 +2435,80 @@ jobs:
           echo "- run_id: \\\`\${{ steps.omar.outputs.run_id }}\\\`" >> "\$GITHUB_STEP_SUMMARY"
           echo "- gate_status: \\\`\${{ steps.omar.outputs.gate_status }}\\\`" >> "\$GITHUB_STEP_SUMMARY"
           echo "- findings: P0=\${{ steps.omar.outputs.p0_count }} P1=\${{ steps.omar.outputs.p1_count }} P2=\${{ steps.omar.outputs.p2_count }} P3=\${{ steps.omar.outputs.p3_count }}" >> "\$GITHUB_STEP_SUMMARY"
+      - name: Stage Omar summary artifact
+        shell: bash
+        env:
+          OMAR_RUN_ID: \${{ steps.omar.outputs.run_id || '' }}
+          OMAR_GATE_STATUS: \${{ steps.omar.outputs.gate_status || '' }}
+          OMAR_P0: \${{ steps.omar.outputs.p0_count || '0' }}
+          OMAR_P1: \${{ steps.omar.outputs.p1_count || '0' }}
+          OMAR_P2: \${{ steps.omar.outputs.p2_count || '0' }}
+          OMAR_P3: \${{ steps.omar.outputs.p3_count || '0' }}
+          OMAR_SCAN_MODE: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
+          OMAR_SEVERITY_GATE: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          OMAR_P2_MAX_ALLOWED: \${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
+        run: |
+          set -euo pipefail
+          mkdir -p omar-artifacts
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def env(name, default=""):
+              return os.environ.get(name, default)
+
+          def int_env(name):
+              value = env(name, "0").strip()
+              return int(value) if value.isdigit() else 0
+
+          github_run_id = env("GITHUB_RUN_ID")
+          server_url = env("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+          repository = env("GITHUB_REPOSITORY")
+          run_url = f"{server_url}/{repository}/actions/runs/{github_run_id}" if repository and github_run_id else ""
+          summary = {
+              "schema_version": 1,
+              "kind": "omar_gate_summary",
+              "run_id": env("OMAR_RUN_ID"),
+              "gate_status": env("OMAR_GATE_STATUS"),
+              "findings": {
+                  "P0": int_env("OMAR_P0"),
+                  "P1": int_env("OMAR_P1"),
+                  "P2": int_env("OMAR_P2"),
+                  "P3": int_env("OMAR_P3"),
+              },
+              "threshold": {
+                  "severity_gate": env("OMAR_SEVERITY_GATE", "P1"),
+                  "p2_max_allowed": int_env("OMAR_P2_MAX_ALLOWED"),
+              },
+              "scan": {
+                  "mode": env("OMAR_SCAN_MODE", "deep"),
+                  "action_ref": "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493",
+                  "managed_llm": False,
+                  "llm_failure_policy": "block",
+              },
+              "github": {
+                  "repository": repository,
+                  "sha": env("GITHUB_SHA"),
+                  "ref": env("GITHUB_REF"),
+                  "event_name": env("GITHUB_EVENT_NAME"),
+                  "workflow": env("GITHUB_WORKFLOW"),
+                  "run_id": github_run_id,
+                  "run_attempt": env("GITHUB_RUN_ATTEMPT"),
+                  "run_url": run_url,
+              },
+          }
+          Path("omar-artifacts/summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload Omar summary artifact
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+        with:
+          name: omar-gate-artifacts
+          path: omar-artifacts/summary.json
+          if-no-files-found: error
 `;
 }
 
