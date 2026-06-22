@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.26.0...v0.27.0) (2026-06-22)
+
+
+### Features
+
+* **omar:** route changed-file persona scope ([f01cd99](https://github.com/mrrCarter/create-sentinelayer/commit/f01cd99ec60b8790b57b3eee1ba60ee296b1f3ad))
+* **omar:** route changed-file persona scope ([7c8d9ab](https://github.com/mrrCarter/create-sentinelayer/commit/7c8d9aba7178da423c3b94dbd2ca191724b8c120))
+
 ## [0.26.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.25.2...v0.26.0) (2026-06-22)
 
 
