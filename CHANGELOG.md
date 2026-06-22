@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.27.0...v0.27.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* preserve billing usage provenance ([9cca8df](https://github.com/mrrCarter/create-sentinelayer/commit/9cca8df5e0a55350deefaf7405fd0db271082836))
+* preserve billing usage provenance ([94d2f84](https://github.com/mrrCarter/create-sentinelayer/commit/94d2f84b8a746e75030cd64086ed63a94e6ccf12))
+
 ## [0.27.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.26.0...v0.27.0) (2026-06-22)
 
 
