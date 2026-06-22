@@ -15,6 +15,10 @@ const DEFAULT_LOCK_POLL_MS = 25;
 const DEFAULT_MAX_STREAM_EVENTS = 10_000;
 const DEFAULT_REMOTE_REFRESH_TTL_SECONDS = 24 * 60 * 60;
 const REMOTE_REFRESH_TIMEOUT_MS = 2_500;
+const METADATA_WRITE_RETRY_ATTEMPTS = 5;
+const METADATA_WRITE_RETRY_DELAY_MS = 50;
+
+let metadataWriteCounter = 0;
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -68,11 +72,36 @@ async function readSessionMetadata(paths) {
   }
 }
 
+function isRetryableMetadataWriteError(error) {
+  const code = error && typeof error === "object" ? error.code : "";
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+async function replaceMetadataFile(tmpPath, metadataPath) {
+  for (let attempt = 1; attempt <= METADATA_WRITE_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      await fsp.rename(tmpPath, metadataPath);
+      return;
+    } catch (error) {
+      if (!isRetryableMetadataWriteError(error) || attempt >= METADATA_WRITE_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      await sleep(METADATA_WRITE_RETRY_DELAY_MS * attempt);
+    }
+  }
+}
+
 async function writeSessionMetadata(paths, metadata = {}) {
   await fsp.mkdir(paths.sessionDir, { recursive: true });
-  const tmpPath = `${paths.metadataPath}.${process.pid}.${Date.now()}.tmp`;
+  metadataWriteCounter = (metadataWriteCounter + 1) % Number.MAX_SAFE_INTEGER;
+  const tmpPath = `${paths.metadataPath}.${process.pid}.${Date.now()}.${metadataWriteCounter}.tmp`;
   await fsp.writeFile(tmpPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
-  await fsp.rename(tmpPath, paths.metadataPath);
+  try {
+    await replaceMetadataFile(tmpPath, paths.metadataPath);
+  } catch (error) {
+    await fsp.rm(tmpPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 function remoteStatusAllowsLocalRefresh(remoteSession = {}) {

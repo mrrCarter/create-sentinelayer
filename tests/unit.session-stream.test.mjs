@@ -19,6 +19,10 @@ async function seedWorkspace(rootPath) {
   await writeFile(path.join(rootPath, "src", "index.js"), "export const value = 1;\n", "utf-8");
 }
 
+async function cleanupTempRoot(tempRoot) {
+  await rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
   const previous = {
     SENTINELAYER_SKIP_REMOTE_SYNC: process.env.SENTINELAYER_SKIP_REMOTE_SYNC,
@@ -64,7 +68,7 @@ test("Unit session stream: append and read events preserves canonical envelope",
     assert.equal(events[0].payload.role, "coder");
     assert.equal(events[0].sessionId, session.sessionId);
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });
 
@@ -103,7 +107,7 @@ test("Unit session stream: remote durable metadata survives local normalization"
     assert.equal(events[0].cursor, "1779364717000:0000002a");
     assert.equal(events[0].sequenceId, 42);
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });
 
@@ -143,7 +147,7 @@ test("Unit session stream: concurrent append from 3 workers writes corruption-fr
       assert.doesNotThrow(() => JSON.parse(line));
     }
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });
 
@@ -184,7 +188,7 @@ test("Unit session stream: tail emits new events within 1 second", async () => {
     assert.ok(emitted);
     assert.equal(emitted.event, "agent_status");
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });
 
@@ -221,7 +225,7 @@ test("Unit session stream: expired session blocks writes, renew re-enables write
     );
     assert.equal(appended.payload.state, "resumed");
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });
 
@@ -275,7 +279,7 @@ test("Unit session stream: expired local cache refreshes before append when remo
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv();
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });
 
@@ -316,6 +320,6 @@ test("Unit session stream: expired local cache does not reopen when remote is cl
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv();
-    await rm(tempRoot, { recursive: true, force: true });
+    await cleanupTempRoot(tempRoot);
   }
 });

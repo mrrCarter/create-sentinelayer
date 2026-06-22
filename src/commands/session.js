@@ -62,6 +62,11 @@ import {
   updateSessionTitle,
 } from "../session/store.js";
 import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
+import {
+  acceptSessionInvitation,
+  normalizeSessionOnboarding,
+  writeSessionOnboardingBrief,
+} from "../session/invitations.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -122,6 +127,13 @@ function shouldEmitJson(options, command) {
 
 function normalizeString(value) {
   return String(value || "").trim();
+}
+
+function optionWasSetByCli(command, optionName) {
+  if (!command || typeof command.getOptionValueSource !== "function") {
+    return false;
+  }
+  return command.getOptionValueSource(optionName) === "cli";
 }
 
 const SESSION_SAY_CONFIRM_ATTEMPTS = 3;
@@ -2719,6 +2731,9 @@ export function registerSessionCommand(program) {
       "--agent <id>",
       "Granted agent id to emit an agent_join event as. Behaves like post-agent for human/placeholder ids — those are recorded in the local registry only.",
     )
+    .option("--invite-token <token>", "Invitation token to accept before joining the session")
+    .option("--seat-key <key>", "Reserved session seat key to claim while accepting an invite")
+    .option("--idempotency-key <key>", "Explicit idempotency key for invite acceptance")
     .option("--role <role>", "Agent role: coder, reviewer, tester, observer", "coder")
     .option("--model <model>", "Agent model hint", "cli")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -2729,12 +2744,35 @@ export function registerSessionCommand(program) {
         throw new Error("session id is required.");
       }
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const explicitAgent = normalizeString(options.agent);
+      const legacyName = normalizeString(options.name);
+      const inviteToken = normalizeString(options.inviteToken);
+      let invitationAccept = null;
+      let invitationAcceptResult = null;
+      if (inviteToken) {
+        invitationAccept = await acceptSessionInvitation(normalizedSessionId, {
+          targetPath,
+          invitationToken: inviteToken,
+          seatKey: options.seatKey,
+          agentId: explicitAgent || legacyName,
+          idempotencyKey: options.idempotencyKey,
+        });
+        invitationAcceptResult =
+          invitationAccept?.result && typeof invitationAccept.result === "object"
+            ? invitationAccept.result
+            : null;
+      }
 
       // PR #483 contract: verify the session exists and the caller has access
       // BEFORE materializing local cache state. Without this we'd silently
       // create a phantom local NDJSON for a session that's archived or owned
       // by another tenant — which is the bug Carter reported when asking for
       // a clean "share an id from web → join in CLI" flow.
+      //
+      // Invitation acceptance is the only exception to the old ordering:
+      // before the invite is accepted the user may legitimately receive 403,
+      // so --invite-token performs the guarded accept mutation first and this
+      // verification proves membership immediately afterward.
       const verification = await verifyRemoteSession(normalizedSessionId, { targetPath });
       if (!verification.ok) {
         if (verification.status === 404 || verification.reason === "not_found") {
@@ -2766,17 +2804,26 @@ export function registerSessionCommand(program) {
         targetPath,
       });
 
-      const explicitAgent = normalizeString(options.agent);
-      const agentSeed = explicitAgent || normalizeString(options.name);
+      const acceptedOnboarding = normalizeSessionOnboarding(
+        invitationAcceptResult?.onboarding,
+        invitationAcceptResult?.claimedSeat,
+      );
+      const acceptedAgentId = normalizeString(acceptedOnboarding?.agentId);
+      const agentSeed = explicitAgent || acceptedAgentId || legacyName;
       const resolvedAgentId = await defaultAgentId(agentSeed, targetPath);
-      const role = normalizeString(options.role) || "coder";
+      const roleWasExplicit = optionWasSetByCli(command, "role");
+      const role =
+        normalizeString(roleWasExplicit ? options.role : acceptedOnboarding?.role || options.role) ||
+        "coder";
       const model = normalizeString(options.model) || "cli";
+      const hasConcreteAgentIdentity = Boolean(explicitAgent || acceptedAgentId);
 
       // `registerAgent` already writes the canonical `agent_join` event to the
       // local NDJSON and best-effort relays it to /events via appendToStream
       // → syncSessionEventToApi. That gives us the exact `post-agent` parity
-      // the spec calls for when `--agent <granted>` is provided. We don't
-      // double-emit; we just record whether the explicit agent path was used
+      // the spec calls for when `--agent <granted>` or an accepted reserved
+      // seat provides a concrete agent id. We don't double-emit; we record
+      // whether a durable agent identity path was used
       // so the JSON output can advertise it to callers (and tests).
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
@@ -2784,15 +2831,21 @@ export function registerSessionCommand(program) {
         model,
         role,
         trackProcessExit: false,
-        awaitRemoteSync: Boolean(explicitAgent),
+        awaitRemoteSync: hasConcreteAgentIdentity,
       });
       const agentJoinRelayed =
         joined.emittedJoinEvent !== false &&
-        Boolean(explicitAgent) &&
+        hasConcreteAgentIdentity &&
         Boolean(resolvedAgentId) &&
         resolvedAgentId !== "cli-user" &&
         resolvedAgentId !== "unknown" &&
         !resolvedAgentId.startsWith("human-");
+      const onboardingBrief = await writeSessionOnboardingBrief(normalizedSessionId, {
+        targetPath,
+        onboarding: acceptedOnboarding,
+        claimedSeat: invitationAcceptResult?.claimedSeat || null,
+        agentId: joined.agentId,
+      });
 
       const eventCount = Number(remoteSession.eventCount ?? remoteSession.events ?? 0);
       const agents = Array.isArray(remoteSession.agents) ? remoteSession.agents : [];
@@ -2824,6 +2877,21 @@ export function registerSessionCommand(program) {
         agentCount: Number.isFinite(agentCount) ? agentCount : 0,
         lastActivityAt: lastActivityIso || null,
         agentJoinRelayed,
+        invitationAccepted: Boolean(invitationAcceptResult?.ok || invitationAccept),
+        invitationAccept: invitationAccept
+          ? {
+              idempotencyKey: invitationAccept.idempotencyKey,
+              claimedSeat: invitationAcceptResult?.claimedSeat || null,
+              onboarding: acceptedOnboarding,
+              capacity: invitationAcceptResult?.capacity || null,
+            }
+          : null,
+        onboardingGuide: onboardingBrief
+          ? {
+              markdownPath: onboardingBrief.markdownPath,
+              jsonPath: onboardingBrief.jsonPath,
+            }
+          : null,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -2836,7 +2904,17 @@ export function registerSessionCommand(program) {
           `Joined session ${titleLabel} (${normalizedSessionId}) — ${payload.eventCount} events, ${payload.agentCount} agents, last activity ${ageLabel}`,
         ),
       );
+      if (payload.invitationAccepted) {
+        const seat = payload.invitationAccept?.claimedSeat || {};
+        const seatLabel = normalizeString(seat.seatKey)
+          ? `; claimed ${normalizeString(seat.seatType) || "reserved"} seat ${seat.seatKey}`
+          : "";
+        console.log(pc.green(`Invitation accepted${seatLabel}`));
+      }
       console.log(pc.gray(`agent=${joined.agentId} role=${joined.role} model=${joined.model}`));
+      if (payload.onboardingGuide?.markdownPath) {
+        console.log(pc.gray(`onboarding=${payload.onboardingGuide.markdownPath}`));
+      }
     });
 
   session

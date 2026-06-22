@@ -19,7 +19,7 @@ import {
   resolveSentinelDir,
 } from "./paths.js";
 
-const EVENTS_LOCK_TIMEOUT_MS = 5000;
+const EVENTS_LOCK_TIMEOUT_MS = 15_000;
 const EVENTS_LOCK_STALE_MS = 30_000;
 const EVENTS_LOCK_POLL_MS = 25;
 
