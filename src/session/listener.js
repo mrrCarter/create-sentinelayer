@@ -311,6 +311,7 @@ export async function listenSessionEvents({
     const latest = await _pollLatest(normalizedSessionId, {
       targetPath,
       limit: 1,
+      forceCircuitProbe: true,
     });
     if (!latest?.ok) {
       throw new Error(`Unable to start listener from the latest event (${latest?.reason || "unknown"}).`);
