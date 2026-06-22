@@ -244,3 +244,65 @@ test("Unit AI review: dry run records session usage billing ledger", async () =>
     await fsp.rm(root, { recursive: true, force: true });
   }
 });
+
+test("Unit AI review: usage ledger failures remain best-effort by default", async () => {
+  const root = await makeRoot();
+  try {
+    const result = await runAiReviewLayer({
+      targetPath: root,
+      runDirectory: path.join(root, "runs", "review-ai-best-effort"),
+      runId: "review-ai-best-effort",
+      sessionId: "sess-review-best-effort",
+      mode: "diff",
+      provider: "openai",
+      model: "gpt-5.3-codex",
+      dryRun: true,
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+        findings: [],
+        scope: { scannedRelativeFiles: ["src/a.js"] },
+      },
+      usageRecorder: async () => {
+        throw new Error("quota projection unavailable");
+      },
+      env: {},
+    });
+
+    assert.equal(result.billing.ok, false);
+    assert.match(result.billing.reason, /quota projection unavailable/);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Unit AI review: required usage ledger failures block the AI review", async () => {
+  const root = await makeRoot();
+  try {
+    await assert.rejects(
+      () =>
+        runAiReviewLayer({
+          targetPath: root,
+          runDirectory: path.join(root, "runs", "review-ai-required"),
+          runId: "review-ai-required",
+          sessionId: "sess-review-required",
+          mode: "diff",
+          provider: "openai",
+          model: "gpt-5.3-codex",
+          dryRun: true,
+          requireUsageLedger: true,
+          deterministic: {
+            summary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+            findings: [],
+            scope: { scannedRelativeFiles: ["src/a.js"] },
+          },
+          usageRecorder: async () => {
+            throw new Error("quota projection unavailable");
+          },
+          env: {},
+        }),
+      /Review AI usage ledger recording failed: quota projection unavailable/
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
