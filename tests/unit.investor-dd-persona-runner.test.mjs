@@ -26,9 +26,9 @@ async function writeFile(root, relativePath, content) {
   await fsp.writeFile(fullPath, content, "utf-8");
 }
 
-test("registry covers 12 canonical personas (frontend excluded)", () => {
-  assert.equal(INVESTOR_DD_PERSONA_IDS.length, 12);
-  const canonicalNoFrontend = [
+test("registry covers 13 canonical personas including frontend", () => {
+  assert.equal(INVESTOR_DD_PERSONA_IDS.length, 13);
+  const canonical = [
     "security",
     "backend",
     "code-quality",
@@ -39,13 +39,14 @@ test("registry covers 12 canonical personas (frontend excluded)", () => {
     "observability",
     "infrastructure",
     "supply-chain",
+    "frontend",
     "documentation",
     "ai-governance",
   ];
-  for (const id of canonicalNoFrontend) {
+  for (const id of canonical) {
     assert.ok(INVESTOR_DD_PERSONA_TOOL_REGISTRY[id], `missing ${id}`);
   }
-  assert.equal(INVESTOR_DD_PERSONA_TOOL_REGISTRY.frontend, undefined);
+  assert.ok(INVESTOR_DD_PERSONA_TOOL_REGISTRY.frontend["frontend-analyze"]);
 });
 
 test("getPersonaTools returns at least one tool per persona", () => {
@@ -209,6 +210,39 @@ test("runAllPersonas: dispatches across multiple personas", async () => {
     assert.equal(result.terminationReason, "ok");
     assert.ok(events.some((e) => e.type === "persona_start"));
     assert.ok(events.some((e) => e.type === "persona_complete"));
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runAllPersonas: frontend persona runs Jules analyzer once for routed files", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(
+      root,
+      "src/frontend/App.tsx",
+      "export function App(){ return <div dangerouslySetInnerHTML={{__html: window.location.hash}} />; }\n",
+    );
+    await writeFile(root, "src/frontend/Button.tsx", "export function Button(){ return <button>Go</button>; }\n");
+
+    const events = [];
+    const result = await runAllPersonas({
+      routing: { frontend: ["src/frontend/App.tsx", "src/frontend/Button.tsx"] },
+      rootPath: root,
+      budget: createBudgetState({ maxUsd: 100 }),
+      onEvent: (e) => events.push(e),
+    });
+
+    assert.ok(result.byPersona.frontend);
+    assert.equal(result.byPersona.frontend.visited.length, 2);
+    assert.equal(result.byPersona.frontend.perFile.length, 1);
+    assert.equal(result.byPersona.frontend.perFile[0].scope, "repo");
+    assert.ok(result.findings.some((finding) => finding.personaId === "frontend"));
+    assert.ok(result.findings.some((finding) => finding.kind.startsWith("frontend.security.")));
+    assert.equal(
+      events.filter((event) => event.type === "persona_file_tool_call" && event.personaId === "frontend").length,
+      1,
+    );
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

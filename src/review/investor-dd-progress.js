@@ -1,20 +1,8 @@
+import { FULL_DEPTH_PERSONAS } from "./scan-modes.js";
+
 export const INVESTOR_DD_PROGRESS_VERSION = "investor_dd_progress_v1";
 
-export const INVESTOR_DD_EXPECTED_PERSONAS = Object.freeze([
-  "security",
-  "backend",
-  "code-quality",
-  "testing",
-  "data-layer",
-  "reliability",
-  "release",
-  "observability",
-  "infrastructure",
-  "supply-chain",
-  "documentation",
-  "ai-governance",
-  "frontend",
-]);
+export const INVESTOR_DD_EXPECTED_PERSONAS = Object.freeze([...FULL_DEPTH_PERSONAS]);
 
 const REQUIRED_FOR_SELLABLE = Object.freeze([
   "persona_roster",
@@ -335,17 +323,15 @@ export function buildInvestorDdProgress({
       ),
     },
     findingCount: Array.isArray(findings) ? findings.length : 0,
-    nextRecommendedSlices: byId(capabilities, "persona_roster")?.status === "complete"
-      ? [
-          "wire Senti session id and live usage counters into Investor-DD runs",
-          "add per-agent token/time/LOC/customer-price/margin telemetry",
-          "require live reconciliation and report-email proof for sellable DD closeout",
-        ]
-      : [
-          "add the missing frontend/Jules persona to the default Investor-DD roster",
-          "wire Senti session id and live usage counters into Investor-DD runs",
-          "add per-agent token/time/LOC/customer-price/margin telemetry",
-          "require live reconciliation and report-email proof for sellable DD closeout",
-        ],
+    nextRecommendedSlices: [
+      ...(byId(capabilities, "persona_roster")?.status === "complete"
+        ? []
+        : missingPersonas.includes("frontend")
+          ? ["add the missing frontend/Jules persona to the default Investor-DD roster"]
+          : ["run the full 13-persona roster before claiming sellable DD coverage"]),
+      "wire Senti session id and live usage counters into Investor-DD runs",
+      "add per-agent token/time/LOC/customer-price/margin telemetry",
+      "require live reconciliation and report-email proof for sellable DD closeout",
+    ],
   };
 }

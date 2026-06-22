@@ -1148,6 +1148,8 @@ async function runLocalOmarGateCommand(args) {
     const requireUsageLedger = hasCommandOption(args, "--require-usage-ledger");
     const model = getCommandOptionValue(args, "--model") || "gpt-5.3-codex";
     const provider = getCommandOptionValue(args, "--provider") || "sentinelayer";
+    const personaCsvFlag = getCommandOptionValue(args, "--persona") || "";
+    const skipPersonaCsvFlag = getCommandOptionValue(args, "--skip-persona") || "";
 
     const targetPath = path.resolve(process.cwd(), pathArg);
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
@@ -1155,6 +1157,11 @@ async function runLocalOmarGateCommand(args) {
     }
 
     const { runInvestorDd } = await import("./review/investor-dd-orchestrator.js");
+    const { parsePersonaCsv, resolveFilteredPersonas } = await import("./review/scan-modes.js");
+    const personaFilter = resolveFilteredPersonas("full-depth", {
+      includeOnly: parsePersonaCsv(personaCsvFlag),
+      skipPersonas: parsePersonaCsv(skipPersonaCsvFlag),
+    });
     const reportEmailClient = emailOnComplete
       ? await import("./review/dd-report-email-client.js")
       : null;
@@ -1164,12 +1171,20 @@ async function runLocalOmarGateCommand(args) {
       printInfo(
         `Budget: $${maxCostUsd.toFixed(2)} / ${maxRuntimeMinutes}min / ${maxParallel} parallel`,
       );
+      printInfo(`Personas: ${personaFilter.personas.join(", ")}`);
+      if (personaFilter.unknown.length > 0) {
+        printInfo(`Unknown persona IDs ignored: ${personaFilter.unknown.join(", ")}`);
+      }
+      if (personaFilter.dropped.length > 0) {
+        printInfo(`Skipped personas: ${personaFilter.dropped.join(", ")}`);
+      }
       if (dryRun) printInfo("Mode: dry-run (plan + stub report only)");
     }
     const result = await runInvestorDd({
       rootPath: targetPath,
       outputDir: outputDirArg,
       budgetOptions: { maxCostUsd, maxRuntimeMinutes, maxParallel },
+      personas: personaFilter.personas,
       dryRun,
       devTestBot: {
         enabled: devTestBotEnabled,

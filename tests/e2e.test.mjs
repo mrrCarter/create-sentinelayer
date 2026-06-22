@@ -1582,6 +1582,56 @@ test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bu
   }
 });
 
+test("CLI omargate investor-dd honors --persona filters", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-investor-dd-persona-filter-"));
+  try {
+    await mkdir(path.join(tempRoot, "src", "frontend"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      JSON.stringify({ name: "investor-dd-persona-filter-fixture", version: "1.0.0" }, null, 2),
+      "utf-8"
+    );
+    await writeFile(
+      path.join(tempRoot, "src", "frontend", "App.tsx"),
+      "export function App(){ return <button>Go</button>; }\n",
+      "utf-8"
+    );
+
+    const outputDir = path.join(tempRoot, "out");
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "omargate",
+        "investor-dd",
+        "--path",
+        tempRoot,
+        "--persona",
+        "frontend",
+        "--dry-run",
+        "--no-email",
+        "--no-dashboard",
+        "--no-devtestbot",
+        "--output-dir",
+        outputDir,
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.deepEqual(payload.summary.personas, ["frontend"]);
+    assert.equal(payload.progress.activePersonaCount, 1);
+    assert.equal(payload.progress.capabilities.find((entry) => entry.id === "persona_roster").metadata.activePersonas.length, 1);
+
+    const plan = JSON.parse(await readFile(path.join(payload.artifactDir, "plan.json"), "utf-8"));
+    assert.deepEqual(plan.personas, ["frontend"]);
+    assert.deepEqual(Object.keys(plan.routing), ["frontend"]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local command: /audit writes pass report for prepared workspace", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-cmd-"));
   try {

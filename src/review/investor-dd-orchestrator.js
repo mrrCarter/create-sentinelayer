@@ -41,21 +41,9 @@ import { renderInvestorDdHtml } from "./investor-dd-html-report.js";
 import { runDevTestBotPhase } from "./investor-dd-devtestbot.js";
 import { redactDdEmailError } from "./dd-report-email-client.js";
 import { buildInvestorDdProgress } from "./investor-dd-progress.js";
+import { FULL_DEPTH_PERSONAS } from "./scan-modes.js";
 
-const INVESTOR_DD_PERSONAS = Object.freeze([
-  "security",
-  "backend",
-  "code-quality",
-  "testing",
-  "data-layer",
-  "reliability",
-  "release",
-  "observability",
-  "infrastructure",
-  "supply-chain",
-  "documentation",
-  "ai-governance",
-]);
+const INVESTOR_DD_PERSONAS = Object.freeze([...FULL_DEPTH_PERSONAS]);
 
 /**
  * Walk the target repo and return a list of relative POSIX file paths.
@@ -148,7 +136,10 @@ function buildSummaryMarkdown({ runId, summary, routing, byPersona }) {
   lines.push("");
   lines.push("| Persona | Files routed | Files visited | Findings |");
   lines.push("|---|---:|---:|---:|");
-  for (const personaId of INVESTOR_DD_PERSONAS) {
+  const reportPersonas = Array.isArray(summary.personas) && summary.personas.length > 0
+    ? summary.personas
+    : INVESTOR_DD_PERSONAS;
+  for (const personaId of reportPersonas) {
     const record = byPersona[personaId] || {};
     const routed = (routing[personaId] || []).length;
     const visited = Array.isArray(record.visited) ? record.visited.length : 0;
@@ -264,7 +255,7 @@ async function triggerReportEmail({ reportEmail, runResult, dryRun, emit }) {
  * @param {string} params.rootPath
  * @param {string} [params.outputDir]            - Defaults to `<rootPath>/.sentinelayer/runs/<runId>`.
  * @param {object} [params.budgetOptions]        - Overrides from CLI: { maxUsd, maxRuntimeMinutes, maxParallel }.
- * @param {string[]} [params.personas]           - Override persona list; defaults to all 12.
+ * @param {string[]} [params.personas]           - Override persona list; defaults to all 13.
  * @param {Function} [params.onEvent]            - Extra event sink (NDJSON stream is always written).
  * @param {boolean} [params.dryRun]              - If true, skip tool execution, emit plan.json + stub report only.
  * @param {string[]|null} [params.compliancePacks]  - Compliance pack IDs to run (default: all seven).
