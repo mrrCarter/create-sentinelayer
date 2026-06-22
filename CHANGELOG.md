@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.1...v0.28.2) (2026-06-22)
+
+
+### Bug Fixes
+
+* **omar:** reclass SL-SPEC-002 to P3 + default deep scope to changed-files ([55e4d0d](https://github.com/mrrCarter/create-sentinelayer/commit/55e4d0d1e9f2817ee2e6edd583e8e305a2e0e3b4))
+
 ## [0.28.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.0...v0.28.1) (2026-06-22)
 
 
