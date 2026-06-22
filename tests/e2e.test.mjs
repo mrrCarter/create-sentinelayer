@@ -1414,6 +1414,65 @@ test("CLI subcommand: omargate deep maps to legacy local command implementation"
   }
 });
 
+test("CLI omargate deep diff mode routes changed files to impacted personas", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-diff-"));
+  try {
+    runCommand({ cwd: tempRoot, command: "git", args: ["init"] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["config", "user.name", "Sentinelayer E2E"] });
+    runCommand({
+      cwd: tempRoot,
+      command: "git",
+      args: ["config", "user.email", "e2e@sentinelayer.local"],
+    });
+
+    await mkdir(path.join(tempRoot, "src", "components"), { recursive: true });
+    await mkdir(path.join(tempRoot, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(tempRoot, "docs"), { recursive: true });
+    await writeFile(path.join(tempRoot, "src", "components", "Button.tsx"), "export function Button() { return <button />; }\n", "utf-8");
+    await writeFile(path.join(tempRoot, ".github", "workflows", "ci.yml"), "name: CI\n", "utf-8");
+    await writeFile(path.join(tempRoot, ".github", "workflows", "omar-gate.yml"), "name: Omar Gate\n", "utf-8");
+    await writeFile(path.join(tempRoot, "docs", "spec.md"), "# Spec\n", "utf-8");
+    runCommand({ cwd: tempRoot, command: "git", args: ["add", "."] });
+    runCommand({ cwd: tempRoot, command: "git", args: ["commit", "-m", "seed"] });
+
+    await writeFile(path.join(tempRoot, "src", "components", "Button.tsx"), "export function Button() { return <button aria-label=\"Save\" />; }\n", "utf-8");
+    await writeFile(path.join(tempRoot, ".github", "workflows", "ci.yml"), "name: CI\non: [push]\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "omargate",
+        "deep",
+        "--path",
+        tempRoot,
+        "--diff",
+        "--ai-dry-run",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "/omargate deep");
+    assert.equal(payload.scopeMode, "diff");
+    assert.equal(payload.scannedFiles, 2);
+    assert.deepEqual(payload.scopedFiles.sort(), [
+      ".github/workflows/ci.yml",
+      "src/components/Button.tsx",
+    ]);
+    assert.equal(payload.personaRouting.enabled, true);
+    assert.deepEqual(payload.personaRouting.effectivePersonas, ["release", "frontend"]);
+    assert.deepEqual(payload.ai.personas.map((persona) => persona.id), ["release", "frontend"]);
+
+    const reportText = await readFile(payload.reportPath, "utf-8");
+    assert.match(reportText, /Scope mode: diff/);
+    assert.match(reportText, /Persona routing: 2\/13 personas for 2 changed files/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local audit can reuse latest OmarGate deterministic cache", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-reuse-"));
   try {

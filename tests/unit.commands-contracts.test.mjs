@@ -302,6 +302,23 @@ test("Unit command contracts: omargate investor-dd exposes devTestBot controls",
   assertCommandHasOption(investorDd, "--require-usage-ledger");
 });
 
+test("Unit command contracts: omargate deep exposes changed-file scope controls", () => {
+  const program = new Command();
+  program
+    .name("sl")
+    .exitOverride()
+    .configureOutput({
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+  registerOmarGateCommand(program, async () => {});
+
+  const deep = getCommandByPath(program, "omargate deep");
+  assertCommandHasOption(deep, "--scope-mode <mode>");
+  assertCommandHasOption(deep, "--diff");
+  assertCommandHasOption(deep, "--staged");
+});
+
 test("Unit command contracts: mcp exposes session registry and stdio server runtime", () => {
   const program = buildProgram(registerMcpCommand);
 

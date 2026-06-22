@@ -847,6 +847,33 @@ function hasCommandOption(args, optionName) {
   return args.some((arg) => String(arg || "").trim() === optionName);
 }
 
+function resolveScopeModeFromOptions(args, { defaultMode = "full" } = {}) {
+  const explicitMode = String(getCommandOptionValue(args, "--scope-mode") || "").trim().toLowerCase();
+  const diffFlag = hasCommandOption(args, "--diff");
+  const stagedFlag = hasCommandOption(args, "--staged");
+
+  if (diffFlag && stagedFlag) {
+    throw new Error("Use only one of --diff or --staged.");
+  }
+
+  let modeFromFlags = "";
+  if (diffFlag) {
+    modeFromFlags = "diff";
+  } else if (stagedFlag) {
+    modeFromFlags = "staged";
+  }
+
+  if (explicitMode && modeFromFlags && explicitMode !== modeFromFlags) {
+    throw new Error(`Conflicting scope selection: --scope-mode ${explicitMode} with --${modeFromFlags}.`);
+  }
+
+  const resolved = explicitMode || modeFromFlags || defaultMode;
+  if (!["full", "diff", "staged"].includes(resolved)) {
+    throw new Error("scope mode must be one of: full, diff, staged.");
+  }
+  return resolved;
+}
+
 async function collectScanFiles(rootPath) {
   const files = [];
   const stack = [rootPath];
@@ -1237,6 +1264,7 @@ async function runLocalOmarGateCommand(args) {
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
+  const scopeMode = resolveScopeModeFromOptions(args, { defaultMode: "full" });
   const aiEnabled = !hasCommandOption(args, "--no-ai");
   const aiDryRun = hasCommandOption(args, "--ai-dry-run");
   const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
@@ -1261,6 +1289,7 @@ async function runLocalOmarGateCommand(args) {
   if (!asJson) {
     printSection("Local Omar Gate Deep");
     printInfo(`Target: ${targetPath}`);
+    printInfo(`Scope mode: ${scopeMode}`);
     printInfo(`Scan mode: ${scanMode} | AI: ${aiEnabled ? "enabled" : "disabled"}`);
     console.error("");
     console.error(pc.gray(`  [${formatElapsed(Date.now() - commandStartedAt)}] Phase 1: Deterministic analysis (22 rules)...`));
@@ -1270,13 +1299,17 @@ async function runLocalOmarGateCommand(args) {
   const { runDeterministicReviewPipeline } = await import("./review/local-review.js");
   const deterministic = await runDeterministicReviewPipeline({
     targetPath,
-    mode: "full",
+    mode: scopeMode,
     outputDir: outputDirArg,
   });
 
   const detFindings = deterministic.findings || [];
   const detSummary = deterministic.summary || { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false };
-  const scannedFiles = deterministic.metadata?.ingest?.filesScanned || deterministic.metadata?.scannedFiles || detFindings.length;
+  const scannedFiles =
+    deterministic.scope?.scannedFiles ??
+    deterministic.metadata?.ingest?.filesScanned ??
+    deterministic.metadata?.scannedFiles ??
+    detFindings.length;
 
   if (!asJson) {
     console.error(`  ${pc.green("✓")} [${formatElapsed(Date.now() - commandStartedAt)}] Deterministic: ${scannedFiles} files → P1=${detSummary.P1} P2=${detSummary.P2} findings`);
@@ -1312,6 +1345,7 @@ async function runLocalOmarGateCommand(args) {
         deterministic: {
           summary: detSummary,
           findings: detFindings,
+          mode: deterministic.mode || scopeMode,
           scope: deterministic.scope || {},
           layers: deterministic.layers || {},
           metadata: deterministic.metadata || {},
@@ -1430,6 +1464,8 @@ async function runLocalOmarGateCommand(args) {
       runId: orchestratorResult.runId,
       mode: orchestratorResult.mode,
       roster: orchestratorResult.roster,
+      basePersonas: orchestratorResult.basePersonas || [],
+      personaRouting: orchestratorResult.personaRouting || null,
       findings: (orchestratorResult.personas || []).flatMap((p) => []),
       aiFindings: aiFindings,
       personaCount: (orchestratorResult.personas || []).length,
@@ -1445,6 +1481,7 @@ async function runLocalOmarGateCommand(args) {
       findings: orchestratorResult.findings || [],
       summary: orchestratorResult.summary,
       reconciliation: orchestratorResult.reconciliation,
+      personaRouting: orchestratorResult.personaRouting || null,
       findingsBySource: orchestratorResult.findingsBySource,
     });
   }
@@ -1461,6 +1498,8 @@ Elapsed: ${totalElapsed}
 
 Summary:
 - Files scanned: ${scannedFiles}
+- Scope mode: ${scopeMode}
+- Persona routing: ${orchestratorResult?.personaRouting?.enabled ? `${orchestratorResult.personaRouting.effectivePersonas.length}/${orchestratorResult.personaRouting.basePersonas.length} personas for ${orchestratorResult.personaRouting.changedFileCount} changed files` : "full roster"}
 - Deterministic findings: P0=${detSummary.P0} P1=${detSummary.P1} P2=${detSummary.P2} P3=${detSummary.P3 || 0}
 - AI findings (raw, pre-reconciliation): ${aiResult ? `P0=${aiResult.summary?.P0 || 0} P1=${aiResult.summary?.P1 || 0} P2=${aiResult.summary?.P2 || 0} P3=${aiResult.summary?.P3 || 0}` : "skipped"}
 - Reconciled (deduped + confidence-boosted): P0=${combinedP0} P1=${combinedP1} P2=${combinedP2} P3=${combinedP3}
@@ -1494,6 +1533,8 @@ ${formatFindingsMarkdown(allFindings)}
           targetPath,
           runId: omargateRunId,
           reportPath,
+          scopeMode,
+          scopedFiles: deterministic.scope?.scannedRelativeFiles || [],
           scannedFiles,
           p0: combinedP0,
           p1: combinedP1,
@@ -1518,6 +1559,8 @@ ${formatFindingsMarkdown(allFindings)}
               }
             : null,
           reconciliation: orchestratorResult?.reconciliation || null,
+          personaRouting: orchestratorResult?.personaRouting || null,
+          basePersonas: orchestratorResult?.basePersonas || [],
           roster: orchestratorResult?.roster || [],
         },
         null,

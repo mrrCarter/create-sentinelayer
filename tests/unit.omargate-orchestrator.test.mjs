@@ -207,3 +207,98 @@ describe("runOmarGateOrchestrator swarm path", () => {
     assert.match(promptText, /trafficLight/);
   });
 });
+
+describe("runOmarGateOrchestrator changed-file routing", () => {
+  it("routes diff scope to only impacted personas and scopes deterministic files per persona", async () => {
+    const targetPath = await makeTempRoot();
+    const events = [];
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      maxCostUsd: 1,
+      dryRun: true,
+      deterministic: {
+        mode: "diff",
+        summary: { P0: 0, P1: 0, P2: 2, P3: 0, blocking: false },
+        findings: [
+          {
+            severity: "P2",
+            file: "src/components/Button.tsx",
+            line: 1,
+            message: "frontend finding",
+          },
+          {
+            severity: "P2",
+            file: ".github/workflows/ci.yml",
+            line: 1,
+            message: "release finding",
+          },
+        ],
+        scope: {
+          scannedFiles: 2,
+          scannedRelativeFiles: [
+            "src/components/Button.tsx",
+            ".github/workflows/ci.yml",
+          ],
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+      onEvent: (evt) => events.push(evt),
+    });
+
+    assert.equal(result.personaRouting.enabled, true);
+    assert.equal(result.personaRouting.scopeMode, "diff");
+    assert.deepEqual(result.personaRouting.effectivePersonas, ["release", "frontend"]);
+    assert.deepEqual(result.personaRouting.filesByPersona.release, [".github/workflows/ci.yml"]);
+    assert.deepEqual(result.personaRouting.filesByPersona.frontend, ["src/components/Button.tsx"]);
+    assert.deepEqual(result.personas.map((entry) => entry.id), ["release", "frontend"]);
+
+    const routingEvent = events.find((evt) => evt.event === "omargate_persona_routing");
+    assert.ok(routingEvent, "expected routing event");
+    assert.equal(routingEvent.payload.routing.changedFileCount, 2);
+
+    const releasePrompt = await fs.readFile(
+      result.personas.find((entry) => entry.id === "release").artifacts.promptPath,
+      "utf-8"
+    );
+    const frontendPrompt = await fs.readFile(
+      result.personas.find((entry) => entry.id === "frontend").artifacts.promptPath,
+      "utf-8"
+    );
+    assert.match(releasePrompt, /\.github\/workflows\/ci\.yml/);
+    assert.doesNotMatch(releasePrompt, /src\/components\/Button\.tsx/);
+    assert.match(frontendPrompt, /src\/components\/Button\.tsx/);
+    assert.doesNotMatch(frontendPrompt, /\.github\/workflows\/ci\.yml/);
+  });
+
+  it("keeps manual persona filters authoritative over changed-file routing", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security"],
+      maxCostUsd: 1,
+      dryRun: true,
+      deterministic: {
+        mode: "diff",
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/components/Button.tsx"],
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(result.personaRouting.enabled, false);
+    assert.equal(result.personaRouting.reason, "manual_persona_filter");
+    assert.deepEqual(result.personas.map((entry) => entry.id), ["security"]);
+  });
+});
