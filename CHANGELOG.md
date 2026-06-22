@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.3...v0.28.4) (2026-06-22)
+
+
+### Bug Fixes
+
+* **session:** recover listen from stale inbound circuit ([ebd2562](https://github.com/mrrCarter/create-sentinelayer/commit/ebd25623900e554712e9c84d527537b2d7b43ba5))
+
 ## [0.28.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.2...v0.28.3) (2026-06-22)
 
 
