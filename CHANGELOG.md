@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.25.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.25.0...v0.25.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* **audit:** calibrate LOC-only specialist findings ([e412df9](https://github.com/mrrCarter/create-sentinelayer/commit/e412df98692002e641c2973ed4bbd4cc26336d72))
+* **audit:** calibrate LOC-only specialist findings ([5773556](https://github.com/mrrCarter/create-sentinelayer/commit/5773556c4beddd87d1cb6c732f149ee40fe3f7a8))
+* **cli:** honor `--path` for nested review and audit commands ([3ede508](https://github.com/mrrCarter/create-sentinelayer/commit/3ede508dc0ed5472f7dde9d5043ceb77c3857541))
+
 ## [0.25.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.24.0...v0.25.0) (2026-06-22)
 
 
