@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.25.2...v0.26.0) (2026-06-22)
+
+
+### Features
+
+* **omar:** upload gate summary artifact ([7598803](https://github.com/mrrCarter/create-sentinelayer/commit/75988033e293cf2c445600637d5ed186d9ea17ba))
+* **omar:** upload gate summary artifact ([cebaa3e](https://github.com/mrrCarter/create-sentinelayer/commit/cebaa3e1913ad0622e451110cd479a76d9879851))
+
 ## [0.25.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.25.1...v0.25.2) (2026-06-22)
 
 
