@@ -2294,6 +2294,9 @@ ${renderCoordinationNumberedList()}
 - Finding: \`sl session say <id> "finding: [P2] missing rate limit on POST /api/auth/login"\`
 - Help: \`sl session say <id> "help: unexpected change in package.json - who modified it?"\`
 - Done: \`sl session say <id> "done: PR merged, auth hardening complete"\`
+
+## Reserved Seat Onboarding
+- If \`sl session join\` returns \`onboardingGuide.markdownPath\`, read that file before posting; it contains your reserved-seat SOUL instructions, role, and first actions.
 `;
 }
 

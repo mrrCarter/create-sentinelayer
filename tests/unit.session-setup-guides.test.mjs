@@ -91,6 +91,8 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.match(firstGuide, /sl session comment <id> <sequence>/);
     assert.match(firstGuide, /sl session actions/);
     assert.match(firstGuide, /sl session search <id> "<topic>" --limit 10/);
+    assert.match(firstGuide, /onboardingGuide\.markdownPath/);
+    assert.match(firstGuide, /reserved-seat SOUL instructions/);
 
     const second = await setupSessionGuides(session.sessionId, { targetPath: tempRoot });
     assert.equal(second.agents.changed, false);
