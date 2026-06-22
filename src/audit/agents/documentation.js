@@ -1,3 +1,5 @@
+import { isAuditSourceFile } from "./path-classification.js";
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -26,9 +28,7 @@ function buildDocumentationInventory(ingest = {}) {
     language: file.language,
   }));
   const docFiles = normalized.filter((file) => /(^|\/)(docs?|guides?|adr|readme)/i.test(file.path));
-  const codeFiles = normalized.filter(
-    (file) => file.loc > 0 && !/(^|\/)(docs?|guides?|adr|readme)/i.test(file.path)
-  );
+  const codeFiles = normalized.filter((file) => file.loc > 0 && isAuditSourceFile(file));
   const docDensity = codeFiles.length > 0 ? docFiles.length / codeFiles.length : 0;
   const undocumentedHotspots = codeFiles
     .filter((file) => file.loc >= 320)
@@ -42,7 +42,7 @@ function buildDocumentationInventory(ingest = {}) {
       path: file.path,
       loc: file.loc,
       language: file.language,
-      severity: file.loc >= 800 ? "P1" : "P2",
+      severity: "P2",
     }));
 
   return {

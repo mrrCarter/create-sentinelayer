@@ -73,3 +73,30 @@ test("Unit audit architecture: markdown renderer emits specialist sections", () 
   assert.match(markdown, /Hotspots:/);
   assert.match(markdown, /Recommendations:/);
 });
+
+test("Unit audit architecture: LOC-only hotspots ignore support artifacts and stay non-blocking", () => {
+  const report = runArchitectureSpecialist({
+    findings: [],
+    ingest: {
+      indexedFiles: {
+        files: [
+          { path: "tests/e2e.test.mjs", language: "javascript", loc: 1800, sizeBytes: 18000 },
+          { path: "tasks/backlog.md", language: "markdown", loc: 1500, sizeBytes: 17000 },
+          { path: ".github/workflows/ci.yml", language: "yaml", loc: 1200, sizeBytes: 12000 },
+          { path: "src/generated/client.ts", language: "typescript", loc: 1100, sizeBytes: 11000 },
+          { path: "package-lock.json", language: "json", loc: 2500, sizeBytes: 90000 },
+          { path: "src/commands/session.js", language: "javascript", loc: 1000, sizeBytes: 16000 },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(
+    report.hotspots.map((item) => item.path),
+    ["src/commands/session.js"]
+  );
+  assert.equal(report.findings.some((finding) => finding.file === "src/commands/session.js"), true);
+  assert.equal(report.summary.P1, 0);
+  assert.equal(report.summary.P2, 1);
+  assert.equal(report.summary.blocking, false);
+});

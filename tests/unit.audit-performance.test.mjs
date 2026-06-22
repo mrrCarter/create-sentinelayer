@@ -50,3 +50,29 @@ test("Unit audit performance: markdown renderer emits specialist sections", () =
   assert.match(markdown, /Runtime hotspots:/);
   assert.match(markdown, /Recommendations:/);
 });
+
+test("Unit audit performance: LOC-only hotspots ignore support artifacts and stay non-blocking", () => {
+  const report = runPerformanceSpecialist({
+    findings: [],
+    ingest: {
+      indexedFiles: {
+        files: [
+          { path: "tests/api.test.mjs", language: "javascript", loc: 1600, sizeBytes: 18000 },
+          { path: "docs/performance.md", language: "markdown", loc: 1400, sizeBytes: 15000 },
+          { path: "fixtures/generated/payload.json", language: "json", loc: 1200, sizeBytes: 90000 },
+          { path: "pnpm-lock.yaml", language: "yaml", loc: 2200, sizeBytes: 90000 },
+          { path: "src/api/server.js", language: "javascript", loc: 950, sizeBytes: 12000 },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(
+    report.runtimeHotspots.map((item) => item.path),
+    ["src/api/server.js"]
+  );
+  assert.equal(report.findings.some((finding) => finding.file === "src/api/server.js"), true);
+  assert.equal(report.summary.P1, 0);
+  assert.equal(report.summary.P2, 1);
+  assert.equal(report.summary.blocking, false);
+});

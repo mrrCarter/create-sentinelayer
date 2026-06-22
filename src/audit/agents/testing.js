@@ -1,3 +1,5 @@
+import { isAuditSourceFile, isAuditTestPath } from "./path-classification.js";
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -18,10 +20,6 @@ function summarizeSeverity(findings = []) {
   return summary;
 }
 
-function isTestPath(filePath) {
-  return /(^|\/)(__tests__|tests?|spec)(\/|$)|\.(test|spec)\.[^.]+$/i.test(filePath);
-}
-
 function buildCoverageInventory(ingest = {}) {
   const indexedFiles = Array.isArray(ingest.indexedFiles?.files) ? ingest.indexedFiles.files : [];
   const normalized = indexedFiles.map((file) => ({
@@ -30,8 +28,8 @@ function buildCoverageInventory(ingest = {}) {
     loc: Number(file.loc || 0),
   }));
 
-  const testFiles = normalized.filter((file) => isTestPath(file.path));
-  const nonTestCodeFiles = normalized.filter((file) => !isTestPath(file.path) && file.loc > 0);
+  const testFiles = normalized.filter((file) => isAuditTestPath(file.path));
+  const nonTestCodeFiles = normalized.filter((file) => isAuditSourceFile(file) && file.loc > 0);
   const ratio = nonTestCodeFiles.length > 0 ? testFiles.length / nonTestCodeFiles.length : 0;
   const likelyGaps = nonTestCodeFiles
     .filter((file) => file.loc >= 260)
@@ -45,7 +43,7 @@ function buildCoverageInventory(ingest = {}) {
       path: file.path,
       loc: file.loc,
       language: file.language,
-      severity: file.loc >= 550 ? "P1" : "P2",
+      severity: "P2",
     }));
 
   return {
