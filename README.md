@@ -259,6 +259,7 @@ The `review` command can now add budget-governed AI reasoning on top of determin
 
 - `sl review --ai --provider openai --model gpt-5.3-codex`
 - `sl review --ai --ai-dry-run` (no provider call; deterministic synthetic output)
+- `sl review --ai --require-usage-ledger` (fail closed if billing-grade usage cannot be recorded)
 - `sl review --ai --max-cost 1.0 --max-tokens 0 --max-runtime-ms 0 --max-tool-calls 0`
 
 AI artifacts are persisted in the same run folder:

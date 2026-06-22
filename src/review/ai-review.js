@@ -486,6 +486,8 @@ export async function runAiReviewLayer({
   warningThresholdPercent = 80,
   systemPrompt = "",
   dryRun = false,
+  requireUsageLedger = false,
+  usageRecorder = recordSessionUsage,
   env = process.env,
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
@@ -496,6 +498,7 @@ export async function runAiReviewLayer({
     Math.floor(Number(maxFindings || DEFAULT_AI_MAX_FINDINGS))
   );
   const normalizedRunId = normalizeString(runId) || "review-ai";
+  const normalizedRequireUsageLedger = Boolean(requireUsageLedger);
 
   const config = await loadConfig({ cwd: normalizedTargetPath, env });
   let resolvedProvider = resolveProvider({
@@ -663,7 +666,7 @@ export async function runAiReviewLayer({
         dryRun: Boolean(dryRun),
       }),
     });
-    sessionUsageLedger = await recordSessionUsage(
+    sessionUsageLedger = await usageRecorder(
       normalizedSessionId,
       {
         agentId: "audit-orchestrator",
@@ -693,6 +696,11 @@ export async function runAiReviewLayer({
       ok: false,
       reason: error instanceof Error ? error.message : String(error || "session_usage_failed"),
     };
+    if (normalizedRequireUsageLedger) {
+      throw new Error(
+        `Review AI usage ledger recording failed: ${sessionUsageLedger.reason || "unknown"}.`
+      );
+    }
   }
 
   let stopTelemetry = null;
@@ -754,6 +762,7 @@ export async function runAiReviewLayer({
     provider: resolvedProvider,
     model: resolvedModel,
     dryRun: Boolean(dryRun),
+    requireUsageLedger: normalizedRequireUsageLedger,
     usage,
     pricingFound: modelCost.pricingFound,
     sessionUsageLedger,

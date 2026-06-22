@@ -6655,7 +6655,7 @@ test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", 
     const result = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
-      args: ["review", "--ai", "--ai-dry-run", "--json"],
+      args: ["review", "--ai", "--ai-dry-run", "--require-usage-ledger", "--json"],
     });
     assert.equal(result.code, 0, result.stderr || result.stdout);
 
@@ -6663,6 +6663,7 @@ test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", 
     assert.equal(payload.command, "review");
     assert.equal(payload.ai.enabled, true);
     assert.equal(payload.ai.dryRun, true);
+    assert.equal(payload.ai.billing.ok, true);
     assert.equal(payload.ai.findingCount >= 1, true);
     assert.match(String(payload.reportUnifiedPath || ""), /[\\/]REVIEW_REPORT\.md$/);
     assert.match(String(payload.reportUnifiedJsonPath || ""), /[\\/]REVIEW_REPORT\.json$/);
@@ -6677,6 +6678,8 @@ test("CLI review --ai --ai-dry-run writes AI artifacts and governed telemetry", 
 
     const aiReportJson = JSON.parse(await readFile(payload.ai.reportJsonPath, "utf-8"));
     assert.equal(aiReportJson.dryRun, true);
+    assert.equal(aiReportJson.requireUsageLedger, true);
+    assert.equal(aiReportJson.sessionUsageLedger.ok, true);
     assert.equal(aiReportJson.parser, "json");
     assert.equal(Array.isArray(aiReportJson.findings), true);
 

@@ -120,6 +120,7 @@ async function executeReviewRun({
       maxNoProgress: aiConfig.maxNoProgress,
       warningThresholdPercent: aiConfig.warnAtPercent,
       dryRun: Boolean(aiConfig.aiDryRun),
+      requireUsageLedger: Boolean(aiConfig.requireUsageLedger),
       env: process.env,
     });
   }
@@ -146,6 +147,7 @@ async function executeReviewRun({
     invocation: {
       aiEnabled: Boolean(aiConfig.enable),
       aiDryRun: Boolean(aiConfig.aiDryRun),
+      requireUsageLedger: Boolean(aiConfig.requireUsageLedger),
       provider: aiConfig.provider,
       model: aiConfig.model,
       sessionId: aiConfig.sessionId,
@@ -209,6 +211,7 @@ async function executeReviewRun({
           budget: aiLayer.budget,
           cost: aiLayer.cost,
           telemetry: aiLayer.telemetry,
+          billing: aiLayer.billing,
         }
       : {
           enabled: false,
@@ -283,6 +286,7 @@ export function registerReviewCommand(program) {
     .option("--staged", "Alias for --mode staged")
     .option("--ai", "Enable AI reasoning layer over deterministic findings")
     .option("--ai-dry-run", "Run AI layer in dry-run mode (no provider call)")
+    .option("--require-usage-ledger", "Fail --ai review if billing-grade session_usage cannot be recorded")
     .option("--provider <name>", "AI provider override (openai|anthropic|google)")
     .option("--model <id>", "AI model override")
     .option("--api-key <key>", "Optional explicit API key override")
@@ -314,6 +318,7 @@ export function registerReviewCommand(program) {
         aiConfig: {
           enable: Boolean(options.ai),
           aiDryRun: Boolean(options.aiDryRun),
+          requireUsageLedger: Boolean(options.requireUsageLedger),
           provider: options.provider,
           model: options.model,
           apiKey: options.apiKey,

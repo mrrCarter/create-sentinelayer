@@ -174,6 +174,7 @@ test("Unit command contracts: review command tree keeps deterministic + HITL flo
     "--staged",
     "--ai",
     "--ai-dry-run",
+    "--require-usage-ledger",
     "--spec <path>",
     "--refresh",
     "--max-cost <usd>",
