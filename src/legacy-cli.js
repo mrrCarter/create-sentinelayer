@@ -847,6 +847,35 @@ function hasCommandOption(args, optionName) {
   return args.some((arg) => String(arg || "").trim() === optionName);
 }
 
+// True when `targetPath` is a git work tree with an uncommitted or staged
+// change set. Used to default local Omar deep scope to changed-files (matching
+// gh's PR-scoped scan) instead of flooding a mature repo full-scope. Mirrors the
+// diff-filter the review pipeline uses for --diff/--staged scope. Fail-safe:
+// any error / non-git / no-delta returns false so the caller falls back to full.
+function hasGitDelta(targetPath) {
+  try {
+    const inside = spawnSync("git", ["-C", targetPath, "rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf-8",
+    });
+    if (inside.status !== 0 || String(inside.stdout || "").trim() !== "true") {
+      return false;
+    }
+    const deltaProbes = [
+      ["-C", targetPath, "diff", "--name-only", "--diff-filter=ACMRTUXB"],
+      ["-C", targetPath, "diff", "--name-only", "--cached", "--diff-filter=ACMRTUXB"],
+    ];
+    for (const gitArgs of deltaProbes) {
+      const res = spawnSync("git", gitArgs, { encoding: "utf-8" });
+      if (res.status === 0 && String(res.stdout || "").trim().length > 0) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function resolveScopeModeFromOptions(args, { defaultMode = "full" } = {}) {
   const explicitMode = String(getCommandOptionValue(args, "--scope-mode") || "").trim().toLowerCase();
   const diffFlag = hasCommandOption(args, "--diff");
@@ -1264,7 +1293,6 @@ async function runLocalOmarGateCommand(args) {
   const asJson = hasCommandOption(args, "--json");
   const pathArg = getCommandOptionValue(args, "--path") || ".";
   const outputDirArg = getCommandOptionValue(args, "--output-dir") || "";
-  const scopeMode = resolveScopeModeFromOptions(args, { defaultMode: "full" });
   const aiEnabled = !hasCommandOption(args, "--no-ai");
   const aiDryRun = hasCommandOption(args, "--ai-dry-run");
   const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
@@ -1285,6 +1313,12 @@ async function runLocalOmarGateCommand(args) {
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
   }
+  // Default scope to changed-files when the target has a git delta (uncommitted
+  // or staged), matching gh's PR-scoped Omar; fall back to full repo otherwise.
+  // Explicit --scope-mode/--diff/--staged always override (see resolveScopeModeFromOptions).
+  const scopeMode = resolveScopeModeFromOptions(args, {
+    defaultMode: hasGitDelta(targetPath) ? "diff" : "full",
+  });
 
   if (!asJson) {
     printSection("Local Omar Gate Deep");

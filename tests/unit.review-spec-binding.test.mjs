@@ -72,7 +72,12 @@ test("Unit spec binding: flags endpoint gaps when code introduces routes not dec
     assert.equal(checks.metadata.enabled, true);
     assert.equal(String(checks.metadata.specHashSha256 || "").length, 64);
     assert.equal(checks.metadata.endpointCount >= 1, true);
-    assert.equal(checks.findings.some((finding) => finding.ruleId === "SL-SPEC-002"), true);
+    const specCoverageFinding = checks.findings.find((finding) => finding.ruleId === "SL-SPEC-002");
+    assert.equal(Boolean(specCoverageFinding), true);
+    // #94680 local-omargate calibration: SL-SPEC-002 (spec-coverage gap) is
+    // informational P3, NOT a security-blocking P2. This rule was 90% of the
+    // local deterministic P2 noise; reclassifying it aligns local with gh.
+    assert.equal(specCoverageFinding.severity, "P3");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
