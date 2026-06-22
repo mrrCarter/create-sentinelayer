@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.2...v0.28.3) (2026-06-22)
+
+
+### Bug Fixes
+
+* **session:** bound read view receipt timeouts ([8f02823](https://github.com/mrrCarter/create-sentinelayer/commit/8f028231a70d867b6b332672c67d891eb4f90a36))
+
 ## [0.28.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.1...v0.28.2) (2026-06-22)
 
 
