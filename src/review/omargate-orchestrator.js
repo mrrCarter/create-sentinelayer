@@ -15,6 +15,7 @@ import { reconcileReviewFindings } from "./report.js";
 import { resolvePersonaVisual } from "../agents/persona-visuals.js";
 import { syncRunToDashboard } from "../telemetry/sync.js";
 import { createAgentEvent } from "../events/schema.js";
+import { buildOwnershipMap, computeRoutingStats, loadScaffoldConfig } from "../ingest/ownership.js";
 
 const OMAR_ORCHESTRATOR_AGENT = Object.freeze({
   id: "omar-orchestrator",
@@ -96,6 +97,158 @@ function uniqueScopeFiles(files = []) {
     normalized.push({ path: filePath, loc });
   }
   return normalized;
+}
+
+function normalizeScopeMode(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (normalized === "diff" || normalized === "staged") {
+    return normalized;
+  }
+  return "full";
+}
+
+function findingRelativePath(finding = {}) {
+  return toPosixPath(finding.file || finding.path || finding.location || "");
+}
+
+function summarizeDeterministicFindings(findings = []) {
+  return summarizeFindings(findings);
+}
+
+function buildScopeForFiles(scope = {}, files = []) {
+  const wanted = new Set(files.map((file) => toPosixPath(file)));
+  const scopedObjects = filesFromScope(scope).filter((file) => wanted.has(file.path));
+  const scopedFiles =
+    scopedObjects.length > 0
+      ? scopedObjects
+      : files.map((filePath) => ({ path: toPosixPath(filePath), loc: 0 }));
+  const totalLoc = scopedFiles.reduce((sum, file) => sum + (file.loc > 0 ? file.loc : 80), 0);
+  return {
+    ...scope,
+    files: scopedFiles,
+    primary: scopedFiles,
+    scannedFiles: files.length,
+    scannedRelativeFiles: files,
+    totalLoc,
+    estimatedLoc: totalLoc,
+  };
+}
+
+function buildPersonaScopedDeterministic(deterministic = {}, personaId, personaRouting = {}) {
+  if (!personaRouting?.enabled) {
+    return deterministic;
+  }
+  const files = Array.isArray(personaRouting.filesByPersona?.[personaId])
+    ? personaRouting.filesByPersona[personaId]
+    : [];
+  const wanted = new Set(files);
+  const findings = (deterministic?.findings || []).filter((finding) =>
+    wanted.has(findingRelativePath(finding))
+  );
+  const summary = summarizeDeterministicFindings(findings);
+  return {
+    ...deterministic,
+    summary,
+    findings,
+    scope: buildScopeForFiles(deterministic?.scope || {}, files),
+    metadata: {
+      ...(deterministic?.metadata || {}),
+      personaRouting: {
+        enabled: true,
+        scopeMode: personaRouting.scopeMode,
+        personaId,
+        scopedFiles: files.length,
+      },
+    },
+  };
+}
+
+async function resolveChangedFilePersonaRouting({
+  targetPath,
+  personas = [],
+  deterministic = {},
+  manualInclude = false,
+} = {}) {
+  const scopeMode = normalizeScopeMode(deterministic?.mode || deterministic?.metadata?.scopeMode);
+  const basePersonas = [...personas];
+  const base = {
+    enabled: false,
+    scopeMode,
+    reason: "full_scope",
+    basePersonas,
+    effectivePersonas: basePersonas,
+    droppedPersonas: [],
+    changedFileCount: 0,
+    personaCoverage: {},
+    tokenReductionEstimatePct: 0,
+    filesByPersona: {},
+    scaffold: { found: false },
+  };
+
+  if (scopeMode === "full") {
+    return base;
+  }
+  if (manualInclude) {
+    return {
+      ...base,
+      reason: "manual_persona_filter",
+    };
+  }
+
+  const scopedFiles = filesFromScope(deterministic?.scope || {})
+    .map((file) => file.path)
+    .filter(Boolean);
+  if (scopedFiles.length === 0) {
+    return {
+      ...base,
+      enabled: true,
+      reason: "no_changed_files",
+      effectivePersonas: [],
+      droppedPersonas: basePersonas,
+      changedFileCount: 0,
+    };
+  }
+
+  let scaffold = { found: false, ownershipRules: [] };
+  try {
+    scaffold = await loadScaffoldConfig({ targetPath });
+  } catch {
+    scaffold = { found: false, ownershipRules: [] };
+  }
+  const ownershipMap = buildOwnershipMap(scopedFiles, scaffold);
+  const stats = computeRoutingStats(ownershipMap);
+  const allowed = new Set(basePersonas);
+  const filesByPersona = {};
+  for (const [file, persona] of ownershipMap.entries()) {
+    if (!allowed.has(persona)) {
+      continue;
+    }
+    if (!filesByPersona[persona]) {
+      filesByPersona[persona] = [];
+    }
+    filesByPersona[persona].push(file);
+  }
+
+  for (const persona of Object.keys(filesByPersona)) {
+    filesByPersona[persona].sort((left, right) => left.localeCompare(right));
+  }
+
+  const effectivePersonas = basePersonas.filter((persona) => filesByPersona[persona]?.length > 0);
+  return {
+    ...base,
+    enabled: true,
+    reason: "changed_file_scope",
+    effectivePersonas,
+    droppedPersonas: basePersonas.filter((persona) => !effectivePersonas.includes(persona)),
+    changedFileCount: scopedFiles.length,
+    personaCoverage: stats.personaCoverage,
+    tokenReductionEstimatePct: stats.tokenReductionEstimatePct,
+    filesByPersona,
+    scaffold: {
+      found: Boolean(scaffold?.found),
+      ruleCount: Array.isArray(scaffold?.ownershipRules) ? scaffold.ownershipRules.length : 0,
+    },
+  };
 }
 
 function filesFromScope(scope = {}) {
@@ -624,7 +777,7 @@ export async function runOmarGateOrchestrator({
       })
     : { ...resolveScanMode(scanMode), dropped: [], unknown: [] };
 
-  const { mode, personas } = resolved;
+  const { mode, personas: basePersonas } = resolved;
   const droppedPersonas = resolved.dropped || [];
   const unknownPersonas = resolved.unknown || [];
 
@@ -637,7 +790,28 @@ export async function runOmarGateOrchestrator({
         mode,
         dropped: droppedPersonas,
         unknown: unknownPersonas,
-        effective: personas,
+        effective: basePersonas,
+      },
+      runId,
+    }));
+  }
+
+  const personaRouting = await resolveChangedFilePersonaRouting({
+    targetPath,
+    personas: basePersonas,
+    deterministic,
+    manualInclude: Array.isArray(includeOnly) && includeOnly.length > 0,
+  });
+  const personas = personaRouting.effectivePersonas;
+
+  if (onEvent && personaRouting.enabled) {
+    onEvent(createAgentEvent({
+      event: "omargate_persona_routing",
+      agent: OMAR_ORCHESTRATOR_AGENT,
+      payload: {
+        runId,
+        mode,
+        routing: personaRouting,
       },
       runId,
     }));
@@ -659,7 +833,17 @@ export async function runOmarGateOrchestrator({
     onEvent(createAgentEvent({
       event: "omargate_start",
       agent: OMAR_ORCHESTRATOR_AGENT,
-      payload: { runId, mode, personas, roster, maxParallel, maxCostUsd, dryRun },
+      payload: {
+        runId,
+        mode,
+        personas,
+        basePersonas,
+        roster,
+        maxParallel,
+        maxCostUsd,
+        dryRun,
+        personaRouting,
+      },
       runId,
     }));
   }
@@ -667,8 +851,8 @@ export async function runOmarGateOrchestrator({
   const detSummary = deterministic?.summary || { P0: 0, P1: 0, P2: 0, P3: 0 };
   const detFindings = deterministic?.findings || [];
 
-  // Per-persona cost budget = global / persona count (with minimum floor)
-  const perPersonaCost = Math.max(0.25, maxCostUsd / personas.length);
+  // Per-persona cost budget = global / effective persona count (with minimum floor).
+  const perPersonaCost = personas.length > 0 ? Math.max(0.25, maxCostUsd / personas.length) : 0;
   let runningCostUsd = 0;
 
   const personaResults = await runWithConcurrency(personas, maxParallel, async (personaId) => {
@@ -711,6 +895,11 @@ export async function runOmarGateOrchestrator({
     }
 
     const personaStart = Date.now();
+    const personaDeterministic = buildPersonaScopedDeterministic(
+      deterministic,
+      personaId,
+      personaRouting
+    );
 
     if (onEvent) {
       onEvent(createAgentEvent({
@@ -735,7 +924,7 @@ export async function runOmarGateOrchestrator({
         targetPath,
         mode,
         runId,
-        deterministic,
+        deterministic: personaDeterministic,
         outputDir,
         provider,
         model,
@@ -788,7 +977,7 @@ export async function runOmarGateOrchestrator({
       const systemPrompt = buildPersonaReviewPrompt({
         personaId,
         targetPath,
-        deterministicSummary: detSummary,
+        deterministicSummary: personaDeterministic?.summary || detSummary,
       });
 
       const result = await runAiReviewLayer({
@@ -801,11 +990,11 @@ export async function runOmarGateOrchestrator({
           personaId
         ),
         deterministic: {
-          summary: detSummary,
-          findings: detFindings,
-          scope: deterministic?.scope || {},
-          layers: deterministic?.layers || {},
-          metadata: deterministic?.metadata || {},
+          summary: personaDeterministic?.summary || detSummary,
+          findings: personaDeterministic?.findings || detFindings,
+          scope: personaDeterministic?.scope || deterministic?.scope || {},
+          layers: personaDeterministic?.layers || deterministic?.layers || {},
+          metadata: personaDeterministic?.metadata || deterministic?.metadata || {},
         },
         outputDir,
         provider: provider || undefined,
@@ -982,7 +1171,9 @@ export async function runOmarGateOrchestrator({
   const result = {
     runId,
     mode,
+    basePersonas,
     roster,
+    personaRouting,
     personas: settled.map((r) => ({
       id: r.personaId,
       identity: r.persona,
@@ -1051,6 +1242,7 @@ export async function runOmarGateOrchestrator({
         findings: reconciledFindings.length,
         summary: result.summary,
         reconciliation: result.reconciliation,
+        personaRouting,
         totalCostUsd: totalCost,
         totalDurationMs: totalDuration,
       },
