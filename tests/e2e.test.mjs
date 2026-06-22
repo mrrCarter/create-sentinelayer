@@ -5088,6 +5088,34 @@ test("CLI audit security runs specialist agent and emits dedicated security repo
   }
 });
 
+test("CLI audit security respects --path when invoked outside target repository", async () => {
+  const driverRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-driver-"));
+  const targetRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-target-"));
+  try {
+    await writeFile(path.join(driverRoot, "driver.js"), "export const driver = true;\n", "utf-8");
+    await writeFile(
+      path.join(targetRoot, "index.js"),
+      "const token = '" + ["sk", "live", "abcdef1234567890abcdef123456"].join("-") + "';\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: driverRoot,
+      env: { ...process.env },
+      args: ["audit", "security", "--path", targetRoot, "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "audit security");
+    assert.equal(path.resolve(payload.targetPath), path.resolve(targetRoot));
+    assert.match(String(payload.reportPath || ""), /[\\/]audits[\\/]audit-/);
+    assert.equal(String(payload.reportPath || "").startsWith(path.join(targetRoot, ".sentinelayer")), true);
+  } finally {
+    await rm(driverRoot, { recursive: true, force: true });
+    await rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI audit architecture runs specialist agent and emits dedicated architecture report", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-audit-architecture-"));
   try {
@@ -6341,6 +6369,35 @@ test("CLI review scan full mode emits deterministic report and findings summary"
     assert.match(reportText, /Local Review Scan/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI review scan respects --path when invoked outside target repository", async () => {
+  const driverRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-driver-"));
+  const targetRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-review-target-"));
+  try {
+    await writeFile(path.join(driverRoot, "driver.js"), "export const driver = true;\n", "utf-8");
+    await writeFile(
+      path.join(targetRoot, "index.js"),
+      "const value = 1; // TODO: tighten target validation\n",
+      "utf-8"
+    );
+
+    const result = await runCli({
+      cwd: driverRoot,
+      env: { ...process.env },
+      args: ["review", "scan", "--path", targetRoot, "--mode", "full", "--json"],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "review scan");
+    assert.equal(path.resolve(payload.targetPath), path.resolve(targetRoot));
+    assert.equal(payload.scopedFiles.includes("index.js"), true);
+    assert.equal(payload.scopedFiles.includes("driver.js"), false);
+    assert.equal(String(payload.reportPath || "").startsWith(path.join(targetRoot, ".sentinelayer")), true);
+  } finally {
+    await rm(driverRoot, { recursive: true, force: true });
+    await rm(targetRoot, { recursive: true, force: true });
   }
 });
 

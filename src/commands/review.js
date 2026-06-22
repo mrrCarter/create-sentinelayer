@@ -25,6 +25,7 @@ import {
   writeReviewComparisonArtifact,
   writeReviewRunContext,
 } from "../review/replay.js";
+import { resolveActionOptions } from "./action-options.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -236,16 +237,17 @@ function registerVerdictCommand(review, verdict) {
     .option("--actor <id>", "Operator identifier for audit trail", "")
     .option("--json", "Emit machine-readable output")
     .action(async (findingId, options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = resolveTargetPath(".", options);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = resolveTargetPath(".", actionOptions);
       const result = await recordReviewDecision({
         targetPath,
-        runId: options.runId,
-        outputDir: options.outputDir,
+        runId: actionOptions.runId,
+        outputDir: actionOptions.outputDir,
         findingId,
         verdict,
-        note: options.note,
-        actor: options.actor,
+        note: actionOptions.note,
+        actor: actionOptions.actor,
         env: process.env,
       });
 
@@ -374,12 +376,13 @@ export function registerReviewCommand(program) {
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = resolveTargetPath(".", options);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = resolveTargetPath(".", actionOptions);
       const loaded = await loadUnifiedReviewReport({
         targetPath,
-        runId: options.runId,
-        outputDir: options.outputDir,
+        runId: actionOptions.runId,
+        outputDir: actionOptions.outputDir,
         env: process.env,
       });
 
@@ -412,14 +415,15 @@ export function registerReviewCommand(program) {
     .option("--output-file <path>", "Optional custom export output path")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = resolveTargetPath(".", options);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = resolveTargetPath(".", actionOptions);
       const exported = await exportUnifiedReviewReport({
         targetPath,
-        runId: options.runId,
-        outputDir: options.outputDir,
-        format: options.format,
-        outputFile: options.outputFile,
+        runId: actionOptions.runId,
+        outputDir: actionOptions.outputDir,
+        format: actionOptions.format,
+        outputFile: actionOptions.outputFile,
         env: process.env,
       });
 
@@ -453,12 +457,13 @@ export function registerReviewCommand(program) {
     .option("--ai-dry-run", "Force AI dry-run during replay")
     .option("--json", "Emit machine-readable output")
     .action(async (runId, options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const lookupPath = resolveTargetPath(".", options);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const lookupPath = resolveTargetPath(".", actionOptions);
       const source = await loadUnifiedReviewReport({
         targetPath: lookupPath,
         runId,
-        outputDir: options.outputDir,
+        outputDir: actionOptions.outputDir,
         env: process.env,
       });
 
@@ -470,20 +475,20 @@ export function registerReviewCommand(program) {
       }
 
       const invocation = sourceContext?.context?.invocation || {};
-      const replayTargetPath = options.path
-        ? resolveTargetPath(".", options)
+      const replayTargetPath = actionOptions.path
+        ? resolveTargetPath(".", actionOptions)
         : path.resolve(sourceContext?.context?.targetPath || source.report.targetPath || lookupPath);
-      const aiEnabled = options.noAi ? false : Boolean(invocation.aiEnabled);
+      const aiEnabled = actionOptions.noAi ? false : Boolean(invocation.aiEnabled);
 
       const replayOutcome = await executeReviewRun({
         targetPath: replayTargetPath,
         mode: sourceContext?.context?.mode || source.report.mode || "full",
-        outputDir: options.outputDir || invocation.outputDir || "",
-        specFile: options.spec || invocation.specFile || "",
-        refreshIngest: Boolean(options.refresh || invocation.refreshIngest),
+        outputDir: actionOptions.outputDir || invocation.outputDir || "",
+        specFile: actionOptions.spec || invocation.specFile || "",
+        refreshIngest: Boolean(actionOptions.refresh || invocation.refreshIngest),
         aiConfig: {
           enable: aiEnabled,
-          aiDryRun: Boolean(options.aiDryRun || invocation.aiDryRun),
+          aiDryRun: Boolean(actionOptions.aiDryRun || invocation.aiDryRun),
           provider: invocation.provider,
           model: invocation.model,
           sessionId: invocation.sessionId,
@@ -542,18 +547,19 @@ export function registerReviewCommand(program) {
     .option("--output-file <path>", "Optional custom output path for comparison JSON")
     .option("--json", "Emit machine-readable output")
     .action(async (baseRunId, candidateRunId, options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = resolveTargetPath(".", options);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = resolveTargetPath(".", actionOptions);
       const base = await loadUnifiedReviewReport({
         targetPath,
         runId: baseRunId,
-        outputDir: options.outputDir,
+        outputDir: actionOptions.outputDir,
         env: process.env,
       });
       const candidate = await loadUnifiedReviewReport({
         targetPath,
         runId: candidateRunId,
-        outputDir: options.outputDir,
+        outputDir: actionOptions.outputDir,
         env: process.env,
       });
 
@@ -566,8 +572,8 @@ export function registerReviewCommand(program) {
       });
 
       let outputPath = artifact.artifactPath;
-      if (options.outputFile) {
-        outputPath = path.resolve(targetPath, String(options.outputFile));
+      if (actionOptions.outputFile) {
+        outputPath = path.resolve(targetPath, String(actionOptions.outputFile));
         await fsp.mkdir(path.dirname(outputPath), { recursive: true });
         await fsp.writeFile(outputPath, `${JSON.stringify(artifact.payload, null, 2)}\n`, "utf-8");
       }
@@ -611,13 +617,14 @@ export function registerReviewCommand(program) {
     .option("--refresh", "Refresh CODEBASE_INGEST prior to compatibility scan")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = resolveTargetPath(".", options);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = resolveTargetPath(".", actionOptions);
       let ingestRefresh = null;
-      if (options.refresh) {
+      if (actionOptions.refresh) {
         const ingestResolution = await resolveCodebaseIngest({
           rootPath: targetPath,
-          outputDir: options.outputDir,
+          outputDir: actionOptions.outputDir,
           refresh: true,
         });
         ingestRefresh = {
@@ -630,13 +637,13 @@ export function registerReviewCommand(program) {
           contentHash: ingestResolution.fingerprint?.contentHash || "",
         };
       }
-      const mode = resolveModeFromOptions(options, {
-        defaultMode: String(options.mode || "full").trim().toLowerCase() || "full",
+      const mode = resolveModeFromOptions(actionOptions, {
+        defaultMode: String(actionOptions.mode || "full").trim().toLowerCase() || "full",
       });
       const scan = await runLocalReviewScan({
         targetPath,
         mode,
-        specFile: options.spec,
+        specFile: actionOptions.spec,
       });
 
       const report = `# Local Review Scan
@@ -660,7 +667,7 @@ ${formatFindingsMarkdown(scan.findings)}
       const reportPath = await writeReviewReport({
         targetPath: scan.targetPath,
         mode: scan.mode,
-        outputDir: options.outputDir,
+        outputDir: actionOptions.outputDir,
         reportMarkdown: report,
       });
 

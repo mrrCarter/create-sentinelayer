@@ -10,6 +10,7 @@ import { loadAuditRegistry, selectAuditAgents } from "../audit/registry.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { createAuditSessionReporter, resolveAuditSessionId } from "../session/audit-reporter.js";
+import { resolveActionOptions } from "./action-options.js";
 import { buildLegacyArgs } from "./legacy-args.js";
 
 function shouldEmitJson(options, command) {
@@ -213,16 +214,17 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const outputRoot = await resolveOutputRoot({
         cwd: targetPath,
-        outputDirOverride: options.outputDir,
+        outputDirOverride: actionOptions.outputDir,
         env: process.env,
       });
       const runDirectory = await resolveAuditRunDirectory({
         outputRoot,
-        runId: options.runId,
+        runId: actionOptions.runId,
       });
       const { report } = await loadAuditRunReport(runDirectory);
       const ddPackage = await writeDdPackage({
@@ -264,11 +266,12 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--refresh", "Refresh CODEBASE_INGEST before replay")
     .option("--json", "Emit machine-readable output")
     .action(async (runId, options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const initialTargetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const initialTargetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const outputRoot = await resolveOutputRoot({
         cwd: initialTargetPath,
-        outputDirOverride: options.outputDir,
+        outputDirOverride: actionOptions.outputDir,
         env: process.env,
       });
       const baseRunDirectory = await resolveAuditRunDirectory({
@@ -276,12 +279,12 @@ export function registerAuditCommand(program, invokeLegacy) {
         runId,
       });
       const { report: baseReport } = await loadAuditRunReport(baseRunDirectory);
-      const targetPath = options.path
-        ? path.resolve(process.cwd(), String(options.path || "."))
+      const targetPath = actionOptions.path
+        ? path.resolve(process.cwd(), String(actionOptions.path || "."))
         : path.resolve(String(baseReport.targetPath || "."));
 
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, (baseReport.selectedAgents || []).join(","));
       if (selected.selected.length === 0) {
@@ -292,9 +295,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: Number(baseReport.maxParallel || 1),
-        outputDir: options.outputDir,
+        outputDir: actionOptions.outputDir,
         dryRun: Boolean(baseReport.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        refreshIngest: Boolean(actionOptions.refresh),
         isolation: baseReport.isolation || "strict",
         seedFromDeterministic: baseReport.seedFromDeterministic !== false,
       });
@@ -341,11 +344,12 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--json", "Emit machine-readable output")
     .action(async (baseRunId, candidateRunId, options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const outputRoot = await resolveOutputRoot({
         cwd: targetPath,
-        outputDirOverride: options.outputDir,
+        outputDirOverride: actionOptions.outputDir,
         env: process.env,
       });
       const baseRunDirectory = await resolveAuditRunDirectory({
@@ -388,9 +392,10 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--registry-file <path>", "Optional custom audit registry file")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const payload = {
         command: "audit registry",
@@ -422,10 +427,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run security planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, "security");
       if (selected.selected.length !== 1) {
@@ -436,9 +442,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: 1,
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        outputDir: actionOptions.outputDir,
+        dryRun: Boolean(actionOptions.dryRun),
+        refreshIngest: Boolean(actionOptions.refresh),
       });
       const securityAgent = result.agentResults.find((agent) => agent.agentId === "security") || null;
 
@@ -486,10 +492,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run architecture planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, "architecture");
       if (selected.selected.length !== 1) {
@@ -500,9 +507,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: 1,
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        outputDir: actionOptions.outputDir,
+        dryRun: Boolean(actionOptions.dryRun),
+        refreshIngest: Boolean(actionOptions.refresh),
       });
       const architectureAgent =
         result.agentResults.find((agent) => agent.agentId === "architecture") || null;
@@ -551,10 +558,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run testing planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, "testing");
       if (selected.selected.length !== 1) {
@@ -565,9 +573,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: 1,
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        outputDir: actionOptions.outputDir,
+        dryRun: Boolean(actionOptions.dryRun),
+        refreshIngest: Boolean(actionOptions.refresh),
       });
       const testingAgent = result.agentResults.find((agent) => agent.agentId === "testing") || null;
 
@@ -615,10 +623,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run performance planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, "performance");
       if (selected.selected.length !== 1) {
@@ -629,9 +638,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: 1,
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        outputDir: actionOptions.outputDir,
+        dryRun: Boolean(actionOptions.dryRun),
+        refreshIngest: Boolean(actionOptions.refresh),
       });
       const performanceAgent =
         result.agentResults.find((agent) => agent.agentId === "performance") || null;
@@ -680,10 +689,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run compliance planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, "compliance");
       if (selected.selected.length !== 1) {
@@ -694,9 +704,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: 1,
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        outputDir: actionOptions.outputDir,
+        dryRun: Boolean(actionOptions.dryRun),
+        refreshIngest: Boolean(actionOptions.refresh),
       });
       const complianceAgent =
         result.agentResults.find((agent) => agent.agentId === "compliance") || null;
@@ -745,10 +755,11 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--dry-run", "Skip deterministic baseline and run documentation planning only")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
       const registry = await loadAuditRegistry({
-        registryFile: options.registryFile,
+        registryFile: actionOptions.registryFile,
       });
       const selected = selectAuditAgents(registry.agents, "documentation");
       if (selected.selected.length !== 1) {
@@ -759,9 +770,9 @@ export function registerAuditCommand(program, invokeLegacy) {
         targetPath,
         agents: selected.selected,
         maxParallel: 1,
-        outputDir: options.outputDir,
-        dryRun: Boolean(options.dryRun),
-        refreshIngest: Boolean(options.refresh),
+        outputDir: actionOptions.outputDir,
+        dryRun: Boolean(actionOptions.dryRun),
+        refreshIngest: Boolean(actionOptions.refresh),
       });
       const documentationAgent =
         result.agentResults.find((agent) => agent.agentId === "documentation") || null;
@@ -808,8 +819,9 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--reuse-omargate <runId>", "Reuse deterministic findings from an OmarGate run id or latest")
     .option("--json", "Emit machine-readable output")
     .action(async (options, command) => {
+      const actionOptions = resolveActionOptions(options, command);
       const legacyArgs = buildLegacyArgs(["/audit"], {
-        commandOptions: options,
+        commandOptions: actionOptions,
         command,
       });
       await invokeLegacy(legacyArgs);
@@ -848,9 +860,10 @@ export function registerAuditCommand(program, invokeLegacy) {
     .option("--output-dir <path>", "Artifact output root override")
     .option("--json", "Emit machine-readable final output")
     .action(async (options, command) => {
-      const emitJson = shouldEmitJson(options, command);
-      const emitStream = Boolean(options.stream);
-      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const actionOptions = resolveActionOptions(options, command);
+      const emitJson = shouldEmitJson(actionOptions, command);
+      const emitStream = Boolean(actionOptions.stream);
+      const targetPath = path.resolve(process.cwd(), String(actionOptions.path || "."));
 
       // Lazy-load modules
       const { julesAuditLoop } = await import("../agents/jules/loop.js");
@@ -861,7 +874,7 @@ export function registerAuditCommand(program, invokeLegacy) {
       const { runDeterministicReviewPipeline } = await import("../review/local-review.js");
       const fsp = await import("node:fs/promises");
 
-      const outputRoot = await resolveOut({ targetPath, outputDir: options.outputDir });
+      const outputRoot = await resolveOut({ targetPath, outputDir: actionOptions.outputDir });
       const artifactDir = path.join(outputRoot, "reports", "jules-" + Date.now());
       await fsp.mkdir(artifactDir, { recursive: true });
 
@@ -876,7 +889,7 @@ export function registerAuditCommand(program, invokeLegacy) {
       try {
         ingest = await generateCodebaseIngest({
           rootPath: targetPath, outputDir: outputRoot,
-          refresh: Boolean(options.refresh),
+          refresh: Boolean(actionOptions.refresh),
         });
       } catch {
         ingest = await collectCodebaseIngest({ rootPath: targetPath });
@@ -887,7 +900,7 @@ export function registerAuditCommand(program, invokeLegacy) {
 
       // ── [2] OMAR BASELINE (blind — Jules won't see until reconciliation) ──
       let omarBaseline = null;
-      if (!options.skipBaseline) {
+      if (!actionOptions.skipBaseline) {
         emitProgress(onEvent, JULES_DEFINITION, "Running Omar 7-layer deterministic baseline...");
         try {
           omarBaseline = await runDeterministicReviewPipeline({
@@ -925,14 +938,14 @@ export function registerAuditCommand(program, invokeLegacy) {
 
       // ── [5] PROVIDER ──────────────────────────────────────────────
       const providerConfig = {};
-      if (options.provider) providerConfig.provider = options.provider;
-      if (options.model) providerConfig.model = options.model;
-      if (options.apiKey) providerConfig.apiKey = options.apiKey;
+      if (actionOptions.provider) providerConfig.provider = actionOptions.provider;
+      if (actionOptions.model) providerConfig.model = actionOptions.model;
+      if (actionOptions.apiKey) providerConfig.apiKey = actionOptions.apiKey;
 
       // ── [6] SYSTEM PROMPT (full production prompt) ─────────────────
       const { buildJulesProductionPrompt } = await import("../agents/jules/config/system-prompt.js");
       const systemPrompt = buildJulesProductionPrompt({
-        mode: options.mode,
+        mode: actionOptions.mode,
         framework: ingest?.frameworks?.[0] || "unknown",
         componentCount: ingest?.indexedFiles?.files?.filter(
           f => /\.(tsx|jsx|vue|svelte)$/.test(f.path || ""),
@@ -952,14 +965,14 @@ export function registerAuditCommand(program, invokeLegacy) {
         blackboard,
         memory: memoryIndex,
         budget: {
-          maxCostUsd: parseFloat(options.maxCost) || 5.0,
+          maxCostUsd: parseFloat(actionOptions.maxCost) || 5.0,
           maxOutputTokens: JULES_DEFINITION.budget.maxOutputTokens,
           maxRuntimeMs: JULES_DEFINITION.budget.maxRuntimeMs,
           maxToolCalls: JULES_DEFINITION.budget.maxToolCalls,
         },
         provider: providerConfig,
-        mode: options.mode,
-        maxTurns: parseInt(options.maxTurns) || 25,
+        mode: actionOptions.mode,
+        maxTurns: parseInt(actionOptions.maxTurns) || 25,
         onEvent,
       });
 
@@ -973,8 +986,8 @@ export function registerAuditCommand(program, invokeLegacy) {
 
       // ── [7.5] RUNTIME AUDIT (if --url provided or URL detected) ────
       let runtimeResult = null;
-      const runtimeUrl = options.url || null;
-      if (runtimeUrl || !options.skipRuntime) {
+      const runtimeUrl = actionOptions.url || null;
+      if (runtimeUrl || !actionOptions.skipRuntime) {
         emitProgress(onEvent, JULES_DEFINITION, "Checking for deployed URL...");
         try {
           const { runtimeAudit: runRT } = await import("../agents/jules/tools/runtime-audit.js");
@@ -1057,7 +1070,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         command: "audit frontend",
         persona: JULES_DEFINITION.persona,
         targetPath,
-        mode: options.mode,
+        mode: actionOptions.mode,
         framework: ingest?.frameworks?.[0] || "unknown",
         findings: allFindings,
         summary: { total: allFindings.length, ...severityCounts, blocking: severityCounts.P0 > 0 || severityCounts.P1 > 0 },
@@ -1109,7 +1122,7 @@ export function registerAuditCommand(program, invokeLegacy) {
         const syncResult = await syncRunToDashboard({
           command: "audit frontend",
           persona: JULES_DEFINITION.persona,
-          mode: options.mode,
+          mode: actionOptions.mode,
           framework: ingest?.frameworks?.[0] || "unknown",
           summary: { total: allFindings.length, ...severityCounts, blocking: severityCounts.P0 > 0 || severityCounts.P1 > 0 },
           usage: report?.usage || {},
