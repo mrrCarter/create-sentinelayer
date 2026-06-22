@@ -172,9 +172,9 @@ export function collectRouteLiteralsFromSource(source = "") {
   return [...endpointSet].sort((left, right) => left.localeCompare(right));
 }
 
-function buildSpecFinding({ ruleId, file, line = 1, message, excerpt, suggestedFix }) {
+function buildSpecFinding({ ruleId, file, line = 1, message, excerpt, suggestedFix, severity = "P2" }) {
   return {
-    severity: "P2",
+    severity,
     file,
     line,
     message,
@@ -433,6 +433,7 @@ export async function runSpecBindingChecks({
         pushFinding(
           buildSpecFinding({
             ruleId: "SL-SPEC-002",
+            severity: "P3",
             file: relativePath,
             line: detectEndpointLine(source, endpoint),
             message: "Endpoint change is missing from spec coverage.",
@@ -462,6 +463,7 @@ export async function runSpecBindingChecks({
         pushFinding(
           buildSpecFinding({
             ruleId: "SL-SPEC-002",
+            severity: "P3",
             file: relativePath,
             line: 1,
             message: "New source file is not represented in spec scope.",
