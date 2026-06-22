@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { invokeViaProxy } from "../src/ai/proxy.js";
+import { invokeViaProxy, SentinelayerProxyError, serializeProxyError } from "../src/ai/proxy.js";
 
 const authFixture = ["fixture", "auth", "value"].join("-");
 
@@ -12,6 +12,27 @@ function createProxyResponse(payload = {}) {
     headers: {
       get() {
         return null;
+      },
+    },
+    async json() {
+      return payload;
+    },
+    async text() {
+      return JSON.stringify(payload);
+    },
+  };
+}
+
+function createProxyErrorResponse({ status = 429, payload = {}, headers = {} } = {}) {
+  const normalizedHeaders = new Map(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), String(value)])
+  );
+  return {
+    ok: false,
+    status,
+    headers: {
+      get(name) {
+        return normalizedHeaders.get(String(name || "").toLowerCase()) || null;
       },
     },
     async json() {
@@ -105,4 +126,117 @@ test("Unit AI proxy: omits session usage fields when no context is provided", as
   assert.equal(body.agent_id, undefined);
   assert.equal(body.usage_idempotency_key, undefined);
   assert.equal(calls[0].init.headers["Idempotency-Key"], undefined);
+});
+
+test("Unit AI proxy: quota denial exposes reset and upgrade metadata without retrying", async () => {
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts += 1;
+    return createProxyErrorResponse({
+      status: 429,
+      headers: {
+        "Retry-After": "3600",
+        "X-RateLimit-Limit": "10",
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": "2026-06-23T00:00:00Z",
+        "X-RateLimit-Policy": "daily_scan",
+        "x-request-id": "req_proxy_quota",
+      },
+      payload: {
+        error: {
+          code: "DAILY_SCAN_LIMIT_EXCEEDED",
+          message: "Daily managed LLM scan quota reached.",
+          request_id: "req_proxy_quota",
+          details: {
+            policy: "daily_scan",
+            scope: "user",
+            limit: 10,
+            remaining: 0,
+            used: 10,
+            unit: "requests",
+            resetAfterSeconds: 3600,
+            resetAt: "2026-06-23T00:00:00Z",
+            retryAfterSeconds: 3600,
+            upgradeUrl: "https://sentinelayer.com/billing",
+            checkoutMode: "membership",
+          },
+        },
+      },
+    });
+  };
+
+  await assert.rejects(
+    () =>
+      invokeViaProxy({
+        apiUrl: "https://api.example.test",
+        token: authFixture,
+        prompt: "hello",
+        fetchImpl,
+      }),
+    (error) => {
+      assert.equal(error instanceof SentinelayerProxyError, true);
+      assert.equal(error.status, 429);
+      assert.equal(error.code, "DAILY_SCAN_LIMIT_EXCEEDED");
+      assert.equal(error.requestId, "req_proxy_quota");
+      assert.equal(error.retryAfterMs, 3600_000);
+      assert.equal(error.quota.policy, "daily_scan");
+      assert.equal(error.quota.scope, "user");
+      assert.equal(error.quota.limit, 10);
+      assert.equal(error.quota.remaining, 0);
+      assert.equal(error.quota.used, 10);
+      assert.equal(error.quota.resetAt, "2026-06-23T00:00:00Z");
+      assert.equal(error.quota.upgradeUrl, "https://sentinelayer.com/billing");
+      assert.equal(error.quota.checkoutMode, "membership");
+      assert.match(error.message, /resets at 2026-06-23T00:00:00Z/);
+      assert.match(error.message, /upgrade: https:\/\/sentinelayer\.com\/billing/);
+      assert.deepEqual(serializeProxyError(error), {
+        status: 429,
+        code: "DAILY_SCAN_LIMIT_EXCEEDED",
+        requestId: "req_proxy_quota",
+        retryAfterMs: 3600000,
+        quota: {
+          policy: "daily_scan",
+          scope: "user",
+          limit: 10,
+          remaining: 0,
+          used: 10,
+          unit: "requests",
+          resetAfterSeconds: 3600,
+          resetAt: "2026-06-23T00:00:00Z",
+          retryAfterSeconds: 3600,
+          retryAfterMs: 3600000,
+          upgradeUrl: "https://sentinelayer.com/billing",
+          checkoutMode: "membership",
+        },
+      });
+      return true;
+    }
+  );
+
+  assert.equal(attempts, 1);
+});
+
+test("Unit AI proxy: transient 429 without quota metadata still retries", async () => {
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return createProxyErrorResponse({
+        status: 429,
+        headers: { "Retry-After": "0" },
+        payload: { error: { code: "TEMPORARY_THROTTLE", message: "Retry shortly." } },
+      });
+    }
+    return createProxyResponse({ content: "retry success", usage: {} });
+  };
+
+  const result = await invokeViaProxy({
+    apiUrl: "https://api.example.test",
+    token: authFixture,
+    prompt: "hello",
+    fetchImpl,
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(result.text, "retry success");
 });
