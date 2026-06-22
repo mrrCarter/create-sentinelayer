@@ -413,10 +413,18 @@ export class MultiProviderApiClient {
    *   prompt?: string,
    *   stream?: boolean,
    *   apiKey?: string,
+   *   apiUrl?: string,
    *   env?: NodeJS.ProcessEnv,
-   *   onChunk?: (chunk: string) => void
+   *   onChunk?: (chunk: string) => void,
+   *   sessionId?: string,
+   *   agentId?: string,
+   *   action?: string,
+   *   usageIdempotencyKey?: string,
+   *   billingTier?: string,
+   *   customerPricingPolicy?: string,
+   *   metadata?: object
    * }} [options]
-   * @returns {Promise<{ provider: string, model: string, text: string }>}
+   * @returns {Promise<{ provider: string, model: string, text: string, usage?: object, usageLedger?: object | null }>}
    */
   async invoke({
     provider,
@@ -424,8 +432,16 @@ export class MultiProviderApiClient {
     prompt,
     stream = false,
     apiKey,
+    apiUrl = "",
     env = process.env,
     onChunk,
+    sessionId = "",
+    agentId = "",
+    action = "",
+    usageIdempotencyKey = "",
+    billingTier = "",
+    customerPricingPolicy = "",
+    metadata = null,
   } = {}) {
     const resolvedProvider = resolveProvider({ provider, env });
     const resolvedModel = resolveModel({ provider: resolvedProvider, model });
@@ -437,10 +453,21 @@ export class MultiProviderApiClient {
         systemPrompt: "",
         model: resolvedModel,
         maxTokens: 4096,
+        apiUrl,
+        token: apiKey,
+        sessionId,
+        agentId,
+        action,
+        usageIdempotencyKey,
+        billingTier,
+        customerPricingPolicy,
+        metadata,
+        fetchImpl: this.fetchImpl,
       });
       return {
         text: result.text,
         usage: result.usage,
+        usageLedger: result.usageLedger,
         provider: "sentinelayer",
         model: resolvedModel,
       };

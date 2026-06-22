@@ -28,6 +28,27 @@ function createJsonResponse({ status = 200, payload = {} } = {}) {
   };
 }
 
+function createProxyJsonResponse(payload = {}) {
+  return createJsonResponse({
+    payload: {
+      content: "proxy-response",
+      usage: {
+        tokens_in: 21,
+        tokens_out: 8,
+        cost_usd: 0.00053,
+        model: "gpt-5.4-mini",
+        provider: "openai",
+        latency_ms: 42,
+      },
+      usageLedger: {
+        event: "session_usage",
+        ledgerEntryId: "bill_proxy_from_client",
+      },
+      ...payload,
+    },
+  });
+}
+
 function createStreamResponse({ status = 200, sseLines = [] } = {}) {
   const encoder = new TextEncoder();
   const content = sseLines.join("\n");
@@ -155,6 +176,58 @@ test("Unit AI client: invoke supports streaming callbacks (openai SSE)", async (
 
   assert.deepEqual(chunks, ["hello", " world"]);
   assert.equal(result.text, "hello world");
+});
+
+test("Unit AI client: sentinelayer provider forwards proxy usage context and preserves ledger", async () => {
+  const calls = [];
+  const client = createMultiProviderApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return createProxyJsonResponse();
+    },
+  });
+
+  const result = await client.invoke({
+    provider: "sentinelayer",
+    model: "gpt-5.4-mini",
+    prompt: "meter this call",
+    apiKey: "fixture-sentinelayer-token",
+    apiUrl: "https://api.example.test",
+    sessionId: "session-123",
+    agentId: "senti",
+    action: "proxy_llm",
+    usageIdempotencyKey: "senti:session-123:help:req-1",
+    billingTier: "internal",
+    customerPricingPolicy: "default",
+    metadata: {
+      purpose: "senti_help_response",
+      runId: "req-1",
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.example.test/api/v1/proxy/llm");
+  assert.equal(calls[0].options.headers["Idempotency-Key"], "senti:session-123:help:req-1");
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.model, "gpt-5.4-mini");
+  assert.equal(body.user_content, "meter this call");
+  assert.equal(body.session_id, "session-123");
+  assert.equal(body.agent_id, "senti");
+  assert.equal(body.action, "proxy_llm");
+  assert.equal(body.usage_idempotency_key, "senti:session-123:help:req-1");
+  assert.equal(body.billing_tier, "internal");
+  assert.equal(body.customer_pricing_policy, "default");
+  assert.deepEqual(body.metadata, {
+    purpose: "senti_help_response",
+    runId: "req-1",
+  });
+
+  assert.equal(result.provider, "sentinelayer");
+  assert.equal(result.model, "gpt-5.4-mini");
+  assert.equal(result.text, "proxy-response");
+  assert.equal(result.usage.inputTokens, 21);
+  assert.equal(result.usage.outputTokens, 8);
+  assert.equal(result.usageLedger.ledgerEntryId, "bill_proxy_from_client");
 });
 
 test("Unit AI client: invoke fails closed when API key is missing", async () => {

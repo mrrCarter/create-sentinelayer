@@ -1,11 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
+import { countPricedUsageEvents } from "../src/billing/ledger-entry.js";
 import {
   INVESTOR_DD_USAGE_ACTIONS,
   InvestorDdUsageLedgerError,
   recordInvestorDdLlmUsage,
 } from "../src/review/investor-dd-usage.js";
+import { createSession } from "../src/session/store.js";
+import { readStream } from "../src/session/stream.js";
+
+async function makeRoot() {
+  return fsp.mkdtemp(path.join(os.tmpdir(), "investor-dd-usage-"));
+}
 
 test("recordInvestorDdLlmUsage records returned DD planner usage without raw prompt metadata", async () => {
   const calls = [];
@@ -66,6 +76,62 @@ test("recordInvestorDdLlmUsage is optional when no session usage context is supp
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "missing_session_usage_context");
+});
+
+test("recordInvestorDdLlmUsage writes DD planner events into the default priced rollup", async () => {
+  const root = await makeRoot();
+  try {
+    await createSession({
+      targetPath: root,
+      sessionId: "sess-dd-priced",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    const result = await recordInvestorDdLlmUsage({
+      usageContext: {
+        sessionId: "sess-dd-priced",
+        targetPath: root,
+        model: "gpt-5.3-codex",
+        provider: "sentinelayer",
+        syncRemote: false,
+      },
+      action: INVESTOR_DD_USAGE_ACTIONS.filePlanner,
+      agentId: "investor-dd-security",
+      phase: "persona_file_loop",
+      response: {
+        text: "done",
+        usage: {
+          inputTokens: 25,
+          outputTokens: 7,
+          model: "gpt-5.3-codex",
+          provider: "sentinelayer",
+        },
+      },
+      metadata: {
+        prompt: "raw prompt must not persist",
+        response: "raw response must not persist",
+        personaId: "security",
+      },
+    });
+
+    assert.equal(result.ok, true, result.reason);
+    assert.equal(result.action, "investor_dd_file_planner");
+
+    const events = await readStream("sess-dd-priced", { targetPath: root, tail: 0 });
+    const usageEvents = events.filter((event) => event.event === "session_usage");
+    assert.equal(usageEvents.length, 1);
+    assert.equal(usageEvents[0].payload.schema, "billing/v1");
+    assert.equal(usageEvents[0].payload.action, "investor_dd_file_planner");
+    assert.equal(usageEvents[0].payload.agentId, "investor-dd-security");
+    assert.equal(usageEvents[0].payload.usage.totalTokens, 32);
+    assert.equal(usageEvents[0].payload.prompt, undefined);
+    assert.equal(usageEvents[0].payload.response, undefined);
+    assert.equal(usageEvents[0].payload.metadata.prompt, undefined);
+    assert.equal(usageEvents[0].payload.metadata.response, undefined);
+    assert.equal(countPricedUsageEvents(events), 1);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("recordInvestorDdLlmUsage does not estimate missing provider usage", async () => {

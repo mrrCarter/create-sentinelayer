@@ -8,7 +8,10 @@ export const PRICED_ACTIONS = Object.freeze([
   "audit_security",
   "audit_frontend",
   "chat_ask",
+  "investor_dd_devtestbot_planner",
+  "investor_dd_file_planner",
   "omargate_deep",
+  "proxy_llm",
   "scan_precheck",
   "spec_generate_ai",
 ]);
