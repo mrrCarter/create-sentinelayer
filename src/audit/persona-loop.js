@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { createMultiProviderApiClient } from "../ai/client.js";
+import { serializeProxyError } from "../ai/proxy.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { estimateTokens } from "../cost/tokenizer.js";
 import { createAgentEvent } from "../events/schema.js";
@@ -866,9 +867,11 @@ async function runSinglePersonaAgenticLoop({
       });
     } catch (error) {
       status = "llm_error_fallback";
+      const proxyError = serializeProxyError(error);
       emit("llm_error", {
         turn: turnCount,
         error: error instanceof Error ? error.message : String(error),
+        ...(proxyError ? { proxyError } : {}),
       });
       break;
     }

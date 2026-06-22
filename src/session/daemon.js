@@ -2,7 +2,7 @@ import path from "node:path";
 import process from "node:process";
 import fsp from "node:fs/promises";
 
-import { invokeViaProxy } from "../ai/proxy.js";
+import { invokeViaProxy, serializeProxyError } from "../ai/proxy.js";
 import { createAgentEvent } from "../events/schema.js";
 import {
   buildDocumentsFromBlackboardEntries,
@@ -496,6 +496,7 @@ async function buildHelpResponseMessage(
   let llmText = "";
   let fallbackPath = false;
   let fallbackReason = "";
+  let proxyError = null;
   let usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -556,6 +557,7 @@ async function buildHelpResponseMessage(
   } catch (error) {
     fallbackPath = true;
     fallbackReason = normalizeString(error?.message || error) || "Senti model invocation failed.";
+    proxyError = serializeProxyError(error);
   }
 
   if (!usage.latencyMs) {
@@ -579,6 +581,7 @@ async function buildHelpResponseMessage(
     usage,
     fallbackPath,
     fallbackReason,
+    proxyError,
     contextSignals: {
       documentCount: documents.length,
       memoryHits: memoryHits.length,
@@ -641,6 +644,7 @@ async function maybeRespondToHelpRequest(
       latencyMs: response.usage.latencyMs,
       fallbackPath: Boolean(response.fallbackPath),
       fallbackReason: response.fallbackReason || null,
+      proxyError: response.proxyError || null,
       contextSignals: response.contextSignals,
     },
     {

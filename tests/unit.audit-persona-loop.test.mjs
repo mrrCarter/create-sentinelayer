@@ -12,6 +12,7 @@ import {
   partitionAuditPersonaFiles,
   runPersonaAgenticLoop,
 } from "../src/audit/persona-loop.js";
+import { SentinelayerProxyError } from "../src/ai/proxy.js";
 
 function securityAgent(overrides = {}) {
   return {
@@ -224,6 +225,56 @@ test("Unit audit persona-loop: non-Jules persona uses tools, emits findings, and
     assert.equal(events.some((event) => event.event === "finding"), true);
     assert.equal(events.at(-1).event, "agent_complete");
     assert.equal(events.every((event) => event.stream === "sl_event"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit audit persona-loop: LLM proxy denials preserve structured metadata", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-persona-proxy-error-"));
+  try {
+    const events = [];
+    const fakeClient = {
+      async invoke() {
+        throw new SentinelayerProxyError(
+          "SentinelLayer LLM proxy error (429 DAILY_SCAN_LIMIT_EXCEEDED): quota reached",
+          {
+            status: 429,
+            code: "DAILY_SCAN_LIMIT_EXCEEDED",
+            requestId: "req-audit-proxy-quota",
+            retryAfterMs: 3600000,
+            quota: {
+              policy: "daily_scan",
+              scope: "user",
+              limit: 10,
+              remaining: 0,
+              used: 10,
+              resetAt: "2026-06-23T00:00:00Z",
+              upgradeUrl: "https://sentinelayer.com/billing",
+              checkoutMode: "membership",
+            },
+          }
+        );
+      },
+    };
+
+    const result = await runPersonaAgenticLoop({
+      agent: securityAgent(),
+      rootPath: tempRoot,
+      maxTurns: 1,
+      clientFactory: () => fakeClient,
+      onEvent: (evt) => events.push(evt),
+    });
+
+    const llmError = events.find((event) => event.event === "llm_error");
+    assert.equal(result.status, "llm_error_fallback");
+    assert.ok(llmError);
+    assert.equal(llmError.payload.proxyError.status, 429);
+    assert.equal(llmError.payload.proxyError.code, "DAILY_SCAN_LIMIT_EXCEEDED");
+    assert.equal(llmError.payload.proxyError.requestId, "req-audit-proxy-quota");
+    assert.equal(llmError.payload.proxyError.retryAfterMs, 3600000);
+    assert.equal(llmError.payload.proxyError.quota.resetAt, "2026-06-23T00:00:00Z");
+    assert.equal(llmError.payload.proxyError.quota.upgradeUrl, "https://sentinelayer.com/billing");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

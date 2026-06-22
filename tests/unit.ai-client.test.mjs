@@ -9,6 +9,7 @@ import {
   resolveModel,
   resolveProvider,
 } from "../src/ai/client.js";
+import { SentinelayerProxyError } from "../src/ai/proxy.js";
 
 const FIXTURE_OPENAI_CRED = ["fixture", "openai", "token", "value"].join("_");
 const FIXTURE_ANTHROPIC_CRED = ["fixture", "anthropic", "token", "value"].join("_");
@@ -47,6 +48,28 @@ function createProxyJsonResponse(payload = {}) {
       ...payload,
     },
   });
+}
+
+function createProxyErrorResponse({ status = 402, payload = {}, headers = {} } = {}) {
+  const normalizedHeaders = new Map(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), String(value)])
+  );
+  return {
+    ok: false,
+    status,
+    headers: {
+      get(name) {
+        return normalizedHeaders.get(String(name || "").toLowerCase()) || null;
+      },
+    },
+    async json() {
+      return payload;
+    },
+    async text() {
+      return JSON.stringify(payload);
+    },
+    body: null,
+  };
 }
 
 function createStreamResponse({ status = 200, sseLines = [] } = {}) {
@@ -228,6 +251,51 @@ test("Unit AI client: sentinelayer provider forwards proxy usage context and pre
   assert.equal(result.usage.inputTokens, 21);
   assert.equal(result.usage.outputTokens, 8);
   assert.equal(result.usageLedger.ledgerEntryId, "bill_proxy_from_client");
+});
+
+test("Unit AI client: sentinelayer provider preserves actionable proxy denial errors", async () => {
+  const client = createMultiProviderApiClient({
+    fetchImpl: async () =>
+      createProxyErrorResponse({
+        status: 402,
+        headers: { "Retry-After": "86400" },
+        payload: {
+          error: {
+            code: "FREE_TRIAL_EXPIRED",
+            message: "Your managed LLM trial has ended.",
+            details: {
+              policy: "trial",
+              scope: "account",
+              resetAfterSeconds: 86400,
+              upgradeUrl: "https://sentinelayer.com/billing",
+              checkoutMode: "membership",
+            },
+          },
+        },
+      }),
+  });
+
+  await assert.rejects(
+    () =>
+      client.invoke({
+        provider: "sentinelayer",
+        prompt: "denied",
+        apiKey: "fixture-sentinelayer-token",
+        apiUrl: "https://api.example.test",
+      }),
+    (error) => {
+      assert.equal(error instanceof SentinelayerProxyError, true);
+      assert.equal(error.status, 402);
+      assert.equal(error.code, "FREE_TRIAL_EXPIRED");
+      assert.equal(error.quota.policy, "trial");
+      assert.equal(error.quota.scope, "account");
+      assert.equal(error.quota.resetAfterSeconds, 86400);
+      assert.equal(error.quota.upgradeUrl, "https://sentinelayer.com/billing");
+      assert.match(error.message, /Your managed LLM trial has ended/);
+      assert.match(error.message, /checkout=membership/);
+      return true;
+    }
+  );
 });
 
 test("Unit AI client: invoke fails closed when API key is missing", async () => {

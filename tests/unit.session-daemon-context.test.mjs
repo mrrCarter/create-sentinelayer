@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent, validateAgentEvent } from "../src/events/schema.js";
+import { SentinelayerProxyError } from "../src/ai/proxy.js";
 import { registerAgent } from "../src/session/agent-registry.js";
 import { startSenti, stopSenti } from "../src/session/daemon.js";
 import { createSession } from "../src/session/store.js";
@@ -163,7 +164,22 @@ test("Unit session daemon context relay: LLM failure emits fallback response wit
       autoStart: false,
       helpRequestTimeoutMs: 25,
       llmInvoker: async () => {
-        throw new Error("simulated upstream failure");
+        throw new SentinelayerProxyError(
+          "SentinelLayer LLM proxy error (402 FREE_TRIAL_EXPIRED): trial ended",
+          {
+            status: 402,
+            code: "FREE_TRIAL_EXPIRED",
+            requestId: "req-senti-proxy-quota",
+            retryAfterMs: 86400000,
+            quota: {
+              policy: "trial",
+              scope: "account",
+              resetAfterSeconds: 86400,
+              upgradeUrl: "https://sentinelayer.com/billing",
+              checkoutMode: "membership",
+            },
+          }
+        );
       },
     });
 
@@ -206,7 +222,13 @@ test("Unit session daemon context relay: LLM failure emits fallback response wit
     assert.equal(validateAgentEvent(modelSpan, { allowLegacy: false }), true);
     assert.match(String(response.payload.response || ""), /help_request/i);
     assert.equal(modelSpan.payload.fallbackPath, true);
-    assert.match(String(modelSpan.payload.fallbackReason || ""), /failure|timeout|failed/i);
+    assert.match(String(modelSpan.payload.fallbackReason || ""), /FREE_TRIAL_EXPIRED|trial ended/i);
+    assert.equal(modelSpan.payload.proxyError.status, 402);
+    assert.equal(modelSpan.payload.proxyError.code, "FREE_TRIAL_EXPIRED");
+    assert.equal(modelSpan.payload.proxyError.requestId, "req-senti-proxy-quota");
+    assert.equal(modelSpan.payload.proxyError.retryAfterMs, 86400000);
+    assert.equal(modelSpan.payload.proxyError.quota.policy, "trial");
+    assert.equal(modelSpan.payload.proxyError.quota.upgradeUrl, "https://sentinelayer.com/billing");
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
