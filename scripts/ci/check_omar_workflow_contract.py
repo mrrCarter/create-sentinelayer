@@ -167,6 +167,10 @@ def validate_omar_contract(workflow_text: str) -> None:
         "Omar BYOK model contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
+        "omar-artifacts/summary.json",
+        "omar_gate_summary",
+        "schema_version",
+        "run_url",
         "Upload Omar artifacts",
         "actions/upload-artifact",
         "omar-artifacts/**",
@@ -250,7 +254,11 @@ jobs:
       - name: Verify BYOK Omar secrets
         run: echo "OPENAI_API_KEY is required because create-sentinelayer Omar Gate runs in BYOK real-LLM mode."
       - name: Stage Omar artifacts
-        run: echo stage
+        run: |
+          echo "omar_gate_summary"
+          echo "schema_version"
+          echo "run_url"
+          echo "omar-artifacts/summary.json"
       - name: Upload Omar artifacts
         uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
         with:
