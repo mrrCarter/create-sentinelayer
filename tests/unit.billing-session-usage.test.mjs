@@ -10,6 +10,7 @@ import {
   buildCallIdempotencyKey,
   buildLedgerEntry,
   countPricedUsageEvents,
+  PRICED_ACTIONS,
 } from "../src/billing/ledger-entry.js";
 import { recordCliLlmSessionUsage } from "../src/billing/llm-session-usage.js";
 import { recordSessionUsage } from "../src/billing/session-usage.js";
@@ -107,6 +108,41 @@ test("Unit billing ledger: deterministic ids and metadata sanitization", () => {
     createdAt,
   });
   assert.notEqual(first.ledgerEntryId, third.ledgerEntryId);
+});
+
+test("Unit billing ledger: default priced action set covers DD planners and Senti proxy LLM", () => {
+  assert.equal(PRICED_ACTIONS.includes("investor_dd_devtestbot_planner"), true);
+  assert.equal(PRICED_ACTIONS.includes("investor_dd_file_planner"), true);
+  assert.equal(PRICED_ACTIONS.includes("proxy_llm"), true);
+
+  const events = [
+    {
+      event: "session_usage",
+      payload: { schema: "billing/v1", action: "investor_dd_devtestbot_planner" },
+    },
+    {
+      event: "session_usage",
+      payload: { schema: "billing/v1", action: "investor_dd_file_planner" },
+    },
+    {
+      event: "session_usage",
+      payload: { schema: "billing/v1", action: "proxy_llm" },
+    },
+    {
+      event: "session_usage",
+      payload: { schema: "billing/v1", action: "unpriced_future_action" },
+    },
+    {
+      event: "session_usage",
+      payload: { schema: "session_usage/local-v1", action: "proxy_llm" },
+    },
+    {
+      event: "session_message",
+      payload: { schema: "billing/v1", action: "proxy_llm" },
+    },
+  ];
+
+  assert.equal(countPricedUsageEvents(events), 3);
 });
 
 test("Unit billing session usage: persists billing/v1 events without raw prompt text", async () => {

@@ -47,6 +47,7 @@ The product surface charges subscription tiers, not raw per-token. Token cost is
 Usage can come from:
 
 - Direct LLM calls inside CLI/persona/orchestrator flows.
+- SentinelLayer proxy calls through `src/ai/client.js` (`MultiProviderApiClient.invoke`) and `src/ai/proxy.js` (`invokeViaProxy`); these must forward any supplied session metering context and preserve returned `usageLedger` provenance.
 - API summary/checkpoint generation calls.
 - Omar/audit runs.
 - Background recap/checkpoint daemons.
