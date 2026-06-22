@@ -28,7 +28,7 @@ async function readJsonBody(req) {
   return raw.trim() ? JSON.parse(raw) : {};
 }
 
-async function startActionMockApi({ actions = [] } = {}) {
+async function startActionMockApi({ actions = [], hangActionResponseBody = false } = {}) {
   const sessionEvents = [
     {
       stream: "sl_event",
@@ -96,6 +96,11 @@ async function startActionMockApi({ actions = [] } = {}) {
         state.actionAuthHeader = String(req.headers.authorization || "");
         state.actionPayload = await readJsonBody(req);
         state.actionPayloads.push(state.actionPayload);
+        if (hangActionResponseBody) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.write('{"ok":true,');
+          return;
+        }
         const actionType = String(state.actionPayload.actionType || "ack");
         return jsonResponse(res, 200, {
           ok: true,
@@ -123,6 +128,11 @@ async function startActionMockApi({ actions = [] } = {}) {
       return jsonResponse(res, 500, { error: String(error?.message || error) });
     }
   });
+  const sockets = new Set();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
 
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -130,11 +140,17 @@ async function startActionMockApi({ actions = [] } = {}) {
   return {
     apiUrl: `http://127.0.0.1:${port}`,
     state,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () =>
+      new Promise((resolve) => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close(resolve);
+      }),
   };
 }
 
-function runCli(args, { cwd, env = {} } = {}) {
+function runCli(args, { cwd, env = {}, timeoutMs = 0 } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
@@ -155,13 +171,23 @@ function runCli(args, { cwd, env = {} } = {}) {
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timeoutHandle = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGKILL");
+        }, timeoutMs)
+      : null;
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("close", (code) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      resolve({ code, stdout, stderr, timedOut });
+    });
   });
 }
 
@@ -307,12 +333,14 @@ test("Unit session read --remote: records automatic view receipts for displayed 
       enabled: true,
       agentId: "codex",
       targetCount: 2,
-      attempted: 2,
-      recorded: 2,
+      attempted: 0,
+      recorded: 0,
       duplicates: 0,
       failed: 0,
       skipped: 0,
-      reason: "",
+      queued: 2,
+      background: true,
+      reason: "queued_best_effort",
     });
 
     assert.equal(mock.state.actionPayloads.length, 2);
@@ -361,6 +389,8 @@ test("Unit session read --remote: --no-view suppresses automatic view receipts",
     assert.equal(payload.autoView.enabled, false);
     assert.equal(payload.autoView.reason, "disabled");
     assert.equal(payload.autoView.targetCount, 0);
+    assert.equal(payload.autoView.queued, 0);
+    assert.equal(payload.autoView.background, false);
     assert.equal(mock.state.actionPayloads.length, 0);
   } finally {
     await mock.close();
@@ -402,15 +432,80 @@ test("Unit session read --remote: caps automatic view writes per read", async ()
       enabled: true,
       agentId: "codex",
       targetCount: 2,
-      attempted: 1,
-      recorded: 1,
+      attempted: 0,
+      recorded: 0,
       duplicates: 0,
       failed: 0,
       skipped: 1,
+      queued: 1,
+      background: true,
       reason: "target_cap_reached",
     });
     assert.equal(mock.state.actionPayloads.length, 1);
     assert.equal(mock.state.actionPayloads[0].targetSequenceId, 42);
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read --remote: hanging auto-view action body does not block output", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-auto-view-hang-"));
+  const mock = await startActionMockApi({ hangActionResponseBody: true });
+  try {
+    const startedAt = Date.now();
+    const result = await runCli(
+      [
+        "session",
+        "read",
+        "sess-actions",
+        "--remote",
+        "--tail",
+        "2",
+        "--no-actions",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+        "--json",
+      ],
+      {
+        cwd: tmp,
+        env: {
+          SENTINELAYER_API_URL: mock.apiUrl,
+          SENTINELAYER_SESSION_READ_VIEW_TIMEOUT_MS: "100",
+        },
+        timeoutMs: 2_500,
+      },
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result.timedOut, false, result.stderr || result.stdout);
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(elapsedMs < 2_000, `session read should exit quickly; elapsed=${elapsedMs}ms`);
+
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "session read");
+    assert.equal(payload.count, 2);
+    assert.deepEqual(
+      payload.events.map((event) => event.payload?.message),
+      ["first readable message", "second readable message"],
+    );
+    assert.deepEqual(payload.autoView, {
+      enabled: true,
+      agentId: "codex",
+      targetCount: 2,
+      attempted: 0,
+      recorded: 0,
+      duplicates: 0,
+      failed: 0,
+      skipped: 0,
+      queued: 2,
+      background: true,
+      reason: "queued_best_effort",
+    });
+    assert.equal(mock.state.actionPayloads.length, 1);
+    assert.equal(mock.state.actionPayloads[0].actionType, "view");
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });

@@ -172,17 +172,6 @@ function resolveGrantRole(rawRole) {
   return AUTO_GRANT_DEFAULT_ROLE;
 }
 
-async function readResponseJsonSafely(response) {
-  if (!response || typeof response.json !== "function") {
-    return null;
-  }
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
 function isIdentityForgeryBody(body) {
   if (!body || typeof body !== "object") return false;
   const error = body.error;
@@ -412,6 +401,184 @@ function enforceRollingLimit(windowByKey, key, {
   };
 }
 
+function makeSyncTimeoutError(reason) {
+  const error = new Error(normalizeString(reason) || "request_timeout");
+  error.name = "AbortError";
+  error.code = "SYNC_REQUEST_TIMEOUT";
+  return error;
+}
+
+function combineAbortSignals(signals = []) {
+  const activeSignals = signals.filter((signal) => signal && typeof signal === "object");
+  if (activeSignals.length === 0) return undefined;
+  if (activeSignals.length === 1) return activeSignals[0];
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+    return AbortSignal.any(activeSignals);
+  }
+
+  const controller = new AbortController();
+  const abort = () => {
+    try {
+      controller.abort();
+    } catch {
+      // ignore
+    }
+    for (const signal of activeSignals) {
+      try {
+        signal.removeEventListener("abort", abort);
+      } catch {
+        // ignore
+      }
+    }
+  };
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort();
+      break;
+    }
+    try {
+      signal.addEventListener("abort", abort, { once: true });
+    } catch {
+      // ignore
+    }
+  }
+  return controller.signal;
+}
+
+function abortRequestController(controller, reason) {
+  if (!controller || controller.signal?.aborted) return;
+  try {
+    controller.abort(makeSyncTimeoutError(reason));
+  } catch {
+    try {
+      controller.abort();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function cancelResponseBody(response) {
+  try {
+    if (response?.body && typeof response.body.cancel === "function") {
+      void response.body.cancel();
+    }
+  } catch {
+    // Best-effort socket/body cleanup only.
+  }
+}
+
+function isSyncTimeoutError(error) {
+  return error?.code === "SYNC_REQUEST_TIMEOUT";
+}
+
+function withTimeout(promise, timeoutMs, { reason = "request_timeout", onTimeout = null } = {}) {
+  const resolvedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutHandle = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        onTimeout?.();
+      } catch {
+        // ignore
+      }
+      reject(makeSyncTimeoutError(reason));
+    }, resolvedTimeoutMs);
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      fn(value);
+    };
+
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
+async function readResponseJsonWithTimeout(
+  response,
+  timeoutMs,
+  {
+    timeoutReason = "response_body_timeout",
+    onTimeout = null,
+    fallback = undefined,
+  } = {},
+) {
+  if (!response || typeof response.json !== "function") {
+    return fallback;
+  }
+  try {
+    return await withTimeout(response.json(), timeoutMs, {
+      reason: timeoutReason,
+      onTimeout: () => {
+        try {
+          onTimeout?.();
+        } finally {
+          cancelResponseBody(response);
+        }
+      },
+    });
+  } catch (error) {
+    if (isSyncTimeoutError(error)) {
+      throw error;
+    }
+    if (fallback !== undefined) {
+      return fallback;
+    }
+    throw error;
+  }
+}
+
+async function readResponseJsonSafely(response, timeoutMs = DEFAULT_SYNC_TIMEOUT_MS) {
+  try {
+    return await readResponseJsonWithTimeout(response, timeoutMs, { fallback: null });
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJsonWithFullTimeout(
+  url,
+  options,
+  timeoutMs,
+  fetchImpl = fetchWithTimeout,
+  { readErrorBody = false } = {},
+) {
+  const resolvedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
+  const controller = new AbortController();
+  const startedAtMs = Date.now();
+  let response = null;
+  const requestOptions = {
+    ...options,
+    signal: combineAbortSignals([options?.signal, controller.signal]),
+  };
+
+  response = await withTimeout(
+    fetchImpl(url, requestOptions, resolvedTimeoutMs),
+    resolvedTimeoutMs,
+    {
+      reason: "request_timeout",
+      onTimeout: () => abortRequestController(controller, "request_timeout"),
+    },
+  );
+
+  let payload = {};
+  if (response?.ok || readErrorBody) {
+    const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+    const remainingMs = Math.max(1, resolvedTimeoutMs - elapsedMs);
+    payload = await readResponseJsonWithTimeout(response, remainingMs, {
+      fallback: {},
+      onTimeout: () => abortRequestController(controller, "response_body_timeout"),
+    });
+  }
+  return { response, payload };
+}
+
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
@@ -421,7 +588,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   try {
     return await fetch(url, {
       ...options,
-      signal: controller.signal,
+      signal: combineAbortSignals([options?.signal, controller.signal]),
     });
   } finally {
     clearTimeout(timeoutHandle);
@@ -1008,7 +1175,7 @@ export async function pollHumanMessages(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/human-messages?${query.toString()}`;
 
   try {
-    const response = await fetchImpl(
+    const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "GET",
@@ -1016,7 +1183,8 @@ export async function pollHumanMessages(
           Authorization: `Bearer ${session.token}`,
         },
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
     );
     if (!response || !response.ok) {
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
@@ -1027,7 +1195,6 @@ export async function pollHumanMessages(
         cursor: normalizedSince || null,
       };
     }
-    const payload = await response.json().catch(() => ({}));
     recordCircuitSuccess(inboundCircuit);
 
     const items = normalizeHumanMessageItems(payload);
@@ -1171,13 +1338,14 @@ export async function pollSessionEvents(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events?${query.toString()}`;
 
   try {
-    const response = await fetchImpl(
+    const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${session.token}` },
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
     );
     if (!response || !response.ok) {
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
@@ -1188,7 +1356,6 @@ export async function pollSessionEvents(
         cursor: normalizedSince || null,
       };
     }
-    const payload = await response.json().catch(() => ({}));
     recordCircuitSuccess(inboundCircuit);
 
     const items = Array.isArray(payload?.events) ? payload.events : [];
@@ -1491,13 +1658,14 @@ export async function pollSessionEventsBefore(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events/before?${query.toString()}`;
 
   try {
-    const response = await fetchImpl(
+    const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${session.token}` },
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
     );
     if (!response || !response.ok) {
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
@@ -1509,7 +1677,6 @@ export async function pollSessionEventsBefore(
         beforeSequence: Number.isFinite(normalizedBeforeSequence) ? normalizedBeforeSequence : null,
       };
     }
-    const payload = await response.json().catch(() => ({}));
     recordCircuitSuccess(inboundCircuit);
 
     const events = chronologicalSessionEvents(payload?.events || []);
@@ -1600,13 +1767,14 @@ export async function listSessionMessageActions(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/actions?${query.toString()}`;
 
   try {
-    const response = await fetchImpl(
+    const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${session.token}` },
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
     );
     if (!response || !response.ok) {
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
@@ -1618,7 +1786,6 @@ export async function listSessionMessageActions(
         projection: null,
       };
     }
-    const payload = await response.json().catch(() => ({}));
     recordCircuitSuccess(inboundCircuit);
     const actions = Array.isArray(payload?.actions) ? payload.actions : [];
     return {
@@ -1772,6 +1939,7 @@ export async function createSessionMessageAction(
     metadata = {},
     idempotencyKey = "",
     timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    signal = undefined,
     resolveAuthSession = resolveActiveAuthSession,
     fetchImpl = fetchWithTimeout,
     nowMs = Date.now,
@@ -1833,7 +2001,7 @@ export async function createSessionMessageAction(
   }
 
   try {
-    const response = await fetchImpl(
+    const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "POST",
@@ -1842,8 +2010,10 @@ export async function createSessionMessageAction(
           Authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify(body),
+        signal,
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
     );
     if (!response || !response.ok) {
       recordCircuitFailure(outboundCircuit, normalizedNowMs);
@@ -1853,7 +2023,6 @@ export async function createSessionMessageAction(
         action: null,
       };
     }
-    const payload = await response.json().catch(() => ({}));
     recordCircuitSuccess(outboundCircuit);
     return {
       ok: Boolean(payload?.ok ?? true),
@@ -1955,13 +2124,14 @@ export async function searchSessionEvents(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events/search?${queryParams.toString()}`;
 
   try {
-    const response = await fetchImpl(
+    const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${session.token}` },
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
     );
     if (!response || !response.ok) {
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
@@ -1975,7 +2145,6 @@ export async function searchSessionEvents(
         nextBeforeSequence: null,
       };
     }
-    const payload = await response.json().catch(() => ({}));
     recordCircuitSuccess(inboundCircuit);
     const results = Array.isArray(payload?.results) ? payload.results : [];
     return {
@@ -2081,15 +2250,17 @@ export async function listSessionsFromApi({
     const endpoint = `${apiBaseUrl}/api/v1/sessions?${query.toString()}`;
 
     let response;
+    let payload;
     try {
-      response = await fetchImpl(
+      ({ response, payload } = await fetchJsonWithFullTimeout(
         endpoint,
         {
           method: "GET",
           headers: { Authorization: `Bearer ${session.token}` },
         },
         normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
-      );
+        fetchImpl,
+      ));
     } catch (err) {
       return {
         ok: false,
@@ -2114,7 +2285,6 @@ export async function listSessionsFromApi({
         warnings: [],
       };
     }
-    const payload = await response.json().catch(() => ({}));
     const pageSessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
     for (const item of pageSessions) {
       const sessionId = normalizeString(item?.sessionId || item?.id);
@@ -2200,15 +2370,17 @@ export async function fetchSessionFromApi(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
 
   let response;
+  let body;
   try {
-    response = await fetchImpl(
+    ({ response, payload: body } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${session.token}` },
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
-    );
+      fetchImpl,
+    ));
   } catch (err) {
     return {
       ok: false,
@@ -2220,7 +2392,6 @@ export async function fetchSessionFromApi(
     return { ok: false, reason: "no_response", session: null };
   }
   if (response.ok) {
-    const body = await response.json().catch(() => ({}));
     const sessionPayload = body && body.session && typeof body.session === "object"
       ? body.session
       : body && typeof body === "object"

@@ -145,6 +145,7 @@ const SESSION_SAY_LOCAL_ONLY_REASONS = new Set([
   "not_authenticated",
   "remote_sync_disabled_env",
 ]);
+const SESSION_READ_AUTO_VIEW_TIMEOUT_MS = 500;
 
 function isLocalOnlySessionSayReason(reason) {
   return SESSION_SAY_LOCAL_ONLY_REASONS.has(normalizeString(reason));
@@ -625,11 +626,76 @@ function sessionReadViewTarget(event = {}) {
   };
 }
 
-async function recordSessionReadViews(sessionId, events = [], {
+function normalizeAutoViewTimeoutMs(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return SESSION_READ_AUTO_VIEW_TIMEOUT_MS;
+  }
+  return Math.max(50, Math.min(5_000, Math.floor(parsed)));
+}
+
+async function writeSessionReadViews(sessionId, writeTargets = [], {
+  targetPath,
+  agentId,
+  timeoutMs = SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
+} = {}) {
+  if (!Array.isArray(writeTargets) || writeTargets.length === 0) {
+    return;
+  }
+  const totalTimeoutMs = normalizeAutoViewTimeoutMs(timeoutMs);
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const timeoutHandle = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch {
+      // ignore
+    }
+  }, totalTimeoutMs);
+  if (typeof timeoutHandle.unref === "function") {
+    timeoutHandle.unref();
+  }
+
+  try {
+    for (const target of writeTargets) {
+      if (controller.signal.aborted) {
+        break;
+      }
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      const remainingMs = Math.max(1, totalTimeoutMs - elapsedMs);
+      const result = await createSessionMessageAction(sessionId, {
+        actionType: "view",
+        targetPath,
+        targetSequenceId: target.targetSequenceId,
+        targetCursor: target.targetCursor,
+        metadata: {
+          source: "cli_read",
+          agentId,
+        },
+        idempotencyKey: defaultActionIdempotencyKey({
+          actionType: "view",
+          targetSequenceId: target.targetSequenceId,
+          targetCursor: target.targetCursor,
+          agentId,
+        }),
+        timeoutMs: remainingMs,
+        signal: controller.signal,
+      });
+      if (!result?.ok) {
+        break;
+      }
+    }
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+function recordSessionReadViews(sessionId, events = [], {
   targetPath,
   agentId,
   enabled = false,
   maxTargets = 50,
+  timeoutMs = SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
 } = {}) {
   const maxAutoViewTargets = Math.max(0, Math.min(200, Number(maxTargets) || 0));
   const summary = {
@@ -641,6 +707,8 @@ async function recordSessionReadViews(sessionId, events = [], {
     duplicates: 0,
     failed: 0,
     skipped: 0,
+    queued: 0,
+    background: false,
     reason: "",
   };
   if (!summary.enabled) {
@@ -662,41 +730,30 @@ async function recordSessionReadViews(sessionId, events = [], {
 
   const writeTargets = maxAutoViewTargets > 0 ? targets.slice(-maxAutoViewTargets) : [];
   summary.skipped = Math.max(0, targets.length - writeTargets.length);
+  summary.queued = writeTargets.length;
   if (summary.skipped > 0) {
     summary.reason = "target_cap_reached";
   }
 
-  for (const target of writeTargets) {
-    const result = await createSessionMessageAction(sessionId, {
-      actionType: "view",
-      targetPath,
-      targetSequenceId: target.targetSequenceId,
-      targetCursor: target.targetCursor,
-      metadata: {
-        source: "cli_read",
-        agentId: summary.agentId,
-      },
-      idempotencyKey: defaultActionIdempotencyKey({
-        actionType: "view",
-        targetSequenceId: target.targetSequenceId,
-        targetCursor: target.targetCursor,
-        agentId: summary.agentId,
-      }),
-      timeoutMs: 15_000,
-    });
-    summary.attempted += 1;
-    if (result?.ok && result.action) {
-      summary.recorded += 1;
-      if (result.duplicate) {
-        summary.duplicates += 1;
-      }
-      continue;
+  if (writeTargets.length === 0) {
+    if (!summary.reason) {
+      summary.reason = "no_targets";
     }
-    summary.failed += 1;
-    summary.reason = normalizeString(result?.reason) || "view_write_failed";
-    summary.skipped = Math.max(0, targets.length - summary.attempted);
-    break;
+    return summary;
   }
+
+  summary.background = true;
+  if (!summary.reason) {
+    summary.reason = "queued_best_effort";
+  }
+
+  void writeSessionReadViews(sessionId, writeTargets, {
+    targetPath,
+    agentId: summary.agentId,
+    timeoutMs,
+  }).catch(() => {
+    // Best-effort view receipts must never affect transcript rendering.
+  });
 
   return summary;
 }
@@ -4652,11 +4709,12 @@ export function registerSessionCommand(program) {
           : displayEvents.filter((event) => !isSessionControlEvent(event));
         const hiddenControlEventCount = displayEvents.length - transcriptEvents.length;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
-        const autoView = await recordSessionReadViews(normalizedSessionId, events, {
+        const autoView = recordSessionReadViews(normalizedSessionId, events, {
           targetPath,
           agentId: readAgentId,
           enabled: Boolean(options.remote && options.view !== false),
           maxTargets: process.env.SENTINELAYER_SESSION_READ_VIEW_MAX_TARGETS || 50,
+          timeoutMs: process.env.SENTINELAYER_SESSION_READ_VIEW_TIMEOUT_MS || SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
         });
         const remoteVerified = Boolean(
           options.remote &&
