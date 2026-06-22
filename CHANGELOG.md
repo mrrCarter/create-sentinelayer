@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.25.1...v0.25.2) (2026-06-22)
+
+
+### Bug Fixes
+
+* **investor-dd:** include frontend persona ([f740d29](https://github.com/mrrCarter/create-sentinelayer/commit/f740d29caf0d4287f7f0df5a52ffea8774eb3e98))
+* **investor-dd:** include frontend persona ([6a52e91](https://github.com/mrrCarter/create-sentinelayer/commit/6a52e910a474fbd9223b0c4cdd39be52a39fc192))
+
 ## [0.25.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.25.0...v0.25.1) (2026-06-22)
 
 
