@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.27.1...v0.28.0) (2026-06-22)
+
+
+### Features
+
+* gate review AI on usage ledger ([cd613e8](https://github.com/mrrCarter/create-sentinelayer/commit/cd613e89a2590cba2820561748c9b8a3637dc9ec))
+
 ## [0.27.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.27.0...v0.27.1) (2026-06-22)
 
 
