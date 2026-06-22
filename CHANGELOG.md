@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.24.0...v0.25.0) (2026-06-22)
+
+
+### Features
+
+* **session:** accept invite seats during join ([#602](https://github.com/mrrCarter/create-sentinelayer/issues/602)) ([9432ef7](https://github.com/mrrCarter/create-sentinelayer/commit/9432ef71ce838c51dc61a59ced7274841b14cbd7))
+
 ## [0.24.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.23.0...v0.24.0) (2026-06-15)
 
 
