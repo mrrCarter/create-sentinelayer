@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.0...v0.28.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* surface proxy quota denials in cli ([07b7b01](https://github.com/mrrCarter/create-sentinelayer/commit/07b7b0152f425b666b6ec840dee97a60da0a92a9))
+
 ## [0.28.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.27.1...v0.28.0) (2026-06-22)
 
 
