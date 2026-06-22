@@ -688,6 +688,58 @@ test("Unit session sync: createSessionMessageAction posts idempotent action payl
   });
 });
 
+test("Unit session sync: createSessionMessageAction times out a stalled response body", async () => {
+  resetSessionSyncStateForTests();
+  const startedAt = Date.now();
+  const result = await createSessionMessageAction("sess-actions-hang", {
+    actionType: "view",
+    targetSequenceId: 42,
+    metadata: { source: "unit" },
+    resolveAuthSession: async () => ({
+      token: "tok_actions",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => new Promise(() => {}),
+    }),
+    timeoutMs: 25,
+    nowMs: () => 1_700_000_470_100,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "response_body_timeout");
+  assert.equal(result.action, null);
+  assert.ok(Date.now() - startedAt < 1_000, "stalled response body must be bounded");
+});
+
+test("Unit session sync: createSessionMessageAction does not wait on stalled error bodies", async () => {
+  resetSessionSyncStateForTests();
+  const startedAt = Date.now();
+  const result = await createSessionMessageAction("sess-actions-error-body-hang", {
+    actionType: "view",
+    targetSequenceId: 42,
+    metadata: { source: "unit" },
+    resolveAuthSession: async () => ({
+      token: "tok_actions",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      json: async () => new Promise(() => {}),
+    }),
+    timeoutMs: 1_000,
+    nowMs: () => 1_700_000_470_200,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "api_500");
+  assert.equal(result.action, null);
+  assert.ok(Date.now() - startedAt < 500, "non-OK response bodies must not delay status handling");
+});
+
 test("Unit session sync: searchSessionEvents calls durable search endpoint", async () => {
   resetSessionSyncStateForTests();
   const calls = [];
