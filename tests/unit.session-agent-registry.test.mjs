@@ -96,6 +96,9 @@ test("Unit session agent registry: active re-register refreshes without join or 
     const first = await registerAgent(session.sessionId, {
       agentId: "codex",
       model: "gpt-5",
+      displayName: "Codex Primary",
+      provider: "openai",
+      clientKind: "cli",
       role: "coder",
       targetPath: tempRoot,
     });
@@ -139,10 +142,36 @@ test("Unit session agent registry: active re-register refreshes without join or 
 
     assert.equal(genericRefresh.refreshedExistingAgent, true);
     assert.equal(genericRefresh.model, "gpt-5");
+    assert.equal(genericRefresh.displayName, "Codex Primary");
+    assert.equal(genericRefresh.provider, "openai");
+    assert.equal(genericRefresh.clientKind, "cli");
     assert.equal(genericRefresh.role, "coder");
     assert.equal(genericRefresh.status, "coding");
     assert.equal(genericRefresh.detail, "working locally");
     assert.equal(genericRefresh.file, "src/session/agent-registry.js");
+
+    const [parallelA, parallelB] = await Promise.all([
+      registerAgent(session.sessionId, {
+        agentId: "codex",
+        model: "cli",
+        role: "observer",
+        targetPath: tempRoot,
+      }),
+      registerAgent(session.sessionId, {
+        agentId: "codex",
+        model: "cli",
+        role: "observer",
+        targetPath: tempRoot,
+      }),
+    ]);
+    const parallelEvents = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
+
+    assert.equal(parallelA.refreshedExistingAgent, true);
+    assert.equal(parallelB.refreshedExistingAgent, true);
+    assert.equal(parallelA.model, "gpt-5");
+    assert.equal(parallelB.displayName, "Codex Primary");
+    assert.equal(parallelEvents.filter((event) => event.event === "agent_join").length, 1);
+    assert.equal(parallelEvents.filter((event) => event.event === "context_briefing").length, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

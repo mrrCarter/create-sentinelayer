@@ -32,6 +32,7 @@ import {
   registerAgent,
   unregisterAgent,
 } from "../session/agent-registry.js";
+import { inferSessionAgentIdentity } from "../session/agent-identity.js";
 import { startSenti, stopSenti } from "../session/daemon.js";
 import {
   getDaemonStatus,
@@ -1607,20 +1608,30 @@ async function publishListenerPresenceEvent({
   agentId,
   agentModel = "cli",
   displayName = "",
+  provider = "",
+  clientKind = "cli",
   listenerId,
   lifecycle = {},
 } = {}) {
   const normalizedType = normalizeString(lifecycle.type) || "heartbeat";
   const eventName = listenerLifecycleEventName(normalizedType);
+  const identity = inferSessionAgentIdentity({
+    agentId,
+    model: agentModel,
+    displayName,
+    provider,
+    clientKind,
+  });
   const event = createAgentEvent({
     event: eventName,
     sessionId,
     agent: {
       id: agentId,
-      model: normalizeString(agentModel) || "cli",
+      model: normalizeString(identity.model) || "cli",
       role: "listener",
-      displayName: normalizeString(displayName) || agentId,
-      clientKind: "cli",
+      displayName: normalizeString(identity.displayName) || agentId,
+      provider: normalizeString(identity.provider) || undefined,
+      clientKind: normalizeString(identity.clientKind) || "cli",
     },
     eventId: `session-listener-${listenerId}-${normalizedType}-${lifecycle.pollCount ?? 0}`,
     idempotencyToken: `session-listener:${listenerId}:${normalizedType}:${lifecycle.pollCount ?? 0}`,
@@ -1676,20 +1687,30 @@ export function buildSessionCoachingEvent({
   agentId,
   agentModel = "cli",
   displayName = "",
+  provider = "",
+  clientKind = "cli",
   listenerId = "",
   tick = 0,
   tips = SESSION_LIVE_SUCCESS_TIPS,
 } = {}) {
   const tipList = Array.isArray(tips) && tips.length ? tips : SESSION_LIVE_SUCCESS_TIPS;
+  const identity = inferSessionAgentIdentity({
+    agentId,
+    model: agentModel,
+    displayName,
+    provider,
+    clientKind,
+  });
   return createAgentEvent({
     event: "session_coaching",
     sessionId,
     agent: {
       id: agentId,
-      model: normalizeString(agentModel) || "cli",
+      model: normalizeString(identity.model) || "cli",
       role: "listener",
-      displayName: normalizeString(displayName) || agentId,
-      clientKind: "cli",
+      displayName: normalizeString(identity.displayName) || agentId,
+      provider: normalizeString(identity.provider) || undefined,
+      clientKind: normalizeString(identity.clientKind) || "cli",
     },
     eventId: `session-coaching-${listenerId || agentId}-${tick}`,
     idempotencyToken: `session-coaching:${listenerId || agentId}:${tick}`,
@@ -1707,20 +1728,30 @@ function buildListenerCatchupEvent({
   agentId,
   agentModel = "cli",
   displayName = "",
+  provider = "",
+  clientKind = "cli",
   listenerId,
   catchup = {},
 } = {}) {
   const message = formatListenerCatchupNotice(catchup);
   const pollCount = Number(catchup.pollCount || 0);
+  const identity = inferSessionAgentIdentity({
+    agentId,
+    model: agentModel,
+    displayName,
+    provider,
+    clientKind,
+  });
   return createAgentEvent({
     event: "session_listen_catchup",
     sessionId,
     agent: {
       id: agentId,
-      model: normalizeString(agentModel) || "cli",
+      model: normalizeString(identity.model) || "cli",
       role: "listener",
-      displayName: normalizeString(displayName) || agentId,
-      clientKind: "cli",
+      displayName: normalizeString(identity.displayName) || agentId,
+      provider: normalizeString(identity.provider) || undefined,
+      clientKind: normalizeString(identity.clientKind) || "cli",
     },
     eventId: `session-listener-${listenerId}-catchup-${pollCount}`,
     idempotencyToken: `session-listener:${listenerId}:catchup:${pollCount}`,
@@ -1959,6 +1990,9 @@ async function ensureSessionSayAgentRegistered(
   const registered = await rememberAgentIdentity(sessionId, {
     agentId,
     model: normalizeString(agent.model) || "cli",
+    displayName: normalizeString(agent.displayName),
+    provider: normalizeString(agent.provider),
+    clientKind: normalizeString(agent.clientKind) || "cli",
     role: sessionSayRegistryRole(agent.role),
     targetPath,
   });
@@ -1995,12 +2029,24 @@ async function resolveSessionAgentEnvelope(
   const resolvedRole = normalizeString(role) || normalizeString(registeredAgent?.role);
   const resolvedDisplayName =
     normalizeString(displayName) || normalizeString(registeredAgent?.displayName);
+  const identity = inferSessionAgentIdentity({
+    agentId: normalizedAgentId,
+    model: resolvedModel,
+    displayName: resolvedDisplayName,
+    provider: registeredAgent?.provider,
+    clientKind: normalizeString(clientKind) || normalizeString(registeredAgent?.clientKind) || "cli",
+  });
   const envelope = {
     id: normalizedAgentId,
-    model: resolvedModel || undefined,
+    model: normalizeString(identity.model) || resolvedModel || undefined,
     role: resolvedRole || undefined,
-    displayName: resolvedDisplayName || undefined,
-    clientKind: normalizeString(clientKind) || undefined,
+    displayName: normalizeString(identity.displayName) || resolvedDisplayName || undefined,
+    provider: normalizeString(identity.provider) || undefined,
+    clientKind:
+      normalizeString(identity.clientKind) ||
+      normalizeString(clientKind) ||
+      normalizeString(registeredAgent?.clientKind) ||
+      undefined,
   };
   return Object.fromEntries(Object.entries(envelope).filter(([, value]) => value !== undefined));
 }
@@ -3021,6 +3067,8 @@ export function registerSessionCommand(program) {
         targetPath,
         agentId: resolvedAgentId,
         model,
+        displayName: normalizeString(acceptedOnboarding?.displayName),
+        clientKind: "cli",
         role,
         trackProcessExit: false,
         awaitRemoteSync: hasConcreteAgentIdentity,
@@ -3059,6 +3107,9 @@ export function registerSessionCommand(program) {
         agentId: joined.agentId,
         role: joined.role,
         model: joined.model,
+        displayName: joined.displayName || null,
+        provider: joined.provider || null,
+        clientKind: joined.clientKind || null,
         status: joined.status,
         joinedAt: joined.joinedAt,
         materializedLocalSession: localSession.materialized,
@@ -3305,12 +3356,19 @@ export function registerSessionCommand(program) {
       if (to) {
         eventPayload.to = to;
       }
+      const agentIdentity = inferSessionAgentIdentity({
+        agentId,
+        model: options.model,
+        displayName: options.displayName,
+        clientKind: "cli",
+      });
       const agent = {
         id: agentId,
-        model: normalizeString(options.model) || "cli",
-        displayName: normalizeString(options.displayName) || undefined,
+        model: normalizeString(agentIdentity.model) || "cli",
+        displayName: normalizeString(agentIdentity.displayName) || undefined,
+        provider: normalizeString(agentIdentity.provider) || undefined,
         role: normalizeString(options.role) || "coder",
-        clientKind: "cli",
+        clientKind: normalizeString(agentIdentity.clientKind) || "cli",
       };
       const event = createAgentEvent({
         event: "session_message",
@@ -3992,8 +4050,16 @@ export function registerSessionCommand(program) {
         "presence-interval",
         60,
       );
-      const agentModel = normalizeString(options.model) || "cli";
-      const displayName = normalizeString(options.displayName) || agentId;
+      const listenerIdentity = inferSessionAgentIdentity({
+        agentId,
+        model: options.model,
+        displayName: options.displayName,
+        clientKind: "cli",
+      });
+      const agentModel = normalizeString(listenerIdentity.model) || "cli";
+      const displayName = normalizeString(listenerIdentity.displayName) || agentId;
+      const provider = normalizeString(listenerIdentity.provider);
+      const clientKind = normalizeString(listenerIdentity.clientKind) || "cli";
       const limit = parsePositiveInteger(options.limit, "limit", 200);
       const emitFormat = normalizeString(options.emit).toLowerCase() || "ndjson";
       if (!["ndjson", "text"].includes(emitFormat)) {
@@ -4085,6 +4151,8 @@ export function registerSessionCommand(program) {
                 agentId,
                 agentModel,
                 displayName,
+                provider,
+                clientKind,
                 listenerId,
                 tick: coachingTick++,
               }),
@@ -4155,6 +4223,8 @@ export function registerSessionCommand(program) {
                     agentId,
                     agentModel,
                     displayName,
+                    provider,
+                    clientKind,
                     listenerId,
                     catchup,
                   }),
@@ -4257,6 +4327,8 @@ export function registerSessionCommand(program) {
               agentId,
               agentModel,
               displayName,
+              provider,
+              clientKind,
               listenerId,
               lifecycle,
             });

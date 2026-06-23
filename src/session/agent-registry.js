@@ -5,6 +5,7 @@ import process from "node:process";
 
 import { STUCK_THRESHOLDS } from "../agents/jules/pulse.js";
 import { createAgentEvent } from "../events/schema.js";
+import { inferSessionAgentIdentity } from "./agent-identity.js";
 import { resolveSessionPaths } from "./paths.js";
 import { emitContextBriefing } from "./recap.js";
 import {
@@ -120,6 +121,9 @@ function normalizeAgentSnapshot(snapshot = {}, nowIso = new Date().toISOString()
     sessionId: normalizeString(snapshot.sessionId),
     agentId: normalizeString(snapshot.agentId),
     model: normalizeString(snapshot.model) || "unknown",
+    displayName: normalizeString(snapshot.displayName) || "",
+    provider: normalizeString(snapshot.provider) || "",
+    clientKind: normalizeString(snapshot.clientKind) || "",
     role: normalizeRole(snapshot.role || "observer"),
     status: normalizeStatus(snapshot.status, "idle"),
     detail: normalizeString(snapshot.detail) || "",
@@ -149,11 +153,28 @@ async function readAgentSnapshot(snapshotPath) {
   }
 }
 
-async function writeAgentSnapshot(snapshotPath, snapshot) {
+const _snapshotWriteQueues = new Map();
+
+async function writeAgentSnapshotFile(snapshotPath, snapshot) {
   await fsp.mkdir(path.dirname(snapshotPath), { recursive: true });
-  const tmpPath = `${snapshotPath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${snapshotPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}.tmp`;
   await fsp.writeFile(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8");
   await fsp.rename(tmpPath, snapshotPath);
+}
+
+async function writeAgentSnapshot(snapshotPath, snapshot) {
+  const previous = _snapshotWriteQueues.get(snapshotPath) || Promise.resolve();
+  const write = previous
+    .catch(() => {})
+    .then(() => writeAgentSnapshotFile(snapshotPath, snapshot));
+  _snapshotWriteQueues.set(snapshotPath, write);
+  try {
+    await write;
+  } finally {
+    if (_snapshotWriteQueues.get(snapshotPath) === write) {
+      _snapshotWriteQueues.delete(snapshotPath);
+    }
+  }
 }
 
 async function emitAgentEvent(
@@ -164,7 +185,14 @@ async function emitAgentEvent(
 ) {
   const envelope = createAgentEvent({
     event,
-    agentId: payload.agentId,
+    agent: {
+      id: payload.agentId,
+      model: payload.model,
+      displayName: payload.displayName,
+      provider: payload.provider,
+      role: payload.role,
+      clientKind: payload.clientKind,
+    },
     sessionId,
     payload,
   });
@@ -198,13 +226,15 @@ function isActiveAgentSnapshot(snapshot) {
   return true;
 }
 
-function chooseAgentRefreshModel(value, existingModel) {
+function chooseAgentRefreshModel(value, existingModel, sourceValue = value) {
   const candidate = normalizeString(value);
   const existing = normalizeString(existingModel);
+  const source = normalizeString(sourceValue).toLowerCase();
+  const sourceIsWeak = !source || ["anonymous", "cli", "unknown", "unreported"].includes(source);
   if (!candidate) {
     return existing || "unknown";
   }
-  if (existing && ["cli", "unknown"].includes(candidate.toLowerCase())) {
+  if (existing && (sourceIsWeak || ["cli", "unknown"].includes(candidate.toLowerCase()))) {
     return existing;
   }
   return candidate;
@@ -217,6 +247,19 @@ function chooseAgentRefreshRole(value, existingRole) {
     return existing || "observer";
   }
   if (existing && candidate.toLowerCase() === "observer") {
+    return existing;
+  }
+  return candidate;
+}
+
+function chooseAgentRefreshMetadata(value, existingValue, sourceValue = value) {
+  const candidate = normalizeString(value);
+  const existing = normalizeString(existingValue);
+  const source = normalizeString(sourceValue);
+  if (!candidate) {
+    return existing;
+  }
+  if (existing && !source) {
     return existing;
   }
   return candidate;
@@ -283,6 +326,9 @@ export async function registerAgent(
   {
     agentId = "",
     model = "",
+    displayName = "",
+    provider = "",
+    clientKind = "",
     role = "observer",
     targetPath = process.cwd(),
     trackProcessExit = true,
@@ -311,6 +357,14 @@ export async function registerAgent(
     }
   }
 
+  const identity = inferSessionAgentIdentity({
+    agentId: resolvedAgentId,
+    model,
+    displayName,
+    provider,
+    clientKind,
+  });
+
   const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
   const existing = await readAgentSnapshot(snapshotPath);
 
@@ -320,7 +374,10 @@ export async function registerAgent(
         ...existing,
         sessionId: paths.sessionId,
         agentId: resolvedAgentId,
-        model: chooseAgentRefreshModel(model, existing.model),
+        model: chooseAgentRefreshModel(identity.model, existing.model, model),
+        displayName: chooseAgentRefreshMetadata(identity.displayName, existing.displayName, displayName),
+        provider: chooseAgentRefreshMetadata(identity.provider, existing.provider, provider),
+        clientKind: chooseAgentRefreshMetadata(identity.clientKind, existing.clientKind, clientKind),
         role: chooseAgentRefreshRole(role, existing.role),
         status: normalizeString(existing.status) || "idle",
         detail: normalizeString(existing.detail) || "",
@@ -350,7 +407,10 @@ export async function registerAgent(
     {
       sessionId: paths.sessionId,
       agentId: resolvedAgentId,
-      model: normalizeString(model) || "unknown",
+      model: normalizeString(identity.model) || "unknown",
+      displayName: normalizeString(identity.displayName),
+      provider: normalizeString(identity.provider),
+      clientKind: normalizeString(identity.clientKind),
       role,
       status: "idle",
       detail: "",
@@ -369,6 +429,9 @@ export async function registerAgent(
   await emitAgentEvent(paths.sessionId, "agent_join", {
     agentId: snapshot.agentId,
     model: snapshot.model,
+    displayName: snapshot.displayName,
+    provider: snapshot.provider,
+    clientKind: snapshot.clientKind,
     role: snapshot.role,
     status: snapshot.status,
   }, { targetPath, awaitRemoteSync });
@@ -412,6 +475,9 @@ export async function rememberAgentIdentity(
   {
     agentId = "",
     model = "",
+    displayName = "",
+    provider = "",
+    clientKind = "",
     role = "observer",
     targetPath = process.cwd(),
   } = {}
@@ -422,6 +488,13 @@ export async function rememberAgentIdentity(
   if (!resolvedAgentId) {
     throw new Error("agentId is required.");
   }
+  const identity = inferSessionAgentIdentity({
+    agentId: resolvedAgentId,
+    model,
+    displayName,
+    provider,
+    clientKind,
+  });
 
   const snapshotPath = buildAgentSnapshotPath(paths, resolvedAgentId);
   const existing = await readAgentSnapshot(snapshotPath);
@@ -430,7 +503,10 @@ export async function rememberAgentIdentity(
       ...(existing || {}),
       sessionId: paths.sessionId,
       agentId: resolvedAgentId,
-      model: normalizeString(model) || normalizeString(existing?.model) || "unknown",
+      model: chooseAgentRefreshModel(identity.model, existing?.model, model),
+      displayName: chooseAgentRefreshMetadata(identity.displayName, existing?.displayName, displayName),
+      provider: chooseAgentRefreshMetadata(identity.provider, existing?.provider, provider),
+      clientKind: chooseAgentRefreshMetadata(identity.clientKind, existing?.clientKind, clientKind),
       role: normalizeString(role) || normalizeString(existing?.role) || "observer",
       status: normalizeString(existing?.status) || "idle",
       detail: normalizeString(existing?.detail) || "",
@@ -536,6 +612,9 @@ export async function unregisterAgent(
     reason: normalizedReason,
     role: snapshot.role,
     model: snapshot.model,
+    displayName: snapshot.displayName,
+    provider: snapshot.provider,
+    clientKind: snapshot.clientKind,
   }, { targetPath });
   // Already left explicitly — don't double-emit on process exit.
   _untrackLocalAgent(paths.sessionId, snapshot.agentId);

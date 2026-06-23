@@ -334,8 +334,6 @@ test("Unit session join: --agent <granted> relays agent_join canonical event", a
       remoteSessionId,
       "--agent",
       "codex",
-      "--model",
-      "gpt-5-codex",
       "--role",
       "coder",
       "--path",
@@ -356,12 +354,26 @@ test("Unit session join: --agent <granted> relays agent_join canonical event", a
     assert.ok(joinPost, "expected an agent_join POST to /events");
     const agentBlock = joinPost.body.event.agent || {};
     assert.equal(agentBlock.id || joinPost.body.event.agentId, "codex");
+    assert.equal(agentBlock.model, "gpt-5-codex");
+    assert.equal(agentBlock.displayName, "Codex");
+    assert.equal(agentBlock.provider, "openai");
+    assert.equal(agentBlock.clientKind, "cli");
+    assert.equal(joinPost.body.event.payload.model, "gpt-5-codex");
+    assert.equal(joinPost.body.event.payload.displayName, "Codex");
+    assert.equal(joinPost.body.event.payload.provider, "openai");
+    assert.equal(payload.model, "gpt-5-codex");
+    assert.equal(payload.displayName, "Codex");
+    assert.equal(payload.provider, "openai");
+    assert.equal(payload.clientKind, "cli");
 
     const local = await readStream(remoteSessionId, { targetPath: tempRoot, tail: 20 });
     const joinEvents = local.filter(
       (event) => event.event === "agent_join" && (event.agent?.id || event.agentId) === "codex",
     );
     assert.equal(joinEvents.length, 1, "join must persist exactly one codex agent_join");
+    assert.equal(joinEvents[0].agent.model, "gpt-5-codex");
+    assert.equal(joinEvents[0].agent.displayName, "Codex");
+    assert.equal(joinEvents[0].agent.provider, "openai");
     const briefingEvents = local.filter(
       (event) =>
         event.event === "context_briefing" &&
