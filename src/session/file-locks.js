@@ -260,6 +260,8 @@ async function appendLockEvent(
   {
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
+    syncRemote = true,
+    awaitRemoteSync = false,
   } = {}
 ) {
   return appendToStream(
@@ -273,6 +275,8 @@ async function appendLockEvent(
     }),
     {
       targetPath,
+      syncRemote,
+      awaitRemoteSync,
     }
   );
 }
@@ -371,6 +375,8 @@ export async function lockFile(
     ttlSeconds = DEFAULT_FILE_LOCK_TTL_SECONDS,
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
+    syncRemote = true,
+    awaitRemoteSync = false,
   } = {}
 ) {
   const normalizedAgentId = normalizeAgentId(agentId);
@@ -437,6 +443,8 @@ export async function lockFile(
       {
         targetPath,
         nowIso: normalizedNow,
+        syncRemote,
+        awaitRemoteSync,
       }
     );
     return {
@@ -462,6 +470,8 @@ export async function unlockFile(
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
     actorAgentId = null,
+    syncRemote = true,
+    awaitRemoteSync = false,
   } = {}
 ) {
   const normalizedAgentId = normalizeAgentId(agentId);
@@ -527,6 +537,8 @@ export async function unlockFile(
     {
       targetPath,
       nowIso: normalizedNow,
+      syncRemote,
+      awaitRemoteSync,
     }
   );
 
