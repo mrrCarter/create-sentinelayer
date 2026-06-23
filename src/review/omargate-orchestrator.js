@@ -423,6 +423,10 @@ function omargateConfidenceFloorForPersona(personaId) {
   return OMARGATE_CONFIDENCE_FLOORS[personaId] || OMARGATE_DEFAULT_CONFIDENCE_FLOOR;
 }
 
+function isUsageLedgerFailure(message = "") {
+  return /usage ledger/i.test(String(message || ""));
+}
+
 async function runOmarPersonaSwarm({
   personaId,
   identity,
@@ -436,6 +440,9 @@ async function runOmarPersonaSwarm({
   perPersonaCost,
   dryRun,
   onEvent,
+  usageSessionId = "",
+  requireUsageLedger = false,
+  usageRecorder = undefined,
 } = {}) {
   const scope = buildPersonaFileScope({ deterministic });
   const decision = decideSwarm({ scope });
@@ -537,10 +544,26 @@ async function runOmarPersonaSwarm({
           outputDir,
           provider: provider || undefined,
           model: model || undefined,
-          sessionId: `${subagentRunId}-ai`,
+          sessionId: usageSessionId || `${subagentRunId}-ai`,
           maxCostUsd: budget.maxCostUsd,
           systemPrompt,
           dryRun,
+          requireUsageLedger,
+          usageRecorder,
+          sourceCommand: "omargate deep",
+          billingAgentId: `omargate-${personaId}-subagent-${subagentIndex}`,
+          billingAction: "omargate_deep",
+          billingMetadata: {
+            personaId,
+            subagentIndex,
+            partitionCount: partitions.length,
+            parentRunId: runId,
+            swarmRunId,
+            subagentRunId,
+            scanMode: mode,
+            fileCount: scopedFiles.length,
+          },
+          usageFailureLabel: "OmarGate AI",
           env: process.env,
         });
 
@@ -610,6 +633,7 @@ async function runOmarPersonaSwarm({
           summary: result?.summary || summarizeFindings(findings),
           costUsd: result?.usage?.costUsd || 0,
           model: result?.model || model || null,
+          billing: result?.billing || null,
           artifacts: result?.artifacts || null,
           durationMs: Date.now() - subagentStart,
         };
@@ -671,6 +695,41 @@ async function runOmarPersonaSwarm({
   const summary = summarizeFindings(findings);
   const okCount = settledSubagents.filter((result) => result.status === "ok").length;
   const errorCount = settledSubagents.filter((result) => result.status === "error").length;
+  const usageLedgerErrors = settledSubagents.filter((result) =>
+    result.status === "error" && isUsageLedgerFailure(result.error)
+  );
+  if (requireUsageLedger && usageLedgerErrors.length > 0) {
+    return {
+      personaId,
+      status: "error",
+      findings: [],
+      summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+      costUsd: totalCostUsd,
+      model: model || null,
+      durationMs: Date.now() - startedAt,
+      error: `OmarGate required usage ledger failed for ${usageLedgerErrors.length}/${settledSubagents.length} subagent(s).`,
+      swarm: {
+        runId: swarmRunId,
+        decision,
+        subagentCount: settledSubagents.length,
+        ok: okCount,
+        error: errorCount,
+        partitionSizes: partitions.map((files) => files.length),
+        blackboardEntries: blackboard.length,
+        subagents: settledSubagents.map((result) => ({
+          id: result.agentId,
+          index: result.subagentIndex,
+          status: result.status,
+          files: result.files,
+          findings: (result.findings || []).length,
+          costUsd: result.costUsd || 0,
+          durationMs: result.durationMs || 0,
+          error: result.error || null,
+          artifacts: result.artifacts || null,
+        })),
+      },
+    };
+  }
 
   if (onEvent) {
     onEvent(createAgentEvent({
@@ -723,6 +782,7 @@ async function runOmarPersonaSwarm({
         files: result.files,
         findings: (result.findings || []).length,
         costUsd: result.costUsd || 0,
+        billing: result.billing || null,
         durationMs: result.durationMs || 0,
         error: result.error || null,
         artifacts: result.artifacts || null,
@@ -747,6 +807,8 @@ async function runOmarPersonaSwarm({
  * @param {Function} [options.onEvent] - Event callback for streaming
  * @param {string[] | null} [options.includeOnly] - Only run these persona IDs (filters scan-mode roster).
  * @param {string[] | null} [options.skipPersonas] - Skip these persona IDs (filters scan-mode roster).
+ * @param {boolean} [options.requireUsageLedger] - Fail if Omar Deep AI calls cannot write billing-grade session_usage.
+ * @param {string} [options.usageSessionId] - Optional shared Senti session id for billing-grade usage entries.
  * @returns {Promise<object>} Orchestrated results
  */
 export async function runOmarGateOrchestrator({
@@ -762,6 +824,9 @@ export async function runOmarGateOrchestrator({
   onEvent = null,
   includeOnly = null,
   skipPersonas = null,
+  requireUsageLedger = false,
+  usageSessionId = "",
+  usageRecorder = undefined,
 } = {}) {
   const runId = `omargate-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const startTime = Date.now();
@@ -931,6 +996,9 @@ export async function runOmarGateOrchestrator({
         perPersonaCost,
         dryRun,
         onEvent,
+        requireUsageLedger,
+        usageSessionId,
+        usageRecorder,
       });
 
       if (swarmResult) {
@@ -999,9 +1067,21 @@ export async function runOmarGateOrchestrator({
         outputDir,
         provider: provider || undefined,
         model: model || undefined,
+        sessionId: usageSessionId || `${runId}-${personaId}-ai`,
         maxCostUsd: perPersonaCost,
         systemPrompt,
         dryRun,
+        requireUsageLedger,
+        usageRecorder,
+        sourceCommand: "omargate deep",
+        billingAgentId: `omargate-${personaId}`,
+        billingAction: "omargate_deep",
+        billingMetadata: {
+          personaId,
+          parentRunId: runId,
+          scanMode: mode,
+        },
+        usageFailureLabel: "OmarGate AI",
         env: process.env,
       });
 
@@ -1062,6 +1142,7 @@ export async function runOmarGateOrchestrator({
         summary: result?.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
         costUsd: personaCost,
         model: result?.model || model || null,
+        billing: result?.billing || null,
         artifacts: result?.artifacts || null,
         durationMs: Date.now() - personaStart,
       };
@@ -1106,6 +1187,18 @@ export async function runOmarGateOrchestrator({
           durationMs: 0,
         })
   );
+  const usageLedgerFailures = settled.filter((r) =>
+    r.status === "error" && isUsageLedgerFailure(r.error)
+  );
+  if (requireUsageLedger && usageLedgerFailures.length > 0) {
+    const examples = usageLedgerFailures
+      .slice(0, 3)
+      .map((r) => `${r.personaId}: ${r.error}`)
+      .join("; ");
+    throw new Error(
+      `OmarGate required usage ledger recording failed for ${usageLedgerFailures.length}/${settled.length} persona(s).${examples ? ` ${examples}` : ""}`
+    );
+  }
 
   // Reconcile AI findings with deterministic findings — canonical single list.
   // Confidence boost when multiple layers agree; deterministic findings get
@@ -1183,6 +1276,7 @@ export async function runOmarGateOrchestrator({
       costUsd: r.costUsd,
       durationMs: r.durationMs,
       model: r.model || null,
+      billing: r.billing || null,
       error: r.error || null,
       swarm: r.swarm || null,
       artifacts: r.artifacts || null,

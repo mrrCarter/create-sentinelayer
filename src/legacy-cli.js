@@ -1298,6 +1298,8 @@ async function runLocalOmarGateCommand(args) {
   const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
   const modelOverride = getCommandOptionValue(args, "--model") || "";
   const providerOverride = getCommandOptionValue(args, "--provider") || "";
+  const notifySession = getCommandOptionValue(args, "--notify-session") || "";
+  const requireUsageLedger = hasCommandOption(args, "--require-usage-ledger");
   const scanMode = getCommandOptionValue(args, "--scan-mode") || "deep";
   const maxParallel = parseInt(getCommandOptionValue(args, "--max-parallel") || "4", 10) || 4;
   const streamEnabled = hasCommandOption(args, "--stream");
@@ -1388,6 +1390,8 @@ async function runLocalOmarGateCommand(args) {
         onEvent: streamHandler,
         includeOnly: includeOnly.length > 0 ? includeOnly : null,
         skipPersonas: skipPersonas.length > 0 ? skipPersonas : null,
+        usageSessionId: notifySession,
+        requireUsageLedger,
       });
 
       // Use orchestrator results as the AI layer. aiResult represents ONLY
@@ -1415,6 +1419,7 @@ async function runLocalOmarGateCommand(args) {
           status: p.status,
           findings: p.findings || 0,
           costUsd: p.costUsd || 0,
+          billing: p.billing || null,
           durationMs: p.durationMs || 0,
           error: p.error || null,
         })),
@@ -1445,8 +1450,17 @@ async function runLocalOmarGateCommand(args) {
         outputDir: outputDirArg,
         provider: providerOverride || undefined,
         model: modelOverride || undefined,
+        sessionId: notifySession,
         maxCostUsd,
         dryRun: aiDryRun,
+        requireUsageLedger,
+        sourceCommand: "omargate deep",
+        billingAgentId: "omargate-orchestrator",
+        billingAction: "omargate_deep",
+        billingMetadata: {
+          scanMode,
+        },
+        usageFailureLabel: "OmarGate AI",
         env: process.env,
       });
     } catch (aiError) {

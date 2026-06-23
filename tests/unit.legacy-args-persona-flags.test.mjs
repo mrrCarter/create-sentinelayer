@@ -77,10 +77,12 @@ test("buildLegacyArgs: OmarGate runtime flags pass through to legacy implementat
       maxCost: "1.25",
       model: "gpt-test",
       provider: "sentinelayer",
+      notifySession: "sess-omargate",
+      requireUsageLedger: true,
     },
   });
 
-  for (const flag of ["--ai-dry-run", "--stream"]) {
+  for (const flag of ["--ai-dry-run", "--stream", "--require-usage-ledger"]) {
     assert.ok(args.includes(flag), `expected ${flag}`);
   }
   for (const [flag, value] of [
@@ -89,6 +91,7 @@ test("buildLegacyArgs: OmarGate runtime flags pass through to legacy implementat
     ["--max-cost", "1.25"],
     ["--model", "gpt-test"],
     ["--provider", "sentinelayer"],
+    ["--notify-session", "sess-omargate"],
   ]) {
     const idx = args.indexOf(flag);
     assert.ok(idx >= 0, `expected ${flag}`);

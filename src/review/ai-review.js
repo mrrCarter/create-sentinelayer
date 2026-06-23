@@ -8,7 +8,7 @@ import {
   resolveProvider,
 } from "../ai/client.js";
 import { computeProviderCost } from "../billing/price-book.js";
-import { buildBillingRunId, buildCallIdempotencyKey } from "../billing/ledger-entry.js";
+import { buildBillingRunId, buildCallIdempotencyKey, sanitizeBillingMetadata } from "../billing/ledger-entry.js";
 import { recordSessionUsage } from "../billing/session-usage.js";
 import { loadConfig } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
@@ -488,6 +488,12 @@ export async function runAiReviewLayer({
   dryRun = false,
   requireUsageLedger = false,
   usageRecorder = recordSessionUsage,
+  sourceCommand = "review",
+  billingAgentId = "audit-orchestrator",
+  billingAction = "audit_run",
+  billingTier = "internal",
+  billingMetadata = {},
+  usageFailureLabel = "Review AI",
   env = process.env,
 } = {}) {
   const normalizedTargetPath = path.resolve(String(targetPath || "."));
@@ -499,6 +505,12 @@ export async function runAiReviewLayer({
   );
   const normalizedRunId = normalizeString(runId) || "review-ai";
   const normalizedRequireUsageLedger = Boolean(requireUsageLedger);
+  const normalizedSourceCommand = normalizeString(sourceCommand) || "review";
+  const normalizedBillingAgentId = normalizeString(billingAgentId) || "audit-orchestrator";
+  const normalizedBillingAction = normalizeString(billingAction) || "audit_run";
+  const normalizedBillingTier = normalizeString(billingTier) || "internal";
+  const normalizedBillingMetadata = sanitizeBillingMetadata(billingMetadata);
+  const normalizedUsageFailureLabel = normalizeString(usageFailureLabel) || "Review AI";
 
   const config = await loadConfig({ cwd: normalizedTargetPath, env });
   let resolvedProvider = resolveProvider({
@@ -641,7 +653,7 @@ export async function runAiReviewLayer({
         toolCalls: 1,
       },
       metadata: {
-        sourceCommand: "review",
+        sourceCommand: normalizedSourceCommand,
         layer: "ai_reasoning",
         provider: resolvedProvider,
         model: resolvedModel,
@@ -657,28 +669,31 @@ export async function runAiReviewLayer({
       sessionId: normalizedSessionId,
       invocationTimestamp: startedAtIso,
       configHash: stableConfigHash({
-        sourceCommand: "review",
+        sourceCommand: normalizedSourceCommand,
         layer: "ai_reasoning",
         provider: resolvedProvider,
         model: resolvedModel,
         mode: normalizedMode,
         runId: normalizedRunId,
         dryRun: Boolean(dryRun),
+        billingAgentId: normalizedBillingAgentId,
+        billingAction: normalizedBillingAction,
       }),
     });
     sessionUsageLedger = await usageRecorder(
       normalizedSessionId,
       {
-        agentId: "audit-orchestrator",
-        action: "audit_run",
+        agentId: normalizedBillingAgentId,
+        action: normalizedBillingAction,
         model: resolvedModel,
         inputTokens,
         outputTokens,
         idempotencyKey: buildCallIdempotencyKey({ runId: billingRunId, callIndex: 0 }),
-        billingTier: "internal",
+        billingTier: normalizedBillingTier,
         createdAt: startedAtIso,
         metadata: {
-          sourceCommand: "review",
+          ...normalizedBillingMetadata,
+          sourceCommand: normalizedSourceCommand,
           layer: "ai_reasoning",
           provider: resolvedProvider,
           mode: normalizedMode,
@@ -698,7 +713,7 @@ export async function runAiReviewLayer({
     };
     if (normalizedRequireUsageLedger) {
       throw new Error(
-        `Review AI usage ledger recording failed: ${sessionUsageLedger.reason || "unknown"}.`
+        `${normalizedUsageFailureLabel} usage ledger recording failed: ${sessionUsageLedger.reason || "unknown"}.`
       );
     }
   }
@@ -729,7 +744,7 @@ export async function runAiReviewLayer({
           reasonCodes: budget.reasons.map((reason) => reason.code),
         },
         metadata: {
-          sourceCommand: "review",
+          sourceCommand: normalizedSourceCommand,
           layer: "ai_reasoning",
           provider: resolvedProvider,
           model: resolvedModel,
