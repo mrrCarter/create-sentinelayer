@@ -566,10 +566,6 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
       "status: implementing D helper",
       "--agent",
       "Codex",
-      "--model",
-      "gpt-5-codex",
-      "--display-name",
-      "Codex",
       "--role",
       "coder",
       "--to",
@@ -599,6 +595,7 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
     assert.equal(body.event.agent.id, "codex");
     assert.equal(body.event.agent.model, "gpt-5-codex");
     assert.equal(body.event.agent.displayName, "Codex");
+    assert.equal(body.event.agent.provider, "openai");
     assert.equal(body.event.agent.clientKind, "cli");
     assert.equal(body.event.payload.message, "status: implementing D helper");
     assert.equal(body.event.payload.source, "agent");
@@ -903,6 +900,7 @@ test("Unit session listen: publishes bounded listener presence for real agent id
     assert.ok(events.every((event) => event.agent.id === "codex"));
     assert.ok(events.every((event) => event.agent.model === "gpt-5.3-codex"));
     assert.ok(events.every((event) => event.agent.displayName === "Codex Listener"));
+    assert.ok(events.every((event) => event.agent.provider === "openai"));
     assert.ok(events.every((event) => event.agent.role === "listener"));
     assert.ok(events.every((event) => event.agent.clientKind === "cli"));
     assert.ok(events.every((event) => event.payload.listenerId.startsWith("listener-codex-")));
@@ -1071,6 +1069,10 @@ test("Unit session listen: emits a bounded catch-up status before stored-cursor 
     assert.equal(lines.length, 2);
     assert.equal(lines[0].event, "session_listen_catchup");
     assert.equal(lines[0].agent.id, "codex");
+    assert.equal(lines[0].agent.model, "gpt-5-codex");
+    assert.equal(lines[0].agent.displayName, "Codex");
+    assert.equal(lines[0].agent.provider, "openai");
+    assert.equal(lines[0].agent.clientKind, "cli");
     assert.equal(lines[0].payload.cursorSource, "stored");
     assert.equal(lines[0].payload.eventCount, 1);
     assert.equal(lines[0].payload.matchingEventCount, 1);

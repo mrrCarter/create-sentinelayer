@@ -25,6 +25,10 @@ test("Unit coaching event: shape, tips, and agent identity", () => {
   });
   assert.equal(event.event, "session_coaching");
   assert.equal(event.agent.id, "claude-mythos");
+  assert.equal(event.agent.model, "claude");
+  assert.equal(event.agent.displayName, "Claude");
+  assert.equal(event.agent.provider, "anthropic");
+  assert.equal(event.agent.clientKind, "cli");
   assert.equal(event.payload.kind, "coaching");
   assert.deepEqual(event.payload.tips, [...SESSION_LIVE_SUCCESS_TIPS]);
 });
