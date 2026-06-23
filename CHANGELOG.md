@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.0...v0.30.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* **omar:** gate DD proxy metadata on session context ([#630](https://github.com/mrrCarter/create-sentinelayer/issues/630)) ([d6dfebd](https://github.com/mrrCarter/create-sentinelayer/commit/d6dfebd0b0d0aa4ebb5b6b4b933a23b599b775a9))
+
 ## [0.30.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.29.1...v0.30.0) (2026-06-23)
 
 
