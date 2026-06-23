@@ -1448,6 +1448,9 @@ test("CLI omargate deep diff mode routes changed files to impacted personas", as
         tempRoot,
         "--diff",
         "--ai-dry-run",
+        "--notify-session",
+        "sess-omargate-diff",
+        "--require-usage-ledger",
         "--json",
       ],
     });
@@ -1464,6 +1467,14 @@ test("CLI omargate deep diff mode routes changed files to impacted personas", as
     assert.equal(payload.personaRouting.enabled, true);
     assert.deepEqual(payload.personaRouting.effectivePersonas, ["release", "frontend"]);
     assert.deepEqual(payload.ai.personas.map((persona) => persona.id), ["release", "frontend"]);
+    assert.deepEqual(
+      payload.ai.personas.map((persona) => persona.billing?.ledgerEntry?.action),
+      ["omargate_deep", "omargate_deep"]
+    );
+    assert.deepEqual(
+      payload.ai.personas.map((persona) => persona.billing?.ledgerEntry?.sessionId),
+      ["sess-omargate-diff", "sess-omargate-diff"]
+    );
 
     const reportText = await readFile(payload.reportPath, "utf-8");
     assert.match(reportText, /Scope mode: diff/);

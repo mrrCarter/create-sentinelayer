@@ -1,3 +1,29 @@
+# 2026-06-23 - Omar Deep Usage Ledger Guardrails (`codex/cli-billing-guardrails-20260623`)
+
+## Plan
+- [x] Reconcile current CLI state, npm version `0.28.4`, active Senti session, and clean worktree.
+- [x] Wire Omar Deep AI/persona billing entries to the existing priced `omargate_deep` action instead of generic `audit_run`.
+- [x] Add `omargate deep --notify-session <session-id>` and `--require-usage-ledger` pass-through with default best-effort behavior unchanged.
+- [x] Preserve and expose per-persona billing results in Omar JSON output for dogfood verification.
+- [x] Add same-PR eval evidence for AI/Omar execution-surface changes.
+- [x] Run focused tests, full E2E, static check, coverage, package dry run, diff check, review scan, and Omar diff scan.
+- [ ] Open PR, post Senti hard-audit request, watch hosted CI/Omar, merge on green, then release/package if the release workflow opens a version cut.
+
+## Review
+- Implemented `runAiReviewLayer` billing overrides for `sourceCommand`, `billingAgentId`, `billingAction`, `billingTier`, sanitized metadata, and custom required-ledger error labels. Canonical ledger fields are assigned after caller metadata so they cannot be spoofed.
+- Omar Deep orchestrator now passes shared usage session ids and `omargate_deep` billing context through direct persona and swarm subagent paths, with opt-in fail-closed handling for required ledger failures.
+- `omargate deep` exposes `--notify-session` and `--require-usage-ledger`; Commander-to-legacy argv coverage and E2E coverage prove command-level behavior.
+- Verification passed:
+  - Focused tests: `51/51`.
+  - Full E2E: `101/101`.
+  - `npm run check`: `335 files passed`.
+  - `npm run test:coverage`: `1550/1550`, statements `91.1%`.
+  - `npm pack --dry-run`: `sentinelayer-cli-0.28.4.tgz`, 333 files.
+  - `git diff --check`: clean aside from Windows LF/CRLF warnings.
+  - Local review scan: `review-scan-diff-20260623-040445.md`, `P1=0`, `P2=2`, `blocking=false`.
+  - Local Omar diff: `omargate-1782187485637-3e462c8f`, `P0=0`, `P1=0`, `P2=2`, `blocking=false`; managed local personas are quota-limited with `DAILY_SCAN_LIMIT_EXCEEDED`, so hosted Omar remains the authoritative managed-LLM gate.
+- The two P2s are the known local spec-binding heuristic on `src/review/ai-review.js` and `src/review/omargate-orchestrator.js`; this PR intentionally touches those AI/Omar execution files and includes eval evidence in `tasks/evals/2026-06-23-omar-deep-usage-ledger.md`.
+
 # 2026-05-19 - L2.5 CLI Auth/JSON Hotfix (`codex/l25-auth-json-fixes`)
 
 ## Plan

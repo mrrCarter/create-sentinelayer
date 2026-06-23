@@ -206,6 +206,88 @@ describe("runOmarGateOrchestrator swarm path", () => {
     assert.match(promptText, /lensEvidence/);
     assert.match(promptText, /trafficLight/);
   });
+
+  it("records Omar Deep billing entries with custom action and shared session", async () => {
+    const targetPath = await makeTempRoot();
+    const calls = [];
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security"],
+      maxCostUsd: 1,
+      dryRun: true,
+      usageSessionId: "sess-omargate-deep",
+      requireUsageLedger: true,
+      usageRecorder: async (sessionId, params, options) => {
+        calls.push({ sessionId, params, options });
+        return {
+          ok: true,
+          ledgerEntry: {
+            ...params,
+            ledgerEntryId: `bill-${calls.length}`,
+          },
+        };
+      },
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/auth.js"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].sessionId, "sess-omargate-deep");
+    assert.equal(calls[0].params.action, "omargate_deep");
+    assert.equal(calls[0].params.agentId, "omargate-security");
+    assert.equal(calls[0].params.billingTier, "internal");
+    assert.equal(calls[0].params.metadata.sourceCommand, "omargate deep");
+    assert.equal(calls[0].params.metadata.personaId, "security");
+    assert.equal(calls[0].params.metadata.scanMode, "deep");
+    assert.equal(calls[0].options.targetPath, targetPath);
+    assert.equal(result.personas[0].billing.ok, true);
+    assert.equal(result.personas[0].billing.ledgerEntry.action, "omargate_deep");
+  });
+
+  it("fails closed when required Omar Deep usage ledger recording fails", async () => {
+    const targetPath = await makeTempRoot();
+
+    await assert.rejects(
+      () =>
+        runOmarGateOrchestrator({
+          targetPath,
+          scanMode: "deep",
+          includeOnly: ["security"],
+          maxCostUsd: 1,
+          dryRun: true,
+          usageSessionId: "sess-omargate-required",
+          requireUsageLedger: true,
+          usageRecorder: async () => {
+            throw new Error("quota projection unavailable");
+          },
+          deterministic: {
+            summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+            findings: [],
+            scope: {
+              scannedFiles: 1,
+              scannedRelativeFiles: ["src/auth.js"],
+              totalLoc: 120,
+            },
+            layers: {},
+            metadata: {},
+            artifacts: {},
+          },
+        }),
+      /OmarGate required usage ledger recording failed for 1\/1 persona\(s\)/
+    );
+  });
 });
 
 describe("runOmarGateOrchestrator changed-file routing", () => {

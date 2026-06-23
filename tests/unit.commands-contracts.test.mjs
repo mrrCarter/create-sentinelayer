@@ -318,6 +318,8 @@ test("Unit command contracts: omargate deep exposes changed-file scope controls"
   assertCommandHasOption(deep, "--scope-mode <mode>");
   assertCommandHasOption(deep, "--diff");
   assertCommandHasOption(deep, "--staged");
+  assertCommandHasOption(deep, "--notify-session <session-id>");
+  assertCommandHasOption(deep, "--require-usage-ledger");
 });
 
 test("Unit command contracts: mcp exposes session registry and stdio server runtime", () => {

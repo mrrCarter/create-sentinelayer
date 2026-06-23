@@ -20,6 +20,8 @@ export function registerOmarGateCommand(program, invokeLegacy) {
     .option("--model <id>", "LLM model override (default: gpt-5.3-codex)")
     .option("--provider <name>", "LLM provider: sentinelayer, openai, anthropic")
     .option("--max-cost <usd>", "Maximum AI layer cost in USD (default: 5.0)")
+    .option("--notify-session <session-id>", "Write Omar Deep billing-grade usage entries into this Senti session")
+    .option("--require-usage-ledger", "Fail if Omar Deep AI calls cannot write billing-grade session_usage")
     .option("--persona <csv>", "Only run these personas (comma-separated IDs); unknown IDs are dropped + warned")
     .option("--skip-persona <csv>", "Skip these personas (comma-separated IDs)")
     .option("--stream", "Emit NDJSON events to stdout as personas run")

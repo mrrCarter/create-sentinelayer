@@ -245,6 +245,58 @@ test("Unit AI review: dry run records session usage billing ledger", async () =>
   }
 });
 
+test("Unit AI review: custom billing metadata cannot override canonical ledger fields", async () => {
+  const root = await makeRoot();
+  try {
+    const result = await runAiReviewLayer({
+      targetPath: root,
+      runDirectory: path.join(root, "runs", "omargate-ai"),
+      runId: "omargate-ai-billing",
+      sessionId: "sess-omargate-billing",
+      mode: "diff",
+      provider: "openai",
+      model: "gpt-5.3-codex",
+      dryRun: true,
+      maxFindings: 1,
+      sourceCommand: "omargate deep",
+      billingAgentId: "omargate-security",
+      billingAction: "omargate_deep",
+      billingMetadata: {
+        personaId: "security",
+        parentRunId: "omargate-parent",
+        sourceCommand: "spoofed",
+        layer: "spoofed",
+        prompt: "must not persist",
+      },
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0 },
+        findings: [],
+        scope: { scannedRelativeFiles: ["src/a.js"] },
+      },
+      env: {},
+    });
+
+    assert.equal(result.billing.ok, true);
+    assert.equal(result.billing.ledgerEntry.action, "omargate_deep");
+    assert.equal(result.billing.ledgerEntry.agentId, "omargate-security");
+    assert.equal(result.billing.ledgerEntry.metadata.sourceCommand, "omargate deep");
+    assert.equal(result.billing.ledgerEntry.metadata.layer, "ai_reasoning");
+    assert.equal(result.billing.ledgerEntry.metadata.personaId, "security");
+    assert.equal(result.billing.ledgerEntry.metadata.parentRunId, "omargate-parent");
+    assert.equal(result.billing.ledgerEntry.metadata.prompt, undefined);
+
+    const events = await readStream("sess-omargate-billing", { targetPath: root, tail: 0 });
+    const usageEvents = events.filter((event) => event.event === "session_usage");
+    assert.equal(usageEvents.length, 1);
+    assert.equal(usageEvents[0].payload.action, "omargate_deep");
+    assert.equal(usageEvents[0].payload.agentId, "omargate-security");
+    assert.equal(usageEvents[0].payload.metadata.sourceCommand, "omargate deep");
+    assert.equal(usageEvents[0].payload.metadata.personaId, "security");
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Unit AI review: usage ledger failures remain best-effort by default", async () => {
   const root = await makeRoot();
   try {
