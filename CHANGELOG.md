@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.4...v0.29.0) (2026-06-23)
+
+
+### Features
+
+* **omargate:** add usage ledger guardrails for deep AI runs ([#625](https://github.com/mrrCarter/create-sentinelayer/issues/625)) ([e47f192](https://github.com/mrrCarter/create-sentinelayer/commit/e47f1926713e4ff8c37017c341d7fc587c8a8aa2))
+
 ## [0.28.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.3...v0.28.4) (2026-06-22)
 
 

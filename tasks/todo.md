@@ -7,7 +7,7 @@
 - [x] Preserve and expose per-persona billing results in Omar JSON output for dogfood verification.
 - [x] Add same-PR eval evidence for AI/Omar execution-surface changes.
 - [x] Run focused tests, full E2E, static check, coverage, package dry run, diff check, review scan, and Omar diff scan.
-- [ ] Open PR, post Senti hard-audit request, watch hosted CI/Omar, merge on green, then release/package if the release workflow opens a version cut.
+- [x] Open PR, post Senti hard-audit request, watch hosted CI/Omar, merge on green, then release/package if the release workflow opens a version cut.
 
 ## Review
 - Implemented `runAiReviewLayer` billing overrides for `sourceCommand`, `billingAgentId`, `billingAction`, `billingTier`, sanitized metadata, and custom required-ledger error labels. Canonical ledger fields are assigned after caller metadata so they cannot be spoofed.
@@ -23,6 +23,22 @@
   - Local review scan: `review-scan-diff-20260623-040445.md`, `P1=0`, `P2=2`, `blocking=false`.
   - Local Omar diff: `omargate-1782187485637-3e462c8f`, `P0=0`, `P1=0`, `P2=2`, `blocking=false`; managed local personas are quota-limited with `DAILY_SCAN_LIMIT_EXCEEDED`, so hosted Omar remains the authoritative managed-LLM gate.
 - The two P2s are the known local spec-binding heuristic on `src/review/ai-review.js` and `src/review/omargate-orchestrator.js`; this PR intentionally touches those AI/Omar execution files and includes eval evidence in `tasks/evals/2026-06-23-omar-deep-usage-ledger.md`.
+- Hosted PR and post-merge gates passed for PR `#625`; merged to `main` as `e47f1926713e4ff8c37017c341d7fc587c8a8aa2`.
+
+# 2026-06-23 - CLI 0.29.0 Release Metadata and npm Publish (`release/0.29.0-20260623`)
+
+## Plan
+- [x] Confirm PR `#625` merged but Release Please did not open a release PR because the squash title was not parseable as a conventional commit.
+- [x] Bump `package.json`, `package-lock.json`, `.release-please-manifest.json`, and `CHANGELOG.md` to `0.29.0`.
+- [x] Run local release-metadata proof: install, static check, package dry run, diff check, review scan, Omar diff scan, and coverage.
+- [x] Open PR `#626` and post Senti hard-audit request for release metadata/tag readiness.
+- [ ] Watch hosted CI/Omar/attestation on PR `#626`, patch if needed, and merge on green.
+- [ ] Verify post-merge `main` checks, especially Release Please behavior on the merge SHA.
+- [ ] Run the guarded release publish path for `v0.29.0`, watch the npm publish workflow, and verify registry `latest` plus a fresh install smoke.
+
+## Review
+- In progress. PR `#626` intentionally restores the protected release path for PR `#625` without changing runtime code.
+- Local proof passed before opening the PR: `npm ci --ignore-scripts`, `npm run check`, `npm pack --dry-run` for `sentinelayer-cli-0.29.0.tgz`, `git diff --check`, review scan `P1=0/P2=0`, Omar diff `P0=0/P1=0/P2=0`, and `npm run test:coverage` `1550/1550`.
 
 # 2026-05-19 - L2.5 CLI Auth/JSON Hotfix (`codex/l25-auth-json-fixes`)
 
