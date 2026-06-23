@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.29.0...v0.29.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* **session:** bound confirmation and expose hidden tail activity ([#627](https://github.com/mrrCarter/create-sentinelayer/issues/627)) ([20524ac](https://github.com/mrrCarter/create-sentinelayer/commit/20524acfe6409b1b76e3b8a709992de62992207e))
+
 ## [0.29.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.28.4...v0.29.0) (2026-06-23)
 
 
