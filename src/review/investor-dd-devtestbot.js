@@ -10,6 +10,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 import { recordProvisionedIdentity } from "../ai/identity-store.js";
 import { runDevTestBotSession } from "../agents/devtestbot/tool.js";
@@ -67,6 +68,26 @@ function parsePlannerJson(text) {
   }
 }
 
+// Derive a stable repo key for the managed-proxy DD entitlement gate (#94651):
+// owner/repo from the git remote when present, else a non-identifying local key
+// (hash of the absolute repo root — no raw path leak). Fail-safe to the local key.
+function deriveRepoKey(rootPath) {
+  try {
+    const remote = spawnSync("git", ["-C", rootPath || ".", "remote", "get-url", "origin"], {
+      encoding: "utf-8",
+    });
+    if (remote.status === 0) {
+      const url = String(remote.stdout || "").trim();
+      const match = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
+      if (match && match[1]) return match[1].toLowerCase();
+    }
+  } catch {
+    // fall through to the local key
+  }
+  const abs = path.resolve(rootPath || ".");
+  return `local/${crypto.createHash("sha256").update(abs).digest("hex").slice(0, 12)}`;
+}
+
 function buildPlannerPrompt({ rootPath, files = [], findings = [], budget = {} }) {
   const severityCounts = {};
   for (const finding of findings || []) {
@@ -86,9 +107,22 @@ function buildPlannerPrompt({ rootPath, files = [], findings = [], budget = {} }
   ].join("\n");
 }
 
-async function callPlannerClient({ plannerClient, rootPath, files, findings, budget, sessionUsage }) {
+export async function callPlannerClient({ plannerClient, rootPath, files, findings, budget, sessionUsage }) {
   if (!plannerClient) return { planned: {}, usageLedger: null };
   const prompt = buildPlannerPrompt({ rootPath, files, findings, budget });
+  // DD entitlement gate metadata (#94651): only label proxy calls when there
+  // is a real session usage anchor. API-side DD actions are fail-closed and
+  // reject incomplete session context before provider spend.
+  const sessionId = String(sessionUsage?.sessionId || "").trim();
+  const ddProxyFields = sessionId
+    ? {
+        action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
+        sessionId,
+        agentId: "investor-dd-devtestbot-planner",
+        usageIdempotencyKey: `investor-dd-devtestbot-${crypto.randomUUID()}`,
+        metadata: { repoKey: deriveRepoKey(rootPath), phase: "devtestbot" },
+      }
+    : {};
   if (typeof plannerClient.decideDevTestBotPhase === "function") {
     return {
       planned: await plannerClient.decideDevTestBotPhase({ rootPath, files, findings, budget, prompt }),
@@ -105,7 +139,7 @@ async function callPlannerClient({ plannerClient, rootPath, files, findings, bud
   }
   const startedAtIso = new Date().toISOString();
   if (typeof plannerClient.invoke === "function") {
-    const response = await plannerClient.invoke({ prompt, stream: false });
+    const response = await plannerClient.invoke({ prompt, stream: false, ...ddProxyFields });
     const usageLedger = sessionUsage
       ? await recordInvestorDdLlmUsage({
           usageContext: sessionUsage,
@@ -128,6 +162,7 @@ async function callPlannerClient({ plannerClient, rootPath, files, findings, bud
   if (typeof plannerClient.generatePlan === "function") {
     const response = await plannerClient.generatePlan([{ role: "user", content: prompt }], {
       phase: "devtestbot",
+      ...ddProxyFields,
     });
     const usageLedger = sessionUsage
       ? await recordInvestorDdLlmUsage({
