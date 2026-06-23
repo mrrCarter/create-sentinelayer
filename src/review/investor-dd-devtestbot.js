@@ -110,18 +110,19 @@ function buildPlannerPrompt({ rootPath, files = [], findings = [], budget = {} }
 export async function callPlannerClient({ plannerClient, rootPath, files, findings, budget, sessionUsage }) {
   if (!plannerClient) return { planned: {}, usageLedger: null };
   const prompt = buildPlannerPrompt({ rootPath, files, findings, budget });
-  // DD entitlement gate metadata (#94651): the managed proxy authorizes investor_dd
-  // before provider spend off the action + repo + caller identity. Idempotency key is
-  // per logical call (proxy.js reuses it across its internal retries).
-  const ddRepoKey = deriveRepoKey(rootPath);
-  const ddIdempotencyKey = `investor-dd-devtestbot-${crypto.randomUUID()}`;
-  const ddProxyFields = {
-    action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
-    sessionId: sessionUsage?.sessionId || "",
-    agentId: "investor-dd-devtestbot-planner",
-    usageIdempotencyKey: ddIdempotencyKey,
-    metadata: { repoKey: ddRepoKey, phase: "devtestbot" },
-  };
+  // DD entitlement gate metadata (#94651): only label proxy calls when there
+  // is a real session usage anchor. API-side DD actions are fail-closed and
+  // reject incomplete session context before provider spend.
+  const sessionId = String(sessionUsage?.sessionId || "").trim();
+  const ddProxyFields = sessionId
+    ? {
+        action: INVESTOR_DD_USAGE_ACTIONS.devTestBotPlanner,
+        sessionId,
+        agentId: "investor-dd-devtestbot-planner",
+        usageIdempotencyKey: `investor-dd-devtestbot-${crypto.randomUUID()}`,
+        metadata: { repoKey: deriveRepoKey(rootPath), phase: "devtestbot" },
+      }
+    : {};
   if (typeof plannerClient.decideDevTestBotPhase === "function") {
     return {
       planned: await plannerClient.decideDevTestBotPhase({ rootPath, files, findings, budget, prompt }),
