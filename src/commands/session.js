@@ -76,6 +76,8 @@ import { appendToStream, readStream, tailStream } from "../session/stream.js";
 import {
   addSessionEventIdentityKeys,
   dedupeSessionEvents,
+  sessionEventIdentityKeys,
+  sessionEventUpgradesExisting,
   sessionEventHasKnownIdentity,
 } from "../session/event-identity.js";
 import { readSessionPreview } from "../session/preview.js";
@@ -2288,6 +2290,7 @@ async function hydrateJoinBriefingContext(sessionId, { targetPath, limit = 100 }
       reason: "",
       remoteEvents: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
       appended: appended.appended,
+      upgraded: appended.upgraded,
       skipped: appended.skipped,
       failed: appended.failed,
       cursor: remoteTail.cursor || null,
@@ -2305,6 +2308,34 @@ async function hydrateJoinBriefingContext(sessionId, { targetPath, limit = 100 }
   }
 }
 
+function remoteSessionEventUpgradesLocal(localEvent = {}, remoteEvent = {}) {
+  return sessionEventUpgradesExisting(localEvent, remoteEvent);
+}
+
+function indexSessionEventIdentityKeys(indexByKey, eventList = [], event = {}, index = -1) {
+  if (!indexByKey || !Array.isArray(eventList) || index < 0) return;
+  for (const key of sessionEventIdentityKeys(event)) {
+    const existingIndex = indexByKey.get(key);
+    const existingEvent = Number.isInteger(existingIndex) && existingIndex >= 0
+      ? eventList[existingIndex]
+      : null;
+    if (!existingEvent || remoteSessionEventUpgradesLocal(existingEvent, event)) {
+      indexByKey.set(key, index);
+    }
+  }
+}
+
+function findSessionEventIdentityIndex(indexByKey, event = {}) {
+  if (!indexByKey) return -1;
+  for (const key of sessionEventIdentityKeys(event)) {
+    const index = indexByKey.get(key);
+    if (Number.isInteger(index) && index >= 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 async function appendMissingRemoteEvents(sessionId, remoteEvents = [], { targetPath } = {}) {
   const events = Array.isArray(remoteEvents) ? remoteEvents : [];
   if (events.length === 0) {
@@ -2315,18 +2346,47 @@ async function appendMissingRemoteEvents(sessionId, remoteEvents = [], { targetP
     };
   }
   const knownKeys = new Set();
+  const localIndexByKey = new Map();
   const localEvents = await readStream(sessionId, {
     targetPath,
     tail: 0,
   });
-  for (const event of localEvents) {
+  for (const [index, event] of localEvents.entries()) {
     addSessionEventIdentityKeys(knownKeys, event);
+    indexSessionEventIdentityKeys(localIndexByKey, localEvents, event, index);
   }
 
   let appended = 0;
+  let upgraded = 0;
   let skipped = 0;
   let failed = 0;
   for (const event of events) {
+    const existingIndex = findSessionEventIdentityIndex(localIndexByKey, event);
+    if (existingIndex >= 0) {
+      const existing = localEvents[existingIndex];
+      if (!remoteSessionEventUpgradesLocal(existing, event)) {
+        skipped += 1;
+        continue;
+      }
+      // Keep the richer canonical API row in local history when it
+      // upgrades an optimistic/local post that had no durable cursor yet.
+      // Future reads can then page by sequence instead of rediscovering the
+      // upgrade every time.
+      try {
+        const persisted = await appendToStream(sessionId, event, {
+          targetPath,
+          syncRemote: false,
+        });
+        localEvents.push(persisted);
+        addSessionEventIdentityKeys(knownKeys, persisted);
+        indexSessionEventIdentityKeys(localIndexByKey, localEvents, persisted, localEvents.length - 1);
+        upgraded += 1;
+      } catch {
+        addSessionEventIdentityKeys(knownKeys, event);
+        failed += 1;
+      }
+      continue;
+    }
     if (sessionEventHasKnownIdentity(event, knownKeys)) {
       skipped += 1;
       continue;
@@ -2345,6 +2405,7 @@ async function appendMissingRemoteEvents(sessionId, remoteEvents = [], { targetP
   }
   return {
     appended,
+    upgraded,
     skipped,
     failed,
   };
@@ -4954,12 +5015,26 @@ export function registerSessionCommand(program) {
         const displayEvents = [...allEvents];
         let remoteTailAppended = 0;
         let remoteTailDisplayedOnly = 0;
+        let remoteTailUpgraded = 0;
         if (remoteTail?.ok && Array.isArray(remoteTail.events) && remoteTail.events.length > 0) {
           const knownKeys = new Set();
-          for (const event of allEvents) {
+          const displayIndexByKey = new Map();
+          for (const [index, event] of displayEvents.entries()) {
             addSessionEventIdentityKeys(knownKeys, event);
+            indexSessionEventIdentityKeys(displayIndexByKey, displayEvents, event, index);
           }
           for (const event of remoteTail.events) {
+            const existingIndex = findSessionEventIdentityIndex(displayIndexByKey, event);
+            if (existingIndex >= 0) {
+              const existing = displayEvents[existingIndex];
+              if (remoteSessionEventUpgradesLocal(existing, event)) {
+                displayEvents[existingIndex] = event;
+                addSessionEventIdentityKeys(knownKeys, event);
+                indexSessionEventIdentityKeys(displayIndexByKey, displayEvents, event, existingIndex);
+                remoteTailUpgraded += 1;
+              }
+              continue;
+            }
             if (sessionEventHasKnownIdentity(event, knownKeys)) {
               continue;
             }
@@ -4970,10 +5045,12 @@ export function registerSessionCommand(program) {
               });
               displayEvents.push(appended);
               addSessionEventIdentityKeys(knownKeys, appended);
+              indexSessionEventIdentityKeys(displayIndexByKey, displayEvents, appended, displayEvents.length - 1);
               remoteTailAppended += 1;
             } catch {
               displayEvents.push(event);
               addSessionEventIdentityKeys(knownKeys, event);
+              indexSessionEventIdentityKeys(displayIndexByKey, displayEvents, event, displayEvents.length - 1);
               remoteTailDisplayedOnly += 1;
             }
           }
@@ -4987,10 +5064,11 @@ export function registerSessionCommand(program) {
         const recentHumanActivity = remoteActions?.ok
           ? readProjectionRecentHumanActivity(remoteActions)
           : [];
+        const dedupedDisplayEvents = dedupeSessionEvents(displayEvents);
         const transcriptEvents = includeControlEvents
-          ? displayEvents
-          : displayEvents.filter((event) => !isSessionControlEvent(event));
-        const hiddenControlEventCount = displayEvents.length - transcriptEvents.length;
+          ? dedupedDisplayEvents
+          : dedupedDisplayEvents.filter((event) => !isSessionControlEvent(event));
+        const hiddenControlEventCount = dedupedDisplayEvents.length - transcriptEvents.length;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
         const autoView = recordSessionReadViews(normalizedSessionId, events, {
           targetPath,
@@ -5040,6 +5118,7 @@ export function registerSessionCommand(program) {
                       verified: Boolean(remoteTail.ok),
                       appended: remoteTailAppended,
                       displayedOnly: remoteTailDisplayedOnly,
+                      upgraded: remoteTailUpgraded,
                       controlEventCount: remoteTailStats?.controlEventCount || 0,
                       materialEventCount: remoteTailStats?.materialEventCount || 0,
                       latestEvent: remoteTailStats?.latestEvent || null,

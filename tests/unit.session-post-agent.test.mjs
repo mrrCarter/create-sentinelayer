@@ -12,7 +12,7 @@ import { listAgents, registerAgent } from "../src/session/agent-registry.js";
 import { resetSessionSyncStateForTests } from "../src/session/sync.js";
 import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 import { createSession } from "../src/session/store.js";
-import { readStream } from "../src/session/stream.js";
+import { appendToStream, readStream } from "../src/session/stream.js";
 
 async function seedWorkspace(rootPath) {
   await mkdir(path.join(rootPath, "src"), { recursive: true });
@@ -1652,6 +1652,125 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.events[0].sequenceId, 9940);
     assert.equal(payload.events[0].cursor, "1779364717000:000026d4");
     assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=25")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read: --remote upgrades local unsequenced post with canonical remote row", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-upgrade-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, sessionId: "remote-read-upgrade", ttlSeconds: 120 });
+    const clientMessageId = "cli-upgrade-123";
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        sessionId: session.sessionId,
+        eventId: clientMessageId,
+        idempotencyToken: clientMessageId,
+        ts: "2026-05-21T12:20:00.000Z",
+        agent: { id: "codex", model: "gpt-5", role: "coder" },
+        payload: {
+          message: "remote accepted message",
+          channel: "session",
+          clientMessageId,
+        },
+      },
+      { targetPath: tempRoot, syncRemote: false },
+    );
+    const canonicalRemoteEvent = {
+      event: "session_message",
+      sessionId: session.sessionId,
+      cursor: "0000000101541:00018ca5",
+      sequenceId: 101541,
+      ts: "2026-05-21T12:20:00.000Z",
+      timestamp: "2026-05-21T12:20:00.000Z",
+      agent: { id: "codex", model: "gpt-5", role: "coder" },
+      payload: {
+        message: "remote accepted message",
+        channel: "session",
+        clientMessageId,
+      },
+    };
+
+    globalThis.fetch = async (url) => {
+      const textUrl = String(url);
+      if (textUrl.includes("/human-messages?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [], cursor: null }),
+        };
+      }
+      if (textUrl.includes("/events/before?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: [canonicalRemoteEvent],
+          }),
+        };
+      }
+      if (textUrl.includes("/events?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [canonicalRemoteEvent], cursor: "0000000101541:00018ca5" }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--tail",
+      "5",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.events.length, 1);
+    assert.equal(payload.events[0].payload.clientMessageId, clientMessageId);
+    assert.equal(payload.events[0].sequenceId, 101541);
+    assert.equal(payload.events[0].cursor, "0000000101541:00018ca5");
+    assert.equal(payload.remote.tailProbe.appended, 0);
+    assert.equal(payload.remote.tailProbe.displayedOnly, 0);
+    assert.equal(payload.remote.tailProbe.upgraded, 0);
+
+    const secondOutput = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--tail",
+      "5",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+    const secondPayload = JSON.parse(secondOutput);
+    const localEvents = await readStream(session.sessionId, { targetPath: tempRoot, tail: 0 });
+    assert.equal(secondPayload.events.length, 1);
+    assert.equal(secondPayload.events[0].sequenceId, 101541);
+    assert.equal(localEvents.length, 2);
+    assert.equal(localEvents.filter((event) => event.sequenceId === 101541).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();

@@ -29,20 +29,48 @@ import {
 import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 import {
   addSessionEventIdentityKeys,
+  sessionEventIdentityKeys,
   sessionEventHasKnownIdentity,
+  sessionEventUpgradesExisting,
 } from "./event-identity.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
 const DEFAULT_EVENT_PAGE_LIMIT = 200;
 const DEFAULT_MAX_EVENT_PAGES = 25;
 
-async function readExistingRelayKeys(sessionId, { targetPath = process.cwd() } = {}) {
+function indexRelayEventIdentityKeys(indexByKey, eventList = [], event = {}, index = -1) {
+  if (!indexByKey || !Array.isArray(eventList) || index < 0) return;
+  for (const key of sessionEventIdentityKeys(event)) {
+    const existingIndex = indexByKey.get(key);
+    const existingEvent = Number.isInteger(existingIndex) && existingIndex >= 0
+      ? eventList[existingIndex]
+      : null;
+    if (!existingEvent || sessionEventUpgradesExisting(existingEvent, event)) {
+      indexByKey.set(key, index);
+    }
+  }
+}
+
+function findRelayEventIdentityIndex(indexByKey, event = {}) {
+  if (!indexByKey) return -1;
+  for (const key of sessionEventIdentityKeys(event)) {
+    const index = indexByKey.get(key);
+    if (Number.isInteger(index) && index >= 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+async function readExistingRelayState(sessionId, { targetPath = process.cwd() } = {}) {
   const knownKeys = new Set();
   const events = await readStream(sessionId, { targetPath, tail: 0 }).catch(() => []);
-  for (const event of events) {
+  const indexByKey = new Map();
+  for (const [index, event] of events.entries()) {
     addSessionEventIdentityKeys(knownKeys, event);
+    indexRelayEventIdentityKeys(indexByKey, events, event, index);
   }
-  return knownKeys;
+  return { knownKeys, events, indexByKey };
 }
 
 async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() } = {}) {
@@ -92,10 +120,13 @@ async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() }
   return { materialized: true, refreshed: false, session: created, remoteStatus };
 }
 
-function sourceFullyRelayed(events = [], successfulKeys = new Set()) {
+function sourceFullyRelayed(events = [], successfulKeys = new Set(), failedKeys = new Set()) {
   const relayedEvents = Array.isArray(events) ? events : [];
   if (relayedEvents.length === 0) return true;
-  return relayedEvents.every((event) => sessionEventHasKnownIdentity(event, successfulKeys));
+  return relayedEvents.every((event) =>
+    !sessionEventHasKnownIdentity(event, failedKeys) &&
+    sessionEventHasKnownIdentity(event, successfulKeys)
+  );
 }
 
 function markPostKillEvent(event = {}) {
@@ -341,11 +372,26 @@ export async function hydrateSessionFromRemote({
   let relayed = 0;
   let materializedLocalSession = false;
   let remoteStatus = "";
-  const successfulRelayKeys =
-    merged.length > 0 ? await readExistingRelayKeys(sessionId, { targetPath }) : new Set();
-  const newEvents = successfulRelayKeys.size > 0
-    ? merged.filter((event) => !sessionEventHasKnownIdentity(event, successfulRelayKeys))
-    : merged;
+  const relayState = merged.length > 0
+    ? await readExistingRelayState(sessionId, { targetPath })
+    : { knownKeys: new Set(), events: [], indexByKey: new Map() };
+  const successfulRelayKeys = relayState.knownKeys;
+  const existingRelayEvents = relayState.events;
+  const existingRelayIndexByKey = relayState.indexByKey;
+  const newEvents = [];
+  for (const event of merged) {
+    const existingIndex = findRelayEventIdentityIndex(existingRelayIndexByKey, event);
+    if (existingIndex >= 0) {
+      const existing = existingRelayEvents[existingIndex];
+      if (sessionEventUpgradesExisting(existing, event)) {
+        newEvents.push(event);
+      }
+      continue;
+    }
+    if (!sessionEventHasKnownIdentity(event, successfulRelayKeys)) {
+      newEvents.push(event);
+    }
+  }
   if (newEvents.length > 0) {
     try {
       const localSession = await _ensureLocalSession(sessionId, { targetPath });
@@ -361,20 +407,30 @@ export async function hydrateSessionFromRemote({
     remoteStatus && !["active", "pending"].includes(remoteStatus)
       ? newEvents.map((event) => markPostKillEvent(event))
       : newEvents;
+  const failedRelayKeys = new Set();
   for (const event of appendEvents) {
     try {
-      await _append(sessionId, event, { targetPath, syncRemote: false });
+      const persisted = await _append(sessionId, event, { targetPath, syncRemote: false });
       relayed += 1;
-      addSessionEventIdentityKeys(successfulRelayKeys, event);
+      const persistedEvent = persisted && typeof persisted === "object" ? persisted : event;
+      existingRelayEvents.push(persistedEvent);
+      addSessionEventIdentityKeys(successfulRelayKeys, persistedEvent);
+      indexRelayEventIdentityKeys(
+        existingRelayIndexByKey,
+        existingRelayEvents,
+        persistedEvent,
+        existingRelayEvents.length - 1,
+      );
     } catch {
+      addSessionEventIdentityKeys(failedRelayKeys, event);
       // Append errors are observable via the stream but should not
       // abort the rest of the batch — partial relay is still progress.
     }
   }
 
   let persistedCursor = false;
-  const humanCursorSafe = sourceFullyRelayed(humanResult?.events || [], successfulRelayKeys);
-  const eventsCursorSafe = sourceFullyRelayed(eventsResult?.events || [], successfulRelayKeys);
+  const humanCursorSafe = sourceFullyRelayed(humanResult?.events || [], successfulRelayKeys, failedRelayKeys);
+  const eventsCursorSafe = sourceFullyRelayed(eventsResult?.events || [], successfulRelayKeys, failedRelayKeys);
   if (humanCursorSafe && typeof humanResult?.cursor === "string" && humanResult.cursor.trim()) {
     const result = await writeSyncCursor(sessionId, humanResult.cursor, { targetPath }).catch(() => null);
     persistedCursor = Boolean(result && result.written);

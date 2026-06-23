@@ -15,6 +15,24 @@ function timestampKey(...values) {
   return "";
 }
 
+export function readSessionEventSequence(event = {}) {
+  const value = Number(event?.sequenceId ?? event?.sequence_id ?? event?.sequence);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+export function sessionEventHasDurableCursor(event = {}) {
+  return Boolean(keyString(event?.cursor));
+}
+
+export function sessionEventUpgradesExisting(existingEvent = {}, candidateEvent = {}) {
+  const existingSequence = readSessionEventSequence(existingEvent);
+  const candidateSequence = readSessionEventSequence(candidateEvent);
+  if (candidateSequence > 0 && existingSequence <= 0) {
+    return true;
+  }
+  return sessionEventHasDurableCursor(candidateEvent) && !sessionEventHasDurableCursor(existingEvent);
+}
+
 function stableJsonValue(value) {
   if (Array.isArray(value)) {
     return value.map((item) => stableJsonValue(item));
@@ -51,6 +69,10 @@ export function sessionEventIdentityKeys(event = {}) {
     keys.push(`idempotency:${event.idempotencyToken.trim()}`);
   }
   const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  const clientMessageId = typeof payload.clientMessageId === "string" ? payload.clientMessageId.trim() : "";
+  if (clientMessageId) {
+    keys.push(`client-message:${clientMessageId}`);
+  }
   const messageId = typeof payload.messageId === "string" ? payload.messageId.trim() : "";
   if (messageId) {
     keys.push(`message:${messageId}`);

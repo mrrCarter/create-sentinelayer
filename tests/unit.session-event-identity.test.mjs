@@ -97,6 +97,42 @@ test("Unit session event identity: known-key set recognizes alternate identity k
   assert.equal(sessionEventHasKnownIdentity(remote, known), true);
 });
 
+test("Unit session event identity: clientMessageId links optimistic local and canonical remote rows", () => {
+  const known = new Set();
+  const local = {
+    event: "session_message",
+    eventId: "cli-123",
+    idempotencyToken: "cli-123",
+    agent: { id: "codex" },
+    payload: {
+      message: "same logical post",
+      channel: "session",
+      clientMessageId: "cli-123",
+    },
+    ts: "2026-06-23T21:29:09.842Z",
+  };
+  const remote = {
+    event: "session_message",
+    cursor: "0000000101541:00018ca5",
+    sequenceId: 101541,
+    agent: { id: "codex" },
+    payload: {
+      message: "same logical post",
+      channel: "session",
+      clientMessageId: "cli-123",
+    },
+    ts: "2026-06-23T21:29:09.842000+00:00",
+  };
+
+  addSessionEventIdentityKeys(known, local);
+  const deduped = dedupeSessionEvents([local, remote]);
+
+  assert.equal(sessionEventHasKnownIdentity(remote, known), true);
+  assert.equal(deduped.length, 1);
+  assert.equal(deduped[0].sequenceId, 101541);
+  assert.equal(deduped[0].cursor, "0000000101541:00018ca5");
+});
+
 test("Unit session event identity: dedupes action events by durable action id", () => {
   const actionId = "166cf548-5dab-4987-92b5-64c535f1422c";
   const targetActionId = "ab044a13-7710-47cf-b061-1c468c6acfba";
