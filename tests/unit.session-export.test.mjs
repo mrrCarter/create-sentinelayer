@@ -160,6 +160,145 @@ test("session export: JSON participants are derived from event authors without r
   }
 });
 
+test("session export: empty transcript has stable zero counts", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    const output = await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "json",
+      "--path",
+      root,
+    ]);
+    const payload = JSON.parse(output);
+    assert.equal(payload.counts.rawEvents, 0);
+    assert.equal(payload.counts.hiddenControlEvents, 0);
+    assert.equal(payload.counts.events, 0);
+    assert.equal(payload.counts.participants, 0);
+    assert.deepEqual(payload.events, []);
+    assert.deepEqual(payload.participants, []);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session export: omits control events by default and includes them only on request", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex",
+        sessionId: created.sessionId,
+        payload: { message: "material export proof" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_listener_heartbeat",
+        agentId: "codex",
+        sessionId: created.sessionId,
+        payload: { source: "session_listen", lifecycle: "heartbeat" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+
+    const output = await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "json",
+      "--path",
+      root,
+    ]);
+    const payload = JSON.parse(output);
+    assert.equal(payload.includeControlEvents, false);
+    assert.equal(payload.counts.rawEvents, 2);
+    assert.equal(payload.counts.hiddenControlEvents, 1);
+    assert.equal(payload.counts.events, 1);
+    assert.deepEqual(payload.events.map((event) => event.event), ["session_message"]);
+
+    const withControls = JSON.parse(await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "json",
+      "--include-control-events",
+      "--path",
+      root,
+    ]));
+    assert.equal(withControls.includeControlEvents, true);
+    assert.equal(withControls.counts.hiddenControlEvents, 0);
+    assert.deepEqual(
+      withControls.events.map((event) => event.event),
+      ["session_message", "session_listener_heartbeat"],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session export: ndjson emits omission metadata before event rows", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex",
+        sessionId: created.sessionId,
+        payload: { message: "ndjson material proof" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_coaching",
+        agentId: "codex",
+        sessionId: created.sessionId,
+        payload: { source: "session_listen", message: "coach" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+
+    const output = await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "ndjson",
+      "--path",
+      root,
+    ]);
+    const rows = output
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(rows[0].kind, "session");
+    assert.equal(rows[1].kind, "export_metadata");
+    assert.equal(rows[1].value.hiddenControlEventCount, 1);
+    assert.equal(rows[1].value.rawEventCount, 2);
+    assert.equal(rows[1].value.eventCount, 1);
+    assert.deepEqual(
+      rows.filter((row) => row.kind === "event").map((row) => row.value.event),
+      ["session_message"],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("session download: JSON agentCount reports transcript participants, not registry files", async () => {
   const root = await makeTempRepo();
   try {
@@ -204,6 +343,54 @@ test("session download: JSON agentCount reports transcript participants, not reg
       payload.participants.map((participant) => participant.agentId).sort(),
       ["codex", "human-mrrcarter"],
     );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session download: omits control events from markdown and reports hidden count", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    const outPath = path.join(root, "download-control.md");
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex",
+        sessionId: created.sessionId,
+        payload: { message: "material download proof" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "listener_stop",
+        agentId: "session-control",
+        sessionId: created.sessionId,
+        payload: { broadcast: true, reason: "operator_stop" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+
+    const output = await runSessionCommand([
+      "session",
+      "download",
+      created.sessionId,
+      "--path",
+      root,
+      "--out",
+      outPath,
+      "--json",
+    ]);
+    const payload = JSON.parse(output);
+    const markdown = await fsp.readFile(outPath, "utf-8");
+    assert.equal(payload.includeControlEvents, false);
+    assert.equal(payload.hiddenControlEventCount, 1);
+    assert.equal(payload.eventCount, 1);
+    assert.match(markdown, /material download proof/);
+    assert.doesNotMatch(markdown, /operator_stop/);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

@@ -1638,7 +1638,7 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.displaySource, "remote_verified_tail");
     assert.equal(payload.remoteVerified, true);
     assert.equal(payload.remote.tailProbe.verified, true);
-    assert.equal(payload.remote.tailProbe.appended, 2);
+    assert.equal(payload.remote.tailProbe.appended, 1);
     assert.equal(payload.remote.tailProbe.displayedOnly, 0);
     assert.equal(payload.remote.tailProbe.controlEventCount, 1);
     assert.equal(payload.remote.tailProbe.materialEventCount, 1);
@@ -1646,12 +1646,12 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.remote.tailProbe.latestEvent.type, "session_message");
     assert.equal(payload.remote.tailProbe.latestVisibleEvent.type, "session_message");
     assert.equal(payload.includeControlEvents, false);
-    assert.equal(payload.hiddenControlEventCount, 1);
+    assert.equal(payload.hiddenControlEventCount, 0);
     assert.equal(payload.events.length, 1);
     assert.equal(payload.events[0].payload.message, "remote verified tail");
     assert.equal(payload.events[0].sequenceId, 9940);
     assert.equal(payload.events[0].cursor, "1779364717000:000026d4");
-    assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=25")));
+    assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=200")));
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
@@ -1859,8 +1859,115 @@ test("Unit session read: --remote reports heartbeat-only latest activity as hidd
     assert.equal(payload.remote.tailProbe.latestEvent.type, "session_listener_heartbeat");
     assert.equal(payload.remote.tailProbe.latestEvent.sequenceId, 9942);
     assert.equal(payload.remote.tailProbe.latestVisibleEvent, null);
-    assert.equal(payload.hiddenControlEventCount, 2);
+    assert.equal(payload.hiddenControlEventCount, 0);
     assert.equal(payload.events.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read: --remote pages past a full heartbeat tail to find material messages", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-heartbeat-backfill-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, sessionId: "remote-heartbeat-backfill", ttlSeconds: 120 });
+    const heartbeatPage = Array.from({ length: 200 }, (_, index) => ({
+      event: "session_listener_heartbeat",
+      sessionId: session.sessionId,
+      cursor: `cursor-heartbeat-${index + 1}`,
+      sequenceId: 10_000 + index,
+      ts: new Date(Date.parse("2026-05-21T12:00:00.000Z") + index * 1000).toISOString(),
+      agent: { id: index % 2 === 0 ? "codex" : "claude-mythos", role: "listener" },
+      payload: { source: "session_listen", lifecycle: "heartbeat" },
+    }));
+    const materialPage = [
+      {
+        event: "session_message",
+        sessionId: session.sessionId,
+        cursor: "cursor-material-1",
+        sequenceId: 9998,
+        ts: "2026-05-21T11:58:00.000Z",
+        agent: { id: "claude-mythos" },
+        payload: { message: "older audit note" },
+      },
+      {
+        event: "session_message",
+        sessionId: session.sessionId,
+        cursor: "cursor-material-2",
+        sequenceId: 9999,
+        ts: "2026-05-21T11:59:00.000Z",
+        agent: { id: "codex" },
+        payload: { message: "older implementation note" },
+      },
+    ];
+    globalThis.fetch = async (url) => {
+      const textUrl = String(url);
+      calls.push(textUrl);
+      if (textUrl.includes("/human-messages?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [], cursor: null }),
+        };
+      }
+      if (textUrl.includes("/events/before?")) {
+        const hasBefore = textUrl.includes("beforeSequence=10000");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: hasBefore ? materialPage : heartbeatPage,
+            next_before_sequence: hasBefore ? 9998 : 10000,
+          }),
+        };
+      }
+      if (textUrl.includes("/events?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [], cursor: null }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--tail",
+      "2",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(calls.filter((url) => url.includes("/events/before?")).length, 2);
+    assert.equal(payload.remote.tailProbe.pageCount, 2);
+    assert.equal(payload.remote.tailProbe.controlEventCount, 200);
+    assert.equal(payload.remote.tailProbe.materialEventCount, 2);
+    assert.equal(payload.remote.tailProbe.latestActivityHidden, true);
+    assert.equal(payload.remote.tailProbe.appended, 2);
+    assert.deepEqual(
+      payload.events.map((event) => event.payload.message),
+      ["older audit note", "older implementation note"],
+    );
+    const localEvents = await readStream(session.sessionId, { targetPath: tempRoot, tail: 0 });
+    assert.equal(localEvents.filter((event) => event.event === "session_listener_heartbeat").length, 0);
+    assert.equal(localEvents.filter((event) => event.event === "session_message").length, 2);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();

@@ -177,6 +177,37 @@ test("Unit session listener: advances across listener presence without emitting 
   assert.equal(result.emitted, 1);
 });
 
+test("Unit session listener: emits listener_stop directives while skipping lifecycle noise", async () => {
+  const emitted = [];
+  const heartbeat = evt(
+    "c1",
+    { source: "session_listen", listenerId: "listener-codex-1" },
+    { event: "session_listener_heartbeat", agent: { id: "codex-1" } },
+  );
+  const stop = {
+    event: "listener_stop",
+    cursor: "c2",
+    agent: { id: "session-control" },
+    payload: { targetAgentId: "codex-1", reason: "operator_stop" },
+  };
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stop-control",
+    agentId: "codex-1",
+    replay: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => ({ ok: true, events: [heartbeat, stop], cursor: "c2" }),
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event.event),
+  });
+
+  assert.deepEqual(emitted, ["listener_stop"]);
+  assert.equal(result.cursor, "c2");
+  assert.equal(result.emitted, 1);
+});
+
 test("Unit session listener: advances cursor across nonmatching first poll and emits later matches", async () => {
   const writes = [];
   const emitted = [];

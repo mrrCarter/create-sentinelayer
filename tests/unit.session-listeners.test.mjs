@@ -52,6 +52,27 @@ test("Unit listeners: stopped lifecycle and stale heartbeats are classified, not
   assert.equal(vision.status, "stopped");
 });
 
+test("Unit listeners: advertised presence keepalive extends stale window", () => {
+  const rows = summarizeListeners(
+    [
+      heartbeat(
+        "codex",
+        {
+          active: false,
+          idleIntervalSeconds: 60,
+          presenceIntervalSeconds: 60,
+          presenceKeepaliveSeconds: 300,
+        },
+        "2026-06-14T07:55:00Z",
+      ),
+    ],
+    { nowMs: NOW },
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "idle");
+  assert.equal(rows[0].presenceKeepaliveSeconds, 300);
+});
+
 test("Unit listeners: ignores non-listener events", () => {
   const rows = summarizeListeners(
     [

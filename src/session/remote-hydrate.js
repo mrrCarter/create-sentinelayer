@@ -33,6 +33,7 @@ import {
   sessionEventHasKnownIdentity,
   sessionEventUpgradesExisting,
 } from "./event-identity.js";
+import { isSessionControlEvent } from "./control-events.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
 const DEFAULT_EVENT_PAGE_LIMIT = 200;
@@ -273,6 +274,7 @@ export async function hydrateSessionFromRemote({
   probeOpenCircuit = true,
   eventPageLimit = DEFAULT_EVENT_PAGE_LIMIT,
   maxEventPages = DEFAULT_MAX_EVENT_PAGES,
+  includeControlEvents = false,
 } = {}) {
   if (!sessionId || typeof sessionId !== "string") {
     return {
@@ -392,7 +394,17 @@ export async function hydrateSessionFromRemote({
       newEvents.push(event);
     }
   }
-  if (newEvents.length > 0) {
+  let skippedControlEventCount = 0;
+  const materialNewEvents = [];
+  for (const event of newEvents) {
+    if (!includeControlEvents && isSessionControlEvent(event)) {
+      skippedControlEventCount += 1;
+      addSessionEventIdentityKeys(successfulRelayKeys, event);
+      continue;
+    }
+    materialNewEvents.push(event);
+  }
+  if (materialNewEvents.length > 0) {
     try {
       const localSession = await _ensureLocalSession(sessionId, { targetPath });
       materializedLocalSession = Boolean(localSession?.materialized);
@@ -403,10 +415,11 @@ export async function hydrateSessionFromRemote({
       // returns a structured result.
     }
   }
+
   const appendEvents =
     remoteStatus && !["active", "pending"].includes(remoteStatus)
-      ? newEvents.map((event) => markPostKillEvent(event))
-      : newEvents;
+      ? materialNewEvents.map((event) => markPostKillEvent(event))
+      : materialNewEvents;
   const failedRelayKeys = new Set();
   for (const event of appendEvents) {
     try {
@@ -451,6 +464,7 @@ export async function hydrateSessionFromRemote({
     persistedCursor,
     humanRelayed: (humanResult?.events || []).length,
     eventsRelayed: (eventsResult?.events || []).length,
+    controlEventsSkipped: skippedControlEventCount,
     eventsCursor:
       typeof eventsResult?.cursor === "string" ? eventsResult.cursor : eventsCursor || null,
     eventsPageCount: Number(eventsResult?.pageCount || 0),

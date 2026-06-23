@@ -66,6 +66,10 @@ import {
 } from "../session/store.js";
 import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import {
+  filterSessionMaterialEvents,
+  isSessionControlEvent,
+} from "../session/control-events.js";
+import {
   acceptSessionInvitation,
   normalizeSessionOnboarding,
   writeSessionOnboardingBrief,
@@ -701,6 +705,80 @@ function mergeSessionActionEvents(events = [], actionEvents = []) {
       return left.index - right.index;
     })
     .map((entry) => entry.event);
+}
+
+async function pollSessionEventsBeforeTranscriptTail(sessionId, {
+  targetPath,
+  beforeSequence = null,
+  tail = 20,
+  includeControlEvents = false,
+  timeoutMs = 15_000,
+  maxPages = 10,
+} = {}) {
+  const targetMaterialCount = Math.max(1, Math.floor(Number(tail) || 20));
+  const pageLimit = includeControlEvents
+    ? Math.min(200, targetMaterialCount)
+    : 200;
+  const maxPageCount = Math.max(1, Math.min(25, Math.floor(Number(maxPages) || 10)));
+  let nextBeforeSequence = beforeSequence;
+  let latestResult = null;
+  let combinedEvents = [];
+  let pageCount = 0;
+
+  for (let page = 0; page < maxPageCount; page += 1) {
+    const result = await pollSessionEventsBefore(sessionId, {
+      targetPath,
+      beforeSequence: nextBeforeSequence,
+      limit: pageLimit,
+      timeoutMs,
+    });
+    pageCount += 1;
+    if (!result?.ok) {
+      if (!latestResult) return { ...result, pageCount };
+      latestResult = {
+        ...latestResult,
+        reason: result?.reason || latestResult.reason || "partial_tail_fetch",
+        partial: true,
+      };
+      break;
+    }
+
+    latestResult = result;
+    const pageEvents = Array.isArray(result.events) ? result.events : [];
+    combinedEvents = [...pageEvents, ...combinedEvents];
+    const materialCount = includeControlEvents
+      ? combinedEvents.length
+      : filterSessionMaterialEvents(combinedEvents).length;
+
+    if (includeControlEvents || materialCount >= targetMaterialCount) break;
+    if (pageEvents.length < pageLimit) break;
+
+    const candidateBefore = Number(result.beforeSequence || 0);
+    if (!Number.isFinite(candidateBefore) || candidateBefore <= 0) break;
+    const currentBefore = Number(nextBeforeSequence || 0);
+    if (currentBefore > 0 && candidateBefore >= currentBefore) break;
+    nextBeforeSequence = candidateBefore;
+  }
+
+  if (!latestResult) {
+    return {
+      ok: true,
+      reason: "",
+      events: [],
+      cursor: null,
+      beforeSequence: beforeSequence || null,
+      pageCount,
+    };
+  }
+
+  return {
+    ...latestResult,
+    events: combinedEvents,
+    cursor: normalizeString(combinedEvents[combinedEvents.length - 1]?.cursor) || latestResult.cursor || null,
+    pageCount,
+    materialBackfillComplete:
+      includeControlEvents || filterSessionMaterialEvents(combinedEvents).length >= targetMaterialCount,
+  };
 }
 
 async function appendActionEventIfMissing(sessionId, actionEvent, { targetPath } = {}) {
@@ -1604,6 +1682,54 @@ function compactPayload(record = {}) {
   );
 }
 
+function listenerPresenceHeartbeatFingerprint(lifecycle = {}) {
+  return JSON.stringify(
+    compactPayload({
+      active: Boolean(lifecycle.active),
+      state: normalizeString(lifecycle.state) || "heartbeat",
+      transport: normalizeString(lifecycle.transport) || null,
+      reason: normalizeString(lifecycle.reason) || null,
+      idleIntervalSeconds: lifecycle.idleIntervalSeconds ?? null,
+      activeIntervalSeconds: lifecycle.activeIntervalSeconds ?? null,
+      activeWindowSeconds: lifecycle.activeWindowSeconds ?? null,
+      lastHumanActivityAt: lifecycle.lastHumanActivityAt || null,
+    }),
+  );
+}
+
+export function shouldPublishListenerPresenceHeartbeat({
+  lifecycle = {},
+  nowMs = Date.now(),
+  lastHeartbeatMs = 0,
+  lastFingerprint = "",
+  presenceIntervalMs = 60_000,
+  presenceKeepaliveMs = 180_000,
+} = {}) {
+  const lifecycleType = normalizeString(lifecycle.type) || "heartbeat";
+  if (lifecycleType !== "heartbeat") {
+    return { publish: true, fingerprint: lastFingerprint, reason: "lifecycle" };
+  }
+  const fingerprint = listenerPresenceHeartbeatFingerprint(lifecycle);
+  if (lifecycle.stopping) {
+    return { publish: true, fingerprint, reason: "stopping" };
+  }
+  const currentMs = Number(nowMs) || Date.now();
+  const previousMs = Number(lastHeartbeatMs) || 0;
+  if (previousMs <= 0) {
+    return { publish: true, fingerprint, reason: "first" };
+  }
+  if (fingerprint !== lastFingerprint) {
+    return { publish: true, fingerprint, reason: "changed" };
+  }
+  const minIntervalMs = Math.max(1, Number(presenceIntervalMs) || 60_000);
+  const keepaliveMs = Math.max(minIntervalMs, Number(presenceKeepaliveMs) || 180_000);
+  const elapsedMs = currentMs - previousMs;
+  if (elapsedMs >= keepaliveMs) {
+    return { publish: true, fingerprint, reason: "keepalive" };
+  }
+  return { publish: false, fingerprint, reason: elapsedMs < minIntervalMs ? "interval" : "unchanged" };
+}
+
 async function publishListenerPresenceEvent({
   sessionId,
   targetPath,
@@ -1653,6 +1779,8 @@ async function publishListenerPresenceEvent({
       idleIntervalSeconds: lifecycle.idleIntervalSeconds,
       activeIntervalSeconds: lifecycle.activeIntervalSeconds,
       activeWindowSeconds: lifecycle.activeWindowSeconds,
+      presenceIntervalSeconds: lifecycle.presenceIntervalSeconds,
+      presenceKeepaliveSeconds: lifecycle.presenceKeepaliveSeconds,
       lastHumanActivityAt: lifecycle.lastHumanActivityAt,
       lastSleepMs: lifecycle.lastSleepMs,
       nextPollMs: lifecycle.nextPollMs,
@@ -2115,13 +2243,6 @@ function formatEventLine(event = {}) {
     return `${ts} ${agentId} ${type}: ${message}`;
   }
   return `${ts} ${agentId} ${type}`;
-}
-
-function isSessionControlEvent(event = {}) {
-  const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
-  const type = normalizeString(event.event || event.type).toLowerCase();
-  if (type.startsWith("session_listener_")) return true;
-  return normalizeString(payload.source).toLowerCase() === "session_listen";
 }
 
 function summarizeSessionTailEvent(event = null) {
@@ -4060,6 +4181,11 @@ export function registerSessionCommand(program) {
       "60",
     )
     .option(
+      "--presence-keepalive <seconds>",
+      "Maximum seconds between unchanged remote listener heartbeat events (default 180)",
+      "180",
+    )
+    .option(
       "--no-presence",
       "Do not publish durable listener lifecycle/heartbeat events",
     )
@@ -4110,6 +4236,11 @@ export function registerSessionCommand(program) {
         options.presenceInterval,
         "presence-interval",
         60,
+      );
+      const presenceKeepaliveSeconds = parsePositiveInteger(
+        options.presenceKeepalive,
+        "presence-keepalive",
+        180,
       );
       const listenerIdentity = inferSessionAgentIdentity({
         agentId,
@@ -4193,7 +4324,10 @@ export function registerSessionCommand(program) {
       const durablePresenceEnabled = options.presence !== false;
       const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
+      const presenceKeepaliveMs =
+        Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds, 1) * 1000;
       let lastPresenceHeartbeatMs = 0;
+      let lastPresenceHeartbeatFingerprint = "";
 
       // Periodic in-session success reminders (ack, claim work, reply
       // in-thread). Long-running interactive listeners only — skipped under
@@ -4375,11 +4509,25 @@ export function registerSessionCommand(program) {
             }
             if (!publishPresence) return;
             const lifecycleType = normalizeString(lifecycle?.type);
+            const publishLifecycle = {
+              ...lifecycle,
+              presenceIntervalSeconds,
+              presenceKeepaliveSeconds: Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds),
+            };
             if (lifecycleType === "heartbeat") {
               const nowMs = Date.now();
-              if (lastPresenceHeartbeatMs > 0 && nowMs - lastPresenceHeartbeatMs < presenceIntervalMs) {
+              const heartbeatDecision = shouldPublishListenerPresenceHeartbeat({
+                lifecycle: publishLifecycle,
+                nowMs,
+                lastHeartbeatMs: lastPresenceHeartbeatMs,
+                lastFingerprint: lastPresenceHeartbeatFingerprint,
+                presenceIntervalMs,
+                presenceKeepaliveMs,
+              });
+              if (!heartbeatDecision.publish) {
                 return;
               }
+              lastPresenceHeartbeatFingerprint = heartbeatDecision.fingerprint;
               lastPresenceHeartbeatMs = nowMs;
             }
             await publishListenerPresenceEvent({
@@ -4391,7 +4539,7 @@ export function registerSessionCommand(program) {
               provider,
               clientKind,
               listenerId,
-              lifecycle,
+              lifecycle: publishLifecycle,
             });
           },
         });
@@ -4914,9 +5062,6 @@ export function registerSessionCommand(program) {
       const beforeSequence = parseOptionalPositiveInteger(options.beforeSequence, "before-sequence");
       const emitJson = shouldEmitJson(options, command);
       const includeControlEvents = Boolean(options.includeControlEvents);
-      const remoteTailLimit = includeControlEvents
-        ? tail
-        : Math.min(200, Math.max(tail, tail + 20));
       const readAgentId = await defaultAgentId(options.agent, targetPath);
 
       let hydration = null;
@@ -4935,11 +5080,13 @@ export function registerSessionCommand(program) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
+          includeControlEvents,
         });
-        remoteTail = await pollSessionEventsBefore(normalizedSessionId, {
+        remoteTail = await pollSessionEventsBeforeTranscriptTail(normalizedSessionId, {
           targetPath,
           beforeSequence,
-          limit: remoteTailLimit,
+          tail,
+          includeControlEvents,
           timeoutMs: 15_000,
         });
         if (options.actions !== false) {
@@ -5016,14 +5163,17 @@ export function registerSessionCommand(program) {
         let remoteTailAppended = 0;
         let remoteTailDisplayedOnly = 0;
         let remoteTailUpgraded = 0;
-        if (remoteTail?.ok && Array.isArray(remoteTail.events) && remoteTail.events.length > 0) {
+        const remoteTailAppendEvents = includeControlEvents
+          ? remoteTail?.events
+          : filterSessionMaterialEvents(remoteTail?.events || []);
+        if (remoteTail?.ok && Array.isArray(remoteTailAppendEvents) && remoteTailAppendEvents.length > 0) {
           const knownKeys = new Set();
           const displayIndexByKey = new Map();
           for (const [index, event] of displayEvents.entries()) {
             addSessionEventIdentityKeys(knownKeys, event);
             indexSessionEventIdentityKeys(displayIndexByKey, displayEvents, event, index);
           }
-          for (const event of remoteTail.events) {
+          for (const event of remoteTailAppendEvents) {
             const existingIndex = findSessionEventIdentityIndex(displayIndexByKey, event);
             if (existingIndex >= 0) {
               const existing = displayEvents[existingIndex];
@@ -5115,6 +5265,8 @@ export function registerSessionCommand(program) {
                       count: Array.isArray(remoteTail.events) ? remoteTail.events.length : 0,
                       cursor: remoteTail.cursor || null,
                       beforeSequence: remoteTail.beforeSequence || null,
+                      pageCount: Number(remoteTail.pageCount || 0),
+                      materialBackfillComplete: Boolean(remoteTail.materialBackfillComplete),
                       verified: Boolean(remoteTail.ok),
                       appended: remoteTailAppended,
                       displayedOnly: remoteTailDisplayedOnly,
@@ -5190,6 +5342,7 @@ export function registerSessionCommand(program) {
             signal: ac.signal,
           })) {
             if (item.event) {
+              if (!includeControlEvents && isSessionControlEvent(item.event)) continue;
               if (emitJson) {
                 console.log(JSON.stringify({ source: item.source, event: item.event }));
               } else {
@@ -5218,6 +5371,9 @@ export function registerSessionCommand(program) {
           continue;
         }
         addSessionEventIdentityKeys(seenFollowEvents, event);
+        if (!includeControlEvents && isSessionControlEvent(event)) {
+          continue;
+        }
         if (emitJson) {
           console.log(JSON.stringify(event));
         } else {
@@ -5659,6 +5815,7 @@ export function registerSessionCommand(program) {
       "Hydrate from the SentinelLayer API before exporting and include remote message actions",
     )
     .option("--no-actions", "Do not include remote message actions/replies/reactions")
+    .option("--include-control-events", "Include listener/control-plane events in the exported transcript")
     .option("--path <path>", "Workspace path for the session", ".")
     .action(async (sessionId, options) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -5676,6 +5833,7 @@ export function registerSessionCommand(program) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
+          includeControlEvents: Boolean(options.includeControlEvents),
         }).catch((error) => ({ ok: false, reason: error?.message || "hydrate_failed" }));
         if (options.actions !== false) {
           remoteActions = await listSessionMessageActions(normalizedSessionId, {
@@ -5708,7 +5866,12 @@ export function registerSessionCommand(program) {
       const actionEvents = remoteActions?.ok
         ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
         : [];
-      const exportEvents = mergeSessionActionEvents(events, actionEvents);
+      const includeControlEvents = Boolean(options.includeControlEvents);
+      const transcriptBaseEvents = includeControlEvents
+        ? events
+        : filterSessionMaterialEvents(events);
+      const hiddenControlEventCount = events.length - transcriptBaseEvents.length;
+      const exportEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
       const stats = computeTranscriptStats({
         sessionMeta: sessionPayload,
         events: exportEvents,
@@ -5722,6 +5885,15 @@ export function registerSessionCommand(program) {
       if (format === "ndjson") {
         const lines = [];
         lines.push(JSON.stringify({ kind: "session", value: sessionPayload }));
+        lines.push(JSON.stringify({
+          kind: "export_metadata",
+          value: {
+            includeControlEvents,
+            hiddenControlEventCount,
+            rawEventCount: events.length,
+            eventCount: exportEvents.length,
+          },
+        }));
         for (const agent of agents) lines.push(JSON.stringify({ kind: "agent", value: agent }));
         for (const participant of participants) {
           lines.push(JSON.stringify({ kind: "participant", value: participant }));
@@ -5763,10 +5935,12 @@ export function registerSessionCommand(program) {
               registeredAgents: agents.length,
               events: exportEvents.length,
               rawEvents: events.length,
+              hiddenControlEvents: hiddenControlEventCount,
               actions: Array.isArray(remoteActions?.actions) ? remoteActions.actions.length : 0,
               actionEvents: actionEvents.length,
               tasks: (tasks.tasks || []).length,
             },
+            includeControlEvents,
             totals: stats.totals,
           },
           null,
@@ -5783,7 +5957,7 @@ export function registerSessionCommand(program) {
           pc.gray(
             `Exported ${exportEvents.length} events / ${participants.length} participants (${agents.length} registered agents) / ${
               (tasks.tasks || []).length
-            } tasks → ${outPath}`,
+            } tasks${hiddenControlEventCount ? ` (${hiddenControlEventCount} control events omitted)` : ""} → ${outPath}`,
           ),
         );
       } else {
@@ -5806,6 +5980,7 @@ export function registerSessionCommand(program) {
       "Hydrate from the SentinelLayer API before rendering (pulls web-posted messages into the local NDJSON)",
     )
     .option("--no-actions", "Do not include remote message actions/replies/reactions")
+    .option("--include-control-events", "Include listener/control-plane events in the Markdown transcript")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -5822,6 +5997,7 @@ export function registerSessionCommand(program) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
+          includeControlEvents: Boolean(options.includeControlEvents),
         }).catch((error) => ({ ok: false, reason: error?.message || "hydrate_failed" }));
         if (options.actions !== false) {
           remoteActions = await listSessionMessageActions(normalizedSessionId, {
@@ -5844,7 +6020,12 @@ export function registerSessionCommand(program) {
       const actionEvents = remoteActions?.ok
         ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
         : [];
-      const transcriptEvents = mergeSessionActionEvents(events, actionEvents);
+      const includeControlEvents = Boolean(options.includeControlEvents);
+      const transcriptBaseEvents = includeControlEvents
+        ? events
+        : filterSessionMaterialEvents(events);
+      const hiddenControlEventCount = events.length - transcriptBaseEvents.length;
+      const transcriptEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
 
       // Pull GitHub/Google avatar + display name from the active auth
       // session so any human-id seen in the stream renders with the
@@ -5909,6 +6090,8 @@ export function registerSessionCommand(program) {
         rawEventCount: events.length,
         actionCount: Array.isArray(remoteActions?.actions) ? remoteActions.actions.length : 0,
         actionEventCount: actionEvents.length,
+        includeControlEvents,
+        hiddenControlEventCount,
         agentCount: participants.length,
         participantCount: participants.length,
         derivedAgentCount: stats.agents.length,
@@ -5940,6 +6123,9 @@ export function registerSessionCommand(program) {
           `${transcriptEvents.length} events · ${participants.length} participants (${agents.length} registered agents) · actions=${payload.actionCount} · live ${stats.sessionLiveSeconds}s · senti=${stats.sentiActions} · tokens=${stats.totals.tokenTotal} · cost=$${stats.totals.costTotalUsd.toFixed(4)}`,
         ),
       );
+      if (hiddenControlEventCount > 0) {
+        console.log(pc.gray(`${hiddenControlEventCount} control events omitted; rerun with --include-control-events to inspect them.`));
+      }
     });
 
   session

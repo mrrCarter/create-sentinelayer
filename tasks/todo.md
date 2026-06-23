@@ -1,3 +1,28 @@
+# 2026-06-23 - Senti Listener Control-Event Bloat (`codex/session-control-event-bloat-20260623`)
+
+## Plan
+- [x] Keep the quiet Codex listener connected to Senti session `6d7ade0b-7d1e-47ba-8f18-bcf162be5672` and post only material updates.
+- [x] Reproduce/confirm the dogfood issue: durable listener heartbeats dominate long-room remote tails and inflate hidden local/export control traffic.
+- [x] Throttle unchanged durable listener heartbeats while preserving start/stop, active/idle state changes, and periodic keepalives for live roster.
+- [x] Centralize session control-event classification and keep `listener_stop` routable to active listeners while hiding it from transcripts by default.
+- [x] Make remote hydration skip control rows by default but treat skipped controls as cursor-safe; keep `includeControlEvents` for forensics.
+- [x] Make `session read --remote` page past full heartbeat tails to find material messages, without appending skipped controls locally.
+- [x] Make read/follow/live, export/download, and MCP inbox hide control events by default; export/download report hidden control counts.
+- [x] Add focused coverage for classifier, listener routing, remote hydrate cursor safety, remote read heartbeat-tail paging, and export/download omission.
+- [x] Run focused proof, full unit, full E2E, static check, diff check, npm pack dry-run, review scan, and live dogfood read proof.
+- [x] Finish Omar diff gate and reconcile audit feedback.
+- [x] Open PR, post final Senti audit request, and watch hosted gates.
+
+## Review
+- PR opened: https://github.com/mrrCarter/create-sentinelayer/pull/639.
+- In progress. This is a source-backed Senti reliability slice based on Popper's audit of the published `sentinelayer-cli@0.30.4` control-event bloat.
+- Scope now covers both future-write reduction and transcript-boundary filtering: `src/commands/session.js`, `src/session/control-events.js`, `src/session/remote-hydrate.js`, `src/session/listener.js`, `src/session/listeners.js`, and `src/mcp/session-stdio-server.js`.
+- Focused proof passed: first pass `123/123`; follow-up P2 boundary tests `67/67`.
+- Full verification passed: `npm run check` (`337 files passed`), `git diff --check` clean aside from Windows LF/CRLF warnings, `npm run test:unit` `1580/1580`, `npm run test:e2e` `102/102`, and `npm pack --dry-run` produced `sentinelayer-cli-0.30.4.tgz` shasum `fee1f2956d0dcc3a5fbadc9cd29f7a1ffa08f710`.
+- Local review scan passed on the final diff: `review-scan-diff-20260623-230919.md`, `P1=0`, `P2=0`, `blocking=false`.
+- Live dogfood proof using the local branch binary: `node bin/sl.js session read ... --remote` saw a new heartbeat, reported `controlEventsSkipped=1`, `relayed=0`, `localAppendComplete=true`, and still advanced `eventsCursor` to `0000000101701:00018d45`.
+- Omar diff gate passed on the final diff: `omargate-1782256159296-44acc345`, `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`.
+
 # 2026-06-23 - CLI 0.29.1 Release Metadata and npm Publish (`codex/release-0.29.1-20260623`)
 
 ## Plan

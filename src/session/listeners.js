@@ -56,6 +56,8 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
     const active = Boolean(payload.active);
     const idleIntervalSeconds = positiveInt(payload.idleIntervalSeconds);
     const activeIntervalSeconds = positiveInt(payload.activeIntervalSeconds);
+    const presenceKeepaliveSeconds = positiveInt(payload.presenceKeepaliveSeconds);
+    const presenceIntervalSeconds = positiveInt(payload.presenceIntervalSeconds);
     const nextPollSeconds = positiveInt(payload.nextPollMs)
       ? Math.round(positiveInt(payload.nextPollMs) / 1000)
       : null;
@@ -64,9 +66,20 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
     const cadenceSeconds = active
       ? activeIntervalSeconds || nextPollSeconds
       : idleIntervalSeconds || nextPollSeconds;
+    const expectedPresenceSeconds =
+      presenceKeepaliveSeconds ||
+      presenceIntervalSeconds ||
+      cadenceSeconds ||
+      idleIntervalSeconds ||
+      activeIntervalSeconds ||
+      null;
+    const staleAfterForRowMs = Math.max(
+      staleAfterMs,
+      expectedPresenceSeconds ? expectedPresenceSeconds * 2_500 : 0,
+    );
     let status;
     if (stopped) status = "stopped";
-    else if (ageMs !== null && ageMs > staleAfterMs) status = "stale";
+    else if (ageMs !== null && ageMs > staleAfterForRowMs) status = "stale";
     else status = active ? "active" : "idle";
 
     rows.push({
@@ -78,6 +91,8 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
       cadenceSeconds: cadenceSeconds ?? null,
       idleIntervalSeconds,
       activeIntervalSeconds,
+      presenceIntervalSeconds,
+      presenceKeepaliveSeconds,
       nextPollSeconds,
       lastSeenAt: epoch ? new Date(epoch).toISOString() : null,
       lastSeenAgoSeconds: ageMs !== null ? Math.round(ageMs / 1000) : null,
