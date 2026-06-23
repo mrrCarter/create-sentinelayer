@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.1...v0.30.2) (2026-06-23)
+
+
+### Bug Fixes
+
+* **session:** keep lock commands out of chat ([#632](https://github.com/mrrCarter/create-sentinelayer/issues/632)) ([92b0856](https://github.com/mrrCarter/create-sentinelayer/commit/92b08561f136ac784809f57472c02fe1614232ce))
+
 ## [0.30.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.0...v0.30.1) (2026-06-23)
 
 
