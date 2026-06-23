@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.2...v0.30.3) (2026-06-23)
+
+
+### Bug Fixes
+
+* **session:** infer agent identity metadata ([b81e6ac](https://github.com/mrrCarter/create-sentinelayer/commit/b81e6ac3d432b2a0662da63aef290b644cc7d36b))
+
 ## [0.30.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.1...v0.30.2) (2026-06-23)
 
 
