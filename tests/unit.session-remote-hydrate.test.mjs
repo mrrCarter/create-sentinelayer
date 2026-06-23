@@ -621,7 +621,7 @@ test("hydrateSessionFromRemote: probes once when both sources are blocked by ope
   }
 });
 
-test("hydrateSessionFromRemote: skips remote canonical events already present locally without cursor", async () => {
+test("hydrateSessionFromRemote: upgrades local optimistic events with remote canonical metadata once", async () => {
   const root = await makeTempRepo();
   const oldSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
   process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
@@ -635,6 +635,7 @@ test("hydrateSessionFromRemote: skips remote canonical events already present lo
         message: "status: already local - Codex",
         channel: "session",
         source: "agent",
+        clientMessageId: "cli-upgrade-hydrate",
       },
     };
     await appendToStream("local-duplicate", localEvent, {
@@ -642,8 +643,87 @@ test("hydrateSessionFromRemote: skips remote canonical events already present lo
       syncRemote: false,
     });
 
+    const pollResult = {
+      ok: true,
+      events: [
+        {
+          ...localEvent,
+          ts: "2026-05-03T13:08:14.291000+00:00",
+          timestamp: "2026-05-03T13:08:14.291000+00:00",
+          payload: {
+            ...localEvent.payload,
+            messageId: "remote-canonical-message-id",
+          },
+          cursor: "remote-canonical-cursor",
+          sequenceId: 123,
+        },
+      ],
+      cursor: "remote-canonical-cursor",
+    };
+
     const result = await hydrateSessionFromRemote({
       sessionId: "local-duplicate",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => pollResult,
+    });
+    const second = await hydrateSessionFromRemote({
+      sessionId: "local-duplicate",
+      targetPath: root,
+      since: null,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => pollResult,
+    });
+
+    const events = await readStream("local-duplicate", { targetPath: root, tail: 0 });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 1);
+    assert.equal(result.eventsRelayed, 1);
+    assert.equal(result.localAppendComplete, true);
+    assert.equal(second.ok, true);
+    assert.equal(second.relayed, 0);
+    assert.equal(second.localAppendComplete, true);
+    assert.equal(
+      await readSyncCursor("local-duplicate", { targetPath: root, suffix: "events" }),
+      "remote-canonical-cursor",
+    );
+    assert.equal(events.length, 2);
+    assert.equal(events[0].payload.message, "status: already local - Codex");
+    assert.equal(events[0].sequenceId, undefined);
+    assert.equal(events[1].payload.messageId, "remote-canonical-message-id");
+    assert.equal(events[1].sequenceId, 123);
+    assert.equal(events[1].cursor, "remote-canonical-cursor");
+  } finally {
+    if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: does not advance cursor when canonical upgrade append fails", async () => {
+  const root = await makeTempRepo();
+  const oldSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+  try {
+    await createSession({ sessionId: "local-upgrade-fail", targetPath: root, ttlSeconds: 120 });
+    const localEvent = {
+      event: "session_message",
+      ts: "2026-05-03T13:08:14.291Z",
+      agent: { id: "codex", model: "gpt-5-codex" },
+      payload: {
+        message: "status: already local - Codex",
+        channel: "session",
+        source: "agent",
+        clientMessageId: "cli-upgrade-fail",
+      },
+    };
+    await appendToStream("local-upgrade-fail", localEvent, {
+      targetPath: root,
+      syncRemote: false,
+    });
+
+    const result = await hydrateSessionFromRemote({
+      sessionId: "local-upgrade-fail",
       targetPath: root,
       _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
       _pollEvents: async () => ({
@@ -658,24 +738,22 @@ test("hydrateSessionFromRemote: skips remote canonical events already present lo
               messageId: "remote-canonical-message-id",
             },
             cursor: "remote-canonical-cursor",
-            eventId: "remote-event-id",
-            idempotencyToken: "remote-event-id",
             sequenceId: 123,
           },
         ],
         cursor: "remote-canonical-cursor",
       }),
+      _append: async () => {
+        throw new Error("disk full");
+      },
     });
 
-    const events = await readStream("local-duplicate", { targetPath: root, tail: 0 });
+    const events = await readStream("local-upgrade-fail", { targetPath: root, tail: 0 });
     assert.equal(result.ok, true);
     assert.equal(result.relayed, 0);
     assert.equal(result.eventsRelayed, 1);
-    assert.equal(result.localAppendComplete, true);
-    assert.equal(
-      await readSyncCursor("local-duplicate", { targetPath: root, suffix: "events" }),
-      "remote-canonical-cursor",
-    );
+    assert.equal(result.localAppendComplete, false);
+    assert.equal(await readSyncCursor("local-upgrade-fail", { targetPath: root, suffix: "events" }), null);
     assert.equal(events.length, 1);
     assert.equal(events[0].payload.message, "status: already local - Codex");
   } finally {
