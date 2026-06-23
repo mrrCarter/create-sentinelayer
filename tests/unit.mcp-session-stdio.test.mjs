@@ -267,6 +267,56 @@ test("Unit MCP session stdio: send_message confirmation forward-paginates in bus
   assert.equal(cached.length, 1);
 });
 
+test("Unit MCP session stdio: send_message confirmation falls back to latest tail", async () => {
+  let beforeCalls = 0;
+  const cached = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsBeforeFn: async () => {
+      beforeCalls += 1;
+      if (beforeCalls === 1) {
+        return {
+          ok: true,
+          cursor: "cursor-anchor",
+          events: [evt("cursor-anchor", "claude", { message: "prior" })],
+        };
+      }
+      return {
+        ok: true,
+        cursor: "cursor-tail",
+        events: [
+          evt("cursor-heartbeat", "codex", { source: "session_listen" }, { event: "session_listener_heartbeat" }),
+          evt("cursor-tail", "codex", { message: "visible in latest tail", clientMessageId: "idem-tail" }),
+        ],
+      };
+    },
+    syncSessionEventToApiFn: async () => ({ synced: true, status: 202 }),
+    pollSessionEventsFn: async (_sessionId, options) => ({
+      ok: true,
+      cursor: options.since,
+      events: [],
+    }),
+    appendToStreamFn: async (sessionId, event, options) => {
+      cached.push({ sessionId, event, options });
+      return event;
+    },
+  });
+
+  const result = await handlers.send_message({
+    sessionId: "sess-1",
+    agentId: "codex",
+    message: "visible in latest tail",
+    idempotencyKey: "idem-tail",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(beforeCalls, 2);
+  assert.equal(result.remoteConfirmation.confirmed, true);
+  assert.equal(result.remoteConfirmation.source, "latest_tail");
+  assert.equal(result.remoteConfirmation.tailChecks, 1);
+  assert.equal(cached.length, 1);
+});
+
 test("Unit MCP session stdio: attention_request emits help_request with high-signal payload", async () => {
   let capturedEvent = null;
   const handlers = createSessionMcpToolHandlers({

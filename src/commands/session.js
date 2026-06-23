@@ -140,6 +140,8 @@ const SESSION_SAY_CONFIRM_ATTEMPTS = 3;
 const SESSION_SAY_CONFIRM_DELAY_MS = 250;
 const SESSION_SAY_CONFIRM_PAGE_LIMIT = 200;
 const SESSION_SAY_CONFIRM_MAX_PAGES = 10;
+const SESSION_SAY_CONFIRM_TOTAL_TIMEOUT_MS = 10_000;
+const SESSION_SAY_CONFIRM_REQUEST_TIMEOUT_MS = 2_000;
 const SESSION_SAY_LOCAL_ONLY_REASONS = new Set([
   "no_session",
   "not_authenticated",
@@ -201,21 +203,131 @@ async function readSessionConfirmationAnchor(sessionId, { targetPath } = {}) {
   };
 }
 
-async function confirmSessionEventVisible(sessionId, clientMessageId, { targetPath, anchorCursor = null } = {}) {
+function normalizePositiveIntegerOrDefault(value, fallbackValue) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return fallbackValue;
+  }
+  return Math.floor(normalized);
+}
+
+function confirmationRemainingMs(deadlineMs, nowMs) {
+  const now = Number(nowMs()) || Date.now();
+  return Math.max(0, Math.floor(deadlineMs - now));
+}
+
+async function confirmSessionEventVisible(
+  sessionId,
+  clientMessageId,
+  {
+    targetPath,
+    anchorCursor = null,
+    pollSessionEventsFn = pollSessionEvents,
+    pollSessionEventsBeforeFn = pollSessionEventsBefore,
+    sleepFn = sleep,
+    nowMs = Date.now,
+    attempts = SESSION_SAY_CONFIRM_ATTEMPTS,
+    delayMs = SESSION_SAY_CONFIRM_DELAY_MS,
+    pageLimit = SESSION_SAY_CONFIRM_PAGE_LIMIT,
+    maxPages = SESSION_SAY_CONFIRM_MAX_PAGES,
+    totalTimeoutMs = SESSION_SAY_CONFIRM_TOTAL_TIMEOUT_MS,
+    requestTimeoutMs = SESSION_SAY_CONFIRM_REQUEST_TIMEOUT_MS,
+  } = {},
+) {
   let lastReason = "not_visible";
   let checked = 0;
   let pages = 0;
+  let tailChecks = 0;
   const normalizedAnchorCursor = normalizeString(anchorCursor) || null;
-  for (let attempt = 1; attempt <= SESSION_SAY_CONFIRM_ATTEMPTS; attempt += 1) {
-    let pageCursor = normalizedAnchorCursor;
-    for (let page = 1; page <= SESSION_SAY_CONFIRM_MAX_PAGES; page += 1) {
-      pages += 1;
-      const result = await pollSessionEvents(sessionId, {
+  const normalizedAttempts = normalizePositiveIntegerOrDefault(attempts, SESSION_SAY_CONFIRM_ATTEMPTS);
+  const normalizedDelayMs = normalizePositiveIntegerOrDefault(delayMs, SESSION_SAY_CONFIRM_DELAY_MS);
+  const normalizedPageLimit = normalizePositiveIntegerOrDefault(pageLimit, SESSION_SAY_CONFIRM_PAGE_LIMIT);
+  const normalizedMaxPages = normalizePositiveIntegerOrDefault(maxPages, SESSION_SAY_CONFIRM_MAX_PAGES);
+  const normalizedTotalTimeoutMs = normalizePositiveIntegerOrDefault(
+    totalTimeoutMs,
+    SESSION_SAY_CONFIRM_TOTAL_TIMEOUT_MS,
+  );
+  const normalizedRequestTimeoutMs = normalizePositiveIntegerOrDefault(
+    requestTimeoutMs,
+    SESSION_SAY_CONFIRM_REQUEST_TIMEOUT_MS,
+  );
+  const deadlineMs = (Number(nowMs()) || Date.now()) + normalizedTotalTimeoutMs;
+  const nextRequestTimeoutMs = () => {
+    const remaining = confirmationRemainingMs(deadlineMs, nowMs);
+    if (remaining <= 0) return 0;
+    return Math.max(1, Math.min(normalizedRequestTimeoutMs, remaining));
+  };
+
+  const maybeConfirmFromLatestTail = async () => {
+    const timeoutMs = nextRequestTimeoutMs();
+    if (timeoutMs <= 0) {
+      lastReason = "confirmation_timeout";
+      return null;
+    }
+    tailChecks += 1;
+    let result = null;
+    try {
+      result = await pollSessionEventsBeforeFn(sessionId, {
         targetPath,
-        since: pageCursor,
-        limit: SESSION_SAY_CONFIRM_PAGE_LIMIT,
+        limit: normalizedPageLimit,
+        timeoutMs,
         forceCircuitProbe: true,
       });
+    } catch (error) {
+      lastReason = normalizeString(error?.code || error?.message) || "confirmation_tail_poll_failed";
+      return null;
+    }
+    if (!result?.ok) {
+      lastReason = normalizeString(result?.reason) || "confirmation_tail_poll_failed";
+      return null;
+    }
+    const events = Array.isArray(result.events) ? result.events : [];
+    checked += events.length;
+    const confirmedEvent = events.find((candidate) => sessionEventMatchesClientMessageId(candidate, clientMessageId));
+    if (!confirmedEvent) {
+      lastReason = "not_visible";
+      return null;
+    }
+    return {
+      confirmed: true,
+      reason: "",
+      checked,
+      pages,
+      tailChecks,
+      source: "latest_tail",
+      anchorCursor: normalizedAnchorCursor,
+      event: confirmedEvent,
+    };
+  };
+
+  for (let attempt = 1; attempt <= normalizedAttempts; attempt += 1) {
+    let pageCursor = normalizedAnchorCursor;
+    for (let page = 1; page <= normalizedMaxPages; page += 1) {
+      const timeoutMs = nextRequestTimeoutMs();
+      if (timeoutMs <= 0) {
+        return {
+          confirmed: false,
+          reason: "confirmation_timeout",
+          checked,
+          pages,
+          tailChecks,
+          anchorCursor: normalizedAnchorCursor,
+        };
+      }
+      pages += 1;
+      let result = null;
+      try {
+        result = await pollSessionEventsFn(sessionId, {
+          targetPath,
+          since: pageCursor,
+          limit: normalizedPageLimit,
+          timeoutMs,
+          forceCircuitProbe: true,
+        });
+      } catch (error) {
+        lastReason = normalizeString(error?.code || error?.message) || "confirmation_poll_failed";
+        break;
+      }
       if (!result?.ok) {
         lastReason = normalizeString(result?.reason) || "confirmation_poll_failed";
         break;
@@ -229,6 +341,8 @@ async function confirmSessionEventVisible(sessionId, clientMessageId, { targetPa
           reason: "",
           checked,
           pages,
+          tailChecks,
+          source: "forward_cursor",
           anchorCursor: normalizedAnchorCursor,
           event: confirmedEvent,
         };
@@ -240,8 +354,17 @@ async function confirmSessionEventVisible(sessionId, clientMessageId, { targetPa
       }
       pageCursor = nextCursor;
     }
-    if (attempt < SESSION_SAY_CONFIRM_ATTEMPTS) {
-      await sleep(SESSION_SAY_CONFIRM_DELAY_MS);
+    const tailConfirmation = await maybeConfirmFromLatestTail();
+    if (tailConfirmation) {
+      return tailConfirmation;
+    }
+    if (attempt < normalizedAttempts) {
+      const remaining = confirmationRemainingMs(deadlineMs, nowMs);
+      if (remaining <= 0) {
+        lastReason = "confirmation_timeout";
+        break;
+      }
+      await sleepFn(Math.min(normalizedDelayMs, remaining));
     }
   }
   return {
@@ -249,6 +372,7 @@ async function confirmSessionEventVisible(sessionId, clientMessageId, { targetPa
     reason: lastReason,
     checked,
     pages,
+    tailChecks,
     anchorCursor: normalizedAnchorCursor,
   };
 }
@@ -1058,6 +1182,44 @@ async function findReusableSessionCandidate({
 //   - When `SENTINELAYER_SKIP_REMOTE_SYNC=1` (test bootstrap), short-circuits
 //     to `{ ok: true, source: "skipped", session: null }` so unit tests
 //     can exercise the local materialization path without a real API.
+async function fetchRemoteSessionDetail(endpoint, headers) {
+  let response;
+  try {
+    response = await fetch(endpoint, { method: "GET", headers });
+  } catch (err) {
+    return {
+      ok: false,
+      response: null,
+      status: 0,
+      reason: normalizeString(err?.message) || "fetch_failed",
+      retryable: true,
+    };
+  }
+  if (response && response.ok) {
+    return { ok: true, response, status: response.status, reason: "", retryable: false };
+  }
+  if (!response) {
+    return { ok: false, response: null, status: 0, reason: "no_response", retryable: true };
+  }
+  const status = Number(response.status) || 0;
+  return {
+    ok: false,
+    response,
+    status,
+    reason: `api_${status || "unknown"}`,
+    retryable: status >= 500 && status < 600,
+  };
+}
+
+async function parseRemoteSessionDetailResponse(response) {
+  const body = await response.json().catch(() => ({}));
+  return body && body.session && typeof body.session === "object"
+    ? body.session
+    : body && typeof body === "object"
+      ? body
+      : null;
+}
+
 async function verifyRemoteSession(sessionId, { targetPath } = {}) {
   const normalizedSessionId = normalizeString(sessionId);
   if (!normalizedSessionId) {
@@ -1085,60 +1247,43 @@ async function verifyRemoteSession(sessionId, { targetPath } = {}) {
   }
   const endpoint = `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
   const headers = { Authorization: `Bearer ${auth.token}` };
-  let lastReason = "unknown";
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let response;
-    try {
-      response = await fetch(endpoint, { method: "GET", headers });
-    } catch (err) {
-      lastReason = normalizeString(err?.message) || "fetch_failed";
-      continue;
-    }
-    if (response && response.ok) {
-      const body = await response.json().catch(() => ({}));
-      const sessionPayload = body && body.session && typeof body.session === "object"
-        ? body.session
-        : body && typeof body === "object"
-          ? body
-          : null;
-      return {
-        ok: true,
-        source: "singleton",
-        session: sessionPayload,
-        status: response.status,
-      };
-    }
-    if (!response) {
-      lastReason = "no_response";
-      continue;
-    }
-    if (response.status === 404) {
-      // Pre-#483 fallback: scan the list endpoint once for the same id.
-      const listResult = await listSessionsFromApi({
-        targetPath,
-        includeArchived: false,
-        limit: 50,
-      }).catch(() => null);
-      if (listResult && listResult.ok) {
-        const found = (listResult.sessions || []).find(
-          (entry) => normalizeString(entry?.sessionId) === normalizedSessionId,
-        );
-        if (found) {
-          return { ok: true, source: "list_fallback", session: found, status: 200 };
-        }
-      }
-      return { ok: false, reason: "not_found", status: 404 };
-    }
-    if (response.status === 403) {
-      return { ok: false, reason: "forbidden", status: 403 };
-    }
-    if (response.status >= 500 && response.status < 600) {
-      lastReason = `api_${response.status}`;
-      continue; // retry once on 5xx
-    }
-    return { ok: false, reason: `api_${response.status}`, status: response.status };
+  const firstAttempt = await fetchRemoteSessionDetail(endpoint, headers);
+  const detail = firstAttempt.retryable
+    ? await fetchRemoteSessionDetail(endpoint, headers)
+    : firstAttempt;
+  if (detail.ok) {
+    return {
+      ok: true,
+      source: "singleton",
+      session: await parseRemoteSessionDetailResponse(detail.response),
+      status: detail.status,
+    };
   }
-  return { ok: false, reason: lastReason };
+  if (detail.status === 404) {
+    // Pre-#483 fallback: scan the list endpoint once for the same id.
+    const listResult = await listSessionsFromApi({
+      targetPath,
+      includeArchived: false,
+      limit: 50,
+    }).catch(() => null);
+    if (listResult && listResult.ok) {
+      const found = (listResult.sessions || []).find(
+        (entry) => normalizeString(entry?.sessionId) === normalizedSessionId,
+      );
+      if (found) {
+        return { ok: true, source: "list_fallback", session: found, status: 200 };
+      }
+    }
+    return { ok: false, reason: "not_found", status: 404 };
+  }
+  if (detail.status === 403) {
+    return { ok: false, reason: "forbidden", status: 403 };
+  }
+  return {
+    ok: false,
+    reason: detail.reason || "unknown",
+    status: detail.status || undefined,
+  };
 }
 
 function normalizeRemoteResumeStatus(session = {}) {
@@ -1951,6 +2096,18 @@ function isSessionControlEvent(event = {}) {
   const type = normalizeString(event.event || event.type).toLowerCase();
   if (type.startsWith("session_listener_")) return true;
   return normalizeString(payload.source).toLowerCase() === "session_listen";
+}
+
+function summarizeSessionTailEvent(event = null) {
+  if (!event || typeof event !== "object") return null;
+  return {
+    type: normalizeString(event.event || event.type) || null,
+    sequenceId: Number(event.sequenceId ?? event.sequence_id) || null,
+    cursor: normalizeString(event.cursor) || null,
+    ts: normalizeString(event.ts || event.timestamp) || null,
+    agentId: normalizeString(event.agent?.id || event.agentId || event.agent_id) || null,
+    control: isSessionControlEvent(event),
+  };
 }
 
 function checkpointSequenceRange(checkpoint = {}) {
@@ -4606,6 +4763,7 @@ export function registerSessionCommand(program) {
       let hydration = null;
       let remoteTail = null;
       let remoteActions = null;
+      let remoteTailStats = null;
       if (options.remote) {
         const authSession = await resolveActiveAuthSession({
           cwd: targetPath,
@@ -4632,6 +4790,23 @@ export function registerSessionCommand(program) {
             timeoutMs: 15_000,
           });
         }
+        const remoteTailEvents = remoteTail?.ok && Array.isArray(remoteTail.events) ? remoteTail.events : [];
+        const latestEvent = remoteTailEvents[remoteTailEvents.length - 1] || null;
+        const latestVisibleEvent = [...remoteTailEvents]
+          .reverse()
+          .find((event) => includeControlEvents || !isSessionControlEvent(event)) || null;
+        const controlEventCount = remoteTailEvents.filter((event) => isSessionControlEvent(event)).length;
+        remoteTailStats = {
+          controlEventCount,
+          materialEventCount: Math.max(0, remoteTailEvents.length - controlEventCount),
+          latestEvent: summarizeSessionTailEvent(latestEvent),
+          latestVisibleEvent: summarizeSessionTailEvent(latestVisibleEvent),
+          latestActivityHidden: Boolean(
+            latestEvent &&
+              isSessionControlEvent(latestEvent) &&
+              !includeControlEvents
+          ),
+        };
         if (!emitJson) {
           if (hydration.ok) {
             console.log(
@@ -4657,6 +4832,16 @@ export function registerSessionCommand(program) {
             console.log(
               pc.yellow(
                 `Remote message actions skipped (${remoteActions.reason}); showing events only.`,
+              ),
+            );
+          }
+          if (remoteTailStats.latestActivityHidden) {
+            const latest = remoteTailStats.latestEvent;
+            const type = latest?.type || "control event";
+            const seq = latest?.sequenceId ? ` seq=${latest.sequenceId}` : "";
+            console.log(
+              pc.gray(
+                `Latest remote activity is hidden control-plane traffic (${type}${seq}); showing recent material messages. Use --include-control-events to inspect it.`,
               ),
             );
           }
@@ -4757,6 +4942,11 @@ export function registerSessionCommand(program) {
                       verified: Boolean(remoteTail.ok),
                       appended: remoteTailAppended,
                       displayedOnly: remoteTailDisplayedOnly,
+                      controlEventCount: remoteTailStats?.controlEventCount || 0,
+                      materialEventCount: remoteTailStats?.materialEventCount || 0,
+                      latestEvent: remoteTailStats?.latestEvent || null,
+                      latestVisibleEvent: remoteTailStats?.latestVisibleEvent || null,
+                      latestActivityHidden: Boolean(remoteTailStats?.latestActivityHidden),
                     }
                   : null,
                 actions: remoteActions
