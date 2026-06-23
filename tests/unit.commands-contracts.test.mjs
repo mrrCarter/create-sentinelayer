@@ -407,6 +407,12 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(read, "--no-view");
   assertCommandHasOption(read, "--include-control-events");
 
+  const exportCommand = getCommandByPath(program, "session export");
+  assertCommandHasOption(exportCommand, "--include-control-events");
+
+  const download = getCommandByPath(program, "session download");
+  assertCommandHasOption(download, "--include-control-events");
+
   const daemon = getCommandByPath(program, "session daemon");
   assertCommandHasOption(daemon, "--session <id>");
   assertCommandHasOption(daemon, "--tick-interval <seconds>");
@@ -431,6 +437,7 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--active-interval <seconds>");
   assertCommandHasOption(listen, "--active-window <seconds>");
   assertCommandHasOption(listen, "--presence-interval <seconds>");
+  assertCommandHasOption(listen, "--presence-keepalive <seconds>");
   assertCommandHasOption(listen, "--no-presence");
   assertCommandHasOption(listen, "--model <model>");
   assertCommandHasOption(listen, "--display-name <name>");

@@ -407,6 +407,137 @@ test("hydrateSessionFromRemote: walks durable event pages before rendering tail"
   }
 });
 
+test("hydrateSessionFromRemote: skips control events locally but advances the events cursor", async () => {
+  const root = await makeTempRepo();
+  try {
+    let ensureCalls = 0;
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "control-only",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            event: "session_listener_heartbeat",
+            cursor: "cursor-heartbeat-1",
+            sequenceId: 1,
+            payload: { source: "session_listen", lifecycle: "heartbeat" },
+          },
+          {
+            event: "session_coaching",
+            cursor: "cursor-coaching-2",
+            sequenceId: 2,
+            payload: { source: "session_listen", message: "tip" },
+          },
+        ],
+        cursor: "cursor-coaching-2",
+      }),
+      _ensureLocalSession: async () => {
+        ensureCalls += 1;
+        return { materialized: true, remoteStatus: "active" };
+      },
+      _append: async (_sessionId, event) => {
+        appended.push(event);
+        return event;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 0);
+    assert.equal(result.eventsRelayed, 2);
+    assert.equal(result.controlEventsSkipped, 2);
+    assert.equal(result.localAppendComplete, true);
+    assert.equal(ensureCalls, 0, "control-only pages should not materialize a local shell");
+    assert.equal(appended.length, 0);
+    assert.equal(
+      await readSyncCursor("control-only", { targetPath: root, suffix: "events" }),
+      "cursor-coaching-2",
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: unidentifiable skipped control events are not cursor-safe", async () => {
+  const root = await makeTempRepo();
+  try {
+    const result = await hydrateSessionFromRemote({
+      sessionId: "malformed-control",
+      targetPath: root,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            event: "session_listener_heartbeat",
+          },
+        ],
+        cursor: "cursor-after-malformed-control",
+      }),
+      _append: async () => {
+        throw new Error("control events should not append");
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 0);
+    assert.equal(result.controlEventsSkipped, 1);
+    assert.equal(result.localAppendComplete, false);
+    assert.equal(
+      await readSyncCursor("malformed-control", { targetPath: root, suffix: "events" }),
+      null,
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: includeControlEvents appends skipped control rows for forensics", async () => {
+  const root = await makeTempRepo();
+  try {
+    let ensureCalls = 0;
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "control-opt-in",
+      targetPath: root,
+      includeControlEvents: true,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [
+          {
+            event: "session_listener_heartbeat",
+            cursor: "cursor-heartbeat-1",
+            sequenceId: 1,
+            payload: { source: "session_listen", lifecycle: "heartbeat" },
+          },
+        ],
+        cursor: "cursor-heartbeat-1",
+      }),
+      _ensureLocalSession: async () => {
+        ensureCalls += 1;
+        return { materialized: true, remoteStatus: "active" };
+      },
+      _append: async (_sessionId, event) => {
+        appended.push(event);
+        return event;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 1);
+    assert.equal(result.eventsRelayed, 1);
+    assert.equal(result.controlEventsSkipped, 0);
+    assert.equal(ensureCalls, 1);
+    assert.equal(appended.length, 1);
+    assert.equal(appended[0].event, "session_listener_heartbeat");
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("hydrateSessionFromRemote: stops durable paging when the API cursor moves backward", async () => {
   const root = await makeTempRepo();
   try {

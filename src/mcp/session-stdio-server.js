@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createAgentEvent } from "../events/schema.js";
 import { appendToStream } from "../session/stream.js";
 import { eventMatchesAgent } from "../session/listener.js";
+import { isSessionControlEvent } from "../session/control-events.js";
 import {
   listSessionMessageActions,
   pollSessionEvents,
@@ -100,20 +101,6 @@ function cleanObject(record = {}) {
 
 function eventAgentId(event = {}) {
   return normalizeAgentId(event?.agent?.id || event?.agentId || event?.agent_id, "");
-}
-
-function eventName(event = {}) {
-  return normalizeString(event?.event || event?.type).toLowerCase();
-}
-
-function isControlEvent(event = {}) {
-  const name = eventName(event);
-  const payload = isPlainObject(event?.payload) ? event.payload : {};
-  return (
-    name.startsWith("session_listen_") ||
-    name === "agent_heartbeat" ||
-    normalizeString(payload.source).toLowerCase() === "session_listen"
-  );
 }
 
 function safePayload(payload = {}) {
@@ -627,7 +614,7 @@ export function createSessionMcpToolHandlers({
       }
 
       const events = (Array.isArray(result.events) ? result.events : []).filter((event) => {
-        if (!includeControlEvents && isControlEvent(event)) return false;
+        if (!includeControlEvents && isSessionControlEvent(event)) return false;
         if (!includeSelf && eventAgentId(event) === agentId) return false;
         return eventMatchesAgent(event, agentId);
       });

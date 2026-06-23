@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { pollSessionEvents, pollSessionEventsBefore, streamSessionEvents } from "./sync.js";
 import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
+import { isSessionListenerLifecycleEvent } from "./control-events.js";
 
 const BROADCAST_RECIPIENTS = new Set([
   "*",
@@ -223,14 +224,6 @@ function isRecentActivity(activityMs, nowMs, windowMs) {
   );
 }
 
-function isListenerLifecycleEvent(event = {}) {
-  if (!isPlainObject(event)) return false;
-  const payload = isPlainObject(event.payload) ? event.payload : {};
-  const eventType = normalizeString(event.event || event.type).toLowerCase();
-  if (eventType.startsWith("session_listener_")) return true;
-  return normalizeString(payload.source).toLowerCase() === "session_listen";
-}
-
 /**
  * Poll session events in the background and emit only events addressed to
  * the current agent or broadcast to everyone. The loop advances its cursor
@@ -409,7 +402,7 @@ export async function listenSessionEvents({
       if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
         lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
       }
-      if (isListenerLifecycleEvent(event)) continue;
+      if (isSessionListenerLifecycleEvent(event)) continue;
       if (!eventMatchesAgent(event, normalizedAgentId)) continue;
       visibleEvents.push(event);
     }
