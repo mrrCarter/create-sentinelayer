@@ -22,6 +22,8 @@ const SESSION_MCP_CONFIRM_ATTEMPTS = 3;
 const SESSION_MCP_CONFIRM_DELAY_MS = 250;
 const SESSION_MCP_CONFIRM_PAGE_LIMIT = 200;
 const SESSION_MCP_CONFIRM_MAX_PAGES = 10;
+const SESSION_MCP_CONFIRM_TOTAL_TIMEOUT_MS = 10_000;
+const SESSION_MCP_CONFIRM_REQUEST_TIMEOUT_MS = 2_000;
 const JSON_RPC_VERSION = "2.0";
 const CONTENT_LENGTH_PREFIX = "content-length:";
 
@@ -46,6 +48,11 @@ function normalizePositiveInteger(value, fallbackValue) {
     return fallbackValue;
   }
   return Math.floor(normalized);
+}
+
+function confirmationRemainingMs(deadlineMs, nowMs) {
+  const now = Number(nowMs()) || Date.now();
+  return Math.max(0, Math.floor(deadlineMs - now));
 }
 
 function normalizeLimit(value) {
@@ -199,32 +206,111 @@ async function confirmSessionEventVisible(
     targetPath,
     anchorCursor = null,
     pollSessionEventsFn = pollSessionEvents,
+    pollSessionEventsBeforeFn = pollSessionEventsBefore,
     sleepFn = sleep,
+    nowMs = Date.now,
     attempts = SESSION_MCP_CONFIRM_ATTEMPTS,
     delayMs = SESSION_MCP_CONFIRM_DELAY_MS,
     pageLimit = SESSION_MCP_CONFIRM_PAGE_LIMIT,
     maxPages = SESSION_MCP_CONFIRM_MAX_PAGES,
+    totalTimeoutMs = SESSION_MCP_CONFIRM_TOTAL_TIMEOUT_MS,
+    requestTimeoutMs = SESSION_MCP_CONFIRM_REQUEST_TIMEOUT_MS,
   } = {},
 ) {
   let lastReason = "not_visible";
   let checked = 0;
   let pages = 0;
+  let tailChecks = 0;
   const normalizedAnchorCursor = normalizeString(anchorCursor) || null;
   const normalizedAttempts = normalizePositiveInteger(attempts, SESSION_MCP_CONFIRM_ATTEMPTS);
   const normalizedDelayMs = normalizePositiveInteger(delayMs, SESSION_MCP_CONFIRM_DELAY_MS);
   const normalizedPageLimit = normalizeLimit(pageLimit);
   const normalizedMaxPages = normalizePositiveInteger(maxPages, SESSION_MCP_CONFIRM_MAX_PAGES);
+  const normalizedTotalTimeoutMs = normalizePositiveInteger(
+    totalTimeoutMs,
+    SESSION_MCP_CONFIRM_TOTAL_TIMEOUT_MS,
+  );
+  const normalizedRequestTimeoutMs = normalizePositiveInteger(
+    requestTimeoutMs,
+    SESSION_MCP_CONFIRM_REQUEST_TIMEOUT_MS,
+  );
+  const deadlineMs = (Number(nowMs()) || Date.now()) + normalizedTotalTimeoutMs;
+  const nextRequestTimeoutMs = () => {
+    const remaining = confirmationRemainingMs(deadlineMs, nowMs);
+    if (remaining <= 0) return 0;
+    return Math.max(1, Math.min(normalizedRequestTimeoutMs, remaining));
+  };
+
+  const maybeConfirmFromLatestTail = async () => {
+    const timeoutMs = nextRequestTimeoutMs();
+    if (timeoutMs <= 0) {
+      lastReason = "confirmation_timeout";
+      return null;
+    }
+    tailChecks += 1;
+    let result = null;
+    try {
+      result = await pollSessionEventsBeforeFn(sessionId, {
+        targetPath,
+        limit: normalizedPageLimit,
+        timeoutMs,
+        forceCircuitProbe: true,
+      });
+    } catch (error) {
+      lastReason = normalizeString(error?.code || error?.message) || "confirmation_tail_poll_failed";
+      return null;
+    }
+    if (!result?.ok) {
+      lastReason = normalizeString(result?.reason) || "confirmation_tail_poll_failed";
+      return null;
+    }
+    const events = Array.isArray(result.events) ? result.events : [];
+    checked += events.length;
+    const confirmedEvent = events.find((candidate) => sessionEventMatchesClientMessageId(candidate, clientMessageId));
+    if (!confirmedEvent) {
+      lastReason = "not_visible";
+      return null;
+    }
+    return {
+      confirmed: true,
+      reason: "",
+      checked,
+      pages,
+      tailChecks,
+      source: "latest_tail",
+      anchorCursor: normalizedAnchorCursor,
+      event: confirmedEvent,
+    };
+  };
 
   for (let attempt = 1; attempt <= normalizedAttempts; attempt += 1) {
     let pageCursor = normalizedAnchorCursor;
     for (let page = 1; page <= normalizedMaxPages; page += 1) {
+      const timeoutMs = nextRequestTimeoutMs();
+      if (timeoutMs <= 0) {
+        return {
+          confirmed: false,
+          reason: "confirmation_timeout",
+          checked,
+          pages,
+          tailChecks,
+          anchorCursor: normalizedAnchorCursor,
+        };
+      }
       pages += 1;
-      const result = await pollSessionEventsFn(sessionId, {
-        targetPath,
-        since: pageCursor,
-        limit: normalizedPageLimit,
-        forceCircuitProbe: true,
-      });
+      let result = null;
+      try {
+        result = await pollSessionEventsFn(sessionId, {
+          targetPath,
+          since: pageCursor,
+          limit: normalizedPageLimit,
+          timeoutMs,
+          forceCircuitProbe: true,
+        });
+      } catch (error) {
+        lastReason = normalizeString(error?.code || error?.message) || "confirmation_poll_failed";
+        break;
+      }
       if (!result?.ok) {
         lastReason = normalizeString(result?.reason) || "confirmation_poll_failed";
         break;
@@ -238,6 +324,8 @@ async function confirmSessionEventVisible(
           reason: "",
           checked,
           pages,
+          tailChecks,
+          source: "forward_cursor",
           anchorCursor: normalizedAnchorCursor,
           event: confirmedEvent,
         };
@@ -249,8 +337,17 @@ async function confirmSessionEventVisible(
       }
       pageCursor = nextCursor;
     }
+    const tailConfirmation = await maybeConfirmFromLatestTail();
+    if (tailConfirmation) {
+      return tailConfirmation;
+    }
     if (attempt < normalizedAttempts) {
-      await sleepFn(normalizedDelayMs);
+      const remaining = confirmationRemainingMs(deadlineMs, nowMs);
+      if (remaining <= 0) {
+        lastReason = "confirmation_timeout";
+        break;
+      }
+      await sleepFn(Math.min(normalizedDelayMs, remaining));
     }
   }
 
@@ -259,6 +356,7 @@ async function confirmSessionEventVisible(
     reason: lastReason,
     checked,
     pages,
+    tailChecks,
     anchorCursor: normalizedAnchorCursor,
   };
 }
@@ -441,6 +539,7 @@ async function persistSessionEvent({
     targetPath,
     anchorCursor: remoteConfirmationAnchor.cursor,
     pollSessionEventsFn,
+    pollSessionEventsBeforeFn,
     sleepFn,
     attempts: confirmationAttempts,
     delayMs: confirmationDelayMs,

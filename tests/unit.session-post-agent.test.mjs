@@ -412,9 +412,110 @@ test("Unit session say: accepted remote write must be canonically visible before
     );
 
     assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
-    assert.equal(calls.filter((call) => call.options.method === "GET").length, 4);
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 7);
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
     assert.equal(events.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say: confirms accepted remote write via latest tail fallback", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-tail-confirm-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let beforeCalls = 0;
+  let postedEvent = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      const textUrl = String(url);
+      if (options.method === "GET" && textUrl.includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        beforeCalls += 1;
+        if (beforeCalls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ events: [anchorSessionEvent()] }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: [
+              {
+                event: "session_listener_heartbeat",
+                sessionId: session.sessionId,
+                cursor: "cursor-heartbeat",
+                sequenceId: 8,
+                ts: "2026-06-23T05:00:00.000Z",
+                agent: { id: "codex" },
+                payload: { source: "session_listen", lifecycle: "heartbeat" },
+              },
+              {
+                ...postedEvent,
+                cursor: "cursor-posted",
+                sequenceId: 9,
+                ts: "2026-06-23T05:00:01.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (options.method === "GET" && textUrl.includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [], cursor: "cursor-anchor" }),
+        };
+      }
+      if (options.method === "POST" && textUrl.endsWith(`/api/v1/sessions/${session.sessionId}/events`)) {
+        postedEvent = JSON.parse(options.body).event;
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "say",
+      session.sessionId,
+      "status: tail fallback confirms this post",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+    const payload = JSON.parse(output);
+
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    assert.equal(payload.remoteConfirmation.source, "latest_tail");
+    assert.equal(payload.remoteConfirmation.tailChecks, 1);
+    assert.equal(payload.remoteConfirmation.event.cursor, "cursor-posted");
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+    assert.equal(beforeCalls, 2);
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.message, "status: tail fallback confirms this post");
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
@@ -662,7 +763,8 @@ test("Unit session post-agent: confirmation retries tolerate delayed canonical v
     const payload = JSON.parse(output);
     assert.equal(payload.remoteConfirmation.confirmed, true);
     assert.equal(payload.remoteConfirmation.pages, 2);
-    assert.equal(payload.remoteConfirmation.checked, 1);
+    assert.equal(payload.remoteConfirmation.checked, 2);
+    assert.equal(payload.remoteConfirmation.tailChecks, 1);
     assert.equal(visibilityPolls, 2);
 
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
@@ -733,7 +835,7 @@ test("Unit session post-agent: accepted remote write must be canonically visible
     );
 
     assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
-    assert.equal(calls.filter((call) => call.options.method === "GET").length, 4);
+    assert.equal(calls.filter((call) => call.options.method === "GET").length, 7);
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
     assert.equal(events.length, 0);
   } finally {
@@ -1536,6 +1638,11 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.remote.tailProbe.verified, true);
     assert.equal(payload.remote.tailProbe.appended, 2);
     assert.equal(payload.remote.tailProbe.displayedOnly, 0);
+    assert.equal(payload.remote.tailProbe.controlEventCount, 1);
+    assert.equal(payload.remote.tailProbe.materialEventCount, 1);
+    assert.equal(payload.remote.tailProbe.latestActivityHidden, false);
+    assert.equal(payload.remote.tailProbe.latestEvent.type, "session_message");
+    assert.equal(payload.remote.tailProbe.latestVisibleEvent.type, "session_message");
     assert.equal(payload.includeControlEvents, false);
     assert.equal(payload.hiddenControlEventCount, 1);
     assert.equal(payload.events.length, 1);
@@ -1543,6 +1650,96 @@ test("Unit session read: --remote --json reports remote verification and tail pr
     assert.equal(payload.events[0].sequenceId, 9940);
     assert.equal(payload.events[0].cursor, "1779364717000:000026d4");
     assert.ok(calls.some((call) => String(call.url).includes("/events/before?limit=25")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session read: --remote reports heartbeat-only latest activity as hidden control-plane traffic", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-heartbeat-tail-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, sessionId: "remote-heartbeat-tail", ttlSeconds: 120 });
+    globalThis.fetch = async (url) => {
+      const textUrl = String(url);
+      if (textUrl.includes("/human-messages?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [], cursor: null }),
+        };
+      }
+      if (textUrl.includes("/events/before?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: [
+              {
+                event: "session_listener_heartbeat",
+                sessionId: session.sessionId,
+                cursor: "1779364717000:000026d5",
+                sequenceId: 9941,
+                ts: "2026-05-21T12:21:00.000Z",
+                agent: { id: "codex", role: "listener" },
+                payload: { source: "session_listen", lifecycle: "heartbeat" },
+              },
+              {
+                event: "session_listener_heartbeat",
+                sessionId: session.sessionId,
+                cursor: "1779364717000:000026d6",
+                sequenceId: 9942,
+                ts: "2026-05-21T12:22:00.000Z",
+                agent: { id: "claude-mythos", role: "listener" },
+                payload: { source: "session_listen", lifecycle: "heartbeat" },
+              },
+            ],
+          }),
+        };
+      }
+      if (textUrl.includes("/events?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [], cursor: null }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--tail",
+      "5",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.displaySource, "remote_verified_tail");
+    assert.equal(payload.remote.tailProbe.verified, true);
+    assert.equal(payload.remote.tailProbe.controlEventCount, 2);
+    assert.equal(payload.remote.tailProbe.materialEventCount, 0);
+    assert.equal(payload.remote.tailProbe.latestActivityHidden, true);
+    assert.equal(payload.remote.tailProbe.latestEvent.type, "session_listener_heartbeat");
+    assert.equal(payload.remote.tailProbe.latestEvent.sequenceId, 9942);
+    assert.equal(payload.remote.tailProbe.latestVisibleEvent, null);
+    assert.equal(payload.hiddenControlEventCount, 2);
+    assert.equal(payload.events.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();

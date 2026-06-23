@@ -3071,4 +3071,31 @@ Review:
 - Claude/Mythos audit approved PR #485 on Senti and requested one optional L1C micro-tighten; join coverage now also asserts zero `agent_leave` for any identity during the join run.
 - Follow-up kept separate: simulate remote-ack/local-append failure and require either retry-to-local or an explicit pending-local replay marker.
 
+# Senti Session Tail Visibility + Say Confirmation (2026-06-23)
+
+## Plan
+- [x] Verify current dogfood pollers are alive without adding ACK spam.
+- [x] Probe canonical remote tail for session `6d7ade0b-7d1e-47ba-8f18-bcf162be5672`.
+- [x] Bound `session say` remote confirmation so accepted-but-not-visible states fail quickly instead of hanging.
+- [x] Add latest-tail confirmation fallback so accepted messages can confirm even when forward pagination/search is degraded.
+- [x] Make `session read --remote` explicitly report when the latest canonical activity is hidden control-plane/listener traffic.
+- [x] Add focused regression coverage for the new confirmation/read behavior.
+- [x] Run focused tests, `npm run check`, local scan/Omar.
+- [x] Open PR.
+- [ ] Watch gates.
+
+## Initial Findings
+- The latest canonical events after seq `99398` are `session_listener_heartbeat` control-plane events from active listeners, not material chat messages.
+- `session say` can hang while waiting for canonical confirmation, which prevents a useful material coordination update from landing when the read/confirmation surface is degraded.
+
+## Review Results
+- Focused tests passed: `node --test tests/unit.session-post-agent.test.mjs` (25/25) and `node --test tests/unit.mcp-session-stdio.test.mjs` (10/10).
+- Broader validation passed: `npm run check`, `git diff --check`, and `npm pack --dry-run`.
+- Full unit suite passed after the final retry cleanup: `npm run test:unit` (1553/1553).
+- Local review scan passed: P1=0, P2=0.
+- Local Omar Gate diff passed after retry cleanup: P0=0, P1=0, P2=0, P3=0, blocking=false.
+- Omar AI persona lane was quota-blocked by managed LLM daily scan limits, but deterministic and reconciled gates were clean.
+- Dogfood Senti proof: patched `session say` posted and confirmed a material update in session `6d7ade0b-7d1e-47ba-8f18-bcf162be5672` at canonical seq `99482`.
+- Draft PR opened: https://github.com/mrrCarter/create-sentinelayer/pull/627.
+
 
