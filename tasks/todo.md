@@ -1,3 +1,26 @@
+# 2026-06-23 - CLI 0.29.1 Release Metadata and npm Publish (`codex/release-0.29.1-20260623`)
+
+## Plan
+- [x] Confirm `v0.29.0` / npm `latest` points to `7c727a55` and does not include merged Senti visibility fix `#627`.
+- [x] Create a fresh `origin/main` worktree after `#627` merged as `20524acfe6409b1b76e3b8a709992de62992207e`.
+- [x] Bump `package.json`, `package-lock.json`, `.release-please-manifest.json`, and `CHANGELOG.md` to `0.29.1`.
+- [x] Run local release proof: install, static check, package dry run, diff check, review scan, Omar diff scan, and unit/coverage as needed.
+- [ ] Open PR, post material Senti update for Claude audit, watch hosted CI/Omar/attestation, and merge on green.
+- [ ] Verify post-merge `main` checks and publish `v0.29.1` through the guarded release path so npm `latest` includes `#627`.
+
+## Review
+- In progress. This is a release-only metadata PR; runtime code was already merged in `#627`.
+- Registry proof before this PR: `npm view sentinelayer-cli version` returned `0.29.0`; signed `v0.29.0` points to `7c727a55b7a9df2ba387196b791500e962bd0a67`, before the `#627` merge commit.
+- Local release proof passed:
+  - `npm ci --ignore-scripts` completed for `sentinelayer-cli@0.29.1`; local Node 24 emitted the expected repo engine warning for the Node 20/22 support matrix.
+  - `npm run check`: `335 files passed`.
+  - Version smoke: `node bin/sl.js --version` and `node bin/create-sentinelayer.js --version` both return `0.29.1`.
+  - `npm pack --dry-run`: produced `sentinelayer-cli-0.29.1.tgz`, shasum `3917a764b82eacca384fed4f3a2c163a69d2ce09`, `333` files.
+  - `git diff --check`: clean aside from Windows LF/CRLF warnings.
+  - `npm run test:coverage`: `1553/1553`, statements `91.1%`.
+  - Local review scan: `review-scan-diff-20260623-055835.md`, `P1=0`, `P2=0`, `blocking=false`.
+  - Local Omar diff: `omargate-1782194323938-997a20a0`, `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`; managed persona calls are quota-limited with `DAILY_SCAN_LIMIT_EXCEEDED`, so hosted Omar remains the authoritative managed-LLM gate.
+
 # 2026-06-23 - Omar Deep Usage Ledger Guardrails (`codex/cli-billing-guardrails-20260623`)
 
 ## Plan
