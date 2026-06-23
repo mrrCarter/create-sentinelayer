@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.3...v0.30.4) (2026-06-23)
+
+
+### Bug Fixes
+
+* **session:** upgrade local posts with canonical remote rows ([c421233](https://github.com/mrrCarter/create-sentinelayer/commit/c421233f617d8b3459bce0015c292efa12c3bc76))
+
 ## [0.30.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.2...v0.30.3) (2026-06-23)
 
 
