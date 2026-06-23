@@ -11,9 +11,10 @@
 - [x] Add focused coverage for classifier, listener routing, remote hydrate cursor safety, remote read heartbeat-tail paging, and export/download omission.
 - [x] Run focused proof, full unit, full E2E, static check, diff check, npm pack dry-run, review scan, and live dogfood read proof.
 - [x] Finish Omar diff gate and reconcile audit feedback.
-- [ ] Open PR, post final Senti audit request, and watch hosted gates.
+- [x] Open PR, post final Senti audit request, and watch hosted gates.
 
 ## Review
+- PR opened: https://github.com/mrrCarter/create-sentinelayer/pull/639.
 - In progress. This is a source-backed Senti reliability slice based on Popper's audit of the published `sentinelayer-cli@0.30.4` control-event bloat.
 - Scope now covers both future-write reduction and transcript-boundary filtering: `src/commands/session.js`, `src/session/control-events.js`, `src/session/remote-hydrate.js`, `src/session/listener.js`, `src/session/listeners.js`, and `src/mcp/session-stdio-server.js`.
 - Focused proof passed: first pass `123/123`; follow-up P2 boundary tests `67/67`.
