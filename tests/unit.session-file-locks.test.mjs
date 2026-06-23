@@ -134,6 +134,73 @@ test("Unit session file locks: unlock emits file_unlock event", async () => {
   }
 });
 
+test("Unit session lock CLI writes structured lock events without chat directive spam", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-lock-cli-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await registerAgent(session.sessionId, {
+      targetPath: tempRoot,
+      agentId: "codex-c3d4",
+      role: "coder",
+      model: "gpt-5.4",
+    });
+
+    const lockOutput = await runSessionCommand([
+      "session",
+      "lock",
+      session.sessionId,
+      "src/routes/auth.js",
+      "src/middleware/validate.js",
+      "--agent",
+      "codex-c3d4",
+      "--intent",
+      "implementing auth fix",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+    const lockPayload = JSON.parse(lockOutput);
+    assert.equal(lockPayload.command, "session lock");
+    assert.equal(lockPayload.files.length, 2);
+    assert.equal(lockPayload.results.every((result) => result.locked === true), true);
+
+    const locks = await listFileLocks(session.sessionId, { targetPath: tempRoot });
+    assert.equal(locks.length, 2);
+
+    const unlockOutput = await runSessionCommand([
+      "session",
+      "unlock",
+      session.sessionId,
+      "src/routes/auth.js",
+      "src/middleware/validate.js",
+      "--agent",
+      "codex-c3d4",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+    const unlockPayload = JSON.parse(unlockOutput);
+    assert.equal(unlockPayload.command, "session unlock");
+    assert.equal(unlockPayload.files.length, 2);
+    assert.equal(unlockPayload.results.every((result) => result.unlocked === true), true);
+
+    const remainingLocks = await listFileLocks(session.sessionId, { targetPath: tempRoot });
+    assert.equal(remainingLocks.length, 0);
+
+    const stream = await readStream(session.sessionId, { tail: 40, targetPath: tempRoot });
+    const directiveMessages = stream.filter((event) => {
+      if (event.event !== "session_message") return false;
+      return /^(lock|unlock)\s*:/i.test(String(event.payload?.message || ""));
+    });
+    assert.equal(directiveMessages.length, 0);
+    assert.equal(stream.filter((event) => event.event === "file_lock").length, 2);
+    assert.equal(stream.filter((event) => event.event === "file_unlock").length, 2);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session file locks: session kill releases locks held by the killed agent", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-lock-kill-"));
   try {

@@ -42,7 +42,9 @@ import {
 import { listRuntimeRuns } from "../session/runtime-bridge.js";
 import {
   listFileLocks,
+  lockFile,
   releaseFileLocksForAgent,
+  unlockFile,
 } from "../session/file-locks.js";
 import {
   injectSessionGuides,
@@ -2014,30 +2016,6 @@ export function buildSessionLockDirective(verb, file, intent = "") {
   return normalizedIntent ? `lock: ${normalizedFile} - ${normalizedIntent}` : `lock: ${normalizedFile}`;
 }
 
-// Posts a coordination directive (e.g. "lock: <file> - <intent>") as a session
-// message so the session daemon processes it into the authoritative file-lock
-// registry. Used by `session lock`/`unlock` as ergonomic sugar over the
-// say-convention; locks are advisory + daemon-enforced with TTL auto-release,
-// so this is a best-effort post.
-async function postSessionDirectiveMessage(sessionId, message, {
-  agentId,
-  targetPath = process.cwd(),
-} = {}) {
-  const clientMessageId = `cli-${randomUUID()}`;
-  const agent = await resolveSessionAgentEnvelope(sessionId, agentId, { targetPath });
-  await ensureSessionSayAgentRegistered(sessionId, agent, { targetPath });
-  const event = createAgentEvent({
-    event: "session_message",
-    agent,
-    sessionId,
-    payload: { message, channel: "session", clientMessageId },
-  });
-  event.eventId = clientMessageId;
-  event.idempotencyToken = clientMessageId;
-  const result = await syncSessionEventToApi(sessionId, event, { targetPath });
-  return { event, result };
-}
-
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
   const normalizedItems = Array.isArray(items) ? items : [];
   const normalizedConcurrency = Math.max(
@@ -3672,7 +3650,7 @@ export function registerSessionCommand(program) {
       return payload;
     });
 
-  const runLockDirectiveCommand = async (verb, sessionId, files, options, command) => {
+  const runFileLockCommand = async (verb, sessionId, files, options, command) => {
     const normalizedSessionId = normalizeString(sessionId);
     if (!normalizedSessionId) {
       throw new Error("session id is required.");
@@ -3698,20 +3676,68 @@ export function registerSessionCommand(program) {
       );
     }
     const intent = normalizeString(options.intent);
+    const results = [];
     const processed = [];
+    const skipped = [];
+    const failed = [];
     for (const file of fileList) {
-      const directive = buildSessionLockDirective(verb, file, intent);
-      await postSessionDirectiveMessage(normalizedSessionId, directive, {
-        agentId: identity.agentId,
+      if (verb === "lock") {
+        const result = await lockFile(normalizedSessionId, identity.agentId, file, {
+          intent,
+          targetPath,
+          awaitRemoteSync: true,
+        });
+        const record = {
+          file: result.file || file,
+          locked: Boolean(result.locked),
+          reason: result.reason || (result.locked ? "locked" : "held_by_other_agent"),
+          heldBy: result.heldBy || null,
+          since: result.since || null,
+        };
+        results.push(record);
+        if (result.locked) {
+          processed.push(record.file);
+        } else {
+          failed.push(record);
+        }
+        continue;
+      }
+
+      const result = await unlockFile(normalizedSessionId, identity.agentId, file, {
+        reason: intent || "manual_release",
         targetPath,
+        awaitRemoteSync: true,
       });
-      processed.push(file);
+      const record = {
+        file: result.file || file,
+        unlocked: Boolean(result.unlocked),
+        reason: result.reason || (result.unlocked ? "unlocked" : "not_locked"),
+        heldBy: result.heldBy || null,
+        since: result.since || null,
+      };
+      results.push(record);
+      if (result.unlocked) {
+        processed.push(record.file);
+      } else if (record.reason === "not_locked") {
+        skipped.push(record);
+      } else {
+        failed.push(record);
+      }
+    }
+
+    if (failed.length > 0) {
+      const summary = failed
+        .map((item) => `${item.file}${item.heldBy ? ` held by ${item.heldBy}` : ""}`)
+        .join(", ");
+      throw new Error(`session ${verb} failed for ${summary}`);
     }
     const payload = {
       command: `session ${verb}`,
       sessionId: normalizedSessionId,
       agentId: identity.agentId,
       files: processed,
+      results,
+      skipped,
     };
     if (shouldEmitJson(options, command)) {
       console.log(JSON.stringify(payload, null, 2));
@@ -3735,7 +3761,7 @@ export function registerSessionCommand(program) {
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, files, options, command) => {
-      await runLockDirectiveCommand("lock", sessionId, files, options, command);
+      await runFileLockCommand("lock", sessionId, files, options, command);
     });
 
   session
@@ -3746,7 +3772,7 @@ export function registerSessionCommand(program) {
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, files, options, command) => {
-      await runLockDirectiveCommand("unlock", sessionId, files, options, command);
+      await runFileLockCommand("unlock", sessionId, files, options, command);
     });
 
   session
