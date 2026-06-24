@@ -237,7 +237,12 @@ function eventBody(event) {
  *  - totals: { tokenTotal, costTotalUsd } summed through the pricing ledger
  *  - sentiActions: count of orchestrator events
  */
-export function computeTranscriptStats({ sessionMeta = {}, events = [], speakerProfiles = new Map() } = {}) {
+export function computeTranscriptStats({
+  sessionMeta = {},
+  events = [],
+  speakerProfiles = new Map(),
+  usageLedger = null,
+} = {}) {
   const perAgent = new Map();
   let firstEventTs = null;
   let lastEventTs = null;
@@ -305,14 +310,14 @@ export function computeTranscriptStats({ sessionMeta = {}, events = [], speakerP
     if (epoch > record.lastSeenMs) record.lastSeenMs = epoch;
   }
 
-  const usageLedger = buildSessionUsageLedger(events, {
+  const resolvedUsageLedger = usageLedger || buildSessionUsageLedger(events, {
     sessionId: normalize(sessionMeta.sessionId),
   });
   const fallbackUsageEpoch =
     lastEventTs ??
     firstEventTs ??
     (Number.isFinite(Date.parse(sessionMeta?.createdAt)) ? Date.parse(sessionMeta.createdAt) : 0);
-  for (const entry of usageLedger.entries) {
+  for (const entry of resolvedUsageLedger.entries) {
     const entryEpoch = Number.isFinite(Date.parse(entry.timestamp))
       ? Date.parse(entry.timestamp)
       : fallbackUsageEpoch;
@@ -364,17 +369,17 @@ export function computeTranscriptStats({ sessionMeta = {}, events = [], speakerP
     sessionLiveSeconds,
     agents,
     totals: {
-      tokenTotal: usageLedger.totals.totalTokens,
-      inputTokens: usageLedger.totals.inputTokens,
-      outputTokens: usageLedger.totals.outputTokens,
-      costTotalUsd: usageLedger.totals.providerCostUsd,
-      customerCostTotalUsd: usageLedger.totals.hasCustomerCost
-        ? usageLedger.totals.customerCostUsd
+      tokenTotal: resolvedUsageLedger.totals.totalTokens,
+      inputTokens: resolvedUsageLedger.totals.inputTokens,
+      outputTokens: resolvedUsageLedger.totals.outputTokens,
+      costTotalUsd: resolvedUsageLedger.totals.providerCostUsd,
+      customerCostTotalUsd: resolvedUsageLedger.totals.hasCustomerCost
+        ? resolvedUsageLedger.totals.customerCostUsd
         : null,
-      usageEntries: usageLedger.entries.length,
-      duplicatesSkipped: usageLedger.duplicatesSkipped,
-      unpriced: usageLedger.totals.unpriced,
-      priceBookVersions: usageLedger.priceBookVersions,
+      usageEntries: resolvedUsageLedger.entries.length,
+      duplicatesSkipped: resolvedUsageLedger.duplicatesSkipped,
+      unpriced: resolvedUsageLedger.totals.unpriced,
+      priceBookVersions: resolvedUsageLedger.priceBookVersions,
     },
     sentiActions,
   };
@@ -408,6 +413,134 @@ function avatarMd(identity) {
   return identity.avatar || letterTile(identity.displayName || identity.agentId);
 }
 
+function intCell(value) {
+  return Math.max(0, Math.floor(Number(value || 0))).toLocaleString("en-US");
+}
+
+function usdCell(value) {
+  return `$${Number(value || 0).toFixed(6)}`;
+}
+
+function tableText(value, { maxLength = 160 } = {}) {
+  const escaped = normalize(value)
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|")
+    .replace(/`/g, "'");
+  if (!maxLength || escaped.length <= maxLength) return escaped;
+  const head = Math.max(24, Math.floor((maxLength - 3) * 0.7));
+  const tail = Math.max(12, maxLength - 3 - head);
+  return `${escaped.slice(0, head)}...${escaped.slice(-tail)}`;
+}
+
+function codeCell(value) {
+  const text = tableText(value);
+  return text ? `\`${text}\`` : "—";
+}
+
+function optionalUsdCell(value, hasValue) {
+  return hasValue ? usdCell(value) : "—";
+}
+
+function shortenIdempotencyKey(value, maxLength = 36) {
+  const text = tableText(value, { maxLength: 0 });
+  if (!text || text.length <= maxLength) return text;
+  const head = Math.max(8, Math.floor((maxLength - 3) * 0.58));
+  const tail = Math.max(6, maxLength - 3 - head);
+  return `${text.slice(0, head)}...${text.slice(-tail)}`;
+}
+
+function rollupsByCostAndTokens(map) {
+  return [...map.values()].sort((a, b) => (
+    b.providerCostUsd - a.providerCostUsd ||
+    b.totalTokens - a.totalTokens ||
+    b.entries - a.entries ||
+    tableText(a.label).localeCompare(tableText(b.label))
+  ));
+}
+
+function recentUsageEntries(entries, limit = 10) {
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => {
+      const aSequence = Number.isFinite(a.entry.sequenceId) ? a.entry.sequenceId : null;
+      const bSequence = Number.isFinite(b.entry.sequenceId) ? b.entry.sequenceId : null;
+      if (aSequence != null && bSequence != null && aSequence !== bSequence) {
+        return bSequence - aSequence;
+      }
+      const aTime = Date.parse(a.entry.timestamp);
+      const bTime = Date.parse(b.entry.timestamp);
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+        return bTime - aTime;
+      }
+      return b.index - a.index;
+    })
+    .slice(0, limit)
+    .map(({ entry }) => entry);
+}
+
+function appendUsageRollupTable(lines, { title, labelHeader, rollups }) {
+  lines.push(`### ${title}`);
+  lines.push("");
+  lines.push(`| ${labelHeader} | Entries | Input | Output | Total | Provider cost | Customer cost | Unpriced |`);
+  lines.push("|---|---:|---:|---:|---:|---:|---:|---:|");
+  if (rollups.length === 0) {
+    lines.push(`| — | 0 | 0 | 0 | 0 | ${usdCell(0)} | — | 0 |`);
+  } else {
+    for (const rollup of rollups) {
+      lines.push(
+        `| ${codeCell(rollup.label)} | ${intCell(rollup.entries)} | ${intCell(rollup.inputTokens)} | ${intCell(rollup.outputTokens)} | ${intCell(rollup.totalTokens)} | ${usdCell(rollup.providerCostUsd)} | ${optionalUsdCell(rollup.customerCostUsd, rollup.hasCustomerCost)} | ${intCell(rollup.unpriced)} |`,
+      );
+    }
+  }
+  lines.push("");
+}
+
+function appendUsageLedgerSection(lines, usageLedger) {
+  const totals = usageLedger.totals;
+  lines.push("## Usage Ledger");
+  lines.push("");
+
+  if (usageLedger.entries.length === 0 && usageLedger.duplicatesSkipped === 0) {
+    lines.push("_No usage telemetry recorded._");
+    lines.push("");
+    return;
+  }
+
+  const customerCostText = totals.hasCustomerCost
+    ? `Customer cost: ${usdCell(totals.customerCostUsd)}`
+    : "Customer cost: —";
+  lines.push(`Accepted entries: ${intCell(usageLedger.entries.length)}`);
+  lines.push(
+    `Tokens: ${intCell(totals.totalTokens)} (input ${intCell(totals.inputTokens)} / output ${intCell(totals.outputTokens)})`,
+  );
+  lines.push(`Provider cost: ${usdCell(totals.providerCostUsd)} · ${customerCostText}`);
+  lines.push(`Price books: ${usageLedger.priceBookVersions.map(tableText).filter(Boolean).join(", ") || "—"}`);
+  lines.push(`Duplicates skipped: ${intCell(usageLedger.duplicatesSkipped)} · Unpriced entries: ${intCell(totals.unpriced)}`);
+  lines.push("");
+
+  appendUsageRollupTable(lines, {
+    title: "Per Agent",
+    labelHeader: "Agent",
+    rollups: rollupsByCostAndTokens(usageLedger.perAgent),
+  });
+  appendUsageRollupTable(lines, {
+    title: "Per Action",
+    labelHeader: "Action",
+    rollups: rollupsByCostAndTokens(usageLedger.perAction),
+  });
+
+  lines.push("### Recent Entries");
+  lines.push("");
+  lines.push("| Time | Agent | Action | Model | Tokens | Provider cost | Customer cost | Idempotency key |");
+  lines.push("|---|---|---|---|---:|---:|---:|---|");
+  for (const entry of recentUsageEntries(usageLedger.entries)) {
+    lines.push(
+      `| ${tableText(timestampOnly(entry.timestamp)) || "—"} | ${codeCell(entry.agentId)} | ${codeCell(entry.action)} | ${codeCell(entry.model)} | ${intCell(entry.totalTokens)} | ${usdCell(entry.providerCostUsd)} | ${optionalUsdCell(entry.customerCostUsd, entry.customerCostUsd != null)} | ${codeCell(shortenIdempotencyKey(entry.idempotencyKey))} |`,
+    );
+  }
+  lines.push("");
+}
+
 /**
  * Build the iMessage-style markdown transcript.
  *
@@ -429,8 +562,11 @@ export function buildTranscriptMarkdown({
   speakerProfiles = new Map(),
   options = {},
 } = {}) {
+  const usageLedger = buildSessionUsageLedger(events, {
+    sessionId: normalize(sessionMeta.sessionId),
+  });
   const includeSystemEvents = options.includeSystemEvents !== false;
-  const stats = computeTranscriptStats({ sessionMeta, events, speakerProfiles });
+  const stats = computeTranscriptStats({ sessionMeta, events, speakerProfiles, usageLedger });
 
   const lines = [];
   const sessionId = normalize(sessionMeta.sessionId) || "unknown";
@@ -496,15 +632,17 @@ export function buildTranscriptMarkdown({
   stats.participantCount = stats.agents.length + silentRegisteredAgents.length;
   lines.push("");
 
+  appendUsageLedgerSection(lines, usageLedger);
+
   // Conversation
   lines.push("## Conversation");
   lines.push("");
   for (const event of events) {
-    const kind = normalize(event.event || event.type);
+    const kind = normalize(event?.event || event?.type);
     if (!kind || !TRANSCRIPT_EVENT_KINDS.has(kind)) continue;
     if (!includeSystemEvents && SYSTEM_EVENT_KINDS.has(kind)) continue;
 
-    const agentId = normalize(event.agent?.id || event.agentId);
+    const agentId = normalize(event?.agent?.id || event?.agentId);
     const profile = speakerProfiles.get(agentId) || null;
     const identity = resolveSpeakerIdentity({
       agentId,

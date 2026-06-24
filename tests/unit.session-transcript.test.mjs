@@ -19,6 +19,13 @@ function ev({ event, agentId, model, ts, payload = {} }) {
   };
 }
 
+function markdownSection(markdown, heading) {
+  const start = markdown.indexOf(`## ${heading}`);
+  assert.notEqual(start, -1, `${heading} section must exist`);
+  const next = markdown.indexOf("\n## ", start + 1);
+  return next === -1 ? markdown.slice(start) : markdown.slice(start, next);
+}
+
 test("resolveSpeakerIdentity routes Senti orchestrator to gold shield", () => {
   const senti = resolveSpeakerIdentity({ agentId: "senti", agentModel: "kai-chen" });
   assert.equal(senti.family, "senti");
@@ -163,6 +170,189 @@ test("computeTranscriptStats: rolls up tokens + cost through pricing-ledger sema
   assert.equal(legacy.tokens, 600);
 });
 
+test("buildTranscriptMarkdown: renders billing-grade usage ledger section", () => {
+  const longIdempotencyKey = "codex-super-long-idempotency-key-0123456789abcdef";
+  const { markdown } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "ledger-session", createdAt: "2026-04-25T10:00:00.000Z" },
+    events: [
+      ev({
+        event: "session_usage",
+        agentId: "claude-1",
+        model: "claude-opus-4-7",
+        ts: "2026-04-25T10:00:00.000Z",
+        payload: {
+          schema: "session_usage/local-v1",
+          idempotencyKey: "claude-call-1",
+          agentId: "claude-1",
+          action: "audit",
+          model: "claude-opus-4-7",
+          inputTokens: 1000,
+          outputTokens: 500,
+          costUsd: 0.012,
+          customerCostUsd: 0.02,
+          response: { text: "local response text" },
+        },
+      }),
+      ev({
+        event: "session_usage",
+        agentId: "claude-1",
+        model: "claude-opus-4-7",
+        ts: "2026-04-25T10:00:01.000Z",
+        payload: {
+          schema: "session_usage/local-v1",
+          idempotencyKey: "claude-call-1",
+          agentId: "claude-1",
+          action: "audit",
+          model: "claude-opus-4-7",
+          inputTokens: 1000,
+          outputTokens: 500,
+          costUsd: 0.012,
+          response: { text: "duplicate response text" },
+        },
+      }),
+      ev({
+        event: "session_usage",
+        agentId: "codex-2",
+        model: "gpt-5.3-codex",
+        ts: "2026-04-25T10:00:30.000Z",
+        payload: {
+          schema: "billing/v1",
+          idempotencyKey: longIdempotencyKey,
+          agentId: "codex-2",
+          action: "omargate",
+          model: "gpt-5.3-codex",
+          usage: {
+            input_tokens: 1600,
+            output_tokens: 900,
+            total_tokens: 2500,
+            cost_usd: 0.025,
+            customer_cost_usd: 0.04,
+          },
+          response: { text: "billing response text" },
+        },
+      }),
+      ev({
+        event: "agent_response",
+        agentId: "legacy-agent",
+        model: "unknown-future-model",
+        ts: "2026-04-25T10:00:45.000Z",
+        payload: {
+          response: "legacy response text",
+          usage: {
+            inputTokens: 100,
+            outputTokens: 50,
+          },
+        },
+      }),
+    ],
+  });
+
+  const ledger = markdownSection(markdown, "Usage Ledger");
+  assert.match(ledger, /^Accepted entries: 3$/m);
+  assert.match(ledger, /^Tokens: 4,150 \(input 2,700 \/ output 1,450\)$/m);
+  assert.match(ledger, /^Provider cost: \$0\.037000 · Customer cost: \$0\.060000$/m);
+  assert.match(ledger, /^Duplicates skipped: 1 · Unpriced entries: 1$/m);
+  assert.match(ledger, /\| `codex-2` \| 1 \| 1,600 \| 900 \| 2,500 \| \$0\.025000 \| \$0\.040000 \| 0 \|/);
+  assert.match(ledger, /\| `claude-1` \| 1 \| 1,000 \| 500 \| 1,500 \| \$0\.012000 \| \$0\.020000 \| 0 \|/);
+  assert.match(ledger, /\| `legacy-agent` \| 1 \| 100 \| 50 \| 150 \| \$0\.000000 \| — \| 1 \|/);
+  assert.match(ledger, /\| `omargate` \| 1 \| 1,600 \| 900 \| 2,500 \| \$0\.025000 \| \$0\.040000 \| 0 \|/);
+  assert.match(ledger, /\| `agent_message` \| 1 \| 100 \| 50 \| 150 \| \$0\.000000 \| — \| 1 \|/);
+  assert.ok(!ledger.includes(longIdempotencyKey), "long idempotency keys should be shortened in markdown");
+  assert.match(ledger, /codex-super-long.*\.\.\..*89abcdef/);
+  assert.ok(!ledger.includes("local response text"));
+  assert.ok(!ledger.includes("billing response text"));
+});
+
+test("buildTranscriptMarkdown: usage ledger de-dupes out-of-order appends and sorts recent entries by sequence", () => {
+  const { markdown, stats } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "ordering-session", createdAt: "2026-04-25T10:00:00.000Z" },
+    events: [
+      {
+        ...ev({
+          event: "session_usage",
+          agentId: "agent-old",
+          model: "gpt-5.3-codex",
+          ts: "2026-04-25T10:05:00.000Z",
+          payload: {
+            schema: "billing/v1",
+            idempotencyKey: "usage-old-seq",
+            ledgerEntryId: "ledger-old-seq",
+            agentId: "agent-old",
+            action: "download",
+            model: "gpt-5.3-codex",
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, cost_usd: 0.001 },
+          },
+        }),
+        sequenceId: 100,
+      },
+      {
+        ...ev({
+          event: "session_usage",
+          agentId: "agent-new",
+          model: "gpt-5.3-codex",
+          ts: "2026-04-25T10:01:00.000Z",
+          payload: {
+            schema: "billing/v1",
+            idempotencyKey: "usage-new-seq",
+            ledgerEntryId: "ledger-new-seq",
+            agentId: "agent-new",
+            action: "download",
+            model: "gpt-5.3-codex",
+            usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30, cost_usd: 0.002 },
+          },
+        }),
+        sequenceId: 200,
+      },
+      {
+        ...ev({
+          event: "session_usage",
+          agentId: "agent-old",
+          model: "gpt-5.3-codex",
+          ts: "2026-04-25T10:06:00.000Z",
+          payload: {
+            schema: "billing/v1",
+            idempotencyKey: "usage-old-seq",
+            ledgerEntryId: "ledger-old-seq",
+            agentId: "agent-old",
+            action: "download",
+            model: "gpt-5.3-codex",
+            usage: { input_tokens: 999, output_tokens: 999, total_tokens: 1998, cost_usd: 0.999 },
+          },
+        }),
+        sequenceId: 300,
+      },
+      {
+        ...ev({
+          event: "session_usage",
+          agentId: "agent-old",
+          model: "gpt-5.3-codex",
+          ts: "2026-04-25T10:05:00.000Z",
+          payload: {
+            schema: "billing/v1",
+            idempotencyKey: "usage-old-seq",
+            ledgerEntryId: "ledger-old-seq",
+            agentId: "agent-old",
+            action: "download",
+            model: "gpt-5.3-codex",
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, cost_usd: 0.001 },
+          },
+        }),
+        sequenceId: 100,
+      },
+    ],
+  });
+
+  assert.equal(stats.totals.usageEntries, 2);
+  assert.equal(stats.totals.duplicatesSkipped, 2);
+  assert.equal(stats.totals.tokenTotal, 45);
+  const ledger = markdownSection(markdown, "Usage Ledger");
+  assert.match(ledger, /^Accepted entries: 2$/m);
+  assert.match(ledger, /^Duplicates skipped: 2 · Unpriced entries: 0$/m);
+  assert.ok(ledger.indexOf("usage-new-seq") < ledger.indexOf("usage-old-seq"));
+  assert.ok(!ledger.includes("1,998"));
+  assert.ok(!ledger.includes("$0.999000"));
+});
+
 test("computeTranscriptStats: counts senti orchestrator actions", () => {
   const events = [
     ev({ event: "agent_join", agentId: "senti", ts: "2026-04-25T10:00:00.000Z" }),
@@ -171,6 +361,17 @@ test("computeTranscriptStats: counts senti orchestrator actions", () => {
   ];
   const stats = computeTranscriptStats({ sessionMeta: {}, events });
   assert.equal(stats.sentiActions, 2);
+});
+
+test("buildTranscriptMarkdown: usage ledger renders explicit zero-telemetry state", () => {
+  const { markdown } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "s1" },
+    events: [
+      ev({ event: "session_message", agentId: "carter", ts: "2026-04-25T10:00:30.000Z", payload: { message: "go" } }),
+    ],
+  });
+  const ledger = markdownSection(markdown, "Usage Ledger");
+  assert.match(ledger, /^_No usage telemetry recorded\._$/m);
 });
 
 test("buildTranscriptMarkdown: header includes Generated/Started/Live for/Senti actions", () => {
