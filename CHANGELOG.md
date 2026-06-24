@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.4...v0.30.5) (2026-06-23)
+
+
+### Bug Fixes
+
+* **session:** reduce Senti control event bloat ([581b94a](https://github.com/mrrCarter/create-sentinelayer/commit/581b94a27249073a8a5f3ce07749b945a382ca96))
+
 ## [0.30.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.3...v0.30.4) (2026-06-23)
 
 
