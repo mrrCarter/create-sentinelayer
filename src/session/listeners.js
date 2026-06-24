@@ -9,6 +9,7 @@ const LISTENER_EVENT_TYPES = new Set([
 // A heartbeat older than this (and not explicitly stopped) means the
 // listener likely died without a clean stop — show it as stale, not live.
 const DEFAULT_STALE_AFTER_MS = 180_000;
+const MAX_STALE_GRACE_MS = 60_000;
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -27,6 +28,38 @@ function readRecord(value) {
 function positiveInt(value) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+function listenerStaleAfterMs({
+  staleAfterMs,
+  presenceKeepaliveSeconds,
+  presenceIntervalSeconds,
+  cadenceSeconds,
+  idleIntervalSeconds,
+  activeIntervalSeconds,
+} = {}) {
+  const fallbackMs = Math.max(1, Number(staleAfterMs) || DEFAULT_STALE_AFTER_MS);
+  const keepaliveMs = presenceKeepaliveSeconds ? presenceKeepaliveSeconds * 1000 : null;
+  const expectedIntervalSeconds =
+    cadenceSeconds ||
+    presenceIntervalSeconds ||
+    idleIntervalSeconds ||
+    activeIntervalSeconds ||
+    null;
+  const expectedIntervalMs = expectedIntervalSeconds ? expectedIntervalSeconds * 1000 : 0;
+
+  if (keepaliveMs) {
+    // The listener can only publish on a poll tick. Allow one bounded poll
+    // interval after the advertised keepalive, not the old 2.5x keepalive
+    // window that made dead listeners look live for several extra minutes.
+    return keepaliveMs + Math.min(expectedIntervalMs || 0, MAX_STALE_GRACE_MS);
+  }
+
+  if (expectedIntervalMs) {
+    return Math.max(fallbackMs, Math.round(expectedIntervalMs * 2.5));
+  }
+
+  return fallbackMs;
 }
 
 /**
@@ -66,17 +99,14 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
     const cadenceSeconds = active
       ? activeIntervalSeconds || nextPollSeconds
       : idleIntervalSeconds || nextPollSeconds;
-    const expectedPresenceSeconds =
-      presenceKeepaliveSeconds ||
-      presenceIntervalSeconds ||
-      cadenceSeconds ||
-      idleIntervalSeconds ||
-      activeIntervalSeconds ||
-      null;
-    const staleAfterForRowMs = Math.max(
+    const staleAfterForRowMs = listenerStaleAfterMs({
       staleAfterMs,
-      expectedPresenceSeconds ? expectedPresenceSeconds * 2_500 : 0,
-    );
+      presenceKeepaliveSeconds,
+      presenceIntervalSeconds,
+      cadenceSeconds,
+      idleIntervalSeconds,
+      activeIntervalSeconds,
+    });
     let status;
     if (stopped) status = "stopped";
     else if (ageMs !== null && ageMs > staleAfterForRowMs) status = "stale";
@@ -94,6 +124,7 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
       presenceIntervalSeconds,
       presenceKeepaliveSeconds,
       nextPollSeconds,
+      staleAfterSeconds: Math.round(staleAfterForRowMs / 1000),
       lastSeenAt: epoch ? new Date(epoch).toISOString() : null,
       lastSeenAgoSeconds: ageMs !== null ? Math.round(ageMs / 1000) : null,
       lastHumanActivityAt: normalizeString(payload.lastHumanActivityAt) || null,
