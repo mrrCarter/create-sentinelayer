@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.10](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.9...v0.30.10) (2026-06-24)
+
+
+### Bug Fixes
+
+* **session:** add safe multiline input for session say ([9500666](https://github.com/mrrCarter/create-sentinelayer/commit/95006662d3ffd9420b47fda80c895cc5fc13c52d))
+
 ## [0.30.9](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.8...v0.30.9) (2026-06-24)
 
 
