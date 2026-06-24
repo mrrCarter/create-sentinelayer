@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.5...v0.30.6) (2026-06-24)
+
+
+### Bug Fixes
+
+* **release:** retry pushed tag ref resolution ([#641](https://github.com/mrrCarter/create-sentinelayer/issues/641)) ([4fd2162](https://github.com/mrrCarter/create-sentinelayer/commit/4fd21621fbac08355032bea307386b235f495292))
+
 ## [0.30.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.4...v0.30.5) (2026-06-23)
 
 
