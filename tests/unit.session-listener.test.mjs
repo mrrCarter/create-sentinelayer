@@ -122,6 +122,79 @@ test("Unit session listener: auto transport consumes stream before polling fallb
   assert.equal(result.cursor, "c1");
 });
 
+test("Unit session listener: stream transport emits lifecycle heartbeats without stream heartbeat frames", async () => {
+  const lifecycle = [];
+  let intervalCallback = null;
+  let clearCount = 0;
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-heartbeat",
+    agentId: "codex-1",
+    transport: "stream",
+    intervalSeconds: 40,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _setInterval: (callback, ms) => {
+      assert.equal(ms, 40_000);
+      intervalCallback = callback;
+      return { unref() {} };
+    },
+    _clearInterval: () => {
+      clearCount += 1;
+    },
+    _stream: async () => {
+      assert.ok(intervalCallback, "expected stream heartbeat timer to be installed");
+      await intervalCallback();
+      return { ok: true, reason: "", cursor: null, eventCount: 0, errorCount: 0 };
+    },
+    onLifecycle: async (event) => lifecycle.push(event),
+  });
+
+  assert.equal(result.streamAttempted, true);
+  assert.equal(result.transport, "stream");
+  assert.equal(clearCount, 1);
+  assert.deepEqual(
+    lifecycle.map((event) => event.type),
+    ["started", "heartbeat", "stopped"],
+  );
+  assert.equal(lifecycle[1].transport, "stream");
+  assert.equal(lifecycle[1].nextPollMs, null);
+});
+
+test("Unit session listener: stream transport dedupes concurrent duplicate events", async () => {
+  const emitted = [];
+  let releaseHandler = null;
+  const handlerGate = new Promise((resolve) => {
+    releaseHandler = resolve;
+  });
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-concurrent-stream",
+    agentId: "codex-1",
+    transport: "stream",
+    replay: true,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _stream: async (sessionId, options) => {
+      const duplicate = evt("c1", { to: "codex-1" });
+      const first = options.onEvent(duplicate);
+      const second = options.onEvent({ ...duplicate });
+      releaseHandler();
+      await Promise.all([first, second]);
+      return { ok: true, reason: "", cursor: "c1", eventCount: 2, errorCount: 0 };
+    },
+    onEvent: async (event) => {
+      emitted.push(event.cursor);
+      await handlerGate;
+    },
+  });
+
+  assert.deepEqual(emitted, ["c1"]);
+  assert.equal(result.emitted, 1);
+  assert.equal(result.matched, 1);
+  assert.equal(result.cursor, "c1");
+});
+
 test("Unit session listener: auto transport falls back to durable polling when stream fails", async () => {
   const emitted = [];
   const errors = [];
@@ -206,6 +279,182 @@ test("Unit session listener: emits listener_stop directives while skipping lifec
   assert.deepEqual(emitted, ["listener_stop"]);
   assert.equal(result.cursor, "c2");
   assert.equal(result.emitted, 1);
+});
+
+test("Unit session listener: ignores stale listener_stop directives from stored-cursor catch-up", async () => {
+  const emitted = [];
+  const writes = [];
+  const stop = {
+    event: "listener_stop",
+    cursor: "c2",
+    ts: "2026-04-28T03:59:59.000Z",
+    agent: { id: "session-control" },
+    payload: { targetAgentId: "codex-1", reason: "operator_stop" },
+  };
+  const message = evt("c3", { to: "codex-1" }, { ts: "2026-04-28T04:00:01.000Z" });
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stale-stop",
+    agentId: "codex-1",
+    maxPolls: 1,
+    _nowMs: () => Date.parse("2026-04-28T04:00:00.500Z"),
+    _readCursor: async () => "c1",
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _poll: async () => ({ ok: true, events: [stop, message], cursor: "c3" }),
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event.event),
+  });
+
+  assert.deepEqual(emitted, ["session_message"]);
+  assert.equal(result.cursor, "c3");
+  assert.equal(result.emitted, 1);
+  assert.equal(result.catchupNotified, true);
+  assert.deepEqual(writes.map((write) => write.cursor), ["c3"]);
+});
+
+test("Unit session listener: emits fresh listener_stop directives created after listener start", async () => {
+  const emitted = [];
+  const stop = {
+    event: "listener_stop",
+    cursor: "c2",
+    ts: "2026-04-28T04:00:01.000Z",
+    agent: { id: "session-control" },
+    payload: { targetAgentId: "codex-1", reason: "operator_stop" },
+  };
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-fresh-stop",
+    agentId: "codex-1",
+    maxPolls: 1,
+    _nowMs: () => Date.parse("2026-04-28T04:00:00.500Z"),
+    _readCursor: async () => "c1",
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => ({ ok: true, events: [stop], cursor: "c2" }),
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event.event),
+  });
+
+  assert.deepEqual(emitted, ["listener_stop"]);
+  assert.equal(result.cursor, "c2");
+  assert.equal(result.emitted, 1);
+});
+
+test("Unit session listener: ignores malformed poll records while advancing valid events", async () => {
+  const emitted = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-malformed-records",
+    agentId: "codex-1",
+    replay: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => ({
+      ok: true,
+      events: [
+        null,
+        "not-an-event",
+        42,
+        { event: "session_message", payload: { to: "claude-1" } },
+        evt("c1", { to: "codex-1" }),
+      ],
+      cursor: "c1",
+    }),
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(emitted, ["c1"]);
+  assert.equal(result.cursor, "c1");
+  assert.equal(result.emitted, 1);
+});
+
+test("Unit session listener: exits cleanly when aborted before polling", async () => {
+  const ac = new AbortController();
+  const lifecycle = [];
+  ac.abort();
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-aborted",
+    agentId: "codex-1",
+    signal: ac.signal,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => {
+      throw new Error("poll should not run after abort");
+    },
+    _sleep: async () => {},
+    onLifecycle: async (event) => lifecycle.push(event),
+  });
+
+  assert.equal(result.pollCount, 0);
+  assert.equal(result.emitted, 0);
+  assert.deepEqual(
+    lifecycle.map((event) => event.type),
+    ["started", "stopped"],
+  );
+  assert.equal(lifecycle.at(-1).aborted, true);
+});
+
+test("Unit session listener fault injection: rejected event callback still stops lifecycle", async () => {
+  const lifecycle = [];
+
+  await assert.rejects(
+    listenSessionEvents({
+      sessionId: "sess-callback-rejects",
+      agentId: "codex-1",
+      replay: true,
+      maxPolls: 1,
+      _readCursor: async () => null,
+      _writeCursor: async () => ({ written: true }),
+      _poll: async () => ({ ok: true, events: [evt("c1", { to: "codex-1" })], cursor: "c1" }),
+      _sleep: async () => {},
+      onLifecycle: async (event) => lifecycle.push(event),
+      onEvent: async () => {
+        throw new Error("handler failed");
+      },
+    }),
+    /handler failed/,
+  );
+
+  assert.deepEqual(
+    lifecycle.map((event) => event.type),
+    ["started", "stopped"],
+  );
+  assert.equal(lifecycle.at(-1).cursor, null);
+});
+
+test("Unit session listener fault injection: abort during idle sleep exits without error", async () => {
+  const ac = new AbortController();
+  const lifecycle = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-abort-during-sleep",
+    agentId: "codex-1",
+    intervalSeconds: 60,
+    signal: ac.signal,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _poll: async () => ({ ok: true, events: [], cursor: null }),
+    _sleep: async () => {
+      ac.abort();
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    },
+    onLifecycle: async (event) => lifecycle.push(event),
+  });
+
+  assert.equal(result.pollCount, 1);
+  assert.equal(result.emitted, 0);
+  assert.deepEqual(
+    lifecycle.map((event) => event.type),
+    ["started", "heartbeat", "stopped"],
+  );
+  assert.equal(lifecycle.at(-1).aborted, true);
 });
 
 test("Unit session listener: advances cursor across nonmatching first poll and emits later matches", async () => {
