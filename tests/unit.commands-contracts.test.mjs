@@ -363,6 +363,8 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(say, "--to <agent>");
   assertCommandHasOption(say, "--reply-to <sequence>");
   assertCommandHasOption(say, "--reply-cursor <cursor>");
+  assertCommandHasOption(say, "--message-file <path>");
+  assertCommandHasOption(say, "--stdin");
   assertCommandHasOption(say, "--local-only");
 
   const postAgent = getCommandByPath(program, "session post-agent");

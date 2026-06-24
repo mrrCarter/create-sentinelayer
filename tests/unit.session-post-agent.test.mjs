@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { Command } from "commander";
@@ -13,6 +15,9 @@ import { resetSessionSyncStateForTests } from "../src/session/sync.js";
 import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
 import { createSession } from "../src/session/store.js";
 import { appendToStream, readStream } from "../src/session/stream.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SL_CLI_PATH = path.resolve(__dirname, "..", "bin", "sl.js");
 
 async function seedWorkspace(rootPath) {
   await mkdir(path.join(rootPath, "src"), { recursive: true });
@@ -43,6 +48,38 @@ async function runSessionCommand(args = []) {
     console.log = originalLog;
   }
   return logs.join("\n").trim();
+}
+
+async function runSessionCli(args = [], { cwd = process.cwd(), stdin = "", env = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [SL_CLI_PATH, ...args], {
+      cwd,
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        SENTINELAYER_SKIP_REMOTE_SYNC: "1",
+        SENTINELAYER_SKIP_SENTI_AUTOSTART: "1",
+        SENTINELAYER_TOKEN: "tok_session_say_stdin_test",
+        ...(env || {}),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => reject(error));
+    child.on("close", (code) => {
+      resolve({ code: Number(code || 0), stdout, stderr });
+    });
+    child.stdin.end(stdin);
+  });
 }
 
 function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
@@ -226,6 +263,150 @@ test("Unit session say identity: explicit metadata is persisted on the event env
       0,
       "identity persistence must not emit a synthetic join event",
     );
+  } finally {
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say: --message-file preserves multiline bodies with blank lines", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-message-file-"));
+  const restoreEnv = installLocalOnlyEnv();
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const messagePath = path.join(tempRoot, "status-update.md");
+    const body = "plan: finish Senti read-path proof\n\nblocked: none\n\nnext: open PR";
+    await writeFile(messagePath, body, "utf-8");
+
+    const output = await runSessionCommand([
+      "session",
+      "say",
+      session.sessionId,
+      "--message-file",
+      messagePath,
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.command, "session say");
+    assert.equal(payload.event.payload.message, body);
+
+    const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(local.at(-1)?.payload?.message, body);
+  } finally {
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say: --stdin preserves multiline bodies through the real CLI", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-stdin-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const body = "first line from stdin\n\nsecond paragraph from stdin";
+
+    const result = await runSessionCli(
+      [
+        "session",
+        "say",
+        session.sessionId,
+        "--stdin",
+        "--agent",
+        "codex",
+        "--path",
+        tempRoot,
+        "--json",
+      ],
+      { stdin: body },
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.command, "session say");
+    assert.equal(payload.event.payload.message, body);
+
+    const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(local.at(-1)?.payload?.message, body);
+  } finally {
+    resetSessionSyncStateForTests();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say: rejects multiple message sources", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-source-conflict-"));
+  const restoreEnv = installLocalOnlyEnv();
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const messagePath = path.join(tempRoot, "status-update.md");
+    await writeFile(messagePath, "from file", "utf-8");
+
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "say",
+          session.sessionId,
+          "from args",
+          "--message-file",
+          messagePath,
+          "--agent",
+          "codex",
+          "--path",
+          tempRoot,
+          "--json",
+        ]),
+      /Use only one message source/,
+    );
+
+    const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(local.filter((event) => event.event === "session_message").length, 0);
+  } finally {
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session say: missing --message-file rejects before local append", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-say-missing-file-"));
+  const restoreEnv = installLocalOnlyEnv();
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "say",
+          session.sessionId,
+          "--message-file",
+          path.join(tempRoot, "does-not-exist.md"),
+          "--agent",
+          "codex",
+          "--path",
+          tempRoot,
+          "--json",
+        ]),
+      /ENOENT|no such file/i,
+    );
+
+    const local = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(local.filter((event) => event.event === "session_message").length, 0);
   } finally {
     resetSessionSyncStateForTests();
     restoreEnv();

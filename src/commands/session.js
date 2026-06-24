@@ -138,6 +138,49 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
+function messagePartsHaveContent(messageParts) {
+  const parts = Array.isArray(messageParts) ? messageParts : [messageParts];
+  return parts.some((part) => normalizeString(part));
+}
+
+function joinMessageParts(messageParts) {
+  if (Array.isArray(messageParts)) {
+    return messageParts.length === 1 ? String(messageParts[0] || "") : messageParts.join(" ");
+  }
+  return String(messageParts || "");
+}
+
+async function readUtf8FromStdin(stdin = process.stdin) {
+  if (stdin.isTTY) {
+    throw new Error("--stdin requires piped input.");
+  }
+  stdin.setEncoding("utf8");
+  let text = "";
+  for await (const chunk of stdin) {
+    text += String(chunk);
+  }
+  return text;
+}
+
+async function resolveSessionSayMessageInput(messageParts, options = {}) {
+  const hasPositionalMessage = messagePartsHaveContent(messageParts);
+  const hasMessageFile = Boolean(normalizeString(options.messageFile));
+  const hasStdin = Boolean(options.stdin);
+  const sources = [hasPositionalMessage, hasMessageFile, hasStdin].filter(Boolean).length;
+  if (sources > 1) {
+    throw new Error("Use only one message source: positional message, --message-file, or --stdin.");
+  }
+  if (hasMessageFile) {
+    return normalizeString(
+      await fsp.readFile(path.resolve(process.cwd(), String(options.messageFile)), "utf-8"),
+    );
+  }
+  if (hasStdin) {
+    return normalizeString(await readUtf8FromStdin());
+  }
+  return normalizeString(joinMessageParts(messageParts));
+}
+
 function optionWasSetByCli(command, optionName) {
   if (!command || typeof command.getOptionValueSource !== "function") {
     return false;
@@ -3343,7 +3386,7 @@ export function registerSessionCommand(program) {
     });
 
   session
-    .command("say <sessionId> <message>")
+    .command("say <sessionId> [message...]")
     .description("Send a message to the session")
     .option(
       "--agent <id>",
@@ -3367,16 +3410,18 @@ export function registerSessionCommand(program) {
     .option("--to <agent>", "Direct the message to a specific agent id")
     .option("--reply-to <sequence>", "Mark this message as a reply to a target sequence id")
     .option("--reply-cursor <cursor>", "Mark this message as a reply to a target event cursor")
+    .option("--message-file <path>", "Read the message body from a UTF-8 file")
+    .option("--stdin", "Read the message body from stdin")
     .option("--force-cli-user", "Allow fallback sends as cli-user when no agent identity can be resolved")
     .option("--local-only", "Append only to the local session cache without remote send confirmation")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
-    .action(async (sessionId, message, options, command) => {
+    .action(async (sessionId, messageParts, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
       if (!normalizedSessionId) {
         throw new Error("session id is required.");
       }
-      const normalizedMessage = normalizeString(message);
+      const normalizedMessage = await resolveSessionSayMessageInput(messageParts, options);
       if (!normalizedMessage) {
         throw new Error("message is required.");
       }
