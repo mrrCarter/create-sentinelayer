@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.6...v0.30.7) (2026-06-24)
+
+
+### Bug Fixes
+
+* **session:** dedupe local enriched transcript rows ([fa25462](https://github.com/mrrCarter/create-sentinelayer/commit/fa25462bafc3091862a444f65ff7bcc55c4b4fe3))
+
 ## [0.30.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.5...v0.30.6) (2026-06-24)
 
 
