@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.9](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.8...v0.30.9) (2026-06-24)
+
+
+### Bug Fixes
+
+* **session:** tighten listener heartbeat health ([#647](https://github.com/mrrCarter/create-sentinelayer/issues/647)) ([c52d9a7](https://github.com/mrrCarter/create-sentinelayer/commit/c52d9a73eb132b92246632522fd0c51de965c9de))
+
 ## [0.30.8](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.7...v0.30.8) (2026-06-24)
 
 
