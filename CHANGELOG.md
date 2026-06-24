@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.11](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.10...v0.30.11) (2026-06-24)
+
+
+### Bug Fixes
+
+* **session:** render usage ledger in CLI downloads ([#651](https://github.com/mrrCarter/create-sentinelayer/issues/651)) ([d59b1e6](https://github.com/mrrCarter/create-sentinelayer/commit/d59b1e68ca31fbe7d179f1443de1e93f78dca702))
+
 ## [0.30.10](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.9...v0.30.10) (2026-06-24)
 
 
