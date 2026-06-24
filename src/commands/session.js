@@ -1811,7 +1811,10 @@ export function shouldPublishListenerPresenceHeartbeat({
   if (elapsedMs >= keepaliveMs) {
     return { publish: true, fingerprint, reason: "keepalive" };
   }
-  return { publish: false, fingerprint, reason: elapsedMs < minIntervalMs ? "interval" : "unchanged" };
+  if (elapsedMs >= minIntervalMs) {
+    return { publish: true, fingerprint, reason: "interval" };
+  }
+  return { publish: false, fingerprint, reason: "interval" };
 }
 
 async function publishListenerPresenceEvent({

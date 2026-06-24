@@ -3177,4 +3177,30 @@ Review:
 - Dogfood Senti proof: patched `session say` posted and confirmed a material update in session `6d7ade0b-7d1e-47ba-8f18-bcf162be5672` at canonical seq `99482`.
 - Draft PR opened: https://github.com/mrrCarter/create-sentinelayer/pull/627.
 
+## 2026-06-24 - Senti Listener Presence Interval Follow-up
+
+## Plan
+- [x] Verify the published `0.30.13` dogfood listener is still running in session `6d7ade0b-7d1e-47ba-8f18-bcf162be5672`.
+- [x] Confirm latest material Senti messages and post one material coordination update for Claude review.
+- [x] Isolate why roster `lastSeenAt` ages while hidden heartbeat traffic exists.
+- [x] Patch listener presence heartbeat publication so `--presence-interval` drives hidden roster freshness.
+- [x] Add focused regression coverage for unchanged heartbeats after the presence interval.
+- [x] Run focused tests, `npm run check`, review scan, Omar Gate, PR/merge/release loop if clean.
+
+## Initial Findings
+- `--presence-interval` is documented as the minimum seconds between remote listener heartbeat events.
+- `shouldPublishListenerPresenceHeartbeat` currently suppresses unchanged heartbeats until `presenceKeepaliveMs`, so a listener can poll every 40 seconds with `--presence-interval 10` while roster `lastSeenAt` intentionally ages toward the 180-second keepalive window.
+
+## Review Results
+- Focused presence helper tests passed: `node --test tests/unit.session-listener-presence.test.mjs` (3/3).
+- Adjacent listener/listeners tests passed: `node --test tests/unit.session-listener-presence.test.mjs tests/unit.session-listener.test.mjs tests/unit.session-listeners.test.mjs` (39/39).
+- Session command regression suite passed: `node --test tests/unit.session-post-agent.test.mjs` (34/34).
+- Static check passed: `npm run check` (337 files).
+- Full unit suite passed: `npm run test:unit` (1613/1613).
+- Docs build passed: `npm run docs:build`.
+- Full E2E suite passed: `npm run test:e2e` (109/109).
+- Pack dry-run passed: shasum `301a5ccdc459a711ecf4fd497b54e05225535acf`.
+- Local review scan passed: `review-20260624-164133-9e09d45e`, P0/P1/P2/P3 all `0`.
+- Local Omar Gate diff passed: `review-20260624-164145-fd3ae870`, P0/P1/P2/P3 all `0`, blocking `false`.
+
 
