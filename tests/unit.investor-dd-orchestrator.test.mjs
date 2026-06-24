@@ -49,6 +49,7 @@ test("runInvestorDd: produces full artifact bundle", async () => {
 
     const files = await fsp.readdir(result.artifactDir);
     assert.ok(files.includes("plan.json"));
+    assert.ok(files.includes("file-metrics.json"));
     assert.ok(files.includes("stream.ndjson"));
     assert.ok(files.includes("summary.json"));
     assert.ok(files.includes("progress.json"));
@@ -60,6 +61,7 @@ test("runInvestorDd: produces full artifact bundle", async () => {
     assert.equal(plan.rootPath, root);
     assert.deepEqual(plan.personas, ["security", "documentation", "supply-chain"]);
     assert.ok(Array.isArray(plan.routing.security));
+    assert.equal(Object.values(plan.routing).flat().some((file) => file.includes(result.runId)), false);
 
     const summary = await readJson(path.join(result.artifactDir, "summary.json"));
     assert.equal(summary.runId, result.runId);
@@ -67,6 +69,15 @@ test("runInvestorDd: produces full artifact bundle", async () => {
     assert.equal(summary.ddProgress.version, "investor_dd_progress_v1");
     assert.equal(summary.ddProgress.sellableReady, false);
     assert.equal(summary.ddProgress.artifact, "progress.json");
+    assert.equal(summary.usageTelemetry.schema, "investor_dd_usage_telemetry_v1");
+    assert.ok(summary.usageTelemetry.totals.locScanned > 0);
+    assert.ok(summary.usageTelemetry.perAgent.some((entry) => entry.personaId === "security"));
+
+    const fileMetrics = await readJson(path.join(result.artifactDir, "file-metrics.json"));
+    assert.equal(fileMetrics.runId, result.runId);
+    assert.equal(fileMetrics.totalFiles, 3);
+    assert.ok(fileMetrics.metrics["src/app.js"].bytes > 0);
+    assert.equal(fileMetrics.metrics["src/app.js"].loc, 1);
 
     const progress = await readJson(path.join(result.artifactDir, "progress.json"));
     assert.equal(progress.runId, result.runId);
@@ -74,6 +85,7 @@ test("runInvestorDd: produces full artifact bundle", async () => {
     assert.equal(progress.sellableReady, false);
     assert.ok(progress.missingPersonas.includes("frontend"));
     assert.ok(progress.summary.blockingGapCount > 0);
+    assert.deepEqual(progress.usageTelemetry, summary.usageTelemetry);
 
     const manifest = await readJson(path.join(result.artifactDir, "manifest.json"));
     assert.ok(manifest["progress.json"]);
@@ -139,6 +151,7 @@ test("runInvestorDd: dryRun skips persona execution + still emits plan", async (
     assert.ok(events.some((e) => e.type === "investor_dd_dry_run"));
     const files = await fsp.readdir(result.artifactDir);
     assert.ok(files.includes("plan.json"));
+    assert.ok(files.includes("file-metrics.json"));
     assert.ok(files.includes("progress.json"));
     assert.equal(files.includes("findings.json"), false);
     assert.equal(files.includes("devtestbot-summary.json"), false);
@@ -146,6 +159,15 @@ test("runInvestorDd: dryRun skips persona execution + still emits plan", async (
     const progress = await readJson(path.join(result.artifactDir, "progress.json"));
     assert.equal(progress.sellableReady, false);
     assert.equal(progress.overallStatus, "partial");
+    assert.equal(progress.usageTelemetry.schema, "investor_dd_usage_telemetry_v1");
+    assert.equal(progress.usageTelemetry.totals.totalTokens, 0);
+    assert.ok(progress.usageTelemetry.totals.locScanned > 0);
+    const usage = progress.capabilities.find((entry) => entry.id === "usage_margin_telemetry");
+    assert.equal(usage.status, "partial");
+    assert.equal(
+      usage.gaps.includes("billing-grade token/customer-cost telemetry is only available when session_usage ledger entries exist"),
+      true,
+    );
     const roster = progress.capabilities.find((entry) => entry.id === "persona_roster");
     const loops = progress.capabilities.find((entry) => entry.id === "persona_agentic_loops");
     assert.equal(roster.status, "partial");
