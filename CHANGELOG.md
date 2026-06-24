@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.12](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.11...v0.30.12) (2026-06-24)
+
+
+### Features
+
+* **session:** add durable session observations ([#654](https://github.com/mrrCarter/create-sentinelayer/issues/654)) ([c500db3](https://github.com/mrrCarter/create-sentinelayer/commit/c500db380c39d0d6d603bcfb961d0c61fc4bd999))
+
 ## [0.30.11](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.10...v0.30.11) (2026-06-24)
 
 
