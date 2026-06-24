@@ -11,6 +11,7 @@ import {
   buildGhReleaseArgs,
   normalizeSshPublicKey,
   parseArgs,
+  waitForRemoteTagRef,
   versionToTag,
 } from "../scripts/release-publish.mjs";
 
@@ -161,6 +162,45 @@ test("Release publish helper creates GitHub releases with --verify-tag only", ()
     "v0.17.0",
     "--generate-notes",
   ]);
+});
+
+test("Release publish helper waits for pushed remote tag refs to become visible", () => {
+  const visibleRef = { object: { type: "tag", sha: "tag-sha" } };
+  const seenDelays = [];
+  let attempts = 0;
+
+  const ref = waitForRemoteTagRef("mrrCarter/create-sentinelayer", "v0.17.0", {
+    delaysMs: [10, 20, 30],
+    sleep: (delayMs) => seenDelays.push(delayMs),
+    resolveRef: (repository, tag) => {
+      assert.equal(repository, "mrrCarter/create-sentinelayer");
+      assert.equal(tag, "v0.17.0");
+      attempts += 1;
+      return attempts === 3 ? visibleRef : null;
+    },
+  });
+
+  assert.equal(ref, visibleRef);
+  assert.equal(attempts, 3);
+  assert.deepEqual(seenDelays, [10, 20]);
+});
+
+test("Release publish helper returns null after exhausting remote tag ref retries", () => {
+  const seenDelays = [];
+  let attempts = 0;
+
+  const ref = waitForRemoteTagRef("mrrCarter/create-sentinelayer", "v0.17.0", {
+    delaysMs: [10, 20],
+    sleep: (delayMs) => seenDelays.push(delayMs),
+    resolveRef: () => {
+      attempts += 1;
+      return null;
+    },
+  });
+
+  assert.equal(ref, null);
+  assert.equal(attempts, 3);
+  assert.deepEqual(seenDelays, [10, 20]);
 });
 
 test("Release publish helper normalizes SSH public keys for GitHub verification", () => {
