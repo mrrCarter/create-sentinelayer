@@ -17,7 +17,7 @@ function heartbeat(overrides = {}) {
   };
 }
 
-test("Unit session listener presence: publishes first and keepalive heartbeats", () => {
+test("Unit session listener presence: publishes first, interval, and keepalive heartbeats", () => {
   const first = shouldPublishListenerPresenceHeartbeat({
     lifecycle: heartbeat(),
     nowMs: 1_000,
@@ -29,14 +29,25 @@ test("Unit session listener presence: publishes first and keepalive heartbeats",
 
   const duplicate = shouldPublishListenerPresenceHeartbeat({
     lifecycle: heartbeat(),
-    nowMs: 61_000,
+    nowMs: 16_000,
     lastHeartbeatMs: 1_000,
     lastFingerprint: first.fingerprint,
     presenceIntervalMs: 30_000,
     presenceKeepaliveMs: 180_000,
   });
   assert.equal(duplicate.publish, false);
-  assert.equal(duplicate.reason, "unchanged");
+  assert.equal(duplicate.reason, "interval");
+
+  const interval = shouldPublishListenerPresenceHeartbeat({
+    lifecycle: heartbeat(),
+    nowMs: 31_000,
+    lastHeartbeatMs: 1_000,
+    lastFingerprint: first.fingerprint,
+    presenceIntervalMs: 30_000,
+    presenceKeepaliveMs: 180_000,
+  });
+  assert.equal(interval.publish, true);
+  assert.equal(interval.reason, "interval");
 
   const keepalive = shouldPublishListenerPresenceHeartbeat({
     lifecycle: heartbeat(),
