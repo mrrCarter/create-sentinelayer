@@ -71,6 +71,7 @@ const CHECKPOINT_MEANINGFUL_EVENT_NAMES = new Set([
   "help_response",
   "session_admin_kill",
   "session_message",
+  "session_observation",
   "task_accepted",
   "task_assign",
   "task_blocked",

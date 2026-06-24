@@ -12,6 +12,7 @@ const PREVIEW_EVENTS = new Set([
   "session_message",
   "session_say",
   "agent_response",
+  "session_observation",
   "human_relay",
   "daemon_alert",
   "session_admin_kill",
@@ -45,6 +46,7 @@ export function pickLatestPreview(events = []) {
     if (!kind || !PREVIEW_EVENTS.has(kind)) continue;
     const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
     const text =
+      payload.summary ||
       payload.message ||
       payload.response ||
       payload.alert ||
