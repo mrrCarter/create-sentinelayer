@@ -1,3 +1,34 @@
+# 2026-06-24 - CLI Listener Lifecycle Hardening (`codex/listener-lifecycle-20260624`)
+
+## Plan
+- [x] Keep `codex` connected to Senti session `6d7ade0b-7d1e-47ba-8f18-bcf162be5672` without ACK spam while working.
+- [x] Reproduce dogfood listener lifecycle issue from durable `session_observation/v1`: same-agent `listener_stop` catch-up can kill a restarted listener, and stream listeners can leave roster presence stale.
+- [x] Ignore only stale `listener_stop` directives whose event timestamp predates the listener start; preserve fresh stop delivery.
+- [x] Add stream-mode lifecycle heartbeat timer so roster presence moves even when the SSE stream emits no heartbeat frames.
+- [x] Harden in-flight duplicate delivery by reserving emitted event keys before awaiting the handler, with rollback if the handler throws.
+- [x] Add focused unit coverage for stale/fresh stop boundaries, stream heartbeat timer, concurrent duplicate delivery, malformed records, pre-poll abort, handler rejection, abort during idle sleep, and non-object record rejection.
+- [x] Add dedicated E2E listener lifecycle/resilience coverage for stale stop restart, fresh stop boundary, and transient `/events` failure recovery.
+- [x] Run focused, full, package, review, and Omar gates.
+- [ ] Post Senti hard-audit request, open PR, watch hosted Omar/quality/attestation, merge on green, then release if npm publication is required.
+
+## Review
+- Implemented in `src/session/listener.js` only: stale `listener_stop` events are skipped only when they carry a parseable timestamp older than this listener's `startedAtMs`; fresh or timestamp-less stop directives remain routable.
+- Stream transport now installs a bounded lifecycle heartbeat timer (`min(idle interval, 60s)`, floor 1s), calls `notifyHeartbeat({ nextPollMs: null })`, guards in-flight timer overlap, `unref()`s the timer, and clears it when the stream closes/fails.
+- Event dedupe now reserves the event identity before awaiting `onEvent`, preventing concurrent duplicate callback delivery from double-emitting; failed handlers remove the reservation and rethrow.
+- Added dedicated E2E files `tests/e2e.session-listener-lifecycle.test.mjs` and `tests/e2e.session-listener-resilience.test.mjs` with three hermetic mock-API scenarios.
+- Added `tests/unit.session-listener-fault-injection.test.mjs` after a fault case exposed that `undefined` records could be normalized into `{}` and treated as broadcast; production now skips non-object event records before lifecycle/routing checks.
+- Verification passed:
+  - Focused listener/fault units: `42/42`.
+  - Dedicated listener lifecycle/resilience E2E: `3/3`.
+  - `npm run check`: `337 files passed`.
+  - `npm run test:unit`: `1613/1613`.
+  - `npm run test:e2e`: `109/109`.
+  - `npm run docs:build`: validation passed.
+  - `git diff --check`: clean aside from expected Windows LF/CRLF warnings.
+  - `npm pack --dry-run --json`: `sentinelayer-cli-0.30.12.tgz`, shasum `8146e7c1ec25b3796b52c2f41fb8f0e023a86657`.
+  - Review scan: `review-scan-diff-20260624-152350.md`, `P1=0`, `P2=0`, blocking `false`.
+  - Omar Gate diff: `omargate-1782314631273-4548ca90`, deterministic `P0=0/P1=0/P2=0/P3=0`, AI `P0=0/P1=0/P2=0/P3=0`, blocking `false`.
+
 # 2026-06-23 - Senti Listener Control-Event Bloat (`codex/session-control-event-bloat-20260623`)
 
 ## Plan

@@ -38,6 +38,10 @@ function normalizePositiveInteger(value, fallbackValue) {
   return Math.floor(normalized);
 }
 
+function isListenerStopDirective(event = {}) {
+  return normalizeString(event?.event) === "listener_stop";
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -255,6 +259,8 @@ export async function listenSessionEvents({
   _readCursor = readSyncCursor,
   _writeCursor = writeSyncCursor,
   _sleep = defaultSleep,
+  _setInterval = setInterval,
+  _clearInterval = clearInterval,
   _nowMs = Date.now,
 } = {}) {
   const normalizedSessionId = normalizeString(sessionId);
@@ -394,6 +400,7 @@ export async function listenSessionEvents({
     const visibleEvents = [];
     let preStartEventCount = 0;
     for (const event of events) {
+      if (!isPlainObject(event)) continue;
       const timestampMs = eventTimestampMs(event);
       if (!timestampMs || timestampMs < startedAtMs) {
         preStartEventCount += 1;
@@ -402,6 +409,7 @@ export async function listenSessionEvents({
       if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
         lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
       }
+      if (timestampMs && timestampMs < startedAtMs && isListenerStopDirective(event)) continue;
       if (isSessionListenerLifecycleEvent(event)) continue;
       if (!eventMatchesAgent(event, normalizedAgentId)) continue;
       visibleEvents.push(event);
@@ -441,9 +449,14 @@ export async function listenSessionEvents({
       if (emittedKeys.has(key)) continue;
       matched += 1;
       if (!shouldEmitBatch && eventTimestampMs(event) < startedAtMs) continue;
-      await onEvent(event);
       emittedKeys.add(key);
-      emitted += 1;
+      try {
+        await onEvent(event);
+        emitted += 1;
+      } catch (error) {
+        emittedKeys.delete(key);
+        throw error;
+      }
     }
 
     if (nextCursor && nextCursor !== cursor) {
@@ -473,6 +486,32 @@ export async function listenSessionEvents({
     return humanActive;
   }
 
+  let streamHeartbeatTimer = null;
+  let streamHeartbeatInFlight = false;
+  const streamHeartbeatMs = Math.max(1_000, Math.min(idleSleepMs, 60_000));
+
+  function stopStreamHeartbeatTimer() {
+    if (!streamHeartbeatTimer) return;
+    _clearInterval(streamHeartbeatTimer);
+    streamHeartbeatTimer = null;
+  }
+
+  function startStreamHeartbeatTimer() {
+    stopStreamHeartbeatTimer();
+    streamHeartbeatTimer = _setInterval(async () => {
+      if (signal?.aborted || streamHeartbeatInFlight) return;
+      streamHeartbeatInFlight = true;
+      try {
+        await notifyHeartbeat({ nextPollMs: null });
+      } finally {
+        streamHeartbeatInFlight = false;
+      }
+    }, streamHeartbeatMs);
+    if (streamHeartbeatTimer && typeof streamHeartbeatTimer.unref === "function") {
+      streamHeartbeatTimer.unref();
+    }
+  }
+
   await notifyLifecycle(
     lifecycleSnapshot("started", {
       startedAt: new Date(startedAtMs).toISOString(),
@@ -484,6 +523,7 @@ export async function listenSessionEvents({
     if (normalizedTransport !== "poll") {
       streamAttempted = true;
       activeTransport = "stream";
+      startStreamHeartbeatTimer();
       const streamResult = await _stream(normalizedSessionId, {
         targetPath,
         since: cursor,
@@ -502,6 +542,8 @@ export async function listenSessionEvents({
         onHeartbeat: async () => {
           await notifyHeartbeat({ nextPollMs: null });
         },
+      }).finally(() => {
+        stopStreamHeartbeatTimer();
       });
       if (!streamResult?.ok) {
         streamFallbackReason = normalizeString(streamResult?.reason) || lastReason || "stream_failed";
