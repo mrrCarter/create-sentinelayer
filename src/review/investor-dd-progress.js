@@ -29,13 +29,26 @@ function compactBudgetState(budgetState) {
   };
 }
 
+function nonNegativeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  return fallback;
+}
+
+function roundedMoney(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.round(parsed * 1_000_000) / 1_000_000;
+}
+
 function usageLedgerKey(entry) {
   return [
     entry?.ledgerEntry?.ledgerEntryId,
-    entry?.action,
+    entry?.action || entry?.ledgerEntry?.action,
+    entry?.agentId || entry?.ledgerEntry?.agentId,
     entry?.ledgerEntry?.idempotencyKey,
-    entry?.inputTokens,
-    entry?.outputTokens,
+    entry?.inputTokens ?? entry?.ledgerEntry?.inputTokens,
+    entry?.outputTokens ?? entry?.ledgerEntry?.outputTokens,
   ].map((value) => String(value || "")).join(":");
 }
 
@@ -54,6 +67,205 @@ function collectSessionUsageLedgerEntries({ budgetState = null, devTestBotPhase 
     entries.push(entry);
   }
   return entries;
+}
+
+function ledgerValue(entry, key, fallback = 0) {
+  if (entry && Object.prototype.hasOwnProperty.call(entry, key)) {
+    return nonNegativeNumber(entry[key], fallback);
+  }
+  if (entry?.ledgerEntry && Object.prototype.hasOwnProperty.call(entry.ledgerEntry, key)) {
+    return nonNegativeNumber(entry.ledgerEntry[key], fallback);
+  }
+  return fallback;
+}
+
+function ledgerString(entry, key) {
+  return String(entry?.[key] || entry?.ledgerEntry?.[key] || "").trim();
+}
+
+function personaFromAgentId(agentId) {
+  const normalized = String(agentId || "").trim();
+  if (!normalized.startsWith("investor-dd-")) return "";
+  return normalized.slice("investor-dd-".length);
+}
+
+function sumFileMetrics(files, fileMetrics = {}) {
+  const seen = new Set();
+  let filesWithMetrics = 0;
+  let locScanned = 0;
+  let bytesScanned = 0;
+  let truncatedFiles = 0;
+  let missingFiles = 0;
+  for (const file of files || []) {
+    const rel = String(file || "").trim();
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+    const metrics = fileMetrics[rel];
+    if (!metrics) continue;
+    filesWithMetrics += 1;
+    locScanned += nonNegativeNumber(metrics.loc, 0);
+    bytesScanned += nonNegativeNumber(metrics.bytes, 0);
+    if (metrics.truncated) truncatedFiles += 1;
+    if (metrics.missing) missingFiles += 1;
+  }
+  return {
+    filesWithMetrics,
+    locScanned,
+    bytesScanned,
+    truncatedFiles,
+    missingFiles,
+  };
+}
+
+function countToolInvocations(record = {}) {
+  return (Array.isArray(record.perFile) ? record.perFile : []).reduce(
+    (count, item) => count + (Array.isArray(item.toolInvocations) ? item.toolInvocations.length : 0),
+    0,
+  );
+}
+
+function createUsageRecord({ personaId = "", agentId = "" } = {}) {
+  const id = String(personaId || "").trim();
+  const agent = String(agentId || (id ? `investor-dd-${id}` : "")).trim();
+  return {
+    personaId: id || null,
+    agentId: agent,
+    routedFiles: 0,
+    visitedFiles: 0,
+    skippedFiles: 0,
+    filesWithMetrics: 0,
+    locScanned: 0,
+    bytesScanned: 0,
+    truncatedFiles: 0,
+    missingFiles: 0,
+    durationMs: 0,
+    toolCalls: 0,
+    findingCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    providerCostUsd: 0,
+    customerCostUsd: null,
+    marginUsd: null,
+    ledgerEntries: 0,
+    actions: [],
+  };
+}
+
+function buildUsageTelemetry({
+  activePersonas = [],
+  routing = {},
+  byPersona = {},
+  fileMetrics = {},
+  sessionUsageLedgerEntries = [],
+} = {}) {
+  const records = new Map();
+  const ensure = ({ personaId = "", agentId = "" } = {}) => {
+    const key = personaId || agentId;
+    if (!records.has(key)) {
+      records.set(key, createUsageRecord({ personaId, agentId }));
+    }
+    return records.get(key);
+  };
+
+  for (const personaId of activePersonas) {
+    const record = ensure({ personaId });
+    const routed = Array.isArray(routing?.[personaId]) ? routing[personaId] : [];
+    const personaRecord = byPersona?.[personaId] || {};
+    const visited = Array.isArray(personaRecord.visited) ? personaRecord.visited : [];
+    const skipped = Array.isArray(personaRecord.skipped) ? personaRecord.skipped : [];
+    const filesForMetrics = visited.length > 0 ? visited : routed;
+    const metrics = sumFileMetrics(filesForMetrics, fileMetrics);
+    record.routedFiles = routed.length;
+    record.visitedFiles = visited.length;
+    record.skippedFiles = skipped.length;
+    record.filesWithMetrics = metrics.filesWithMetrics;
+    record.locScanned = metrics.locScanned;
+    record.bytesScanned = metrics.bytesScanned;
+    record.truncatedFiles = metrics.truncatedFiles;
+    record.missingFiles = metrics.missingFiles;
+    record.durationMs = Math.max(0, Math.floor(nonNegativeNumber(personaRecord.durationMs, 0)));
+    record.toolCalls = countToolInvocations(personaRecord);
+    record.findingCount = Array.isArray(personaRecord.findings) ? personaRecord.findings.length : 0;
+  }
+
+  for (const entry of sessionUsageLedgerEntries) {
+    const agentId = ledgerString(entry, "agentId");
+    const personaId = personaFromAgentId(agentId);
+    const record = ensure({ personaId, agentId });
+    const inputTokens = ledgerValue(entry, "inputTokens", 0);
+    const outputTokens = ledgerValue(entry, "outputTokens", 0);
+    const totalTokens = ledgerValue(entry, "totalTokens", inputTokens + outputTokens);
+    const providerCost = roundedMoney(
+      entry?.ledgerEntry?.providerCostUsd ?? entry?.ledgerEntry?.costUsd ?? entry?.providerCostUsd ?? entry?.costUsd,
+    );
+    const customerCost = roundedMoney(entry?.ledgerEntry?.customerCostUsd ?? entry?.customerCostUsd);
+    record.inputTokens += inputTokens;
+    record.outputTokens += outputTokens;
+    record.totalTokens += totalTokens;
+    if (providerCost != null) {
+      record.providerCostUsd = roundedMoney(record.providerCostUsd + providerCost);
+    }
+    if (customerCost != null) {
+      record.customerCostUsd = roundedMoney((record.customerCostUsd || 0) + customerCost);
+    }
+    if (record.customerCostUsd != null && record.providerCostUsd != null) {
+      record.marginUsd = roundedMoney(record.customerCostUsd - record.providerCostUsd);
+    }
+    record.ledgerEntries += 1;
+    const action = ledgerString(entry, "action");
+    if (action && !record.actions.includes(action)) record.actions.push(action);
+  }
+
+  const perAgent = Array.from(records.values()).map((record) => ({
+    ...record,
+    providerCostUsd: roundedMoney(record.providerCostUsd) || 0,
+  }));
+  const hasCustomerCost = perAgent.some((record) => record.customerCostUsd != null);
+  const totals = perAgent.reduce(
+    (acc, record) => {
+      acc.routedFiles += record.routedFiles;
+      acc.visitedFiles += record.visitedFiles;
+      acc.filesWithMetrics += record.filesWithMetrics;
+      acc.locScanned += record.locScanned;
+      acc.bytesScanned += record.bytesScanned;
+      acc.durationMs += record.durationMs;
+      acc.toolCalls += record.toolCalls;
+      acc.findingCount += record.findingCount;
+      acc.inputTokens += record.inputTokens;
+      acc.outputTokens += record.outputTokens;
+      acc.totalTokens += record.totalTokens;
+      acc.providerCostUsd += record.providerCostUsd || 0;
+      acc.customerCostUsd += record.customerCostUsd || 0;
+      acc.ledgerEntries += record.ledgerEntries;
+      return acc;
+    },
+    {
+      routedFiles: 0,
+      visitedFiles: 0,
+      filesWithMetrics: 0,
+      locScanned: 0,
+      bytesScanned: 0,
+      durationMs: 0,
+      toolCalls: 0,
+      findingCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      providerCostUsd: 0,
+      customerCostUsd: 0,
+      ledgerEntries: 0,
+    },
+  );
+  totals.providerCostUsd = roundedMoney(totals.providerCostUsd) || 0;
+  totals.customerCostUsd = hasCustomerCost ? roundedMoney(totals.customerCostUsd) : null;
+  totals.marginUsd = totals.customerCostUsd != null ? roundedMoney(totals.customerCostUsd - totals.providerCostUsd) : null;
+
+  return {
+    schema: "investor_dd_usage_telemetry_v1",
+    totals,
+    perAgent,
+  };
 }
 
 function byId(capabilities, id) {
@@ -110,6 +322,7 @@ export function buildInvestorDdProgress({
   artifactFiles = [],
   budgetState = null,
   usageLedgerEntries = [],
+  fileMetrics = {},
 } = {}) {
   const activePersonas = uniqueStrings(personas);
   const missingPersonas = INVESTOR_DD_EXPECTED_PERSONAS.filter(
@@ -169,13 +382,28 @@ export function buildInvestorDdProgress({
     devTestBotPhase,
     usageLedgerEntries,
   });
+  const usageTelemetry = buildUsageTelemetry({
+    activePersonas,
+    routing,
+    byPersona,
+    fileMetrics,
+    sessionUsageLedgerEntries,
+  });
   const hasSessionUsageLedger = sessionUsageLedgerEntries.length > 0;
+  const hasPerAgentTelemetry = usageTelemetry.perAgent.length > 0;
+  const hasLocTelemetry = usageTelemetry.totals.locScanned > 0 || usageTelemetry.totals.filesWithMetrics > 0;
+  const hasRuntimeTelemetry = usageTelemetry.totals.durationMs > 0;
+  const hasCustomerPricing = usageTelemetry.totals.customerCostUsd != null;
   addCapability(capabilities, {
     id: "usage_margin_telemetry",
     label: "Billing-grade per-agent usage, token, time, LOC, and margin telemetry",
-    status: compactBudget || hasSessionUsageLedger ? "partial" : dryRun ? "deferred" : "not_configured",
-    evidence: compactBudget || hasSessionUsageLedger
+    status: compactBudget || hasSessionUsageLedger || hasPerAgentTelemetry ? "partial" : dryRun ? "deferred" : "not_configured",
+    evidence: compactBudget || hasSessionUsageLedger || hasPerAgentTelemetry
       ? [
+          `agentUsageTelemetry=${hasPerAgentTelemetry}`,
+          `perAgentUsageRecords=${usageTelemetry.perAgent.length}`,
+          `locScanned=${usageTelemetry.totals.locScanned}`,
+          `durationMs=${usageTelemetry.totals.durationMs}`,
           ...(compactBudget
             ? [
                 `localBudgetSpentUsd=${compactBudget.spentUsd}`,
@@ -192,11 +420,12 @@ export function buildInvestorDdProgress({
         ? ["dryRun=true"]
         : [],
     gaps: [
-      hasSessionUsageLedger
-        ? "only optional DD planner calls are wired to billing-grade session_usage"
-        : "budgetState is a local run governor, not the billing-grade session_usage ledger",
-      "summary does not include per-agent token totals",
-      "summary does not include per-agent runtime, LOC scanned, customer price, or margin",
+      ...(hasSessionUsageLedger
+        ? ["only optional DD planner calls are wired to billing-grade session_usage"]
+        : ["billing-grade token/customer-cost telemetry is only available when session_usage ledger entries exist"]),
+      ...(hasRuntimeTelemetry || dryRun ? [] : ["per-agent runtime is unavailable because no persona execution records were produced"]),
+      ...(hasLocTelemetry ? [] : ["per-agent LOC is unavailable because file metrics were not collected"]),
+      ...(hasCustomerPricing ? [] : ["customerCostUsd and marginUsd are unavailable until customer pricing is supplied by the session_usage ledger"]),
     ],
   });
 
@@ -277,8 +506,8 @@ export function buildInvestorDdProgress({
   });
 
   const artifactRequired = dryRun
-    ? ["plan.json", "stream.ndjson", "summary.json", "report.md", "report.html"]
-    : ["plan.json", "stream.ndjson", "summary.json", "report.md", "report.html", "findings.json"];
+    ? ["file-metrics.json", "plan.json", "stream.ndjson", "summary.json", "report.md", "report.html"]
+    : ["file-metrics.json", "plan.json", "stream.ndjson", "summary.json", "report.md", "report.html", "findings.json"];
   const missingArtifacts = artifactRequired.filter((file) => !artifactFiles.includes(file));
   addCapability(capabilities, {
     id: "artifact_bundle",
@@ -315,6 +544,7 @@ export function buildInvestorDdProgress({
     plannedPersonaCount: INVESTOR_DD_EXPECTED_PERSONAS.length,
     missingPersonas,
     capabilities,
+    usageTelemetry,
     routingSummary: {
       routedPersonas: Object.keys(routing || {}).length,
       routedFiles: Object.values(routing || {}).reduce(
@@ -330,7 +560,7 @@ export function buildInvestorDdProgress({
           ? ["add the missing frontend/Jules persona to the default Investor-DD roster"]
           : ["run the full 13-persona roster before claiming sellable DD coverage"]),
       "wire Senti session id and live usage counters into Investor-DD runs",
-      "add per-agent token/time/LOC/customer-price/margin telemetry",
+      "wire billing-grade token/customer-price/margin telemetry for every Investor-DD persona",
       "require live reconciliation and report-email proof for sellable DD closeout",
     ],
   };

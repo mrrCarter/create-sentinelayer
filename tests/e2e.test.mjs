@@ -1639,6 +1639,15 @@ test("CLI omargate investor-dd --stream emits devTestBot phase and writes bot bu
     );
     assert.equal(devTestBotSummary.findingCount >= 1, true);
     assert.equal(devTestBotSummary.subagents[0].dryRun, true);
+    const summary = JSON.parse(await readFile(path.join(investorArtifactDir, "summary.json"), "utf-8"));
+    const progress = JSON.parse(await readFile(path.join(investorArtifactDir, "progress.json"), "utf-8"));
+    const fileMetrics = JSON.parse(await readFile(path.join(investorArtifactDir, "file-metrics.json"), "utf-8"));
+    assert.equal(summary.usageTelemetry.schema, "investor_dd_usage_telemetry_v1");
+    assert.deepEqual(progress.usageTelemetry, summary.usageTelemetry);
+    assert.equal(summary.usageTelemetry.perAgent.length >= 1, true);
+    assert.equal(summary.usageTelemetry.totals.locScanned >= 1, true);
+    assert.equal(fileMetrics.metrics["src/app.js"].loc, 1);
+    assert.equal(Object.keys(fileMetrics.metrics).some((file) => file.includes(".sentinelayer")), false);
 
     assert.equal(mock.state.requestCount, 1);
     assert.equal(mock.state.lastRunId, emailEvent.runId);
@@ -1693,10 +1702,17 @@ test("CLI omargate investor-dd honors --persona filters", async () => {
     assert.deepEqual(payload.summary.personas, ["frontend"]);
     assert.equal(payload.progress.activePersonaCount, 1);
     assert.equal(payload.progress.capabilities.find((entry) => entry.id === "persona_roster").metadata.activePersonas.length, 1);
+    assert.equal(payload.summary.usageTelemetry.schema, "investor_dd_usage_telemetry_v1");
+    assert.deepEqual(payload.progress.usageTelemetry, payload.summary.usageTelemetry);
+    assert.equal(payload.summary.usageTelemetry.totals.totalTokens, 0);
+    assert.equal(payload.summary.usageTelemetry.totals.locScanned >= 1, true);
+    assert.equal(payload.summary.usageTelemetry.perAgent[0].personaId, "frontend");
 
     const plan = JSON.parse(await readFile(path.join(payload.artifactDir, "plan.json"), "utf-8"));
     assert.deepEqual(plan.personas, ["frontend"]);
     assert.deepEqual(Object.keys(plan.routing), ["frontend"]);
+    const fileMetrics = JSON.parse(await readFile(path.join(payload.artifactDir, "file-metrics.json"), "utf-8"));
+    assert.equal(fileMetrics.metrics["src/frontend/App.tsx"].loc, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

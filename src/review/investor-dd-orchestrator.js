@@ -49,7 +49,12 @@ const INVESTOR_DD_PERSONAS = Object.freeze([...FULL_DEPTH_PERSONAS]);
  * Walk the target repo and return a list of relative POSIX file paths.
  * Skips common noise directories.
  */
-async function walkRepoFiles(rootPath) {
+function isPathInsideOrSame(candidate, root) {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+async function walkRepoFiles(rootPath, { excludeRoots = [] } = {}) {
   const SKIP_DIRS = new Set([
     "node_modules",
     ".git",
@@ -84,7 +89,11 @@ async function walkRepoFiles(rootPath) {
   ]);
 
   const results = [];
+  const excludedRoots = excludeRoots.map((item) => path.resolve(item));
   async function walk(absDir, relDir) {
+    if (excludedRoots.some((excludedRoot) => isPathInsideOrSame(absDir, excludedRoot))) {
+      return;
+    }
     let entries;
     try {
       entries = await fsp.readdir(absDir, { withFileTypes: true });
@@ -99,6 +108,7 @@ async function walkRepoFiles(rootPath) {
       const absPath = path.join(absDir, entry.name);
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
+        if (excludedRoots.some((excludedRoot) => isPathInsideOrSame(absPath, excludedRoot))) continue;
         await walk(absPath, relPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
@@ -109,6 +119,45 @@ async function walkRepoFiles(rootPath) {
   }
   await walk(rootPath, "");
   return results;
+}
+
+function countSourceLoc(text) {
+  return String(text || "")
+    .split(/\r\n|\n|\r/)
+    .filter((line) => line.trim().length > 0).length;
+}
+
+async function collectFileMetrics(rootPath, files) {
+  const metrics = {};
+  for (const file of files) {
+    const rel = String(file || "").trim();
+    if (!rel) continue;
+    const abs = path.resolve(rootPath, rel);
+    try {
+      const stat = await fsp.stat(abs);
+      if (!stat.isFile()) continue;
+      let loc = 0;
+      let truncated = false;
+      if (stat.size <= 2_000_000) {
+        const text = await fsp.readFile(abs, "utf-8");
+        loc = countSourceLoc(text);
+      } else {
+        truncated = true;
+      }
+      metrics[rel] = {
+        bytes: stat.size,
+        loc,
+        truncated,
+      };
+    } catch {
+      metrics[rel] = {
+        bytes: 0,
+        loc: 0,
+        missing: true,
+      };
+    }
+  }
+  return metrics;
 }
 
 async function writeJson(filePath, obj) {
@@ -317,11 +366,18 @@ export async function runInvestorDd({
   const startTime = Date.now();
   emit({ type: "investor_dd_start", rootPath, personas });
 
-  const files = await walkRepoFiles(rootPath);
+  const files = await walkRepoFiles(rootPath, { excludeRoots: [runRoot] });
   emit({ type: "investor_dd_files_discovered", totalFiles: files.length });
 
   const routing = routeFilesToPersonas({ files, personas });
   const routingSummary = summarizeRouting(routing);
+  const fileMetrics = await collectFileMetrics(rootPath, files);
+  await writeJson(path.join(artifactBase, "file-metrics.json"), {
+    runId,
+    rootPath,
+    totalFiles: files.length,
+    metrics: fileMetrics,
+  });
   await writeJson(path.join(artifactBase, "plan.json"), {
     runId,
     rootPath,
@@ -520,6 +576,7 @@ export async function runInvestorDd({
     notification,
     artifactFiles: artifactFilesBeforeManifest,
     budgetState,
+    fileMetrics,
   });
   summary.ddProgress = {
     version: ddProgress.version,
@@ -531,6 +588,7 @@ export async function runInvestorDd({
     blockingGapCount: ddProgress.summary.blockingGapCount,
     artifact: "progress.json",
   };
+  summary.usageTelemetry = ddProgress.usageTelemetry;
   runResult.progress = ddProgress;
   await writeJson(path.join(artifactBase, "progress.json"), ddProgress);
   await writeJson(path.join(artifactBase, "summary.json"), summary);

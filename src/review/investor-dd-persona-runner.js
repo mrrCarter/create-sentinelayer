@@ -180,6 +180,7 @@ export async function runPersonaAcrossFiles({
   onEvent = () => {},
 } = {}) {
   if (!Array.isArray(files)) throw new TypeError("runPersonaAcrossFiles requires files array");
+  const startedAtMs = Date.now();
   const safeBudget = budget || createBudgetState();
   const perFile = [];
   const allFindings = [];
@@ -228,6 +229,7 @@ export async function runPersonaAcrossFiles({
       visited,
       skipped,
       terminationReason,
+      durationMs: Math.max(0, Date.now() - startedAtMs),
     };
   }
 
@@ -268,6 +270,7 @@ export async function runPersonaAcrossFiles({
     visited,
     skipped,
     terminationReason,
+    durationMs: Math.max(0, Date.now() - startedAtMs),
   };
 }
 
