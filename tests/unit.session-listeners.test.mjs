@@ -71,6 +71,29 @@ test("Unit listeners: advertised presence keepalive extends stale window", () =>
   assert.equal(rows.length, 1);
   assert.equal(rows[0].status, "idle");
   assert.equal(rows[0].presenceKeepaliveSeconds, 300);
+  assert.equal(rows[0].staleAfterSeconds, 360);
+});
+
+test("Unit listeners: advertised presence keepalive does not keep dead listeners live for 2.5x", () => {
+  const rows = summarizeListeners(
+    [
+      heartbeat(
+        "codex",
+        {
+          active: false,
+          idleIntervalSeconds: 40,
+          presenceIntervalSeconds: 30,
+          presenceKeepaliveSeconds: 180,
+        },
+        "2026-06-14T07:56:49Z",
+      ),
+    ],
+    { nowMs: NOW },
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lastSeenAgoSeconds, 221);
+  assert.equal(rows[0].staleAfterSeconds, 220);
+  assert.equal(rows[0].status, "stale");
 });
 
 test("Unit listeners: ignores non-listener events", () => {

@@ -4324,8 +4324,9 @@ export function registerSessionCommand(program) {
       const durablePresenceEnabled = options.presence !== false;
       const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
-      const presenceKeepaliveMs =
-        Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds, 1) * 1000;
+      const effectivePresenceKeepaliveSeconds =
+        Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds, intervalSeconds, 1);
+      const presenceKeepaliveMs = effectivePresenceKeepaliveSeconds * 1000;
       let lastPresenceHeartbeatMs = 0;
       let lastPresenceHeartbeatFingerprint = "";
 
@@ -4512,7 +4513,7 @@ export function registerSessionCommand(program) {
             const publishLifecycle = {
               ...lifecycle,
               presenceIntervalSeconds,
-              presenceKeepaliveSeconds: Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds),
+              presenceKeepaliveSeconds: effectivePresenceKeepaliveSeconds,
             };
             if (lifecycleType === "heartbeat") {
               const nowMs = Date.now();

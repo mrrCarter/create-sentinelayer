@@ -916,6 +916,66 @@ test("Unit session listen: publishes bounded listener presence for real agent id
   }
 });
 
+test("Unit session listen: advertised presence keepalive covers the idle poll interval", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-keepalive-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ events: [], cursor: null }),
+      };
+    };
+
+    await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+      "--interval",
+      "240",
+      "--presence-interval",
+      "60",
+      "--presence-keepalive",
+      "180",
+    ]);
+
+    const events = calls
+      .filter((call) => call.options.method === "POST")
+      .map((call) => JSON.parse(call.options.body).event);
+    const heartbeat = events.find((event) => event.event === "session_listener_heartbeat");
+    assert.ok(heartbeat, "expected listener heartbeat presence event");
+    assert.equal(heartbeat.payload.idleIntervalSeconds, 240);
+    assert.equal(heartbeat.payload.presenceIntervalSeconds, 60);
+    assert.equal(heartbeat.payload.presenceKeepaliveSeconds, 240);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session listen: --no-presence keeps real agent listener remote-quiet", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-no-presence-"));
