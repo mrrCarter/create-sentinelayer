@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const TAG_PATTERN = /^v\d+\.\d+\.\d+(?:[.-][0-9A-Za-z.-]+)?$/;
+export const REMOTE_TAG_REF_RETRY_DELAYS_MS = Object.freeze([500, 1000, 2000, 4000, 5000]);
 
 export function parseArgs(argv) {
   const options = {
@@ -227,6 +228,13 @@ function tryRun(command, args) {
   return result.stdout || "";
 }
 
+function sleepMs(delayMs) {
+  const normalized = Number(delayMs);
+  if (!Number.isFinite(normalized) || normalized <= 0) return;
+  const lock = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(lock, 0, 0, normalized);
+}
+
 function resolvePathFromGitConfig(value) {
   const trimmed = String(value || "").trim();
   if (trimmed.startsWith("~/") || trimmed.startsWith("~\\") || trimmed === "~") {
@@ -292,6 +300,22 @@ function remoteTagRef(repository, tag) {
   const output = tryRun("gh", ["api", `repos/${repository}/git/ref/tags/${tag}`]);
   if (!output) return null;
   return JSON.parse(output);
+}
+
+export function waitForRemoteTagRef(
+  repository,
+  tag,
+  { resolveRef = remoteTagRef, sleep = sleepMs, delaysMs = REMOTE_TAG_REF_RETRY_DELAYS_MS } = {}
+) {
+  const delays = Array.isArray(delaysMs) ? delaysMs : [];
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    const ref = resolveRef(repository, tag);
+    if (ref) return ref;
+    if (attempt < delays.length) {
+      sleep(delays[attempt]);
+    }
+  }
+  return null;
 }
 
 function remoteTagObject(repository, tagObjectSha) {
@@ -389,9 +413,11 @@ export function main(argv = process.argv.slice(2)) {
     ensureLocalSignedTag(tag);
     run("git", ["push", "origin", tag]);
 
-    const pushedRef = remoteTagRef(repository, tag);
+    const pushedRef = waitForRemoteTagRef(repository, tag);
     if (!pushedRef) {
-      throw new Error(`Failed to resolve pushed remote tag '${tag}'.`);
+      throw new Error(
+        `Failed to resolve pushed remote tag '${tag}' after ${REMOTE_TAG_REF_RETRY_DELAYS_MS.length + 1} attempts.`
+      );
     }
     if (pushedRef?.object?.type !== "tag") {
       assertTrustedRemoteTag({
