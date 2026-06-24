@@ -463,6 +463,36 @@ test("buildTranscriptMarkdown: session action/reply/reaction events render in co
   assert.match(markdown, /\*\*Reaction:\*\* `like` on `reply action act-reply-10 under #10`/);
 });
 
+test("buildTranscriptMarkdown: session observations render as signed product notes", () => {
+  const { markdown } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "s1" },
+    events: [
+      ev({
+        event: "session_observation",
+        agentId: "codex",
+        model: "gpt-5-codex",
+        ts: "2026-04-25T10:00:34.000Z",
+        payload: {
+          summary: "Checkpoint card renders but does not navigate.",
+          kind: "ux",
+          severity: "p2",
+          owner: "web",
+          proposedBatch: "PR-F",
+          targetSequenceId: 102466,
+          proposal: "Load the checkpoint anchor window before scrolling.",
+        },
+      }),
+    ],
+  });
+
+  assert.match(markdown, /### .* codex/);
+  assert.match(markdown, /\*\*Observation:\*\* `p2` . `ux`/);
+  assert.match(markdown, /Owner: `web` .* Batch: `PR-F` .* Target: `#102466`/);
+  assert.match(markdown, /^Checkpoint card renders but does not navigate\.$/m);
+  assert.match(markdown, /^\*\*Proposal:\*\*$/m);
+  assert.match(markdown, /^Load the checkpoint anchor window before scrolling\.$/m);
+});
+
 test("buildTranscriptMarkdown: system events render as italic dash-bullets", () => {
   const { markdown } = buildTranscriptMarkdown({
     sessionMeta: { sessionId: "s1" },

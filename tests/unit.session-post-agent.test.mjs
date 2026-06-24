@@ -799,6 +799,109 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
   }
 });
 
+test("Unit session observe: posts durable observation event and persists only after remote acceptance", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-observe-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let postedEvent = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && String(url).includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: postedEvent ? [projectApiSessionEvent(postedEvent)] : [] }),
+        };
+      }
+      postedEvent = JSON.parse(options.body).event;
+      return {
+        ok: true,
+        status: 202,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "observe",
+      session.sessionId,
+      "checkpoint card renders but has no interaction",
+      "--agent",
+      "Codex",
+      "--kind",
+      "ux",
+      "--severity",
+      "p2",
+      "--owner",
+      "web",
+      "--batch",
+      "PR-F",
+      "--target-sequence",
+      "102466",
+      "--proposal",
+      "Wire checkpoint deep links to an anchored transcript window.",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.command, "session observe");
+    assert.equal(payload.agentId, "codex");
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    const postCalls = calls.filter((call) => call.options.method === "POST");
+    assert.equal(postCalls.length, 1);
+    const body = JSON.parse(postCalls[0].options.body);
+    assert.equal(body.source, "cli");
+    assert.equal(body.event.event, "session_observation");
+    assert.equal(body.event.agent.id, "codex");
+    assert.equal(body.event.agent.role, "observer");
+    assert.equal(body.event.agent.model, "gpt-5-codex");
+    assert.equal(body.event.agent.displayName, "Codex");
+    assert.equal(body.event.payload.schema, "session_observation/v1");
+    assert.equal(body.event.payload.summary, "checkpoint card renders but has no interaction");
+    assert.equal(body.event.payload.message, "checkpoint card renders but has no interaction");
+    assert.equal(body.event.payload.source, "session_observe");
+    assert.equal(body.event.payload.kind, "ux");
+    assert.equal(body.event.payload.severity, "p2");
+    assert.equal(body.event.payload.owner, "web");
+    assert.equal(body.event.payload.proposedBatch, "PR-F");
+    assert.equal(body.event.payload.targetSequenceId, 102466);
+    assert.equal(body.event.payload.proposal, "Wire checkpoint deep links to an anchored transcript window.");
+    assert.match(body.event.payload.clientMessageId, /^cli-observation-/);
+    assert.equal(body.event.eventId, body.event.payload.clientMessageId);
+    assert.equal(body.event.idempotencyToken, body.event.payload.clientMessageId);
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    const observed = events.find(
+      (event) =>
+        event.event === "session_observation" &&
+        event.agent?.id === "codex" &&
+        event.payload?.summary === "checkpoint card renders but has no interaction",
+    );
+    assert.ok(observed);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session post-agent: confirmation pages forward from the pre-send cursor in busy rooms", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-busy-"));
@@ -1737,6 +1840,43 @@ test("Unit session post-agent: rejects human and placeholder identities before r
         runSessionCommand([
           "session",
           "post-agent",
+          session.sessionId,
+          "status: nope",
+          "--agent",
+          "human-mrrcarter",
+          "--path",
+          tempRoot,
+        ]),
+      /requires a granted non-human agent id/,
+    );
+    assert.equal(called, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session observe: rejects human and placeholder identities before remote call", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-observe-human-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async () => {
+      called = true;
+      return { ok: true, status: 202 };
+    };
+
+    await assert.rejects(
+      () =>
+        runSessionCommand([
+          "session",
+          "observe",
           session.sessionId,
           "status: nope",
           "--agent",

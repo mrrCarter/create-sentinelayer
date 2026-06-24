@@ -7128,6 +7128,130 @@ test("CLI session post-agent: relays inferred metadata through canonical events 
   }
 });
 
+test("CLI session observe: relays durable observation through canonical events API", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-observe-e2e-"));
+  let server = null;
+  try {
+    await writeFile(
+      path.join(tempRoot, "package.json"),
+      '{"name":"session-observe-e2e","version":"1.0.0"}\n',
+      "utf-8",
+    );
+
+    const startResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env, SENTINELAYER_SKIP_REMOTE_SYNC: "1" },
+      args: ["session", "start", "--path", tempRoot, "--no-daemon", "--json"],
+    });
+    assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
+    const startPayload = JSON.parse(String(startResult.stdout || "").trim());
+    const sessionId = String(startPayload.sessionId || "").trim();
+    assert.ok(sessionId);
+
+    let postedEvent = null;
+    const calls = [];
+    server = createServer(async (req, res) => {
+      try {
+        const url = new URL(String(req.url || "/"), "http://127.0.0.1");
+        calls.push({ method: req.method, pathname: url.pathname, search: url.search });
+        if (req.method === "GET" && url.pathname === `/api/v1/sessions/${sessionId}/events/before`) {
+          return jsonResponse(res, 200, {
+            events: [
+              {
+                event: "session_message",
+                cursor: "cursor-anchor",
+                payload: { message: "anchor" },
+              },
+            ],
+          });
+        }
+        if (req.method === "POST" && url.pathname === `/api/v1/sessions/${sessionId}/events`) {
+          postedEvent = (await readJsonBody(req)).event;
+          return jsonResponse(res, 202, {});
+        }
+        if (req.method === "GET" && url.pathname === `/api/v1/sessions/${sessionId}/events`) {
+          const projected = postedEvent ? JSON.parse(JSON.stringify(postedEvent)) : null;
+          if (projected) {
+            delete projected.eventId;
+            delete projected.idempotencyToken;
+            projected.cursor = "cursor-confirmed";
+          }
+          return jsonResponse(res, 200, { events: projected ? [projected] : [] });
+        }
+        return jsonResponse(res, 404, {});
+      } catch (error) {
+        return jsonResponse(res, 500, { error: String(error?.message || error) });
+      }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const apiUrl = `http://127.0.0.1:${address.port}`;
+
+    const observeResult = await runCli({
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        SENTINELAYER_API_URL: apiUrl,
+        SENTINELAYER_TOKEN: "tok_session_observe_e2e",
+        SENTINELAYER_SKIP_REMOTE_SYNC: "",
+      },
+      args: [
+        "session",
+        "observe",
+        sessionId,
+        "checkpoint card needs anchored navigation",
+        "--agent",
+        "Codex",
+        "--kind",
+        "ux",
+        "--severity",
+        "p2",
+        "--owner",
+        "web",
+        "--batch",
+        "PR-F",
+        "--target-sequence",
+        "102466",
+        "--proposal",
+        "Load checkpoint range before scrolling.",
+        "--path",
+        tempRoot,
+        "--json",
+      ],
+    });
+
+    assert.equal(observeResult.code, 0, observeResult.stderr || observeResult.stdout);
+    const payload = JSON.parse(String(observeResult.stdout || "").trim());
+    assert.equal(payload.command, "session observe");
+    assert.equal(payload.agentId, "codex");
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    assert.equal(calls.some((call) => call.method === "POST" && call.pathname.endsWith("/events")), true);
+    assert.equal(postedEvent.event, "session_observation");
+    assert.equal(postedEvent.agent.id, "codex");
+    assert.equal(postedEvent.agent.role, "observer");
+    assert.equal(postedEvent.agent.model, "gpt-5-codex");
+    assert.equal(postedEvent.agent.displayName, "Codex");
+    assert.equal(postedEvent.agent.provider, "openai");
+    assert.equal(postedEvent.agent.clientKind, "cli");
+    assert.equal(postedEvent.payload.schema, "session_observation/v1");
+    assert.equal(postedEvent.payload.summary, "checkpoint card needs anchored navigation");
+    assert.equal(postedEvent.payload.kind, "ux");
+    assert.equal(postedEvent.payload.severity, "p2");
+    assert.equal(postedEvent.payload.owner, "web");
+    assert.equal(postedEvent.payload.proposedBatch, "PR-F");
+    assert.equal(postedEvent.payload.targetSequenceId, 102466);
+    assert.equal(postedEvent.payload.proposal, "Load checkpoint range before scrolling.");
+  } finally {
+    if (server?.listening) {
+      server.close();
+      await once(server, "close");
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI session commands: start/list/join/say/read/status/kill/leave flow with lease revocation", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-e2e-"));
   try {

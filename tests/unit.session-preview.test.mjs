@@ -84,6 +84,23 @@ test("pickLatestPreview: trims long messages", () => {
   assert.ok(result.message.endsWith("…"));
 });
 
+test("pickLatestPreview: uses session observation summaries", () => {
+  const result = pickLatestPreview([
+    {
+      event: "session_observation",
+      ts: "2026-04-25T07:00:00.000Z",
+      agent: { id: "codex" },
+      payload: {
+        summary: "Observation summary wins.",
+        message: "fallback should not win",
+      },
+    },
+  ]);
+  assert.equal(result.kind, "session_observation");
+  assert.equal(result.agentId, "codex");
+  assert.equal(result.message, "Observation summary wins.");
+});
+
 test("readSessionPreview: returns null for missing session", async () => {
   const root = await makeTempRepo();
   try {

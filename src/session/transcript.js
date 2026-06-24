@@ -47,6 +47,7 @@ const TRANSCRIPT_EVENT_KINDS = new Set([
   "session_reply",
   "session_reaction",
   "session_usage",
+  "session_observation",
   "human_relay",
   "agent_join",
   "agent_left",
@@ -209,10 +210,55 @@ function actionBody(event) {
   return "";
 }
 
+function boundedMarkdownText(value, { maxLength = 2_000 } = {}) {
+  const text = normalize(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!maxLength || text.length <= maxLength) return text;
+  const head = Math.max(120, Math.floor((maxLength - 3) * 0.75));
+  const tail = Math.max(40, maxLength - 3 - head);
+  return `${text.slice(0, head)}...${text.slice(-tail)}`;
+}
+
+function observationTargetLabel(payload = {}) {
+  const targetSequence = Number(payload.targetSequenceId || payload.target_sequence_id || 0);
+  if (Number.isFinite(targetSequence) && targetSequence > 0) {
+    return `#${Math.floor(targetSequence)}`;
+  }
+  const targetCursor = tableText(payload.targetCursor || payload.target_cursor, { maxLength: 96 });
+  return targetCursor ? `cursor ${targetCursor}` : "";
+}
+
+function observationBody(event) {
+  const payload = event && typeof event.payload === "object" ? event.payload : {};
+  const severity = tableText(payload.severity || "info", { maxLength: 16 }).toLowerCase();
+  const kind = tableText(payload.kind || "process", { maxLength: 32 }).toLowerCase();
+  const summary = boundedMarkdownText(payload.summary || payload.message || payload.text, {
+    maxLength: 4_000,
+  });
+  const proposal = boundedMarkdownText(payload.proposal || payload.recommendation, {
+    maxLength: 2_000,
+  });
+  const owner = tableText(payload.owner || payload.assignee, { maxLength: 96 });
+  const proposedBatch = tableText(payload.proposedBatch || payload.batch, { maxLength: 96 });
+  const target = observationTargetLabel(payload);
+  const metadata = [];
+  if (owner) metadata.push(`Owner: \`${owner}\``);
+  if (proposedBatch) metadata.push(`Batch: \`${proposedBatch}\``);
+  if (target) metadata.push(`Target: \`${target}\``);
+
+  const lines = [`**Observation:** \`${severity || "info"}\` · \`${kind || "process"}\``];
+  if (metadata.length) lines.push(metadata.join(" · "));
+  if (summary) lines.push("", summary);
+  if (proposal) lines.push("", "**Proposal:**", proposal);
+  return lines.join("\n");
+}
+
 function eventBody(event) {
   const kind = normalize(event?.event || event?.type);
   if (kind === "session_action" || kind === "session_reply" || kind === "session_reaction") {
     return actionBody(event);
+  }
+  if (kind === "session_observation") {
+    return observationBody(event);
   }
   const payload = event && typeof event.payload === "object" ? event.payload : {};
   // session_usage carries the response inside payload.response.text

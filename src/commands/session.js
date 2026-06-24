@@ -1712,6 +1712,47 @@ function canPublishListenerPresence(agentId) {
   );
 }
 
+const SESSION_OBSERVATION_SEVERITIES = new Set(["info", "p3", "p2", "p1", "p0"]);
+const SESSION_OBSERVATION_KINDS = new Set([
+  "ux",
+  "process",
+  "reliability",
+  "security",
+  "billing",
+  "coordination",
+  "architecture",
+  "testing",
+  "release",
+  "other",
+]);
+const SESSION_OBSERVATION_SUMMARY_MAX_LENGTH = 4_000;
+const SESSION_OBSERVATION_OPTION_MAX_LENGTH = 512;
+const SESSION_OBSERVATION_PROPOSAL_MAX_LENGTH = 2_000;
+
+function requireGrantedNonHumanAgentId(rawAgentId, commandName) {
+  const agentId = normalizeAgentId(rawAgentId, "");
+  if (!agentId || !canPublishListenerPresence(agentId)) {
+    throw new Error(`${commandName} requires a granted non-human agent id.`);
+  }
+  return agentId;
+}
+
+function normalizeSessionObservationChoice(rawValue, allowedValues, fallbackValue, fieldName) {
+  const value = normalizeString(rawValue || fallbackValue).toLowerCase();
+  if (!allowedValues.has(value)) {
+    throw new Error(`${fieldName} must be one of: ${[...allowedValues].join(", ")}.`);
+  }
+  return value;
+}
+
+function normalizeSessionObservationText(rawValue, fieldName, maxLength) {
+  const value = normalizeString(rawValue);
+  if (value.length > maxLength) {
+    throw new Error(`${fieldName} must be ${maxLength} characters or fewer.`);
+  }
+  return value;
+}
+
 function listenerLifecycleEventName(type = "") {
   const normalized = normalizeString(type).toLowerCase();
   if (normalized === "started") return "session_listener_started";
@@ -3643,6 +3684,174 @@ export function registerSessionCommand(program) {
       });
       const payload = {
         command: "session post-agent",
+        targetPath,
+        sessionId: normalizedSessionId,
+        agentId,
+        event: persisted,
+        materializedLocalSession: localSession.materialized,
+        refreshedLocalSession: Boolean(localSession.refreshed),
+        remoteSync,
+        remoteConfirmationAnchor,
+        remoteConfirmation,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(formatEventLine(persisted));
+    });
+
+  session
+    .command("observe <sessionId> [summary...]")
+    .description("Record a durable product/process observation in the session")
+    .requiredOption("--agent <id>", "Granted non-human agent id to record the observation as")
+    .option("--model <model>", "Agent model/provider hint", "cli")
+    .option("--display-name <name>", "Human-readable agent display name")
+    .option("--role <role>", "Agent role metadata", "observer")
+    .option(
+      "--kind <kind>",
+      `Observation kind: ${[...SESSION_OBSERVATION_KINDS].join(", ")}`,
+      "process",
+    )
+    .option(
+      "--severity <level>",
+      `Observation severity: ${[...SESSION_OBSERVATION_SEVERITIES].join(", ")}`,
+      "info",
+    )
+    .option("--owner <owner>", "Suggested owner/team for follow-up")
+    .option("--batch <batch>", "Suggested PR batch or backlog lane")
+    .option("--target-sequence <n>", "Anchor the observation to a session sequence id")
+    .option("--target-cursor <cursor>", "Anchor the observation to a session event cursor")
+    .option("--proposal <text>", "Suggested remediation or next step")
+    .option("--message-file <path>", "Read the observation summary from a UTF-8 file")
+    .option("--stdin", "Read the observation summary from stdin")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, summaryParts, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const summary = normalizeSessionObservationText(
+        await resolveSessionSayMessageInput(summaryParts, options),
+        "summary",
+        SESSION_OBSERVATION_SUMMARY_MAX_LENGTH,
+      );
+      if (!summary) {
+        throw new Error("summary is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const agentId = requireGrantedNonHumanAgentId(options.agent, "observe");
+      const kind = normalizeSessionObservationChoice(
+        options.kind,
+        SESSION_OBSERVATION_KINDS,
+        "process",
+        "kind",
+      );
+      const severity = normalizeSessionObservationChoice(
+        options.severity,
+        SESSION_OBSERVATION_SEVERITIES,
+        "info",
+        "severity",
+      );
+      const owner = normalizeSessionObservationText(
+        options.owner,
+        "owner",
+        SESSION_OBSERVATION_OPTION_MAX_LENGTH,
+      );
+      const proposedBatch = normalizeSessionObservationText(
+        options.batch,
+        "batch",
+        SESSION_OBSERVATION_OPTION_MAX_LENGTH,
+      );
+      const proposal = normalizeSessionObservationText(
+        options.proposal,
+        "proposal",
+        SESSION_OBSERVATION_PROPOSAL_MAX_LENGTH,
+      );
+      const targetSequenceId = parseOptionalPositiveInteger(options.targetSequence, "target-sequence");
+      const targetCursor = normalizeSessionObservationText(
+        options.targetCursor,
+        "target-cursor",
+        SESSION_OBSERVATION_OPTION_MAX_LENGTH,
+      );
+      const localSession = await ensureLocalSessionForRemoteCommand(normalizedSessionId, {
+        targetPath,
+      });
+      const clientMessageId = `cli-observation-${randomUUID()}`;
+      const eventPayload = {
+        schema: "session_observation/v1",
+        summary,
+        message: summary,
+        kind,
+        severity,
+        channel: "session",
+        source: "session_observe",
+        clientKind: "cli",
+        clientMessageId,
+      };
+      if (owner) eventPayload.owner = owner;
+      if (proposedBatch) eventPayload.proposedBatch = proposedBatch;
+      if (proposal) eventPayload.proposal = proposal;
+      if (targetSequenceId) eventPayload.targetSequenceId = targetSequenceId;
+      if (targetCursor) eventPayload.targetCursor = targetCursor;
+
+      const agent = await resolveSessionAgentEnvelope(normalizedSessionId, agentId, {
+        targetPath,
+        model: options.model,
+        role: normalizeString(options.role) || "observer",
+        displayName: options.displayName,
+      });
+      agent.role = normalizeString(agent.role) || "observer";
+      agent.model = normalizeString(agent.model) || "cli";
+      agent.clientKind = normalizeString(agent.clientKind) || "cli";
+
+      const event = createAgentEvent({
+        event: "session_observation",
+        agent,
+        sessionId: normalizedSessionId,
+        payload: eventPayload,
+      });
+      event.eventId = clientMessageId;
+      event.idempotencyToken = clientMessageId;
+
+      const remoteConfirmationAnchor = await readSessionConfirmationAnchor(normalizedSessionId, {
+        targetPath,
+      });
+      if (!remoteConfirmationAnchor?.ok) {
+        if (remoteConfirmationAnchor?.reason === "api_403") {
+          throw new Error(
+            `Observation failed (api_403). Ensure this user has an active grant for '${agentId}'.`,
+          );
+        }
+        throw new Error(
+          `Observation confirmation anchor failed (${remoteConfirmationAnchor?.reason || "unknown"}); local cache was not updated.`,
+        );
+      }
+      const remoteSync = await syncSessionEventToApi(normalizedSessionId, event, {
+        targetPath,
+      });
+      if (!remoteSync?.synced) {
+        throw new Error(
+          `Observation failed (${remoteSync?.reason || "unknown"}). Ensure this user has an active grant for '${agentId}'.`,
+        );
+      }
+      const remoteConfirmation = await confirmSessionEventVisible(normalizedSessionId, clientMessageId, {
+        targetPath,
+        anchorCursor: remoteConfirmationAnchor?.cursor,
+      });
+      if (!remoteConfirmation?.confirmed) {
+        throw new Error(
+          `Observation was accepted but not visible in canonical session events (${remoteConfirmation?.reason || "not_visible"}); local cache was not updated.`,
+        );
+      }
+
+      const persisted = await appendToStream(normalizedSessionId, event, {
+        targetPath,
+        syncRemote: false,
+      });
+      const payload = {
+        command: "session observe",
         targetPath,
         sessionId: normalizedSessionId,
         agentId,

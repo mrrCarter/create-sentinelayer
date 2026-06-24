@@ -107,3 +107,51 @@ test("buildTranscriptMarkdown: bounds hostile usage ledger fields and ignores in
   assert.match(ledger, /download-b{20,}\.\.\.b{12,}/);
   assert.match(ledger, /idem-c{8,}\.\.\.c{4,}-tail/);
 });
+
+test("buildTranscriptMarkdown: bounds hostile session observation fields and tolerates malformed payloads", () => {
+  const hugeSummary = `observation-${"s".repeat(4_500)}-tail`;
+  const hugeProposal = `proposal-${"p".repeat(2_500)}-tail`;
+  const hugeOwner = `owner-${"o".repeat(260)}-tail`;
+  const hugeBatch = `batch-${"b".repeat(260)}-tail`;
+  const hugeCursor = `cursor-${"c".repeat(260)}-tail`;
+
+  const { markdown } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "observation-edge" },
+    events: [
+      {
+        event: "session_observation",
+        agent: { id: "codex", model: "gpt-5-codex" },
+        ts: "2026-04-25T10:00:00.000Z",
+        payload: ["not", "an", "object"],
+      },
+      {
+        event: "session_observation",
+        agent: { id: "codex", model: "gpt-5-codex" },
+        ts: "2026-04-25T10:00:01.000Z",
+        payload: {
+          summary: hugeSummary,
+          proposal: hugeProposal,
+          severity: "p2|pipe`tick",
+          kind: "ux|pipe`tick",
+          owner: hugeOwner,
+          proposedBatch: hugeBatch,
+          targetCursor: hugeCursor,
+        },
+      },
+    ],
+  });
+
+  const conversation = markdownSection(markdown, "Conversation");
+  assert.match(conversation, /\*\*Observation:\*\* `info` · `process`/);
+  assert.match(conversation, /\*\*Observation:\*\* `p2\\\|pipe'tick` · `ux\\\|pipe'tick`/);
+  assert.ok(!conversation.includes(hugeSummary));
+  assert.ok(!conversation.includes(hugeProposal));
+  assert.ok(!conversation.includes(hugeOwner));
+  assert.ok(!conversation.includes(hugeBatch));
+  assert.ok(!conversation.includes(hugeCursor));
+  assert.match(conversation, /observation-s{20,}\.\.\.s{20,}-tail/);
+  assert.match(conversation, /proposal-p{20,}\.\.\.p{20,}-tail/);
+  assert.match(conversation, /Owner: `owner-o{20,}\.\.\.o{12,}-tail`/);
+  assert.match(conversation, /Batch: `batch-b{20,}\.\.\.b{12,}-tail`/);
+  assert.match(conversation, /Target: `cursor cursor-c{20,}\.\.\.c{12,}-tail`/);
+});
