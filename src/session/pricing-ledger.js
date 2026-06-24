@@ -138,7 +138,10 @@ export function buildUsageLedgerEntry(
   { sessionId = "", priceBookVersion = DEFAULT_PRICE_BOOK_VERSION, billingTier = "unknown" } = {},
 ) {
   const kind = n(event?.event || event?.type);
-  const payload = object(event?.payload);
+  const rawPayload = event?.payload;
+  const payload = object(rawPayload);
+  const payloadWasObject = rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload);
+  if (kind === SESSION_USAGE_EVENT && !payloadWasObject) return null;
   const schema = n(payload.schema);
   const usage = object(payload.usage);
   const legacyUsageEvent = kind !== SESSION_USAGE_EVENT && hasUsageHints(usage);
