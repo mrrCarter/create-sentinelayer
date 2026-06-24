@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.13](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.12...v0.30.13) (2026-06-24)
+
+
+### Bug Fixes
+
+* **session:** harden listener lifecycle restarts ([f389124](https://github.com/mrrCarter/create-sentinelayer/commit/f389124cbd0cbde809d00d5a0c0a1abacb8dae6e))
+
 ## [0.30.12](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.11...v0.30.12) (2026-06-24)
 
 
