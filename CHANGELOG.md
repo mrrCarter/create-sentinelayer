@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.8](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.7...v0.30.8) (2026-06-24)
+
+
+### Bug Fixes
+
+* **investor-dd:** expose per-agent usage telemetry ([#645](https://github.com/mrrCarter/create-sentinelayer/issues/645)) ([3eae08a](https://github.com/mrrCarter/create-sentinelayer/commit/3eae08aeae1c30c4e57e86e3ec76372465d693c2))
+
 ## [0.30.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.6...v0.30.7) (2026-06-24)
 
 
