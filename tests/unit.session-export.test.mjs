@@ -247,6 +247,92 @@ test("session export: omits control events by default and includes them only on 
   }
 });
 
+test("session export/download dedupes local enriched canonical message duplicates", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    const message = "status: duplicate local enrichment proof";
+    const timestamp = "2026-06-24T01:44:35.221Z";
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex",
+        agentModel: "gpt-5",
+        sessionId: created.sessionId,
+        eventId: "local-enriched-event",
+        idempotencyToken: "local-enriched-token",
+        ts: timestamp,
+        payload: {
+          message,
+          channel: "session",
+          source: "agent",
+          to: ["claude-mythos"],
+          mentions: { handles: ["claude-mythos"], broadcast: [] },
+        },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex",
+        sessionId: created.sessionId,
+        eventId: "remote-canonical-event",
+        idempotencyToken: "remote-canonical-token",
+        cursor: "0000000101866:00018dfa",
+        sequenceId: 101866,
+        ts: "2026-06-24T01:44:35.221000+00:00",
+        payload: {
+          message,
+          channel: "session",
+          source: "agent",
+          messageId: "remote-message-id",
+        },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+
+    const exported = JSON.parse(await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "json",
+      "--path",
+      root,
+    ]));
+    assert.equal(exported.counts.rawEvents, 2);
+    assert.equal(exported.counts.events, 1);
+    assert.equal(exported.events[0].sequenceId, 101866);
+    assert.equal(exported.events[0].payload.messageId, "remote-message-id");
+    assert.deepEqual(exported.events[0].payload.to, ["claude-mythos"]);
+    assert.deepEqual(exported.events[0].payload.mentions, {
+      handles: ["claude-mythos"],
+      broadcast: [],
+    });
+
+    const outPath = path.join(root, "download-deduped.md");
+    const downloaded = JSON.parse(await runSessionCommand([
+      "session",
+      "download",
+      created.sessionId,
+      "--path",
+      root,
+      "--out",
+      outPath,
+      "--json",
+    ]));
+    const markdown = await fsp.readFile(outPath, "utf-8");
+    assert.equal(downloaded.rawEventCount, 2);
+    assert.equal(downloaded.eventCount, 1);
+    assert.equal(markdown.match(new RegExp(message, "g"))?.length, 1);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("session export: ndjson emits omission metadata before event rows", async () => {
   const root = await makeTempRepo();
   try {
