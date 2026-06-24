@@ -133,6 +133,55 @@ test("Unit session event identity: clientMessageId links optimistic local and ca
   assert.equal(deduped[0].cursor, "0000000101541:00018ca5");
 });
 
+test("Unit session event identity: volatile routing metadata does not split material duplicates", () => {
+  const localEnriched = {
+    event: "session_message",
+    eventId: "local-enriched-event",
+    idempotencyToken: "local-enriched-token",
+    agent: { id: "codex", model: "gpt-5" },
+    payload: {
+      message: "same logical post with local routing metadata",
+      channel: "session",
+      source: "agent",
+      to: ["claude-mythos"],
+      mentions: { handles: ["claude-mythos"], broadcast: [] },
+    },
+    ts: "2026-06-24T01:44:35.221Z",
+  };
+  const remoteCanonical = {
+    event: "session_message",
+    eventId: "remote-canonical-event",
+    idempotencyToken: "remote-canonical-token",
+    cursor: "0000000101866:00018dfa",
+    sequenceId: 101866,
+    agent: { id: "codex" },
+    payload: {
+      message: "same logical post with local routing metadata",
+      channel: "session",
+      source: "agent",
+      messageId: "remote-message-id",
+    },
+    ts: "2026-06-24T01:44:35.221000+00:00",
+  };
+
+  const deduped = dedupeSessionEvents([localEnriched, remoteCanonical]);
+  const dedupedReverse = dedupeSessionEvents([remoteCanonical, localEnriched]);
+
+  assert.equal(deduped.length, 1);
+  assert.equal(deduped[0].sequenceId, 101866);
+  assert.equal(deduped[0].cursor, "0000000101866:00018dfa");
+  assert.equal(deduped[0].payload.messageId, "remote-message-id");
+  assert.deepEqual(deduped[0].payload.to, ["claude-mythos"]);
+  assert.deepEqual(deduped[0].payload.mentions, { handles: ["claude-mythos"], broadcast: [] });
+  assert.equal(dedupedReverse.length, 1);
+  assert.equal(dedupedReverse[0].eventId, "remote-canonical-event");
+  assert.equal(dedupedReverse[0].sequenceId, 101866);
+  assert.equal(dedupedReverse[0].cursor, "0000000101866:00018dfa");
+  assert.equal(dedupedReverse[0].payload.messageId, "remote-message-id");
+  assert.deepEqual(dedupedReverse[0].payload.to, ["claude-mythos"]);
+  assert.deepEqual(dedupedReverse[0].payload.mentions, { handles: ["claude-mythos"], broadcast: [] });
+});
+
 test("Unit session event identity: dedupes action events by durable action id", () => {
   const actionId = "166cf548-5dab-4987-92b5-64c535f1422c";
   const targetActionId = "ab044a13-7710-47cf-b061-1c468c6acfba";

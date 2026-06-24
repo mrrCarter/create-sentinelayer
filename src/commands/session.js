@@ -5867,10 +5867,11 @@ export function registerSessionCommand(program) {
         ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
         : [];
       const includeControlEvents = Boolean(options.includeControlEvents);
+      const dedupedEvents = dedupeSessionEvents(events);
       const transcriptBaseEvents = includeControlEvents
-        ? events
-        : filterSessionMaterialEvents(events);
-      const hiddenControlEventCount = events.length - transcriptBaseEvents.length;
+        ? dedupedEvents
+        : filterSessionMaterialEvents(dedupedEvents);
+      const hiddenControlEventCount = dedupedEvents.length - transcriptBaseEvents.length;
       const exportEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
       const stats = computeTranscriptStats({
         sessionMeta: sessionPayload,
@@ -6021,10 +6022,11 @@ export function registerSessionCommand(program) {
         ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
         : [];
       const includeControlEvents = Boolean(options.includeControlEvents);
+      const dedupedEvents = dedupeSessionEvents(events);
       const transcriptBaseEvents = includeControlEvents
-        ? events
-        : filterSessionMaterialEvents(events);
-      const hiddenControlEventCount = events.length - transcriptBaseEvents.length;
+        ? dedupedEvents
+        : filterSessionMaterialEvents(dedupedEvents);
+      const hiddenControlEventCount = dedupedEvents.length - transcriptBaseEvents.length;
       const transcriptEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
 
       // Pull GitHub/Google avatar + display name from the active auth

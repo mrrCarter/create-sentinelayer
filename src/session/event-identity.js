@@ -52,9 +52,61 @@ function stableStringify(value) {
   return JSON.stringify(stableJsonValue(value));
 }
 
+function messageEventCanUseRelaxedContentKey(eventKind) {
+  return [
+    "agent_response",
+    "human_relay",
+    "session_message",
+    "session_say",
+  ].includes(keyString(eventKind));
+}
+
+function eventDurabilityScore(event = {}) {
+  let score = 0;
+  if (readSessionEventSequence(event) > 0) score += 2;
+  if (sessionEventHasDurableCursor(event)) score += 1;
+  return score;
+}
+
+function mergeObjectPreferringPrimary(primaryValue, secondaryValue) {
+  if (
+    primaryValue &&
+    typeof primaryValue === "object" &&
+    !Array.isArray(primaryValue) &&
+    secondaryValue &&
+    typeof secondaryValue === "object" &&
+    !Array.isArray(secondaryValue)
+  ) {
+    return { ...secondaryValue, ...primaryValue };
+  }
+  return primaryValue === undefined ? secondaryValue : primaryValue;
+}
+
+function mergeDuplicateEvent(existingEvent = {}, candidateEvent = {}) {
+  const existingScore = eventDurabilityScore(existingEvent);
+  const candidateScore = eventDurabilityScore(candidateEvent);
+  const candidateIsPrimary = candidateScore > existingScore || (
+    candidateScore === existingScore &&
+    sessionEventUpgradesExisting(existingEvent, candidateEvent)
+  ) || (
+    candidateScore === existingScore &&
+    !sessionEventUpgradesExisting(candidateEvent, existingEvent)
+  );
+  const primaryEvent = candidateIsPrimary ? candidateEvent : existingEvent;
+  const secondaryEvent = candidateIsPrimary ? existingEvent : candidateEvent;
+
+  return {
+    ...secondaryEvent,
+    ...primaryEvent,
+    agent: mergeObjectPreferringPrimary(primaryEvent.agent, secondaryEvent.agent),
+    payload: mergeObjectPreferringPrimary(primaryEvent.payload, secondaryEvent.payload),
+  };
+}
+
 export function sessionEventIdentityKeys(event = {}) {
   if (!event || typeof event !== "object") return [];
   const keys = [];
+  const eventKind = keyString(event.event || event.type);
   const id = keyString(event.id);
   if (id) {
     keys.push(`id:${id}`);
@@ -109,7 +161,7 @@ export function sessionEventIdentityKeys(event = {}) {
   if (message) {
     try {
       keys.push(`content:${stableStringify({
-        event: keyString(event.event || event.type),
+        event: eventKind,
         agent: keyString(event.agent?.id || event.agentId || payload.agentId || payload.authorId),
         payload: {
           channel: keyString(payload.channel),
@@ -122,6 +174,22 @@ export function sessionEventIdentityKeys(event = {}) {
       })}`);
     } catch {
       // Best-effort duplicate suppression only.
+    }
+    if (messageEventCanUseRelaxedContentKey(eventKind)) {
+      try {
+        keys.push(`content-relaxed:${stableStringify({
+          event: eventKind,
+          agent: keyString(event.agent?.id || event.agentId || payload.agentId || payload.authorId),
+          payload: {
+            channel: keyString(payload.channel),
+            message,
+            source: keyString(payload.source),
+          },
+          ts: timestampKey(event.ts, event.timestamp, event.at),
+        })}`);
+      } catch {
+        // Best-effort duplicate suppression only.
+      }
     }
   }
   return keys;
@@ -151,7 +219,7 @@ export function dedupeSessionEvents(events = []) {
     const existingIndex = existingIndexes.length > 0 ? Math.min(...existingIndexes) : -1;
 
     if (existingIndex >= 0) {
-      deduped[existingIndex] = event;
+      deduped[existingIndex] = mergeDuplicateEvent(deduped[existingIndex], event);
       for (const key of keys) {
         indexByKey.set(key, existingIndex);
       }
