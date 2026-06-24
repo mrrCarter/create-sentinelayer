@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.14](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.13...v0.30.14) (2026-06-24)
+
+
+### Bug Fixes
+
+* **session:** honor listener presence interval ([a5579a3](https://github.com/mrrCarter/create-sentinelayer/commit/a5579a3740448d3dce90091a81a692ba0456b29c))
+
 ## [0.30.13](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.12...v0.30.13) (2026-06-24)
 
 
