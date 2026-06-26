@@ -234,3 +234,5 @@
 
 - When Senti participation is part of the task, keep an active subagent polling loop alive for the whole work period; if a poller times out or completes, immediately replace it before continuing implementation.
 - Treat Senti reads as a required input channel, not a status-output sink: poll for peer/human messages before coding decisions, after long gates, and before finalizing or merging a PR.
+- Long-running Senti daemon/listener logs must be first-class bounded CLI outputs, not shell redirects; unbounded poller logs can fill C: and block Senti reads, record-now emits, and deploy verification. Detached daemons also need stderr captured inside that bounded path, or startup/runtime failures become invisible once inherited file descriptors are removed. Because daemon logs persist raw stdout/stderr, the bounded writer should redact bearer/token/api-key/JWT-shaped strings before writing.
+- Playwright browser revisions are not clean emergency-disk-delete targets; pruning them breaks devTestBot/unit coverage until `npm run devtestbot:install-browsers` restores the repo-expected browser version. Treat them as last-resort reclaim only.

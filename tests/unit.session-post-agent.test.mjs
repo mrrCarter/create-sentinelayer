@@ -1200,6 +1200,57 @@ test("Unit session listen: publishes bounded listener presence for real agent id
   }
 });
 
+test("Unit session listen: --log-file writes and rotates listener output", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-log-file-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  try {
+    await seedWorkspace(tempRoot);
+    const logPath = path.join(tempRoot, "listener.log");
+    await writeFile(logPath, "oversized-listener-log", "utf-8");
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ events: [], cursor: null }),
+    });
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen-log",
+      "--agent",
+      "codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "1",
+      "--emit",
+      "text",
+      "--no-presence",
+      "--no-coaching",
+      "--log-file",
+      "listener.log",
+      "--log-max-bytes",
+      "5",
+      "--log-max-files",
+      "3",
+    ]);
+
+    assert.match(output, /Listening to session remote-listen-log as codex/);
+    const activeLog = await readFile(logPath, "utf-8");
+    assert.match(activeLog, /Remote listener presence is disabled/);
+    assert.match(await readFile(`${logPath}.1`, "utf-8"), /Listening to session remote-listen-log as codex/);
+    assert.equal(await readFile(`${logPath}.2`, "utf-8"), "oversized-listener-log");
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session listen: advertised presence keepalive covers the idle poll interval", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-keepalive-"));

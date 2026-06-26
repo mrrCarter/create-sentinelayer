@@ -3163,6 +3163,38 @@ Review:
 - [x] Open PR.
 - [ ] Watch gates.
 
+# Senti Daemon/Listener Log Rotation Hardening (2026-06-25)
+
+## Plan
+- [x] Confirm the ENOSPC source included unbounded Senti/poller log files.
+- [x] Add a small rotating log helper with deterministic max-byte and retained-file controls.
+- [x] Route autostarted Senti daemons through the managed rotating log instead of append-only stdout/stderr fd inheritance.
+- [x] Add `session listen --log-file` and `session daemon --log-file` with bounded rotation controls.
+- [x] Capture daemon/listener stderr in the same bounded rotating log so detached failures remain diagnosable without unbounded fd inheritance.
+- [x] Redact bearer/token/api-key/JWT-shaped strings before writing daemon/listener rotating logs.
+- [x] Tighten JWT redaction so hostnames, IPs, and version strings remain readable in daemon logs.
+- [x] Add focused daemon and listener regression tests.
+- [x] Run static checks, review scan, and Omar Gate.
+- [ ] Open PR, watch CI/Omar, merge on green, and verify post-merge main.
+
+## Review Results
+- Focused daemon tests passed after stderr-capture and redaction hardening: `node --import ./tests/setup-env.mjs --test tests/unit.session-daemon-spawn.test.mjs` (10/10).
+- Follow-up hardening folded into the PR from Senti review: rotating-log writes now redact bearer/token/api-key/JWT-shaped material before persistence.
+- Follow-up log-quality tightening folded into the PR from Senti review: JWT matching now requires a JWT-like `eyJ...` header and minimum base64url segment lengths, and tests verify hostnames/IPs/version strings remain readable.
+- Focused listener/session tests passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-post-agent.test.mjs` (35/35).
+- Static syntax checks passed for `src/session/rotating-log.js`, `src/session/daemon-spawn.js`, and `src/commands/session.js`.
+- Full unit initially failed because emergency disk cleanup removed the Playwright Chromium revision devTestBot expected; `npm run devtestbot:install-browsers` restored chromium-1217/headless shell.
+- Full unit rerun passed after stderr-capture hardening: `npm run test:unit` (1617/1617).
+- Full unit rerun passed after log redaction hardening: `npm run test:unit` (1618/1618).
+- `npm run docs:build` passed.
+- `npm run test:e2e` passed (109/109).
+- `npm run test:coverage` passed after `npm ci` restored the local `c8` binary (1617/1617; statements/lines 91.1%, branches 70.35%, functions 92.87%).
+- `npm pack --dry-run` passed for `sentinelayer-cli@0.30.14` (336 files, 852.8 kB package, 3.8 MB unpacked, shasum `6aa5d52427de6790d3ebe37c0e211e3dca18a3d1`).
+- Local review scan passed: `review-scan-diff-20260626-003716.md` scanned 7 intended files, P1=0, P2=0, blocking=false; redaction follow-up rerun `review-scan-diff-20260626-005540.md` scanned 4 intended files, P1=0, P2=0, blocking=false.
+- Local Omar Gate diff passed: `review-20260626-003716-add91e33`, P0/P1/P2/P3 all `0`, blocking=false; redaction follow-up rerun `review-20260626-005540-b3bd4e82`, P0/P1/P2/P3 all `0`, blocking=false.
+- JWT matcher tightening rerun passed: `review-scan-diff-20260626-010648.md` scanned 3 intended files with P1=0, P2=0, blocking=false; Omar `review-20260626-010647-7373e0f1`, P0/P1/P2/P3 all `0`, blocking=false.
+- Local `/audit` passed after final patch: `audit-20260626-004000.md`, P1=0, P2=3, blocking=false.
+
 ## Initial Findings
 - The latest canonical events after seq `99398` are `session_listener_heartbeat` control-plane events from active listeners, not material chat messages.
 - `session say` can hang while waiting for canonical confirmation, which prevents a useful material coordination update from landing when the read/confirmation surface is degraded.

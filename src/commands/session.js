@@ -101,6 +101,11 @@ import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
 import { SESSION_LIVE_SUCCESS_TIPS } from "../session/coordination-guidance.js";
+import {
+  DEFAULT_ROTATING_LOG_MAX_BYTES,
+  DEFAULT_ROTATING_LOG_MAX_FILES,
+  installRotatingConsoleLog,
+} from "../session/rotating-log.js";
 import { buildSessionRecap } from "../session/recap.js";
 import { computeTranscriptStats } from "../session/transcript.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
@@ -4478,6 +4483,17 @@ export function registerSessionCommand(program) {
       "900",
     )
     .option("--no-coaching", "Do not emit periodic in-session success reminders")
+    .option("--log-file <path>", "Also write listener output to a bounded rotating log file")
+    .option(
+      "--log-max-bytes <bytes>",
+      `Rotate --log-file after this many bytes (default ${DEFAULT_ROTATING_LOG_MAX_BYTES})`,
+      String(DEFAULT_ROTATING_LOG_MAX_BYTES),
+    )
+    .option(
+      "--log-max-files <n>",
+      `Total log files to retain including the active file (default ${DEFAULT_ROTATING_LOG_MAX_FILES})`,
+      String(DEFAULT_ROTATING_LOG_MAX_FILES),
+    )
     .action(async (options) => {
       const normalizedSessionId = resolveSessionIdOption(options);
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
@@ -4514,6 +4530,9 @@ export function registerSessionCommand(program) {
       if (!["ndjson", "text"].includes(emitFormat)) {
         throw new Error("--emit must be one of: ndjson, text.");
       }
+      const listenLogPath = normalizeString(options.logFile)
+        ? path.resolve(targetPath, String(options.logFile))
+        : "";
       // Optional wake hook: run a host command on each matched event so the
       // host can resume/wake its agent (the notify->resume bridge).
       const emitWakeNotice = (payload = {}) => {
@@ -4574,6 +4593,14 @@ export function registerSessionCommand(program) {
       if (options.fromNow && options.since !== undefined) {
         throw new Error("Use either --from-now or --since, not both.");
       }
+      const restoreConsoleLog = listenLogPath
+        ? installRotatingConsoleLog({
+            logPath: listenLogPath,
+            maxBytes: parsePositiveInteger(options.logMaxBytes, "log-max-bytes", DEFAULT_ROTATING_LOG_MAX_BYTES),
+            maxFiles: parsePositiveInteger(options.logMaxFiles, "log-max-files", DEFAULT_ROTATING_LOG_MAX_FILES),
+            tee: true,
+          })
+        : null;
       const ac = new AbortController();
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
@@ -4805,6 +4832,9 @@ export function registerSessionCommand(program) {
         if (coachingTimer) {
           clearInterval(coachingTimer);
         }
+        if (restoreConsoleLog) {
+          restoreConsoleLog();
+        }
         process.removeListener("SIGINT", onSigint);
       }
     });
@@ -4829,6 +4859,17 @@ export function registerSessionCommand(program) {
     .option("--checkpoint-idle <seconds>", "Seconds after latest source event before idle checkpoint attempt (default 600)", "600")
     .option("--no-checkpoints", "Disable durable checkpoint generation")
     .option("--no-checkpoint-closeout", "Skip the final closeout checkpoint when the daemon stops")
+    .option("--log-file <path>", "Also write daemon output to a bounded rotating log file")
+    .option(
+      "--log-max-bytes <bytes>",
+      `Rotate --log-file after this many bytes (default ${DEFAULT_ROTATING_LOG_MAX_BYTES})`,
+      String(DEFAULT_ROTATING_LOG_MAX_BYTES),
+    )
+    .option(
+      "--log-max-files <n>",
+      `Total log files to retain including the active file (default ${DEFAULT_ROTATING_LOG_MAX_FILES})`,
+      String(DEFAULT_ROTATING_LOG_MAX_FILES),
+    )
     .option("--once", "Run one Senti health tick and exit (CI/dogfood smoke)")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -4843,6 +4884,18 @@ export function registerSessionCommand(program) {
         "tick-interval",
         30,
       );
+      const daemonLogPath = normalizeString(options.logFile)
+        ? path.resolve(targetPath, String(options.logFile))
+        : "";
+      const restoreConsoleLog = daemonLogPath
+        ? installRotatingConsoleLog({
+            logPath: daemonLogPath,
+            maxBytes: parsePositiveInteger(options.logMaxBytes, "log-max-bytes", DEFAULT_ROTATING_LOG_MAX_BYTES),
+            maxFiles: parsePositiveInteger(options.logMaxFiles, "log-max-files", DEFAULT_ROTATING_LOG_MAX_FILES),
+            tee: true,
+          })
+        : null;
+      try {
       // One manager per session: refuse to double-run unless --force.
       // A stale pid file (reboot, hard kill) reads as not-running and is
       // safely overwritten.
@@ -4886,26 +4939,32 @@ export function registerSessionCommand(program) {
       };
 
       if (options.once) {
-        const payload = await runTickAndBuildPayload();
-        const stopped = await daemon.stop("once_complete");
-        payload.running = false;
-        payload.stopped = {
-          stopped: Boolean(stopped?.stopped),
-          reason: stopped?.reason || "once_complete",
-          checkpointCloseout: stopped?.checkpointCloseout || null,
-        };
-        if (emitJson) {
-          console.log(JSON.stringify(payload, null, 2));
+        try {
+          const payload = await runTickAndBuildPayload();
+          const stopped = await daemon.stop("once_complete");
+          payload.running = false;
+          payload.stopped = {
+            stopped: Boolean(stopped?.stopped),
+            reason: stopped?.reason || "once_complete",
+            checkpointCloseout: stopped?.checkpointCloseout || null,
+          };
+          if (emitJson) {
+            console.log(JSON.stringify(payload, null, 2));
+            return;
+          }
+          const checkpoint = payload.summary?.checkpoint || {};
+          const recap = payload.summary?.recap || {};
+          console.log(
+            pc.green(
+              `senti tick: relayed=${Number(payload.summary?.humanMessages?.relayed || 0)} recap=${recap.emitted ? recap.mode || "emitted" : recap.reason || "none"} checkpoint=${checkpoint.created ? checkpoint.checkpointId || "created" : checkpoint.reason || "none"}`,
+            ),
+          );
           return;
+        } finally {
+          if (restoreConsoleLog) {
+            restoreConsoleLog();
+          }
         }
-        const checkpoint = payload.summary?.checkpoint || {};
-        const recap = payload.summary?.recap || {};
-        console.log(
-          pc.green(
-            `senti tick: relayed=${Number(payload.summary?.humanMessages?.relayed || 0)} recap=${recap.emitted ? recap.mode || "emitted" : recap.reason || "none"} checkpoint=${checkpoint.created ? checkpoint.checkpointId || "created" : checkpoint.reason || "none"}`,
-          ),
-        );
-        return;
       }
 
       const controller = new AbortController();
@@ -4994,6 +5053,14 @@ export function registerSessionCommand(program) {
           );
         } else {
           console.log(pc.gray(`senti daemon stopped (${stopped?.reason || "signal"}).`));
+        }
+        if (restoreConsoleLog) {
+          restoreConsoleLog();
+        }
+      }
+      } finally {
+        if (restoreConsoleLog) {
+          restoreConsoleLog();
         }
       }
     });
