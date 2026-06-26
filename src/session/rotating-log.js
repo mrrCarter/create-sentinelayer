@@ -75,7 +75,7 @@ export function appendRotatingLogLine(logPath, line = "", options = {}) {
   }
   fs.mkdirSync(path.dirname(normalizedLogPath), { recursive: true });
   const rotation = rotateLogFileIfNeeded(normalizedLogPath, options);
-  fs.appendFileSync(normalizedLogPath, `${String(line)}\n`, "utf-8");
+  fs.appendFileSync(normalizedLogPath, `${redactLogSecrets(line)}\n`, "utf-8");
   return { written: true, rotation };
 }
 
@@ -88,6 +88,16 @@ function normalizeLogChunk(chunk, encoding = "utf8") {
 
 export function formatConsoleLogLine(parts = []) {
   return parts.map((part) => (typeof part === "string" ? part : util.inspect(part))).join(" ");
+}
+
+export function redactLogSecrets(value = "") {
+  return String(value ?? "")
+    .replace(/\bbearer\s+[a-z0-9._~+/=-]+\b/gi, "bearer [REDACTED]")
+    .replace(
+      /\b([a-z0-9_.-]*(?:token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)[a-z0-9_.-]*)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi,
+      "$1=[REDACTED]",
+    )
+    .replace(/\b[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, "[REDACTED_JWT]");
 }
 
 export function installRotatingConsoleLog({

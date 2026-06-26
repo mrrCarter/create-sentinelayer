@@ -167,6 +167,33 @@ test("Unit daemon-spawn: rotating log helper retains bounded backups", async () 
   }
 });
 
+test("Unit daemon-spawn: rotating log helper redacts token-shaped output", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-log-redact-"));
+  try {
+    const logPath = path.join(tempRoot, "senti-daemon.log");
+    const bearerToken = ["tok", "daemon", "secret", "1234567890"].join("_");
+    const apiKey = ["sk", "daemon", "redact", "1234567890"].join("-");
+    const jwt = ["eyJhbGciOiJIUzI1NiI", "eyJzdWIiOiIxMjMifQ", "sig"].join(".");
+
+    appendRotatingLogLine(
+      logPath,
+      `Authorization: Bearer ${bearerToken} SENTINELAYER_TOKEN=${bearerToken} OPENAI_API_KEY=${apiKey} jwt=${jwt}`,
+      { maxBytes: 1024, maxFiles: 2 },
+    );
+
+    const logText = await readFile(logPath, "utf-8");
+    assert.equal(logText.includes(bearerToken), false);
+    assert.equal(logText.includes(apiKey), false);
+    assert.equal(logText.includes(jwt), false);
+    assert.match(logText, /bearer \[REDACTED\]/i);
+    assert.match(logText, /SENTINELAYER_TOKEN=\[REDACTED\]/);
+    assert.match(logText, /OPENAI_API_KEY=\[REDACTED\]/);
+    assert.match(logText, /\[REDACTED_JWT\]/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit daemon-spawn: rotating console logger captures stderr without terminal tee", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-stderr-log-"));
   try {
