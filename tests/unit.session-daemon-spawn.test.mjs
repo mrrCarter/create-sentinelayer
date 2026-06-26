@@ -19,6 +19,7 @@ import {
   spawnDetachedSentiDaemon,
   writeDaemonPidRecord,
 } from "../src/session/daemon-spawn.js";
+import { appendRotatingLogLine, installRotatingConsoleLog } from "../src/session/rotating-log.js";
 import { createSession } from "../src/session/store.js";
 
 const CLI_ENTRY = path.resolve(
@@ -138,6 +139,85 @@ test("Unit daemon-spawn: spawn guards (disabled env, missing id, already running
     assert.equal(dedupe.spawned, false);
     assert.equal(dedupe.reason, "already_running");
     assert.equal(dedupe.pid, process.pid);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: rotating log helper retains bounded backups", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-log-rotate-"));
+  try {
+    const logPath = path.join(tempRoot, "senti-daemon.log");
+    await writeFile(logPath, "active-over-limit", "utf-8");
+    await writeFile(`${logPath}.1`, "previous-one", "utf-8");
+    await writeFile(`${logPath}.2`, "previous-two", "utf-8");
+
+    const result = appendRotatingLogLine(logPath, "new-active-line", {
+      maxBytes: 5,
+      maxFiles: 3,
+    });
+
+    assert.equal(result.written, true);
+    assert.equal(result.rotation.rotated, true);
+    assert.equal(await readFile(logPath, "utf-8"), "new-active-line\n");
+    assert.equal(await readFile(`${logPath}.1`, "utf-8"), "active-over-limit");
+    assert.equal(await readFile(`${logPath}.2`, "utf-8"), "previous-one");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: rotating console logger captures stderr without terminal tee", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-stderr-log-"));
+  try {
+    const logPath = path.join(tempRoot, "senti-daemon.log");
+    const restore = installRotatingConsoleLog({
+      logPath,
+      maxBytes: 1024,
+      maxFiles: 2,
+      tee: false,
+      now: () => new Date("2026-06-25T00:00:00.000Z"),
+    });
+    try {
+      console.log("stdout tick");
+      console.error("console error", { code: "boom" });
+      process.stderr.write("raw stderr line\n");
+    } finally {
+      restore();
+    }
+
+    const logText = await readFile(logPath, "utf-8");
+    assert.match(logText, /stdout tick/);
+    assert.match(logText, /\[stderr\] console error \{ code: 'boom' \}/);
+    assert.match(logText, /\[stderr\] raw stderr line/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit daemon-spawn: session daemon --once writes a bounded log file", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-log-file-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 600 });
+    const output = await runSessionCommand([
+      "session",
+      "daemon",
+      session.sessionId,
+      "--path",
+      tempRoot,
+      "--once",
+      "--log-file",
+      "daemon-once.log",
+      "--log-max-bytes",
+      "1024",
+      "--log-max-files",
+      "2",
+    ]);
+
+    assert.match(output, /senti tick:/);
+    const logText = await readFile(path.join(tempRoot, "daemon-once.log"), "utf-8");
+    assert.match(logText, /senti tick:/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

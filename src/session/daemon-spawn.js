@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
 import { resolveSessionPaths } from "./paths.js";
+import {
+  appendRotatingLogLine,
+  normalizeRotatingLogOptions,
+} from "./rotating-log.js";
 
 const PID_FILE_NAME = "senti-daemon.json";
 const LOG_FILE_NAME = "senti-daemon.log";
@@ -132,6 +135,8 @@ export async function spawnDetachedSentiDaemon({
   targetPath = process.cwd(),
   cliPath = "",
   env = process.env,
+  logMaxBytes = env.SENTINELAYER_SENTI_LOG_MAX_BYTES,
+  logMaxFiles = env.SENTINELAYER_SENTI_LOG_MAX_FILES,
 } = {}) {
   const normalizedSessionId = normalizeString(sessionId);
   if (!normalizedSessionId) {
@@ -157,22 +162,45 @@ export async function spawnDetachedSentiDaemon({
   }
 
   const logPath = resolveDaemonLogPath(normalizedSessionId, { targetPath });
-  let logFd = null;
+  const logOptions = normalizeRotatingLogOptions({ maxBytes: logMaxBytes, maxFiles: logMaxFiles });
   try {
-    await fsp.mkdir(path.dirname(logPath), { recursive: true });
-    logFd = fs.openSync(logPath, "a");
+    appendRotatingLogLine(
+      logPath,
+      `${new Date().toISOString()} spawning Senti daemon for ${normalizedSessionId}`,
+      logOptions,
+    );
     const child = spawn(
       process.execPath,
-      [entryPath, "session", "daemon", normalizedSessionId, "--path", path.resolve(String(targetPath || "."))],
+      [
+        entryPath,
+        "session",
+        "daemon",
+        normalizedSessionId,
+        "--path",
+        path.resolve(String(targetPath || ".")),
+        "--log-file",
+        logPath,
+        "--log-max-bytes",
+        String(logOptions.maxBytes),
+        "--log-max-files",
+        String(logOptions.maxFiles),
+      ],
       {
         detached: true,
-        stdio: ["ignore", logFd, logFd],
+        stdio: ["ignore", "ignore", "ignore"],
         windowsHide: true,
         env,
       }
     );
     child.unref();
-    return { spawned: true, pid: child.pid ?? null, reason: "spawned", logPath };
+    return {
+      spawned: true,
+      pid: child.pid ?? null,
+      reason: "spawned",
+      logPath,
+      logMaxBytes: logOptions.maxBytes,
+      logMaxFiles: logOptions.maxFiles,
+    };
   } catch (error) {
     return {
       spawned: false,
@@ -180,13 +208,5 @@ export async function spawnDetachedSentiDaemon({
       reason: `spawn_failed: ${normalizeString(error?.message) || "unknown"}`,
       logPath,
     };
-  } finally {
-    if (logFd != null) {
-      try {
-        fs.closeSync(logFd);
-      } catch {
-        // fd already closed
-      }
-    }
   }
 }
