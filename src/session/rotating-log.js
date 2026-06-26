@@ -97,7 +97,7 @@ export function redactLogSecrets(value = "") {
       /\b([a-z0-9_.-]*(?:token|secret|password|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)[a-z0-9_.-]*)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi,
       "$1=[REDACTED]",
     )
-    .replace(/\b[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, "[REDACTED_JWT]");
+    .replace(/\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b/gi, "[REDACTED_JWT]");
 }
 
 export function installRotatingConsoleLog({

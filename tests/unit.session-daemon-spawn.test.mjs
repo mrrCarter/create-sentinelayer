@@ -173,7 +173,11 @@ test("Unit daemon-spawn: rotating log helper redacts token-shaped output", async
     const logPath = path.join(tempRoot, "senti-daemon.log");
     const bearerToken = ["tok", "daemon", "secret", "1234567890"].join("_");
     const apiKey = ["sk", "daemon", "redact", "1234567890"].join("-");
-    const jwt = ["eyJhbGciOiJIUzI1NiI", "eyJzdWIiOiIxMjMifQ", "sig"].join(".");
+    const jwt = [
+      "eyJhbGciOiJIUzI1NiJ9",
+      "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+      "signature0123456789",
+    ].join(".");
 
     appendRotatingLogLine(
       logPath,
@@ -189,6 +193,16 @@ test("Unit daemon-spawn: rotating log helper redacts token-shaped output", async
     assert.match(logText, /SENTINELAYER_TOKEN=\[REDACTED\]/);
     assert.match(logText, /OPENAI_API_KEY=\[REDACTED\]/);
     assert.match(logText, /\[REDACTED_JWT\]/);
+
+    appendRotatingLogLine(logPath, "connect api.sentinelayer.com dashboard.aidenid.com 10.0.0.1 version=1.2.3", {
+      maxBytes: 1024,
+      maxFiles: 2,
+    });
+    const readableLogText = await readFile(logPath, "utf-8");
+    assert.match(readableLogText, /api\.sentinelayer\.com/);
+    assert.match(readableLogText, /dashboard\.aidenid\.com/);
+    assert.match(readableLogText, /10\.0\.0\.1/);
+    assert.match(readableLogText, /version=1\.2\.3/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
