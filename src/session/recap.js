@@ -407,6 +407,8 @@ function emptyWorkPlanSummary() {
     path: WORK_PLAN_RELATIVE_PATH,
     exists: false,
     truncated: false,
+    detailSuppressed: false,
+    detailSuppressionReason: "",
     total: 0,
     open: 0,
     completed: 0,
@@ -431,6 +433,10 @@ function summarizeWorkPlanMarkdown(raw = "", { limit = DEFAULT_WORK_PLAN_SUMMARY
   const summary = emptyWorkPlanSummary();
   summary.exists = true;
   summary.truncated = Boolean(truncated);
+  if (summary.truncated) {
+    summary.detailSuppressed = true;
+    summary.detailSuppressionReason = "large_plan_recent_window";
+  }
 
   const records = [];
   let section = "";
@@ -469,6 +475,10 @@ function summarizeWorkPlanMarkdown(raw = "", { limit = DEFAULT_WORK_PLAN_SUMMARY
     .filter((record) => record.status === "open")
     .slice(-normalizedLimit);
   summary.recent = records.slice(-normalizedLimit);
+  if (summary.detailSuppressed) {
+    summary.currentSection = "";
+    summary.recentOpen = [];
+  }
   return summary;
 }
 
@@ -707,6 +717,9 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
   const open = Number(workPlan.open || 0);
   const completed = Number(workPlan.completed || 0);
   const pathText = normalizeString(workPlan.path) || WORK_PLAN_RELATIVE_PATH;
+  if (workPlan.detailSuppressed || workPlan.truncated) {
+    return `Plan: ${open} open / ${completed} done in recent ${pathText} window. Current/next items suppressed because the plan file is large.`;
+  }
   const currentSection = normalizeString(workPlan.currentSection);
   const currentText = currentSection ? ` Current: ${currentSection}.` : "";
   const recentOpen = Array.isArray(workPlan.recentOpen) ? workPlan.recentOpen : [];

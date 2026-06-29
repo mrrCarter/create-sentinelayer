@@ -285,6 +285,53 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
   }
 });
 
+test("Unit session recap: suppresses current and next details for truncated todo plan windows", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-large-plan-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+
+    const historicalLines = ["# Historical Dogfood Plan", ""];
+    for (let index = 0; index < 6_000; index += 1) {
+      historicalLines.push(
+        `- [x] Old shipped item ${index} ${"already shipped and should not become live recap context ".repeat(2)}`,
+      );
+    }
+    historicalLines.push(
+      "",
+      "## Plan",
+      "- [ ] WI-5: Deploy stale web release tag",
+      "- [ ] WI-6: Record stale CLI publish blocker note",
+    );
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), historicalLines.join("\n"), "utf-8");
+
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Plan: 2 open \/ \d+ done in recent tasks\/todo\.md window/);
+    assert.match(
+      recap.text,
+      /Current\/next items suppressed because the plan file is large/,
+    );
+    assert.doesNotMatch(recap.text, /Current: Plan/);
+    assert.doesNotMatch(recap.text, /Next:/);
+    assert.doesNotMatch(recap.text, /WI-5: Deploy stale web/);
+    assert.equal(recap.summary.workPlan.exists, true);
+    assert.equal(recap.summary.workPlan.truncated, true);
+    assert.equal(recap.summary.workPlan.detailSuppressed, true);
+    assert.equal(recap.summary.workPlan.detailSuppressionReason, "large_plan_recent_window");
+    assert.equal(recap.summary.workPlan.currentSection, "");
+    assert.deepEqual(recap.summary.workPlan.recentOpen, []);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: includes token and cost usage ledger", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-recap-"));
   try {
