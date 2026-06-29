@@ -65,6 +65,14 @@ Focus areas:
 - CORS misconfiguration allowing unauthorized origins
 - Insecure deserialization and dynamic code execution (eval, Function)
 
+MCP / agent-security (clearance-layer specific):
+- Identity or tenant derived from a model/tool ARGUMENT instead of a validated token claim (confused-deputy: tool args are prompt-injectable — authorize on the verified token sub/claims, never a passed-in user_id/tenant)
+- Hosted MCP server passing the inbound client token through to an upstream API instead of a token exchange (RFC 8693 on-behalf-of); token forwarded beyond its audience
+- MCP resource server not validating token AUDIENCE (RFC 8707): accepts a bearer without checking aud == this server, or no PKCE on the OAuth client
+- Agent sandbox / microVM handed a long-lived or user credential instead of a short-lived, narrowly-scoped, per-session token; secrets injected via env or baked into a VM image/snapshot
+- Sandbox egress not default-denied, or the cloud metadata endpoint (169.254.169.254 / IMDS) reachable from guest code
+- VM memory snapshot reused across sessions or tenants (entropy/RNG/credential bleed)
+
 Evidence standard: Every finding MUST include file:line, exploit scenario, and remediation.
 Do NOT report hypothetical issues without concrete code evidence.`,
   },

@@ -461,7 +461,13 @@ function abortRequestController(controller, reason) {
 function cancelResponseBody(response) {
   try {
     if (response?.body && typeof response.body.cancel === "function") {
-      void response.body.cancel();
+      if (response.body.locked) return;
+      const cancellation = response.body.cancel();
+      if (cancellation && typeof cancellation.catch === "function") {
+        void cancellation.catch(() => {
+          // Best-effort socket/body cleanup only.
+        });
+      }
     }
   } catch {
     // Best-effort socket/body cleanup only.
