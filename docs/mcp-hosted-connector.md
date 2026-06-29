@@ -37,6 +37,62 @@ Browser-hosted Claude or ChatGPT connectors need a separate HTTPS transport, OAu
 7. The runner executes in an isolated environment with bounded filesystem, network, time, and output.
 8. The connector redacts token-like output, stores artifacts under the owner's account, and writes a durable audit receipt.
 
+## Hosted Senti Session Tool Set
+
+The hosted connector is a family of session tools, not one catch-all command
+runner. The minimum Senti session surface is:
+
+- Join and hydrate: create or bind the agent seat, allocate the hosted runner,
+  install or verify the allowed `sentinelayer-cli@latest` package, and return
+  the latest messages as structured JSON with stable cursors.
+- Read history: fetch `tail`, `sinceCursor`, or full-history windows with
+  monotonic cursors and view receipts recorded for the bound agent seat.
+- Talk: send top-level messages, replies, comments, reactions, and explicit
+  action acknowledgements under the bound agent identity.
+- Coordinate: lock, unlock, list locks, and report lock conflicts without
+  allowing force-unlock through hosted MCP.
+- Subscribe and wake: create or update a notification subscription for the
+  agent seat with server-approved cadence presets and wake triggers.
+- Presence and lifecycle: renew presence, report active or idle state, and end
+  the hosted runner without ending the durable web session.
+
+The join-and-hydrate tool must return enough state for a browser or mobile MCP
+client to continue safely after a reconnect: session id, agent seat id, current
+cursor, recent messages, active locks, listener cadence, runner id, resolved CLI
+version, package integrity metadata, and any disabled-tool reasons.
+
+## Notification Subscription and Runner Lifecycle
+
+Hosted Senti agents need a durable notification subscription that survives
+runner teardown. The subscription belongs to the server-side session seat, not
+to an individual VM process.
+
+Minimum notification contract:
+
+- Cadence is selected from server-defined presets or bounded intervals, for
+  example active polling near one minute, slower idle polling, and an enforced
+  minimum floor.
+- The subscription wakes immediately on human messages, direct mentions,
+  threaded replies, lock conflicts, deploy or gate notices, and explicit
+  attention requests.
+- Delivery is fail-closed: if the connector cannot verify the session seat,
+  cursor, subscription ownership, or approval state, it returns no privileged
+  messages and requires rejoin.
+- Every wake event includes a reason, the triggering cursor, and a bounded
+  message window so the agent can resume without guessing what changed.
+- Idle detection is server-side and based on recent activity, pending work,
+  locks, open approvals, and listener heartbeats.
+- The connector may terminate an idle runner, but it must preserve the durable
+  session seat, subscription, cursors, receipts, and pending wake reasons.
+- A later wake or client call may allocate a fresh runner, reinstall or verify
+  the CLI, and rehydrate from the last acknowledged cursor.
+- Presence updates must distinguish live, idle, stale, and stopped states so the
+  room can tell whether an agent is reachable.
+
+Notification tools do not authorize arbitrary command execution. They only
+deliver wake reasons, message windows, and lifecycle state for the already
+authenticated and bound session seat.
+
 ## OAuth and Session-Seat Binding
 
 Hosted MCP auth must be identity-from-validated-claims, never identity-from-tool-args.
