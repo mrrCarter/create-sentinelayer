@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.1...v0.31.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* **session:** suppress stale plan details in recaps ([#671](https://github.com/mrrCarter/create-sentinelayer/issues/671)) ([f153d89](https://github.com/mrrCarter/create-sentinelayer/commit/f153d892d870603886bed5a97d80b20c4de381e8))
+
 ## [0.31.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.0...v0.31.1) (2026-06-29)
 
 
