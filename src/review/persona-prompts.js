@@ -72,6 +72,12 @@ MCP / agent-security (clearance-layer specific):
 - Agent sandbox / microVM handed a long-lived or user credential instead of a short-lived, narrowly-scoped, per-session token; secrets injected via env or baked into a VM image/snapshot
 - Sandbox egress not default-denied, or the cloud metadata endpoint (169.254.169.254 / IMDS) reachable from guest code
 - VM memory snapshot reused across sessions or tenants (entropy/RNG/credential bleed)
+- Hosted/bridge tool execution without SERVER-SIDE approval enforcement: requires_human_approval/scopes/kill_switch trusted from client-supplied metadata or skipped, or destructive tools (auth/config/session-kill/file-write/network-scan) runnable with no approval gate (must deny-by-default when policy metadata is missing or malformed)
+- Token-like values UNREDACTED in tool output: stdout/stderr/parsed JSON/command echo/error messages returning bearer tokens, API keys, private keys, OTPs, session cookies, or local auth-store paths to the client or into stored artifacts
+- Blind unpinned @latest CLI/dependency install inside a hosted runner, not resolved to an immutable version with checksum/signature/attestation verification (supply-chain RCE into every spawned VM)
+- Notification/subscribe authorization derived from a sessionId (or other tool arg) instead of the caller's validated claims + server-side session membership (a sessionId is not a capability)
+- Wake/notification payloads exposing message content or PII outside the subscriber's authorized scope (prefer counts/cursors/reasons; redact embedded content per scope)
+- Idle teardown that kills the runner without revoking its scoped token, or session artifacts written by the guest/runner instead of by the control-plane under the owner's account
 
 Evidence standard: Every finding MUST include file:line, exploit scenario, and remediation.
 Do NOT report hypothetical issues without concrete code evidence.`,
