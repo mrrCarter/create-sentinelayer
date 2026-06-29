@@ -7,8 +7,21 @@ The shipped local surface is:
 - `sl mcp server run` for local stdio MCP clients.
 - `sl mcp registry init-session` for native Senti session tools.
 - `sl mcp registry init-cli` for generated `sl.*` CLI tool schemas.
+- `sl mcp registry init-hosted-session-connector` for a contract-only hosted
+  Senti session connector artifact that hosted services can validate before
+  implementation.
 
 Browser-hosted Claude or ChatGPT connectors need a separate HTTPS transport, OAuth authorization, session-seat binding, approval enforcement, and isolated execution before they can safely invoke CLI-backed tools.
+
+## Architecture References
+
+This contract is the hosted counterpart to the local session MCP surface in
+`docs/mcp.md` and the Senti session operations model in `docs/sessions.md`.
+The broader autonomous-agent control-plane requirements, including kill
+switches and runtime cleanup, are tracked in `docs/MULTI_AGENT_SESSION_SPEC.md`.
+The local registry generator is deliberately only an artifact producer; hosted
+runtime PRs must link back to this contract and explain which release gates
+they satisfy.
 
 ## Non-Goals
 
@@ -38,6 +51,29 @@ Browser-hosted Claude or ChatGPT connectors need a separate HTTPS transport, OAu
 6. If the call is allowed, the connector creates a short-lived runner credential scoped to that one invocation.
 7. The runner executes in an isolated environment with bounded filesystem, network, time, and output.
 8. The connector redacts token-like output, stores artifacts under the owner's account, and writes a durable audit receipt.
+
+## Incident Response Runbook and Kill-Switch Procedure
+
+Hosted connector exposure must be killable without redeploying a runner image.
+Until the hosted runtime exists, the only shipped action is to withhold the
+hosted contract from production connector registration. Runtime PRs must provide
+all of the following operator controls before enabling traffic:
+
+- Disable tool listing for `hosted-senti-session` at the connector service
+  policy layer while leaving local `sl mcp server run` unaffected.
+- Revoke active hosted runner tokens by session seat, by user, and globally.
+- Stop idle or active hosted runners without deleting the durable Senti session,
+  cursors, receipts, checkpoints, or audit artifacts.
+- Fail closed on the next MCP call after disablement with an explicit
+  `connector_disabled` reason and no message-content payload.
+- Roll back to the previous connector release by switching the hosted service
+  deployment pointer; never roll back by re-enabling long-lived CLI token
+  passthrough.
+
+Operationally, an incident runbook should use this order: disable tool listing,
+revoke scoped runner tokens, stop hosted runners, preserve receipts/artifacts,
+then re-enable only after OmarGate MCP-security rules and the release gates
+below pass again.
 
 ## Hosted Senti Session Tool Set
 
@@ -253,3 +289,18 @@ A hosted connector release is not ready until all gates are green:
 - OmarGate MCP-security pack pass.
 
 Until then, documentation and PRs must state that only local stdio MCP and registry generation are shipped.
+
+The hosted session connector contract can be generated and checked locally:
+
+```bash
+sl mcp registry init-session
+sl mcp registry init-hosted-session-connector
+sl mcp registry validate-hosted-session-connector \
+  --file .sentinelayer/mcp/hosted-senti-session-connector.json \
+  --registry-file .sentinelayer/mcp/tool-registry.session-tools.json
+```
+
+This artifact is a guardrail, not a runtime. It makes server-side session-seat
+identity, no long-lived token passthrough, wake payload minimization, durable
+receipts, and scoped runner-token revocation machine-readable so hosted runtime
+PRs can fail closed when they drift from the contract.

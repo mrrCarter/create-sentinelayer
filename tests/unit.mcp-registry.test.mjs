@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 
 import {
   buildAidenIdProvisioningAdapterTemplate,
+  buildHostedSentiSessionConnectorContract,
   buildAidenIdRegistryTemplate,
   buildMcpServerConfigTemplate,
   buildSentinelayerSessionRegistryTemplate,
   validateAidenIdAdapterContract,
+  validateHostedSentiSessionConnectorContract,
   validateMcpToolRegistry,
   validateMcpServerConfig,
 } from "../src/mcp/registry.js";
@@ -75,6 +77,70 @@ test("Unit MCP registry: SentinelLayer session registry exposes inbox and write 
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "send_message").security.scopes, ["session:write"]);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "session_react").security.scopes, ["session:write", "session:action"]);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "session_lock").security.scopes, ["session:lock"]);
+});
+
+test("Unit MCP registry: hosted Senti connector contract rejects identity from tool args", () => {
+  const registry = buildSentinelayerSessionRegistryTemplate({
+    generatedAt: "2026-06-29T00:00:00.000Z",
+  });
+  const contract = buildHostedSentiSessionConnectorContract({
+    generatedAt: "2026-06-29T00:00:00.000Z",
+  });
+  const parsed = validateHostedSentiSessionConnectorContract(contract, {
+    registryPayload: registry,
+  });
+  const pollInbox = parsed.tools.find((tool) => tool.tool_name === "poll_inbox");
+  const subscribeWake = parsed.tools.find((tool) => tool.tool_name === "subscribe_wake");
+
+  assert.equal(parsed.runtime_status, "contract_only");
+  assert.equal(parsed.boundary.identity_source, "validated_oauth_claims_and_server_session_seat");
+  assert.equal(parsed.boundary.long_lived_cli_token_passthrough_allowed, false);
+  assert.equal(pollInbox.input_policy.identity_source, "server_session_seat");
+  assert.equal(pollInbox.input_policy.rejects_identity_from_tool_args, true);
+  assert.equal(pollInbox.input_policy.allowed_user_args.includes("sessionId"), false);
+  assert.equal(pollInbox.input_policy.allowed_user_args.includes("agentId"), false);
+  assert.equal(pollInbox.input_policy.forbidden_capability_args.includes("sessionId"), true);
+  assert.equal(pollInbox.input_policy.forbidden_capability_args.includes("agentId"), true);
+  assert.equal(subscribeWake.operation, "subscribe_wake");
+  assert.equal(subscribeWake.wake_payload.may_include_message_content, false);
+  assert.equal(subscribeWake.runner_lifecycle.revoke_token_on_idle_teardown, true);
+});
+
+test("Unit MCP registry: hosted connector validation fails if identity args are allowed", () => {
+  const contract = buildHostedSentiSessionConnectorContract({
+    generatedAt: "2026-06-29T00:00:00.000Z",
+  });
+  contract.tools[0].input_policy.allowed_user_args.push("agentId");
+
+  assert.throws(
+    () => validateHostedSentiSessionConnectorContract(contract),
+    /allows forbidden capability argument agentId/i
+  );
+});
+
+test("Unit MCP registry: hosted connector validation fails if wake revocation controls are missing", () => {
+  const contract = buildHostedSentiSessionConnectorContract({
+    generatedAt: "2026-06-29T00:00:00.000Z",
+  });
+  const subscribeWake = contract.tools.find((tool) => tool.tool_name === "subscribe_wake");
+  delete subscribeWake.runner_lifecycle;
+
+  assert.throws(
+    () => validateHostedSentiSessionConnectorContract(contract),
+    /must define scoped runner-token lifecycle controls/i
+  );
+});
+
+test("Unit MCP registry: hosted connector validation fails if required release gates drift", () => {
+  const contract = buildHostedSentiSessionConnectorContract({
+    generatedAt: "2026-06-29T00:00:00.000Z",
+  });
+  contract.release_gates = contract.release_gates.filter((gate) => gate !== "wake_payload_minimization");
+
+  assert.throws(
+    () => validateHostedSentiSessionConnectorContract(contract),
+    /missing required release gate wake_payload_minimization/i
+  );
 });
 
 test("Unit MCP registry: MCP server config rejects bearer auth without audience", () => {
