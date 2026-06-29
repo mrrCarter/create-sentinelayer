@@ -22,17 +22,23 @@ function jsonResponse(res, status, payload) {
 
 async function runCli({ cwd, env, args = [] }) {
   return new Promise((resolve, reject) => {
+    const childEnv = {
+      ...process.env,
+      HOME: cwd,
+      USERPROFILE: cwd,
+      XDG_CONFIG_HOME: path.join(cwd, ".config"),
+      NODE_ENV: "test",
+      SENTINELAYER_CLI_TEST_MODE: "1",
+      SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
+      SENTINELAYER_CLI_SKIP_AUTH: "1",
+      SENTINELAYER_TOKEN: "api_token_e2e_test_session",
+      ...(env || {}),
+    };
+    delete childEnv.SENTINELAYER_SKIP_REMOTE_SYNC;
+
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env: {
-        ...process.env,
-        NODE_ENV: "test",
-        SENTINELAYER_CLI_TEST_MODE: "1",
-        SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
-        SENTINELAYER_CLI_SKIP_AUTH: "1",
-        SENTINELAYER_TOKEN: "api_token_e2e_test_session",
-        ...(env || {}),
-      },
+      env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -125,6 +131,8 @@ test("E2E session listener resilience: transient events API failure recovers on 
     assert.equal(requests.length, 2);
     assert.equal(requests[0]?.after, "cursor-1");
     assert.equal(requests[1]?.after, "cursor-1");
+    assert.equal(requests[0]?.limit, "200");
+    assert.equal(requests[1]?.limit, "200");
 
     const emitted = String(result.stdout || "")
       .trim()
@@ -132,6 +140,10 @@ test("E2E session listener resilience: transient events API failure recovers on 
       .filter(Boolean)
       .map((line) => JSON.parse(line));
 
+    assert.deepEqual(
+      emitted.map((event) => event.event),
+      ["session_listen_error", "session_message"],
+    );
     assert.equal(
       emitted.some(
         (event) => event.event === "session_listen_error" && event.payload?.reason === "api_503",
