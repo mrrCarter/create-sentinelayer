@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.3...v0.31.4) (2026-06-29)
+
+
+### Bug Fixes
+
+* **session:** clarify recap listener presence ([58ca02a](https://github.com/mrrCarter/create-sentinelayer/commit/58ca02a932e7e0cc4995b7cbc16cd972ed174ae7))
+
 ## [0.31.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.2...v0.31.3) (2026-06-29)
 
 
