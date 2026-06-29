@@ -1,12 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent } from "../events/schema.js";
 import { appendToStream } from "../session/stream.js";
+import { listFileLocks, lockFile, unlockFile } from "../session/file-locks.js";
 import { eventMatchesAgent } from "../session/listener.js";
 import { isSessionControlEvent } from "../session/control-events.js";
 import {
+  createSessionMessageAction,
   listSessionMessageActions,
   pollSessionEvents,
   pollSessionEventsBefore,
@@ -27,6 +29,16 @@ const SESSION_MCP_CONFIRM_TOTAL_TIMEOUT_MS = 10_000;
 const SESSION_MCP_CONFIRM_REQUEST_TIMEOUT_MS = 2_000;
 const JSON_RPC_VERSION = "2.0";
 const CONTENT_LENGTH_PREFIX = "content-length:";
+const SESSION_MESSAGE_ACTION_TYPES = new Set([
+  "ack",
+  "working_on",
+  "reply",
+  "like",
+  "dislike",
+  "disregard",
+  "view",
+]);
+const SESSION_MESSAGE_ACTION_ALIASES = new Map([["comment", "reply"]]);
 
 function normalizeString(value) {
   return String(value == null ? "" : value).trim();
@@ -47,6 +59,17 @@ function normalizePositiveInteger(value, fallbackValue) {
   const normalized = Number(value);
   if (!Number.isFinite(normalized) || normalized <= 0) {
     return fallbackValue;
+  }
+  return Math.floor(normalized);
+}
+
+function normalizeOptionalPositiveInteger(value, fieldName) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return null;
+  }
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    throw new Error(`${fieldName} must be a positive integer.`);
   }
   return Math.floor(normalized);
 }
@@ -85,6 +108,22 @@ function normalizeRecipients(value) {
   return recipients;
 }
 
+function normalizeFileList(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/[\n,]+/g);
+  const seen = new Set();
+  const files = [];
+  for (const item of items) {
+    const file = normalizeString(item);
+    if (!file || seen.has(file)) continue;
+    seen.add(file);
+    files.push(file);
+  }
+  if (files.length === 0) {
+    throw new Error("files must include at least one path.");
+  }
+  return files;
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -97,6 +136,10 @@ function cleanObject(record = {}) {
     }
   }
   return cleaned;
+}
+
+function shortSha256(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 32);
 }
 
 function eventAgentId(event = {}) {
@@ -413,6 +456,51 @@ function requireAgentId(input = {}) {
   return agentId;
 }
 
+function normalizeSessionMessageActionType(value) {
+  const raw = normalizeString(value).toLowerCase();
+  const normalized = SESSION_MESSAGE_ACTION_ALIASES.get(raw) || raw;
+  if (!SESSION_MESSAGE_ACTION_TYPES.has(normalized)) {
+    throw new Error(
+      `actionType must be one of: ${[...SESSION_MESSAGE_ACTION_TYPES].join(", ")}; aliases: comment=reply.`,
+    );
+  }
+  return normalized;
+}
+
+function requireSessionActionTarget(input = {}) {
+  const targetSequenceId = normalizeOptionalPositiveInteger(
+    input.targetSequenceId || input.target_sequence_id || input.sequenceId || input.sequence_id,
+    "targetSequenceId",
+  );
+  const targetCursor = normalizeString(input.targetCursor || input.target_cursor || input.cursor);
+  const targetActionId = normalizeString(input.targetActionId || input.target_action_id || input.actionId);
+  if (!targetSequenceId && !targetCursor && !targetActionId) {
+    throw new Error("Provide targetSequenceId, targetCursor, or targetActionId.");
+  }
+  return {
+    targetSequenceId,
+    targetCursor,
+    targetActionId,
+  };
+}
+
+function defaultActionIdempotencyKey({
+  actionType,
+  targetSequenceId = null,
+  targetCursor = "",
+  targetActionId = "",
+  note = "",
+  agentId = "",
+} = {}) {
+  const target = targetSequenceId
+    ? `seq:${targetSequenceId}`
+    : targetActionId
+      ? `action:${targetActionId}`
+      : `cursor:${normalizeString(targetCursor)}`;
+  const actor = normalizeAgentId(agentId, "unknown");
+  return `mcp:${normalizeString(actionType).toLowerCase()}:${target}:${actor}:${shortSha256(note)}`;
+}
+
 function buildAgentEnvelope(agentId, input = {}) {
   return cleanObject({
     id: agentId,
@@ -461,6 +549,67 @@ function buildSessionMessageEvent({
     eventId,
     idempotencyToken: eventId,
   });
+}
+
+async function runSessionAction({
+  input = {},
+  actionType,
+  note = "",
+  targetPath,
+  createSessionMessageActionFn,
+} = {}) {
+  const sessionId = requireSessionId(input);
+  const agentId = requireAgentId(input);
+  const normalizedActionType = normalizeSessionMessageActionType(actionType || input.actionType || input.action_type);
+  const target = requireSessionActionTarget(input);
+  const normalizedNote = truncateText(note || input.note || input.message || input.text || "").text;
+  const idempotencyKey =
+    normalizeString(input.idempotencyKey || input.idempotency_key) ||
+    defaultActionIdempotencyKey({
+      actionType: normalizedActionType,
+      ...target,
+      note: normalizedNote,
+      agentId,
+    });
+
+  if (Boolean(input.dryRun || input.dry_run)) {
+    return {
+      ok: true,
+      dryRun: true,
+      sessionId,
+      agentId,
+      actionType: normalizedActionType,
+      ...target,
+      note: normalizedNote,
+      idempotencyKey,
+    };
+  }
+
+  const result = await createSessionMessageActionFn(sessionId, {
+    actionType: normalizedActionType,
+    targetPath,
+    ...target,
+    note: normalizedNote,
+    metadata: {
+      source: "mcp",
+      agentId,
+    },
+    idempotencyKey,
+    timeoutMs: normalizePositiveInteger(input.timeoutMs || input.timeout_ms, 15_000),
+  });
+
+  return {
+    ok: Boolean(result?.ok),
+    reason: normalizeString(result?.reason),
+    duplicate: Boolean(result?.duplicate),
+    sessionId,
+    agentId,
+    actionType: normalizedActionType,
+    ...target,
+    note: normalizedNote,
+    idempotencyKey,
+    action: result?.action || null,
+  };
 }
 
 async function persistSessionEvent({
@@ -576,6 +725,10 @@ export function createSessionMcpToolHandlers({
   pollSessionEventsFn = pollSessionEvents,
   pollSessionEventsBeforeFn = pollSessionEventsBefore,
   listSessionMessageActionsFn = listSessionMessageActions,
+  createSessionMessageActionFn = createSessionMessageAction,
+  lockFileFn = lockFile,
+  unlockFileFn = unlockFile,
+  listFileLocksFn = listFileLocks,
   syncSessionEventToApiFn = syncSessionEventToApi,
   appendToStreamFn = appendToStream,
   sleepFn = sleep,
@@ -678,6 +831,123 @@ export function createSessionMcpToolHandlers({
       });
     },
 
+    async session_action(input = {}) {
+      return runSessionAction({
+        input,
+        targetPath,
+        createSessionMessageActionFn,
+      });
+    },
+
+    async session_react(input = {}) {
+      const reaction = normalizeSessionMessageActionType(input.reaction || input.actionType || input.action_type);
+      if (!["ack", "like", "dislike"].includes(reaction)) {
+        throw new Error("reaction must be one of: ack, like, dislike.");
+      }
+      return runSessionAction({
+        input,
+        actionType: reaction,
+        targetPath,
+        createSessionMessageActionFn,
+      });
+    },
+
+    async session_reply(input = {}) {
+      return runSessionAction({
+        input,
+        actionType: "reply",
+        note: input.message || input.text || input.note,
+        targetPath,
+        createSessionMessageActionFn,
+      });
+    },
+
+    async session_lock(input = {}) {
+      const sessionId = requireSessionId(input);
+      const agentId = requireAgentId(input);
+      const files = normalizeFileList(input.files || input.file || input.paths);
+      const intent = normalizeString(input.intent || input.reason);
+      const ttlSeconds = normalizePositiveInteger(input.ttlSeconds || input.ttl_seconds, 300);
+      const results = [];
+      for (const file of files) {
+        const result = await lockFileFn(sessionId, agentId, file, {
+          intent,
+          ttlSeconds,
+          targetPath,
+          syncRemote: input.syncRemote !== false && input.sync_remote !== false,
+          awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
+        });
+        results.push({
+          file: normalizeString(result?.file) || file,
+          locked: Boolean(result?.locked),
+          reason: normalizeString(result?.reason) || (result?.locked ? "locked" : "held_by_other_agent"),
+          heldBy: normalizeString(result?.heldBy) || null,
+          since: normalizeString(result?.since) || null,
+          lock: result?.lock || null,
+        });
+      }
+      const failed = results.filter((result) => !result.locked);
+      return {
+        ok: failed.length === 0,
+        reason: failed.length === 0 ? "" : "lock_conflict",
+        sessionId,
+        agentId,
+        lockedCount: results.length - failed.length,
+        failedCount: failed.length,
+        results,
+      };
+    },
+
+    async session_unlock(input = {}) {
+      const sessionId = requireSessionId(input);
+      const agentId = requireAgentId(input);
+      const files = normalizeFileList(input.files || input.file || input.paths);
+      const reason = normalizeString(input.reason || input.intent) || "manual_release";
+      const results = [];
+      for (const file of files) {
+        const result = await unlockFileFn(sessionId, agentId, file, {
+          reason,
+          force: false,
+          targetPath,
+          syncRemote: input.syncRemote !== false && input.sync_remote !== false,
+          awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
+        });
+        results.push({
+          file: normalizeString(result?.file) || file,
+          unlocked: Boolean(result?.unlocked),
+          reason: normalizeString(result?.reason) || (result?.unlocked ? "unlocked" : "not_locked"),
+          heldBy: normalizeString(result?.heldBy) || null,
+          since: normalizeString(result?.since) || null,
+          lock: result?.lock || null,
+        });
+      }
+      const failed = results.filter((result) => !result.unlocked && result.reason !== "not_locked");
+      return {
+        ok: failed.length === 0,
+        reason: failed.length === 0 ? "" : "unlock_failed",
+        sessionId,
+        agentId,
+        unlockedCount: results.filter((result) => result.unlocked).length,
+        skippedCount: results.filter((result) => !result.unlocked && result.reason === "not_locked").length,
+        failedCount: failed.length,
+        results,
+      };
+    },
+
+    async session_locks(input = {}) {
+      const sessionId = requireSessionId(input);
+      const locks = await listFileLocksFn(sessionId, {
+        targetPath,
+      });
+      return {
+        ok: true,
+        reason: "",
+        sessionId,
+        lockCount: Array.isArray(locks) ? locks.length : 0,
+        locks: Array.isArray(locks) ? locks : [],
+      };
+    },
+
     async attention_request(input = {}) {
       const sessionId = requireSessionId(input);
       const agentId = requireAgentId(input);
@@ -763,6 +1033,136 @@ export const SESSION_MCP_TOOLS = Object.freeze([
         displayName: { type: "string" },
         idempotencyKey: { type: "string" },
         dryRun: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "session_action",
+    title: "Record Senti Session Action",
+    description:
+      "Record a low-noise message action such as ack, working_on, disregard, view, like, dislike, or reply against a target session event.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId", "agentId", "actionType"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
+        actionType: { type: "string", enum: [...SESSION_MESSAGE_ACTION_TYPES] },
+        targetSequenceId: { type: "integer", minimum: 1 },
+        targetCursor: { type: "string" },
+        targetActionId: { type: "string" },
+        note: { type: "string", maxLength: MAX_MESSAGE_CHARS },
+        idempotencyKey: { type: "string" },
+        timeoutMs: { type: "integer", minimum: 1, default: 15000 },
+        dryRun: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "session_react",
+    title: "React To Senti Message",
+    description:
+      "Acknowledge or react to a target session event with ack, like, or dislike.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId", "agentId", "reaction"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
+        reaction: { type: "string", enum: ["ack", "like", "dislike"] },
+        targetSequenceId: { type: "integer", minimum: 1 },
+        targetCursor: { type: "string" },
+        targetActionId: { type: "string" },
+        idempotencyKey: { type: "string" },
+        timeoutMs: { type: "integer", minimum: 1, default: 15000 },
+        dryRun: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "session_reply",
+    title: "Reply In Senti Thread",
+    description:
+      "Add a threaded reply/comment under a specific session event using the session action channel.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId", "agentId", "targetSequenceId", "message"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
+        targetSequenceId: { type: "integer", minimum: 1 },
+        targetCursor: { type: "string" },
+        targetActionId: { type: "string" },
+        message: { type: "string", minLength: 1, maxLength: MAX_MESSAGE_CHARS },
+        idempotencyKey: { type: "string" },
+        timeoutMs: { type: "integer", minimum: 1, default: 15000 },
+        dryRun: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "session_lock",
+    title: "Lock Senti Files",
+    description:
+      "Claim session-scoped file locks before editing files, using the same fail-closed lock registry as the CLI.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId", "agentId", "files"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
+        files: {
+          anyOf: [
+            { type: "string" },
+            { type: "array", items: { type: "string" }, minItems: 1 },
+          ],
+        },
+        intent: { type: "string" },
+        ttlSeconds: { type: "integer", minimum: 1, default: 300 },
+        syncRemote: { type: "boolean", default: true },
+        awaitRemoteSync: { type: "boolean", default: true },
+      },
+    },
+  },
+  {
+    name: "session_unlock",
+    title: "Unlock Senti Files",
+    description:
+      "Release session-scoped file locks held by an agent.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId", "agentId", "files"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
+        files: {
+          anyOf: [
+            { type: "string" },
+            { type: "array", items: { type: "string" }, minItems: 1 },
+          ],
+        },
+        reason: { type: "string" },
+        syncRemote: { type: "boolean", default: true },
+        awaitRemoteSync: { type: "boolean", default: true },
+      },
+    },
+  },
+  {
+    name: "session_locks",
+    title: "List Senti File Locks",
+    description:
+      "List active file locks for a session.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
       },
     },
   },
