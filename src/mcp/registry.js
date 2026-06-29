@@ -12,6 +12,8 @@ export const MCP_TOOL_REGISTRY_SCHEMA_VERSION = "1.0.0";
 export const MCP_SERVER_CONFIG_SCHEMA_VERSION = "1.0.0";
 /** AIdenID adapter-contract schema version used by Sentinelayer CLI generated artifacts. */
 export const AIDENID_ADAPTER_CONTRACT_SCHEMA_VERSION = "1.0.0";
+/** Hosted Senti session connector-contract schema version. */
+export const HOSTED_SENTI_SESSION_CONNECTOR_CONTRACT_SCHEMA_VERSION = "1.0.0";
 
 const serverIdRegex = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 const inputPlaceholderRegex = /^\{\{input\.[a-zA-Z0-9_.-]+\}\}$/;
@@ -141,6 +143,113 @@ const aidenIdAdapterContractSchema = z
     tool_bindings: z.array(aidenIdProvisioningBindingSchema).min(1),
   })
   .strict();
+
+const hostedSessionConnectorToolSchema = z
+  .object({
+    tool_name: z
+      .string()
+      .min(1)
+      .regex(/^[a-zA-Z0-9_.:-]+$/, "tool_name must contain only [a-zA-Z0-9_.:-]"),
+    local_tool_name: z
+      .string()
+      .min(1)
+      .regex(/^[a-zA-Z0-9_.:-]+$/, "local_tool_name must contain only [a-zA-Z0-9_.:-]"),
+    operation: z.enum([
+      "join_and_hydrate",
+      "read_history",
+      "send_message",
+      "session_action",
+      "session_lock",
+      "session_unlock",
+      "list_locks",
+      "attention_request",
+      "subscribe_wake",
+      "presence_renew",
+      "runner_teardown",
+    ]),
+    input_policy: z
+      .object({
+        identity_source: z.literal("server_session_seat"),
+        rejects_identity_from_tool_args: z.literal(true),
+        allowed_user_args: z.array(z.string().min(1)).default([]),
+        forbidden_capability_args: z
+          .array(z.enum(["sessionId", "session_id", "agentId", "agent_id", "userId", "user_id", "orgId", "org_id"]))
+          .default(["sessionId", "session_id", "agentId", "agent_id", "userId", "user_id", "orgId", "org_id"]),
+      })
+      .strict(),
+    authorization: z
+      .object({
+        requires_validated_claims: z.literal(true),
+        requires_session_seat: z.literal(true),
+        required_scopes: z.array(z.string().min(1)).min(1),
+      })
+      .strict(),
+    wake_payload: z
+      .object({
+        policy: z.enum(["none", "cursor_reason_counts_only", "bounded_redacted_window"]),
+        may_include_message_content: z.boolean().default(false),
+        max_events: z.number().int().positive().max(200).optional(),
+      })
+      .strict()
+      .superRefine((payload, ctx) => {
+        if (payload.policy === "cursor_reason_counts_only" && payload.may_include_message_content) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["may_include_message_content"],
+            message: "cursor/reason wake payloads must not include message content.",
+          });
+        }
+      }),
+    audit: z
+      .object({
+        durable_receipt_required: z.literal(true),
+        idempotency_key_fields: z.array(z.string().min(1)).min(1),
+      })
+      .strict(),
+    runner_lifecycle: z
+      .object({
+        requires_scoped_runner_token: z.literal(true),
+        revoke_token_on_idle_teardown: z.literal(true),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+const hostedSessionConnectorContractSchema = z
+  .object({
+    version: z
+      .literal(HOSTED_SENTI_SESSION_CONNECTOR_CONTRACT_SCHEMA_VERSION)
+      .default(HOSTED_SENTI_SESSION_CONNECTOR_CONTRACT_SCHEMA_VERSION),
+    provider: z.literal("sentinelayer"),
+    connector: z.literal("hosted-senti-session"),
+    generated_at: z.string().min(1),
+    local_registry_file: z.string().min(1),
+    runtime_status: z.literal("contract_only"),
+    boundary: z
+      .object({
+        transport: z.literal("https_mcp_streamable_http"),
+        identity_source: z.literal("validated_oauth_claims_and_server_session_seat"),
+        local_stdio_registry_is_not_hosted_capability: z.literal(true),
+        long_lived_cli_token_passthrough_allowed: z.literal(false),
+      })
+      .strict(),
+    tools: z.array(hostedSessionConnectorToolSchema).min(1),
+    release_gates: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+
+const REQUIRED_HOSTED_SESSION_CONNECTOR_RELEASE_GATES = [
+  "oauth_resource_binding",
+  "session_seat_ownership",
+  "deny_identity_from_tool_args",
+  "approval_policy_enforcement",
+  "scoped_runner_token_revocation",
+  "wake_payload_minimization",
+  "durable_audit_receipts",
+  "output_redaction",
+  "omar_gate_mcp_security_pack",
+];
 
 const mcpServerTransportSchema = z.discriminatedUnion("mode", [
   z
@@ -812,6 +921,152 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
   };
 }
 
+function hostedSessionTool({
+  toolName,
+  operation,
+  allowedUserArgs,
+  requiredScopes,
+  wakePayload = { policy: "none", may_include_message_content: false },
+  runnerLifecycle = null,
+}) {
+  const tool = {
+    tool_name: toolName,
+    local_tool_name: toolName,
+    operation,
+    input_policy: {
+      identity_source: "server_session_seat",
+      rejects_identity_from_tool_args: true,
+      allowed_user_args: allowedUserArgs,
+      forbidden_capability_args: ["sessionId", "session_id", "agentId", "agent_id", "userId", "user_id", "orgId", "org_id"],
+    },
+    authorization: {
+      requires_validated_claims: true,
+      requires_session_seat: true,
+      required_scopes: requiredScopes,
+    },
+    wake_payload: wakePayload,
+    audit: {
+      durable_receipt_required: true,
+      idempotency_key_fields: ["subject", "session_seat", "tool_name", "normalized_inputs"],
+    },
+  };
+  if (runnerLifecycle) {
+    tool.runner_lifecycle = runnerLifecycle;
+  }
+  return tool;
+}
+
+/**
+ * Create the hosted Senti session connector contract.
+ *
+ * This is intentionally separate from the local stdio session registry. Local
+ * tools need sessionId/agentId arguments; hosted tools must derive identity from
+ * validated OAuth claims plus a server-side session seat and must not treat those
+ * arguments as capabilities.
+ *
+ * @param {{ generatedAt?: string, localRegistryFile?: string }} [options]
+ * @returns {Record<string, any>}
+ */
+export function buildHostedSentiSessionConnectorContract({
+  generatedAt = new Date().toISOString(),
+  localRegistryFile = ".sentinelayer/mcp/tool-registry.session-tools.json",
+} = {}) {
+  return {
+    version: HOSTED_SENTI_SESSION_CONNECTOR_CONTRACT_SCHEMA_VERSION,
+    provider: "sentinelayer",
+    connector: "hosted-senti-session",
+    generated_at: generatedAt,
+    local_registry_file: String(localRegistryFile || "").trim() || ".sentinelayer/mcp/tool-registry.session-tools.json",
+    runtime_status: "contract_only",
+    boundary: {
+      transport: "https_mcp_streamable_http",
+      identity_source: "validated_oauth_claims_and_server_session_seat",
+      local_stdio_registry_is_not_hosted_capability: true,
+      long_lived_cli_token_passthrough_allowed: false,
+    },
+    tools: [
+      hostedSessionTool({
+        toolName: "poll_inbox",
+        operation: "read_history",
+        allowedUserArgs: ["cursor", "limit", "actionLimit", "includeActions"],
+        requiredScopes: ["session:read"],
+        wakePayload: { policy: "bounded_redacted_window", may_include_message_content: true, max_events: 50 },
+      }),
+      hostedSessionTool({
+        toolName: "send_message",
+        operation: "send_message",
+        allowedUserArgs: ["message", "to", "idempotencyKey"],
+        requiredScopes: ["session:write"],
+      }),
+      hostedSessionTool({
+        toolName: "session_action",
+        operation: "session_action",
+        allowedUserArgs: ["actionType", "targetSequenceId", "targetCursor", "targetActionId", "note", "idempotencyKey"],
+        requiredScopes: ["session:write", "session:action"],
+      }),
+      hostedSessionTool({
+        toolName: "session_react",
+        operation: "session_action",
+        allowedUserArgs: ["reaction", "targetSequenceId", "targetCursor", "targetActionId", "idempotencyKey"],
+        requiredScopes: ["session:write", "session:action"],
+      }),
+      hostedSessionTool({
+        toolName: "session_reply",
+        operation: "session_action",
+        allowedUserArgs: ["targetSequenceId", "targetCursor", "targetActionId", "message", "idempotencyKey"],
+        requiredScopes: ["session:write", "session:action"],
+      }),
+      hostedSessionTool({
+        toolName: "session_lock",
+        operation: "session_lock",
+        allowedUserArgs: ["files", "intent", "ttlSeconds"],
+        requiredScopes: ["session:lock"],
+      }),
+      hostedSessionTool({
+        toolName: "session_unlock",
+        operation: "session_unlock",
+        allowedUserArgs: ["files", "reason"],
+        requiredScopes: ["session:lock"],
+      }),
+      hostedSessionTool({
+        toolName: "session_locks",
+        operation: "list_locks",
+        allowedUserArgs: [],
+        requiredScopes: ["session:lock"],
+      }),
+      hostedSessionTool({
+        toolName: "attention_request",
+        operation: "attention_request",
+        allowedUserArgs: ["message", "to", "priority", "severity", "idempotencyKey"],
+        requiredScopes: ["session:write"],
+        wakePayload: { policy: "cursor_reason_counts_only", may_include_message_content: false },
+      }),
+      hostedSessionTool({
+        toolName: "subscribe_wake",
+        operation: "subscribe_wake",
+        allowedUserArgs: ["cadencePreset", "wakeTriggers", "sinceCursor"],
+        requiredScopes: ["session:read", "session:wake"],
+        wakePayload: { policy: "cursor_reason_counts_only", may_include_message_content: false },
+        runnerLifecycle: {
+          requires_scoped_runner_token: true,
+          revoke_token_on_idle_teardown: true,
+        },
+      }),
+    ],
+    release_gates: [
+      "oauth_resource_binding",
+      "session_seat_ownership",
+      "deny_identity_from_tool_args",
+      "approval_policy_enforcement",
+      "scoped_runner_token_revocation",
+      "wake_payload_minimization",
+      "durable_audit_receipts",
+      "output_redaction",
+      "omar_gate_mcp_security_pack",
+    ],
+  };
+}
+
 /**
  * Create an AIdenID adapter contract template that binds MCP tools to provisioning endpoints.
  *
@@ -976,6 +1231,68 @@ export function validateAidenIdAdapterContract(payload, { registryPayload } = {}
 }
 
 /**
+ * Validate and normalize hosted Senti session connector contract payload.
+ * Optionally cross-validates hosted local_tool_name references against a local
+ * session registry payload. Contract-only hosted tools, such as subscribe_wake,
+ * can omit a local registry binding by using the same name as a non-local tool.
+ *
+ * @param {unknown} payload
+ * @param {{ registryPayload?: unknown }} [options]
+ * @returns {any}
+ */
+export function validateHostedSentiSessionConnectorContract(payload, { registryPayload } = {}) {
+  const parsed = hostedSessionConnectorContractSchema.parse(payload);
+  const releaseGateSet = new Set(parsed.release_gates);
+
+  for (const gate of REQUIRED_HOSTED_SESSION_CONNECTOR_RELEASE_GATES) {
+    if (!releaseGateSet.has(gate)) {
+      throw new Error(`Hosted connector contract is missing required release gate ${gate}.`);
+    }
+  }
+
+  for (const tool of parsed.tools) {
+    const forbidden = new Set(tool.input_policy.forbidden_capability_args);
+    for (const key of ["sessionId", "session_id", "agentId", "agent_id"]) {
+      if (!forbidden.has(key)) {
+        throw new Error(`Hosted connector tool ${tool.tool_name} must forbid capability argument ${key}.`);
+      }
+    }
+    for (const arg of tool.input_policy.allowed_user_args) {
+      if (forbidden.has(arg)) {
+        throw new Error(`Hosted connector tool ${tool.tool_name} allows forbidden capability argument ${arg}.`);
+      }
+    }
+    if (tool.operation === "subscribe_wake") {
+      if (!tool.runner_lifecycle) {
+        throw new Error(`Hosted connector tool ${tool.tool_name} must define scoped runner-token lifecycle controls.`);
+      }
+      if (!tool.runner_lifecycle.requires_scoped_runner_token) {
+        throw new Error(`Hosted connector tool ${tool.tool_name} must require a scoped runner token.`);
+      }
+      if (!tool.runner_lifecycle.revoke_token_on_idle_teardown) {
+        throw new Error(`Hosted connector tool ${tool.tool_name} must revoke runner tokens on idle teardown.`);
+      }
+    }
+  }
+
+  if (registryPayload !== undefined) {
+    const registry = validateMcpToolRegistry(registryPayload);
+    const localToolNames = new Set(registry.tools.map((tool) => tool.name));
+    const missingLocalTools = parsed.tools
+      .filter((tool) => tool.operation !== "subscribe_wake" && tool.operation !== "presence_renew" && tool.operation !== "runner_teardown")
+      .map((tool) => tool.local_tool_name)
+      .filter((toolName) => !localToolNames.has(toolName));
+    if (missingLocalTools.length > 0) {
+      throw new Error(
+        `Hosted connector references local tools not present in registry: ${[...new Set(missingLocalTools)].join(", ")}`
+      );
+    }
+  }
+
+  return parsed;
+}
+
+/**
  * Validate and normalize MCP server runtime config payload.
  *
  * @param {unknown} payload
@@ -1067,6 +1384,21 @@ export async function resolveDefaultAidenIdAdapterContractPath({ cwd, outputDir,
     env,
   });
   return path.join(outputRoot, "mcp", "aidenid-provisioning-adapter.json");
+}
+
+/**
+ * Resolve default output path for hosted Senti session connector contracts.
+ *
+ * @param {{ cwd?: string, outputDir?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {Promise<string>}
+ */
+export async function resolveDefaultHostedSentiSessionConnectorContractPath({ cwd, outputDir, env } = {}) {
+  const outputRoot = await resolveOutputRoot({
+    cwd,
+    outputDirOverride: outputDir,
+    env,
+  });
+  return path.join(outputRoot, "mcp", "hosted-senti-session-connector.json");
 }
 
 /**

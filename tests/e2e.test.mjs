@@ -4203,6 +4203,8 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     const schemaPath = path.join(tempRoot, "artifacts", "mcp-tool-registry.schema.json");
     const templatePath = path.join(tempRoot, "artifacts", "mcp-tool-registry.aidenid-template.json");
     const adapterPath = path.join(tempRoot, "artifacts", "mcp-aidenid-provisioning-adapter.json");
+    const sessionRegistryPath = path.join(tempRoot, "artifacts", "mcp-session-tools.json");
+    const hostedContractPath = path.join(tempRoot, "artifacts", "hosted-senti-session-connector.json");
     const serverPath = path.join(tempRoot, "artifacts", "mcp-server.local-aidenid.json");
     const vscodeBridgePath = path.join(tempRoot, "artifacts", ".vscode", "mcp.json");
 
@@ -4284,6 +4286,67 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(adapterValidatePayload.valid, true);
     assert.equal(adapterValidatePayload.bindingCount, 1);
     assert.equal(adapterValidatePayload.tools.includes("aidenid.provision_email"), true);
+
+    const sessionRegistryResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: ["mcp", "registry", "init-session", "--path", sessionRegistryPath, "--json"],
+    });
+    assert.equal(sessionRegistryResult.code, 0, sessionRegistryResult.stderr || sessionRegistryResult.stdout);
+    const sessionRegistryPayload = JSON.parse(String(sessionRegistryResult.stdout || "").trim());
+    assert.equal(sessionRegistryPayload.command, "mcp registry init-session");
+    assert.equal(sessionRegistryPayload.toolCount, 9);
+    assert.equal(sessionRegistryPayload.tools.includes("poll_inbox"), true);
+
+    const hostedContractResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "mcp",
+        "registry",
+        "init-hosted-session-connector",
+        "--registry-file",
+        sessionRegistryPath,
+        "--path",
+        hostedContractPath,
+        "--json",
+      ],
+    });
+    assert.equal(hostedContractResult.code, 0, hostedContractResult.stderr || hostedContractResult.stdout);
+    const hostedContractPayload = JSON.parse(String(hostedContractResult.stdout || "").trim());
+    assert.equal(hostedContractPayload.command, "mcp registry init-hosted-session-connector");
+    assert.equal(hostedContractPayload.toolCount, 10);
+    assert.equal(hostedContractPayload.tools.includes("subscribe_wake"), true);
+
+    const hostedValidateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "mcp",
+        "registry",
+        "validate-hosted-session-connector",
+        "--file",
+        hostedContractPath,
+        "--registry-file",
+        sessionRegistryPath,
+        "--json",
+      ],
+    });
+    assert.equal(hostedValidateResult.code, 0, hostedValidateResult.stderr || hostedValidateResult.stdout);
+    const hostedValidatePayload = JSON.parse(String(hostedValidateResult.stdout || "").trim());
+    assert.equal(hostedValidatePayload.command, "mcp registry validate-hosted-session-connector");
+    assert.equal(hostedValidatePayload.valid, true);
+    assert.equal(hostedValidatePayload.connector, "hosted-senti-session");
+    assert.equal(hostedValidatePayload.toolCount, 10);
+    assert.equal(hostedValidatePayload.releaseGateCount, 9);
+
+    const hostedContract = JSON.parse(await readFile(hostedContractPath, "utf-8"));
+    const hostedPollInbox = hostedContract.tools.find((tool) => tool.tool_name === "poll_inbox");
+    const hostedSubscribeWake = hostedContract.tools.find((tool) => tool.tool_name === "subscribe_wake");
+    assert.equal(hostedContract.runtime_status, "contract_only");
+    assert.equal(hostedPollInbox.input_policy.allowed_user_args.includes("sessionId"), false);
+    assert.equal(hostedPollInbox.input_policy.allowed_user_args.includes("agentId"), false);
+    assert.equal(hostedSubscribeWake.runner_lifecycle.revoke_token_on_idle_teardown, true);
 
     const serverInitResult = await runCli({
       cwd: tempRoot,

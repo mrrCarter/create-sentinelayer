@@ -326,7 +326,9 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   const program = buildProgram(registerMcpCommand);
 
   getCommandByPath(program, "mcp registry init-session");
+  getCommandByPath(program, "mcp registry init-hosted-session-connector");
   getCommandByPath(program, "mcp registry init-cli");
+  getCommandByPath(program, "mcp registry validate-hosted-session-connector");
   getCommandByPath(program, "mcp server run");
 
   const initSession = getCommandByPath(program, "mcp registry init-session");
@@ -334,6 +336,18 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   assertCommandHasOption(initSession, "--output-dir <path>");
   assertCommandHasOption(initSession, "--force");
   assertCommandHasOption(initSession, "--json");
+
+  const initHostedSession = getCommandByPath(program, "mcp registry init-hosted-session-connector");
+  assertCommandHasOption(initHostedSession, "--registry-file <path>");
+  assertCommandHasOption(initHostedSession, "--path <path>");
+  assertCommandHasOption(initHostedSession, "--output-dir <path>");
+  assertCommandHasOption(initHostedSession, "--force");
+  assertCommandHasOption(initHostedSession, "--json");
+
+  const validateHostedSession = getCommandByPath(program, "mcp registry validate-hosted-session-connector");
+  assertCommandHasOption(validateHostedSession, "--file <path>");
+  assertCommandHasOption(validateHostedSession, "--registry-file <path>");
+  assertCommandHasOption(validateHostedSession, "--json");
 
   const initCli = getCommandByPath(program, "mcp registry init-cli");
   assertCommandHasOption(initCli, "--path <path>");

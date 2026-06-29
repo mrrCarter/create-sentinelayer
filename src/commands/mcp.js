@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 
 import {
   buildAidenIdProvisioningAdapterTemplate,
+  buildHostedSentiSessionConnectorContract,
   buildAidenIdRegistryTemplate,
   buildMcpToolRegistrySchema,
   buildMcpServerConfigTemplate,
@@ -15,10 +16,12 @@ import {
   buildVsCodeMcpBridgeTemplate,
   readJsonFile,
   resolveDefaultAidenIdAdapterContractPath,
+  resolveDefaultHostedSentiSessionConnectorContractPath,
   resolveDefaultMcpOutputPath,
   resolveDefaultMcpServerConfigPath,
   resolveDefaultVsCodeBridgePath,
   validateAidenIdAdapterContract,
+  validateHostedSentiSessionConnectorContract,
   stringifyJson,
   validateMcpServerConfig,
   validateMcpToolRegistry,
@@ -256,6 +259,46 @@ export function registerMcpCommand(program) {
     });
 
   registry
+    .command("init-hosted-session-connector")
+    .description("Write the hosted Senti session MCP connector contract")
+    .option(
+      "--registry-file <path>",
+      "Local session registry file referenced by hosted connector contract",
+      ".sentinelayer/mcp/tool-registry.session-tools.json"
+    )
+    .option("--path <path>", "Destination file path override")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--force", "Overwrite destination file if it already exists")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const defaultPath = await resolveDefaultHostedSentiSessionConnectorContractPath({
+        cwd: process.cwd(),
+        outputDir: options.outputDir,
+        env: process.env,
+      });
+      const outputPath = normalizeOutputPath(options.path, defaultPath);
+      const template = buildHostedSentiSessionConnectorContract({
+        localRegistryFile: options.registryFile,
+      });
+      validateHostedSentiSessionConnectorContract(template);
+      const writtenPath = await writeJsonFile(outputPath, template, { force: Boolean(options.force) });
+      const payload = {
+        command: "mcp registry init-hosted-session-connector",
+        outputPath: writtenPath,
+        localRegistryFile: template.local_registry_file,
+        toolCount: template.tools.length,
+        tools: template.tools.map((tool) => tool.tool_name),
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Wrote hosted Senti session connector contract: ${writtenPath}`));
+      console.log(pc.gray("This is a hosted connector contract, not a local stdio runtime claim."));
+    });
+
+  registry
     .command("init-cli")
     .description("Write a generated MCP registry for every SentinelLayer CLI leaf command")
     .option("--path <path>", "Destination file path override")
@@ -332,6 +375,66 @@ export function registerMcpCommand(program) {
       console.log(pc.gray(`File: ${loaded.path}`));
       for (const name of toolNames) {
         console.log(`- ${name}`);
+      }
+    });
+
+  registry
+    .command("validate-hosted-session-connector")
+    .description("Validate a hosted Senti session MCP connector contract")
+    .requiredOption("--file <path>", "Hosted connector contract JSON file to validate")
+    .option("--registry-file <path>", "Optional local session registry JSON file for cross-check")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const inputPath = path.resolve(process.cwd(), String(options.file || "").trim());
+      const loaded = await readJsonFile(inputPath);
+      const registryFile = String(options.registryFile || "").trim();
+      const loadedRegistry = registryFile
+        ? await readJsonFile(path.resolve(process.cwd(), registryFile))
+        : null;
+
+      let parsed;
+      try {
+        parsed = validateHostedSentiSessionConnectorContract(loaded.data, {
+          registryPayload: loadedRegistry ? loadedRegistry.data : undefined,
+        });
+      } catch (error) {
+        const payload = {
+          command: "mcp registry validate-hosted-session-connector",
+          valid: false,
+          filePath: loaded.path,
+          registryFilePath: loadedRegistry ? loadedRegistry.path : null,
+          error: zodIssueSummary(error),
+        };
+        if (shouldEmitJson(options, command)) {
+          console.log(JSON.stringify(payload, null, 2));
+        } else {
+          console.log(pc.red(`Hosted Senti session connector contract invalid: ${payload.error}`));
+          console.log(pc.gray(`File: ${loaded.path}`));
+          if (payload.registryFilePath) {
+            console.log(pc.gray(`Registry: ${payload.registryFilePath}`));
+          }
+        }
+        process.exitCode = 2;
+        return;
+      }
+
+      const payload = {
+        command: "mcp registry validate-hosted-session-connector",
+        valid: true,
+        filePath: loaded.path,
+        registryFilePath: loadedRegistry ? loadedRegistry.path : null,
+        connector: parsed.connector,
+        toolCount: parsed.tools.length,
+        releaseGateCount: parsed.release_gates.length,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Hosted Senti session connector contract valid (${parsed.tools.length} tools)`));
+      console.log(pc.gray(`File: ${loaded.path}`));
+      if (payload.registryFilePath) {
+        console.log(pc.gray(`Registry: ${payload.registryFilePath}`));
       }
     });
 
