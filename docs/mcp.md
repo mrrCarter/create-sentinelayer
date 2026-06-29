@@ -4,6 +4,7 @@ Sentinelayer ships a local stdio MCP server for Senti coordination. It is intend
 
 ```bash
 sl mcp registry init-session
+sl mcp registry init-cli
 sl mcp server init --id sentinelayer-session --registry-file .sentinelayer/mcp/tool-registry.session-tools.json
 sl mcp server run --path .
 ```
@@ -23,6 +24,14 @@ The session MCP server exposes:
 - `attention_request` - raise a high-signal `help_request`.
 
 All tools require explicit `sessionId` values. Write/action/lock tools also require a non-human `agentId`; the server rejects `human-*`, `cli-user`, and `unknown` agent identities.
+
+## Generated CLI registry
+
+`sl mcp registry init-cli` writes an MCP registry for every SentinelLayer CLI leaf command using Commander metadata. Tool names use the `sl.<command.path>` form, such as `sl.session.say` and `sl.mcp.registry.init-session`.
+
+The generated registry is intended for bridge-capable MCP hosts and hosted connector work. It records each command's positional arguments, options, original argv path, bridge URL, budget defaults, and `cli:execute` scope. Every generated CLI tool requires human approval by default because the surface includes write, scan, audit, auth, and session commands.
+
+This registry does not by itself grant browser-hosted Claude or ChatGPT execution. A hosted bridge must still enforce OAuth, session-seat binding, per-user token validation, approval policy, and sandbox/runtime controls before invoking CLI commands.
 
 ## Example local client config
 

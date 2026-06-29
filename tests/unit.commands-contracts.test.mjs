@@ -326,6 +326,7 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   const program = buildProgram(registerMcpCommand);
 
   getCommandByPath(program, "mcp registry init-session");
+  getCommandByPath(program, "mcp registry init-cli");
   getCommandByPath(program, "mcp server run");
 
   const initSession = getCommandByPath(program, "mcp registry init-session");
@@ -333,6 +334,12 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   assertCommandHasOption(initSession, "--output-dir <path>");
   assertCommandHasOption(initSession, "--force");
   assertCommandHasOption(initSession, "--json");
+
+  const initCli = getCommandByPath(program, "mcp registry init-cli");
+  assertCommandHasOption(initCli, "--path <path>");
+  assertCommandHasOption(initCli, "--output-dir <path>");
+  assertCommandHasOption(initCli, "--force");
+  assertCommandHasOption(initCli, "--json");
 
   const serverRun = getCommandByPath(program, "mcp server run");
   assertCommandHasOption(serverRun, "--config <path>");
