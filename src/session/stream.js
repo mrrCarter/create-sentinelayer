@@ -3,6 +3,10 @@ import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent, normalizeAgentEvent } from "../events/schema.js";
+import {
+  dedupeSessionEvents,
+  sessionEventIdentityKeys,
+} from "./event-identity.js";
 import { enrichEventWithMentions } from "./mentions.js";
 import { resolveSessionPaths } from "./paths.js";
 import { redactEventPayload } from "./redact.js";
@@ -348,6 +352,58 @@ async function rotateStreamIfNeeded(paths, maxEvents) {
   await fsp.writeFile(paths.streamPath, retainedPayload, "utf-8");
 }
 
+function eventsShareIdentity(left = {}, right = {}) {
+  const leftKeys = new Set(sessionEventIdentityKeys(left));
+  if (leftKeys.size === 0) return false;
+  return sessionEventIdentityKeys(right).some((key) => leftKeys.has(key));
+}
+
+async function appendOrMergeCurrentStreamEvent(paths, canonicalEvent, { mergeExisting = false } = {}) {
+  if (!mergeExisting) {
+    await fsp.appendFile(paths.streamPath, `${JSON.stringify(canonicalEvent)}\n`, "utf-8");
+    return;
+  }
+
+  const currentEvents = await readEventsFromFile(paths.streamPath);
+  const matchingIndexes = [];
+  for (const [index, event] of currentEvents.entries()) {
+    if (eventsShareIdentity(event, canonicalEvent)) {
+      matchingIndexes.push(index);
+    }
+  }
+
+  if (matchingIndexes.length === 0) {
+    await fsp.appendFile(paths.streamPath, `${JSON.stringify(canonicalEvent)}\n`, "utf-8");
+    return;
+  }
+
+  const replacement = dedupeSessionEvents([
+    ...matchingIndexes.map((index) => currentEvents[index]),
+    canonicalEvent,
+  ])[0] || canonicalEvent;
+  const firstMatch = matchingIndexes[0];
+  const matchingIndexSet = new Set(matchingIndexes);
+  const mergedEvents = [];
+  for (const [index, event] of currentEvents.entries()) {
+    if (index === firstMatch) {
+      mergedEvents.push(replacement);
+      continue;
+    }
+    if (matchingIndexSet.has(index)) {
+      continue;
+    }
+    mergedEvents.push(event);
+  }
+
+  await fsp.writeFile(
+    paths.streamPath,
+    mergedEvents.length > 0
+      ? `${mergedEvents.map((event) => JSON.stringify(event)).join("\n")}\n`
+      : "",
+    "utf-8",
+  );
+}
+
 function filterBySince(events = [], since) {
   const normalizedSince = normalizeString(since);
   if (!normalizedSince) {
@@ -371,6 +427,7 @@ export async function appendToStream(
     maxEvents = DEFAULT_MAX_STREAM_EVENTS,
     syncRemote = true,
     awaitRemoteSync = false,
+    mergeExisting = false,
   } = {}
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
@@ -403,7 +460,7 @@ export async function appendToStream(
   await acquireLock(paths.lockPath);
   try {
     await fsp.mkdir(paths.sessionDir, { recursive: true });
-    await fsp.appendFile(paths.streamPath, `${JSON.stringify(canonicalEvent)}\n`, "utf-8");
+    await appendOrMergeCurrentStreamEvent(paths, canonicalEvent, { mergeExisting });
     await rotateStreamIfNeeded(paths, normalizedMaxEvents);
 
     metadata.lastInteractionAt = nowIso;

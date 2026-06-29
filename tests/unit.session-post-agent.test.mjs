@@ -2201,7 +2201,10 @@ test("Unit session read: --remote upgrades local unsequenced post with canonical
     const localEvents = await readStream(session.sessionId, { targetPath: tempRoot, tail: 0 });
     assert.equal(secondPayload.events.length, 1);
     assert.equal(secondPayload.events[0].sequenceId, 101541);
-    assert.equal(localEvents.length, 2);
+    assert.equal(localEvents.length, 1);
+    assert.equal(localEvents[0].payload.clientMessageId, clientMessageId);
+    assert.equal(localEvents[0].cursor, "0000000101541:00018ca5");
+    assert.equal(localEvents[0].sequenceId, 101541);
     assert.equal(localEvents.filter((event) => event.sequenceId === 101541).length, 1);
   } finally {
     globalThis.fetch = originalFetch;

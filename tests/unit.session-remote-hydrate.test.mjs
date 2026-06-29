@@ -818,12 +818,81 @@ test("hydrateSessionFromRemote: upgrades local optimistic events with remote can
       await readSyncCursor("local-duplicate", { targetPath: root, suffix: "events" }),
       "remote-canonical-cursor",
     );
-    assert.equal(events.length, 2);
+    assert.equal(events.length, 1);
     assert.equal(events[0].payload.message, "status: already local - Codex");
-    assert.equal(events[0].sequenceId, undefined);
-    assert.equal(events[1].payload.messageId, "remote-canonical-message-id");
-    assert.equal(events[1].sequenceId, 123);
-    assert.equal(events[1].cursor, "remote-canonical-cursor");
+    assert.equal(events[0].payload.messageId, "remote-canonical-message-id");
+    assert.equal(events[0].payload.clientMessageId, "cli-upgrade-hydrate");
+    assert.equal(events[0].sequenceId, 123);
+    assert.equal(events[0].cursor, "remote-canonical-cursor");
+  } finally {
+    if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+    else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: repairs pre-existing optimistic plus canonical local duplicates", async () => {
+  const root = await makeTempRepo();
+  const oldSkip = process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+  process.env.SENTINELAYER_SKIP_REMOTE_SYNC = "1";
+  try {
+    await createSession({ sessionId: "local-duplicate-repair", targetPath: root, ttlSeconds: 120 });
+    const localEvent = {
+      event: "session_message",
+      eventId: "cli-repair-hydrate",
+      idempotencyToken: "cli-repair-hydrate",
+      ts: "2026-05-03T13:08:14.291Z",
+      agent: { id: "codex", model: "gpt-5-codex" },
+      payload: {
+        message: "status: already duplicated - Codex",
+        channel: "session",
+        source: "agent",
+        clientMessageId: "cli-repair-hydrate",
+      },
+    };
+    const canonicalEvent = {
+      ...localEvent,
+      idempotencyToken: "content:repair-canonical",
+      ts: "2026-05-03T13:08:14.291000+00:00",
+      timestamp: "2026-05-03T13:08:14.291000+00:00",
+      payload: {
+        ...localEvent.payload,
+        messageId: "remote-repair-message-id",
+      },
+      cursor: "remote-repair-cursor",
+      sequenceId: 456,
+    };
+    await appendToStream("local-duplicate-repair", localEvent, {
+      targetPath: root,
+      syncRemote: false,
+    });
+    await appendToStream("local-duplicate-repair", canonicalEvent, {
+      targetPath: root,
+      syncRemote: false,
+    });
+    assert.equal((await readStream("local-duplicate-repair", { targetPath: root, tail: 0 })).length, 2);
+
+    const result = await hydrateSessionFromRemote({
+      sessionId: "local-duplicate-repair",
+      targetPath: root,
+      since: null,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async () => ({
+        ok: true,
+        events: [canonicalEvent],
+        cursor: "remote-repair-cursor",
+      }),
+    });
+
+    const events = await readStream("local-duplicate-repair", { targetPath: root, tail: 0 });
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 1);
+    assert.equal(result.localAppendComplete, true);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.clientMessageId, "cli-repair-hydrate");
+    assert.equal(events[0].payload.messageId, "remote-repair-message-id");
+    assert.equal(events[0].sequenceId, 456);
+    assert.equal(events[0].cursor, "remote-repair-cursor");
   } finally {
     if (oldSkip === undefined) delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
     else process.env.SENTINELAYER_SKIP_REMOTE_SYNC = oldSkip;
