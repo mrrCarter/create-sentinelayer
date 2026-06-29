@@ -4346,6 +4346,162 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
   }
 });
 
+test("CLI mcp server run exposes security metadata and honors CLI bridge kill-switch", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-stdio-"));
+  try {
+    const child = spawn(
+      process.execPath,
+      [CLI_PATH, "mcp", "server", "run", "--path", tempRoot, "--framing", "newline"],
+      {
+        cwd: tempRoot,
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          SENTINELAYER_CLI_TEST_MODE: "1",
+          SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
+          SENTINELAYER_CLI_SKIP_AUTH: "1",
+          SENTINELAYER_MCP_CLI_BRIDGE_DISABLED: "1",
+          SENTINELAYER_TOKEN: "api_token_e2e_test_session",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    const closed = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("mcp stdio server timed out"));
+      }, 10_000);
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve(Number(code || 0));
+      });
+    });
+
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "sl.auth.status", arguments: {} },
+      })}\n`,
+    );
+    child.stdin.end();
+    const code = await closed;
+
+    assert.equal(code, 0, stderr || stdout);
+    const responses = stdout
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const listed = responses.find((response) => response.id === 1);
+    const called = responses.find((response) => response.id === 2);
+    const logoutTool = listed.result.tools.find((tool) => tool.name === "sl.auth.logout");
+
+    assert.equal(logoutTool.security.requires_human_approval, true);
+    assert.equal(logoutTool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+    assert.equal(called.result.structuredContent.ok, false);
+    assert.equal(called.result.structuredContent.reason, "mcp_cli_bridge_disabled");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI mcp server run blocks secret-bearing config reads", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-config-block-"));
+  const secretCanary = "sk-ant-e2e-secret-never-print";
+  try {
+    const child = spawn(
+      process.execPath,
+      [CLI_PATH, "mcp", "server", "run", "--path", tempRoot, "--framing", "newline"],
+      {
+        cwd: tempRoot,
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          SENTINELAYER_CLI_TEST_MODE: "1",
+          SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
+          SENTINELAYER_CLI_SKIP_AUTH: "1",
+          SENTINELAYER_TOKEN: "api_token_e2e_test_session",
+          ANTHROPIC_API_KEY: secretCanary,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    const closed = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("mcp stdio server timed out"));
+      }, 10_000);
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve(Number(code || 0));
+      });
+    });
+
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "sl.config.list", arguments: {} },
+      })}\n`,
+    );
+    child.stdin.end();
+    const code = await closed;
+
+    assert.equal(code, 0, stderr || stdout);
+    assert.equal(stdout.includes(secretCanary), false);
+    assert.equal(stderr.includes(secretCanary), false);
+
+    const responses = stdout
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const listed = responses.find((response) => response.id === 1);
+    const called = responses.find((response) => response.id === 2);
+    const configListTool = listed.result.tools.find((tool) => tool.name === "sl.config.list");
+
+    assert.equal(configListTool.security.requires_human_approval, true);
+    assert.equal(configListTool.security.runtime_blocked, true);
+    assert.equal(configListTool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+    assert.equal(called.result.structuredContent.ok, false);
+    assert.equal(called.result.structuredContent.reason, "blocked_sensitive_cli_command");
+    assert.equal(called.result.structuredContent.tool, "sl.config.list");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI plugin commands scaffold, validate, and list manifests", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-plugin-cmd-"));
   try {

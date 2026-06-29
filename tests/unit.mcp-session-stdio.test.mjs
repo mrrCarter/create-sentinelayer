@@ -512,6 +512,36 @@ test("Unit MCP session stdio: JSON-RPC initialize, list, and call return MCP too
   assert.equal(called.result.content[0].type, "text");
 });
 
+test("Unit MCP session stdio: tools/list preserves bridge security metadata", async () => {
+  const listed = await handleMcpJsonRpcMessage(
+    { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    {
+      handlers: { "sl.auth.logout": async () => ({ ok: false }) },
+      tools: [
+        {
+          name: "sl.auth.logout",
+          title: "Sl Auth Logout",
+          description: "Clear local credentials",
+          inputSchema: { type: "object", additionalProperties: false, properties: {} },
+          annotations: { destructiveHint: true },
+          security: {
+            requires_human_approval: true,
+            runtime_blocked: true,
+            runtime_block_reason: "blocked_sensitive_cli_command",
+          },
+          metadata: { bridge: "cli-command", cliPath: ["auth", "logout"] },
+        },
+      ],
+    },
+  );
+  const tool = listed.result.tools.find((entry) => entry.name === "sl.auth.logout");
+
+  assert.equal(tool.security.requires_human_approval, true);
+  assert.equal(tool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+  assert.deepEqual(tool.metadata.cliPath, ["auth", "logout"]);
+  assert.equal(tool.annotations.destructiveHint, true);
+});
+
 test("Unit MCP session stdio: framing parser accepts content-length and writer supports newline", () => {
   const payload = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
   const framed = Buffer.from(`Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`);
