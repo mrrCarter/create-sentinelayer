@@ -17,6 +17,8 @@ Browser-hosted Claude or ChatGPT connectors need a separate HTTPS transport, OAu
 - Do not run hosted CLI commands on the web process host.
 - Do not claim Firecracker, OAuth, S3 artifact retention, or browser-hosted connector support until the gates below are implemented and tested.
 - Do not let local stdio bridge metadata stand in for hosted server-side policy.
+- Do not install a blind `@latest` CLI inside a hosted runner without resolving
+  it to an immutable version and verifying checksum, signature, or attestation.
 
 ## Actors
 
@@ -43,8 +45,9 @@ The hosted connector is a family of session tools, not one catch-all command
 runner. The minimum Senti session surface is:
 
 - Join and hydrate: create or bind the agent seat, allocate the hosted runner,
-  install or verify the allowed `sentinelayer-cli@latest` package, and return
-  the latest messages as structured JSON with stable cursors.
+  resolve the allowed `sentinelayer-cli@latest` request to an immutable package
+  version, verify its checksum, signature, or attestation, and return the latest
+  messages as structured JSON with stable cursors.
 - Read history: fetch `tail`, `sinceCursor`, or full-history windows with
   monotonic cursors and view receipts recorded for the bound agent seat.
 - Talk: send top-level messages, replies, comments, reactions, and explicit
@@ -59,7 +62,8 @@ runner. The minimum Senti session surface is:
 The join-and-hydrate tool must return enough state for a browser or mobile MCP
 client to continue safely after a reconnect: session id, agent seat id, current
 cursor, recent messages, active locks, listener cadence, runner id, resolved CLI
-version, package integrity metadata, and any disabled-tool reasons.
+version, package digest, signature or attestation metadata, and any disabled-tool
+reasons.
 
 ## Notification Subscription and Runner Lifecycle
 
@@ -69,6 +73,8 @@ to an individual VM process.
 
 Minimum notification contract:
 
+- Subscribe and wake tools authorize by the caller's validated token and
+  server-side session membership. A passed `sessionId` is never a capability.
 - Cadence is selected from server-defined presets or bounded intervals, for
   example active polling near one minute, slower idle polling, and an enforced
   minimum floor.
@@ -80,12 +86,16 @@ Minimum notification contract:
   messages and requires rejoin.
 - Every wake event includes a reason, the triggering cursor, and a bounded
   message window so the agent can resume without guessing what changed.
+- Wake payloads should prefer counts, cursors, and reasons over full message
+  content. Any embedded content must be scoped and redacted for the subscriber.
 - Idle detection is server-side and based on recent activity, pending work,
   locks, open approvals, and listener heartbeats.
 - The connector may terminate an idle runner, but it must preserve the durable
-  session seat, subscription, cursors, receipts, and pending wake reasons.
+  session seat, subscription, cursors, receipts, and pending wake reasons while
+  revoking the runner's scoped token.
 - A later wake or client call may allocate a fresh runner, reinstall or verify
-  the CLI, and rehydrate from the last acknowledged cursor.
+  the pinned CLI package, mint a fresh scoped token, and rehydrate from the last
+  acknowledged cursor.
 - Presence updates must distinguish live, idle, stale, and stopped states so the
   room can tell whether an agent is reachable.
 
@@ -145,7 +155,9 @@ Minimum runner contract:
 - SIGTERM followed by SIGKILL finalizer on timeout.
 - Snapshot reuse cannot carry user secrets across invocations.
 
-The runner receives a scoped invocation token, not the owner's long-lived CLI token.
+The runner receives a scoped invocation or session token, not the owner's
+long-lived CLI token. The connector must revoke that scoped token when the
+runner stops, times out, or is torn down for idleness.
 
 ## Artifact Ownership
 
@@ -213,6 +225,10 @@ The hosted path must be blocked by review if code introduces:
 - snapshot secret reuse
 - tool execution without server-side approval enforcement
 - unredacted token-like stdout/stderr/JSON output
+- blind unpinned `@latest` CLI install in a hosted runner
+- notification authorization from `sessionId` arguments instead of validated claims
+- wake payloads that expose message content or PII outside subscriber scope
+- idle teardown that kills the runner without revoking its scoped token
 
 These rules are the W7 MCP-security rule pack target.
 
@@ -225,8 +241,12 @@ A hosted connector release is not ready until all gates are green:
 - Approval enforcement tests for destructive tools.
 - Deny-by-default tests for unknown/malformed tool policy.
 - Runner no-secret-in-env test.
+- Runner CLI package pin and integrity/attestation verification tests.
 - Egress-deny and IMDS-block tests.
 - Timeout finalizer test.
+- Scoped runner-token revocation tests for timeout, explicit stop, and idle teardown.
+- Notification subscription authorization and cross-session denial tests.
+- Wake payload minimization and scoped-redaction tests.
 - Artifact ownership and cross-tenant denial tests.
 - Output redaction tests for raw and parsed outputs.
 - Durable receipt tests.
