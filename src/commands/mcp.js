@@ -24,6 +24,7 @@ import {
   validateMcpToolRegistry,
   writeJsonFile,
 } from "../mcp/registry.js";
+import { buildSentinelayerCliRegistryTemplate } from "../mcp/cli-registry.js";
 import { runMcpStdioServer } from "../mcp/session-stdio-server.js";
 import { resolveOutputRoot } from "../config/service.js";
 
@@ -252,6 +253,39 @@ export function registerMcpCommand(program) {
       }
       console.log(pc.green(`Wrote SentinelLayer session MCP registry template: ${writtenPath}`));
       console.log(pc.gray("Next: run 'sl mcp server init --id sentinelayer-session --registry-file <path>'."));
+    });
+
+  registry
+    .command("init-cli")
+    .description("Write a generated MCP registry for every SentinelLayer CLI leaf command")
+    .option("--path <path>", "Destination file path override")
+    .option("--output-dir <path>", "Optional artifact output root override")
+    .option("--force", "Overwrite destination file if it already exists")
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const defaultPath = await resolveDefaultMcpOutputPath({
+        cwd: process.cwd(),
+        outputDir: options.outputDir,
+        env: process.env,
+      });
+      const outputPath = normalizeOutputPath(options.path, defaultPath.replace(".schema", ".cli-tools"));
+      const template = await buildSentinelayerCliRegistryTemplate();
+      validateMcpToolRegistry(template);
+      const writtenPath = await writeJsonFile(outputPath, template, { force: Boolean(options.force) });
+      const payload = {
+        command: "mcp registry init-cli",
+        outputPath: writtenPath,
+        toolCount: template.tools.length,
+        tools: template.tools.map((tool) => tool.name),
+      };
+
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(pc.green(`Wrote SentinelLayer CLI MCP registry template: ${writtenPath}`));
+      console.log(pc.gray(`${template.tools.length} CLI leaf commands exposed as bridge tools.`));
+      console.log(pc.gray("Execution requires a bridge-capable MCP host; local stdio run still exposes session tools."));
     });
 
   registry
