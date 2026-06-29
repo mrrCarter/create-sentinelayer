@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.0...v0.31.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* **session:** merge canonical remote hydration rows ([#669](https://github.com/mrrCarter/create-sentinelayer/issues/669)) ([112ebeb](https://github.com/mrrCarter/create-sentinelayer/commit/112ebeb3b576ea7d8c77d4f3c8411317636c9f76))
+
 ## [0.31.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.14...v0.31.0) (2026-06-29)
 
 
