@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.2...v0.31.3) (2026-06-29)
+
+
+### Bug Fixes
+
+* **session:** honor before-sequence read window ([14886d9](https://github.com/mrrCarter/create-sentinelayer/commit/14886d916f22f4e0657dfff10f4b2534110db32a))
+
 ## [0.31.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.1...v0.31.2) (2026-06-29)
 
 
