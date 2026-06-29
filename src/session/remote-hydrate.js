@@ -67,11 +67,18 @@ async function readExistingRelayState(sessionId, { targetPath = process.cwd() } 
   const knownKeys = new Set();
   const events = await readStream(sessionId, { targetPath, tail: 0 }).catch(() => []);
   const indexByKey = new Map();
+  const duplicateKeys = new Set();
   for (const [index, event] of events.entries()) {
+    for (const key of sessionEventIdentityKeys(event)) {
+      const existingIndex = indexByKey.get(key);
+      if (Number.isInteger(existingIndex) && existingIndex >= 0 && existingIndex !== index) {
+        duplicateKeys.add(key);
+      }
+    }
     addSessionEventIdentityKeys(knownKeys, event);
     indexRelayEventIdentityKeys(indexByKey, events, event, index);
   }
-  return { knownKeys, events, indexByKey };
+  return { knownKeys, events, indexByKey, duplicateKeys };
 }
 
 async function ensureLocalSessionShell(sessionId, { targetPath = process.cwd() } = {}) {
@@ -380,13 +387,19 @@ export async function hydrateSessionFromRemote({
   const successfulRelayKeys = relayState.knownKeys;
   const existingRelayEvents = relayState.events;
   const existingRelayIndexByKey = relayState.indexByKey;
+  const duplicateRelayKeys = relayState.duplicateKeys || new Set();
   const newEvents = [];
+  const eventsNeedingMerge = new Set();
   for (const event of merged) {
     const existingIndex = findRelayEventIdentityIndex(existingRelayIndexByKey, event);
     if (existingIndex >= 0) {
       const existing = existingRelayEvents[existingIndex];
-      if (sessionEventUpgradesExisting(existing, event)) {
+      if (
+        sessionEventUpgradesExisting(existing, event) ||
+        sessionEventHasKnownIdentity(event, duplicateRelayKeys)
+      ) {
         newEvents.push(event);
+        eventsNeedingMerge.add(event);
       }
       continue;
     }
@@ -416,14 +429,20 @@ export async function hydrateSessionFromRemote({
     }
   }
 
-  const appendEvents =
-    remoteStatus && !["active", "pending"].includes(remoteStatus)
-      ? materialNewEvents.map((event) => markPostKillEvent(event))
-      : materialNewEvents;
+  const appendEvents = materialNewEvents.map((event) => ({
+    event: remoteStatus && !["active", "pending"].includes(remoteStatus)
+      ? markPostKillEvent(event)
+      : event,
+    mergeExisting: eventsNeedingMerge.has(event),
+  }));
   const failedRelayKeys = new Set();
-  for (const event of appendEvents) {
+  for (const { event, mergeExisting } of appendEvents) {
     try {
-      const persisted = await _append(sessionId, event, { targetPath, syncRemote: false });
+      const persisted = await _append(sessionId, event, {
+        targetPath,
+        syncRemote: false,
+        mergeExisting,
+      });
       relayed += 1;
       const persistedEvent = persisted && typeof persisted === "object" ? persisted : event;
       existingRelayEvents.push(persistedEvent);

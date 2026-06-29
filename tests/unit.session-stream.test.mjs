@@ -111,6 +111,65 @@ test("Unit session stream: remote durable metadata survives local normalization"
   }
 });
 
+test("Unit session stream: mergeExisting replaces optimistic local rows with canonical durable rows", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-stream-merge-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const optimistic = {
+      event: "session_message",
+      sessionId: session.sessionId,
+      eventId: "cli-merge-1",
+      idempotencyToken: "cli-merge-1",
+      ts: "2026-06-29T17:31:24.152Z",
+      agent: { id: "codex", model: "gpt-5-codex" },
+      payload: {
+        channel: "session",
+        clientMessageId: "cli-merge-1",
+        message: "status update - Codex",
+      },
+    };
+    const canonical = {
+      ...optimistic,
+      idempotencyToken: "content:178275428:canonical",
+      cursor: "0000000120819:0001d7f3",
+      sequenceId: 120819,
+      timestamp: "2026-06-29T17:31:24.152000+00:00",
+      payload: {
+        ...optimistic.payload,
+        messageId: "remote-message-1",
+      },
+    };
+
+    await appendToStream(session.sessionId, optimistic, {
+      targetPath: tempRoot,
+      syncRemote: false,
+    });
+    await appendToStream(session.sessionId, canonical, {
+      targetPath: tempRoot,
+      syncRemote: false,
+      mergeExisting: true,
+    });
+    await appendToStream(session.sessionId, canonical, {
+      targetPath: tempRoot,
+      syncRemote: false,
+      mergeExisting: true,
+    });
+
+    const events = await readStream(session.sessionId, { tail: 0, targetPath: tempRoot });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].eventId, "cli-merge-1");
+    assert.equal(events[0].idempotencyToken, "content:178275428:canonical");
+    assert.equal(events[0].cursor, "0000000120819:0001d7f3");
+    assert.equal(events[0].sequenceId, 120819);
+    assert.equal(events[0].payload.clientMessageId, "cli-merge-1");
+    assert.equal(events[0].payload.messageId, "remote-message-1");
+    assert.equal(events[0].payload.message, "status update - Codex");
+  } finally {
+    await cleanupTempRoot(tempRoot);
+  }
+});
+
 test("Unit session stream: concurrent append from 3 workers writes corruption-free NDJSON", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-concurrent-"));
   try {
