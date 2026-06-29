@@ -31,7 +31,7 @@ All tools require explicit `sessionId` values. Write/action/lock tools also requ
 
 The generated registry is intended for bridge-capable MCP hosts and hosted connector work. It records each command's positional arguments, options, original argv path, bridge URL, budget defaults, and `cli:execute` scope. Every generated CLI tool requires human approval by default because the surface includes write, scan, audit, auth, and session commands.
 
-This registry does not by itself grant browser-hosted Claude or ChatGPT execution. A hosted bridge must still enforce OAuth, session-seat binding, per-user token validation, approval policy, and sandbox/runtime controls before invoking CLI commands.
+This registry does not by itself grant browser-hosted Claude or ChatGPT execution. A hosted bridge must still enforce OAuth, session-seat binding, per-user token validation, approval policy, and sandbox/runtime controls before invoking CLI commands. See [Hosted MCP Connector Contract](./mcp-hosted-connector.md).
 
 ## Example local client config
 
@@ -64,3 +64,5 @@ On Windows, `sl` can conflict with PowerShell's `Set-Location` alias. Use `senti
 The local stdio server is real, but it is not a hosted Claude-web or ChatGPT connector. Browser-hosted clients cannot spawn the local process. They need a separate HTTPS MCP transport, OAuth, per-user token validation, and a session-seat binding model before they can safely call Senti.
 
 Likewise, ephemeral Firecracker or microVM execution is not part of this local server. That belongs in a hosted runner architecture with scoped auth, lifecycle cleanup, artifact ownership, and network/file-system policy enforcement.
+
+The target hosted contract is documented in [Hosted MCP Connector Contract](./mcp-hosted-connector.md). Until those release gates are implemented and tested, SentinelLayer should describe hosted MCP as design work rather than shipped execution.
