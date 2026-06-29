@@ -641,6 +641,28 @@ function buildSessionActionEvents(sessionId, actions = []) {
     .filter(Boolean);
 }
 
+function filterSessionActionEventsForTranscriptWindow(actionEvents = [], transcriptEvents = []) {
+  if (!Array.isArray(actionEvents) || actionEvents.length === 0) return [];
+  if (!Array.isArray(transcriptEvents) || transcriptEvents.length === 0) return [];
+  const targetSequences = new Set();
+  const targetCursors = new Set();
+  for (const event of transcriptEvents) {
+    const sequence = eventSequenceNumber(event);
+    if (sequence > 0) targetSequences.add(sequence);
+    const cursor = normalizeString(event?.cursor);
+    if (cursor) targetCursors.add(cursor);
+  }
+  return actionEvents.filter((event) => {
+    const payload = event?.payload || {};
+    const sequence = Number(payload.targetSequenceId || 0);
+    if (Number.isFinite(sequence) && sequence > 0 && targetSequences.has(Math.floor(sequence))) {
+      return true;
+    }
+    const cursor = normalizeString(payload.targetCursor);
+    return Boolean(cursor && targetCursors.has(cursor));
+  });
+}
+
 function readProjectionUnacknowledgedHumanMessages(remoteActions = null) {
   const messages = remoteActions?.projection?.unacknowledgedHumanMessages;
   return Array.isArray(messages)
@@ -5530,7 +5552,7 @@ export function registerSessionCommand(program) {
             }
           }
         }
-        const actionEvents = remoteActions?.ok
+        const rawActionEvents = remoteActions?.ok
           ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
           : [];
         const unacknowledgedHumanMessages = remoteActions?.ok
@@ -5540,10 +5562,20 @@ export function registerSessionCommand(program) {
           ? readProjectionRecentHumanActivity(remoteActions)
           : [];
         const dedupedDisplayEvents = dedupeSessionEvents(displayEvents);
+        const remoteWindowRead = Boolean(options.remote && beforeSequence);
+        const remoteWindowEvents = remoteTail?.ok
+          ? dedupeSessionEvents(Array.isArray(remoteTailAppendEvents) ? remoteTailAppendEvents : [])
+          : [];
+        const sourceEvents = remoteWindowRead && remoteTail?.ok
+          ? remoteWindowEvents
+          : dedupedDisplayEvents;
         const transcriptEvents = includeControlEvents
-          ? dedupedDisplayEvents
-          : dedupedDisplayEvents.filter((event) => !isSessionControlEvent(event));
-        const hiddenControlEventCount = dedupedDisplayEvents.length - transcriptEvents.length;
+          ? sourceEvents
+          : sourceEvents.filter((event) => !isSessionControlEvent(event));
+        const hiddenControlEventCount = sourceEvents.length - transcriptEvents.length;
+        const actionEvents = remoteWindowRead
+          ? filterSessionActionEventsForTranscriptWindow(rawActionEvents, transcriptEvents)
+          : rawActionEvents;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
         const autoView = recordSessionReadViews(normalizedSessionId, events, {
           targetPath,

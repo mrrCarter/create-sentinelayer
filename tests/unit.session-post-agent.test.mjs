@@ -2411,6 +2411,161 @@ test("Unit session read: --remote pages past a full heartbeat tail to find mater
   }
 });
 
+test("Unit session read: --remote --before-sequence displays the requested older window", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-before-window-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, sessionId: "remote-read-before-window", ttlSeconds: 120 });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        sessionId: session.sessionId,
+        cursor: "cursor-local-latest",
+        sequenceId: 201,
+        ts: "2026-05-21T12:30:00.000Z",
+        agent: { id: "codex" },
+        payload: { message: "latest local tail should not render" },
+      },
+      { targetPath: tempRoot, syncRemote: false },
+    );
+    const olderPage = [
+      {
+        event: "session_message",
+        sessionId: session.sessionId,
+        cursor: "cursor-older-140",
+        sequenceId: 140,
+        ts: "2026-05-21T11:40:00.000Z",
+        agent: { id: "claude-warden" },
+        payload: { message: "older requested page A" },
+      },
+      {
+        event: "session_message",
+        sessionId: session.sessionId,
+        cursor: "cursor-older-149",
+        sequenceId: 149,
+        ts: "2026-05-21T11:49:00.000Z",
+        agent: { id: "codex" },
+        payload: { message: "older requested page B" },
+      },
+    ];
+    globalThis.fetch = async (url) => {
+      const textUrl = String(url);
+      calls.push(textUrl);
+      if (textUrl.includes("/human-messages?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ messages: [], cursor: null }),
+        };
+      }
+      if (textUrl.includes("/events/before?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: olderPage,
+            next_before_sequence: 140,
+          }),
+        };
+      }
+      if (textUrl.includes("/actions?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sessionId: session.sessionId,
+            actions: [
+              {
+                id: "reply-relevant",
+                sessionId: session.sessionId,
+                targetSequenceId: 149,
+                actionType: "reply",
+                actorKind: "agent",
+                actorId: "builder-codex",
+                actorRole: "coder",
+                note: "relevant older reply",
+                createdAt: "2026-05-21T11:49:30.000Z",
+              },
+              {
+                id: "reply-local-latest",
+                sessionId: session.sessionId,
+                targetSequenceId: 201,
+                actionType: "reply",
+                actorKind: "agent",
+                actorId: "builder-codex",
+                actorRole: "coder",
+                note: "unrelated newest reply",
+                createdAt: "2026-05-21T12:30:30.000Z",
+              },
+            ],
+            count: 2,
+            projection: {},
+          }),
+        };
+      }
+      if (textUrl.includes("/events?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [], cursor: null }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "read",
+      session.sessionId,
+      "--remote",
+      "--before-sequence",
+      "150",
+      "--tail",
+      "5",
+      "--path",
+      tempRoot,
+      "--json",
+      "--no-view",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.beforeSequence, 150);
+    assert.equal(payload.displaySource, "remote_verified_tail");
+    assert.equal(payload.remote.tailProbe.beforeSequence, 140);
+    assert.ok(calls.some((url) => url.includes("/events/before?beforeSequence=150&limit=200")));
+    assert.deepEqual(
+      payload.events.map((event) => event.payload.message),
+      [
+        "older requested page A",
+        "older requested page B",
+        "reply #149: relevant older reply",
+      ],
+    );
+    assert.equal(
+      payload.events.some((event) => event.payload.message === "latest local tail should not render"),
+      false,
+    );
+    assert.equal(
+      payload.events.some((event) => event.payload.message === "reply #201: unrelated newest reply"),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session read: --remote surfaces unacknowledged human asks from action projection", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-read-human-asks-"));
