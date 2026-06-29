@@ -658,14 +658,17 @@ The CLI now includes deterministic MCP registry commands:
 - `sl mcp schema write`
 - `sl mcp registry init-aidenid`
 - `sl mcp registry init-aidenid-adapter`
+- `sl mcp registry init-session`
 - `sl mcp registry validate --file <path>`
 - `sl mcp registry validate-aidenid-adapter --file <path> [--registry-file <path>]`
 - `sl mcp server init --id <server-id> --registry-file <path>`
 - `sl mcp server validate --file <path>`
+- `sl mcp server run --path .`
 - `sl mcp bridge init-vscode --server-id <server-id> --server-config <path>`
 
 Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for AIdenID provisioning APIs, then customize transport/auth before runtime wiring.
 Use `init-aidenid-adapter` to scaffold a deterministic AIdenID provisioning API contract (tool binding -> HTTP path/method -> response field mapping) and cross-check it against the registry with `validate-aidenid-adapter`.
+Use `init-session` plus `server run` for the local stdio Senti MCP server. It exposes session inbox, durable posts, actions/replies/reactions, file locks, and attention requests to local MCP clients. Hosted Claude-web/ChatGPT connectors need a separate HTTPS/OAuth service and are not shipped by the local stdio server. See [docs/mcp.md](docs/mcp.md).
 
 ## Plugin governance foundation (Phase 5.2 slice)
 

@@ -501,6 +501,266 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         },
       },
       {
+        name: "session_action",
+        title: "Record Senti Session Action",
+        description:
+          "Record a low-noise message action such as ack, working_on, disregard, view, like, dislike, or reply against a target session event.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "actionType"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            actionType: {
+              type: "string",
+              enum: ["ack", "working_on", "reply", "like", "dislike", "disregard", "view"],
+            },
+            targetSequenceId: { type: "integer", minimum: 1 },
+            targetCursor: { type: "string" },
+            targetActionId: { type: "string" },
+            note: { type: "string" },
+            idempotencyKey: { type: "string" },
+            timeoutMs: { type: "integer", minimum: 1 },
+            dryRun: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/session_action",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 40,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:write", "session:action"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "session_react",
+        title: "React To Senti Message",
+        description:
+          "Acknowledge or react to a target session event with ack, like, or dislike.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "reaction"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            reaction: { type: "string", enum: ["ack", "like", "dislike"] },
+            targetSequenceId: { type: "integer", minimum: 1 },
+            targetCursor: { type: "string" },
+            targetActionId: { type: "string" },
+            idempotencyKey: { type: "string" },
+            timeoutMs: { type: "integer", minimum: 1 },
+            dryRun: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/session_react",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 60,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:write", "session:action"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "session_reply",
+        title: "Reply In Senti Thread",
+        description:
+          "Add a threaded reply/comment under a specific session event using the session action channel.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "targetSequenceId", "message"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            targetSequenceId: { type: "integer", minimum: 1 },
+            targetCursor: { type: "string" },
+            targetActionId: { type: "string" },
+            message: { type: "string" },
+            idempotencyKey: { type: "string" },
+            timeoutMs: { type: "integer", minimum: 1 },
+            dryRun: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/session_reply",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 40,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:write", "session:action"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "session_lock",
+        title: "Lock Senti Files",
+        description:
+          "Claim session-scoped file locks before editing files, using the same fail-closed lock registry as the CLI.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "files"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            files: {
+              anyOf: [
+                { type: "string" },
+                { type: "array", items: { type: "string" }, minItems: 1 },
+              ],
+            },
+            intent: { type: "string" },
+            ttlSeconds: { type: "integer", minimum: 1 },
+            syncRemote: { type: "boolean" },
+            awaitRemoteSync: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/session_lock",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 20,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:lock"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "session_unlock",
+        title: "Unlock Senti Files",
+        description:
+          "Release session-scoped file locks held by an agent.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId", "agentId", "files"],
+          properties: {
+            sessionId: { type: "string" },
+            agentId: { type: "string" },
+            files: {
+              anyOf: [
+                { type: "string" },
+                { type: "array", items: { type: "string" }, minItems: 1 },
+              ],
+            },
+            reason: { type: "string" },
+            force: { type: "boolean" },
+            syncRemote: { type: "boolean" },
+            awaitRemoteSync: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/session_unlock",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 20,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:lock"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
+        name: "session_locks",
+        title: "List Senti File Locks",
+        description:
+          "List active file locks for a session.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId"],
+          properties: {
+            sessionId: { type: "string" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/session_locks",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 20,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:lock"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
         name: "attention_request",
         title: "Request Senti Attention",
         description:

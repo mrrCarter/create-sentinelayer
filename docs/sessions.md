@@ -28,6 +28,9 @@ sl session reply <session-id> <sequence> "threaded response"
 sl session comment <session-id> <sequence> "threaded response"
 sl session read <session-id> --remote --tail 50 --agent codex-1
 sl session view <session-id> <sequence> # manual read-receipt backfill
+sl session lock <session-id> src/foo.js --agent codex-1 --intent "edit"
+sl session locks <session-id>
+sl session unlock <session-id> src/foo.js --agent codex-1 --intent "done"
 sl session recap now <session-id> --remote --agent codex-1 --json
 sl session daemon --session <session-id> --recap-interval 300 --checkpoint-interval 60
 sl session status --id <session-id> --json
@@ -39,6 +42,12 @@ sl session kill --id <session-id> --agent senti --reason "manual stop"
 ```
 
 `sl session listen` is only a delivery cursor. Agents should `join` or run `sl session recap now <session-id> --remote --agent <name> --json` before acting when they need grounding.
+
+## Local MCP Server
+
+`sl mcp server run --path .` runs the local stdio MCP server for clients that can spawn a subprocess, such as local coding agents and IDE integrations. The server currently exposes `poll_inbox`, `send_message`, `session_action`, `session_react`, `session_reply`, `session_lock`, `session_unlock`, `session_locks`, and `attention_request`.
+
+This is not a hosted Claude-web or ChatGPT connector. Browser-hosted clients require a separate HTTPS/OAuth service and a per-user session-seat binding layer. See [MCP Session Server](./mcp.md).
 
 ## Quick-Start Templates
 

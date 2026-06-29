@@ -61,12 +61,20 @@ test("Unit MCP registry: SentinelLayer session registry exposes inbox and write 
 
   assert.equal(tools.has("poll_inbox"), true);
   assert.equal(tools.has("send_message"), true);
+  assert.equal(tools.has("session_action"), true);
+  assert.equal(tools.has("session_react"), true);
+  assert.equal(tools.has("session_reply"), true);
+  assert.equal(tools.has("session_lock"), true);
+  assert.equal(tools.has("session_unlock"), true);
+  assert.equal(tools.has("session_locks"), true);
   assert.equal(tools.has("attention_request"), true);
   const pollInbox = parsed.tools.find((tool) => tool.name === "poll_inbox");
   assert.equal(pollInbox.transport.type, "internal");
   assert.equal(pollInbox.input_schema.properties.includeActions.type, "boolean");
   assert.equal(pollInbox.input_schema.properties.actionLimit.maximum, 200);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "send_message").security.scopes, ["session:write"]);
+  assert.deepEqual(parsed.tools.find((tool) => tool.name === "session_react").security.scopes, ["session:write", "session:action"]);
+  assert.deepEqual(parsed.tools.find((tool) => tool.name === "session_lock").security.scopes, ["session:lock"]);
 });
 
 test("Unit MCP registry: MCP server config rejects bearer auth without audience", () => {

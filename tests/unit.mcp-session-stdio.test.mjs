@@ -358,6 +358,121 @@ test("Unit MCP session stdio: attention_request emits help_request with high-sig
   assert.equal(result.remoteConfirmation.confirmed, true);
 });
 
+test("Unit MCP session stdio: session actions call durable message-action API with agent metadata", async () => {
+  const calls = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    createSessionMessageActionFn: async (sessionId, options) => {
+      calls.push({ sessionId, options });
+      return {
+        ok: true,
+        duplicate: false,
+        action: {
+          id: `action-${calls.length}`,
+          actionType: options.actionType,
+          targetSequenceId: options.targetSequenceId,
+          targetCursor: options.targetCursor,
+          targetActionId: options.targetActionId,
+          actorId: options.metadata.agentId,
+          note: options.note,
+          idempotencyKey: options.idempotencyKey,
+          createdAt: "2026-05-25T00:00:00.000Z",
+        },
+      };
+    },
+  });
+
+  const ack = await handlers.session_react({
+    sessionId: "sess-1",
+    agentId: "codex",
+    reaction: "ack",
+    targetSequenceId: 115853,
+  });
+  const reply = await handlers.session_reply({
+    sessionId: "sess-1",
+    agentId: "codex",
+    targetSequenceId: 115853,
+    message: "ACK, taking MCP lane",
+  });
+  const workingOn = await handlers.session_action({
+    sessionId: "sess-1",
+    agentId: "codex",
+    actionType: "working_on",
+    targetActionId: "thread-1",
+    note: "expanding MCP session tools",
+    idempotencyKey: "idem-work",
+  });
+
+  assert.equal(ack.ok, true);
+  assert.equal(ack.actionType, "ack");
+  assert.match(ack.idempotencyKey, /^mcp:ack:seq:115853:codex:/);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.actionType, "reply");
+  assert.equal(reply.note, "ACK, taking MCP lane");
+  assert.equal(workingOn.ok, true);
+  assert.equal(workingOn.idempotencyKey, "idem-work");
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].options.metadata.source, "mcp");
+  assert.equal(calls[0].options.metadata.agentId, "codex");
+  assert.equal(calls[0].options.targetSequenceId, 115853);
+  assert.equal(calls[1].options.note, "ACK, taking MCP lane");
+  assert.equal(calls[2].options.targetActionId, "thread-1");
+});
+
+test("Unit MCP session stdio: file lock tools use real lock primitives and report conflicts", async () => {
+  const lockCalls = [];
+  const unlockCalls = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    lockFileFn: async (sessionId, agentId, file, options) => {
+      lockCalls.push({ sessionId, agentId, file, options });
+      if (file === "src/conflict.js") {
+        return { file, locked: false, heldBy: "claude", since: "2m ago" };
+      }
+      return { file, locked: true, lock: { file, agentId, intent: options.intent } };
+    },
+    unlockFileFn: async (sessionId, agentId, file, options) => {
+      unlockCalls.push({ sessionId, agentId, file, options });
+      return { file, unlocked: file !== "src/other.js", reason: file === "src/other.js" ? "held_by_other_agent" : "" };
+    },
+    listFileLocksFn: async (sessionId, options) => [
+      { file: "src/a.js", agentId: "codex", intent: "edit", sessionId, targetPath: options.targetPath },
+    ],
+  });
+
+  const locked = await handlers.session_lock({
+    sessionId: "sess-1",
+    agentId: "codex",
+    files: ["src/a.js", "src/conflict.js"],
+    intent: "edit MCP surface",
+    ttlSeconds: 60,
+    syncRemote: false,
+    awaitRemoteSync: false,
+  });
+  const unlocked = await handlers.session_unlock({
+    sessionId: "sess-1",
+    agentId: "codex",
+    files: ["src/a.js", "src/other.js"],
+    reason: "done",
+  });
+  const listed = await handlers.session_locks({ sessionId: "sess-1" });
+
+  assert.equal(locked.ok, false);
+  assert.equal(locked.reason, "lock_conflict");
+  assert.equal(locked.lockedCount, 1);
+  assert.equal(locked.results[1].heldBy, "claude");
+  assert.equal(lockCalls[0].options.intent, "edit MCP surface");
+  assert.equal(lockCalls[0].options.ttlSeconds, 60);
+  assert.equal(lockCalls[0].options.syncRemote, false);
+  assert.equal(lockCalls[0].options.awaitRemoteSync, false);
+  assert.equal(unlocked.ok, false);
+  assert.equal(unlocked.failedCount, 1);
+  assert.equal(unlockCalls[0].options.reason, "done");
+  assert.equal(listed.ok, true);
+  assert.equal(listed.lockCount, 1);
+  assert.equal(listed.locks[0].file, "src/a.js");
+});
+
 test("Unit MCP session stdio: JSON-RPC initialize, list, and call return MCP tool results", async () => {
   const handlers = {
     poll_inbox: async () => ({ ok: true, cursor: "c1", events: [] }),
@@ -374,6 +489,10 @@ test("Unit MCP session stdio: JSON-RPC initialize, list, and call return MCP too
     { handlers },
   );
   assert.equal(listed.result.tools.some((tool) => tool.name === "poll_inbox"), true);
+  assert.equal(listed.result.tools.some((tool) => tool.name === "session_react"), true);
+  assert.equal(listed.result.tools.some((tool) => tool.name === "session_reply"), true);
+  assert.equal(listed.result.tools.some((tool) => tool.name === "session_lock"), true);
+  assert.equal(listed.result.tools.some((tool) => tool.name === "session_unlock"), true);
 
   const called = await handleMcpJsonRpcMessage(
     {
