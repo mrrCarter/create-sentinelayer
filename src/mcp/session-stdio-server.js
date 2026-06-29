@@ -907,7 +907,7 @@ export function createSessionMcpToolHandlers({
       for (const file of files) {
         const result = await unlockFileFn(sessionId, agentId, file, {
           reason,
-          force: Boolean(input.force),
+          force: false,
           targetPath,
           syncRemote: input.syncRemote !== false && input.sync_remote !== false,
           awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
@@ -1147,7 +1147,6 @@ export const SESSION_MCP_TOOLS = Object.freeze([
           ],
         },
         reason: { type: "string" },
-        force: { type: "boolean", default: false },
         syncRemote: { type: "boolean", default: true },
         awaitRemoteSync: { type: "boolean", default: true },
       },

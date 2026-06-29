@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
 import {
+  SESSION_MCP_TOOLS,
   createSessionMcpToolHandlers,
   handleMcpJsonRpcMessage,
   readNextMcpMessage,
@@ -454,8 +455,10 @@ test("Unit MCP session stdio: file lock tools use real lock primitives and repor
     agentId: "codex",
     files: ["src/a.js", "src/other.js"],
     reason: "done",
+    force: true,
   });
   const listed = await handlers.session_locks({ sessionId: "sess-1" });
+  const unlockTool = SESSION_MCP_TOOLS.find((tool) => tool.name === "session_unlock");
 
   assert.equal(locked.ok, false);
   assert.equal(locked.reason, "lock_conflict");
@@ -468,6 +471,8 @@ test("Unit MCP session stdio: file lock tools use real lock primitives and repor
   assert.equal(unlocked.ok, false);
   assert.equal(unlocked.failedCount, 1);
   assert.equal(unlockCalls[0].options.reason, "done");
+  assert.equal(unlockCalls[0].options.force, false);
+  assert.equal(unlockTool.inputSchema.properties.force, undefined);
   assert.equal(listed.ok, true);
   assert.equal(listed.lockCount, 1);
   assert.equal(listed.locks[0].file, "src/a.js");
