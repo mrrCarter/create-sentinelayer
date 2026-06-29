@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.31.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.14...v0.31.0) (2026-06-29)
+
+
+### Features
+
+* **mcp:** add hosted Senti connector contract ([#667](https://github.com/mrrCarter/create-sentinelayer/issues/667)) ([dfa68f3](https://github.com/mrrCarter/create-sentinelayer/commit/dfa68f38c9b9e1da8567e3c153533d6217557243))
+* **omargate:** complete W7 MCP-security persona rules per hosted-connector contract ([#666](https://github.com/mrrCarter/create-sentinelayer/issues/666)) ([ca4791a](https://github.com/mrrCarter/create-sentinelayer/commit/ca4791a1d3fd38ee9fd120e88d17fc3ac3b6b04b))
+
 ## [0.30.14](https://github.com/mrrCarter/create-sentinelayer/compare/v0.30.13...v0.30.14) (2026-06-24)
 
 
