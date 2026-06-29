@@ -128,6 +128,11 @@ test("Unit AI client: invoke performs non-stream request and returns normalized 
               },
             },
           ],
+          usage: {
+            prompt_tokens: 31,
+            completion_tokens: 9,
+            total_tokens: 40,
+          },
         },
       });
     },
@@ -143,6 +148,13 @@ test("Unit AI client: invoke performs non-stream request and returns normalized 
   assert.equal(result.provider, "openai");
   assert.equal(result.model, "gpt-4o");
   assert.equal(result.text, "openai-response");
+  assert.deepEqual(result.usage, {
+    inputTokens: 31,
+    outputTokens: 9,
+    totalTokens: 40,
+    model: "gpt-4o",
+    provider: "openai",
+  });
   assert.equal(calls.length, 1);
   assert.match(String(calls[0].url || ""), /api\.openai\.com/);
 });
@@ -160,6 +172,10 @@ test("Unit AI client: invoke retries retryable statuses and eventually succeeds"
       return createJsonResponse({
         payload: {
           content: [{ text: "anthropic-success" }],
+          usage: {
+            input_tokens: 44,
+            output_tokens: 12,
+          },
         },
       });
     },
@@ -173,7 +189,54 @@ test("Unit AI client: invoke retries retryable statuses and eventually succeeds"
 
   assert.equal(result.provider, "anthropic");
   assert.equal(result.text, "anthropic-success");
+  assert.deepEqual(result.usage, {
+    inputTokens: 44,
+    outputTokens: 12,
+    totalTokens: 56,
+    model: "claude-sonnet-4",
+    provider: "anthropic",
+  });
   assert.equal(attempts, 2);
+});
+
+test("Unit AI client: invoke preserves Google usage metadata", async () => {
+  const client = createMultiProviderApiClient({
+    fetchImpl: async () =>
+      createJsonResponse({
+        payload: {
+          candidates: [
+            {
+              content: {
+                parts: [{ text: "google-response" }],
+              },
+            },
+          ],
+          usageMetadata: {
+            promptTokenCount: 22,
+            candidatesTokenCount: 11,
+            totalTokenCount: 33,
+          },
+        },
+      }),
+  });
+
+  const result = await client.invoke({
+    provider: "google",
+    model: "gemini-2.5-pro",
+    prompt: "usage-test",
+    apiKey: FIXTURE_GOOGLE_CRED,
+  });
+
+  assert.equal(result.provider, "google");
+  assert.equal(result.model, "gemini-2.5-pro");
+  assert.equal(result.text, "google-response");
+  assert.deepEqual(result.usage, {
+    inputTokens: 22,
+    outputTokens: 11,
+    totalTokens: 33,
+    model: "gemini-2.5-pro",
+    provider: "google",
+  });
 });
 
 test("Unit AI client: invoke supports streaming callbacks (openai SSE)", async () => {

@@ -44,6 +44,7 @@ import { stopRuntimeRunsForSession } from "./runtime-bridge.js";
 import { getSession, renewSession } from "./store.js";
 import { appendToStream, readStream, tailStream } from "./stream.js";
 import { handleTaskDirective } from "./tasks.js";
+import { emitLLMInteraction } from "./usage.js";
 
 const DAEMON_TICK_INTERVAL_MS = 30_000;
 const HELP_REQUEST_TIMEOUT_MS = 1_200;
@@ -653,6 +654,28 @@ async function maybeRespondToHelpRequest(
       nowIso,
     }
   );
+  if (normalizeUsageNumber(response.usage.inputTokens) + normalizeUsageNumber(response.usage.outputTokens) > 0) {
+    // The managed proxy already records the durable API billing/v1 row for
+    // this same idempotency key. Keep this copy local for immediate transcript
+    // and recap usage without double-counting Session.total_cost_usd remotely.
+    await emitLLMInteraction(daemonState.sessionId, {
+      agentId: SENTI_IDENTITY.id,
+      agentModel: response.usage.model || daemonState.model,
+      role: SENTI_IDENTITY.role,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      costUsd: response.usage.costUsd,
+      durationMs: response.usage.latencyMs,
+      action: "proxy_llm",
+      provider: response.usage.provider || "sentinelayer",
+      billingTier: "internal",
+      prompt: normalizeString(requestEvent?.payload?.message) || normalizeString(requestEvent?.payload?.request),
+      response: response.message,
+      interactionId: `senti:${daemonState.sessionId}:help:${requestId}`,
+      targetPath,
+      syncRemote: false,
+    });
+  }
   return responseEvent;
 }
 

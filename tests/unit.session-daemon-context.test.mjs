@@ -99,7 +99,12 @@ test("Unit session daemon context relay: unanswered help_request emits help_resp
         events.some(
           (event) => event.event === "help_response" && event.payload?.requestId === "req-context-1"
         ) &&
-        events.some((event) => event.event === "model_span" && event.payload?.requestId === "req-context-1")
+        events.some((event) => event.event === "model_span" && event.payload?.requestId === "req-context-1") &&
+        events.some(
+          (event) =>
+            event.event === "session_usage" &&
+            event.payload?.interactionId === `senti:${session.sessionId}:help:req-context-1`
+        )
     );
     const response = stream.find(
       (event) => event.event === "help_response" && event.payload?.requestId === "req-context-1"
@@ -107,11 +112,18 @@ test("Unit session daemon context relay: unanswered help_request emits help_resp
     const modelSpan = stream.find(
       (event) => event.event === "model_span" && event.payload?.requestId === "req-context-1"
     );
+    const usage = stream.find(
+      (event) =>
+        event.event === "session_usage" &&
+        event.payload?.interactionId === `senti:${session.sessionId}:help:req-context-1`
+    );
 
     assert.ok(response);
     assert.ok(modelSpan);
+    assert.ok(usage);
     assert.equal(validateAgentEvent(response, { allowLegacy: false }), true);
     assert.equal(validateAgentEvent(modelSpan, { allowLegacy: false }), true);
+    assert.equal(validateAgentEvent(usage, { allowLegacy: false }), true);
     assert.equal(response.payload.requestId, "req-context-1");
     assert.match(String(response.payload.response || ""), /src\/auth\/login\.js/i);
     assert.equal(Number(response.payload?.contextSignals?.documentCount || 0) > 0, true);
@@ -127,6 +139,15 @@ test("Unit session daemon context relay: unanswered help_request emits help_resp
     assert.equal(modelSpan.payload.inputTokens, 120);
     assert.equal(modelSpan.payload.outputTokens, 18);
     assert.equal(modelSpan.payload.costUsd, 0.0008);
+    assert.equal(usage.payload.schema, "session_usage/local-v1");
+    assert.equal(usage.payload.agentId, "senti");
+    assert.equal(usage.payload.action, "proxy_llm");
+    assert.equal(usage.payload.inputTokens, 120);
+    assert.equal(usage.payload.outputTokens, 18);
+    assert.equal(usage.payload.totalTokens, 138);
+    assert.equal(usage.payload.costUsd, 0.0008);
+    assert.equal(usage.payload.usage.inputTokens, 120);
+    assert.equal(usage.payload.usage.outputTokens, 18);
     assert.equal(llmCalls.length, 1);
     assert.equal(llmCalls[0].sessionId, session.sessionId);
     assert.equal(llmCalls[0].agentId, "senti");
