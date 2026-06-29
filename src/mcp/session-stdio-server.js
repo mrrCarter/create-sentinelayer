@@ -3,6 +3,10 @@ import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createAgentEvent } from "../events/schema.js";
+import {
+  buildCliCommandMcpTools,
+  createCliCommandMcpToolHandlers,
+} from "./cli-command-tools.js";
 import { appendToStream } from "../session/stream.js";
 import { listFileLocks, lockFile, unlockFile } from "../session/file-locks.js";
 import { eventMatchesAgent } from "../session/listener.js";
@@ -1198,12 +1202,15 @@ export const SESSION_MCP_TOOLS = Object.freeze([
 ]);
 
 function toMcpTool(tool) {
-  return {
+  return cleanObject({
     name: tool.name,
     title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema,
-  };
+    annotations: tool.annotations,
+    security: tool.security,
+    metadata: tool.metadata,
+  });
 }
 
 function buildToolResult(payload, { isError = false } = {}) {
@@ -1278,7 +1285,7 @@ export async function handleMcpJsonRpcMessage(
         version: "0.20.0",
       },
       instructions:
-        "Use poll_inbox with the returned cursor before acting; use send_message for durable session posts and attention_request for help_request events.",
+        "Use native Senti tools for coordination actions and generated sl.* bridge tools for the rest of SentinelLayer CLI. Poll first with poll_inbox, use session_action/session_react/session_reply/session_lock/session_unlock/session_locks for low-noise session work, use send_message for durable posts, and use generated command tools such as sl.auth.status or sl.review.scan for ordinary CLI commands.",
     });
   }
 
@@ -1330,6 +1337,24 @@ export async function handleMcpJsonRpcMessage(
   }
 
   return isNotification ? null : jsonRpcError(id, -32601, "Method not found");
+}
+
+export async function createSessionMcpRuntime({
+  targetPath = process.cwd(),
+  sessionHandlers = createSessionMcpToolHandlers({ targetPath }),
+  sessionTools = SESSION_MCP_TOOLS,
+  buildCliCommandMcpToolsFn = buildCliCommandMcpTools,
+  createCliCommandMcpToolHandlersFn = createCliCommandMcpToolHandlers,
+} = {}) {
+  const commandTools = await buildCliCommandMcpToolsFn();
+  return {
+    tools: [...sessionTools, ...commandTools],
+    handlers: {
+      ...sessionHandlers,
+      ...createCliCommandMcpToolHandlersFn(commandTools, { targetPath }),
+    },
+    commandToolCount: commandTools.length,
+  };
 }
 
 function findHeaderSeparator(buffer) {
@@ -1401,9 +1426,14 @@ export async function runMcpStdioServer({
   stderr = process.stderr,
   targetPath = process.cwd(),
   framing = "newline",
-  handlers = createSessionMcpToolHandlers({ targetPath }),
-  tools = SESSION_MCP_TOOLS,
+  handlers = null,
+  tools = null,
 } = {}) {
+  if (!handlers || !tools) {
+    const runtime = await createSessionMcpRuntime({ targetPath });
+    handlers = handlers || runtime.handlers;
+    tools = tools || runtime.tools;
+  }
   let buffer = Buffer.alloc(0);
   let chain = Promise.resolve();
 
