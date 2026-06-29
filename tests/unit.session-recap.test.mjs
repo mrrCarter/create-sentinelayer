@@ -400,6 +400,130 @@ test("Unit session recap: includes token and cost usage ledger", async () => {
   }
 });
 
+test("Unit session recap: separates live listeners from recent transcript actors", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-listeners-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      ttlSeconds: 120,
+      createdAt: "2026-05-19T08:00:00.000Z",
+      expiresAt: "2027-05-19T08:00:00.000Z",
+    });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "codex-a1",
+        sequenceId: 1,
+        ts: "2026-05-19T08:01:00.000Z",
+        payload: { message: "working on listener diagnostics" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-b2",
+        sequenceId: 2,
+        ts: "2026-05-19T08:02:00.000Z",
+        payload: { message: "reviewing the recap wording" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_listener_heartbeat",
+        agent: { id: "codex-a1", model: "gpt-5", displayName: "Codex" },
+        sequenceId: 3,
+        ts: "2026-05-19T08:02:30.000Z",
+        payload: {
+          source: "session_listen",
+          listenerId: "codex-a1",
+          active: false,
+          idleIntervalSeconds: 40,
+          presenceKeepaliveSeconds: 180,
+        },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_listener_heartbeat",
+        agent: { id: "stale-bot", model: "gpt-5", displayName: "Stale Bot" },
+        sequenceId: 4,
+        ts: "2026-05-19T07:50:00.000Z",
+        payload: {
+          source: "session_listen",
+          listenerId: "stale-bot",
+          active: false,
+          idleIntervalSeconds: 40,
+          presenceKeepaliveSeconds: 180,
+        },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "human-carter",
+      maxEvents: 20,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T08:03:00.000Z",
+    });
+
+    assert.match(recap.text, /1 live listener \(codex-a1\)/);
+    assert.match(recap.text, /2 recent actors \(claude-b2, codex-a1\)/);
+    assert.doesNotMatch(recap.text, /2 active/);
+    assert.equal(recap.summary.activeAgents, 2);
+    assert.equal(recap.summary.recentActors, 2);
+    assert.deepEqual(recap.summary.recentActorIds, ["claude-b2", "codex-a1"]);
+    assert.equal(recap.summary.liveListeners, 1);
+    assert.deepEqual(recap.summary.liveListenerIds, ["codex-a1"]);
+    assert.equal(recap.summary.listenerCount, 2);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: listener heartbeats do not trigger recap prompts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-heartbeats-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_listener_heartbeat",
+        agent: { id: "codex-a1", model: "gpt-5", displayName: "Codex" },
+        ts: "2026-05-19T08:01:00.000Z",
+        payload: {
+          source: "session_listen",
+          listenerId: "codex-a1",
+          active: false,
+          idleIntervalSeconds: 40,
+          presenceKeepaliveSeconds: 180,
+        },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const shouldRecap = await shouldEmitRecap(session.sessionId, "human-carter", {
+      lastReadAt: "2026-05-19T08:00:00.000Z",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T08:10:00.000Z",
+      newEventThreshold: 1,
+      inactivityMs: 1,
+    });
+
+    assert.equal(shouldRecap, false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: CLI recap now emits deterministic JSON", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-now-"));
   try {

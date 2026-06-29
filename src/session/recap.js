@@ -4,6 +4,7 @@ import process from "node:process";
 
 import { createAgentEvent } from "../events/schema.js";
 import { dedupeSessionEvents } from "./event-identity.js";
+import { summarizeListeners } from "./listeners.js";
 import { resolveSessionPaths } from "./paths.js";
 import { appendToStream, readStream } from "./stream.js";
 import { getSession } from "./store.js";
@@ -28,6 +29,10 @@ const RECAP_SOURCE_IGNORED_EVENTS = new Set([
   "daemon_alert",
   "session_ack",
   "session_checkpoint",
+  "session_listen_error",
+  "session_listener_heartbeat",
+  "session_listener_started",
+  "session_listener_stopped",
   "session_reaction",
   "session_recap",
   "session_usage",
@@ -648,7 +653,9 @@ function buildRecapKey(sessionId, targetPath) {
 }
 
 function buildRecapText({
-  activeAgents = [],
+  recentActors = [],
+  liveListeners = [],
+  listenerCount = 0,
   totalFindings = 0,
   activeLocks = 0,
   pendingTasks = 0,
@@ -657,10 +664,20 @@ function buildRecapText({
   usageSummary = normalizeUsageSummary(),
   snippets = [],
 } = {}) {
-  const agentText =
-    activeAgents.length > 0
-      ? `${activeAgents.length} active (${activeAgents.slice(0, 3).join(", ")})`
-      : "no active peers yet";
+  const listenerText =
+    liveListeners.length > 0
+      ? `${liveListeners.length} live listener${liveListeners.length === 1 ? "" : "s"} (${liveListeners
+          .slice(0, 3)
+          .join(", ")})`
+      : listenerCount > 0
+        ? "no live listeners"
+        : "listener status unknown";
+  const actorText =
+    recentActors.length > 0
+      ? `${recentActors.length} recent actor${recentActors.length === 1 ? "" : "s"} (${recentActors
+          .slice(0, 3)
+          .join(", ")})`
+      : "no recent peer activity";
   const findingText = `${totalFindings} finding${totalFindings === 1 ? "" : "s"} logged`;
   const lockText = `${activeLocks} file lock${activeLocks === 1 ? "" : "s"} active`;
   const pendingText =
@@ -669,7 +686,7 @@ function buildRecapText({
   const usageText = buildUsageLedgerText(usageSummary);
   const workPlanText = buildWorkPlanText(workPlan);
   const snippetText = snippets.length > 0 ? `Recent: ${snippets.join(" | ")}` : "";
-  return `While you were away: ${agentText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${workPlanText} ${usageText} ${snippetText}`.replace(
+  return `While you were away: ${listenerText}; ${actorText}. ${findingText}. ${lockText}. ${pendingText} ${taskText}. ${workPlanText} ${usageText} ${snippetText}`.replace(
     /\s+/g,
     " "
   ).trim();
@@ -840,18 +857,27 @@ function buildAgentJoinBriefingText({ recap = "", forAgent = "" } = {}) {
 function buildPeriodicText(recap = {}) {
   const summary = recap.summary && typeof recap.summary === "object" ? recap.summary : {};
   const elapsedMinutes = Number(summary.elapsedMinutes || 0);
-  const activeAgents = Number(summary.activeAgents || 0);
+  const recentActors = Number(summary.recentActors ?? summary.activeAgents ?? 0);
+  const liveListeners = Number(summary.liveListeners ?? summary.liveListenerCount ?? 0);
+  const listenerCount = Number(summary.listenerCount || 0);
   const totalFindings = Number(summary.totalFindingsCount || 0);
   const activeLocks = Number(summary.activeLocks || 0);
   const lastActor = normalizeString(summary.lastActorId);
   const actorText = lastActor ? `${lastActor} active` : "no active actor";
+  const listenerText =
+    liveListeners > 0
+      ? `${liveListeners} live listener${liveListeners === 1 ? "" : "s"}`
+      : listenerCount > 0
+        ? "no live listeners"
+        : "listener status unknown";
+  const recentActorText = `${recentActors} recent actor${recentActors === 1 ? "" : "s"}`;
   const taskText = buildTaskLedgerText(summary.taskLedger);
   const workPlanText = buildWorkPlanText(summary.workPlan);
   const usageText = buildUsageLedgerText({
     totals: summary.usageTotals,
     topAgents: summary.usageTopAgents,
   });
-  return `Session active for ${elapsedMinutes}m. ${activeAgents} agents. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${workPlanText} ${usageText} ${actorText}.`.replace(
+  return `Session active for ${elapsedMinutes}m. ${listenerText}. ${recentActorText}. ${totalFindings} findings. ${activeLocks} locks. ${taskText}. ${workPlanText} ${usageText} ${actorText}.`.replace(
     /\s+/g,
     " ",
   ).trim();
@@ -899,19 +925,28 @@ export async function buildSessionRecap(
     return !normalizedForAgentId || agentId.toLowerCase() !== normalizedForAgentId.toLowerCase();
   });
 
-  const activeAgentSet = new Set();
-  for (const event of visibleEvents) {
+  const listenerRows = summarizeListeners(sortedEvents, {
+    nowMs: toEpoch(normalizedNow, normalizedNow),
+  });
+  const liveListenerRows = listenerRows.filter(
+    (row) => row.status === "active" || row.status === "idle",
+  );
+  const liveListenerIds = liveListenerRows.map((row) => row.agentId).filter(Boolean);
+
+  const actorEvents = visibleEvents.filter(isMeaningfulRecapSourceEvent);
+  const recentActorSet = new Set();
+  for (const event of actorEvents) {
     const agentId = normalizeString(event.agent?.id || event.agentId);
     if (agentId && agentId !== SENTI_AGENT_ID) {
-      activeAgentSet.add(agentId);
+      recentActorSet.add(agentId);
     }
   }
-  const activeAgents = [...activeAgentSet].sort((left, right) => left.localeCompare(right));
+  const recentActors = [...recentActorSet].sort((left, right) => left.localeCompare(right));
 
-  const findingSummary = buildFindingSummary(visibleEvents);
+  const findingSummary = buildFindingSummary(actorEvents);
   const totalFindingsCount =
     findingSummary.P0 + findingSummary.P1 + findingSummary.P2 + findingSummary.P3;
-  const activeLocks = countActiveLocks(visibleEvents);
+  const activeLocks = countActiveLocks(actorEvents);
   const pendingTasks = await readPendingTasks(normalizedSessionId, {
     forAgentId: normalizedForAgentId,
     targetPath: normalizedTargetPath,
@@ -922,17 +957,19 @@ export async function buildSessionRecap(
   const workPlan = await readWorkPlanSummary({
     targetPath: normalizedTargetPath,
   });
-  const snippets = summarizeRecentActivity(visibleEvents, {
+  const snippets = summarizeRecentActivity(actorEvents, {
     forAgentId: normalizedForAgentId,
     limit: 2,
   });
-  const windowElapsedMinutes = buildElapsedMinutes(visibleEvents, normalizedNow);
-  const elapsedMinutes = buildElapsedMinutes(visibleEvents, normalizedNow, {
+  const windowElapsedMinutes = buildElapsedMinutes(actorEvents, normalizedNow);
+  const elapsedMinutes = buildElapsedMinutes(actorEvents, normalizedNow, {
     startedAt: sessionMetadata?.createdAt,
   });
-  const latestEvent = visibleEvents.length > 0 ? visibleEvents[visibleEvents.length - 1] : null;
+  const latestEvent = actorEvents.length > 0 ? actorEvents[actorEvents.length - 1] : null;
   const recapText = buildRecapText({
-    activeAgents,
+    recentActors,
+    liveListeners: liveListenerIds,
+    listenerCount: listenerRows.length,
     totalFindings: totalFindingsCount,
     activeLocks,
     pendingTasks,
@@ -951,8 +988,17 @@ export async function buildSessionRecap(
     text: recapText,
     recap: recapText,
     summary: {
-      activeAgents: activeAgents.length,
-      activeAgentIds: activeAgents,
+      // Back-compat: historical consumers read activeAgents, but this count is
+      // recent transcript actors, not live listener presence.
+      activeAgents: recentActors.length,
+      activeAgentIds: recentActors,
+      recentActors: recentActors.length,
+      recentActorIds: recentActors,
+      liveListeners: liveListenerIds.length,
+      liveListenerIds,
+      liveListenerCount: liveListenerIds.length,
+      listenerCount: listenerRows.length,
+      listenerStatus: listenerRows,
       totalFindings: findingSummary,
       totalFindingsCount,
       activeLocks,
