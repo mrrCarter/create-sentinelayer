@@ -29,6 +29,8 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   "session.kill",
   "session.listen",
   "session.provision-emails",
+  "daemon.control.stop",
+  "omargate.investor-dd",
   // Token-handling (same class as auth.*): writes the live SentinelLayer token into a
   // caller-specified GitHub repo's secrets — a token-misplacement/exfil vector via the bridge.
   "scan.setup-secrets",
@@ -37,6 +39,8 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   // (normal recent-message reads) stays available for legitimate agent use.
   "session.export",
   "session.download",
+  "review.show",
+  "review.export",
   // Identity/state mutation (same class as session.kill): create/revoke/kill AIdenIDs +
   // provision emails (cost + side effects) should not be driven by an untrusted LLM via the bridge.
   "ai.identity.provision",
@@ -45,6 +49,10 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   "ai.identity.create-child",
   "ai.identity.revoke-children",
   "ai.provision-email",
+  // Inbound AIdenID extraction surfaces can expose OTPs, action links, or raw events.
+  "ai.identity.events",
+  "ai.identity.latest",
+  "ai.identity.wait-for-otp",
 ]);
 
 // Whole governance sub-trees under ai.identity (domain/target/site/legal-hold) are live
@@ -193,7 +201,17 @@ function validateCliOptionSpecs(optionSpecs = []) {
 
 function validateBridgeToolDefinition(tool = {}) {
   const metadata = tool.metadata || {};
-  return validateCliPathSegments(metadata.cliPath) || validateCliOptionSpecs(metadata.options);
+  const shapeError = validateCliPathSegments(metadata.cliPath) || validateCliOptionSpecs(metadata.options);
+  if (shapeError) return shapeError;
+  if (metadata.generated_from !== "commander" || metadata.execution !== "bridge") {
+    return "untrusted_cli_bridge_definition";
+  }
+  const commandPathKey = metadata.cliPath.map(normalizeString).filter(Boolean).join(".");
+  const namePathKey = registryToolNameToCliPath(tool.name).join(".");
+  if (namePathKey && namePathKey !== commandPathKey) {
+    return "cli_path_name_mismatch";
+  }
+  return "";
 }
 
 function isAllowedInputValue(value) {
