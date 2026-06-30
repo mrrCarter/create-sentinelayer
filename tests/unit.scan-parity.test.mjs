@@ -41,14 +41,18 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.match(workflow, /- audit/);
   assert.match(workflow, /- full-depth/);
   assert.match(workflow, new RegExp(`uses: ${SENTINELAYER_ACTION_REF}`));
-  assert.match(workflow, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
-  assert.match(workflow, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
-  assert.match(workflow, /model_fallback:\s*gemini-2\.5-flash/);
+  assert.match(workflow, /sentinelayer_managed_llm:\s*"true"/);
+  assert.doesNotMatch(workflow, /openai_api_key:/);
+  assert.doesNotMatch(workflow, /google_api_key:/);
+  assert.match(workflow, /model_fallback:\s*gpt-4\.1-mini/);
+  assert.match(workflow, /use_codex:\s*"true"/);
+  assert.match(workflow, /codex_only:\s*"false"/);
   assert.match(workflow, /Stage Omar summary artifact/);
   assert.match(workflow, /omar-artifacts\/summary\.json/);
   assert.match(workflow, /omar_gate_summary/);
   assert.match(workflow, /schema_version/);
   assert.match(workflow, /run_url/);
+  assert.match(workflow, /'managed_llm': True/);
   assert.match(workflow, /actions\/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874/);
 });
 

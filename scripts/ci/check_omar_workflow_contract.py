@@ -19,11 +19,11 @@ BRIDGE_OR_BROKEN_MARKERS = (
 )
 
 
-def _line_has_byok_llm_enabled(line: str) -> bool:
+def _line_has_managed_llm_enabled(line: str) -> bool:
     normalized = line.split("#", 1)[0].strip().lower().replace("'", '"')
     return normalized in {
-        'sentinelayer_managed_llm: "false"',
-        "sentinelayer_managed_llm: false",
+        'sentinelayer_managed_llm: "true"',
+        "sentinelayer_managed_llm: true",
     }
 
 
@@ -94,12 +94,14 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
         if stripped.startswith(
             (
                 "anthropic_api_key:",
+                "google_api_key:",
+                "openai_api_key:",
                 "xai_api_key:",
                 "llm_provider:",
             )
         ):
             raise OmarWorkflowContractError(
-                "full Omar action workflow must not pass unsupported provider-key inputs"
+                "managed Omar workflow must not pass provider-key inputs"
             )
         if stripped.startswith("sentinelayer_managed_llm:") and "${{" in stripped:
             raise OmarWorkflowContractError("sentinelayer_managed_llm must be literal")
@@ -116,9 +118,9 @@ def validate_omar_contract(workflow_text: str) -> None:
         raise OmarWorkflowContractError(
             "Omar workflow must use the pinned sentinelayer-v1-action directly"
         )
-    if not any(_line_has_byok_llm_enabled(line) for line in workflow_text.splitlines()):
+    if not any(_line_has_managed_llm_enabled(line) for line in workflow_text.splitlines()):
         raise OmarWorkflowContractError(
-            'Omar workflow must configure sentinelayer_managed_llm: "false"'
+            'Omar workflow must configure sentinelayer_managed_llm: "true"'
         )
 
     workflow_lines = workflow_text.splitlines()
@@ -153,23 +155,25 @@ def validate_omar_contract(workflow_text: str) -> None:
         "check_omar_workflow_contract.py --self-test",
         "check_forbidden_omar_surface.py --self-test",
         "check_forbidden_omar_surface.py",
-        "Verify BYOK Omar secrets",
+        "Verify managed Omar token secret",
         "Run Omar Gate",
-        "Assert Omar BYOK model contract is active",
-        'REQUESTED_MANAGED_LLM: "false"',
+        "Assert Omar managed model contract is active",
+        'REQUESTED_MANAGED_LLM: "true"',
         "REQUESTED_FAILURE_POLICY: block",
         "REQUESTED_MODEL: gpt-5.3-codex",
         "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
-        "REQUESTED_FALLBACK_MODEL: gemini-2.5-flash",
-        "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
-        "google_api_key: ${{ secrets.GOOGLE_API_KEY }}",
-        "model_fallback: gemini-2.5-flash",
-        "Omar BYOK model contract active",
+        "REQUESTED_FALLBACK_MODEL: gpt-4.1-mini",
+        'sentinelayer_managed_llm: "true"',
+        "model_fallback: gpt-4.1-mini",
+        'use_codex: "true"',
+        'codex_only: "false"',
+        "Omar managed model contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
         "omar-artifacts/summary.json",
         "omar_gate_summary",
         "schema_version",
+        '"managed_llm": True',
         "run_url",
         "Upload Omar artifacts",
         "actions/upload-artifact",
@@ -237,26 +241,27 @@ jobs:
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
-          sentinelayer_managed_llm: "false"
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
-          model_fallback: gemini-2.5-flash
-      - name: Assert Omar BYOK model contract is active
+          sentinelayer_managed_llm: "true"
+          model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
+      - name: Assert Omar managed model contract is active
         env:
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: gemini-2.5-flash
-          REQUESTED_MANAGED_LLM: "false"
+          REQUESTED_FALLBACK_MODEL: gpt-4.1-mini
+          REQUESTED_MANAGED_LLM: "true"
           REQUESTED_FAILURE_POLICY: block
         run: |
-          echo "Omar BYOK model contract active"
+          echo "Omar managed model contract active"
           echo "Omar Gate did not pass"
-      - name: Verify BYOK Omar secrets
-        run: echo "OPENAI_API_KEY is required because create-sentinelayer Omar Gate runs in BYOK real-LLM mode."
+      - name: Verify managed Omar token secret
+        run: echo "SENTINELAYER_TOKEN is required for Omar telemetry/upload."
       - name: Stage Omar artifacts
         run: |
           echo "omar_gate_summary"
           echo "schema_version"
+          echo '"managed_llm": True'
           echo "run_url"
           echo "omar-artifacts/summary.json"
       - name: Upload Omar artifacts
@@ -275,7 +280,16 @@ jobs:
     validate_omar_contract(valid_workflow)
 
     _assert_fails(
-        valid_workflow.replace('sentinelayer_managed_llm: "false"', ""),
+        valid_workflow.replace('sentinelayer_managed_llm: "true"', ""),
+    )
+    _assert_fails(
+        valid_workflow.replace('sentinelayer_managed_llm: "true"', 'sentinelayer_managed_llm: "false"'),
+    )
+    _assert_fails(
+        valid_workflow.replace(
+            'sentinelayer_managed_llm: "true"',
+            'sentinelayer_managed_llm: "true"\n          openai_api_key: ${{ secrets.OPENAI_API_KEY }}',
+        ),
     )
     _assert_fails(
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
@@ -284,10 +298,7 @@ jobs:
     _assert_fails(valid_workflow.replace("actions/upload-artifact", "actions/cache"))
     _assert_fails(valid_workflow.replace("mrrCarter/sentinelayer-v1-action@", "./.github/actions/omar-gate # "))
     _assert_fails(
-        valid_workflow.replace("google_api_key: ${{ secrets.GOOGLE_API_KEY }}", "")
-    )
-    _assert_fails(
-        valid_workflow.replace("model_fallback: gemini-2.5-flash", "model_fallback: gpt-5.2-codex")
+        valid_workflow.replace("model_fallback: gpt-4.1-mini", "model_fallback: gpt-5.2-codex")
     )
 
 
