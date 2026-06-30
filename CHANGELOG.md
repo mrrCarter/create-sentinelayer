@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.4...v0.32.5) (2026-06-30)
+
+
+### Bug Fixes
+
+* **session:** render hosted usage rollups ([#690](https://github.com/mrrCarter/create-sentinelayer/issues/690)) ([ac1a275](https://github.com/mrrCarter/create-sentinelayer/commit/ac1a2757895c52ff25047c66a68a0133a8b58225))
+
 ## [0.32.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.3...v0.32.4) (2026-06-30)
 
 
