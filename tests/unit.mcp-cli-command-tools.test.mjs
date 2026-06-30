@@ -48,6 +48,19 @@ function buildSensitiveBridgeProgram() {
   const identity = ai.command("identity").description("Identity lifecycle");
   identity.command("provision").description("Provision identity");
   identity.command("revoke").description("Revoke identity");
+  identity.command("kill-all").description("Kill all identities");
+  identity.command("create-child").description("Create a child identity");
+  identity.command("revoke-children").description("Revoke child identities");
+  // governance sub-trees (blocked by prefix, incl. read-only leaves to keep it complete)
+  const domain = identity.command("domain").description("Domain governance");
+  domain.command("create").description("Create domain");
+  domain.command("verify").description("Verify domain");
+  const targetGroup = identity.command("target").description("Target governance");
+  targetGroup.command("create").description("Create target");
+  const siteGroup = identity.command("site").description("Callback domain");
+  siteGroup.command("create").description("Create site");
+  const legalHold = identity.command("legal-hold").description("Legal hold");
+  legalHold.command("set").description("Set legal hold");
   return program;
 }
 
@@ -62,6 +75,15 @@ test("Unit MCP CLI command tools: blocks token/exfil/identity-mutation commands 
     "sl.ai.provision-email",
     "sl.ai.identity.provision",
     "sl.ai.identity.revoke",
+    "sl.ai.identity.kill-all",
+    "sl.ai.identity.create-child",
+    "sl.ai.identity.revoke-children",
+    // governance sub-trees blocked by prefix (domain/target/site/legal-hold)
+    "sl.ai.identity.domain.create",
+    "sl.ai.identity.domain.verify",
+    "sl.ai.identity.target.create",
+    "sl.ai.identity.site.create",
+    "sl.ai.identity.legal-hold.set",
   ];
   for (const name of expectedBlocked) {
     const tool = tools.find((candidate) => candidate.name === name);
@@ -88,6 +110,9 @@ test("Unit MCP CLI command tools: blocks token/exfil/identity-mutation commands 
   const identityRevoke = await handlers["sl.ai.identity.revoke"]({});
   assert.equal(identityRevoke.ok, false);
   assert.equal(identityRevoke.reason, "blocked_sensitive_cli_command");
+  const domainCreate = await handlers["sl.ai.identity.domain.create"]({});
+  assert.equal(domainCreate.ok, false, "prefix-blocked governance command must not execute");
+  assert.equal(domainCreate.reason, "blocked_sensitive_cli_command");
 });
 
 test("Unit MCP CLI command tools: generates leaf tools from commander tree", async () => {

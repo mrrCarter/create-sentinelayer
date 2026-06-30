@@ -37,12 +37,25 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   // (normal recent-message reads) stays available for legitimate agent use.
   "session.export",
   "session.download",
-  // Identity/state mutation (same class as session.kill): create/revoke AIdenIDs + provision
-  // emails (cost + side effects) should not be driven by an untrusted LLM via the bridge.
+  // Identity/state mutation (same class as session.kill): create/revoke/kill AIdenIDs +
+  // provision emails (cost + side effects) should not be driven by an untrusted LLM via the bridge.
   "ai.identity.provision",
   "ai.identity.revoke",
+  "ai.identity.kill-all",
+  "ai.identity.create-child",
+  "ai.identity.revoke-children",
   "ai.provision-email",
 ]);
+
+// Whole governance sub-trees under ai.identity (domain/target/site/legal-hold) are live
+// identity-governance mutations (create/verify/freeze/etc.); block the entire prefix so the
+// bridge stays complete + future-proof as new leaves are added. Operators use the direct CLI.
+const SENSITIVE_COMMAND_PREFIXES = [
+  "ai.identity.domain.",
+  "ai.identity.target.",
+  "ai.identity.site.",
+  "ai.identity.legal-hold.",
+];
 const REDACTION_MARKER = "[REDACTED]";
 
 function normalizeString(value) {
@@ -140,6 +153,9 @@ function blockedReasonForCommandPath(commandPathKey) {
     return "blocked_recursive_mcp_server_command";
   }
   if (SENSITIVE_COMMAND_PATHS.has(commandPathKey)) {
+    return "blocked_sensitive_cli_command";
+  }
+  if (SENSITIVE_COMMAND_PREFIXES.some((prefix) => commandPathKey.startsWith(prefix))) {
     return "blocked_sensitive_cli_command";
   }
   return "";
