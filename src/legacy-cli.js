@@ -2521,14 +2521,12 @@ jobs:
         with:
           github_token: \${{ github.token }}
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
-          sentinelayer_managed_llm: "false"
-          openai_api_key: \${{ secrets.OPENAI_API_KEY }}
-          google_api_key: \${{ secrets.GOOGLE_API_KEY }}
+          sentinelayer_managed_llm: "true"
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
           codex_model: gpt-5.3-codex
-          model_fallback: gemini-2.5-flash
+          model_fallback: gpt-4.1-mini
           llm_failure_policy: block
       - name: Enforce Omar reviewer merge thresholds
         shell: bash
@@ -2612,7 +2610,7 @@ jobs:
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
                   "action_ref": "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493",
-                  "managed_llm": False,
+                  "managed_llm": True,
                   "llm_failure_policy": "block",
               },
               "github": {
