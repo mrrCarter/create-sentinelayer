@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.33.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.5...v0.33.0) (2026-06-30)
+
+
+### Features
+
+* **mcp:** add `sl mcp token mint` for short-lived hosted MCP bearer tokens, backed by the deployed `/api/v1/auth/mcp-token` endpoint and existing CLI auth ([#692](https://github.com/mrrCarter/create-sentinelayer/pull/692)) ([1a49987](https://github.com/mrrCarter/create-sentinelayer/commit/1a49987508b60f21dcf6641f4cd4bbc545e52fe5)).
+
+
+### Security
+
+* **mcp:** hide minted bearer tokens in text output, expose them only in explicit `--json` mode, and block `sl.mcp.token.mint` from the generated CLI MCP bridge so an LLM tool cannot mint/exfiltrate fresh hosted MCP credentials ([#692](https://github.com/mrrCarter/create-sentinelayer/pull/692)) ([1a49987](https://github.com/mrrCarter/create-sentinelayer/commit/1a49987508b60f21dcf6641f4cd4bbc545e52fe5)).
+
 ## [0.32.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.4...v0.32.5) (2026-06-30)
 
 
