@@ -9,6 +9,7 @@ import {
   assertTagMatchesVersion,
   assertTrustedRemoteTag,
   buildGhReleaseArgs,
+  COMMAND_CAPTURE_MAX_BUFFER_BYTES,
   matchingSuccessfulReleasePleaseRuns,
   normalizeReleaseWorkflowPolicy,
   normalizeSshPublicKey,
@@ -273,6 +274,13 @@ test("Release publish helper waits for Release Please before tag creation", () =
   assert.deepEqual(delays, [10]);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /before creating the release tag/);
+});
+
+test("Release publish helper captures mature GitHub Actions run pages", async () => {
+  const script = await readFile(new URL("../scripts/release-publish.mjs", import.meta.url), "utf8");
+
+  assert.ok(COMMAND_CAPTURE_MAX_BUFFER_BYTES >= 8 * 1024 * 1024);
+  assert.match(script, /maxBuffer:\s*COMMAND_CAPTURE_MAX_BUFFER_BYTES/);
 });
 
 test("Release publish helper fails closed without unique Release Please evidence", () => {
