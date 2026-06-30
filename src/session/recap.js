@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -70,6 +71,25 @@ function normalizePositiveInteger(value, fallbackValue) {
     return fallbackValue;
   }
   return Math.max(1, Math.floor(normalized));
+}
+
+function buildWorkPlanSourceContext(targetPath = process.cwd(), { sourceReason = "caller_target_path" } = {}) {
+  const workspacePath = path.resolve(String(targetPath || "."));
+  const workspaceLabel = normalizeString(path.basename(workspacePath)) || ".";
+  const workspaceFingerprint = createHash("sha256")
+    .update(workspacePath)
+    .digest("hex")
+    .slice(0, 8);
+  const sourceLabel = `${WORK_PLAN_RELATIVE_PATH} from ${workspaceLabel}#${workspaceFingerprint}`;
+  return {
+    workspacePath,
+    filePath: path.join(workspacePath, WORK_PLAN_RELATIVE_PATH),
+    path: WORK_PLAN_RELATIVE_PATH,
+    workspaceLabel,
+    workspaceFingerprint,
+    sourceLabel,
+    sourceReason: normalizeString(sourceReason),
+  };
 }
 
 function toEpoch(value, fallbackIso = new Date().toISOString()) {
@@ -407,21 +427,14 @@ function emptyTaskLedgerSummary() {
   };
 }
 
-function emptyWorkPlanSummary({
-  sourcePath = "",
-  workspacePath = "",
-  sourceReason = "",
-  skipped = false,
-  skipReason = "",
-} = {}) {
+function emptyWorkPlanSummary(sourceContext = {}) {
   return {
-    path: WORK_PLAN_RELATIVE_PATH,
-    sourcePath: normalizeString(sourcePath),
-    workspacePath: normalizeString(workspacePath),
-    sourceReason: normalizeString(sourceReason),
+    path: normalizeString(sourceContext.path) || WORK_PLAN_RELATIVE_PATH,
+    workspaceLabel: normalizeString(sourceContext.workspaceLabel),
+    workspaceFingerprint: normalizeString(sourceContext.workspaceFingerprint),
+    sourceLabel: normalizeString(sourceContext.sourceLabel),
+    sourceReason: normalizeString(sourceContext.sourceReason),
     exists: false,
-    skipped: Boolean(skipped),
-    skipReason: normalizeString(skipReason),
     truncated: false,
     detailSuppressed: false,
     detailSuppressionReason: "",
@@ -432,15 +445,6 @@ function emptyWorkPlanSummary({
     recentOpen: [],
     recent: [],
   };
-}
-
-function normalizeComparablePath(value) {
-  const resolved = path.resolve(String(value || "."));
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-function sameResolvedPath(left, right) {
-  return normalizeComparablePath(left) === normalizeComparablePath(right);
 }
 
 function shortWorkPlanText(value) {
@@ -456,15 +460,9 @@ function shortWorkPlanText(value) {
 
 function summarizeWorkPlanMarkdown(
   raw = "",
-  {
-    limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT,
-    truncated = false,
-    sourcePath = "",
-    workspacePath = "",
-    sourceReason = "",
-  } = {}
+  { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT, truncated = false, sourceContext = {} } = {}
 ) {
-  const summary = emptyWorkPlanSummary({ sourcePath, workspacePath, sourceReason });
+  const summary = emptyWorkPlanSummary(sourceContext);
   summary.exists = true;
   summary.truncated = Boolean(truncated);
   if (summary.truncated) {
@@ -518,32 +516,17 @@ function summarizeWorkPlanMarkdown(
 
 async function readWorkPlanSummary({
   targetPath = process.cwd(),
-  sessionTargetPath = "",
   limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT,
+  sourceReason = "caller_target_path",
 } = {}) {
-  const resolvedTargetPath = path.resolve(String(targetPath || "."));
-  const hasSessionTargetPath = Boolean(normalizeString(sessionTargetPath));
-  const resolvedSessionTargetPath = hasSessionTargetPath
-    ? path.resolve(String(sessionTargetPath))
-    : resolvedTargetPath;
-  const filePath = path.join(resolvedSessionTargetPath, WORK_PLAN_RELATIVE_PATH);
-  const sourceReason = hasSessionTargetPath ? "session_metadata_target_path" : "caller_target_path";
-  if (!sameResolvedPath(resolvedTargetPath, resolvedSessionTargetPath)) {
-    return emptyWorkPlanSummary({
-      sourcePath: filePath,
-      workspacePath: resolvedSessionTargetPath,
-      sourceReason,
-      skipped: true,
-      skipReason: "target_path_mismatch",
-    });
-  }
+  const sourceContext = buildWorkPlanSourceContext(targetPath, { sourceReason });
   try {
-    const stats = await fsp.stat(filePath);
+    const stats = await fsp.stat(sourceContext.filePath);
     let source = "";
     let truncated = false;
     if (stats.size > MAX_WORK_PLAN_BYTES) {
       truncated = true;
-      const handle = await fsp.open(filePath, "r");
+      const handle = await fsp.open(sourceContext.filePath, "r");
       try {
         const buffer = Buffer.alloc(MAX_WORK_PLAN_BYTES);
         const position = Math.max(0, stats.size - MAX_WORK_PLAN_BYTES);
@@ -553,41 +536,18 @@ async function readWorkPlanSummary({
         await handle.close();
       }
     } else {
-      source = await fsp.readFile(filePath, "utf-8");
+      source = await fsp.readFile(sourceContext.filePath, "utf-8");
     }
     return summarizeWorkPlanMarkdown(source, {
       limit,
       truncated,
-      sourcePath: filePath,
-      workspacePath: resolvedSessionTargetPath,
-      sourceReason,
+      sourceContext,
     });
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
-      return emptyWorkPlanSummary({
-        sourcePath: filePath,
-        workspacePath: resolvedSessionTargetPath,
-        sourceReason,
-      });
+      return emptyWorkPlanSummary(sourceContext);
     }
-    return emptyWorkPlanSummary({
-      sourcePath: filePath,
-      workspacePath: resolvedSessionTargetPath,
-      sourceReason,
-    });
-  }
-}
-
-async function readSessionTargetPath(sessionMetadata = null) {
-  const metadataPath = normalizeString(sessionMetadata?.metadataPath);
-  if (!metadataPath) {
-    return "";
-  }
-  try {
-    const raw = JSON.parse(await fsp.readFile(metadataPath, "utf-8"));
-    return normalizeString(raw?.targetPath);
-  } catch {
-    return "";
+    return emptyWorkPlanSummary(sourceContext);
   }
 }
 
@@ -803,31 +763,29 @@ function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
 }
 
 function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
-  if (!workPlan || typeof workPlan !== "object") {
+  if (!workPlan || typeof workPlan !== "object" || !workPlan.exists) {
     return "";
-  }
-  const pathText = normalizeString(workPlan.path) || WORK_PLAN_RELATIVE_PATH;
-  const sourcePath = normalizeString(workPlan.sourcePath);
-  const workspacePath = normalizeString(workPlan.workspacePath);
-  const sourceReason = normalizeString(workPlan.sourceReason);
-  const skipReason = normalizeString(workPlan.skipReason);
-  const provenance = [
-    sourcePath ? `source: ${sourcePath}` : "",
-    workspacePath ? `workspace: ${workspacePath}` : "",
-    sourceReason ? `selected: ${sourceReason}` : "",
-  ]
-    .filter(Boolean)
-    .join("; ");
-  const provenanceText = provenance ? ` (${provenance})` : "";
-  if (!workPlan.exists) {
-    return workPlan.skipped
-      ? `Plan: skipped ${pathText}${provenanceText}${skipReason ? ` because ${skipReason}` : ""}.`
-      : "";
   }
   const open = Number(workPlan.open || 0);
   const completed = Number(workPlan.completed || 0);
+  const sourceText =
+    normalizeString(workPlan.sourceLabel) ||
+    (() => {
+      const pathText = normalizeString(workPlan.path) || WORK_PLAN_RELATIVE_PATH;
+      const workspaceLabel = normalizeString(workPlan.workspaceLabel);
+      const workspaceFingerprint = normalizeString(workPlan.workspaceFingerprint);
+      if (!workspaceLabel) {
+        return pathText;
+      }
+      const workspaceText = workspaceFingerprint
+        ? `${workspaceLabel}#${workspaceFingerprint}`
+        : workspaceLabel;
+      return `${pathText} from ${workspaceText}`;
+    })();
+  const sourceReason = normalizeString(workPlan.sourceReason);
+  const sourceReasonText = sourceReason ? ` (${sourceReason})` : "";
   if (workPlan.detailSuppressed || workPlan.truncated) {
-    return `Plan: ${open} open / ${completed} done in recent ${pathText} window${provenanceText}. Current/next items suppressed because the plan file is large.`;
+    return `Plan: ${open} open / ${completed} done in recent ${sourceText} window${sourceReasonText}. Current/next items suppressed because the plan file is large.`;
   }
   const currentSection = normalizeString(workPlan.currentSection);
   const currentText = currentSection ? ` Current: ${currentSection}.` : "";
@@ -844,7 +802,7 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
           .join("; ")}.`
       : "";
   const truncatedText = workPlan.truncated ? " Recent window only." : "";
-  return `Plan: ${open} open / ${completed} done in ${pathText}${provenanceText}.${currentText}${nextText}${truncatedText}`;
+  return `Plan: ${open} open / ${completed} done in ${sourceText}${sourceReasonText}.${currentText}${nextText}${truncatedText}`;
 }
 
 function roundCurrency(value) {
@@ -1003,6 +961,12 @@ export async function buildSessionRecap(
   } catch {
     sessionMetadata = null;
   }
+  const sessionWorkspaceTargetPath = path.resolve(
+    normalizeString(sessionMetadata?.targetPath) || normalizedTargetPath,
+  );
+  const workPlanSourceReason = normalizeString(sessionMetadata?.targetPath)
+    ? "session_metadata_target_path"
+    : "caller_target_path";
   const sortedEvents = sortEventsByConversationTime(dedupeSessionEvents(allEvents), normalizedNow);
   const usageSummary = normalizeUsageSummary(sortedEvents);
   const events = sortedEvents.slice(-normalizedMaxEvents);
@@ -1046,10 +1010,9 @@ export async function buildSessionRecap(
   const taskLedger = await readTaskLedgerSummary(normalizedSessionId, {
     targetPath: normalizedTargetPath,
   });
-  const sessionTargetPath = await readSessionTargetPath(sessionMetadata);
   const workPlan = await readWorkPlanSummary({
-    targetPath: normalizedTargetPath,
-    sessionTargetPath,
+    targetPath: sessionWorkspaceTargetPath,
+    sourceReason: workPlanSourceReason,
   });
   const snippets = summarizeRecentActivity(actorEvents, {
     forAgentId: normalizedForAgentId,

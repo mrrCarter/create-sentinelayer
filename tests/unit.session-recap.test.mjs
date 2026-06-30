@@ -9,6 +9,7 @@ import { Command } from "commander";
 import { registerSessionCommand } from "../src/commands/session.js";
 import { validateAgentEvent } from "../src/events/schema.js";
 import { registerAgent } from "../src/session/agent-registry.js";
+import { resolveSessionPaths } from "../src/session/paths.js";
 import {
   buildSessionRecap,
   emitPeriodicRecap,
@@ -270,15 +271,23 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
       nowIso: "2026-05-19T09:03:00.000Z",
     });
 
-    assert.match(recap.text, /Plan: 2 open \/ 1 done in tasks\/todo\.md/);
-    assert.match(recap.text, /source:/);
-    assert.match(recap.text, /workspace:/);
+    assert.match(
+      recap.text,
+      /Plan: 2 open \/ 1 done in tasks\/todo\.md from create-sentinelayer-session-plan-recap-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
+    );
     assert.match(recap.text, /Current: Active Shipment/);
     assert.match(recap.text, /Active Shipment - Build Senti auto recap/);
     assert.match(recap.text, /Active Shipment - Verify npm release/);
     assert.equal(recap.summary.workPlan.exists, true);
-    assert.equal(recap.summary.workPlan.sourcePath, path.join(tempRoot, "tasks", "todo.md"));
-    assert.equal(recap.summary.workPlan.workspacePath, path.resolve(tempRoot));
+    assert.match(
+      recap.summary.workPlan.workspaceLabel,
+      /^create-sentinelayer-session-plan-recap-/,
+    );
+    assert.match(recap.summary.workPlan.workspaceFingerprint, /^[a-f0-9]{8}$/);
+    assert.match(
+      recap.summary.workPlan.sourceLabel,
+      /^tasks\/todo\.md from create-sentinelayer-session-plan-recap-/,
+    );
     assert.equal(recap.summary.workPlan.sourceReason, "session_metadata_target_path");
     assert.equal(recap.summary.workPlan.total, 3);
     assert.equal(recap.summary.workPlan.open, 2);
@@ -290,42 +299,85 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
   }
 });
 
-test("Unit session recap: skips workspace todo plan when session metadata target path mismatches", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-plan-local-"));
-  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-plan-source-"));
+test("Unit session recap: reads todo plan from session workspace metadata, not caller cache path", async () => {
+  const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-cache-"));
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-workspace-"));
   try {
-    await seedWorkspace(tempRoot);
-    await seedWorkspace(sessionRoot);
-    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await seedWorkspace(cacheRoot);
+    await seedWorkspace(workspaceRoot);
+    await mkdir(path.join(cacheRoot, "tasks"), { recursive: true });
+    await mkdir(path.join(workspaceRoot, "tasks"), { recursive: true });
     await writeFile(
-      path.join(tempRoot, "tasks", "todo.md"),
-      ["# Wrong Project", "", "- [ ] This unrelated local plan must not leak"].join("\n"),
+      path.join(cacheRoot, "tasks", "todo.md"),
+      ["# Wrong Cache Plan", "", "## Stale", "- [ ] Do not recap this stale caller cwd task"].join("\n"),
       "utf-8",
     );
-    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
-    const metadata = JSON.parse(await readFile(session.metadataPath, "utf-8"));
-    metadata.targetPath = sessionRoot;
-    await writeFile(session.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
+    await writeFile(
+      path.join(workspaceRoot, "tasks", "todo.md"),
+      ["# Right Workspace Plan", "", "## Active Workspace", "- [ ] Recap the workspace-owned task"].join("\n"),
+      "utf-8",
+    );
+
+    const session = await createSession({ targetPath: cacheRoot, ttlSeconds: 120 });
+    const sessionPaths = resolveSessionPaths(session.sessionId, { targetPath: cacheRoot });
+    const metadata = JSON.parse(await readFile(sessionPaths.metadataPath, "utf-8"));
+    metadata.targetPath = workspaceRoot;
+    await writeFile(sessionPaths.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
 
     const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: cacheRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Active Workspace - Recap the workspace-owned task/);
+    assert.doesNotMatch(recap.text, /Wrong Cache Plan/);
+    assert.doesNotMatch(recap.text, /stale caller cwd task/);
+    assert.equal(recap.summary.workPlan.workspaceLabel, path.basename(workspaceRoot));
+    assert.match(recap.summary.workPlan.workspaceFingerprint, /^[a-f0-9]{8}$/);
+    assert.equal(recap.summary.workPlan.sourceReason, "session_metadata_target_path");
+  } finally {
+    await rm(cacheRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: handles empty and single-message transcript boundaries", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-empty-boundary-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const emptyRecap = await buildSessionRecap(session.sessionId, {
       forAgentId: "codex",
       targetPath: tempRoot,
       nowIso: "2026-05-19T09:03:00.000Z",
     });
+    assert.equal(emptyRecap.summary.recentActors, 0);
+    assert.equal(emptyRecap.summary.totalFindingsCount, 0);
+    assert.equal(emptyRecap.summary.workPlan.exists, false);
+    assert.match(emptyRecap.text, /no recent peer activity/);
+    assert.doesNotMatch(emptyRecap.text, /Plan:/);
 
-    assert.doesNotMatch(recap.text, /Wrong Project/);
-    assert.doesNotMatch(recap.text, /unrelated local plan/);
-    assert.match(recap.text, /Plan: skipped tasks\/todo\.md/);
-    assert.match(recap.text, /target_path_mismatch/);
-    assert.equal(recap.summary.workPlan.exists, false);
-    assert.equal(recap.summary.workPlan.skipped, true);
-    assert.equal(recap.summary.workPlan.skipReason, "target_path_mismatch");
-    assert.equal(recap.summary.workPlan.sourcePath, path.join(sessionRoot, "tasks", "todo.md"));
-    assert.equal(recap.summary.workPlan.workspacePath, path.resolve(sessionRoot));
-    assert.equal(recap.summary.workPlan.sourceReason, "session_metadata_target_path");
+    await appendToStream(session.sessionId, {
+      event: "session_message",
+      agent: { id: "claude-reviewer", model: "claude-opus-4-7" },
+      payload: { message: "Single boundary message." },
+      ts: "2026-05-19T09:04:00.000Z",
+    }, { targetPath: tempRoot });
+
+    const singleMessageRecap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:05:00.000Z",
+    });
+    assert.equal(singleMessageRecap.summary.recentActors, 1);
+    assert.deepEqual(singleMessageRecap.summary.recentActorIds, ["claude-reviewer"]);
+    assert.equal(singleMessageRecap.summary.lastActorId, "claude-reviewer");
+    assert.match(singleMessageRecap.text, /1 recent actor/);
+    assert.match(singleMessageRecap.text, /claude-reviewer: Single boundary message/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
-    await rm(sessionRoot, { recursive: true, force: true });
   }
 });
 
@@ -357,7 +409,10 @@ test("Unit session recap: suppresses current and next details for truncated todo
       nowIso: "2026-05-19T09:03:00.000Z",
     });
 
-    assert.match(recap.text, /Plan: 2 open \/ \d+ done in recent tasks\/todo\.md window/);
+    assert.match(
+      recap.text,
+      /Plan: 2 open \/ \d+ done in recent tasks\/todo\.md from create-sentinelayer-session-large-plan-recap-[^#]+#[a-f0-9]{8} window \(session_metadata_target_path\)/,
+    );
     assert.match(
       recap.text,
       /Current\/next items suppressed because the plan file is large/,

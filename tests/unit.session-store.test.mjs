@@ -47,11 +47,13 @@ test("Unit session store: creates metadata with ingest context and lists active 
 
     const created = await createSession({ targetPath: tempRoot, ttlSeconds: 60 });
     assert.ok(created.sessionId);
+    assert.equal(created.targetPath, path.resolve(tempRoot));
     assert.ok(created.sessionDir.endsWith(created.sessionId));
     assert.match(created.elapsedTimer, /m|h/);
 
     const metadata = await getSession(created.sessionId, { targetPath: tempRoot });
     assert.equal(metadata?.sessionId, created.sessionId);
+    assert.equal(metadata?.targetPath, path.resolve(tempRoot));
     assert.equal(metadata?.status, "active");
     assert.ok(metadata?.codebaseContext);
     assert.ok(Number.isFinite(Number(metadata?.codebaseContext?.summary?.filesScanned)));
@@ -59,6 +61,7 @@ test("Unit session store: creates metadata with ingest context and lists active 
     const active = await listActiveSessions({ targetPath: tempRoot });
     assert.equal(active.length, 1);
     assert.equal(active[0].sessionId, created.sessionId);
+    assert.equal(active[0].targetPath, path.resolve(tempRoot));
 
     const rawMetadata = JSON.parse(
       await readFile(path.join(created.sessionDir, "metadata.json"), "utf-8")
@@ -66,6 +69,27 @@ test("Unit session store: creates metadata with ingest context and lists active 
     assert.equal(rawMetadata.sessionId, created.sessionId);
     assert.equal(rawMetadata.status, "active");
     assert.ok(Array.isArray(rawMetadata.codebaseContext.frameworks));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session store: missing sessions and unsafe ids fail closed", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-store-invalid-"));
+  try {
+    await seedWorkspace(tempRoot);
+
+    const missing = await getSession("missing-session", { targetPath: tempRoot });
+    assert.equal(missing, null);
+
+    await assert.rejects(
+      () => createSession({ targetPath: tempRoot, sessionId: "../escape" }),
+      /sessionId must not contain path traversal segments/,
+    );
+    await assert.rejects(
+      () => createSession({ targetPath: tempRoot, sessionId: "nested/path" }),
+      /sessionId must not contain path traversal segments/,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
