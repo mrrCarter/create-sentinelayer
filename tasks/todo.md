@@ -1,3 +1,22 @@
+# 2026-06-30 - Senti Recap Workspace Provenance (`builder/recap-provenance`)
+
+## Plan
+- [x] Keep the `codex-senti-product` listener connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` without ACK spam.
+- [x] Identify root cause: recap work-plan grounding read `tasks/todo.md` from the caller target path and did not surface a safe source/workspace label.
+- [x] Expose normalized session workspace metadata to recap callers and read the plan from that workspace.
+- [x] Render non-secret source provenance in recap text and summary payload.
+- [x] Add regression coverage proving stale caller-cache plans are not recapped.
+- [x] Run focused tests, static checks, review/Omar gates, hosted checks, and merge only on green.
+
+## Review
+- Focused recap/store suite passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-recap.test.mjs tests/unit.session-store.test.mjs` (`22/22`).
+- Static check passed: `npm run check` (`343 files passed`).
+- Full unit suite passed: `npm run test:unit` (`1678/1678`).
+- Diff whitespace check passed; only expected Windows LF notices were emitted.
+- Review scan passed: `review-scan-diff-20260630-170735.md`, `P1=0`, `P2=0`, `blocking=false`.
+- Package dry-run passed for `sentinelayer-cli-0.33.0.tgz`.
+- Omar Gate diff remained merge-threshold clean: deterministic `P0=0/P1=0/P2=0/P3=0`, reconciled `P0=0/P1=0`, blocking `false`. Two AI-only P2 testing-depth advisories remain broad non-blocking coverage asks after adding recap empty/single-message and store invalid-id regressions.
+
 # 2026-06-24 - CLI Listener Lifecycle Hardening (`codex/listener-lifecycle-20260624`)
 
 ## Plan
