@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.3...v0.32.4) (2026-06-30)
+
+
+### Bug Fixes
+
+* **mcp:** block token/exfil/identity-mutation commands from the MCP bridge blocklist ([#688](https://github.com/mrrCarter/create-sentinelayer/issues/688)) ([a25d807](https://github.com/mrrCarter/create-sentinelayer/commit/a25d807e09e6e75a94bea45af996274dd392232c))
+
 ## [0.32.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.2...v0.32.3) (2026-06-30)
 
 
