@@ -81,6 +81,10 @@ export async function runMcpDoctorProbes({
   }
 
   const probes = [];
+  // Whether PRM advertised an authorization server changes how severe an
+  // AS-metadata 503 is: advertised pointer + 503 is a broken chain (FAIL),
+  // while omitted pointer + 503 is a consistent fail-closed state (WARN).
+  let prmAdvertisesAuthServer = false;
 
   // 1. Protected Resource Metadata (RFC 9728)
   {
@@ -95,6 +99,7 @@ export async function runMcpDoctorProbes({
       const count = Array.isArray(result.json.authorization_servers)
         ? result.json.authorization_servers.length
         : 0;
+      prmAdvertisesAuthServer = count > 0;
       detail = `resource=${result.json.resource}; authorization_servers=${count}`;
     } else if (result.status === 200) {
       verdict = WARN;
@@ -127,9 +132,18 @@ export async function runMcpDoctorProbes({
           ? `token_endpoint=${result.json.token_endpoint}`
           : "advertised";
     } else if (result.status === 503) {
-      verdict = WARN;
-      detail =
-        "503 unconfigured — the authorization server is not advertised, so remote clients cannot auto-discover it (set MCP_OAUTH_AUTHORIZATION_ENDPOINT + MCP_OAUTH_TOKEN_ENDPOINT)";
+      if (prmAdvertisesAuthServer) {
+        // Broken discovery chain: PRM points clients at an authorization server
+        // that then returns 503. Clients WILL follow the pointer and fail.
+        verdict = FAIL;
+        detail =
+          "PRM advertises authorization_servers but AS metadata is 503 — remote clients will follow the advertised pointer to an unconfigured authorization server (broken discovery chain)";
+      } else {
+        // Consistent fail-closed: no AS advertised, AS metadata not configured.
+        verdict = WARN;
+        detail =
+          "503 unconfigured and PRM does not advertise an authorization server (fail-closed, consistent) — set MCP_OAUTH_AUTHORIZATION_ENDPOINT + MCP_OAUTH_TOKEN_ENDPOINT to enable remote auto-discovery";
+      }
     } else {
       detail = `expected 200, got HTTP ${result.status}`;
     }

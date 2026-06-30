@@ -89,15 +89,38 @@ test("mcp doctor: healthy hosted MCP auth -> all probes pass", async () => {
   }
 });
 
-test("mcp doctor: AS metadata 503 unconfigured -> WARN, overall still ok", async () => {
+test("mcp doctor: AS metadata 503 while PRM advertises an AS -> FAIL (broken chain)", async () => {
+  // HEALTHY.prm advertises authorization_servers, so a 503 here means clients
+  // follow the advertised pointer straight into an unconfigured AS.
   const { server, baseUrl } = await startMockApi({
     ...HEALTHY,
     asMetadata: (res) => jsonResponse(res, 503, { error: { code: "MCP_OAUTH_METADATA_UNCONFIGURED" } }),
   });
   try {
     const result = await runMcpDoctorProbes({ apiBaseUrl: baseUrl, timeoutMs: 2000 });
+    const as = byId(result.probes, "authorization_server_metadata");
+    assert.equal(as.verdict, "FAIL");
+    assert.match(as.detail, /advertises authorization_servers/i);
+    assert.equal(result.ok, false, "an advertised-but-503 AS is a broken discovery chain");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("mcp doctor: AS metadata 503 while PRM omits the AS -> WARN (fail-closed)", async () => {
+  const { server, baseUrl } = await startMockApi({
+    ...HEALTHY,
+    prm: (res) =>
+      jsonResponse(res, 200, {
+        resource: "https://mcp.sentinelayer.test",
+        bearer_methods_supported: ["header"],
+      }),
+    asMetadata: (res) => jsonResponse(res, 503, { error: { code: "MCP_OAUTH_METADATA_UNCONFIGURED" } }),
+  });
+  try {
+    const result = await runMcpDoctorProbes({ apiBaseUrl: baseUrl, timeoutMs: 2000 });
     assert.equal(byId(result.probes, "authorization_server_metadata").verdict, "WARN");
-    assert.equal(result.ok, true, "a WARN must not fail the overall check");
+    assert.equal(result.ok, true, "fail-closed AS-503 with no advertised pointer is a warning, not a failure");
   } finally {
     await closeServer(server);
   }
