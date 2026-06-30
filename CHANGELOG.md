@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.5...v0.32.0) (2026-06-30)
+
+
+### Features
+
+* **session:** add sanitized usage report command ([#679](https://github.com/mrrCarter/create-sentinelayer/issues/679)) ([31eb86e](https://github.com/mrrCarter/create-sentinelayer/commit/31eb86e8765836aec8a2002ff0c9752279e7735c))
+
 ## [0.31.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.4...v0.31.5) (2026-06-30)
 
 
