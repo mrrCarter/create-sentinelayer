@@ -29,6 +29,7 @@ import {
   getCoordinationEtiquetteItems,
   renderCoordinationNumberedList,
 } from "./session/coordination-guidance.js";
+import { resolveUsageSessionId } from "./session/usage-session-resolver.js";
 
 let DEFAULT_API_URL = process.env.SENTINELAYER_API_URL || "https://api.sentinelayer.com";
 let DEFAULT_WEB_URL = process.env.SENTINELAYER_WEB_URL || "https://sentinelayer.com";
@@ -1200,7 +1201,7 @@ async function runLocalOmarGateCommand(args) {
     const devTestBotBaseUrl = getCommandOptionValue(args, "--devtestbot-base-url") || "";
     const devTestBotScope = getCommandOptionValue(args, "--devtestbot-scope") || "";
     const emailOnComplete = getCommandOptionValue(args, "--email-on-complete") || "";
-    const notifySession = getCommandOptionValue(args, "--notify-session") || "";
+    const notifySessionFlag = getCommandOptionValue(args, "--notify-session") || "";
     const requireUsageLedger = hasCommandOption(args, "--require-usage-ledger");
     const model = getCommandOptionValue(args, "--model") || "gpt-5.3-codex";
     const provider = getCommandOptionValue(args, "--provider") || "sentinelayer";
@@ -1211,6 +1212,12 @@ async function runLocalOmarGateCommand(args) {
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
       throw new Error(`Invalid --path target: ${targetPath}`);
     }
+    const usageSession = await resolveUsageSessionId({
+      explicitSessionId: notifySessionFlag,
+      targetPath,
+      env: process.env,
+    });
+    const notifySession = usageSession.sessionId || "";
 
     const { runInvestorDd } = await import("./review/investor-dd-orchestrator.js");
     const { parsePersonaCsv, resolveFilteredPersonas } = await import("./review/scan-modes.js");
@@ -1235,6 +1242,15 @@ async function runLocalOmarGateCommand(args) {
         printInfo(`Skipped personas: ${personaFilter.dropped.join(", ")}`);
       }
       if (dryRun) printInfo("Mode: dry-run (plan + stub report only)");
+      if (notifySession) {
+        printInfo(
+          `Usage ledger: ${usageSession.source === "explicit" ? "using" : "auto-detected"} Senti session ${notifySession}`,
+        );
+      } else if (requireUsageLedger) {
+        printInfo(
+          `Usage ledger: required but no active Senti session was auto-detected (${usageSession.reason || "missing_session"}).`,
+        );
+      }
     }
     const result = await runInvestorDd({
       rootPath: targetPath,
@@ -1298,7 +1314,7 @@ async function runLocalOmarGateCommand(args) {
   const maxCostUsd = parseFloat(getCommandOptionValue(args, "--max-cost") || "5.0") || 5.0;
   const modelOverride = getCommandOptionValue(args, "--model") || "";
   const providerOverride = getCommandOptionValue(args, "--provider") || "";
-  const notifySession = getCommandOptionValue(args, "--notify-session") || "";
+  const notifySessionFlag = getCommandOptionValue(args, "--notify-session") || "";
   const requireUsageLedger = hasCommandOption(args, "--require-usage-ledger");
   const scanMode = getCommandOptionValue(args, "--scan-mode") || "deep";
   const maxParallel = parseInt(getCommandOptionValue(args, "--max-parallel") || "4", 10) || 4;
@@ -1315,6 +1331,12 @@ async function runLocalOmarGateCommand(args) {
   if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
     throw new Error(`Invalid --path target: ${targetPath}`);
   }
+  const usageSession = await resolveUsageSessionId({
+    explicitSessionId: notifySessionFlag,
+    targetPath,
+    env: process.env,
+  });
+  const notifySession = usageSession.sessionId || "";
   // Default scope to changed-files when the target has a git delta (uncommitted
   // or staged), matching gh's PR-scoped Omar; fall back to full repo otherwise.
   // Explicit --scope-mode/--diff/--staged always override (see resolveScopeModeFromOptions).
@@ -1327,6 +1349,15 @@ async function runLocalOmarGateCommand(args) {
     printInfo(`Target: ${targetPath}`);
     printInfo(`Scope mode: ${scopeMode}`);
     printInfo(`Scan mode: ${scanMode} | AI: ${aiEnabled ? "enabled" : "disabled"}`);
+    if (notifySession) {
+      printInfo(
+        `Usage ledger: ${usageSession.source === "explicit" ? "using" : "auto-detected"} Senti session ${notifySession}`,
+      );
+    } else if (requireUsageLedger) {
+      printInfo(
+        `Usage ledger: required but no active Senti session was auto-detected (${usageSession.reason || "missing_session"}).`,
+      );
+    }
     console.error("");
     console.error(pc.gray(`  [${formatElapsed(Date.now() - commandStartedAt)}] Phase 1: Deterministic analysis (22 rules)...`));
   }
