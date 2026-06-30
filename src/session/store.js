@@ -407,6 +407,7 @@ export function isSessionCacheExpired(metadata, nowIso = new Date().toISOString(
 function buildSessionPayload(metadata, paths, nowIso = new Date().toISOString()) {
   return {
     sessionId: metadata.sessionId,
+    targetPath: metadata.targetPath,
     sessionDir: paths.sessionDir,
     metadataPath: paths.metadataPath,
     streamPath: paths.streamPath,
