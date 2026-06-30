@@ -448,6 +448,12 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   const download = getCommandByPath(program, "session download");
   assertCommandHasOption(download, "--include-control-events");
 
+  const usage = getCommandByPath(program, "session usage");
+  assertCommandHasOption(usage, "--remote");
+  assertCommandHasOption(usage, "--recent <n>");
+  assertCommandHasOption(usage, "--format <format>");
+  assertCommandHasOption(usage, "--out <file>");
+
   const daemon = getCommandByPath(program, "session daemon");
   assertCommandHasOption(daemon, "--session <id>");
   assertCommandHasOption(daemon, "--tick-interval <seconds>");

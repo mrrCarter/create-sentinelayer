@@ -1816,6 +1816,96 @@ export async function listSessionMessageActions(
   }
 }
 
+export async function fetchSessionUsageLedger(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    limit = 500,
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    forceCircuitProbe = false,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {}
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return {
+      ok: false,
+      reason: "invalid_session_id",
+      status: 0,
+      payload: null,
+    };
+  }
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      status: 0,
+      payload: null,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", status: 0, payload: null };
+  }
+  if (!session || !session.token) {
+    return { ok: false, reason: "not_authenticated", status: 0, payload: null };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const query = new URLSearchParams();
+  query.set(
+    "limit",
+    String(Math.max(1, Math.min(500, normalizePositiveInteger(limit, 500))))
+  );
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/usage?${query.toString()}`;
+
+  try {
+    const { response, payload } = await fetchJsonWithFullTimeout(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
+    );
+    if (!response || !response.ok) {
+      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        status: response?.status || 0,
+        payload: null,
+      };
+    }
+    recordCircuitSuccess(inboundCircuit);
+    return {
+      ok: true,
+      reason: "",
+      status: response.status || 200,
+      payload: payload && typeof payload === "object" ? payload : {},
+    };
+  } catch (error) {
+    recordCircuitFailure(inboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "usage_read_failed",
+      status: 0,
+      payload: null,
+    };
+  }
+}
+
 function pinnedEventContentText(event = {}) {
   const payload = event && typeof event === "object" ? event.payload || {} : {};
   return (
