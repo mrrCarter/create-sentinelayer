@@ -29,7 +29,41 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   "session.kill",
   "session.listen",
   "session.provision-emails",
+  "daemon.control.stop",
+  "omargate.investor-dd",
+  // Token-handling (same class as auth.*): writes the live SentinelLayer token into a
+  // caller-specified GitHub repo's secrets — a token-misplacement/exfil vector via the bridge.
+  "scan.setup-secrets",
+  // Bulk session-content exfil (same rationale that blocks config.*): full transcript dumps
+  // can carry arbitrary sensitive content that output-redaction does not mask. `session read`
+  // (normal recent-message reads) stays available for legitimate agent use.
+  "session.export",
+  "session.download",
+  "review.show",
+  "review.export",
+  // Identity/state mutation (same class as session.kill): create/revoke/kill AIdenIDs +
+  // provision emails (cost + side effects) should not be driven by an untrusted LLM via the bridge.
+  "ai.identity.provision",
+  "ai.identity.revoke",
+  "ai.identity.kill-all",
+  "ai.identity.create-child",
+  "ai.identity.revoke-children",
+  "ai.provision-email",
+  // Inbound AIdenID extraction surfaces can expose OTPs, action links, or raw events.
+  "ai.identity.events",
+  "ai.identity.latest",
+  "ai.identity.wait-for-otp",
 ]);
+
+// Whole governance sub-trees under ai.identity (domain/target/site/legal-hold) are live
+// identity-governance mutations (create/verify/freeze/etc.); block the entire prefix so the
+// bridge stays complete + future-proof as new leaves are added. Operators use the direct CLI.
+const SENSITIVE_COMMAND_PREFIXES = [
+  "ai.identity.domain.",
+  "ai.identity.target.",
+  "ai.identity.site.",
+  "ai.identity.legal-hold.",
+];
 const REDACTION_MARKER = "[REDACTED]";
 
 function normalizeString(value) {
@@ -129,6 +163,9 @@ function blockedReasonForCommandPath(commandPathKey) {
   if (SENSITIVE_COMMAND_PATHS.has(commandPathKey)) {
     return "blocked_sensitive_cli_command";
   }
+  if (SENSITIVE_COMMAND_PREFIXES.some((prefix) => commandPathKey.startsWith(prefix))) {
+    return "blocked_sensitive_cli_command";
+  }
   return "";
 }
 
@@ -164,7 +201,17 @@ function validateCliOptionSpecs(optionSpecs = []) {
 
 function validateBridgeToolDefinition(tool = {}) {
   const metadata = tool.metadata || {};
-  return validateCliPathSegments(metadata.cliPath) || validateCliOptionSpecs(metadata.options);
+  const shapeError = validateCliPathSegments(metadata.cliPath) || validateCliOptionSpecs(metadata.options);
+  if (shapeError) return shapeError;
+  if (metadata.generated_from !== "commander" || metadata.execution !== "bridge") {
+    return "untrusted_cli_bridge_definition";
+  }
+  const commandPathKey = metadata.cliPath.map(normalizeString).filter(Boolean).join(".");
+  const namePathKey = registryToolNameToCliPath(tool.name).join(".");
+  if (namePathKey && namePathKey !== commandPathKey) {
+    return "cli_path_name_mismatch";
+  }
+  return "";
 }
 
 function isAllowedInputValue(value) {

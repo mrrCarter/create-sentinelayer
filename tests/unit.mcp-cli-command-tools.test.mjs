@@ -10,6 +10,7 @@ import {
   createCliCommandMcpToolHandlers,
   executeCliCommand,
 } from "../src/mcp/cli-command-tools.js";
+import { buildCliProgram } from "../src/cli.js";
 import { createSessionMcpRuntime } from "../src/mcp/session-stdio-server.js";
 
 function buildFakeProgram() {
@@ -31,6 +32,161 @@ function buildFakeProgram() {
   server.command("server").command("run").description("Run stdio server");
   return program;
 }
+
+function buildSensitiveBridgeProgram() {
+  const program = new Command();
+  program.name("sl");
+  const scan = program.command("scan").description("Security & review");
+  scan
+    .command("setup-secrets")
+    .description("Set up GitHub secrets for Omar Gate")
+    .option("--repo <slug>", "Repo slug override");
+  const session = program.command("session").description("Manage Senti sessions");
+  session.command("export <sessionId>").description("Export full transcript");
+  session.command("download <sessionId>").description("Download transcript markdown");
+  const daemon = program.command("daemon").description("Daemon controls");
+  const control = daemon.command("control").description("Operator control plane");
+  control.command("stop").description("Stop/quarantine work item");
+  const omargate = program.command("omargate").description("Omar Gate");
+  omargate.command("investor-dd").description("Run investor-grade due diligence");
+  const review = program.command("review").description("Review reports");
+  review.command("show").description("Show full report");
+  review.command("export").description("Export full report");
+  const ai = program.command("ai").description("AIdenID");
+  ai.command("provision-email").description("Provision an AIdenID email");
+  const identity = ai.command("identity").description("Identity lifecycle");
+  identity.command("provision").description("Provision identity");
+  identity.command("revoke").description("Revoke identity");
+  identity.command("kill-all").description("Kill all identities");
+  identity.command("create-child").description("Create a child identity");
+  identity.command("revoke-children").description("Revoke child identities");
+  identity.command("events").description("List inbound identity events");
+  identity.command("latest").description("Show latest extraction");
+  identity.command("wait-for-otp").description("Poll latest extraction");
+  // governance sub-trees (blocked by prefix, incl. read-only leaves to keep it complete)
+  const domain = identity.command("domain").description("Domain governance");
+  domain.command("create").description("Create domain");
+  domain.command("verify").description("Verify domain");
+  const targetGroup = identity.command("target").description("Target governance");
+  targetGroup.command("create").description("Create target");
+  const siteGroup = identity.command("site").description("Callback domain");
+  siteGroup.command("create").description("Create site");
+  const legalHold = identity.command("legal-hold").description("Legal hold");
+  legalHold.command("set").description("Set legal hold");
+  return program;
+}
+
+test("Unit MCP CLI command tools: blocks token/exfil/identity-mutation commands from the bridge", async () => {
+  const tools = await buildCliCommandMcpTools({
+    buildProgramFn: async () => buildSensitiveBridgeProgram(),
+  });
+  const expectedBlocked = [
+    "sl.scan.setup-secrets",
+    "sl.session.export",
+    "sl.session.download",
+    "sl.daemon.control.stop",
+    "sl.omargate.investor-dd",
+    "sl.review.show",
+    "sl.review.export",
+    "sl.ai.provision-email",
+    "sl.ai.identity.provision",
+    "sl.ai.identity.revoke",
+    "sl.ai.identity.kill-all",
+    "sl.ai.identity.create-child",
+    "sl.ai.identity.revoke-children",
+    "sl.ai.identity.events",
+    "sl.ai.identity.latest",
+    "sl.ai.identity.wait-for-otp",
+    // governance sub-trees blocked by prefix (domain/target/site/legal-hold)
+    "sl.ai.identity.domain.create",
+    "sl.ai.identity.domain.verify",
+    "sl.ai.identity.target.create",
+    "sl.ai.identity.site.create",
+    "sl.ai.identity.legal-hold.set",
+  ];
+  for (const name of expectedBlocked) {
+    const tool = tools.find((candidate) => candidate.name === name);
+    assert.ok(tool, `expected bridge tool ${name} to exist`);
+    assert.equal(tool.security.runtime_blocked, true, `${name} should be runtime_blocked`);
+    assert.equal(
+      tool.security.runtime_block_reason,
+      "blocked_sensitive_cli_command",
+      `${name} should carry the sensitive block reason`,
+    );
+  }
+
+  const handlers = createCliCommandMcpToolHandlers(tools, {
+    executeCliCommandFn: async () => {
+      throw new Error("must not execute sensitive bridge command");
+    },
+  });
+  const setupSecrets = await handlers["sl.scan.setup-secrets"]({});
+  assert.equal(setupSecrets.ok, false);
+  assert.equal(setupSecrets.reason, "blocked_sensitive_cli_command");
+  const sessionExport = await handlers["sl.session.export"]({});
+  assert.equal(sessionExport.ok, false);
+  assert.equal(sessionExport.reason, "blocked_sensitive_cli_command");
+  const investorDd = await handlers["sl.omargate.investor-dd"]({});
+  assert.equal(investorDd.ok, false);
+  assert.equal(investorDd.reason, "blocked_sensitive_cli_command");
+  const identityRevoke = await handlers["sl.ai.identity.revoke"]({});
+  assert.equal(identityRevoke.ok, false);
+  assert.equal(identityRevoke.reason, "blocked_sensitive_cli_command");
+  const domainCreate = await handlers["sl.ai.identity.domain.create"]({});
+  assert.equal(domainCreate.ok, false, "prefix-blocked governance command must not execute");
+  assert.equal(domainCreate.reason, "blocked_sensitive_cli_command");
+  const waitForOtp = await handlers["sl.ai.identity.wait-for-otp"]({});
+  assert.equal(waitForOtp.ok, false, "OTP extraction command must not execute");
+  assert.equal(waitForOtp.reason, "blocked_sensitive_cli_command");
+});
+
+test("Unit MCP CLI command tools: blocks sensitive AIdenID commands in the real CLI tree", async () => {
+  const tools = await buildCliCommandMcpTools({
+    buildProgramFn: async () => buildCliProgram({ invokeLegacy: async () => {} }),
+  });
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const expectedBlocked = [
+    "sl.ai.provision-email",
+    "sl.ai.identity.provision",
+    "sl.ai.identity.revoke",
+    "sl.ai.identity.kill-all",
+    "sl.ai.identity.create-child",
+    "sl.ai.identity.revoke-children",
+    "sl.ai.identity.events",
+    "sl.ai.identity.latest",
+    "sl.ai.identity.wait-for-otp",
+    "sl.ai.identity.domain.create",
+    "sl.ai.identity.domain.verify",
+    "sl.ai.identity.domain.freeze",
+    "sl.ai.identity.target.create",
+    "sl.ai.identity.target.verify",
+    "sl.ai.identity.target.show",
+    "sl.ai.identity.site.create",
+    "sl.ai.identity.site.list",
+    "sl.ai.identity.legal-hold.status",
+    "sl.daemon.control.stop",
+    "sl.omargate.investor-dd",
+    "sl.review.show",
+    "sl.review.export",
+  ];
+  for (const name of expectedBlocked) {
+    const tool = byName.get(name);
+    assert.ok(tool, `expected real CLI bridge tool ${name}`);
+    assert.equal(tool.security.runtime_blocked, true, `${name} should be runtime_blocked`);
+    assert.equal(tool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+  }
+
+  for (const name of [
+    "sl.ai.identity.list",
+    "sl.ai.identity.show",
+    "sl.ai.identity.audit",
+    "sl.ai.identity.lineage",
+  ]) {
+    const tool = byName.get(name);
+    assert.ok(tool, `expected real CLI bridge tool ${name}`);
+    assert.equal(tool.security.runtime_blocked, undefined, `${name} should stay bridge-callable`);
+  }
+});
 
 test("Unit MCP CLI command tools: generates leaf tools from commander tree", async () => {
   const tools = await buildCliCommandMcpTools({
@@ -196,6 +352,52 @@ test("Unit MCP CLI command tools: rejects invalid registry command metadata befo
   assert.equal(result.ok, false);
   assert.equal(result.reason, "invalid_cli_bridge_definition");
   assert.equal(result.detail, "invalid_cli_path_segment");
+});
+
+test("Unit MCP CLI command tools: rejects untrusted registry command metadata before execution", async () => {
+  const handlers = createCliCommandMcpToolHandlers(
+    [
+      {
+        name: "sl.session.say",
+        inputSchema: { type: "object", properties: {} },
+        metadata: {
+          bridge: "cli-command",
+          cliPath: ["session", "say"],
+          positional: [],
+          options: [],
+          supportsJson: false,
+        },
+      },
+      {
+        name: "sl.session.read",
+        inputSchema: { type: "object", properties: {} },
+        metadata: {
+          bridge: "cli-command",
+          generated_from: "commander",
+          execution: "bridge",
+          cliPath: ["session", "say"],
+          positional: [],
+          options: [],
+          supportsJson: false,
+        },
+      },
+    ],
+    {
+      executeCliCommandFn: async () => {
+        throw new Error("must not execute");
+      },
+    },
+  );
+
+  const untrusted = await handlers["sl.session.say"]({});
+  assert.equal(untrusted.ok, false);
+  assert.equal(untrusted.reason, "invalid_cli_bridge_definition");
+  assert.equal(untrusted.detail, "untrusted_cli_bridge_definition");
+
+  const mismatched = await handlers["sl.session.read"]({});
+  assert.equal(mismatched.ok, false);
+  assert.equal(mismatched.reason, "invalid_cli_bridge_definition");
+  assert.equal(mismatched.detail, "cli_path_name_mismatch");
 });
 
 test("Unit MCP CLI command tools: env kill-switch disables generated CLI bridge execution", async () => {
