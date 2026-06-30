@@ -45,6 +45,8 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.doesNotMatch(workflow, /openai_api_key:/);
   assert.doesNotMatch(workflow, /google_api_key:/);
   assert.match(workflow, /model_fallback:\s*gpt-4\.1-mini/);
+  assert.match(workflow, /use_codex:\s*"true"/);
+  assert.match(workflow, /codex_only:\s*"false"/);
   assert.match(workflow, /Stage Omar summary artifact/);
   assert.match(workflow, /omar-artifacts\/summary\.json/);
   assert.match(workflow, /omar_gate_summary/);

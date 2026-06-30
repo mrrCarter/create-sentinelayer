@@ -2527,6 +2527,8 @@ jobs:
           model: gpt-5.3-codex
           codex_model: gpt-5.3-codex
           model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
           llm_failure_policy: block
       - name: Enforce Omar reviewer merge thresholds
         shell: bash

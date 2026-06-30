@@ -165,6 +165,8 @@ def validate_omar_contract(workflow_text: str) -> None:
         "REQUESTED_FALLBACK_MODEL: gpt-4.1-mini",
         'sentinelayer_managed_llm: "true"',
         "model_fallback: gpt-4.1-mini",
+        'use_codex: "true"',
+        'codex_only: "false"',
         "Omar managed model contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
@@ -241,6 +243,8 @@ jobs:
         with:
           sentinelayer_managed_llm: "true"
           model_fallback: gpt-4.1-mini
+          use_codex: "true"
+          codex_only: "false"
       - name: Assert Omar managed model contract is active
         env:
           REQUESTED_MODEL: gpt-5.3-codex

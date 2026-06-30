@@ -18,8 +18,8 @@ test("Unit Omar workflow: managed real LLM keeps Omar in fail-closed direct-acti
   assert.match(workflowText, /model:\s*gpt-5\.3-codex/);
   assert.match(workflowText, /codex_model:\s*gpt-5\.3-codex/);
   assert.match(workflowText, /model_fallback:\s*gpt-4\.1-mini/);
-  assert.doesNotMatch(workflowText, /use_codex:/);
-  assert.doesNotMatch(workflowText, /codex_only:/);
+  assert.match(workflowText, /use_codex:\s*"true"/);
+  assert.match(workflowText, /codex_only:\s*"false"/);
   assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.doesNotMatch(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate Omar workflow contract/);
