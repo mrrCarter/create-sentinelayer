@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -26,6 +28,15 @@ function runCli({ cwd, args, env = {} }) {
     });
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+function jsonResponse(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
 }
 
 test("CLI session download renders billing-grade Usage Ledger markdown", async () => {
@@ -176,6 +187,215 @@ test("CLI session usage emits sanitized usage report without raw prompt or secre
     assert.doesNotMatch(markdown, new RegExp(rawPrompt));
     assert.doesNotMatch(markdown, new RegExp(rawResponse));
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI session usage --remote renders hosted byAgent/byAction rollups", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-remote-e2e-"));
+  const sessionId = "remote-usage-e2e-session";
+  const apiToken = "remote-usage-e2e-token";
+  const secretIdempotencyKey = "sk-remote-usage-idempotency-secret";
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      if (req.method === "GET" && url.pathname === `/api/v1/sessions/${sessionId}/usage`) {
+        requests.push({
+          authorization: req.headers.authorization,
+          limit: url.searchParams.get("limit"),
+        });
+        return jsonResponse(res, 200, {
+          sessionId,
+          totals: {
+            entries: 2,
+            inputTokens: 300,
+            outputTokens: 125,
+            totalTokens: 425,
+            providerCostUsd: 0.00425,
+            customerCostUsd: 0,
+          },
+          byAgent: [
+            {
+              agentId: "omargate-testing",
+              count: 1,
+              inputTokens: 100,
+              outputTokens: 25,
+              totalTokens: 125,
+              providerCostUsd: 0.00125,
+              customerCostUsd: 0,
+            },
+            {
+              agentId: "omargate-backend",
+              count: 1,
+              inputTokens: 200,
+              outputTokens: 100,
+              totalTokens: 300,
+              providerCostUsd: 0.003,
+              customerCostUsd: 0,
+            },
+          ],
+          byAction: [
+            {
+              action: "omargate_deep",
+              count: 2,
+              inputTokens: 300,
+              outputTokens: 125,
+              totalTokens: 425,
+              providerCostUsd: 0.00425,
+              customerCostUsd: 0,
+            },
+          ],
+          entries: [
+            {
+              timestamp: "2026-06-30T08:00:00.000Z",
+              ledgerEntryId: "bill_remote_e2e",
+              idempotencyKey: secretIdempotencyKey,
+              schema: "billing/v1",
+              agentId: "omargate-backend",
+              action: "omargate_deep",
+              model: "gpt-5.3-codex",
+              priceBookVersion: "2026-05-19",
+              inputTokens: 200,
+              outputTokens: 100,
+              totalTokens: 300,
+              providerCostUsd: 0.003,
+            },
+          ],
+        });
+      }
+      return jsonResponse(res, 404, { error: "not_found" });
+    } catch (error) {
+      return jsonResponse(res, 500, { error: String(error?.message || error) });
+    }
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+
+  try {
+    await writeFile(path.join(tempRoot, "package.json"), '{"name":"session-usage-remote-e2e","version":"1.0.0"}\n', "utf-8");
+    const result = await runCli({
+      cwd: tempRoot,
+      env: {
+        SENTINELAYER_API_URL: `http://127.0.0.1:${address.port}`,
+        SENTINELAYER_TOKEN: apiToken,
+      },
+      args: ["session", "usage", sessionId, "--remote", "--json", "--path", tempRoot],
+    });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].authorization, `Bearer ${apiToken}`);
+    assert.equal(requests[0].limit, "500");
+    assert.doesNotMatch(result.stdout, new RegExp(secretIdempotencyKey));
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.source, "remote_usage");
+    assert.equal(payload.totals.totalTokens, 425);
+    assert.deepEqual(payload.totals.priceBookVersions, ["2026-05-19"]);
+    assert.deepEqual(
+      payload.perAgent.map((entry) => entry.label),
+      ["omargate-backend", "omargate-testing"],
+    );
+    assert.equal(payload.perAction[0].label, "omargate_deep");
+    assert.match(payload.recentEntries[0].idempotencyKeyHash, /^sha256:[0-9a-f]{16}$/);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI session usage --remote falls back to local sanitized report when hosted usage fails", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-fallback-e2e-"));
+  const apiToken = "remote-usage-fallback-token";
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      requests.push(url.pathname);
+      if (req.method === "GET" && url.pathname.endsWith("/usage")) {
+        return jsonResponse(res, 503, { error: "usage_unavailable" });
+      }
+      return jsonResponse(res, 503, { error: "events_unavailable" });
+    } catch (error) {
+      return jsonResponse(res, 500, { error: String(error?.message || error) });
+    }
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+
+  try {
+    await writeFile(path.join(tempRoot, "package.json"), '{"name":"session-usage-fallback-e2e","version":"1.0.0"}\n', "utf-8");
+    const startResult = await runCli({
+      cwd: tempRoot,
+      args: ["session", "start", "--path", tempRoot, "--no-daemon", "--json"],
+    });
+    assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
+    const sessionId = String(JSON.parse(String(startResult.stdout || "").trim()).sessionId || "").trim();
+    assert.ok(sessionId);
+
+    const secretIdempotencyKey = "sk-fallback-usage-idempotency-secret";
+    const usageEvent = {
+      stream: "sl_event",
+      event: "session_usage",
+      agent: { id: "local-agent", model: "gpt-5" },
+      payload: {
+        schema: "billing/v1",
+        idempotencyKey: secretIdempotencyKey,
+        ledgerEntryId: "bill_fallback_safe",
+        agentId: "local-agent",
+        action: "session_usage_fallback",
+        model: "gpt-5",
+        usage: {
+          inputTokens: 40,
+          outputTokens: 10,
+          totalTokens: 50,
+          costUsd: 0.0005,
+        },
+      },
+      sessionId,
+      ts: "2026-06-30T08:01:00.000Z",
+      timestamp: "2026-06-30T08:01:00.000Z",
+      cursor: "fallback-usage-cursor-1",
+      eventId: "fallback-usage-event-1",
+      idempotencyToken: "fallback-usage-event-1",
+      sequenceId: 1200,
+    };
+    await appendFile(
+      path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "stream.ndjson"),
+      `${JSON.stringify(usageEvent)}\n`,
+      "utf-8",
+    );
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: {
+        SENTINELAYER_API_URL: `http://127.0.0.1:${address.port}`,
+        SENTINELAYER_TOKEN: apiToken,
+      },
+      args: ["session", "usage", sessionId, "--remote", "--json", "--path", tempRoot],
+    });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.ok(requests.some((pathname) => pathname.endsWith("/usage")));
+    assert.doesNotMatch(result.stdout, new RegExp(secretIdempotencyKey));
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.source, "local_events");
+    assert.equal(payload.remote.usage.ok, false);
+    assert.equal(payload.remote.usage.status, 503);
+    assert.equal(payload.totals.acceptedEntries, 1);
+    assert.equal(payload.totals.totalTokens, 50);
+    assert.equal(payload.perAgent[0].label, "local-agent");
+    assert.match(payload.recentEntries[0].idempotencyKeyHash, /^sha256:[0-9a-f]{16}$/);
+  } finally {
+    server.close();
+    await once(server, "close");
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

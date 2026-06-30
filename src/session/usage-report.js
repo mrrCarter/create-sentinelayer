@@ -124,7 +124,7 @@ function hostedRollupToJson(rollup, fallbackLabel = "") {
   const hasCustomerCost = Boolean(bag.hasCustomerCost ?? bag.has_customer_cost ?? bag.customerCostUsd != null ?? bag.customer_cost_usd != null);
   return {
     label: normalize(bag.label ?? bag.agentId ?? bag.agent_id ?? bag.action ?? fallbackLabel) || "unknown",
-    entries: nonNegativeInt(bag.entries ?? bag.count),
+    entries: nonNegativeInt(bag.entries ?? bag.entryCount ?? bag.entry_count ?? bag.count ?? bag.interactions),
     inputTokens: nonNegativeInt(bag.inputTokens ?? bag.input_tokens),
     outputTokens: nonNegativeInt(bag.outputTokens ?? bag.output_tokens),
     totalTokens: nonNegativeInt(bag.totalTokens ?? bag.total_tokens),
@@ -249,11 +249,24 @@ export function buildSessionUsageReportFromLedgerPayload({
     ? embedded
     : root;
   const entries = sourceArray(source.entries).map(hostedEntryToJson);
-  const totals = hostedRollupToJson(object(source.totals), "session");
-  const priceBookVersions = sourceArray(source.priceBooks || source.price_books || source.priceBookVersions || source.price_book_versions)
+  const sourceTotals = object(source.totals);
+  const totals = hostedRollupToJson(sourceTotals, "session");
+  const priceBookVersions = sourceArray(
+    source.priceBooks ||
+      source.price_books ||
+      source.priceBookVersions ||
+      source.price_book_versions ||
+      sourceTotals.priceBooks ||
+      sourceTotals.price_books ||
+      sourceTotals.priceBookVersions ||
+      sourceTotals.price_book_versions,
+  )
     .map(normalize)
     .filter(Boolean)
     .sort();
+  const resolvedPriceBookVersions = priceBookVersions.length
+    ? priceBookVersions
+    : [...new Set(entries.map((entry) => normalize(entry.priceBookVersion)).filter(Boolean))].sort();
   const limit = clampRecentLimit(recentLimit);
   return {
     schema: SESSION_USAGE_REPORT_SCHEMA,
@@ -268,12 +281,28 @@ export function buildSessionUsageReportFromLedgerPayload({
       providerCostUsd: totals.providerCostUsd,
       customerCostUsd: totals.customerCostUsd,
       unpriced: totals.unpriced,
-      priceBookVersions,
+      priceBookVersions: resolvedPriceBookVersions,
     },
-    perAgent: sourceArray(source.agents || source.perAgent || source.per_agent || source.agentsById || source.agents_by_id)
+    perAgent: sourceArray(
+      source.agents ||
+        source.perAgent ||
+        source.per_agent ||
+        source.byAgent ||
+        source.by_agent ||
+        source.agentsById ||
+        source.agents_by_id,
+    )
       .map((rollup) => hostedRollupToJson(rollup))
       .sort((a, b) => b.providerCostUsd - a.providerCostUsd || b.totalTokens - a.totalTokens || a.label.localeCompare(b.label)),
-    perAction: sourceArray(source.actions || source.perAction || source.per_action || source.actionsById || source.actions_by_id)
+    perAction: sourceArray(
+      source.actions ||
+        source.perAction ||
+        source.per_action ||
+        source.byAction ||
+        source.by_action ||
+        source.actionsById ||
+        source.actions_by_id,
+    )
       .map((rollup) => hostedRollupToJson(rollup))
       .sort((a, b) => b.providerCostUsd - a.providerCostUsd || b.totalTokens - a.totalTokens || a.label.localeCompare(b.label)),
     recentEntries: recentReportEntries(entries, limit),

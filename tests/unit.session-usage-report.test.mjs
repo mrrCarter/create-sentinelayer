@@ -187,3 +187,73 @@ test("session usage report normalizes hosted ledger payloads without raw idempot
   const rendered = JSON.stringify(report);
   assert.doesNotMatch(rendered, new RegExp(rawIdempotencyKey));
 });
+
+test("session usage report accepts hosted byAgent and byAction rollup aliases", () => {
+  const report = buildSessionUsageReportFromLedgerPayload({
+    sessionId: "hosted-by-rollup-session",
+    payload: {
+      sessionId: "hosted-by-rollup-session",
+      totals: {
+        entries: 2,
+        inputTokens: 300,
+        outputTokens: 125,
+        totalTokens: 425,
+        providerCostUsd: 0.00425,
+      },
+      byAgent: [
+        {
+          agentId: "omargate-testing",
+          count: 1,
+          inputTokens: 100,
+          outputTokens: 25,
+          totalTokens: 125,
+          providerCostUsd: 0.00125,
+        },
+        {
+          agentId: "omargate-backend",
+          count: 1,
+          inputTokens: 200,
+          outputTokens: 100,
+          totalTokens: 300,
+          providerCostUsd: 0.003,
+        },
+      ],
+      byAction: [
+        {
+          action: "omargate_deep",
+          count: 2,
+          inputTokens: 300,
+          outputTokens: 125,
+          totalTokens: 425,
+          providerCostUsd: 0.00425,
+        },
+      ],
+      entries: [
+        {
+          timestamp: "2026-06-30T07:00:00.000Z",
+          ledgerEntryId: "bill_remote_alias",
+          idempotencyKey: "remote-alias-key",
+          agentId: "omargate-backend",
+          action: "omargate_deep",
+          model: "gpt-5.3-codex",
+          priceBookVersion: "2026-05-19",
+          inputTokens: 200,
+          outputTokens: 100,
+          totalTokens: 300,
+          providerCostUsd: 0.003,
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.totals.acceptedEntries, 2);
+  assert.deepEqual(report.totals.priceBookVersions, ["2026-05-19"]);
+  assert.deepEqual(
+    report.perAgent.map((entry) => entry.label),
+    ["omargate-backend", "omargate-testing"],
+  );
+  assert.equal(report.perAgent[0].totalTokens, 300);
+  assert.equal(report.perAction[0].label, "omargate_deep");
+  assert.equal(report.perAction[0].entries, 2);
+  assert.match(renderSessionUsageSummary(report), /Per agent:/);
+});
