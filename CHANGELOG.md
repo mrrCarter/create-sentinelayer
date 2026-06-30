@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.34.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.33.0...v0.34.0) (2026-06-30)
+
+
+### Features
+
+* **mcp:** add `sl mcp doctor` to diagnose hosted MCP auth setup ([#696](https://github.com/mrrCarter/create-sentinelayer/issues/696)) ([9b0a847](https://github.com/mrrCarter/create-sentinelayer/commit/9b0a8474c2c523cbe411c7b53ff113ad74b28def))
+* **mcp:** doctor fails on symmetric keys in the public JWKS ([#700](https://github.com/mrrCarter/create-sentinelayer/issues/700)) ([94f5a42](https://github.com/mrrCarter/create-sentinelayer/commit/94f5a42f90b1335cf3f0b6da7995614cd3a53d86))
+
+
+### Bug Fixes
+
+* **ci:** ignore cancelled quality runs in attestation ([#699](https://github.com/mrrCarter/create-sentinelayer/issues/699)) ([b5ecca4](https://github.com/mrrCarter/create-sentinelayer/commit/b5ecca48c5488112c4dd42e89d953ca578e9ac0f))
+* **session:** sanitize recap work plan provenance ([#698](https://github.com/mrrCarter/create-sentinelayer/issues/698)) ([9bbebb9](https://github.com/mrrCarter/create-sentinelayer/commit/9bbebb9a682bc02a611442ed89e15afd9d234cbb))
+
 ## [0.33.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.5...v0.33.0) (2026-06-30)
 
 
