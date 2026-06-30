@@ -1,6 +1,6 @@
 # SentinelLayer CLI — Enterprise / Standalone Readiness Audit
 
-Last refreshed: 2026-04-25.
+Last refreshed: 2026-06-30.
 Scope: `create-sentinelayer/` (the `sentinelayer-cli` npm package).
 
 This audit treats the CLI as an **agent-coordination bus** — anywhere
@@ -17,6 +17,7 @@ gaps blocking that vision plus what already works.
 | Session create / join / leave / kill | `slc session ...`, `src/session/store.js` | Multi-agent registry per session |
 | Bidirectional human ↔ agent messaging | `slc session say`, `slc session sync`, `slc session read --remote` (#407) | Web posts now hydrate into local NDJSON |
 | Past-conversation browsing | `slc session list --include-archived`, `slc session history` (#408) | Local cache; remote merge queued |
+| Durable session search | `slc session search <id> "<query>"` | API-backed search over durable events, with `--limit` and `--before-sequence` pagination |
 | 13-persona AI review (Omar Gate) | `slc /omargate deep`, `slc /omargate investor-dd` | Investor-DD adds compliance + live-web validation |
 | Multi-tenant token isolation | `src/auth/session-store.js` | Per-user keyring fallback |
 | MCP registry | `src/mcp/registry.js` | MCP servers are registerable |
@@ -97,14 +98,16 @@ expiring tokens.
 without the human's full token. Already partially shaped via
 `src/auth/gate.js`.
 
-### G7. Session search / full-text query
+### G7. Session search / full-text query — shipped for durable events
 
-**Today:** `slc session list --include-archived` lists by id. To find
-a past conversation about "investor-DD", you `grep` the NDJSON
-manually.
+**Status:** `slc session search <sessionId> "<query>"` is implemented
+against the durable API event search endpoint. It supports text,
+event-type, and agent queries, plus bounded paging via `--limit` and
+`--before-sequence`.
 
-**Fix shape:** local sqlite fts on `.sentinelayer/sessions/*/stream.ndjson`,
-exposed as `slc session search "<query>"`. Indexes on every append.
+**Residual gap:** offline local SQLite FTS across every cached
+`.sentinelayer/sessions/*/stream.ndjson` file remains optional for
+air-gapped use, but it is no longer the primary user-facing gap.
 
 ### G8. No multi-session reconnect for a single agent
 
@@ -162,20 +165,18 @@ the recap so an agent has full context after one call.
 
 ## Recommended PR sequence (after this one)
 
-1. **`slc session search` (G7)** — ships the highest user-facing pain
-   relief, no API change.
-2. **Agent role enforcement (G3)** — minimal code, big trust win.
-3. **`slc agent inbox` / `slc me` (G8)** — one-line surface change,
+1. **Agent role enforcement (G3)** — minimal code, big trust win.
+2. **`slc agent inbox` / `slc me` (G8)** — one-line surface change,
    massive UX upgrade for multi-session use.
-4. **CLI-side audit log (G11)** — append-only NDJSON of every
+3. **CLI-side audit log (G11)** — append-only NDJSON of every
    mutation. No external dependency.
-5. **`slc session grant` (G6)** — needs an API endpoint; queue
+4. **`slc session grant` (G6)** — needs an API endpoint; queue
    cross-repo PR.
-6. **SSE streaming (G1)** — biggest infra change; saves polling cost
+5. **SSE streaming (G1)** — biggest infra change; saves polling cost
    at scale. Cross-repo.
-7. **Outbound webhooks (G2)** — required for Slack / on-call
+6. **Outbound webhooks (G2)** — required for Slack / on-call
    integrations. Cross-repo.
-8. **`slc session archive` wired (G5)** — closes the compliance loop.
+7. **`slc session archive` wired (G5)** — closes the compliance loop.
 
 ## Standalone-product readiness checklist (what's missing for a sellable SKU)
 
@@ -184,7 +185,8 @@ the recap so an agent has full context after one call.
 - [ ] SSE streaming (G1)
 - [ ] SSO / SAML / SCIM (G10)
 - [ ] Audit log + tamper-evident chain (G11)
-- [ ] Session search / FTS (G7)
+- [x] Session search / FTS (G7) — durable API search shipped; local
+  offline FTS can be tracked separately if needed
 - [ ] Granular auth scopes per agent (G3 + G6)
 - [ ] CLI-side compliance command set (DSAR export / delete / freeze)
 - [ ] Public health + status page surface
