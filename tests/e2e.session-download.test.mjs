@@ -35,7 +35,7 @@ test("CLI session download renders billing-grade Usage Ledger markdown", async (
 
     const startResult = await runCli({
       cwd: tempRoot,
-      args: ["session", "start", "--path", tempRoot, "--json"],
+      args: ["session", "start", "--path", tempRoot, "--no-daemon", "--json"],
     });
     assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
     const startPayload = JSON.parse(String(startResult.stdout || "").trim());
@@ -96,6 +96,90 @@ test("CLI session download renders billing-grade Usage Ledger markdown", async (
   }
 });
 
+test("CLI session usage emits sanitized usage report without raw prompt or secret idempotency material", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-e2e-"));
+  try {
+    await writeFile(path.join(tempRoot, "package.json"), '{"name":"session-usage-e2e","version":"1.0.0"}\n', "utf-8");
+
+    const startResult = await runCli({
+      cwd: tempRoot,
+      args: ["session", "start", "--path", tempRoot, "--no-daemon", "--json"],
+    });
+    assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
+    const sessionId = String(JSON.parse(String(startResult.stdout || "").trim()).sessionId || "").trim();
+    assert.ok(sessionId);
+
+    const secretIdempotencyKey = "sk-test-usage-command-idempotency-secret";
+    const rawPrompt = "SESSION_USAGE_COMMAND_PROMPT_SECRET";
+    const rawResponse = "SESSION_USAGE_COMMAND_RESPONSE_SECRET";
+    const usageEvent = {
+      stream: "sl_event",
+      event: "session_usage",
+      agent: { id: "codex", model: "gpt-5" },
+      payload: {
+        schema: "session_usage/local-v1",
+        idempotencyKey: secretIdempotencyKey,
+        ledgerEntryId: "bill_usage_command_safe",
+        agentId: "codex",
+        action: "session_recap",
+        model: "gpt-5",
+        prompt: { text: rawPrompt, tokens: 200 },
+        response: { text: rawResponse, tokens: 50 },
+        usage: {
+          inputTokens: 200,
+          outputTokens: 50,
+          totalTokens: 250,
+          costUsd: 0.012345,
+          customerCostUsd: 0.023456,
+        },
+      },
+      sessionId,
+      ts: "2026-04-25T10:00:50.000Z",
+      timestamp: "2026-04-25T10:00:50.000Z",
+      cursor: "usage-command-cursor-1",
+      eventId: "usage-command-event-1",
+      idempotencyToken: "usage-command-event-1",
+      sequenceId: 1100,
+    };
+    await appendFile(
+      path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "stream.ndjson"),
+      `${JSON.stringify(usageEvent)}\n`,
+      "utf-8",
+    );
+
+    const jsonResult = await runCli({
+      cwd: tempRoot,
+      args: ["session", "usage", sessionId, "--path", tempRoot, "--json"],
+    });
+    assert.equal(jsonResult.code, 0, jsonResult.stderr || jsonResult.stdout);
+    assert.doesNotMatch(jsonResult.stdout, new RegExp(secretIdempotencyKey));
+    assert.doesNotMatch(jsonResult.stdout, new RegExp(rawPrompt));
+    assert.doesNotMatch(jsonResult.stdout, new RegExp(rawResponse));
+    const payload = JSON.parse(String(jsonResult.stdout || "").trim());
+    assert.equal(payload.command, "session usage");
+    assert.equal(payload.totals.acceptedEntries, 1);
+    assert.equal(payload.totals.totalTokens, 250);
+    assert.equal(payload.recentEntries[0].ledgerEntryId, "bill_usage_command_safe");
+    assert.match(payload.recentEntries[0].idempotencyKeyHash, /^sha256:[0-9a-f]{16}$/);
+
+    const markdownPath = path.join(tempRoot, "usage-report.md");
+    const markdownResult = await runCli({
+      cwd: tempRoot,
+      args: ["session", "usage", sessionId, "--path", tempRoot, "--format", "markdown", "--out", markdownPath],
+    });
+    assert.equal(markdownResult.code, 0, markdownResult.stderr || markdownResult.stdout);
+    const markdown = await readFile(markdownPath, "utf-8");
+    assert.match(markdown, /^# Session Usage /m);
+    assert.match(markdown, /^Accepted entries: 1$/m);
+    assert.match(markdown, /^Tokens: 250 \(input 200 \/ output 50\)$/m);
+    assert.doesNotMatch(markdown, new RegExp(secretIdempotencyKey));
+    assert.doesNotMatch(markdown, new RegExp(rawPrompt));
+    assert.doesNotMatch(markdown, new RegExp(rawResponse));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI session download keeps local markdown usable when remote hydration is unavailable", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-download-remote-e2e-"));
   try {
@@ -103,7 +187,7 @@ test("CLI session download keeps local markdown usable when remote hydration is 
 
     const startResult = await runCli({
       cwd: tempRoot,
-      args: ["session", "start", "--path", tempRoot, "--json"],
+      args: ["session", "start", "--path", tempRoot, "--no-daemon", "--json"],
     });
     assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
     const sessionId = String(JSON.parse(String(startResult.stdout || "").trim()).sessionId || "").trim();

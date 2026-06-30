@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   __resetAutoGrantCacheForTests,
   createSessionMessageAction,
+  fetchSessionUsageLedger,
   listSessionMessageActions,
   pollHumanMessages,
   pollSessionEvents,
@@ -639,6 +640,51 @@ test("Unit session sync: listSessionMessageActions hits actions endpoint", async
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_actions");
+});
+
+test("Unit session sync: fetchSessionUsageLedger hits scoped usage endpoint with bounded limit", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await fetchSessionUsageLedger("sess-usage", {
+    limit: 999,
+    resolveAuthSession: async () => ({
+      token: "tok_usage",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sessionId: "sess-usage",
+          usageLedger: {
+            totals: {
+              entries: 1,
+              inputTokens: 12,
+              outputTokens: 3,
+              totalTokens: 15,
+              providerCostUsd: 0.001,
+              customerCostUsd: 0.002,
+              hasCustomerCost: true,
+            },
+            entries: [{ ledgerEntryId: "bill_usage", totalTokens: 15 }],
+          },
+        }),
+      };
+    },
+    nowMs: () => 1_700_000_465_000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.equal(result.payload.sessionId, "sess-usage");
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-usage/usage?limit=500",
+  );
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.headers.Authorization, "Bearer tok_usage");
 });
 
 test("Unit session sync: createSessionMessageAction posts idempotent action payload", async () => {

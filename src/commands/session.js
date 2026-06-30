@@ -87,6 +87,7 @@ import {
 import { readSessionPreview } from "../session/preview.js";
 import {
   createSessionMessageAction,
+  fetchSessionUsageLedger,
   fetchSessionPinnedMessages,
   listSessionMessageActions,
   listSessionsFromApi,
@@ -108,6 +109,12 @@ import {
 } from "../session/rotating-log.js";
 import { buildSessionRecap } from "../session/recap.js";
 import { computeTranscriptStats } from "../session/transcript.js";
+import {
+  buildSessionUsageReport,
+  buildSessionUsageReportFromLedgerPayload,
+  renderSessionUsageMarkdown,
+  renderSessionUsageSummary,
+} from "../session/usage-report.js";
 import { deriveSessionTitle } from "../session/senti-naming.js";
 import { pushSessionTitleToApi } from "../session/title-sync.js";
 import {
@@ -6485,6 +6492,120 @@ export function registerSessionCommand(program) {
       if (hiddenControlEventCount > 0) {
         console.log(pc.gray(`${hiddenControlEventCount} control events omitted; rerun with --include-control-events to inspect them.`));
       }
+    });
+
+  session
+    .command("usage <sessionId>")
+    .description(
+      "Show a sanitized token/cost usage report for a session without raw prompts, responses, or config values",
+    )
+    .option(
+      "--remote",
+      "Hydrate from the SentinelLayer API before rendering (uses the authenticated account-scoped session events endpoint)",
+    )
+    .option("--recent <n>", "Recent ledger entries to include in the report (0-50)", "10")
+    .option("--format <format>", "Output format: summary, markdown, or json", "summary")
+    .option("--out <file>", "Write the selected report format to a file")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable JSON output")
+    .action(async (sessionId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const emitJson = shouldEmitJson(options, command);
+      const requestedFormat = emitJson
+        ? "json"
+        : normalizeString(options.format || "summary").toLowerCase();
+      if (!["summary", "markdown", "json"].includes(requestedFormat)) {
+        throw new Error("--format must be one of: summary, markdown, json.");
+      }
+
+      let hydration = null;
+      let hostedUsage = null;
+      let events = [];
+      let dedupedEvents = [];
+      let report = null;
+      if (options.remote) {
+        hostedUsage = await fetchSessionUsageLedger(normalizedSessionId, {
+          targetPath,
+          limit: 500,
+        });
+        if (hostedUsage.ok) {
+          report = buildSessionUsageReportFromLedgerPayload({
+            sessionId: normalizedSessionId,
+            payload: hostedUsage.payload,
+            recentLimit: options.recent,
+          });
+        } else {
+          hydration = await hydrateSessionFromRemote({
+            sessionId: normalizedSessionId,
+            targetPath,
+          }).catch((error) => ({ ok: false, reason: error?.message || "hydrate_failed" }));
+        }
+      }
+
+      if (!report) {
+        const sessionPayload = await getSession(normalizedSessionId, { targetPath });
+        if (!sessionPayload) {
+          throw new Error(`Session '${normalizedSessionId}' was not found.`);
+        }
+
+        events = await readStream(normalizedSessionId, { targetPath, tail: 0 });
+        dedupedEvents = dedupeSessionEvents(events);
+        report = buildSessionUsageReport({
+          sessionId: normalizedSessionId,
+          events: dedupedEvents,
+          recentLimit: options.recent,
+        });
+      }
+
+      const payload = {
+        command: "session usage",
+        targetPath,
+        source: hostedUsage?.ok ? "remote_usage" : "local_events",
+        remote: {
+          usage: hostedUsage
+            ? {
+                ok: Boolean(hostedUsage.ok),
+                reason: hostedUsage.reason || "",
+                status: hostedUsage.status || 0,
+              }
+            : null,
+          hydration,
+        },
+        rawEventCount: events.length,
+        eventCount: dedupedEvents.length,
+        ...report,
+      };
+
+      const output =
+        requestedFormat === "json"
+          ? `${JSON.stringify(payload, null, 2)}\n`
+          : requestedFormat === "markdown"
+            ? renderSessionUsageMarkdown(report)
+            : renderSessionUsageSummary(report);
+
+      const outArg = normalizeString(options.out);
+      if (outArg) {
+        const outPath = path.resolve(process.cwd(), outArg);
+        await fsp.mkdir(path.dirname(outPath), { recursive: true });
+        await fsp.writeFile(outPath, output, "utf-8");
+        if (emitJson || requestedFormat === "json") {
+          console.log(JSON.stringify({ ...payload, outPath }, null, 2));
+          return;
+        }
+        console.log(pc.bold(`Wrote session usage ${normalizedSessionId} -> ${outPath}`));
+        console.log(
+          pc.gray(
+            `${report.totals.acceptedEntries} entries - ${report.totals.totalTokens} tokens - provider cost=$${report.totals.providerCostUsd.toFixed(4)}`,
+          ),
+        );
+        return;
+      }
+
+      process.stdout.write(output);
     });
 
   session
