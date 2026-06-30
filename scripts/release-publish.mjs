@@ -21,6 +21,7 @@ export const RELEASE_PLEASE_RUN_RETRY_DELAYS_MS = Object.freeze([
 ]);
 const RELEASE_PLEASE_RUNS_PER_PAGE = 100;
 const RELEASE_PLEASE_RUN_PAGE_LIMIT = 50;
+export const COMMAND_CAPTURE_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
 export function parseArgs(argv) {
   const options = {
@@ -244,6 +245,7 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: ROOT,
     encoding: "utf8",
+    maxBuffer: COMMAND_CAPTURE_MAX_BUFFER_BYTES,
     stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
   });
   if (result.status !== 0) {
@@ -257,6 +259,7 @@ function tryRun(command, args) {
   const result = spawnSync(command, args, {
     cwd: ROOT,
     encoding: "utf8",
+    maxBuffer: COMMAND_CAPTURE_MAX_BUFFER_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
