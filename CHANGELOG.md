@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.2...v0.32.3) (2026-06-30)
+
+
+### Bug Fixes
+
+* **omargate:** attribute usage to active Senti session ([#685](https://github.com/mrrCarter/create-sentinelayer/issues/685)) ([44680ff](https://github.com/mrrCarter/create-sentinelayer/commit/44680ff06214526c8b58cfa763b7b1cd99a905b7))
+* **release:** capture large workflow pages ([#686](https://github.com/mrrCarter/create-sentinelayer/issues/686)) ([74eeb3b](https://github.com/mrrCarter/create-sentinelayer/commit/74eeb3bbcbe2db658702c7d69a4d4d9d2a7708ca))
+
 ## [0.32.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.1...v0.32.2) (2026-06-30)
 
 
