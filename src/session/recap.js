@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -70,6 +71,25 @@ function normalizePositiveInteger(value, fallbackValue) {
     return fallbackValue;
   }
   return Math.max(1, Math.floor(normalized));
+}
+
+function buildWorkPlanSourceContext(targetPath = process.cwd(), { sourceReason = "caller_target_path" } = {}) {
+  const workspacePath = path.resolve(String(targetPath || "."));
+  const workspaceLabel = normalizeString(path.basename(workspacePath)) || ".";
+  const workspaceFingerprint = createHash("sha256")
+    .update(workspacePath)
+    .digest("hex")
+    .slice(0, 8);
+  const sourceLabel = `${WORK_PLAN_RELATIVE_PATH} from ${workspaceLabel}#${workspaceFingerprint}`;
+  return {
+    workspacePath,
+    filePath: path.join(workspacePath, WORK_PLAN_RELATIVE_PATH),
+    path: WORK_PLAN_RELATIVE_PATH,
+    workspaceLabel,
+    workspaceFingerprint,
+    sourceLabel,
+    sourceReason: normalizeString(sourceReason),
+  };
 }
 
 function toEpoch(value, fallbackIso = new Date().toISOString()) {
@@ -407,9 +427,13 @@ function emptyTaskLedgerSummary() {
   };
 }
 
-function emptyWorkPlanSummary() {
+function emptyWorkPlanSummary(sourceContext = {}) {
   return {
-    path: WORK_PLAN_RELATIVE_PATH,
+    path: normalizeString(sourceContext.path) || WORK_PLAN_RELATIVE_PATH,
+    workspaceLabel: normalizeString(sourceContext.workspaceLabel),
+    workspaceFingerprint: normalizeString(sourceContext.workspaceFingerprint),
+    sourceLabel: normalizeString(sourceContext.sourceLabel),
+    sourceReason: normalizeString(sourceContext.sourceReason),
     exists: false,
     truncated: false,
     detailSuppressed: false,
@@ -434,8 +458,11 @@ function shortWorkPlanText(value) {
   return `${text.slice(0, 97)}...`;
 }
 
-function summarizeWorkPlanMarkdown(raw = "", { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT, truncated = false } = {}) {
-  const summary = emptyWorkPlanSummary();
+function summarizeWorkPlanMarkdown(
+  raw = "",
+  { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT, truncated = false, sourceContext = {} } = {}
+) {
+  const summary = emptyWorkPlanSummary(sourceContext);
   summary.exists = true;
   summary.truncated = Boolean(truncated);
   if (summary.truncated) {
@@ -487,15 +514,19 @@ function summarizeWorkPlanMarkdown(raw = "", { limit = DEFAULT_WORK_PLAN_SUMMARY
   return summary;
 }
 
-async function readWorkPlanSummary({ targetPath = process.cwd(), limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT } = {}) {
-  const filePath = path.join(path.resolve(String(targetPath || ".")), WORK_PLAN_RELATIVE_PATH);
+async function readWorkPlanSummary({
+  targetPath = process.cwd(),
+  limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT,
+  sourceReason = "caller_target_path",
+} = {}) {
+  const sourceContext = buildWorkPlanSourceContext(targetPath, { sourceReason });
   try {
-    const stats = await fsp.stat(filePath);
+    const stats = await fsp.stat(sourceContext.filePath);
     let source = "";
     let truncated = false;
     if (stats.size > MAX_WORK_PLAN_BYTES) {
       truncated = true;
-      const handle = await fsp.open(filePath, "r");
+      const handle = await fsp.open(sourceContext.filePath, "r");
       try {
         const buffer = Buffer.alloc(MAX_WORK_PLAN_BYTES);
         const position = Math.max(0, stats.size - MAX_WORK_PLAN_BYTES);
@@ -505,14 +536,18 @@ async function readWorkPlanSummary({ targetPath = process.cwd(), limit = DEFAULT
         await handle.close();
       }
     } else {
-      source = await fsp.readFile(filePath, "utf-8");
+      source = await fsp.readFile(sourceContext.filePath, "utf-8");
     }
-    return summarizeWorkPlanMarkdown(source, { limit, truncated });
+    return summarizeWorkPlanMarkdown(source, {
+      limit,
+      truncated,
+      sourceContext,
+    });
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
-      return emptyWorkPlanSummary();
+      return emptyWorkPlanSummary(sourceContext);
     }
-    return emptyWorkPlanSummary();
+    return emptyWorkPlanSummary(sourceContext);
   }
 }
 
@@ -733,9 +768,24 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
   }
   const open = Number(workPlan.open || 0);
   const completed = Number(workPlan.completed || 0);
-  const pathText = normalizeString(workPlan.path) || WORK_PLAN_RELATIVE_PATH;
+  const sourceText =
+    normalizeString(workPlan.sourceLabel) ||
+    (() => {
+      const pathText = normalizeString(workPlan.path) || WORK_PLAN_RELATIVE_PATH;
+      const workspaceLabel = normalizeString(workPlan.workspaceLabel);
+      const workspaceFingerprint = normalizeString(workPlan.workspaceFingerprint);
+      if (!workspaceLabel) {
+        return pathText;
+      }
+      const workspaceText = workspaceFingerprint
+        ? `${workspaceLabel}#${workspaceFingerprint}`
+        : workspaceLabel;
+      return `${pathText} from ${workspaceText}`;
+    })();
+  const sourceReason = normalizeString(workPlan.sourceReason);
+  const sourceReasonText = sourceReason ? ` (${sourceReason})` : "";
   if (workPlan.detailSuppressed || workPlan.truncated) {
-    return `Plan: ${open} open / ${completed} done in recent ${pathText} window. Current/next items suppressed because the plan file is large.`;
+    return `Plan: ${open} open / ${completed} done in recent ${sourceText} window${sourceReasonText}. Current/next items suppressed because the plan file is large.`;
   }
   const currentSection = normalizeString(workPlan.currentSection);
   const currentText = currentSection ? ` Current: ${currentSection}.` : "";
@@ -752,7 +802,7 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
           .join("; ")}.`
       : "";
   const truncatedText = workPlan.truncated ? " Recent window only." : "";
-  return `Plan: ${open} open / ${completed} done in ${pathText}.${currentText}${nextText}${truncatedText}`;
+  return `Plan: ${open} open / ${completed} done in ${sourceText}${sourceReasonText}.${currentText}${nextText}${truncatedText}`;
 }
 
 function roundCurrency(value) {
@@ -911,6 +961,12 @@ export async function buildSessionRecap(
   } catch {
     sessionMetadata = null;
   }
+  const sessionWorkspaceTargetPath = path.resolve(
+    normalizeString(sessionMetadata?.targetPath) || normalizedTargetPath,
+  );
+  const workPlanSourceReason = normalizeString(sessionMetadata?.targetPath)
+    ? "session_metadata_target_path"
+    : "caller_target_path";
   const sortedEvents = sortEventsByConversationTime(dedupeSessionEvents(allEvents), normalizedNow);
   const usageSummary = normalizeUsageSummary(sortedEvents);
   const events = sortedEvents.slice(-normalizedMaxEvents);
@@ -955,7 +1011,8 @@ export async function buildSessionRecap(
     targetPath: normalizedTargetPath,
   });
   const workPlan = await readWorkPlanSummary({
-    targetPath: normalizedTargetPath,
+    targetPath: sessionWorkspaceTargetPath,
+    sourceReason: workPlanSourceReason,
   });
   const snippets = summarizeRecentActivity(actorEvents, {
     forAgentId: normalizedForAgentId,
