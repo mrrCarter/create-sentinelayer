@@ -118,9 +118,10 @@ omits `accessToken`.
 
 `sl mcp doctor` checks whether the hosted MCP server is correctly set up for
 remote-agent (ChatGPT / Claude) OAuth authentication and reports each check as
-**PASS / WARN / FAIL**. All probes are **unauthenticated**: no bearer token is
-sent and none is minted, so the command is side-effect-free and safe to run
-before `sl auth login`.
+**PASS / WARN / FAIL**. All network probes are **unauthenticated**: no bearer
+token is sent and none is minted, so the diagnostic is side-effect-free. To run
+it before `sl auth login`, pass `--api-url`; otherwise the command only reads
+the stored CLI session to find the API base URL.
 
 ```bash
 sl mcp doctor                                              # probe the API resolved from your CLI session
