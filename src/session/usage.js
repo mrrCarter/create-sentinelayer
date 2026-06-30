@@ -111,6 +111,7 @@ function computedCost({ model, inputTokens, outputTokens }) {
  * @param {string} [params.response]          full response text (clipped)
  * @param {string} [params.interactionId]     opaque id for cross-event correlation
  * @param {string} [params.targetPath]        workspace path (default cwd)
+ * @param {boolean} [params.syncRemote]       sync local usage event to API (default true)
  * @returns {Promise<{ event: string, interactionId: string, totalTokens: number, costUsd: number }>}
  */
 export async function emitLLMInteraction(
@@ -132,6 +133,7 @@ export async function emitLLMInteraction(
     response = "",
     interactionId = "",
     targetPath = process.cwd(),
+    syncRemote = true,
   } = {},
 ) {
   const sid = n(sessionId);
@@ -219,7 +221,7 @@ export async function emitLLMInteraction(
     ts,
   });
 
-  await appendToStream(paths.sessionId, envelope, { targetPath });
+  await appendToStream(paths.sessionId, envelope, { targetPath, syncRemote });
   return {
     event: SESSION_USAGE_EVENT,
     interactionId: id,

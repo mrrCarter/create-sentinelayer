@@ -146,6 +146,70 @@ function extractTextFromResponse(provider, payload) {
   return "";
 }
 
+function normalizeUsageNumber(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+  return Math.floor(parsed);
+}
+
+function buildUsagePayload({ provider, model, inputTokens = 0, outputTokens = 0, totalTokens = 0 } = {}) {
+  const input = normalizeUsageNumber(inputTokens);
+  const output = normalizeUsageNumber(outputTokens);
+  const total = normalizeUsageNumber(totalTokens) || input + output;
+  if (total <= 0 && input + output <= 0) {
+    return null;
+  }
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: total,
+    model,
+    provider,
+  };
+}
+
+function extractUsageFromResponse(provider, payload, model) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  if (provider === "openai") {
+    const usage = payload.usage || {};
+    return buildUsagePayload({
+      provider,
+      model,
+      inputTokens: usage.prompt_tokens ?? usage.input_tokens,
+      outputTokens: usage.completion_tokens ?? usage.output_tokens,
+      totalTokens: usage.total_tokens,
+    });
+  }
+
+  if (provider === "anthropic") {
+    const usage = payload.usage || {};
+    return buildUsagePayload({
+      provider,
+      model,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+    });
+  }
+
+  if (provider === "google") {
+    const usage = payload.usageMetadata || payload.usage_metadata || {};
+    return buildUsagePayload({
+      provider,
+      model,
+      inputTokens: usage.promptTokenCount ?? usage.prompt_token_count,
+      outputTokens: usage.candidatesTokenCount ?? usage.candidates_token_count,
+      totalTokens: usage.totalTokenCount ?? usage.total_token_count,
+    });
+  }
+
+  return null;
+}
+
 function buildProviderRequest({ provider, apiKey, model, prompt, stream }) {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedPrompt = normalizePrompt(prompt);
@@ -527,6 +591,13 @@ export class MultiProviderApiClient {
         } else {
           const payload = await response.json();
           text = extractTextFromResponse(resolvedProvider, payload);
+          const usage = extractUsageFromResponse(resolvedProvider, payload, resolvedModel);
+          return {
+            provider: resolvedProvider,
+            model: resolvedModel,
+            text,
+            usage: usage || undefined,
+          };
         }
 
         return {
