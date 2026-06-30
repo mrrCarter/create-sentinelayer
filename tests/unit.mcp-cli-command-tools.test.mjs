@@ -36,6 +36,8 @@ function buildFakeProgram() {
 function buildSensitiveBridgeProgram() {
   const program = new Command();
   program.name("sl");
+  const mcp = program.command("mcp").description("Manage MCP");
+  mcp.command("token").command("mint").description("Mint hosted MCP bearer token");
   const scan = program.command("scan").description("Security & review");
   scan
     .command("setup-secrets")
@@ -81,6 +83,7 @@ test("Unit MCP CLI command tools: blocks token/exfil/identity-mutation commands 
     buildProgramFn: async () => buildSensitiveBridgeProgram(),
   });
   const expectedBlocked = [
+    "sl.mcp.token.mint",
     "sl.scan.setup-secrets",
     "sl.session.export",
     "sl.session.download",
@@ -123,6 +126,9 @@ test("Unit MCP CLI command tools: blocks token/exfil/identity-mutation commands 
   const setupSecrets = await handlers["sl.scan.setup-secrets"]({});
   assert.equal(setupSecrets.ok, false);
   assert.equal(setupSecrets.reason, "blocked_sensitive_cli_command");
+  const mcpTokenMint = await handlers["sl.mcp.token.mint"]({});
+  assert.equal(mcpTokenMint.ok, false);
+  assert.equal(mcpTokenMint.reason, "blocked_sensitive_cli_command");
   const sessionExport = await handlers["sl.session.export"]({});
   assert.equal(sessionExport.ok, false);
   assert.equal(sessionExport.reason, "blocked_sensitive_cli_command");
@@ -146,6 +152,7 @@ test("Unit MCP CLI command tools: blocks sensitive AIdenID commands in the real 
   });
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const expectedBlocked = [
+    "sl.mcp.token.mint",
     "sl.ai.provision-email",
     "sl.ai.identity.provision",
     "sl.ai.identity.revoke",

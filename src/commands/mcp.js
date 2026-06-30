@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 
 import fs from "node:fs/promises";
 
+import { DEFAULT_REQUEST_TIMEOUT_MS, SentinelayerApiError } from "../auth/http.js";
 import {
   buildAidenIdProvisioningAdapterTemplate,
   buildHostedSentiSessionConnectorContract,
@@ -27,6 +28,7 @@ import {
   validateMcpToolRegistry,
   writeJsonFile,
 } from "../mcp/registry.js";
+import { requestHostedMcpAccessToken } from "../mcp/token-service.js";
 import { buildSentinelayerCliRegistryTemplate } from "../mcp/cli-registry.js";
 import { runMcpStdioServer } from "../mcp/session-stdio-server.js";
 import { resolveOutputRoot } from "../config/service.js";
@@ -54,6 +56,14 @@ function zodIssueSummary(error) {
     .slice(0, 10)
     .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
     .join("; ");
+}
+
+function formatApiError(error) {
+  if (!(error instanceof SentinelayerApiError)) {
+    return error instanceof Error ? error.message : String(error || "Unknown error");
+  }
+  const requestId = error.requestId ? ` request_id=${error.requestId}` : "";
+  return `${error.message} [${error.code}] status=${error.status}${requestId}`;
 }
 
 export function registerMcpCommand(program) {
@@ -111,6 +121,67 @@ export function registerMcpCommand(program) {
       for (const entry of entries) {
         console.log(`- ${entry.name} [${entry.type}] (${entry.toolCount} tools) — ${entry.path}`);
       }
+    });
+
+  const token = mcp.command("token").description("Mint hosted MCP resource tokens");
+
+  token
+    .command("mint")
+    .description("Mint a short-lived bearer token for the hosted Sentinelayer MCP resource")
+    .option(
+      "--scope <scopes>",
+      "Space- or comma-separated MCP scopes (API default: sessions:read)"
+    )
+    .option("--ttl-seconds <seconds>", "Token lifetime in seconds (API default and maximum are server-configured)")
+    .option("--timeout-ms <ms>", "Sentinelayer API request timeout in milliseconds", String(DEFAULT_REQUEST_TIMEOUT_MS))
+    .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option("--no-auto-rotate", "Disable stored CLI token rotation before minting")
+    .option("--json", "Emit machine-readable output, including the minted access token")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      let result;
+      try {
+        result = await requestHostedMcpAccessToken({
+          cwd: process.cwd(),
+          env: process.env,
+          explicitApiUrl: options.apiUrl,
+          autoRotate: options.autoRotate !== false,
+          scope: options.scope,
+          ttlSeconds: options.ttlSeconds,
+          timeoutMs: options.timeoutMs,
+        });
+      } catch (error) {
+        throw new Error(formatApiError(error));
+      }
+
+      const payload = {
+        command: "mcp token mint",
+        apiUrl: result.apiUrl,
+        authSource: result.authSource,
+        rotated: result.rotated,
+        accessToken: result.accessToken,
+        tokenType: result.tokenType,
+        expiresIn: result.expiresIn,
+        expiresAt: result.expiresAt,
+        issuer: result.issuer,
+        audience: result.audience,
+        scope: result.scope,
+      };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.green("Minted hosted MCP bearer credential"));
+      console.log(pc.gray(`API: ${payload.apiUrl}`));
+      console.log(`Expires in: ${payload.expiresIn}s`);
+      if (payload.expiresAt) {
+        console.log(`Expires at: ${payload.expiresAt}`);
+      }
+      console.log(`Issuer: ${payload.issuer}`);
+      console.log(`Audience: ${payload.audience}`);
+      console.log(`Scope: ${payload.scope}`);
+      console.log(pc.gray("Secret value hidden in text output; use --json when you need the bearer value."));
     });
 
   const schema = mcp.command("schema").description("Inspect or materialize MCP tool-registry schema");

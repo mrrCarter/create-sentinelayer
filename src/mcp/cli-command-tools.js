@@ -17,6 +17,7 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   "auth.login",
   "auth.logout",
   "auth.revoke",
+  "mcp.token.mint",
   "config.edit",
   "config.get",
   "config.list",
