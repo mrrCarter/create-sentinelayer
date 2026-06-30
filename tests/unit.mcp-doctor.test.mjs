@@ -170,6 +170,22 @@ test("mcp doctor: missing 'resource' field in PRM -> WARN", async () => {
   }
 });
 
+test("mcp doctor: symmetric key in public JWKS -> FAIL (signing-secret disclosure)", async () => {
+  const { server, baseUrl } = await startMockApi({
+    ...HEALTHY,
+    jwks: (res) => jsonResponse(res, 200, { keys: [{ kty: "oct", alg: "HS256", k: "c2VjcmV0" }] }),
+  });
+  try {
+    const result = await runMcpDoctorProbes({ apiBaseUrl: baseUrl, timeoutMs: 2000 });
+    const jwks = byId(result.probes, "jwks");
+    assert.equal(jwks.verdict, "FAIL");
+    assert.match(jwks.detail, /symmetric|signing secret|forge/i);
+    assert.equal(result.ok, false, "a leaked symmetric signing key must fail the overall check");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("mcp doctor command: stored-session API URL lookup disables token rotation", async () => {
   let observed = null;
   const apiBaseUrl = await resolveMcpDoctorApiBaseUrl({
