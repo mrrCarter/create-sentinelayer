@@ -290,24 +290,29 @@ jobs:
             echo "::error::No successful 'Quality Summary' check-run found for ${TARGET_SHA}."
             exit 1
           fi
-          # A release's canonical quality artifact must trace to the integration
-          # build (push / workflow_dispatch), never a nightly `schedule` re-run on
-          # the same pinned commit. Scheduled Quality Gates runs accumulate on an
-          # unchanged main and would otherwise make this selection nondeterministic.
-          # Resolve each candidate run's triggering event and exclude schedule runs.
+          # A release's canonical quality artifact must trace to a successful
+          # integration build, never a nightly `schedule` re-run or a cancelled
+          # workflow that left behind a successful Quality Summary child job.
+          # Resolve each candidate run's event/conclusion before enforcing the
+          # single-candidate contract.
           all_run_ids="$(echo "${quality_candidates}" | jq -r '[.[].run_id] | unique | .[]')"
           release_run_ids=()
           schedule_run_ids=()
+          non_success_run_ids=()
           for rid in ${all_run_ids}; do
-            run_event="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${rid}" --jq '.event // ""' 2>/dev/null || echo "")"
+            run_meta="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${rid}" --jq '{event: (.event // ""), conclusion: (.conclusion // "")}' 2>/dev/null || echo '{}')"
+            run_event="$(echo "${run_meta}" | jq -r '.event // ""')"
+            run_conclusion="$(echo "${run_meta}" | jq -r '.conclusion // ""')"
             if [ "${run_event}" = "schedule" ]; then
               schedule_run_ids+=("${rid}")
-            else
+            elif [ "${run_conclusion}" = "success" ]; then
               release_run_ids+=("${rid}")
+            else
+              non_success_run_ids+=("${rid}:${run_conclusion:-unknown}")
             fi
           done
           if [ "${#release_run_ids[@]}" -lt 1 ]; then
-            echo "::error::No non-schedule successful 'Quality Summary' run for ${TARGET_SHA}; ignored schedule-only runs: ${schedule_run_ids[*]:-none}."
+            echo "::error::No successful non-schedule Quality Gates workflow run for ${TARGET_SHA}; ignored schedule-only runs: ${schedule_run_ids[*]:-none}; ignored non-success runs: ${non_success_run_ids[*]:-none}."
             exit 1
           fi
           if [ "${#release_run_ids[@]}" -gt 1 ]; then
