@@ -755,6 +755,14 @@ function formatHumanAskLine(event = {}) {
   return `${sequenceLabel} ${humanAskAgentId(event)}${ts ? ` ${ts}` : ""}${suffix}`;
 }
 
+function formatRemoteHydrateAppendWarning(result = {}) {
+  const count = Number(result?.appendFailureCount || 0);
+  if (!Number.isFinite(count) || count <= 0) return "";
+  const reason = normalizeString(result.appendFailureReason) || "local_append_failed";
+  const noun = count === 1 ? "event" : "events";
+  return `Remote hydrate could not persist ${count} ${noun} locally (${reason}); affected cursors were not advanced.`;
+}
+
 function eventTimestampMs(event = {}) {
   for (const key of ["ts", "timestamp", "createdAt", "at"]) {
     const epoch = Date.parse(normalizeString(event?.[key]));
@@ -5481,6 +5489,10 @@ export function registerSessionCommand(program) {
                 ),
               );
             }
+            const appendWarning = formatRemoteHydrateAppendWarning(hydration);
+            if (appendWarning) {
+              console.log(pc.yellow(appendWarning));
+            }
           } else {
             console.log(
               pc.yellow(
@@ -5847,6 +5859,8 @@ export function registerSessionCommand(program) {
         eventsCursor: result.eventsCursor,
         materializedLocalSession: result.materializedLocalSession,
         localAppendComplete: result.localAppendComplete,
+        appendFailureCount: result.appendFailureCount,
+        appendFailureReason: result.appendFailureReason,
         access: access || undefined,
       };
       if (shouldEmitJson(options, command)) {
@@ -5857,6 +5871,10 @@ export function registerSessionCommand(program) {
         console.log(
           `Hydrated session ${normalizedSessionId}: relayed=${result.relayed} dropped=${result.dropped}.`,
         );
+        const appendWarning = formatRemoteHydrateAppendWarning(result);
+        if (appendWarning) {
+          console.log(pc.yellow(appendWarning));
+        }
         if (access && !access.accessible) {
           if (access.reason === "session_not_found") {
             console.log(

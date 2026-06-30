@@ -38,6 +38,7 @@ import { isSessionControlEvent } from "./control-events.js";
 const EVENTS_CURSOR_SUFFIX = "events";
 const DEFAULT_EVENT_PAGE_LIMIT = 200;
 const DEFAULT_MAX_EVENT_PAGES = 25;
+const MAX_APPEND_FAILURE_REASON_LENGTH = 160;
 
 function indexRelayEventIdentityKeys(indexByKey, eventList = [], event = {}, index = -1) {
   if (!indexByKey || !Array.isArray(eventList) || index < 0) return;
@@ -161,6 +162,28 @@ function normalizePositiveInteger(value, fallbackValue) {
     return fallbackValue;
   }
   return Math.floor(normalized);
+}
+
+function localAppendFailureReason(error) {
+  const message = error?.message || String(error || "");
+  let reason = String(message).trim();
+  if (!reason) return "local_append_failed";
+  reason = reason.replace(
+    /(["'])(?:[A-Za-z]:\\|\/(?:Users|home|tmp|var|private|mnt|workspace)\/).*?\1/g,
+    "$1[path]$1",
+  );
+  reason = reason.replace(/[A-Za-z]:\\[^,;\r\n)]+/g, "[path]");
+  reason = reason.replace(/(^|[\s"'(])\/(?:Users|home|tmp|var|private|mnt|workspace)\/[^\s,;)"']+/g, "$1[path]");
+  reason = reason.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]");
+  reason = reason.replace(
+    /\b([A-Za-z0-9_-]*(?:api[_-]?key|authorization|password|secret|token)[A-Za-z0-9_-]*)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/gi,
+    "$1=[REDACTED]",
+  );
+  reason = reason.replace(/\b[A-Za-z0-9._~+/=-]{32,}\b/g, "[REDACTED]");
+  if (reason.length > MAX_APPEND_FAILURE_REASON_LENGTH) {
+    reason = `${reason.slice(0, MAX_APPEND_FAILURE_REASON_LENGTH - 3)}...`;
+  }
+  return reason || "local_append_failed";
 }
 
 async function pollSessionEventPages({
@@ -436,6 +459,8 @@ export async function hydrateSessionFromRemote({
     mergeExisting: eventsNeedingMerge.has(event),
   }));
   const failedRelayKeys = new Set();
+  let appendFailureCount = 0;
+  let appendFailureReason = "";
   for (const { event, mergeExisting } of appendEvents) {
     try {
       const persisted = await _append(sessionId, event, {
@@ -453,7 +478,11 @@ export async function hydrateSessionFromRemote({
         persistedEvent,
         existingRelayEvents.length - 1,
       );
-    } catch {
+    } catch (error) {
+      appendFailureCount += 1;
+      if (!appendFailureReason) {
+        appendFailureReason = localAppendFailureReason(error);
+      }
       addSessionEventIdentityKeys(failedRelayKeys, event);
       // Append errors are observable via the stream but should not
       // abort the rest of the batch — partial relay is still progress.
@@ -492,6 +521,8 @@ export async function hydrateSessionFromRemote({
     eventsBackfillReason: eventsResult?.complete === false ? eventsResult?.reason || "" : "",
     materializedLocalSession,
     localAppendComplete: humanCursorSafe && eventsCursorSafe,
+    appendFailureCount,
+    appendFailureReason,
     remoteStatus: remoteStatus || null,
   };
 }

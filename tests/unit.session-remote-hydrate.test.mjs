@@ -135,6 +135,8 @@ test("hydrateSessionFromRemote: append failures don't abort the batch", async ()
     });
     assert.equal(calls, 3);
     assert.equal(result.relayed, 2);
+    assert.equal(result.appendFailureCount, 1);
+    assert.equal(result.appendFailureReason, "disk full");
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
@@ -205,8 +207,42 @@ test("hydrateSessionFromRemote: does not advance cursors when local append fails
     assert.equal(result.relayed, 0);
     assert.equal(result.persistedCursor, false);
     assert.equal(result.localAppendComplete, false);
+    assert.equal(result.appendFailureCount, 2);
+    assert.equal(result.appendFailureReason, "missing metadata");
     assert.equal(await readSyncCursor("append-fails", { targetPath: root }), null);
     assert.equal(await readSyncCursor("append-fails", { targetPath: root, suffix: "events" }), null);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: redacts and bounds local append failure reasons", async () => {
+  const root = await makeTempRepo();
+  try {
+    const result = await hydrateSessionFromRemote({
+      sessionId: "append-redacts",
+      targetPath: root,
+      _poll: async () => ({
+        ok: true,
+        events: [{ event: "human_relay", cursor: "h-1", payload: { message: "human" } }],
+        cursor: "h-1",
+      }),
+      _pollEvents: async () => ({ ok: true, events: [], cursor: null }),
+      _append: async () => {
+        throw new Error(
+          `write failed at "C:\\Users\\carter\\secret\\stream.ndjson" token=sk-secret-value-1234567890 Bearer abcdefghijklmnopqrstuvwxyz0123456789 ${"x".repeat(220)}`,
+        );
+      },
+      _ensureLocalSession: async () => ({ materialized: false }),
+    });
+    assert.equal(result.appendFailureCount, 1);
+    assert.equal(result.appendFailureReason.length <= 160, true);
+    assert.match(result.appendFailureReason, /\[path\]/);
+    assert.match(result.appendFailureReason, /token=\[REDACTED\]/);
+    assert.match(result.appendFailureReason, /Bearer \[REDACTED\]/);
+    assert.doesNotMatch(result.appendFailureReason, /C:\\Users\\carter/);
+    assert.doesNotMatch(result.appendFailureReason, /sk-secret-value/);
+    assert.doesNotMatch(result.appendFailureReason, /abcdefghijklmnopqrstuvwxyz0123456789/);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }
