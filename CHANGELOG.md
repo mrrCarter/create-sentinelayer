@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.0...v0.32.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **config:** redact sensitive values in CLI output ([#681](https://github.com/mrrCarter/create-sentinelayer/issues/681)) ([e7cd366](https://github.com/mrrCarter/create-sentinelayer/commit/e7cd3669053b0b5493ca3573d45d64307dc852d3))
+
 ## [0.32.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.5...v0.32.0) (2026-06-30)
 
 
