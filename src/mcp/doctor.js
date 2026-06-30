@@ -166,8 +166,25 @@ export async function runMcpDoctorProbes({
     if (!result.reached) {
       detail = result.detail;
     } else if (result.status === 200 && result.json && Array.isArray(result.json.keys) && result.json.keys.length > 0) {
-      verdict = PASS;
-      detail = `${result.json.keys.length} signing key(s) published`;
+      const keys = result.json.keys;
+      // A PUBLIC JWKS must only ever publish ASYMMETRIC public keys. A symmetric
+      // key (kty "oct" / HS* alg) here IS the shared HMAC signing secret — anyone
+      // who can read it can forge MCP access tokens. Treat that as a hard failure.
+      const symmetricKeys = keys.filter((key) => {
+        const kty = String((key && key.kty) || "").toLowerCase();
+        const alg = String((key && key.alg) || "").toUpperCase();
+        return kty === "oct" || alg.startsWith("HS");
+      });
+      if (symmetricKeys.length > 0) {
+        verdict = FAIL;
+        detail = `CRITICAL: ${symmetricKeys.length} symmetric key(s) (kty=oct / HS*) published in the public JWKS — that is the HMAC signing secret and lets anyone forge MCP access tokens`;
+      } else {
+        verdict = PASS;
+        const algs = [
+          ...new Set(keys.map((key) => String((key && key.alg) || (key && key.kty) || "?"))),
+        ].join(", ");
+        detail = `${keys.length} asymmetric signing key(s) published (${algs})`;
+      }
     } else if (result.status === 200) {
       verdict = WARN;
       detail = "200 but no signing keys published (expected for HS256/non-prod; production must publish an RS256 JWKS)";
