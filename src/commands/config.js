@@ -13,6 +13,14 @@ import {
 } from "../config/service.js";
 
 const SCOPES = "global|project|env|resolved";
+const REDACTION_MARKER = "[REDACTED]";
+const SENSITIVE_TOP_LEVEL_KEYS = new Set([
+  "sentinelayerToken",
+  "openaiApiKey",
+  "anthropicApiKey",
+  "googleApiKey",
+]);
+const SENSITIVE_KEY_RE = /(authorization|cookie|set-cookie|x-api-key|api[_-]?key|secret|password|credential|token|webhook[_-]?url)/i;
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -21,14 +29,59 @@ function shouldEmitJson(options, command) {
   return local || globalFromCommand;
 }
 
-function displayValue(value) {
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isSensitiveConfigPath(pathParts = []) {
+  const lastKey = String(pathParts[pathParts.length - 1] || "");
+  if (!lastKey) return false;
+  if (pathParts.length === 1 && SENSITIVE_TOP_LEVEL_KEYS.has(lastKey)) return true;
+  if (SENSITIVE_KEY_RE.test(lastKey)) return true;
+  if (pathParts.includes("alerts") && lastKey.replace(/[_-]/g, "").toLowerCase() === "url") {
+    return true;
+  }
+  return false;
+}
+
+function redactConfigValue(value, pathParts = [], depth = 0) {
+  if (value === undefined) return undefined;
+  if (isSensitiveConfigPath(pathParts)) return REDACTION_MARKER;
+  if (depth > 8) return REDACTION_MARKER;
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactConfigValue(entry, pathParts, depth + 1));
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, inner]) => [
+        key,
+        redactConfigValue(inner, [...pathParts, key], depth + 1),
+      ])
+    );
+  }
+  return value;
+}
+
+function redactConfigLayer(layer = {}) {
+  return redactConfigValue(layer, []);
+}
+
+function redactConfigResult(result = {}) {
+  return {
+    ...result,
+    value: redactConfigValue(result.value, [result.key]),
+  };
+}
+
+function displayValue(key, value) {
+  const safeValue = redactConfigValue(value, [key]);
   if (value === undefined) {
     return "";
   }
-  if (typeof value === "string") {
-    return value;
+  if (typeof safeValue === "string") {
+    return safeValue;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(safeValue);
 }
 
 function assertKnownKey(key) {
@@ -61,7 +114,7 @@ export function registerConfigCommand(program) {
           JSON.stringify(
             {
               scope,
-              config: layer,
+              config: redactConfigLayer(layer),
               paths: payload.paths,
             },
             null,
@@ -78,7 +131,7 @@ export function registerConfigCommand(program) {
         return;
       }
       for (const [key, value] of entries) {
-        console.log(`${key}: ${displayValue(value)}`);
+        console.log(`${key}: ${displayValue(key, value)}`);
       }
     });
 
@@ -103,7 +156,7 @@ export function registerConfigCommand(program) {
             {
               key: normalizedKey,
               scope,
-              value,
+              value: redactConfigValue(value, [normalizedKey]),
               source,
             },
             null,
@@ -119,7 +172,7 @@ export function registerConfigCommand(program) {
         return;
       }
 
-      console.log(displayValue(value));
+      console.log(displayValue(normalizedKey, value));
     });
 
   config
@@ -137,13 +190,13 @@ export function registerConfigCommand(program) {
       });
 
       if (shouldEmitJson(options, command)) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify(redactConfigResult(result), null, 2));
         return;
       }
 
       console.log(pc.green(`Updated ${result.key} in ${result.scope} config.`));
       console.log(pc.gray(`Path: ${result.path}`));
-      console.log(`${result.key}: ${displayValue(result.value)}`);
+      console.log(`${result.key}: ${displayValue(result.key, result.value)}`);
     });
 
   config
