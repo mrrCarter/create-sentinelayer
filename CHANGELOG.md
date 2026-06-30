@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.0...v0.34.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **session:** surface remote hydrate append failures ([7f2cb77](https://github.com/mrrCarter/create-sentinelayer/commit/7f2cb77f0d9497097a03c2bf985f1c48a4c16730))
+
 ## [0.34.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.33.0...v0.34.0) (2026-06-30)
 
 
