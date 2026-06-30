@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.1...v0.32.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* **release:** wait for release-please before publishing ([a04a6e1](https://github.com/mrrCarter/create-sentinelayer/commit/a04a6e1f1ae4d015518f0dfabc11e26b39681026))
+
 ## [0.32.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.32.0...v0.32.1) (2026-06-30)
 
 
