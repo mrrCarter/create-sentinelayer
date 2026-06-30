@@ -1484,6 +1484,90 @@ test("CLI omargate deep diff mode routes changed files to impacted personas", as
   }
 });
 
+test("AC-USAGE-001: CLI omargate deep auto-detects active Senti session for usage ledger", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-auto-session-"));
+  try {
+    const srcDir = path.join(tempRoot, "src");
+    await mkdir(srcDir, { recursive: true });
+    await writeFile(path.join(srcDir, "index.js"), "export function ok() { return true; }\n", "utf-8");
+
+    const startResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env, SENTINELAYER_SKIP_REMOTE_SYNC: "1" },
+      args: ["session", "start", "--path", tempRoot, "--no-daemon", "--json"],
+    });
+    assert.equal(startResult.code, 0, startResult.stderr || startResult.stdout);
+    const sessionId = String(JSON.parse(String(startResult.stdout || "").trim()).sessionId || "").trim();
+    assert.ok(sessionId);
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env, SENTINELAYER_SKIP_REMOTE_SYNC: "1" },
+      args: [
+        "omargate",
+        "deep",
+        "--path",
+        tempRoot,
+        "--ai-dry-run",
+        "--persona",
+        "security",
+        "--require-usage-ledger",
+        "--json",
+      ],
+    });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+
+    const payload = JSON.parse(String(result.stdout || "").trim());
+    assert.equal(payload.command, "/omargate deep");
+    assert.deepEqual(payload.ai.personas.map((persona) => persona.id), ["security"]);
+    assert.deepEqual(
+      payload.ai.personas.map((persona) => persona.billing?.ledgerEntry?.sessionId),
+      [sessionId],
+    );
+    assert.deepEqual(
+      payload.ai.personas.map((persona) => persona.billing?.ledgerEntry?.action),
+      ["omargate_deep"],
+    );
+
+    const streamText = await readFile(
+      path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "stream.ndjson"),
+      "utf-8",
+    );
+    assert.match(streamText, /"event":"session_usage"/);
+    assert.match(streamText, /"action":"omargate_deep"/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("AC-USAGE-003: CLI omargate deep rejects unsafe usage session selectors", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-unsafe-session-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    await writeFile(path.join(tempRoot, "src", "index.js"), "export const ok = true;\n", "utf-8");
+
+    const result = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env, SENTINELAYER_SKIP_REMOTE_SYNC: "1" },
+      args: [
+        "omargate",
+        "deep",
+        "--path",
+        tempRoot,
+        "--no-ai",
+        "--notify-session",
+        "../outside",
+        "--json",
+      ],
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Invalid --notify-session usage session id/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI local audit can reuse latest OmarGate deterministic cache", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-omargate-reuse-"));
   try {
