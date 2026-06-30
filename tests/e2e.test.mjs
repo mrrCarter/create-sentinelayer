@@ -1353,6 +1353,8 @@ test("CLI flags: --help and --version return successfully", async () => {
     assert.equal(helpResult.code, 0, helpResult.stderr || helpResult.stdout);
     assert.match(helpResult.stdout, /Usage:/);
     assert.match(helpResult.stdout, /--non-interactive/);
+    assert.match(helpResult.stdout, /Examples:/);
+    assert.match(helpResult.stdout, /github\.com\/mrrCarter\/create-sentinelayer#readme/);
 
     const versionResult = await runCli({
       cwd: tempRoot,
@@ -2345,7 +2347,7 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
       true
     );
     const manualSetupInstruction =
-      "- For manual setup: https://sentinelayer.com/docs/getting-started/install-workflow";
+      "- For manual setup: https://github.com/mrrCarter/create-sentinelayer#manual-fallback-if-auto-injection-is-skipped";
     assert.equal(initPayload.instructions.includes(manualSetupInstruction), true);
 
     const workflowText = await readFile(initPayload.workflowPath, "utf-8");

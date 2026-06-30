@@ -140,6 +140,28 @@ If a hosted MCP bearer value is pasted into a transcript, log, ticket, or tool o
 
 This registry does not by itself grant browser-hosted Claude or ChatGPT execution. A hosted bridge must still enforce OAuth, session-seat binding, per-user token validation, approval policy, and sandbox/runtime controls before invoking CLI commands. See [Hosted MCP Connector Contract](./mcp-hosted-connector.md).
 
+## Worked CLI examples
+
+List local MCP artifacts:
+
+```bash
+sl mcp list --json
+```
+
+Create and run the local Senti stdio server:
+
+```bash
+sl mcp registry init-session --force
+sl mcp server init --id sentinelayer-session --registry-file .sentinelayer/mcp/tool-registry.session-tools.json
+sl mcp server run --path .
+```
+
+Generate guarded CLI bridge metadata:
+
+```bash
+sl mcp registry init-cli --json
+```
+
 ## Hosted session connector contract
 
 `sl mcp registry init-hosted-session-connector` writes a contract artifact for the future HTTPS hosted Senti connector. It is intentionally separate from the local stdio registry: local tools require explicit `sessionId` and `agentId` arguments, while hosted tools must derive identity from validated OAuth claims and a server-side session seat.
@@ -155,7 +177,6 @@ sl mcp registry validate-hosted-session-connector \
 ```
 
 The validator fails if a hosted tool allows capability-bearing identity arguments such as `sessionId` or `agentId`, if it omits server-side session-seat authorization, or if contract-bound local tools drift from the local session registry. The `subscribe_wake` entry is contract-only until the hosted connector service implements durable subscriptions, scoped runner tokens, and idle teardown revocation.
-
 ## Example local client config
 
 ```json

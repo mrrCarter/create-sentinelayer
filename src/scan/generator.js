@@ -498,7 +498,7 @@ export function buildSecretSetupInstructions(
     `- gh secret set ${normalizedSecret} --repo ${resolvedRepoSlug}`,
     `- Verify secret visibility: gh secret list --repo ${resolvedRepoSlug}`,
     "- Commit and push .github/workflows/omar-gate.yml",
-    "- For manual setup: https://sentinelayer.com/docs/getting-started/install-workflow",
+    "- For manual setup: https://github.com/mrrCarter/create-sentinelayer#manual-fallback-if-auto-injection-is-skipped",
   ];
 }
 

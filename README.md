@@ -712,6 +712,16 @@ Architecture references: local stdio runtime and incident response live in
 [docs/mcp-hosted-connector.md](docs/mcp-hosted-connector.md); Senti room
 coordination behavior lives in [docs/sessions.md](docs/sessions.md).
 
+Worked MCP examples:
+
+```bash
+sl mcp list --json
+sl mcp registry init-session --force
+sl mcp server init --id sentinelayer-session --registry-file .sentinelayer/mcp/tool-registry.session-tools.json
+sl mcp server run --path .
+sl mcp registry init-cli --json
+```
+
 ### MCP Live Entry Point Map
 
 - Local stdio server: `sl mcp server run --path .`, configured from
@@ -820,7 +830,7 @@ gh secret set SENTINELAYER_TOKEN --repo <owner/repo>
 gh secret list --repo <owner/repo>
 ```
 
-3. For manual setup details: `https://sentinelayer.com/docs/getting-started/install-workflow`
+3. For manual setup details: `https://github.com/mrrCarter/create-sentinelayer#manual-fallback-if-auto-injection-is-skipped`
 
 4. BYOK mode (no Sentinelayer token):
    - keep generated `docs/spec.md`, `docs/build-guide.md`, `prompts/execution-prompt.md`, and `tasks/todo.md`
