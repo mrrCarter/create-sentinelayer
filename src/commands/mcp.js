@@ -68,6 +68,31 @@ function formatApiError(error) {
   return `${error.message} [${error.code}] status=${error.status}${requestId}`;
 }
 
+export async function resolveMcpDoctorApiBaseUrl({
+  explicitApiUrl = "",
+  cwd = process.cwd(),
+  env = process.env,
+  resolveActiveAuthSessionImpl = resolveActiveAuthSession,
+} = {}) {
+  const directApiUrl = String(explicitApiUrl || "").trim();
+  if (directApiUrl) {
+    return directApiUrl;
+  }
+
+  // Probes are unauthenticated, but the API base URL can live in the CLI auth
+  // config. Read it without token rotation so doctor remains side-effect-free.
+  try {
+    const session = await resolveActiveAuthSessionImpl({
+      cwd,
+      env,
+      autoRotate: false,
+    });
+    return String((session && session.apiUrl) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export function registerMcpCommand(program) {
   const mcp = program
     .command("mcp")
@@ -222,17 +247,11 @@ Docs: https://github.com/mrrCarter/create-sentinelayer/blob/main/docs/mcp.md`,
       const timeoutMs =
         Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : DEFAULT_REQUEST_TIMEOUT_MS;
 
-      let apiBaseUrl = String(options.apiUrl || "").trim();
-      if (!apiBaseUrl) {
-        // Probes are unauthenticated, but the API base URL lives in the CLI auth
-        // config. Resolve it best-effort; fall back to requiring --api-url.
-        try {
-          const session = await resolveActiveAuthSession({ cwd: process.cwd(), env: process.env });
-          apiBaseUrl = String((session && session.apiUrl) || "").trim();
-        } catch {
-          apiBaseUrl = "";
-        }
-      }
+      const apiBaseUrl = await resolveMcpDoctorApiBaseUrl({
+        explicitApiUrl: options.apiUrl,
+        cwd: process.cwd(),
+        env: process.env,
+      });
       if (!apiBaseUrl) {
         throw new Error(
           "Could not resolve the Sentinelayer API URL. Pass --api-url <url>, or run `sl auth login` first."

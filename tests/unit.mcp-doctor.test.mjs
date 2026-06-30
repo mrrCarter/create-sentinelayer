@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 
+import { resolveMcpDoctorApiBaseUrl } from "../src/commands/mcp.js";
 import { runMcpDoctorProbes } from "../src/mcp/doctor.js";
 
 function jsonResponse(res, status, payload, extraHeaders = {}) {
@@ -167,6 +168,37 @@ test("mcp doctor: missing 'resource' field in PRM -> WARN", async () => {
   } finally {
     await closeServer(server);
   }
+});
+
+test("mcp doctor command: stored-session API URL lookup disables token rotation", async () => {
+  let observed = null;
+  const apiBaseUrl = await resolveMcpDoctorApiBaseUrl({
+    cwd: "C:/workspace",
+    env: {},
+    resolveActiveAuthSessionImpl: async (args) => {
+      observed = args;
+      return { apiUrl: "https://api.sentinelayer.test" };
+    },
+  });
+
+  assert.equal(apiBaseUrl, "https://api.sentinelayer.test");
+  assert.equal(observed.cwd, "C:/workspace");
+  assert.deepEqual(observed.env, {});
+  assert.equal(observed.autoRotate, false);
+});
+
+test("mcp doctor command: explicit API URL bypasses stored session lookup", async () => {
+  let called = false;
+  const apiBaseUrl = await resolveMcpDoctorApiBaseUrl({
+    explicitApiUrl: "https://api.override.test",
+    resolveActiveAuthSessionImpl: async () => {
+      called = true;
+      return { apiUrl: "https://api.sentinelayer.test" };
+    },
+  });
+
+  assert.equal(apiBaseUrl, "https://api.override.test");
+  assert.equal(called, false);
 });
 
 test("mcp doctor: requires an apiBaseUrl", async () => {
