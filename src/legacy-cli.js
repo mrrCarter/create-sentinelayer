@@ -292,7 +292,13 @@ function printUsage() {
   console.log("  sl auth login && npx create-sentinelayer my-app && cd my-app");
   console.log("  # Then hand docs/spec.md to your coding agent");
   console.log("");
-  console.log("Docs: https://sentinelayer.com/docs");
+  console.log("Examples:");
+  console.log("  sl session read <id> --remote --agent <agent> --tail 20");
+  console.log("  sl session react <id> ack --target-sequence <seq> --agent <agent>");
+  console.log("  sl mcp registry init-session --force && sl mcp server run --path .");
+  console.log("  sl mcp registry init-cli --json");
+  console.log("");
+  console.log("Docs: https://github.com/mrrCarter/create-sentinelayer#readme");
 }
 
 function normalizeInterviewInput(

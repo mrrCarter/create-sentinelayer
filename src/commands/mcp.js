@@ -67,7 +67,26 @@ function formatApiError(error) {
 }
 
 export function registerMcpCommand(program) {
-  const mcp = program.command("mcp").description("Manage Sentinelayer MCP registry schemas and adapters");
+  const mcp = program
+    .command("mcp")
+    .description("Manage local MCP registries, stdio servers, and guarded CLI bridge metadata")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sl mcp list --json
+  sl mcp registry init-session --force
+  sl mcp server init --id sentinelayer-session --registry-file .sentinelayer/mcp/tool-registry.session-tools.json
+  sl mcp server run --path .
+  sl mcp registry init-cli --json
+
+Notes:
+  Local stdio MCP works for clients that can spawn the CLI process.
+  Hosted Claude/ChatGPT connectors require the separate HTTPS/OAuth hosted connector contract.
+  Generated CLI bridge tools are metadata only until a bridge host enforces auth, approval, and runtime policy.
+
+Docs: https://github.com/mrrCarter/create-sentinelayer/blob/main/docs/mcp.md`,
+    );
 
   mcp
     .command("list")
@@ -371,7 +390,7 @@ export function registerMcpCommand(program) {
 
   registry
     .command("init-cli")
-    .description("Write a generated MCP registry for every SentinelLayer CLI leaf command")
+    .description("Write guarded sl.* CLI bridge metadata for bridge-capable MCP hosts")
     .option("--path <path>", "Destination file path override")
     .option("--output-dir <path>", "Optional artifact output root override")
     .option("--force", "Overwrite destination file if it already exists")
@@ -399,7 +418,8 @@ export function registerMcpCommand(program) {
       }
       console.log(pc.green(`Wrote SentinelLayer CLI MCP registry template: ${writtenPath}`));
       console.log(pc.gray(`${template.tools.length} CLI leaf commands exposed as bridge tools.`));
-      console.log(pc.gray("Execution requires a bridge-capable MCP host; local stdio run still exposes session tools."));
+      console.log(pc.gray("Execution requires a bridge-capable MCP host with auth, approval, and runtime policy."));
+      console.log(pc.gray("Sensitive token, export, and identity-mutation commands are runtime-blocked."));
     });
 
   registry
