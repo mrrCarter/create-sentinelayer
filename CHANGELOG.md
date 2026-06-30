@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.4...v0.31.5) (2026-06-30)
+
+
+### Bug Fixes
+
+* preserve sourced Senti usage tokens ([#677](https://github.com/mrrCarter/create-sentinelayer/issues/677)) ([fc798b0](https://github.com/mrrCarter/create-sentinelayer/commit/fc798b088430ce0709994ec717677540374a621a))
+
 ## [0.31.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.31.3...v0.31.4) (2026-06-29)
 
 
