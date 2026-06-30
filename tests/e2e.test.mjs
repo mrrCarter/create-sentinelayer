@@ -49,6 +49,7 @@ async function startMockApi({
     generatePayload: null,
     generateAuthHeader: "",
     sessionStartPayload: null,
+    mcpTokenRequests: [],
   };
 
   const server = createServer(async (req, res) => {
@@ -116,6 +117,26 @@ jobs:
         return jsonResponse(res, 200, {
           token: BOOTSTRAP_VALUE_FROM_ENDPOINT,
           required_secret_name: "SENTINELAYER_TOKEN",
+        });
+      }
+
+      if (req.method === "POST" && req.url === "/api/v1/auth/mcp-token") {
+        const authHeader = String(req.headers.authorization || "");
+        if (!authHeader.startsWith("Bearer ")) {
+          return jsonResponse(res, 401, {
+            error: { code: "AUTH_REQUIRED", message: "Missing bearer token" },
+          });
+        }
+        const body = await readJsonBody(req);
+        state.mcpTokenRequests.push({ authHeader, body });
+        return jsonResponse(res, 200, {
+          access_token: "mcp_secret_fixture_value",
+          token_type: "Bearer",
+          expires_in: body.ttl_seconds || 600,
+          expires_at: "2026-04-01T00:10:00.000Z",
+          issuer: "https://api.sentinelayer.test",
+          audience: "https://mcp.sentinelayer.test",
+          scope: body.scope || "sessions:read",
         });
       }
 
@@ -4277,6 +4298,70 @@ test("CLI mcp list returns machine-readable registry listing", async () => {
     assert.ok(Array.isArray(payload.entries));
     assert.ok(typeof payload.mcpDir === "string");
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI mcp token mint uses auth, hides bearer value in text, and emits it only as JSON", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-token-"));
+  const mock = await startMockApi();
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_TOKEN: "api_token_existing",
+    };
+
+    const jsonResult = await runCli({
+      cwd: tempRoot,
+      env,
+      args: [
+        "mcp",
+        "token",
+        "mint",
+        "--scope",
+        "sessions:read sessions:usage:read",
+        "--ttl-seconds",
+        "120",
+        "--timeout-ms",
+        "5000",
+        "--json",
+      ],
+    });
+    assert.equal(jsonResult.code, 0, jsonResult.stderr || jsonResult.stdout);
+    const payload = JSON.parse(String(jsonResult.stdout || "").trim());
+    assert.equal(payload.command, "mcp token mint");
+    assert.equal(payload.accessToken, "mcp_secret_fixture_value");
+    assert.equal(payload.tokenType, "Bearer");
+    assert.equal(payload.expiresIn, 120);
+    assert.equal(payload.scope, "sessions:read sessions:usage:read");
+
+    const textResult = await runCli({
+      cwd: tempRoot,
+      env,
+      args: [
+        "mcp",
+        "token",
+        "mint",
+        "--scope",
+        "sessions:read",
+        "--ttl-seconds",
+        "120",
+        "--timeout-ms",
+        "5000",
+      ],
+    });
+    assert.equal(textResult.code, 0, textResult.stderr || textResult.stdout);
+    assert.match(textResult.stdout, /Secret value hidden in text output/);
+    assert.equal(textResult.stdout.includes("mcp_secret_fixture_value"), false);
+    assert.equal(mock.state.mcpTokenRequests.length, 2);
+    assert.equal(mock.state.mcpTokenRequests[0].authHeader, "Bearer api_token_existing");
+    assert.deepEqual(mock.state.mcpTokenRequests[0].body, {
+      scope: "sessions:read sessions:usage:read",
+      ttl_seconds: 120,
+    });
+  } finally {
+    await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

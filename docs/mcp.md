@@ -44,6 +44,100 @@ All tools require explicit `sessionId` values. Write/action/lock tools also requ
 
 The generated registry is intended for bridge-capable MCP hosts and hosted connector work. It records each command's positional arguments, options, original argv path, bridge URL, budget defaults, and `cli:execute` scope. Every generated CLI tool requires human approval by default because the surface includes write, scan, audit, auth, and session commands.
 
+Secret-bearing commands are blocked from bridge execution even when they appear in the generated registry. `sl mcp token mint` is one of those blocked commands because it returns a fresh bearer token; operators must run it directly:
+
+```bash
+sl mcp token mint --scope "sessions:read sessions:usage:read" --ttl-seconds 300 --json
+```
+
+## Hosted MCP Token Operator Flow
+
+Use this flow when an operator needs a short-lived bearer for the hosted MCP
+resource:
+
+1. Confirm local auth with `sl auth status`.
+2. Mint the shortest practical credential:
+
+   ```bash
+   sl mcp token mint --scope "sessions:read sessions:usage:read" --ttl-seconds 300 --json
+   ```
+
+3. Store the returned `accessToken` only in the target MCP host secret field or
+   local shell variable. Do not paste it into Senti, tickets, PR comments, or
+   durable logs.
+4. Smoke the hosted resource without printing the token:
+
+   ```bash
+   curl -sS https://api.sentinelayer.com/mcp \
+     -H "Authorization: Bearer $SENTINELAYER_MCP_TOKEN" \
+     -H "Content-Type: application/json" \
+     --data '{"jsonrpc":"2.0","id":"smoke","method":"tools/list","params":{}}'
+   ```
+
+5. For local stdio demos, skip hosted token minting entirely and point the MCP
+   host at `sl mcp server run --path .`.
+
+### Hosted Token Request And Response Schema
+
+`sl mcp token mint` calls `POST /api/v1/auth/mcp-token` with the existing
+Sentinelayer CLI API token in the `Authorization` header. The CLI does not sign,
+verify, or decode MCP credentials locally.
+
+Request body:
+
+```json
+{
+  "scope": "sessions:read sessions:usage:read",
+  "ttl_seconds": 300
+}
+```
+
+The `scope` field is optional; callers may pass a space-separated or
+comma-separated string. The `ttl_seconds` field is optional and must be a
+positive integer when supplied. The server enforces the final minimum and
+maximum TTL.
+
+Successful response body:
+
+```json
+{
+  "access_token": "<bearer>",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "expires_at": "2026-04-01T00:10:00.000Z",
+  "issuer": "https://api.sentinelayer.com",
+  "audience": "https://mcp.sentinelayer.com",
+  "scope": "sessions:read sessions:usage:read"
+}
+```
+
+CLI JSON output maps `access_token` to `accessToken`. Text output intentionally
+omits `accessToken`.
+
+## Bearer Exposure Response
+
+If a hosted MCP bearer value is pasted into a transcript, log, ticket, or tool output:
+
+1. Treat it as exposed until it expires. The hosted API caps MCP credential lifetime server-side between 60 and 3600 seconds; prefer the shortest TTL that supports the task.
+2. Stop generated CLI bridge execution for local MCP hosts, then restart the
+   host process:
+
+   ```bash
+   export SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1
+   # PowerShell: $env:SENTINELAYER_MCP_CLI_BRIDGE_DISABLED = "1"
+   ```
+
+3. Rotate or revoke the long-lived Sentinelayer CLI session that requested the
+   bearer value with `sl auth revoke` or from the dashboard, then re-run
+   `sl auth login` for a fresh session.
+4. Remove the exposed value from local logs and exported transcripts where
+   possible. Do not repost the bearer value into Senti.
+5. Verify containment by calling the hosted `/mcp` resource with the exposed
+   value after expiry/revocation and confirming it returns an auth failure. The
+   expected failure is `401 AUTH_REQUIRED` or an equivalent token-expired error.
+6. If bridge execution was disabled, keep it disabled until the host config and
+   logs have been inspected for the leaked token.
+
 This registry does not by itself grant browser-hosted Claude or ChatGPT execution. A hosted bridge must still enforce OAuth, session-seat binding, per-user token validation, approval policy, and sandbox/runtime controls before invoking CLI commands. See [Hosted MCP Connector Contract](./mcp-hosted-connector.md).
 
 ## Hosted session connector contract
@@ -95,6 +189,24 @@ The local stdio server is real, but it is not a hosted Claude-web or ChatGPT con
 Likewise, ephemeral Firecracker or microVM execution is not part of this local server. That belongs in a hosted runner architecture with scoped auth, lifecycle cleanup, artifact ownership, and network/file-system policy enforcement.
 
 The target hosted contract is documented in [Hosted MCP Connector Contract](./mcp-hosted-connector.md). Until those release gates are implemented and tested, SentinelLayer should describe hosted MCP as design work rather than shipped execution.
+
+## Architecture Decision Trail
+
+The MCP/token design intentionally follows these decisions:
+
+1. Local stdio runtime and hosted HTTPS MCP are separate surfaces. Local clients
+   can spawn `sl mcp server run --path .`; browser-hosted clients must use an
+   HTTPS service with OAuth and session-seat binding.
+2. Hosted bearer minting is server-owned. `sl mcp token mint` sends an
+   authenticated request to `POST /api/v1/auth/mcp-token`; the CLI never signs,
+   verifies, or derives token claims locally.
+3. Generated CLI bridge execution is approval-oriented and fail-closed for
+   secret-bearing commands. `sl mcp token mint` is listed for operator
+   discoverability but blocked from bridge execution.
+4. Incident response favors containment before cleanup: disable bridge
+   execution with `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1`, restart the MCP
+   host, rotate/revoke the source CLI session, then verify `/mcp` rejects the
+   exposed bearer.
 
 Architecture references: this local server doc is paired with the hosted
 connector contract in [Hosted MCP Connector Contract](./mcp-hosted-connector.md),

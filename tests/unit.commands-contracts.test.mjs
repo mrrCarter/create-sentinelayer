@@ -325,11 +325,20 @@ test("Unit command contracts: omargate deep exposes changed-file scope controls"
 test("Unit command contracts: mcp exposes session registry and stdio server runtime", () => {
   const program = buildProgram(registerMcpCommand);
 
+  getCommandByPath(program, "mcp token mint");
   getCommandByPath(program, "mcp registry init-session");
   getCommandByPath(program, "mcp registry init-hosted-session-connector");
   getCommandByPath(program, "mcp registry init-cli");
   getCommandByPath(program, "mcp registry validate-hosted-session-connector");
   getCommandByPath(program, "mcp server run");
+
+  const tokenMint = getCommandByPath(program, "mcp token mint");
+  assertCommandHasOption(tokenMint, "--scope <scopes>");
+  assertCommandHasOption(tokenMint, "--ttl-seconds <seconds>");
+  assertCommandHasOption(tokenMint, "--timeout-ms <ms>");
+  assertCommandHasOption(tokenMint, "--api-url <url>");
+  assertCommandHasOption(tokenMint, "--no-auto-rotate");
+  assertCommandHasOption(tokenMint, "--json");
 
   const initSession = getCommandByPath(program, "mcp registry init-session");
   assertCommandHasOption(initSession, "--path <path>");
