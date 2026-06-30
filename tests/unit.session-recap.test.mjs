@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 
 import { Command } from "commander";
 
@@ -271,10 +271,15 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
     });
 
     assert.match(recap.text, /Plan: 2 open \/ 1 done in tasks\/todo\.md/);
+    assert.match(recap.text, /source:/);
+    assert.match(recap.text, /workspace:/);
     assert.match(recap.text, /Current: Active Shipment/);
     assert.match(recap.text, /Active Shipment - Build Senti auto recap/);
     assert.match(recap.text, /Active Shipment - Verify npm release/);
     assert.equal(recap.summary.workPlan.exists, true);
+    assert.equal(recap.summary.workPlan.sourcePath, path.join(tempRoot, "tasks", "todo.md"));
+    assert.equal(recap.summary.workPlan.workspacePath, path.resolve(tempRoot));
+    assert.equal(recap.summary.workPlan.sourceReason, "session_metadata_target_path");
     assert.equal(recap.summary.workPlan.total, 3);
     assert.equal(recap.summary.workPlan.open, 2);
     assert.equal(recap.summary.workPlan.completed, 1);
@@ -282,6 +287,45 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
     assert.equal(recap.summary.workPlan.recentOpen[0].task, "Build Senti auto recap");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session recap: skips workspace todo plan when session metadata target path mismatches", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-plan-local-"));
+  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-plan-source-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await seedWorkspace(sessionRoot);
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "tasks", "todo.md"),
+      ["# Wrong Project", "", "- [ ] This unrelated local plan must not leak"].join("\n"),
+      "utf-8",
+    );
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    const metadata = JSON.parse(await readFile(session.metadataPath, "utf-8"));
+    metadata.targetPath = sessionRoot;
+    await writeFile(session.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.doesNotMatch(recap.text, /Wrong Project/);
+    assert.doesNotMatch(recap.text, /unrelated local plan/);
+    assert.match(recap.text, /Plan: skipped tasks\/todo\.md/);
+    assert.match(recap.text, /target_path_mismatch/);
+    assert.equal(recap.summary.workPlan.exists, false);
+    assert.equal(recap.summary.workPlan.skipped, true);
+    assert.equal(recap.summary.workPlan.skipReason, "target_path_mismatch");
+    assert.equal(recap.summary.workPlan.sourcePath, path.join(sessionRoot, "tasks", "todo.md"));
+    assert.equal(recap.summary.workPlan.workspacePath, path.resolve(sessionRoot));
+    assert.equal(recap.summary.workPlan.sourceReason, "session_metadata_target_path");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(sessionRoot, { recursive: true, force: true });
   }
 });
 
