@@ -114,6 +114,52 @@ Successful response body:
 CLI JSON output maps `access_token` to `accessToken`. Text output intentionally
 omits `accessToken`.
 
+## Diagnosing Hosted MCP Auth (`sl mcp doctor`)
+
+`sl mcp doctor` checks whether the hosted MCP server is correctly set up for
+remote-agent (ChatGPT / Claude) OAuth authentication and reports each check as
+**PASS / WARN / FAIL**. All probes are **unauthenticated**: no bearer token is
+sent and none is minted, so the command is side-effect-free and safe to run
+before `sl auth login`.
+
+```bash
+sl mcp doctor                                              # probe the API resolved from your CLI session
+sl mcp doctor --api-url https://api.sentinelayer.com --json
+```
+
+The API base URL comes from `--api-url`, or is resolved read-only from the stored
+CLI session (token rotation is disabled for this lookup, so the diagnostic never
+mutates your credential). `--json` emits the structured result and `--timeout-ms`
+bounds each probe. The command exits non-zero if any probe is `FAIL`.
+
+The checks:
+
+1. **Protected Resource Metadata** (RFC 9728) — `GET /.well-known/oauth-protected-resource`. Confirms the resource advertises itself and, optionally, its authorization server.
+2. **Authorization Server Metadata** (RFC 8414) — `GET /.well-known/oauth-authorization-server`. Confirms the AS discovery document is published.
+3. **JSON Web Key Set** — `GET /.well-known/jwks.json`. Confirms signing keys are published and are asymmetric.
+4. **Enforcement** — `POST /mcp` with no token. Confirms the resource server rejects unauthenticated calls.
+
+Verdicts worth knowing:
+
+- **AS metadata `503` severity depends on PRM.** If PRM advertises
+  `authorization_servers` but the AS metadata returns `503`, clients follow the
+  advertised pointer into an unconfigured authorization server — a broken
+  discovery chain → **FAIL**. If PRM omits the AS and the metadata is `503`, that
+  is a consistent fail-closed state (discovery simply not wired) → **WARN**.
+  Configure `MCP_OAUTH_AUTHORIZATION_ENDPOINT` + `MCP_OAUTH_TOKEN_ENDPOINT` to
+  advertise it.
+- **A symmetric key in the public JWKS is a hard FAIL.** A `kty: "oct"` / `HS*`
+  key published at `/.well-known/jwks.json` *is* the shared HMAC signing secret;
+  anyone who can read the public endpoint could forge MCP access tokens.
+  Production must publish only asymmetric (e.g. RS256) public keys.
+- **Unauthenticated `/mcp` returning `200` is a hard FAIL** — the resource server
+  is not enforcing authentication. A correctly configured server returns `401`
+  with a `WWW-Authenticate` challenge that points back at the protected-resource
+  metadata.
+
+Run `doctor` after configuring the hosted MCP OAuth environment, and again from
+an operator workstation before pointing a remote agent at the server.
+
 ## Bearer Exposure Response
 
 If a hosted MCP bearer value is pasted into a transcript, log, ticket, or tool output:
