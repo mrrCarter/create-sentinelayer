@@ -9,6 +9,18 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const TAG_PATTERN = /^v\d+\.\d+\.\d+(?:[.-][0-9A-Za-z.-]+)?$/;
 export const REMOTE_TAG_REF_RETRY_DELAYS_MS = Object.freeze([500, 1000, 2000, 4000, 5000]);
+export const RELEASE_PLEASE_RUN_RETRY_DELAYS_MS = Object.freeze([
+  5000,
+  10000,
+  20000,
+  30000,
+  60000,
+  120000,
+  180000,
+  300000,
+]);
+const RELEASE_PLEASE_RUNS_PER_PAGE = 100;
+const RELEASE_PLEASE_RUN_PAGE_LIMIT = 50;
 
 export function parseArgs(argv) {
   const options = {
@@ -88,6 +100,31 @@ export function normalizePolicy(policy) {
   return {
     allowedActors,
     allowedSignerEmails,
+  };
+}
+
+export function normalizeReleaseWorkflowPolicy(policy) {
+  const requiredPath = String(policy?.required_release_workflow_path || "").trim();
+  const requiredName = String(policy?.required_release_workflow_name || "").trim();
+  const requiredActors = Array.isArray(policy?.required_release_workflow_actors)
+    ? normalizeList(policy.required_release_workflow_actors)
+    : normalizeList([policy?.required_release_workflow_actor]);
+
+  if (!requiredPath) {
+    throw new Error("release-tag-policy.json has no required_release_workflow_path.");
+  }
+  if (!requiredName) {
+    throw new Error("release-tag-policy.json has no required_release_workflow_name.");
+  }
+  if (requiredActors.length === 0) {
+    throw new Error("release-tag-policy.json has no required release workflow actor allowlist.");
+  }
+
+  return {
+    requiredPath,
+    requiredName,
+    requiredActors,
+    workflowId: requiredPath.split(/[\\/]/).filter(Boolean).pop(),
   };
 }
 
@@ -318,6 +355,112 @@ export function waitForRemoteTagRef(
   return null;
 }
 
+export function matchingSuccessfulReleasePleaseRuns(runs, targetSha, policy) {
+  const normalized = normalizeReleaseWorkflowPolicy(policy);
+  const sha = String(targetSha || "").trim();
+  if (!sha) {
+    throw new Error("Target release commit SHA is required before checking Release Please state.");
+  }
+
+  return (Array.isArray(runs) ? runs : [])
+    .filter((run) => {
+      const actor = String(run?.actor?.login || "").trim();
+      return (
+        run?.conclusion === "success" &&
+        run?.event === "push" &&
+        run?.head_branch === "main" &&
+        run?.head_sha === sha &&
+        run?.path === normalized.requiredPath &&
+        run?.name === normalized.requiredName &&
+        normalized.requiredActors.includes(actor)
+      );
+    })
+    .map((run) => ({
+      id: String(run.id || "").trim(),
+      run_number: Number(run.run_number || 0),
+      run_attempt: Number(run.run_attempt || 0),
+      created_at: String(run.created_at || "").trim(),
+      updated_at: String(run.updated_at || "").trim(),
+    }))
+    .sort((a, b) => {
+      if (a.run_number !== b.run_number) return a.run_number - b.run_number;
+      if (a.run_attempt !== b.run_attempt) return a.run_attempt - b.run_attempt;
+      return `${a.updated_at}${a.created_at}`.localeCompare(`${b.updated_at}${b.created_at}`);
+    });
+}
+
+export function selectSuccessfulReleasePleaseRun(runs, targetSha, policy) {
+  const candidates = matchingSuccessfulReleasePleaseRuns(runs, targetSha, policy);
+  if (candidates.length === 0) return null;
+  if (candidates.length > 1) {
+    throw new Error(
+      `Multiple successful Release Please runs found for ${targetSha}; refusing nondeterministic publish selection (${candidates
+        .map((candidate) => candidate.id)
+        .join(",")}).`
+    );
+  }
+  return candidates[0];
+}
+
+function releasePleaseRunsPage(repository, page, policy) {
+  const normalized = normalizeReleaseWorkflowPolicy(policy);
+  return JSON.parse(
+    run(
+      "gh",
+      [
+        "api",
+        `repos/${repository}/actions/workflows/${normalized.workflowId}/runs?event=push&branch=main&status=completed&per_page=${RELEASE_PLEASE_RUNS_PER_PAGE}&page=${page}`,
+      ],
+      { capture: true }
+    ) || "{}"
+  );
+}
+
+export function waitForSuccessfulReleasePleaseRun(
+  repository,
+  targetSha,
+  policy,
+  {
+    fetchRunsPage = releasePleaseRunsPage,
+    sleep = sleepMs,
+    delaysMs = RELEASE_PLEASE_RUN_RETRY_DELAYS_MS,
+    pageLimit = RELEASE_PLEASE_RUN_PAGE_LIMIT,
+    logger = console.log,
+  } = {}
+) {
+  const delays = Array.isArray(delaysMs) ? delaysMs : [];
+  const normalized = normalizeReleaseWorkflowPolicy(policy);
+
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    const runs = [];
+    for (let page = 1; page <= pageLimit; page += 1) {
+      const pageJson = fetchRunsPage(repository, page, policy) || {};
+      const workflowRuns = Array.isArray(pageJson.workflow_runs) ? pageJson.workflow_runs : [];
+      runs.push(...workflowRuns);
+      if (workflowRuns.length < RELEASE_PLEASE_RUNS_PER_PAGE) break;
+      if (page === pageLimit) {
+        throw new Error(
+          `Pagination exceeded ${pageLimit} pages while resolving Release Please candidates for ${targetSha}.`
+        );
+      }
+    }
+
+    const selected = selectSuccessfulReleasePleaseRun(runs, targetSha, policy);
+    if (selected) return selected;
+
+    if (attempt < delays.length) {
+      logger?.(
+        `Waiting for successful ${normalized.requiredName} run on main for ${targetSha} before creating the release tag...`
+      );
+      sleep(delays[attempt]);
+    }
+  }
+
+  throw new Error(
+    `No successful ${normalized.requiredName} workflow run found on main for release commit ${targetSha}. Wait for the main Release Please run to finish, then rerun npm run release:publish.`
+  );
+}
+
 function remoteTagObject(repository, tagObjectSha) {
   return JSON.parse(
     run("gh", ["api", `repos/${repository}/git/tags/${tagObjectSha}`], {
@@ -363,8 +506,8 @@ function ensureLocalSignedTag(tag) {
 function printUsage() {
   console.log(`Usage: npm run release:publish -- [--tag vX.Y.Z] [--notes-file file | --generate-notes] [--repo owner/repo]
 
-Creates and verifies the signed annotated release tag before creating the GitHub release.
-The command refuses to create a GitHub release when the remote tag is lightweight or unverified.`);
+Confirms the main Release Please run has succeeded for the release commit, then creates and verifies the signed annotated release tag before creating the GitHub release.
+The command refuses to create a GitHub release when Release Please evidence is missing or the remote tag is lightweight or unverified.`);
 }
 
 export function main(argv = process.argv.slice(2)) {
@@ -385,6 +528,10 @@ export function main(argv = process.argv.slice(2)) {
   assertAllowedActor(viewer, policy);
   ensureCleanWorktree();
   const expectedTargetSha = ensureMainHead();
+  const releasePleaseRun = waitForSuccessfulReleasePleaseRun(repository, expectedTargetSha, policy);
+  console.log(
+    `Confirmed Release Please run ${releasePleaseRun.id} succeeded on main for ${expectedTargetSha}.`
+  );
 
   const existingRemoteRef = remoteTagRef(repository, tag);
   if (existingRemoteRef) {

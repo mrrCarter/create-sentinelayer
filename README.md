@@ -929,6 +929,18 @@ Ledger contract:
 - network access to Sentinelayer API/web
 - optional: GitHub CLI (`gh`) authenticated for secret injection
 
+## Operator and architecture references
+
+- First-run engineering onboarding: `docs/ENGINEERING_ONBOARDING.md`
+- Senti session operations, coordination, kill, and rollback conventions: `docs/sessions.md`
+- Release workflow map and rollback drill ownership: `docs/workflow-matrix.md`
+- Release rollback execution: `.github/workflows/rollback.yml` and `.github/scripts/release-rollback-readiness.sh`
+- Architecture and decision records for major surfaces:
+  - Hosted MCP connector boundary: `docs/mcp-hosted-connector.md`
+  - MCP local/runtime entry points: `docs/mcp.md`
+  - Investor-DD architecture: `docs/INVESTOR_DD_ARCHITECTURE.md`
+  - CI/CD acknowledged release risks: `.github/policies/cicd-acknowledged-risks.md`
+
 ## Release to npm
 
 This repo includes `.github/workflows/release.yml`.
@@ -949,14 +961,15 @@ Release flow:
 
 1. Merge to `main` and let `Release Please` open/update the release PR.
 2. Merge the release PR after Omar, Quality Gates, and Attestation are green.
-3. From a clean checkout of the release commit, run the guarded release command:
+3. Wait for the main-branch `Release Please` workflow run on that merge commit to complete successfully.
+4. From a clean checkout of the release commit, run the guarded release command:
    ```bash
    git fetch origin main --tags
    git checkout main && git pull --ff-only
    npm run release:publish -- --tag v0.1.1 --notes-file release-notes.md
    ```
-4. The guarded command creates the tag with `git tag -s`, verifies it with `git tag -v`, pushes it, confirms the remote GitHub tag object is annotated and cryptographically verified by an allowlisted signer, then creates the GitHub release with `gh release create --verify-tag`.
-5. The tag push triggers `Release`, which re-verifies upstream checks, release artifact attestations, rollback readiness, protected `package-release` approval, and npm trusted publishing OIDC before publishing.
+5. The guarded command confirms the exact release commit has one successful main `Release Please` run, creates the tag with `git tag -s`, verifies it with `git tag -v`, pushes it, confirms the remote GitHub tag object is annotated and cryptographically verified by an allowlisted signer, then creates the GitHub release with `gh release create --verify-tag`.
+6. The tag push triggers `Release`, which re-verifies upstream checks, release artifact attestations, rollback readiness, protected `package-release` approval, and npm trusted publishing OIDC before publishing.
 
 Do not run `gh release create v0.1.1` before pushing the signed tag. GitHub release creation creates a lightweight tag when the tag does not already exist, and the Release workflow intentionally fails closed for lightweight tags. If a remote tag already exists as a lightweight tag, `npm run release:publish` refuses to create the GitHub release.
 
@@ -964,6 +977,7 @@ Release publish now enforces tarball checksum-manifest validation and attestatio
 
 Release guardrails now require successful upstream checks on the target commit:
 
+- `Release Please`
 - `Quality Summary`
 - `Omar Gate`
 - `Attestation Summary`

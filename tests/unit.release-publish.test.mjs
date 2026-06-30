@@ -9,8 +9,12 @@ import {
   assertTagMatchesVersion,
   assertTrustedRemoteTag,
   buildGhReleaseArgs,
+  matchingSuccessfulReleasePleaseRuns,
+  normalizeReleaseWorkflowPolicy,
   normalizeSshPublicKey,
   parseArgs,
+  selectSuccessfulReleasePleaseRun,
+  waitForSuccessfulReleasePleaseRun,
   waitForRemoteTagRef,
   versionToTag,
 } from "../scripts/release-publish.mjs";
@@ -22,6 +26,31 @@ const POLICY = {
     "41898282+github-actions[bot]@users.noreply.github.com",
   ],
 };
+
+const RELEASE_POLICY = {
+  ...POLICY,
+  required_release_workflow_path: ".github/workflows/release-please.yml",
+  required_release_workflow_name: "Release Please",
+  required_release_workflow_actors: ["github-actions[bot]", "mrrCarter"],
+};
+
+function releasePleaseRun(overrides = {}) {
+  return {
+    id: 101,
+    conclusion: "success",
+    event: "push",
+    head_branch: "main",
+    head_sha: "release-sha",
+    path: ".github/workflows/release-please.yml",
+    name: "Release Please",
+    actor: { login: "github-actions[bot]" },
+    run_number: 77,
+    run_attempt: 1,
+    created_at: "2026-06-30T04:00:00Z",
+    updated_at: "2026-06-30T04:01:00Z",
+    ...overrides,
+  };
+}
 
 test("Release publish helper parses release arguments", () => {
   assert.deepEqual(
@@ -183,6 +212,94 @@ test("Release publish helper waits for pushed remote tag refs to become visible"
   assert.equal(ref, visibleRef);
   assert.equal(attempts, 3);
   assert.deepEqual(seenDelays, [10, 20]);
+});
+
+test("Release publish helper selects the required successful main Release Please run", () => {
+  assert.deepEqual(normalizeReleaseWorkflowPolicy(RELEASE_POLICY), {
+    requiredPath: ".github/workflows/release-please.yml",
+    requiredName: "Release Please",
+    requiredActors: ["github-actions[bot]", "mrrCarter"],
+    workflowId: "release-please.yml",
+  });
+
+  const candidates = matchingSuccessfulReleasePleaseRuns(
+    [
+      releasePleaseRun({ id: 1, conclusion: "failure" }),
+      releasePleaseRun({ id: 2, head_sha: "other-sha" }),
+      releasePleaseRun({ id: 3, head_branch: "release" }),
+      releasePleaseRun({ id: 4, path: ".github/workflows/release.yml" }),
+      releasePleaseRun({ id: 5, actor: { login: "octocat" } }),
+      releasePleaseRun({ id: 6 }),
+    ],
+    "release-sha",
+    RELEASE_POLICY
+  );
+
+  assert.deepEqual(candidates, [
+    {
+      id: "6",
+      run_number: 77,
+      run_attempt: 1,
+      created_at: "2026-06-30T04:00:00Z",
+      updated_at: "2026-06-30T04:01:00Z",
+    },
+  ]);
+});
+
+test("Release publish helper waits for Release Please before tag creation", () => {
+  const delays = [];
+  const logs = [];
+  let attempts = 0;
+
+  const selected = waitForSuccessfulReleasePleaseRun(
+    "mrrCarter/create-sentinelayer",
+    "release-sha",
+    RELEASE_POLICY,
+    {
+      delaysMs: [10, 20],
+      sleep: (delayMs) => delays.push(delayMs),
+      logger: (message) => logs.push(message),
+      fetchRunsPage: (repository, page) => {
+        assert.equal(repository, "mrrCarter/create-sentinelayer");
+        assert.equal(page, 1);
+        attempts += 1;
+        return attempts === 1 ? { workflow_runs: [] } : { workflow_runs: [releasePleaseRun()] };
+      },
+    }
+  );
+
+  assert.equal(selected.id, "101");
+  assert.equal(attempts, 2);
+  assert.deepEqual(delays, [10]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /before creating the release tag/);
+});
+
+test("Release publish helper fails closed without unique Release Please evidence", () => {
+  assert.throws(
+    () =>
+      waitForSuccessfulReleasePleaseRun(
+        "mrrCarter/create-sentinelayer",
+        "release-sha",
+        RELEASE_POLICY,
+        {
+          delaysMs: [],
+          fetchRunsPage: () => ({ workflow_runs: [] }),
+          logger: null,
+        }
+      ),
+    /No successful Release Please workflow run found/
+  );
+
+  assert.throws(
+    () =>
+      selectSuccessfulReleasePleaseRun(
+        [releasePleaseRun({ id: 1 }), releasePleaseRun({ id: 2, run_attempt: 2 })],
+        "release-sha",
+        RELEASE_POLICY
+      ),
+    /Multiple successful Release Please runs/
+  );
 });
 
 test("Release publish helper returns null after exhausting remote tag ref retries", () => {
