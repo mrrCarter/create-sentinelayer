@@ -31,6 +31,8 @@ import {
 import { requestHostedMcpAccessToken } from "../mcp/token-service.js";
 import { buildSentinelayerCliRegistryTemplate } from "../mcp/cli-registry.js";
 import { runMcpStdioServer } from "../mcp/session-stdio-server.js";
+import { runMcpDoctorProbes } from "../mcp/doctor.js";
+import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveOutputRoot } from "../config/service.js";
 
 function shouldEmitJson(options, command) {
@@ -182,6 +184,71 @@ export function registerMcpCommand(program) {
       console.log(`Audience: ${payload.audience}`);
       console.log(`Scope: ${payload.scope}`);
       console.log(pc.gray("Secret value hidden in text output; use --json when you need the bearer value."));
+    });
+
+  mcp
+    .command("doctor")
+    .description(
+      "Diagnose hosted MCP auth: probe the OAuth discovery chain (PRM, AS metadata, JWKS) and verify unauthenticated /mcp is rejected"
+    )
+    .option(
+      "--api-url <url>",
+      "Sentinelayer API base URL to probe (default: resolved from your CLI auth session)"
+    )
+    .option("--timeout-ms <ms>", "Per-probe request timeout in milliseconds", String(DEFAULT_REQUEST_TIMEOUT_MS))
+    .option("--json", "Emit machine-readable output")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      const parsedTimeout = Number(options.timeoutMs);
+      const timeoutMs =
+        Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : DEFAULT_REQUEST_TIMEOUT_MS;
+
+      let apiBaseUrl = String(options.apiUrl || "").trim();
+      if (!apiBaseUrl) {
+        // Probes are unauthenticated, but the API base URL lives in the CLI auth
+        // config. Resolve it best-effort; fall back to requiring --api-url.
+        try {
+          const session = await resolveActiveAuthSession({ cwd: process.cwd(), env: process.env });
+          apiBaseUrl = String((session && session.apiUrl) || "").trim();
+        } catch {
+          apiBaseUrl = "";
+        }
+      }
+      if (!apiBaseUrl) {
+        throw new Error(
+          "Could not resolve the Sentinelayer API URL. Pass --api-url <url>, or run `sl auth login` first."
+        );
+      }
+
+      const result = await runMcpDoctorProbes({ apiBaseUrl, timeoutMs });
+
+      if (emitJson) {
+        console.log(JSON.stringify({ command: "mcp doctor", ...result }, null, 2));
+      } else {
+        console.log(pc.bold(`MCP auth doctor — ${result.apiBaseUrl}`));
+        for (const probe of result.probes) {
+          const mark =
+            probe.verdict === "PASS"
+              ? pc.green("PASS")
+              : probe.verdict === "WARN"
+                ? pc.yellow("WARN")
+                : pc.red("FAIL");
+          console.log(`  [${mark}] ${probe.label}  (HTTP ${probe.status})`);
+          console.log(pc.gray(`         ${probe.url}`));
+          if (probe.detail) {
+            console.log(pc.gray(`         ${probe.detail}`));
+          }
+        }
+        console.log(
+          result.ok
+            ? pc.green("All critical MCP auth probes passed.")
+            : pc.red("One or more MCP auth probes FAILED — remote agents may not authenticate correctly.")
+        );
+      }
+
+      if (!result.ok) {
+        process.exitCode = 1;
+      }
     });
 
   const schema = mcp.command("schema").description("Inspect or materialize MCP tool-registry schema");
