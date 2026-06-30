@@ -29,6 +29,19 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   "session.kill",
   "session.listen",
   "session.provision-emails",
+  // Token-handling (same class as auth.*): writes the live SentinelLayer token into a
+  // caller-specified GitHub repo's secrets — a token-misplacement/exfil vector via the bridge.
+  "scan.setup-secrets",
+  // Bulk session-content exfil (same rationale that blocks config.*): full transcript dumps
+  // can carry arbitrary sensitive content that output-redaction does not mask. `session read`
+  // (normal recent-message reads) stays available for legitimate agent use.
+  "session.export",
+  "session.download",
+  // Identity/state mutation (same class as session.kill): create/revoke AIdenIDs + provision
+  // emails (cost + side effects) should not be driven by an untrusted LLM via the bridge.
+  "ai.identity.provision",
+  "ai.identity.revoke",
+  "ai.provision-email",
 ]);
 const REDACTION_MARKER = "[REDACTED]";
 

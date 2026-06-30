@@ -32,6 +32,64 @@ function buildFakeProgram() {
   return program;
 }
 
+function buildSensitiveBridgeProgram() {
+  const program = new Command();
+  program.name("sl");
+  const scan = program.command("scan").description("Security & review");
+  scan
+    .command("setup-secrets")
+    .description("Set up GitHub secrets for Omar Gate")
+    .option("--repo <slug>", "Repo slug override");
+  const session = program.command("session").description("Manage Senti sessions");
+  session.command("export <sessionId>").description("Export full transcript");
+  session.command("download <sessionId>").description("Download transcript markdown");
+  const ai = program.command("ai").description("AIdenID");
+  ai.command("provision-email").description("Provision an AIdenID email");
+  const identity = ai.command("identity").description("Identity lifecycle");
+  identity.command("provision").description("Provision identity");
+  identity.command("revoke").description("Revoke identity");
+  return program;
+}
+
+test("Unit MCP CLI command tools: blocks token/exfil/identity-mutation commands from the bridge", async () => {
+  const tools = await buildCliCommandMcpTools({
+    buildProgramFn: async () => buildSensitiveBridgeProgram(),
+  });
+  const expectedBlocked = [
+    "sl.scan.setup-secrets",
+    "sl.session.export",
+    "sl.session.download",
+    "sl.ai.provision-email",
+    "sl.ai.identity.provision",
+    "sl.ai.identity.revoke",
+  ];
+  for (const name of expectedBlocked) {
+    const tool = tools.find((candidate) => candidate.name === name);
+    assert.ok(tool, `expected bridge tool ${name} to exist`);
+    assert.equal(tool.security.runtime_blocked, true, `${name} should be runtime_blocked`);
+    assert.equal(
+      tool.security.runtime_block_reason,
+      "blocked_sensitive_cli_command",
+      `${name} should carry the sensitive block reason`,
+    );
+  }
+
+  const handlers = createCliCommandMcpToolHandlers(tools, {
+    executeCliCommandFn: async () => {
+      throw new Error("must not execute sensitive bridge command");
+    },
+  });
+  const setupSecrets = await handlers["sl.scan.setup-secrets"]({});
+  assert.equal(setupSecrets.ok, false);
+  assert.equal(setupSecrets.reason, "blocked_sensitive_cli_command");
+  const sessionExport = await handlers["sl.session.export"]({});
+  assert.equal(sessionExport.ok, false);
+  assert.equal(sessionExport.reason, "blocked_sensitive_cli_command");
+  const identityRevoke = await handlers["sl.ai.identity.revoke"]({});
+  assert.equal(identityRevoke.ok, false);
+  assert.equal(identityRevoke.reason, "blocked_sensitive_cli_command");
+});
+
 test("Unit MCP CLI command tools: generates leaf tools from commander tree", async () => {
   const tools = await buildCliCommandMcpTools({
     buildProgramFn: async () => buildFakeProgram(),
