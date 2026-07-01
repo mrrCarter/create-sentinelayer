@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.2...v0.34.3) (2026-07-01)
+
+
+### Bug Fixes
+
+* **mcp:** denylist sensitive CLI bridge commands ([c5f9d51](https://github.com/mrrCarter/create-sentinelayer/commit/c5f9d51dbf5546e7496b5aae8d1aaac121a98430))
+
 ## [0.34.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.1...v0.34.2) (2026-06-30)
 
 
