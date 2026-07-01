@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.5...v0.34.6) (2026-07-01)
+
+
+### Bug Fixes
+
+* **session:** release 429 backoff handling ([#717](https://github.com/mrrCarter/create-sentinelayer/issues/717)) ([b01013b](https://github.com/mrrCarter/create-sentinelayer/commit/b01013b738edd7a5a21ea9cbd3985528273ca1f3))
+
 ## [0.34.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.4...v0.34.5) (2026-07-01)
 
 
