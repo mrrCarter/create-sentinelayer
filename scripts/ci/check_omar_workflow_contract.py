@@ -167,6 +167,9 @@ def validate_omar_contract(workflow_text: str) -> None:
         "model_fallback: gpt-4.1-mini",
         'use_codex: "true"',
         'codex_only: "false"',
+        "max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}",
+        "min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}",
+        "rate_limit_fail_mode: closed",
         "Omar managed model contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
@@ -245,6 +248,9 @@ jobs:
           model_fallback: gpt-4.1-mini
           use_codex: "true"
           codex_only: "false"
+          max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
+          min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
+          rate_limit_fail_mode: closed
       - name: Assert Omar managed model contract is active
         env:
           REQUESTED_MODEL: gpt-5.3-codex

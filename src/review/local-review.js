@@ -336,6 +336,16 @@ function regexMatches(regex, input) {
   return new RegExp(regex.source, flags).test(input);
 }
 
+function isGitHubActionsContextExpressionLiteral(line) {
+  return /(?:[:=]\s*)['"]?\s*\$\{\{\s*(?:github|secrets|vars|env|inputs|steps|needs|matrix|runner|strategy)\.[^}]+\}\}\s*['"]?/i.test(
+    String(line || "")
+  );
+}
+
+function shouldSuppressRuleLine(rule, line) {
+  return rule.id === "SL-SEC-005" && isGitHubActionsContextExpressionLiteral(line);
+}
+
 function sanitizeLineForExcerpt(line) {
   return String(line || "")
     .trim()
@@ -588,6 +598,9 @@ async function scanRulesForFiles({ rootPath, filePaths, rules, maxFindings = MAX
       }
       for (const rule of lineRules) {
         if (!regexMatches(rule.regex, line)) {
+          continue;
+        }
+        if (shouldSuppressRuleLine(rule, line)) {
           continue;
         }
         const pushed = tryPushFinding(

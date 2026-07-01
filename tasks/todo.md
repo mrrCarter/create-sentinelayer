@@ -7,7 +7,7 @@
 - [x] Filter projected remote action rows in `session read`, `session export`, and `session download` unless `--include-control-events` is requested.
 - [x] Add regression coverage for classifier behavior, remote transcript projection, and quiet action visibility.
 - [x] Run full unit/e2e, static, docs, package, review, Omar, and branch-local dogfood gates.
-- [ ] Open PR, post Senti audit request, watch hosted gates, and merge/release only when green.
+- [ ] Watch hosted gates after the CI-cap follow-up push, then merge/release only when green.
 
 ## Review
 - In progress.
@@ -17,6 +17,11 @@
 - Branch-local dogfood passed against Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a`: default `node bin/sl.js session read ... --remote` hid quiet action/file-lock/control chatter while preserving material messages; `--include-control-events` still exposed listener/control rows for forensics.
 - Review scan passed: `review-scan-diff-20260701-124718.md`, `P1=0`, `P2=0`, `blocking=false`.
 - Omar Gate diff passed on rerun after one transient proxy 504: `omargate-1782910138658-20e37bd4`, deterministic `P0=0/P1=0/P2=0/P3=0`, AI `P0=0/P1=0/P2=0/P3=0`, both routed personas `ok`, `blocking=false`.
+- PR opened: https://github.com/mrrCarter/create-sentinelayer/pull/714.
+- Hosted #714 Omar initially failed closed because the managed LLM daily scan cap was exhausted (`Daily scan limit reached for managed LLM usage`); attestation failures were downstream because required Omar concluded failure.
+- Added a follow-up in the same PR to keep Omar fail-closed while making the hosted daily cap configurable: `.github/workflows/omar-gate.yml`, generated workflow output, legacy workflow output, and the workflow-contract tests now set `max_daily_scans`, `min_scan_interval_minutes`, and `rate_limit_fail_mode: closed`.
+- Added a deterministic scanner regression for GitHub Actions context expressions so generated lines such as `github_token: "${{ github.token }}"` are treated as runtime context indirection, while real hardcoded token literals still trigger `SL-SEC-005`.
+- Follow-up proof passed: workflow contract self-test; focused unit tests `6/6`; `npm run check` (`344 files passed`); `npm run test:unit` (`1694/1694`); filtered e2e run covering review scan (`108/108`); `npm run docs:build`; `git diff --check` clean aside from expected Windows LF/CRLF notices; `npm pack --dry-run --json` produced `sentinelayer-cli-0.34.4.tgz` shasum `fbdf5f39827b9ae4aad2717538b1bb1163ad5dbb`; branch-local review scan `review-scan-diff-20260701-130909.md` `P1=0/P2=0/blocking=false`; branch-local Omar `omargate-1782911350132-dea63050` `P0/P1/P2/P3=0`, `blocking=false`.
 
 # 2026-06-30 - Senti Recap Workspace Provenance (`builder/recap-provenance`)
 

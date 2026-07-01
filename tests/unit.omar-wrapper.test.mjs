@@ -20,6 +20,12 @@ test("Unit Omar workflow: managed real LLM keeps Omar in fail-closed direct-acti
   assert.match(workflowText, /model_fallback:\s*gpt-4\.1-mini/);
   assert.match(workflowText, /use_codex:\s*"true"/);
   assert.match(workflowText, /codex_only:\s*"false"/);
+  assert.match(workflowText, /max_daily_scans:\s*\$\{\{\s*vars\.OMAR_MAX_DAILY_SCANS\s*\|\|\s*'200'\s*\}\}/);
+  assert.match(
+    workflowText,
+    /min_scan_interval_minutes:\s*\$\{\{\s*vars\.OMAR_MIN_SCAN_INTERVAL_MINUTES\s*\|\|\s*'0'\s*\}\}/,
+  );
+  assert.match(workflowText, /rate_limit_fail_mode:\s*closed/);
   assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.doesNotMatch(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate Omar workflow contract/);

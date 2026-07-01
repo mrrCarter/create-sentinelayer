@@ -2530,6 +2530,9 @@ jobs:
           use_codex: "true"
           codex_only: "false"
           llm_failure_policy: block
+          max_daily_scans: \${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
+          min_scan_interval_minutes: \${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
+          rate_limit_fail_mode: closed
       - name: Enforce Omar reviewer merge thresholds
         shell: bash
         env:

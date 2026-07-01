@@ -47,6 +47,12 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.match(workflow, /model_fallback:\s*gpt-4\.1-mini/);
   assert.match(workflow, /use_codex:\s*"true"/);
   assert.match(workflow, /codex_only:\s*"false"/);
+  assert.match(workflow, /max_daily_scans:\s*\$\{\{\s*vars\.OMAR_MAX_DAILY_SCANS\s*\|\|\s*'200'\s*\}\}/);
+  assert.match(
+    workflow,
+    /min_scan_interval_minutes:\s*\$\{\{\s*vars\.OMAR_MIN_SCAN_INTERVAL_MINUTES\s*\|\|\s*'0'\s*\}\}/,
+  );
+  assert.match(workflow, /rate_limit_fail_mode:\s*closed/);
   assert.match(workflow, /Stage Omar summary artifact/);
   assert.match(workflow, /omar-artifacts\/summary\.json/);
   assert.match(workflow, /omar_gate_summary/);
