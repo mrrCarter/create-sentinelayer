@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.34.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.3...v0.34.4) (2026-07-01)
+
+
+### Bug Fixes
+
+* **session:** preserve durable sequence order in exports ([e7b5197](https://github.com/mrrCarter/create-sentinelayer/commit/e7b519757b4e2020c357b6d4a9cde48ea366e888))
+* **session:** preserve durable sequence order in exports ([08f383f](https://github.com/mrrCarter/create-sentinelayer/commit/08f383fdd814e4e84e538a0439ffa4f5e02bc36c))
+
 ## [0.34.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.2...v0.34.3) (2026-07-01)
 
 
