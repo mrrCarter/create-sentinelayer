@@ -147,9 +147,15 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
  */
 export async function fetchSessionListeners(
   sessionId,
-  { targetPath = process.cwd(), limit = 200, nowMs = Date.now, poll = pollSessionEventsBefore } = {}
+  {
+    targetPath = process.cwd(),
+    limit = 200,
+    nowMs = Date.now,
+    forceCircuitProbe = true,
+    poll = pollSessionEventsBefore,
+  } = {}
 ) {
-  const result = await poll(sessionId, { targetPath, limit });
+  const result = await poll(sessionId, { targetPath, limit, forceCircuitProbe });
   if (!result?.ok) {
     return { ok: false, reason: normalizeString(result?.reason) || "fetch_failed", listeners: [] };
   }
