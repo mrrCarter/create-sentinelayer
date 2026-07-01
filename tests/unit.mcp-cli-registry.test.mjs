@@ -63,3 +63,25 @@ test("Unit MCP CLI registry: init-session schema records bridge command metadata
   assert.equal(tool.input_schema.properties.force.type, "boolean");
   assert.equal(tool.input_schema.properties.json.type, "boolean");
 });
+
+test("Unit MCP CLI registry: sensitive config/auth commands are excluded from the bridge tool set", async () => {
+  const registry = await buildRegistry();
+  const names = new Set(registry.tools.map((tool) => tool.name));
+  // config + auth read or mutate credentials and config secrets; they must not be remotely
+  // tool-callable by default (defense-in-depth beyond per-command output redaction).
+  assert.equal([...names].some((name) => name.startsWith("sl.config.")), false, "sl.config.* must be denylisted from the bridge");
+  assert.equal([...names].some((name) => name.startsWith("sl.auth.")), false, "sl.auth.* must be denylisted from the bridge");
+  assert.equal(names.has("sl.session.say"), true);
+});
+
+test("Unit MCP CLI registry: includeSensitive re-includes config/auth for local/trusted contexts", async () => {
+  const program = await buildCliProgram({ invokeLegacy: async () => {} });
+  const registry = await buildSentinelayerCliRegistryTemplate({
+    generatedAt: "2026-06-29T00:00:00.000Z",
+    program,
+    includeSensitive: true,
+  });
+  const names = new Set(registry.tools.map((tool) => tool.name));
+  assert.equal([...names].some((name) => name.startsWith("sl.config.")), true, "includeSensitive should re-include sl.config.*");
+  assert.equal([...names].some((name) => name.startsWith("sl.auth.")), true, "includeSensitive should re-include sl.auth.*");
+});

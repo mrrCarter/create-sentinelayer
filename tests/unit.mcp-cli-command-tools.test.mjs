@@ -202,9 +202,6 @@ test("Unit MCP CLI command tools: generates leaf tools from commander tree", asy
   const names = tools.map((tool) => tool.name);
 
   assert.deepEqual(names, [
-    "sl.auth.logout",
-    "sl.config.get",
-    "sl.config.list",
     "sl.mcp.server.run",
     "sl.session.say",
   ]);
@@ -219,13 +216,6 @@ test("Unit MCP CLI command tools: generates leaf tools from commander tree", asy
   assert.equal(say.security.requires_human_approval, true);
   assert.equal(say.metadata.supportsJson, true);
   assert.deepEqual(say.metadata.cliPath, ["session", "say"]);
-
-  const logout = tools.find((tool) => tool.name === "sl.auth.logout");
-  assert.equal(logout.security.runtime_blocked, true);
-  assert.equal(logout.security.runtime_block_reason, "blocked_sensitive_cli_command");
-  const configGet = tools.find((tool) => tool.name === "sl.config.get");
-  assert.equal(configGet.security.runtime_blocked, true);
-  assert.equal(configGet.security.runtime_block_reason, "blocked_sensitive_cli_command");
 });
 
 test("Unit MCP CLI command tools: maps tool input to CLI args and forces json when supported", async () => {
@@ -291,6 +281,7 @@ test("Unit MCP CLI command tools: blocks recursive mcp server run bridge", async
 test("Unit MCP CLI command tools: blocks sensitive auth/config commands before execution", async () => {
   const tools = await buildCliCommandMcpTools({
     buildProgramFn: async () => buildFakeProgram(),
+    includeSensitive: true,
   });
   const handlers = createCliCommandMcpToolHandlers(tools, {
     executeCliCommandFn: async () => {
