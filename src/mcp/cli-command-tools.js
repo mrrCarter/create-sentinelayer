@@ -293,11 +293,13 @@ export async function buildCliCommandMcpTools({
   generatedAt = "1970-01-01T00:00:00.000Z",
   program = null,
   includeHidden = false,
+  includeSensitive = false,
 } = {}) {
   const registry = await buildRegistryTemplateFn({
     generatedAt,
     program: program || (buildProgramFn ? await buildProgramFn() : null),
     includeHidden,
+    includeSensitive,
   });
   return (Array.isArray(registry?.tools) ? registry.tools : [])
     .map(normalizeRegistryTool)
