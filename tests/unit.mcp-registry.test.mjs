@@ -62,6 +62,7 @@ test("Unit MCP registry: SentinelLayer session registry exposes inbox and write 
   const tools = new Set(parsed.tools.map((tool) => tool.name));
 
   assert.equal(tools.has("poll_inbox"), true);
+  assert.equal(tools.has("read_history"), true);
   assert.equal(tools.has("send_message"), true);
   assert.equal(tools.has("session_action"), true);
   assert.equal(tools.has("session_react"), true);
@@ -71,9 +72,13 @@ test("Unit MCP registry: SentinelLayer session registry exposes inbox and write 
   assert.equal(tools.has("session_locks"), true);
   assert.equal(tools.has("attention_request"), true);
   const pollInbox = parsed.tools.find((tool) => tool.name === "poll_inbox");
+  const readHistory = parsed.tools.find((tool) => tool.name === "read_history");
   assert.equal(pollInbox.transport.type, "internal");
   assert.equal(pollInbox.input_schema.properties.includeActions.type, "boolean");
   assert.equal(pollInbox.input_schema.properties.actionLimit.maximum, 200);
+  assert.equal(readHistory.transport.url, "sentinelayer://session/read_history");
+  assert.equal(readHistory.input_schema.required.includes("agentId"), false);
+  assert.equal(readHistory.input_schema.properties.beforeSequence.minimum, 1);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "send_message").security.scopes, ["session:write"]);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "session_react").security.scopes, ["session:write", "session:action"]);
   assert.deepEqual(parsed.tools.find((tool) => tool.name === "session_lock").security.scopes, ["session:lock"]);
@@ -89,18 +94,25 @@ test("Unit MCP registry: hosted Senti connector contract rejects identity from t
   const parsed = validateHostedSentiSessionConnectorContract(contract, {
     registryPayload: registry,
   });
+  const joinAndHydrate = parsed.tools.find((tool) => tool.tool_name === "join_and_hydrate");
   const pollInbox = parsed.tools.find((tool) => tool.tool_name === "poll_inbox");
+  const readHistory = parsed.tools.find((tool) => tool.tool_name === "read_history");
   const subscribeWake = parsed.tools.find((tool) => tool.tool_name === "subscribe_wake");
 
   assert.equal(parsed.runtime_status, "contract_only");
   assert.equal(parsed.boundary.identity_source, "validated_oauth_claims_and_server_session_seat");
   assert.equal(parsed.boundary.long_lived_cli_token_passthrough_allowed, false);
+  assert.equal(joinAndHydrate.operation, "join_and_hydrate");
+  assert.equal(joinAndHydrate.input_policy.allowed_user_args.includes("sessionId"), false);
   assert.equal(pollInbox.input_policy.identity_source, "server_session_seat");
   assert.equal(pollInbox.input_policy.rejects_identity_from_tool_args, true);
   assert.equal(pollInbox.input_policy.allowed_user_args.includes("sessionId"), false);
   assert.equal(pollInbox.input_policy.allowed_user_args.includes("agentId"), false);
   assert.equal(pollInbox.input_policy.forbidden_capability_args.includes("sessionId"), true);
   assert.equal(pollInbox.input_policy.forbidden_capability_args.includes("agentId"), true);
+  assert.equal(readHistory.operation, "read_history");
+  assert.equal(readHistory.input_policy.allowed_user_args.includes("beforeSequence"), true);
+  assert.equal(readHistory.input_policy.allowed_user_args.includes("agentId"), false);
   assert.equal(subscribeWake.operation, "subscribe_wake");
   assert.equal(subscribeWake.wake_payload.may_include_message_content, false);
   assert.equal(subscribeWake.runner_lifecycle.revoke_token_on_idle_teardown, true);
