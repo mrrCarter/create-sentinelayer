@@ -444,6 +444,13 @@ function recentHumanActivityFromActions(remoteActions = null, { limit = DEFAULT_
     : [];
 }
 
+function normalizeHistoryEvents(events = [], { includeControlEvents = false } = {}) {
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    if (!includeControlEvents && isSessionControlEvent(event)) return false;
+    return true;
+  });
+}
+
 function requireSessionId(input = {}) {
   const sessionId = normalizeString(input.sessionId || input.session_id || input.session);
   if (!sessionId) {
@@ -807,6 +814,85 @@ export function createSessionMcpToolHandlers({
       };
     },
 
+    async read_history(input = {}) {
+      const sessionId = requireSessionId(input);
+      const cursor = normalizeString(input.cursor || input.after || input.since) || null;
+      const beforeSequence = normalizeOptionalPositiveInteger(
+        input.beforeSequence || input.before_sequence,
+        "beforeSequence",
+      );
+      if (cursor && beforeSequence) {
+        throw new Error("Use either cursor/after/since or beforeSequence, not both.");
+      }
+      const limit = normalizeLimit(input.limit || input.tail || input.maxEvents || input.max_events);
+      const actionLimit = normalizeLimit(input.actionLimit || input.action_limit || limit);
+      const includeActions = input.includeActions !== false && input.include_actions !== false;
+      const includeControlEvents = Boolean(input.includeControlEvents || input.include_control_events);
+      const includeRaw = Boolean(input.includeRaw || input.include_raw);
+      const forceCircuitProbe = input.forceCircuitProbe !== false && input.force_circuit_probe !== false;
+
+      const result = cursor
+        ? await pollSessionEventsFn(sessionId, {
+            targetPath,
+            since: cursor,
+            limit,
+            forceCircuitProbe,
+          })
+        : await pollSessionEventsBeforeFn(sessionId, {
+            targetPath,
+            beforeSequence,
+            limit,
+            forceCircuitProbe,
+          });
+      if (!result?.ok) {
+        return {
+          ok: false,
+          reason: result?.reason || "read_history_failed",
+          sessionId,
+          source: cursor ? "after_cursor" : beforeSequence ? "before_sequence" : "latest_tail",
+          cursor,
+          beforeSequence: beforeSequence || null,
+          events: [],
+          eventCount: 0,
+          materialEventCount: 0,
+        };
+      }
+
+      const rawEvents = Array.isArray(result.events) ? result.events : [];
+      const events = normalizeHistoryEvents(rawEvents, { includeControlEvents });
+      const actionResult = includeActions
+        ? await listSessionMessageActionsFn(sessionId, {
+            targetPath,
+            limit: actionLimit,
+            forceCircuitProbe,
+          })
+        : null;
+      const recentHumanActivity = actionResult?.ok
+        ? recentHumanActivityFromActions(actionResult, { limit: actionLimit })
+        : [];
+
+      return {
+        ok: true,
+        reason: "",
+        sessionId,
+        source: cursor ? "after_cursor" : beforeSequence ? "before_sequence" : "latest_tail",
+        cursor: normalizeString(result.cursor) || cursor,
+        beforeSequence: normalizePositiveInteger(result.beforeSequence || result.before_sequence, null),
+        eventCount: rawEvents.length,
+        materialEventCount: events.length,
+        recentHumanActivityCount: recentHumanActivity.length,
+        recentHumanActivity,
+        actionProjection: actionResult
+          ? {
+              ok: Boolean(actionResult.ok),
+              reason: actionResult.reason || "",
+              count: Array.isArray(actionResult.actions) ? actionResult.actions.length : 0,
+            }
+          : null,
+        events: includeRaw ? events : events.map((event) => summarizeSessionEvent(event)),
+      };
+    },
+
     async send_message(input = {}) {
       const sessionId = requireSessionId(input);
       const agentId = requireAgentId(input);
@@ -1008,6 +1094,27 @@ export const SESSION_MCP_TOOLS = Object.freeze([
         actionLimit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
         includeActions: { type: "boolean", default: true },
         includeSelf: { type: "boolean", default: false },
+        includeControlEvents: { type: "boolean", default: false },
+        includeRaw: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "read_history",
+    title: "Read Senti History",
+    description:
+      "Hydrate a bounded recent, older, or after-cursor session transcript window without recipient filtering.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sessionId"],
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        cursor: { type: "string" },
+        beforeSequence: { type: "integer", minimum: 1 },
+        limit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
+        actionLimit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
+        includeActions: { type: "boolean", default: true },
         includeControlEvents: { type: "boolean", default: false },
         includeRaw: { type: "boolean", default: false },
       },
@@ -1285,7 +1392,7 @@ export async function handleMcpJsonRpcMessage(
         version: "0.20.0",
       },
       instructions:
-        "Use native Senti tools for coordination actions and generated sl.* bridge tools for the rest of SentinelLayer CLI. Poll first with poll_inbox, use session_action/session_react/session_reply/session_lock/session_unlock/session_locks for low-noise session work, use send_message for durable posts, and use generated command tools such as sl.auth.status or sl.review.scan for ordinary CLI commands.",
+        "Use native Senti tools for coordination actions and generated sl.* bridge tools for the rest of SentinelLayer CLI. Use poll_inbox for addressed wake-style delivery, read_history for recent/older transcript grounding, session_action/session_react/session_reply/session_lock/session_unlock/session_locks for low-noise session work, send_message for durable posts, and generated command tools such as sl.auth.status or sl.review.scan for ordinary CLI commands.",
     });
   }
 
