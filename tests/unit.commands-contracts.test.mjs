@@ -497,6 +497,8 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(listen, "--since <cursor>");
   assertCommandHasOption(listen, "--replay");
   assertCommandHasOption(listen, "--max-polls <n>");
+  assertCommandHasOption(listen, "--force");
+  assertCommandHasOption(listen, "--allow-duplicate");
 
   const wake = getCommandByPath(program, "session wake");
   assert.ok(wake.description().includes("Wake"));

@@ -66,6 +66,12 @@ import {
 } from "../session/store.js";
 import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import {
+  getListenerProcessStatus,
+  removeListenerPidRecord,
+  requestListenerProcessStop,
+  writeListenerPidRecord,
+} from "../session/listener-process.js";
+import {
   filterSessionMaterialEvents,
   isSessionControlEvent,
 } from "../session/control-events.js";
@@ -4539,6 +4545,14 @@ export function registerSessionCommand(program) {
     .option("--replay", "Emit matching historical events on the first poll")
     .option("--max-polls <n>", "Stop after N poll cycles (useful for tests and smoke checks)")
     .option(
+      "--force",
+      "Stop and replace an existing local listener process for this session/agent",
+    )
+    .option(
+      "--allow-duplicate",
+      "Allow multiple local listeners for the same session/agent (advanced; can duplicate wake hooks)",
+    )
+    .option(
       "--wake <command>",
       "Wake hook: run this shell command on each matched event (notify->resume bridge). Metadata JSON is piped to stdin; sanitized SL_WAKE_* env vars are set.",
     )
@@ -4666,18 +4680,59 @@ export function registerSessionCommand(program) {
       if (options.fromNow && options.since !== undefined) {
         throw new Error("Use either --from-now or --since, not both.");
       }
-      const restoreConsoleLog = listenLogPath
-        ? installRotatingConsoleLog({
-            logPath: listenLogPath,
-            maxBytes: parsePositiveInteger(options.logMaxBytes, "log-max-bytes", DEFAULT_ROTATING_LOG_MAX_BYTES),
-            maxFiles: parsePositiveInteger(options.logMaxFiles, "log-max-files", DEFAULT_ROTATING_LOG_MAX_FILES),
-            tee: true,
-          })
-        : null;
+      const listenerId = `listener-${agentId}-${randomUUID()}`;
+      const singletonEnabled = maxPolls === null && !options.allowDuplicate;
+      let listenerPidRecordActive = false;
+      if (singletonEnabled) {
+        const existingListener = await getListenerProcessStatus(normalizedSessionId, agentId, {
+          targetPath,
+        });
+        if (existingListener.running && !options.force) {
+          throw new Error(
+            `A local session listener is already running for session ${normalizedSessionId} as ${agentId} (pid ${existingListener.pid}). Use --force to take over or --allow-duplicate if you intentionally need more than one.`,
+          );
+        }
+        if (existingListener.running && options.force) {
+          const stopResult = await requestListenerProcessStop(existingListener.pid);
+          if (!stopResult.stopped) {
+            throw new Error(
+              `Unable to stop existing listener pid ${existingListener.pid} for session ${normalizedSessionId} as ${agentId} (${stopResult.reason}). Stop it manually or use --allow-duplicate if parallel listeners are intentional.`,
+            );
+          }
+        }
+        await writeListenerPidRecord(normalizedSessionId, agentId, {
+          targetPath,
+          listenerId,
+          transport: listenTransport,
+          intervalSeconds,
+          activeIntervalSeconds,
+          presenceIntervalSeconds,
+          logFile: listenLogPath,
+        });
+        listenerPidRecordActive = true;
+      }
+      let restoreConsoleLog = null;
+      try {
+        restoreConsoleLog = listenLogPath
+          ? installRotatingConsoleLog({
+              logPath: listenLogPath,
+              maxBytes: parsePositiveInteger(options.logMaxBytes, "log-max-bytes", DEFAULT_ROTATING_LOG_MAX_BYTES),
+              maxFiles: parsePositiveInteger(options.logMaxFiles, "log-max-files", DEFAULT_ROTATING_LOG_MAX_FILES),
+              tee: true,
+            })
+          : null;
+      } catch (error) {
+        if (listenerPidRecordActive) {
+          await removeListenerPidRecord(normalizedSessionId, agentId, {
+            targetPath,
+            onlyForPid: process.pid,
+          }).catch(() => {});
+        }
+        throw error;
+      }
       const ac = new AbortController();
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
-      const listenerId = `listener-${agentId}-${randomUUID()}`;
       const durablePresenceEnabled = options.presence !== false;
       const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
@@ -4909,6 +4964,12 @@ export function registerSessionCommand(program) {
           restoreConsoleLog();
         }
         process.removeListener("SIGINT", onSigint);
+        if (listenerPidRecordActive) {
+          await removeListenerPidRecord(normalizedSessionId, agentId, {
+            targetPath,
+            onlyForPid: process.pid,
+          }).catch(() => {});
+        }
       }
     });
 

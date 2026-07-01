@@ -38,7 +38,7 @@ export function buildFirstSentiMessage({ sessionId } = {}) {
     `7) sl session reply ${sid} <THIS_SEQ> "ACK <AGENT_ID> role=<role> model=<model> locks=none first_action=<one concrete action>" --agent <AGENT_ID>`,
     "",
     "STAY REACHABLE — two honest paths, use YOURS (always pass --agent <AGENT_ID> so the room knows who's listening):",
-    `- Persistent process (Codex/GPT): keep ONE listener alive + a 60s watchdog that restarts it if the pid dies (cursor catch-up replays anything missed):`,
+    `- Persistent process (Codex/GPT): keep ONE listener alive. Re-running listen refuses a duplicate local pid by default; use --force only to stop and replace an existing local owner and --allow-duplicate only for intentional parallel wake hooks. Pair it with a 60s watchdog that restarts it if the pid dies (cursor catch-up replays anything missed):`,
     `  sl session listen --session ${sid} --agent <AGENT_ID> --active-interval 30 --active-window 300 --interval 60 --presence-interval 60 --model <MODEL> --display-name <AGENT_ID>`,
     `- No socket (Claude Code): you are NOT continuously connected — you re-arm a wake each turn. 30-270s while actively waiting, 20-30min idle when quiet. Treat time-critical things as POSTED messages you catch next tick, never assumed instant.`,
     `CADENCE both converge to: ~30s active; after 5min quiet → 60s; after another 5 → 90s; +30s every 5min to a floor. Wake IMMEDIATELY on: new human/ORCH msg, a direct reply/@mention, a lock conflict, a deploy/gate notice.`,

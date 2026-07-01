@@ -10,6 +10,10 @@ import { Command } from "commander";
 
 import { registerSessionCommand, resolveSessionSayAgentId } from "../src/commands/session.js";
 import { listenCursorSuffix } from "../src/session/listener.js";
+import {
+  readListenerPidRecord,
+  writeListenerPidRecord,
+} from "../src/session/listener-process.js";
 import { listAgents, registerAgent } from "../src/session/agent-registry.js";
 import { resetSessionSyncStateForTests } from "../src/session/sync.js";
 import { readSyncCursor, writeSyncCursor } from "../src/session/sync-cursor.js";
@@ -1196,6 +1200,40 @@ test("Unit session listen: publishes bounded listener presence for real agent id
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
     restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session listen: refuses duplicate local listener for same session and agent", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-singleton-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await writeListenerPidRecord("remote-listen", "Codex", {
+      targetPath: tempRoot,
+      pid: process.pid,
+      listenerId: "listener-codex-existing",
+    });
+
+    await assert.rejects(
+      runSessionCommand([
+        "session",
+        "listen",
+        "--session",
+        "remote-listen",
+        "--agent",
+        "Codex",
+        "--path",
+        tempRoot,
+        "--no-coaching",
+      ]),
+      /already running for session remote-listen as codex/,
+    );
+
+    const record = await readListenerPidRecord("remote-listen", "Codex", {
+      targetPath: tempRoot,
+    });
+    assert.equal(record.listenerId, "listener-codex-existing");
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
