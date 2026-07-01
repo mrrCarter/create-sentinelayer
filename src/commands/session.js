@@ -2177,13 +2177,15 @@ export function createSessionWakeRunner({
       return;
     }
     busy = true;
+    const rawSequence = event?.sequenceId ?? event?.sequence_id ?? "";
+    const sanitizedSequence = sanitizeWakeValue(rawSequence);
     const env = {
       ...process.env,
       SL_WAKE_SESSION_ID: sanitizeWakeValue(sessionId),
       SL_WAKE_AGENT_ID: sanitizeWakeValue(agentId),
       SL_WAKE_EVENT_TYPE: sanitizeWakeValue(event?.event),
       SL_WAKE_EVENT_CURSOR: sanitizeWakeValue(event?.cursor),
-      SL_WAKE_EVENT_SEQUENCE: String(event?.sequenceId ?? event?.sequence_id ?? ""),
+      SL_WAKE_EVENT_SEQUENCE: sanitizedSequence,
       SL_WAKE_ACTOR_ID: sanitizeWakeValue(event?.agent?.id || event?.agentId),
     };
     // Metadata-only wake envelope for the host command's stdin. Deliberately
@@ -2195,7 +2197,7 @@ export function createSessionWakeRunner({
       sessionId: env.SL_WAKE_SESSION_ID,
       agentId: env.SL_WAKE_AGENT_ID,
       cursor: env.SL_WAKE_EVENT_CURSOR,
-      sequenceId: event?.sequenceId ?? event?.sequence_id ?? null,
+      sequenceId: typeof rawSequence === "number" && Number.isFinite(rawSequence) ? rawSequence : sanitizedSequence || null,
       actorId: env.SL_WAKE_ACTOR_ID,
     };
     let child;
@@ -4538,7 +4540,7 @@ export function registerSessionCommand(program) {
     .option("--max-polls <n>", "Stop after N poll cycles (useful for tests and smoke checks)")
     .option(
       "--wake <command>",
-      "Wake hook: run this shell command on each matched event (notify->resume bridge). Event JSON is piped to stdin; SL_WAKE_* env vars are set.",
+      "Wake hook: run this shell command on each matched event (notify->resume bridge). Metadata JSON is piped to stdin; sanitized SL_WAKE_* env vars are set.",
     )
     .option(
       "--wake-host <name>",

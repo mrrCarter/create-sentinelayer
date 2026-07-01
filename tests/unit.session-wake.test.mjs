@@ -74,7 +74,7 @@ test("Unit wake runner: redacts message content/PII + sanitizes remote env value
   runner.trigger({
     event: "session_message",
     cursor: "c-1",
-    sequenceId: 99,
+    sequenceId: "99\nSEQUENCE-INJECT",
     agent: { id: "evil\ninjected-actor" },
     // Content fields a real session_message carries — must NOT be piped out.
     message: "SECRET user PII in the body",
@@ -97,13 +97,18 @@ test("Unit wake runner: redacts message content/PII + sanitizes remote env value
     "sessionId",
   ]);
   assert.equal(payload.event, "session_message");
-  assert.equal(payload.sequenceId, 99);
+  assert.equal(payload.sequenceId, "99 SEQUENCE-INJECT");
   // Remote-derived env value is sanitized: no control-char / newline injection.
   assert.ok(
     !calls[0].opts.env.SL_WAKE_ACTOR_ID.includes("\n"),
     "actor id newline must be stripped from the child env",
   );
   assert.equal(calls[0].opts.env.SL_WAKE_ACTOR_ID, "evil injected-actor");
+  assert.ok(
+    !calls[0].opts.env.SL_WAKE_EVENT_SEQUENCE.includes("\n"),
+    "sequence newline must be stripped from the child env",
+  );
+  assert.equal(calls[0].opts.env.SL_WAKE_EVENT_SEQUENCE, "99 SEQUENCE-INJECT");
 });
 
 test("Unit wake runner: coalesces a burst into one trailing wake", () => {
