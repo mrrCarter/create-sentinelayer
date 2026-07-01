@@ -396,6 +396,59 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");
 });
 
+test("Unit session sync: pollSessionEvents treats 429 as backoff without opening inbound circuit", async () => {
+  resetSessionSyncStateForTests();
+  let callCount = 0;
+  const authStub = async () => ({
+    token: "tok_test_123",
+    apiUrl: "https://api.sentinelayer.com",
+  });
+  const fetchImpl = async () => {
+    callCount += 1;
+    if (callCount <= 3) {
+      return {
+        ok: false,
+        status: 429,
+        headers: new Map([["Retry-After", "7"]]),
+        json: async () => ({ error: { code: "RATE_LIMITED" } }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: [{ cursor: "cursor-after-limit", event: "session_message" }],
+      }),
+    };
+  };
+
+  for (let index = 0; index < 3; index += 1) {
+    const limited = await pollSessionEvents("sess-events-rate", {
+      since: "cursor-before-limit",
+      resolveAuthSession: authStub,
+      fetchImpl,
+      nowMs: () => 1_700_000_401_000 + index,
+    });
+    assert.equal(limited.ok, false);
+    assert.equal(limited.reason, "rate_limited");
+    assert.equal(limited.status, 429);
+    assert.equal(limited.retryAfterMs, 7_000);
+    assert.equal(limited.cursor, "cursor-before-limit");
+  }
+
+  const recovered = await pollSessionEvents("sess-events-rate", {
+    since: "cursor-before-limit",
+    resolveAuthSession: authStub,
+    fetchImpl,
+    nowMs: () => 1_700_000_402_000,
+  });
+
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.cursor, "cursor-after-limit");
+  assert.equal(callCount, 4);
+  resetSessionSyncStateForTests();
+});
+
 test("Unit session sync: streamSessionEvents consumes SSE events from stream endpoint", async () => {
   resetSessionSyncStateForTests();
   const calls = [];
@@ -534,6 +587,35 @@ test("Unit session sync: pollSessionEventsBefore fetches latest tail chronologic
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${apiToken}`);
+});
+
+test("Unit session sync: pollSessionEventsBefore surfaces rate-limit retry metadata without circuit failure", async () => {
+  resetSessionSyncStateForTests();
+  let callCount = 0;
+  const result = await pollSessionEventsBefore("sess-before-rate", {
+    beforeSequence: 100,
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async () => {
+      callCount += 1;
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({ error: { code: "RATE_LIMITED", retryAfterMs: 2500 } }),
+      };
+    },
+    nowMs: () => 1_700_000_451_000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "rate_limited");
+  assert.equal(result.status, 429);
+  assert.equal(result.retryAfterMs, 2500);
+  assert.equal(result.beforeSequence, 100);
+  assert.equal(callCount, 1);
+  resetSessionSyncStateForTests();
 });
 
 test("Unit session sync: pollSessionEventsBefore orders durable rows by sequence across timestamp skew", async () => {

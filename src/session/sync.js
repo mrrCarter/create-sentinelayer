@@ -349,6 +349,65 @@ function recordCircuitSuccess(circuit) {
   persistCircuitState();
 }
 
+function responseHeader(response, name) {
+  const headers = response?.headers;
+  if (!headers || !name) return "";
+  if (typeof headers.get === "function") {
+    return normalizeString(headers.get(name));
+  }
+  const lower = String(name).toLowerCase();
+  if (headers instanceof Map) {
+    for (const [key, value] of headers.entries()) {
+      if (String(key).toLowerCase() === lower) return normalizeString(value);
+    }
+    return "";
+  }
+  if (typeof headers === "object") {
+    for (const [key, value] of Object.entries(headers)) {
+      if (String(key).toLowerCase() === lower) return normalizeString(value);
+    }
+  }
+  return "";
+}
+
+function retryAfterMsFromResponse(response, payload, nowMs = Date.now()) {
+  const retryAfterMs = [
+    payload?.retryAfterMs,
+    payload?.error?.retryAfterMs,
+    payload?.detail?.retryAfterMs,
+  ].map(Number).find((value) => Number.isFinite(value) && value > 0);
+  if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return Math.ceil(retryAfterMs);
+  }
+
+  const retryAfterSeconds = [
+    payload?.retryAfterSeconds,
+    payload?.error?.retryAfterSeconds,
+    payload?.detail?.retryAfterSeconds,
+  ].map(Number).find((value) => Number.isFinite(value) && value > 0);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.ceil(retryAfterSeconds * 1000);
+  }
+
+  const header = responseHeader(response, "Retry-After");
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.ceil(seconds * 1000);
+  }
+  const retryAtMs = Date.parse(header);
+  if (Number.isFinite(retryAtMs)) {
+    return Math.max(0, Math.ceil(retryAtMs - nowMs));
+  }
+  return null;
+}
+
+function isRateLimitResponse(response, payload) {
+  if (response?.status === 429) return true;
+  const code = normalizeString(payload?.error?.code || payload?.code || payload?.detail?.code).toUpperCase();
+  return code === "RATE_LIMITED";
+}
+
 // Test-only helper. Resets both circuits in memory AND on disk so unit
 // tests that exercise hydration don't leak state across runs.
 export function __resetCircuitStateForTests(homeDir) {
@@ -1357,8 +1416,19 @@ export async function pollSessionEvents(
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
+      { readErrorBody: true },
     );
     if (!response || !response.ok) {
+      if (isRateLimitResponse(response, payload)) {
+        return {
+          ok: false,
+          reason: "rate_limited",
+          status: response?.status || 429,
+          retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+          events: [],
+          cursor: normalizedSince || null,
+        };
+      }
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
       return {
         ok: false,
@@ -1677,8 +1747,20 @@ export async function pollSessionEventsBefore(
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
+      { readErrorBody: true },
     );
     if (!response || !response.ok) {
+      if (isRateLimitResponse(response, payload)) {
+        return {
+          ok: false,
+          reason: "rate_limited",
+          status: response?.status || 429,
+          retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+          events: [],
+          cursor: null,
+          beforeSequence: Number.isFinite(normalizedBeforeSequence) ? normalizedBeforeSequence : null,
+        };
+      }
       recordCircuitFailure(inboundCircuit, normalizedNowMs);
       return {
         ok: false,
