@@ -109,14 +109,21 @@ test("Unit listeners: ignores non-listener events", () => {
 });
 
 test("Unit listeners: fetchSessionListeners summarizes a poll result", async () => {
+  let pollOptions = null;
   const fakePoll = async () => ({
     ok: true,
     events: [heartbeat("api-01", { active: true, activeIntervalSeconds: 30 }, "2026-06-14T08:00:20Z")],
   });
-  const result = await fetchSessionListeners("sess-1", { poll: fakePoll, nowMs: () => NOW });
+  const recordingPoll = async (sessionId, options) => {
+    pollOptions = { sessionId, options };
+    return fakePoll();
+  };
+  const result = await fetchSessionListeners("sess-1", { poll: recordingPoll, nowMs: () => NOW });
   assert.equal(result.ok, true);
   assert.equal(result.listeners.length, 1);
   assert.equal(result.listeners[0].status, "active");
+  assert.equal(pollOptions.sessionId, "sess-1");
+  assert.equal(pollOptions.options.forceCircuitProbe, true);
 });
 
 test("Unit listeners: fetch surfaces a failed poll without throwing", async () => {
