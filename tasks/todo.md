@@ -29,6 +29,40 @@
   - `npm run check` (`345 files passed`).
   - `git diff --check` clean aside from expected Windows LF/CRLF notices.
 
+# 2026-07-01 - Senti MCP History Hydration (`codex/senti-mcp-hydrated-read-20260701`)
+
+## Plan
+- [x] Keep `codex-senti-product-0344` connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` on a quiet 40s listener cadence.
+- [x] Reconcile Carter's room-954 asks with peer ownership before taking a non-conflicting lane.
+- [x] Add a native local MCP `read_history` tool for bounded latest, older, or after-cursor transcript hydration without recipient filtering.
+- [x] Keep `poll_inbox` focused on addressed/wake-style delivery and document when agents should use each tool.
+- [x] Expose `read_history` in the local session MCP registry and hosted connector contract; add contract-only `join_and_hydrate` for the future hosted seat bootstrap.
+- [x] Preserve hosted MCP identity boundaries: no user-supplied `sessionId`, `agentId`, `userId`, or `orgId`; hosted identity remains validated OAuth claims plus server-side session seat.
+- [x] Add unit and e2e coverage for the local tool list, hosted contract counts, forbidden identity args, older-page history reads, and control-event filtering.
+- [x] Finish full e2e rerun, static/docs/package/review/Omar gates, then open PR and request Warden/Codex review in room 954.
+
+## Review
+- 2026-07-02 post-rebase proof on top of `origin/main` after `#719`:
+  - Rebased cleanly after preserving both the listener-singleton and MCP-history task ledger entries.
+  - Focused/e2e proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.mcp-registry.test.mjs tests/unit.mcp-session-stdio.test.mjs tests/e2e.test.mjs` (`132/132`).
+  - Static/docs/diff proof passed: `npm run check` (`345 files passed`), `npm run docs:build` validation passed, and `git diff --check origin/main...HEAD` was clean.
+  - Full review scan passed nonblocking: `review-scan-full-20260702-051818.md`, `scannedFiles=702`, `P1=0`, `P2=1`, `blocking=false`.
+  - Package proof: `npm pack --dry-run --json` produced `sentinelayer-cli-0.34.7.tgz` with shasum `2ac25207c44f950ed09e9e52cde932abcf61930b`.
+  - Local Omar attempt was bounded to `240s` and timed out (`OMARGATE_TIMEOUT`); hosted Omar remains the authoritative gate for the refreshed PR head.
+- Focused MCP unit suite passed: `node --import ./tests/setup-env.mjs --test tests/unit.mcp-session-stdio.test.mjs tests/unit.mcp-registry.test.mjs` (`24/24`).
+- Full unit suite passed before the e2e contract-count correction: `npm run test:unit` (`1703/1703`).
+- Static/docs/package gates passed before the e2e contract-count correction: `npm run check` (`344 files passed`), `npm run docs:build` (validation passed), and `npm pack --dry-run` produced shasum `e9ba92ee8e8ed087e744539276303c69f9dd1f82`.
+- Branch-local review scan passed before the e2e contract-count correction: `sl.cmd review scan --path . --mode diff --json` (`P1=0/P2=0/blocking=false`).
+- Branch-local Omar passed deterministically before the e2e contract-count correction: `omargate-1782936617135-abe8db20`, deterministic/reconciled `P0=0/P1=0/P2=0/P3=0`, `blocking=false`; AI personas reported managed-provider quota exhaustion only.
+- Full e2e initially caught one stale contract assertion in `tests/e2e.test.mjs` (`sessionRegistryPayload.toolCount` expected `9`, actual `10`). The test was corrected to assert `read_history`, `join_and_hydrate`, and hosted `read_history` by name.
+- Focused e2e after the correction passed: `node --import ./tests/setup-env.mjs --test --test-name-pattern "CLI mcp schema and registry commands scaffold and validate AIdenID template" tests/e2e.test.mjs` (`1/1`).
+- Full e2e rerun passed after the correction: `npm run test:e2e` (`120/120`).
+- Final repository verify passed after the MCP instruction update: `npm run verify` completed `check`, `docs:build`, `test:e2e`, `test:coverage`, and `npm pack --dry-run`; coverage summary was statements `91.49%`, branches `70.51%`, functions `92.67%`, lines `91.49%`; package shasum `e033838cb9bf55ae3c81c37536e1d68b2843fdd8`.
+- Final static and diff gates passed: `npm run check` (`344 files passed`), `git diff --check` clean aside from expected Windows LF/CRLF notices.
+- Final review scan passed: `review-scan-diff-20260701-203042.md`, 8 scoped files, `P1=0`, `P2=0`, `blocking=false`.
+- Final Omar Gate diff passed: `omargate-1782937843256-57e40d2e`, 8 scoped files, deterministic/reconciled `P0=0/P1=0/P2=0/P3=0`, `blocking=false`; AI personas returned managed-provider quota exhaustion only.
+- Repo-required `/audit` passed overall: `audit-20260701-203042.md`, `P1=0`, `P2=3`, `blocking=false`. Remaining P2s are pre-existing outside this MCP diff (`tasks/evals/2026-04-17-pr-335-spec-session-integration.md`, `src/scan/generator.js:229-230`).
+
 # 2026-07-01 - Senti Quiet Action Transcript Filtering (`codex/senti-control-noise-20260701`)
 
 ## Plan
@@ -63,7 +97,7 @@
 - Follow-up proof passed: workflow contract self-test; focused unit tests `6/6`; `npm run check` (`344 files passed`); `npm run test:unit` (`1694/1694`); filtered e2e run covering review scan (`108/108`); `npm run docs:build`; `git diff --check` clean aside from expected Windows LF/CRLF notices; `npm pack --dry-run --json` produced `sentinelayer-cli-0.34.4.tgz` shasum `fbdf5f39827b9ae4aad2717538b1bb1163ad5dbb`; branch-local review scan `review-scan-diff-20260701-130909.md` `P1=0/P2=0/blocking=false`; branch-local Omar `omargate-1782911350132-dea63050` `P0/P1/P2/P3=0`, `blocking=false`.
 - Hosted rerun after the cap-knob follow-up still failed Omar because the action was using the SentinelLayer managed LLM backend and the account-level daily managed quota remained exhausted; `max_daily_scans` and `min_scan_interval_minutes` were not the root limiter.
 - Added the real hosted fix: Omar workflow, generated workflow, and legacy workflow now bind `openai_api_key: ${{ secrets.OPENAI_API_KEY }}` and use `sentinelayer_managed_llm` only when `OPENAI_API_KEY` is absent and a SentinelLayer token exists. The contract checker now rejects managed-only drift, bad OpenAI secret bindings, alternate provider-key inputs, and missing fallback expressions.
-- Extended local review suppression so generated GitHub Actions context literals such as `openai_api_key: "${{ secrets.OPENAI_API_KEY }}"` do not raise fake credential findings in either `runDeterministicReviewPipeline` or the legacy `runLocalReviewScan`; real hardcoded token literals still trigger `SL-SEC-005`.
+- Extended local review suppression so generated GitHub Actions OpenAI secret-context bindings do not raise fake credential findings in either `runDeterministicReviewPipeline` or the legacy `runLocalReviewScan`; real hardcoded token literals still trigger `SL-SEC-005`.
 - BYO-LLM follow-up proof passed: workflow contract self-test and real workflow contract check; focused units `6/6`; `npm run check` (`344 files passed`); `npm run test:unit` (`1694/1694`); `node bin/sl.js review scan --path . --mode diff --json` (`P1=0/P2=0/blocking=false`); `node bin/sl.js /omargate deep --path . --json` `omargate-1782912244405-64e39f3b` (`P0/P1/P2/P3=0`, `blocking=false`; local AI personas hit SentinelLayer proxy `502 UPSTREAM_ERROR`, reinforcing the BYO hosted route); `npm pack --dry-run --json` shasum `f42a2d7d53c8c405d616f4fd27e4cca344185403`.
 - Hosted rerun after the BYO OpenAI follow-up proved the workflow used `openai_api_key: ***` and `sentinelayer_managed_llm=false`, but Omar still failed closed because the repo `OPENAI_API_KEY` hit OpenAI `429 insufficient_quota`.
 - Added a Google/Gemini fail-closed fallback follow-up: direct/generated/legacy workflows now pass `google_api_key: ${{ secrets.GOOGLE_API_KEY }}`, select `llm_provider=google` when the Google secret exists, use `gemini-2.5-pro` with `gemini-2.5-flash` fallback, disable Codex on that route, and only use SentinelLayer managed LLM when both BYO provider keys are absent.

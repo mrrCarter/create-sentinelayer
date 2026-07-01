@@ -114,6 +114,62 @@ test("Unit MCP session stdio: poll_inbox surfaces recent human action activity",
   assert.equal(result.recentHumanActivity[0].note, "new reply on an old parent");
 });
 
+test("Unit MCP session stdio: read_history hydrates unfiltered recent transcript context", async () => {
+  const calls = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsBeforeFn: async (sessionId, options) => {
+      calls.push({ sessionId, options });
+      return {
+        ok: true,
+        sessionId,
+        beforeSequence: 90,
+        cursor: "c9",
+        events: [
+          evt("c7", "human-mrrcarter", { message: "ship the ledger" }),
+          evt("c8", "codex", { message: "self context still matters" }),
+          evt("c9", "senti", { source: "session_listen", message: "heartbeat" }, { event: "session_listener_heartbeat" }),
+        ],
+      };
+    },
+    listSessionMessageActionsFn: async (sessionId, options) => ({
+      ok: true,
+      sessionId,
+      options,
+      actions: [
+        {
+          id: "human-ack",
+          sessionId,
+          targetSequenceId: 7,
+          actionType: "ack",
+          actorKind: "human",
+          actorId: "human-mrrcarter",
+          createdAt: "2026-05-25T05:00:00.000Z",
+        },
+      ],
+    }),
+  });
+
+  const result = await handlers.read_history({
+    sessionId: "sess-1",
+    limit: 25,
+    actionLimit: 5,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.source, "latest_tail");
+  assert.equal(result.beforeSequence, 90);
+  assert.equal(result.eventCount, 3);
+  assert.equal(result.materialEventCount, 2);
+  assert.deepEqual(
+    result.events.map((event) => event.payload.message),
+    ["ship the ledger", "self context still matters"],
+  );
+  assert.equal(result.recentHumanActivityCount, 1);
+  assert.equal(calls[0].options.limit, 25);
+  assert.equal(calls[0].options.forceCircuitProbe, true);
+});
+
 test("Unit MCP session stdio: send_message persists remote first and caches local second", async () => {
   const calls = [];
   const synced = [];
@@ -494,6 +550,7 @@ test("Unit MCP session stdio: JSON-RPC initialize, list, and call return MCP too
     { handlers },
   );
   assert.equal(listed.result.tools.some((tool) => tool.name === "poll_inbox"), true);
+  assert.equal(listed.result.tools.some((tool) => tool.name === "read_history"), true);
   assert.equal(listed.result.tools.some((tool) => tool.name === "session_react"), true);
   assert.equal(listed.result.tools.some((tool) => tool.name === "session_reply"), true);
   assert.equal(listed.result.tools.some((tool) => tool.name === "session_lock"), true);

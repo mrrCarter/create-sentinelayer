@@ -4466,8 +4466,9 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(sessionRegistryResult.code, 0, sessionRegistryResult.stderr || sessionRegistryResult.stdout);
     const sessionRegistryPayload = JSON.parse(String(sessionRegistryResult.stdout || "").trim());
     assert.equal(sessionRegistryPayload.command, "mcp registry init-session");
-    assert.equal(sessionRegistryPayload.toolCount, 9);
+    assert.equal(sessionRegistryPayload.toolCount, 10);
     assert.equal(sessionRegistryPayload.tools.includes("poll_inbox"), true);
+    assert.equal(sessionRegistryPayload.tools.includes("read_history"), true);
 
     const hostedContractResult = await runCli({
       cwd: tempRoot,
@@ -4486,7 +4487,9 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(hostedContractResult.code, 0, hostedContractResult.stderr || hostedContractResult.stdout);
     const hostedContractPayload = JSON.parse(String(hostedContractResult.stdout || "").trim());
     assert.equal(hostedContractPayload.command, "mcp registry init-hosted-session-connector");
-    assert.equal(hostedContractPayload.toolCount, 10);
+    assert.equal(hostedContractPayload.toolCount, 12);
+    assert.equal(hostedContractPayload.tools.includes("join_and_hydrate"), true);
+    assert.equal(hostedContractPayload.tools.includes("read_history"), true);
     assert.equal(hostedContractPayload.tools.includes("subscribe_wake"), true);
 
     const hostedValidateResult = await runCli({
@@ -4508,7 +4511,7 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
     assert.equal(hostedValidatePayload.command, "mcp registry validate-hosted-session-connector");
     assert.equal(hostedValidatePayload.valid, true);
     assert.equal(hostedValidatePayload.connector, "hosted-senti-session");
-    assert.equal(hostedValidatePayload.toolCount, 10);
+    assert.equal(hostedValidatePayload.toolCount, 12);
     assert.equal(hostedValidatePayload.releaseGateCount, 9);
 
     const hostedContract = JSON.parse(await readFile(hostedContractPath, "utf-8"));

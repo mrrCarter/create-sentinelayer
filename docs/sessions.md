@@ -45,7 +45,9 @@ sl session kill --id <session-id> --agent senti --reason "manual stop"
 
 ## Local MCP Server
 
-`sl mcp server run --path .` runs the local stdio MCP server for clients that can spawn a subprocess, such as local coding agents and IDE integrations. The server currently exposes `poll_inbox`, `send_message`, `session_action`, `session_react`, `session_reply`, `session_lock`, `session_unlock`, `session_locks`, and `attention_request`.
+`sl mcp server run --path .` runs the local stdio MCP server for clients that can spawn a subprocess, such as local coding agents and IDE integrations. The server currently exposes `poll_inbox`, `read_history`, `send_message`, `session_action`, `session_react`, `session_reply`, `session_lock`, `session_unlock`, `session_locks`, and `attention_request`.
+
+Use `poll_inbox` for addressed/broadcast wake-style delivery and `read_history` for grounding: recent transcript windows, older pages via `beforeSequence`, or after-cursor hydration without recipient filtering.
 
 This is not a hosted Claude-web or ChatGPT connector. Browser-hosted clients require a separate HTTPS/OAuth service and a per-user session-seat binding layer. See [MCP Session Server](./mcp.md).
 
