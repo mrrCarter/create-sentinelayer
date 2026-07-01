@@ -49,8 +49,61 @@ test("Unit wake runner: fires the command with event context on stdin + env", ()
   assert.equal(calls[0].opts.env.SL_WAKE_EVENT_CURSOR, "0000000026018:000065a2");
   assert.equal(calls[0].opts.env.SL_WAKE_EVENT_SEQUENCE, "26018");
   assert.equal(calls[0].opts.env.SL_WAKE_ACTOR_ID, "human-mrrcarter");
-  assert.deepEqual(JSON.parse(calls[0].stdin), EVENT);
+  // stdin carries a metadata-only envelope (NOT the raw event) so message
+  // body/content never reaches the external wake command.
+  assert.deepEqual(JSON.parse(calls[0].stdin), {
+    event: "session_message",
+    sessionId: "sess-1",
+    agentId: "claude-mythos",
+    cursor: "0000000026018:000065a2",
+    sequenceId: 26018,
+    actorId: "human-mrrcarter",
+  });
   assert.equal(emits[0].status, "fired");
+});
+
+test("Unit wake runner: redacts message content/PII + sanitizes remote env values", () => {
+  const calls = [];
+  const runner = createSessionWakeRunner({
+    command: "wake.sh",
+    sessionId: "s",
+    agentId: "a",
+    spawnImpl: fakeSpawn(calls),
+  });
+
+  runner.trigger({
+    event: "session_message",
+    cursor: "c-1",
+    sequenceId: 99,
+    agent: { id: "evil\ninjected-actor" },
+    // Content fields a real session_message carries — must NOT be piped out.
+    message: "SECRET user PII in the body",
+    messageParts: ["another SECRET chunk"],
+    body: "do-not-leak",
+  });
+
+  const piped = calls[0].stdin;
+  // PII: no message content may reach the external wake command's stdin.
+  assert.ok(!piped.includes("SECRET"), "message content must not leak to the wake hook");
+  assert.ok(!piped.includes("do-not-leak"));
+  // Envelope is metadata-only (fixed key set).
+  const payload = JSON.parse(piped);
+  assert.deepEqual(Object.keys(payload).sort(), [
+    "actorId",
+    "agentId",
+    "cursor",
+    "event",
+    "sequenceId",
+    "sessionId",
+  ]);
+  assert.equal(payload.event, "session_message");
+  assert.equal(payload.sequenceId, 99);
+  // Remote-derived env value is sanitized: no control-char / newline injection.
+  assert.ok(
+    !calls[0].opts.env.SL_WAKE_ACTOR_ID.includes("\n"),
+    "actor id newline must be stripped from the child env",
+  );
+  assert.equal(calls[0].opts.env.SL_WAKE_ACTOR_ID, "evil injected-actor");
 });
 
 test("Unit wake runner: coalesces a burst into one trailing wake", () => {

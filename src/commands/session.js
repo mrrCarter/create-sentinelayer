@@ -151,6 +151,22 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
+// A wake hook hands remote-influenced event fields to a local host command
+// (as SL_WAKE_* env vars). Bound + strip each value so a crafted event cannot
+// inject control chars / newlines into the child environment or blow it up.
+const WAKE_VALUE_MAX_LENGTH = 512;
+function sanitizeWakeValue(value) {
+  // Strip control chars (incl. NUL / newline) by codepoint so a crafted remote
+  // event cannot inject into the child env; a codepoint check avoids putting a
+  // control-char regex literal in source.
+  let out = "";
+  for (const ch of normalizeString(value)) {
+    const code = ch.codePointAt(0);
+    out += code < 0x20 || code === 0x7f ? " " : ch;
+  }
+  return out.slice(0, WAKE_VALUE_MAX_LENGTH);
+}
+
 function messagePartsHaveContent(messageParts) {
   const parts = Array.isArray(messageParts) ? messageParts : [messageParts];
   return parts.some((part) => normalizeString(part));
@@ -2163,12 +2179,24 @@ export function createSessionWakeRunner({
     busy = true;
     const env = {
       ...process.env,
-      SL_WAKE_SESSION_ID: normalizeString(sessionId),
-      SL_WAKE_AGENT_ID: normalizeString(agentId),
-      SL_WAKE_EVENT_TYPE: normalizeString(event?.event),
-      SL_WAKE_EVENT_CURSOR: normalizeString(event?.cursor),
+      SL_WAKE_SESSION_ID: sanitizeWakeValue(sessionId),
+      SL_WAKE_AGENT_ID: sanitizeWakeValue(agentId),
+      SL_WAKE_EVENT_TYPE: sanitizeWakeValue(event?.event),
+      SL_WAKE_EVENT_CURSOR: sanitizeWakeValue(event?.cursor),
       SL_WAKE_EVENT_SEQUENCE: String(event?.sequenceId ?? event?.sequence_id ?? ""),
-      SL_WAKE_ACTOR_ID: normalizeString(event?.agent?.id || event?.agentId),
+      SL_WAKE_ACTOR_ID: sanitizeWakeValue(event?.agent?.id || event?.agentId),
+    };
+    // Metadata-only wake envelope for the host command's stdin. Deliberately
+    // EXCLUDES the event body/content so session message text / PII never
+    // reaches an external process — the woken agent re-reads the room over its
+    // own authenticated channel using this cursor/sequence.
+    const wakePayload = {
+      event: env.SL_WAKE_EVENT_TYPE,
+      sessionId: env.SL_WAKE_SESSION_ID,
+      agentId: env.SL_WAKE_AGENT_ID,
+      cursor: env.SL_WAKE_EVENT_CURSOR,
+      sequenceId: event?.sequenceId ?? event?.sequence_id ?? null,
+      actorId: env.SL_WAKE_ACTOR_ID,
     };
     let child;
     try {
@@ -2186,7 +2214,7 @@ export function createSessionWakeRunner({
     });
     try {
       if (child && child.stdin) {
-        child.stdin.write(JSON.stringify(event ?? {}));
+        child.stdin.write(JSON.stringify(wakePayload));
         child.stdin.end();
       }
     } catch {
