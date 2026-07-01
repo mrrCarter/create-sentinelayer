@@ -5579,6 +5579,9 @@ export function registerSessionCommand(program) {
         const rawActionEvents = remoteActions?.ok
           ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
           : [];
+        const visibleActionEvents = includeControlEvents
+          ? rawActionEvents
+          : rawActionEvents.filter((event) => !isSessionControlEvent(event));
         const unacknowledgedHumanMessages = remoteActions?.ok
           ? readProjectionUnacknowledgedHumanMessages(remoteActions)
           : [];
@@ -5598,8 +5601,8 @@ export function registerSessionCommand(program) {
           : sourceEvents.filter((event) => !isSessionControlEvent(event));
         const hiddenControlEventCount = sourceEvents.length - transcriptEvents.length;
         const actionEvents = remoteWindowRead
-          ? filterSessionActionEventsForTranscriptWindow(rawActionEvents, transcriptEvents)
-          : rawActionEvents;
+          ? filterSessionActionEventsForTranscriptWindow(visibleActionEvents, transcriptEvents)
+          : visibleActionEvents;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
         const autoView = recordSessionReadViews(normalizedSessionId, events, {
           targetPath,
@@ -6250,15 +6253,19 @@ export function registerSessionCommand(program) {
           limit: 5_000,
         }),
       ]);
-      const actionEvents = remoteActions?.ok
+      const includeControlEvents = Boolean(options.includeControlEvents);
+      const rawActionEvents = remoteActions?.ok
         ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
         : [];
-      const includeControlEvents = Boolean(options.includeControlEvents);
+      const actionEvents = includeControlEvents
+        ? rawActionEvents
+        : rawActionEvents.filter((event) => !isSessionControlEvent(event));
       const dedupedEvents = dedupeSessionEvents(events);
       const transcriptBaseEvents = includeControlEvents
         ? dedupedEvents
         : filterSessionMaterialEvents(dedupedEvents);
-      const hiddenControlEventCount = dedupedEvents.length - transcriptBaseEvents.length;
+      const hiddenControlEventCount =
+        dedupedEvents.length - transcriptBaseEvents.length + rawActionEvents.length - actionEvents.length;
       const exportEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
       const stats = computeTranscriptStats({
         sessionMeta: sessionPayload,
@@ -6405,15 +6412,19 @@ export function registerSessionCommand(program) {
         listAgents(normalizedSessionId, { targetPath, includeInactive: true }),
         readStream(normalizedSessionId, { targetPath, tail: 0 }),
       ]);
-      const actionEvents = remoteActions?.ok
+      const includeControlEvents = Boolean(options.includeControlEvents);
+      const rawActionEvents = remoteActions?.ok
         ? buildSessionActionEvents(normalizedSessionId, remoteActions.actions)
         : [];
-      const includeControlEvents = Boolean(options.includeControlEvents);
+      const actionEvents = includeControlEvents
+        ? rawActionEvents
+        : rawActionEvents.filter((event) => !isSessionControlEvent(event));
       const dedupedEvents = dedupeSessionEvents(events);
       const transcriptBaseEvents = includeControlEvents
         ? dedupedEvents
         : filterSessionMaterialEvents(dedupedEvents);
-      const hiddenControlEventCount = dedupedEvents.length - transcriptBaseEvents.length;
+      const hiddenControlEventCount =
+        dedupedEvents.length - transcriptBaseEvents.length + rawActionEvents.length - actionEvents.length;
       const transcriptEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
 
       // Pull GitHub/Google avatar + display name from the active auth

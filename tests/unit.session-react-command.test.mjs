@@ -512,7 +512,7 @@ test("Unit session read --remote: hanging auto-view action body does not block o
   }
 });
 
-test("Unit session read --remote: view actions stay out of visible transcript events", async () => {
+test("Unit session read --remote: quiet actions stay out of visible transcript events", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-view-actions-hidden-"));
   const mock = await startActionMockApi({
     actions: [
@@ -562,7 +562,7 @@ test("Unit session read --remote: view actions stay out of visible transcript ev
     );
     assert.equal(
       payload.events.some((event) => event.payload?.actionType === "ack"),
-      true,
+      false,
     );
   } finally {
     await mock.close();

@@ -1,8 +1,20 @@
 const SESSION_CONTROL_EVENT_TYPES = new Set([
+  "file_lock",
+  "file_unlock",
+  "file_lock_expired",
   "listener_stop",
   "session_coaching",
   "session_listen_catchup",
   "session_listen_error",
+  "session_reaction",
+]);
+
+const QUIET_SESSION_ACTION_TYPES = new Set([
+  "ack",
+  "dislike",
+  "disregard",
+  "like",
+  "view",
 ]);
 
 function normalizeString(value) {
@@ -28,8 +40,13 @@ export function isSessionListenerLifecycleEvent(event = {}) {
 
 export function isSessionControlEvent(event = {}) {
   const type = eventType(event);
+  const payload = event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? event.payload
+    : {};
+  const actionType = normalizeString(payload.actionType || payload.action_type || payload.reaction).toLowerCase();
   return (
     isSessionListenerLifecycleEvent(event) ||
+    (type === "session_action" && QUIET_SESSION_ACTION_TYPES.has(actionType)) ||
     type.startsWith("session_listen_") ||
     SESSION_CONTROL_EVENT_TYPES.has(type)
   );

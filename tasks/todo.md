@@ -1,3 +1,23 @@
+# 2026-07-01 - Senti Quiet Action Transcript Filtering (`codex/senti-control-noise-20260701`)
+
+## Plan
+- [x] Keep `codex-senti-product-0344` connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` without ACK spam.
+- [x] Confirm the dogfood issue in the published CLI: default remote reads still surface `file_lock` rows and quiet `session_action ack` projections as material chat.
+- [x] Extend session control-event classification to file locks, file unlocks, expired locks, quiet reactions, and quiet actions (`ack`, `view`, `like`, `dislike`, `disregard`) while preserving `working_on` as visible work coordination.
+- [x] Filter projected remote action rows in `session read`, `session export`, and `session download` unless `--include-control-events` is requested.
+- [x] Add regression coverage for classifier behavior, remote transcript projection, and quiet action visibility.
+- [x] Run full unit/e2e, static, docs, package, review, Omar, and branch-local dogfood gates.
+- [ ] Open PR, post Senti audit request, watch hosted gates, and merge/release only when green.
+
+## Review
+- In progress.
+- Focused action/control transcript suite passed: `node --test tests/unit.session-control-events.test.mjs tests/unit.session-post-agent.test.mjs tests/unit.session-react-command.test.mjs tests/unit.session-export.test.mjs tests/unit.session-remote-hydrate.test.mjs` (`90/90`).
+- Full package tests passed after updating the old `ack` visibility assertion to the new quiet-action contract: `npm test` (`1692/1692` unit, `118/118` e2e).
+- Static/docs/package gates passed: `npm run check` (`344 files passed`), `npm run docs:build` (validation passed), `git diff --check` clean aside from expected Windows LF/CRLF notices, and `npm pack --dry-run --json` produced `sentinelayer-cli-0.34.4.tgz` shasum `2cb706c2517de2cfdab79735d6e6acfd75328678`.
+- Branch-local dogfood passed against Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a`: default `node bin/sl.js session read ... --remote` hid quiet action/file-lock/control chatter while preserving material messages; `--include-control-events` still exposed listener/control rows for forensics.
+- Review scan passed: `review-scan-diff-20260701-124718.md`, `P1=0`, `P2=0`, `blocking=false`.
+- Omar Gate diff passed on rerun after one transient proxy 504: `omargate-1782910138658-20e37bd4`, deterministic `P0=0/P1=0/P2=0/P3=0`, AI `P0=0/P1=0/P2=0/P3=0`, both routed personas `ok`, `blocking=false`.
+
 # 2026-06-30 - Senti Recap Workspace Provenance (`builder/recap-provenance`)
 
 ## Plan
