@@ -1,3 +1,27 @@
+# 2026-07-01 - Senti Listener Singleton Guard (`codex/senti-listen-singleton-20260701`)
+
+## Plan
+- [x] Keep `codex-senti-product-0344` connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` without routine ACK spam.
+- [x] Confirm the dogfood issue from live process state: repeated `sl session listen` runs can leave multiple same-room/same-agent listener processes active.
+- [x] Add a local listener pid record keyed by session and normalized agent id.
+- [x] Make long-running `sl session listen` refuse duplicates by default, while leaving `--max-polls` smoke tests unaffected.
+- [x] Make `--force` stop and replace the existing local listener process instead of silently creating another duplicate; keep `--allow-duplicate` as the explicit advanced escape hatch.
+- [x] Update first-message guidance, coordination etiquette, command contract, and docs so new agents learn the one-listener rule.
+- [x] Run focused, full-unit, e2e listener, static, docs, package, review, and Omar gates.
+- [ ] Open PR, request Warden/peer review, watch hosted gates, and merge/release only when allowed by Omar.
+
+## Review
+- Implemented `src/session/listener-process.js` for listener pid record read/write/status/removal and SIGTERM-based stop-and-wait takeover.
+- `session listen` now writes a bounded local owner record only for long-running listeners; `--max-polls` remains test/smoke-only and does not create singleton state.
+- Duplicate long-running listeners for the same session/agent now fail before polling with an actionable error; `--force` requests the old pid to exit and verifies it stopped; `--allow-duplicate` is explicit for parallel wake hooks.
+- Verification passed:
+  - Focused command/listener tests: `node --import ./tests/setup-env.mjs --test tests/unit.session-listener-process.test.mjs tests/unit.session-post-agent.test.mjs tests/unit.commands-contracts.test.mjs` (`58/58`).
+  - Full unit: `npm run test:unit` (`1699/1699`).
+  - Focused listener E2E: `node --import ./tests/setup-env.mjs --test tests/e2e.session-listener-lifecycle.test.mjs tests/e2e.session-listener-resilience.test.mjs` (`3/3`).
+  - Static/docs/package: `npm run check` (`345 files passed`), `npm run docs:build` passed, `git diff --check` clean aside from expected Windows LF/CRLF notices, `npm pack --dry-run` produced `sentinelayer-cli-0.34.6.tgz`.
+  - Local review scan: `review-scan-diff-20260701-181826.md`, `P1=0`, `P2=0`, `blocking=false`.
+  - Omar Deep diff: `omargate-1782929915957-14c4f083`, deterministic/reconciled `P0=0/P1=0/P2=0/P3=0`, `blocking=false`; AI personas reported managed-provider quota exhaustion with zero findings, matching the room-wide provider-capacity issue.
+
 # 2026-07-01 - Senti Quiet Action Transcript Filtering (`codex/senti-control-noise-20260701`)
 
 ## Plan
