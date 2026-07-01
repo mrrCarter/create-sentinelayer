@@ -1479,6 +1479,7 @@ export async function pollSessionEvents(
  * @param {object} [options]
  * @param {string|null} [options.since] - durable cursor to resume after
  * @param {AbortSignal} [options.signal]
+ * @param {number} [options.idleTimeoutMs] - abort a connected stream after this many silent milliseconds
  * @param {(event: object) => Promise<void>|void} [options.onEvent]
  * @param {(payload: object) => Promise<void>|void} [options.onError]
  * @param {() => Promise<void>|void} [options.onHeartbeat]
@@ -1490,6 +1491,7 @@ export async function streamSessionEvents(
     targetPath = process.cwd(),
     since = null,
     timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    idleTimeoutMs = 0,
     signal = undefined,
     resolveAuthSession = resolveActiveAuthSession,
     fetchImpl = fetch,
@@ -1545,10 +1547,26 @@ export async function streamSessionEvents(
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/stream${suffix}`;
   const controller = new AbortController();
   const normalizedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
+  const normalizedIdleTimeoutMs = normalizePositiveInteger(idleTimeoutMs, 0);
   const timeoutHandle = setTimeout(() => controller.abort(), normalizedTimeoutMs);
   if (typeof timeoutHandle.unref === "function") {
     timeoutHandle.unref();
   }
+  let idleTimeoutHandle = null;
+  let idleTimedOut = false;
+  const clearIdleTimeout = () => {
+    if (!idleTimeoutHandle) return;
+    clearTimeout(idleTimeoutHandle);
+    idleTimeoutHandle = null;
+  };
+  const armIdleTimeout = () => {
+    if (!normalizedIdleTimeoutMs) return;
+    clearIdleTimeout();
+    idleTimeoutHandle = setTimeout(() => {
+      idleTimedOut = true;
+      controller.abort();
+    }, normalizedIdleTimeoutMs);
+  };
   const forwardAbort = () => controller.abort(signal?.reason);
   if (signal) {
     if (signal.aborted) {
@@ -1574,10 +1592,13 @@ export async function streamSessionEvents(
     );
   } catch (error) {
     clearTimeout(timeoutHandle);
+    clearIdleTimeout();
     if (signal) signal.removeEventListener("abort", forwardAbort);
     return {
       ok: false,
-      reason: isAbortLike(error) || signal?.aborted ? "aborted" : normalizeString(error?.message) || "stream_failed",
+      reason: idleTimedOut
+        ? "stream_idle_timeout"
+        : isAbortLike(error) || signal?.aborted ? "aborted" : normalizeString(error?.message) || "stream_failed",
       cursor: normalizedSince,
       eventCount: 0,
       errorCount: 0,
@@ -1621,7 +1642,9 @@ export async function streamSessionEvents(
       };
     }
 
+    armIdleTimeout();
     for await (const chunk of readResponseTextChunks(response)) {
+      armIdleTimeout();
       buffer += decoder.decode(chunk, { stream: true });
       buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       const blocks = buffer.split("\n\n");
@@ -1637,13 +1660,16 @@ export async function streamSessionEvents(
   } catch (error) {
     return {
       ok: false,
-      reason: isAbortLike(error) || signal?.aborted ? "aborted" : normalizeString(error?.message) || "stream_failed",
+      reason: idleTimedOut
+        ? "stream_idle_timeout"
+        : isAbortLike(error) || signal?.aborted ? "aborted" : normalizeString(error?.message) || "stream_failed",
       cursor,
       eventCount,
       errorCount,
       aborted: Boolean(signal?.aborted || isAbortLike(error)),
     };
   } finally {
+    clearIdleTimeout();
     if (signal) signal.removeEventListener("abort", forwardAbort);
   }
 
