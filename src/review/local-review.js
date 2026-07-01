@@ -95,6 +95,7 @@ const REVIEW_RULES = Object.freeze([
     regex: /\b(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,})\b/,
   },
   {
+    id: "SL-SEC-005",
     severity: "P2",
     message: "Possible hardcoded credential literal.",
     regex: /(api[_-]?key|secret|token)\s*[:=]\s*['\"][^'\"]{20,}['\"]/i,
@@ -334,6 +335,16 @@ function severityRank(value) {
 function regexMatches(regex, input) {
   const flags = regex.flags.replace(/g/g, "");
   return new RegExp(regex.source, flags).test(input);
+}
+
+function isGitHubActionsContextExpressionLiteral(line) {
+  return /(?:[:=]\s*)['"]?\s*\$\{\{\s*(?:github|secrets|vars|env|inputs|steps|needs|matrix|runner|strategy)\.[^}]+\}\}\s*['"]?/i.test(
+    String(line || "")
+  );
+}
+
+function shouldSuppressRuleLine(rule, line) {
+  return rule.id === "SL-SEC-005" && isGitHubActionsContextExpressionLiteral(line);
 }
 
 function sanitizeLineForExcerpt(line) {
@@ -588,6 +599,9 @@ async function scanRulesForFiles({ rootPath, filePaths, rules, maxFindings = MAX
       }
       for (const rule of lineRules) {
         if (!regexMatches(rule.regex, line)) {
+          continue;
+        }
+        if (shouldSuppressRuleLine(rule, line)) {
           continue;
         }
         const pushed = tryPushFinding(

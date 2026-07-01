@@ -2492,6 +2492,17 @@ test("Unit session read: --remote --before-sequence displays the requested older
                 createdAt: "2026-05-21T11:49:30.000Z",
               },
               {
+                id: "ack-relevant",
+                sessionId: session.sessionId,
+                targetSequenceId: 149,
+                actionType: "ack",
+                actorKind: "agent",
+                actorId: "builder-codex",
+                actorRole: "coder",
+                note: null,
+                createdAt: "2026-05-21T11:49:45.000Z",
+              },
+              {
                 id: "reply-local-latest",
                 sessionId: session.sessionId,
                 targetSequenceId: 201,
@@ -2556,6 +2567,10 @@ test("Unit session read: --remote --before-sequence displays the requested older
     );
     assert.equal(
       payload.events.some((event) => event.payload.message === "reply #201: unrelated newest reply"),
+      false,
+    );
+    assert.equal(
+      payload.events.some((event) => event.event === "session_action" && event.payload.actionType === "ack"),
       false,
     );
   } finally {

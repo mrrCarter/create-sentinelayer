@@ -17,6 +17,13 @@ test("Unit control events: classifies listener lifecycle and Senti control traff
     { event: "session_listen_catchup" },
     { event: "session_listen_error" },
     { event: "session_message", payload: { source: "session_listen", message: "tip" } },
+    { event: "file_lock" },
+    { event: "file_unlock" },
+    { event: "file_lock_expired" },
+    { event: "session_action", payload: { actionType: "ack" } },
+    { event: "session_action", payload: { actionType: "view" } },
+    { event: "session_action", payload: { actionType: "like" } },
+    { event: "session_reaction", payload: { actionType: "ack" } },
   ];
 
   for (const event of controls) {
@@ -28,7 +35,8 @@ test("Unit control events: keeps material chat/action traffic visible", () => {
   const material = [
     { event: "session_message", payload: { message: "work update" } },
     { event: "agent_response", payload: { response: "done" } },
-    { event: "session_action", payload: { actionType: "ack" } },
+    { event: "session_action", payload: { actionType: "working_on", note: "reviewing live deploy" } },
+    { event: "session_reply", payload: { message: "review complete" } },
   ];
 
   for (const event of material) {
