@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.34.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.1...v0.34.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* **ci:** pin Omar Codex execution mode ([597939e](https://github.com/mrrCarter/create-sentinelayer/commit/597939e21a3a6b218f65c02e7196c30845918989))
+* **ci:** use managed Omar LLM across create workflows ([6b6890d](https://github.com/mrrCarter/create-sentinelayer/commit/6b6890d0edfa14238cc91ba7b706251fb3e638c8))
+* **ci:** use managed Omar LLM across create workflows ([bcf4438](https://github.com/mrrCarter/create-sentinelayer/commit/bcf4438760a67803052a0422a43bc9314cbe533d))
+
 ## [0.34.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.0...v0.34.1) (2026-06-30)
 
 
