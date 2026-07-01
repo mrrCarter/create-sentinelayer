@@ -116,6 +116,7 @@ function rollupToJson(rollup) {
     providerCostUsd: rollup.providerCostUsd,
     customerCostUsd: rollup.hasCustomerCost ? rollup.customerCostUsd : null,
     unpriced: rollup.unpriced,
+    estimatedEntries: rollup.estimatedEntries || 0,
   };
 }
 
@@ -133,6 +134,7 @@ function hostedRollupToJson(rollup, fallbackLabel = "") {
       ? money(bag.customerCostUsd ?? bag.customer_cost_usd ?? bag.billableCostUsd ?? bag.billable_cost_usd) ?? 0
       : null,
     unpriced: nonNegativeInt(bag.unpriced),
+    estimatedEntries: nonNegativeInt(bag.estimatedEntries ?? bag.estimated_entries),
   };
 }
 
@@ -155,6 +157,7 @@ function entryToJson(entry) {
     providerCostUsd: entry.providerCostUsd,
     customerCostUsd: entry.customerCostUsd,
     unpriced: entry.unpriced,
+    estimated: Boolean(entry.estimated),
   };
 }
 
@@ -181,6 +184,7 @@ function hostedEntryToJson(entry) {
     providerCostUsd: money(bag.providerCostUsd ?? bag.provider_cost_usd ?? bag.costUsd ?? bag.cost_usd ?? bag.cost) ?? 0,
     customerCostUsd: money(bag.customerCostUsd ?? bag.customer_cost_usd ?? bag.billableCostUsd ?? bag.billable_cost_usd),
     unpriced: Boolean(bag.unpriced),
+    estimated: Boolean(bag.estimated),
   };
 }
 
@@ -214,8 +218,12 @@ export function buildSessionUsageReport({
   sessionId = "",
   events = [],
   recentLimit = DEFAULT_RECENT_LIMIT,
+  estimateMessageUsage = true,
 } = {}) {
-  const ledger = buildSessionUsageLedger(events, { sessionId: normalize(sessionId) });
+  const ledger = buildSessionUsageLedger(events, {
+    sessionId: normalize(sessionId),
+    includeEstimatedMessages: estimateMessageUsage,
+  });
   const limit = clampRecentLimit(recentLimit);
   return {
     schema: SESSION_USAGE_REPORT_SCHEMA,
@@ -230,6 +238,7 @@ export function buildSessionUsageReport({
       providerCostUsd: ledger.totals.providerCostUsd,
       customerCostUsd: ledger.totals.hasCustomerCost ? ledger.totals.customerCostUsd : null,
       unpriced: ledger.totals.unpriced,
+      estimatedEntries: ledger.totals.estimatedEntries || 0,
       priceBookVersions: ledger.priceBookVersions,
     },
     perAgent: sortRollups(ledger.perAgent).map(rollupToJson),
@@ -281,6 +290,7 @@ export function buildSessionUsageReportFromLedgerPayload({
       providerCostUsd: totals.providerCostUsd,
       customerCostUsd: totals.customerCostUsd,
       unpriced: totals.unpriced,
+      estimatedEntries: nonNegativeInt(source.estimatedEntries ?? source.estimated_entries ?? sourceTotals.estimatedEntries ?? sourceTotals.estimated_entries),
       priceBookVersions: resolvedPriceBookVersions,
     },
     perAgent: sourceArray(
@@ -343,7 +353,12 @@ export function renderSessionUsageMarkdown(report = {}) {
     `Provider cost: ${usdCell(totals.providerCostUsd)} - Customer cost: ${optionalUsdCell(totals.customerCostUsd, totals.customerCostUsd != null)}`,
   );
   lines.push(`Price books: ${(totals.priceBookVersions || []).map(tableText).filter(Boolean).join(", ") || "-"}`);
-  lines.push(`Duplicates skipped: ${intCell(totals.duplicatesSkipped)} - Unpriced entries: ${intCell(totals.unpriced)}`);
+  lines.push(
+    `Duplicates skipped: ${intCell(totals.duplicatesSkipped)} - Unpriced entries: ${intCell(totals.unpriced)} - Estimated entries: ${intCell(totals.estimatedEntries)}`,
+  );
+  if (totals.estimatedEntries > 0) {
+    lines.push("_Estimated entries are output-text estimates from non-human session messages, not billing-grade provider usage._");
+  }
   lines.push("");
 
   appendRollupTable(lines, {
@@ -366,8 +381,9 @@ export function renderSessionUsageMarkdown(report = {}) {
     lines.push(`| - | - | - | - | 0 | ${usdCell(0)} | - | - | - |`);
   } else {
     for (const entry of entries) {
+      const action = entry.estimated ? `${entry.action} (estimated)` : entry.action;
       lines.push(
-        `| ${tableText(timestampOnly(entry.timestamp)) || "-"} | ${codeCell(entry.agentId)} | ${codeCell(entry.action)} | ${codeCell(entry.model)} | ${intCell(entry.totalTokens)} | ${usdCell(entry.providerCostUsd)} | ${optionalUsdCell(entry.customerCostUsd, entry.customerCostUsd != null)} | ${codeCell(entry.ledgerEntryId)} | ${codeCell(entry.idempotencyKeyHash)} |`,
+        `| ${tableText(timestampOnly(entry.timestamp)) || "-"} | ${codeCell(entry.agentId)} | ${codeCell(action)} | ${codeCell(entry.model)} | ${intCell(entry.totalTokens)} | ${usdCell(entry.providerCostUsd)} | ${optionalUsdCell(entry.customerCostUsd, entry.customerCostUsd != null)} | ${codeCell(entry.ledgerEntryId)} | ${codeCell(entry.idempotencyKeyHash)} |`,
       );
     }
   }
@@ -387,6 +403,9 @@ export function renderSessionUsageSummary(report = {}) {
   lines.push(
     `priceBooks=${(totals.priceBookVersions || []).map(tableText).filter(Boolean).join(",") || "-"} duplicatesSkipped=${intCell(totals.duplicatesSkipped)} unpriced=${intCell(totals.unpriced)}`,
   );
+  if (totals.estimatedEntries > 0) {
+    lines.push(`estimatedEntries=${intCell(totals.estimatedEntries)} (output-text estimates; not billing-grade)`);
+  }
   const agents = Array.isArray(report.perAgent) ? report.perAgent.slice(0, 8) : [];
   if (agents.length) {
     lines.push("");
@@ -403,7 +422,7 @@ export function renderSessionUsageSummary(report = {}) {
     lines.push("Recent:");
     for (const entry of entries) {
       lines.push(
-        `- ${timestampOnly(entry.timestamp) || "-"} ${entry.agentId} ${entry.action} ${intCell(entry.totalTokens)} tokens ${usdCell(entry.providerCostUsd)} ledger=${entry.ledgerEntryId}`,
+        `- ${timestampOnly(entry.timestamp) || "-"} ${entry.agentId} ${entry.action}${entry.estimated ? " (estimated)" : ""} ${intCell(entry.totalTokens)} tokens ${usdCell(entry.providerCostUsd)} ledger=${entry.ledgerEntryId}`,
       );
     }
   }

@@ -425,6 +425,7 @@ export function computeTranscriptStats({
       usageEntries: resolvedUsageLedger.entries.length,
       duplicatesSkipped: resolvedUsageLedger.duplicatesSkipped,
       unpriced: resolvedUsageLedger.totals.unpriced,
+      estimatedEntries: resolvedUsageLedger.totals.estimatedEntries,
       priceBookVersions: resolvedUsageLedger.priceBookVersions,
     },
     sentiActions,
@@ -504,6 +505,12 @@ function rollupsByCostAndTokens(map) {
   ));
 }
 
+function estimateNote(count) {
+  const normalized = Math.max(0, Math.floor(Number(count || 0)));
+  if (normalized <= 0) return "";
+  return `${normalized.toLocaleString("en-US")} estimated`;
+}
+
 function recentUsageEntries(entries, limit = 10) {
   return entries
     .map((entry, index) => ({ entry, index }))
@@ -561,7 +568,15 @@ function appendUsageLedgerSection(lines, usageLedger) {
   );
   lines.push(`Provider cost: ${usdCell(totals.providerCostUsd)} · ${customerCostText}`);
   lines.push(`Price books: ${usageLedger.priceBookVersions.map(tableText).filter(Boolean).join(", ") || "—"}`);
-  lines.push(`Duplicates skipped: ${intCell(usageLedger.duplicatesSkipped)} · Unpriced entries: ${intCell(totals.unpriced)}`);
+  const estimateText = totals.estimatedEntries > 0
+    ? ` · Estimated entries: ${intCell(totals.estimatedEntries)}`
+    : "";
+  lines.push(
+    `Duplicates skipped: ${intCell(usageLedger.duplicatesSkipped)} · Unpriced entries: ${intCell(totals.unpriced)}${estimateText}`,
+  );
+  if (totals.estimatedEntries > 0) {
+    lines.push("_Estimated entries are output-text estimates from non-human session messages, not billing-grade provider usage._");
+  }
   lines.push("");
 
   appendUsageRollupTable(lines, {
@@ -580,8 +595,11 @@ function appendUsageLedgerSection(lines, usageLedger) {
   lines.push("| Time | Agent | Action | Model | Tokens | Provider cost | Customer cost | Idempotency key |");
   lines.push("|---|---|---|---|---:|---:|---:|---|");
   for (const entry of recentUsageEntries(usageLedger.entries)) {
+    const action = entry.estimated
+      ? `${entry.action} (${estimateNote(1)})`
+      : entry.action;
     lines.push(
-      `| ${tableText(timestampOnly(entry.timestamp)) || "—"} | ${codeCell(entry.agentId)} | ${codeCell(entry.action)} | ${codeCell(entry.model)} | ${intCell(entry.totalTokens)} | ${usdCell(entry.providerCostUsd)} | ${optionalUsdCell(entry.customerCostUsd, entry.customerCostUsd != null)} | ${codeCell(shortenIdempotencyKey(entry.idempotencyKey))} |`,
+      `| ${tableText(timestampOnly(entry.timestamp)) || "—"} | ${codeCell(entry.agentId)} | ${codeCell(action)} | ${codeCell(entry.model)} | ${intCell(entry.totalTokens)} | ${usdCell(entry.providerCostUsd)} | ${optionalUsdCell(entry.customerCostUsd, entry.customerCostUsd != null)} | ${codeCell(shortenIdempotencyKey(entry.idempotencyKey))} |`,
     );
   }
   lines.push("");
@@ -608,8 +626,10 @@ export function buildTranscriptMarkdown({
   speakerProfiles = new Map(),
   options = {},
 } = {}) {
+  const estimateMessageUsage = options.estimateMessageUsage !== false;
   const usageLedger = buildSessionUsageLedger(events, {
     sessionId: normalize(sessionMeta.sessionId),
+    includeEstimatedMessages: estimateMessageUsage,
   });
   const includeSystemEvents = options.includeSystemEvents !== false;
   const stats = computeTranscriptStats({ sessionMeta, events, speakerProfiles, usageLedger });
@@ -628,8 +648,12 @@ export function buildTranscriptMarkdown({
       stats.totals.customerCostTotalUsd == null
         ? ""
         : ` · Billable: $${stats.totals.customerCostTotalUsd.toFixed(4)}`;
+    const estimatedText =
+      stats.totals.estimatedEntries > 0
+        ? ` · Estimated entries: ${stats.totals.estimatedEntries.toLocaleString("en-US")}`
+        : "";
     lines.push(
-      `Tokens: ${stats.totals.tokenTotal.toLocaleString("en-US")} · Cost: $${stats.totals.costTotalUsd.toFixed(4)}${billableText}`,
+      `Tokens: ${stats.totals.tokenTotal.toLocaleString("en-US")} · Cost: $${stats.totals.costTotalUsd.toFixed(4)}${billableText}${estimatedText}`,
     );
   }
   lines.push("");

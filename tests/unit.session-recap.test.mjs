@@ -545,6 +545,71 @@ test("Unit session recap: includes token and cost usage ledger", async () => {
   }
 });
 
+test("Unit session recap: estimates non-human message usage when no provider ledger exists", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-estimated-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({
+      targetPath: tempRoot,
+      ttlSeconds: 120,
+      createdAt: "2026-05-19T08:00:00.000Z",
+      expiresAt: "2027-05-19T08:00:00.000Z",
+    });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agent: { id: "human-carter", model: "human", role: "human" },
+        ts: "2026-05-19T08:01:00.000Z",
+        payload: { message: "Can you check the usage meter?" },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agent: { id: "senti", model: "senti", role: "orchestrator" },
+        ts: "2026-05-19T08:01:30.000Z",
+        payload: { message: "Welcome to this Senti coding room." },
+      },
+      { targetPath: tempRoot },
+    );
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agent: { id: "codex-senti-product", model: "gpt-5.4-mini", role: "participant" },
+        ts: "2026-05-19T08:02:00.000Z",
+        payload: {
+          clientMessageId: "recap-estimated-message-1",
+          message: "The transcript download now marks estimated agent-message tokens as non-billing usage.",
+        },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex-senti-product",
+      maxEvents: 10,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T08:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Usage: [1-9][0-9]* tokens \/ \$/);
+    assert.match(recap.text, /Top agents: codex-senti-product/);
+    assert.equal(recap.summary.usageTotals.totalTokens > 0, true);
+    assert.equal(recap.summary.usageTotals.inputTokens, 0);
+    assert.equal(recap.summary.usageTopAgents[0].agentId, "codex-senti-product");
+    assert.equal(
+      recap.summary.usageTopAgents.some((agent) => agent.agentId === "human-carter" || agent.agentId === "senti"),
+      false,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: separates live listeners from recent transcript actors", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-listeners-"));
   try {

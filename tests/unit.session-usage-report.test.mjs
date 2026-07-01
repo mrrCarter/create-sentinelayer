@@ -112,6 +112,48 @@ test("session usage report tolerates malformed rows, dedupes retries, and bounds
   assert.doesNotThrow(() => renderSessionUsageSummary(report));
 });
 
+test("session usage report surfaces estimated non-human message usage as non-billing", () => {
+  const report = buildSessionUsageReport({
+    sessionId: "estimated-report-session",
+    events: [
+      {
+        event: "session_message",
+        sequenceId: 1,
+        ts: "2026-06-30T01:00:00.000Z",
+        agent: { id: "human-carter", model: "human" },
+        payload: { message: "Human prompt text is not charged as agent output." },
+      },
+      {
+        event: "session_message",
+        sequenceId: 2,
+        ts: "2026-06-30T01:00:30.000Z",
+        agent: { id: "claude-warden", model: "claude-sonnet-4.5" },
+        payload: {
+          clientMessageId: "claude-estimated-report-1",
+          message: "Security gate passes after replaying the scoped token rejection tests.",
+        },
+      },
+    ],
+  });
+
+  assert.equal(report.totals.acceptedEntries, 1);
+  assert.equal(report.totals.estimatedEntries, 1);
+  assert.equal(report.totals.totalTokens > 0, true);
+  assert.equal(report.perAgent[0].label, "claude-warden");
+  assert.equal(report.perAgent[0].estimatedEntries, 1);
+  assert.equal(report.recentEntries[0].estimated, true);
+  assert.match(report.recentEntries[0].idempotencyKeyHash, /^sha256:[0-9a-f]{16}$/);
+
+  const rendered = [
+    renderSessionUsageMarkdown(report),
+    renderSessionUsageSummary(report),
+  ].join("\n");
+  assert.match(rendered, /Estimated entries: 1/);
+  assert.match(rendered, /not billing-grade/);
+  assert.match(rendered, /estimated_agent_message \(estimated\)/);
+  assert.doesNotMatch(rendered, /Human prompt text/);
+});
+
 test("session usage report normalizes hosted ledger payloads without raw idempotency keys", () => {
   const rawIdempotencyKey = "sk-hosted-usage-idempotency-secret";
   const report = buildSessionUsageReportFromLedgerPayload({

@@ -109,6 +109,7 @@ import {
 } from "../session/rotating-log.js";
 import { buildSessionRecap } from "../session/recap.js";
 import { computeTranscriptStats } from "../session/transcript.js";
+import { buildSessionUsageLedger } from "../session/pricing-ledger.js";
 import {
   buildSessionUsageReport,
   buildSessionUsageReportFromLedgerPayload,
@@ -6267,9 +6268,14 @@ export function registerSessionCommand(program) {
       const hiddenControlEventCount =
         dedupedEvents.length - transcriptBaseEvents.length + rawActionEvents.length - actionEvents.length;
       const exportEvents = mergeSessionActionEvents(transcriptBaseEvents, actionEvents);
+      const usageLedger = buildSessionUsageLedger(exportEvents, {
+        sessionId: normalizedSessionId,
+        includeEstimatedMessages: true,
+      });
       const stats = computeTranscriptStats({
         sessionMeta: sessionPayload,
         events: exportEvents,
+        usageLedger,
       });
       const participants = buildSessionParticipants({
         statsAgents: stats.agents,
