@@ -4580,7 +4580,7 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
   }
 });
 
-test("CLI mcp server run exposes security metadata and honors CLI bridge kill-switch", async () => {
+test("CLI mcp server run excludes sensitive commands and honors CLI bridge kill-switch", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-stdio-"));
   try {
     const child = spawn(
@@ -4630,7 +4630,7 @@ test("CLI mcp server run exposes security metadata and honors CLI bridge kill-sw
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: "sl.auth.status", arguments: {} },
+        params: { name: "sl.session.list", arguments: {} },
       })}\n`,
     );
     child.stdin.end();
@@ -4644,10 +4644,12 @@ test("CLI mcp server run exposes security metadata and honors CLI bridge kill-sw
       .map((line) => JSON.parse(line));
     const listed = responses.find((response) => response.id === 1);
     const called = responses.find((response) => response.id === 2);
+    const sessionListTool = listed.result.tools.find((tool) => tool.name === "sl.session.list");
     const logoutTool = listed.result.tools.find((tool) => tool.name === "sl.auth.logout");
 
-    assert.equal(logoutTool.security.requires_human_approval, true);
-    assert.equal(logoutTool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+    assert.ok(sessionListTool, "expected non-sensitive session.list bridge tool to remain available");
+    assert.equal(sessionListTool.security.requires_human_approval, true);
+    assert.equal(logoutTool, undefined);
     assert.equal(called.result.structuredContent.ok, false);
     assert.equal(called.result.structuredContent.reason, "mcp_cli_bridge_disabled");
   } finally {
@@ -4725,11 +4727,9 @@ test("CLI mcp server run blocks secret-bearing config reads", async () => {
     const called = responses.find((response) => response.id === 2);
     const configListTool = listed.result.tools.find((tool) => tool.name === "sl.config.list");
 
-    assert.equal(configListTool.security.requires_human_approval, true);
-    assert.equal(configListTool.security.runtime_blocked, true);
-    assert.equal(configListTool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+    assert.equal(configListTool, undefined);
     assert.equal(called.result.structuredContent.ok, false);
-    assert.equal(called.result.structuredContent.reason, "blocked_sensitive_cli_command");
+    assert.equal(called.result.structuredContent.reason, "unknown_tool");
     assert.equal(called.result.structuredContent.tool, "sl.config.list");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

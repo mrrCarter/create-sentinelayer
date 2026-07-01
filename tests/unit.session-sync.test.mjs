@@ -536,7 +536,7 @@ test("Unit session sync: pollSessionEventsBefore fetches latest tail chronologic
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${apiToken}`);
 });
 
-test("Unit session sync: pollSessionEventsBefore keeps API before-sequence metadata across timestamp skew", async () => {
+test("Unit session sync: pollSessionEventsBefore orders durable rows by sequence across timestamp skew", async () => {
   resetSessionSyncStateForTests();
   const result = await pollSessionEventsBefore("sess-skewed", {
     beforeSequence: 100,
@@ -572,7 +572,7 @@ test("Unit session sync: pollSessionEventsBefore keeps API before-sequence metad
   assert.equal(result.ok, true);
   assert.deepEqual(
     result.events.map((event) => event.sequenceId),
-    [99, 98],
+    [98, 99],
   );
   assert.equal(result.beforeSequence, 98);
 });
@@ -600,7 +600,7 @@ test("Unit session sync: pollSessionEventsBefore falls back to minimum sequence 
   assert.equal(result.ok, true);
   assert.deepEqual(
     result.events.map((event) => event.sequenceId),
-    [99, 98],
+    [98, 99],
   );
   assert.equal(result.beforeSequence, 98);
 });

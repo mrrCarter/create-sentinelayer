@@ -185,6 +185,70 @@ test("session export: empty transcript has stable zero counts", async () => {
   }
 });
 
+test("session export: sequence-bearing events stay in durable sequence order across timestamp skew", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_usage",
+        agentId: "omargate-security",
+        sessionId: created.sessionId,
+        cursor: "000000000012:0000000c",
+        sequenceId: 12,
+        ts: "2026-07-01T05:00:00.000Z",
+        payload: {
+          schema: "billing/v1",
+          action: "omargate_deep",
+          totalTokens: 10,
+          providerCostUsd: 0.01,
+        },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_usage",
+        agentId: "omargate-testing",
+        sessionId: created.sessionId,
+        cursor: "000000000011:0000000b",
+        sequenceId: 11,
+        ts: "2026-07-01T05:00:00.001Z",
+        payload: {
+          schema: "billing/v1",
+          action: "omargate_deep",
+          totalTokens: 5,
+          providerCostUsd: 0.005,
+        },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+
+    const output = await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "json",
+      "--path",
+      root,
+    ]);
+    const payload = JSON.parse(output);
+    assert.deepEqual(
+      payload.events.map((event) => event.sequenceId),
+      [11, 12],
+    );
+    assert.deepEqual(
+      payload.events.map((event) => event.cursor),
+      ["000000000011:0000000b", "000000000012:0000000c"],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("session export: omits control events by default and includes them only on request", async () => {
   const root = await makeTempRepo();
   try {
