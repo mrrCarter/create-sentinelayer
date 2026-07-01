@@ -31,7 +31,7 @@ test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action
   assert.match(workflowText, /codex_model:\s*gpt-5\.3-codex/);
   assert.match(
     workflowText,
-    /model_fallback:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*!=\s*''\s*&&\s*'gpt-4\.1-mini'\s*\|\|\s*\(\(secrets\.GOOGLE_GEMINI_API_KEY\s*!=\s*''\s*\|\|\s*secrets\.GOOGLE_API_KEY\s*!=\s*''\)\s*&&\s*'gemini-2\.5-flash'\s*\|\|\s*'gpt-4\.1-mini'\)\s*\}\}/,
+    /model_fallback:\s*\$\{\{\s*\(secrets\.GOOGLE_GEMINI_API_KEY\s*!=\s*''\s*\|\|\s*secrets\.GOOGLE_API_KEY\s*!=\s*''\)\s*&&\s*'gemini-2\.5-flash'\s*\|\|\s*'gpt-4\.1-mini'\s*\}\}/,
   );
   assert.match(
     workflowText,
