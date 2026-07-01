@@ -253,9 +253,14 @@ function chronologicalSessionEvents(events = []) {
   return (Array.isArray(events) ? events : [])
     .map((event, index) => ({ event, index }))
     .sort((left, right) => {
+      const leftSequence = eventSequenceNumber(left.event);
+      const rightSequence = eventSequenceNumber(right.event);
+      if (leftSequence > 0 && rightSequence > 0 && leftSequence !== rightSequence) {
+        return leftSequence - rightSequence;
+      }
       const timeDiff = eventTimestampMs(left.event) - eventTimestampMs(right.event);
       if (timeDiff !== 0) return timeDiff;
-      const sequenceDiff = eventSequenceNumber(left.event) - eventSequenceNumber(right.event);
+      const sequenceDiff = leftSequence - rightSequence;
       if (sequenceDiff !== 0) return sequenceDiff;
       return left.index - right.index;
     })
