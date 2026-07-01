@@ -878,7 +878,7 @@ function roundCurrency(value) {
 }
 
 function normalizeUsageSummary(events = []) {
-  const aggregate = aggregateSessionUsage(events);
+  const aggregate = aggregateSessionUsage(events, { includeEstimatedMessages: true });
   const totals = {
     totalTokens: Number(aggregate.totals.totalTokens || 0),
     inputTokens: Number(aggregate.totals.inputTokens || 0),

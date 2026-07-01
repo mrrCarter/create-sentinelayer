@@ -374,6 +374,39 @@ test("buildTranscriptMarkdown: usage ledger renders explicit zero-telemetry stat
   assert.match(ledger, /^_No usage telemetry recorded\._$/m);
 });
 
+test("buildTranscriptMarkdown: estimates non-human chat message usage without billing human text", () => {
+  const { markdown, stats } = buildTranscriptMarkdown({
+    sessionMeta: { sessionId: "estimated-chat-session", createdAt: "2026-04-25T10:00:00.000Z" },
+    events: [
+      ev({
+        event: "session_message",
+        agentId: "human-carter",
+        model: "human",
+        ts: "2026-04-25T10:00:30.000Z",
+        payload: { message: "Please review the deployment blocker." },
+      }),
+      ev({
+        event: "session_message",
+        agentId: "codex-senti-product",
+        model: "gpt-5.4-mini",
+        ts: "2026-04-25T10:01:30.000Z",
+        payload: { clientMessageId: "codex-estimate-1", message: "The hosted Omar failure is a quota gate, not a diff finding." },
+      }),
+    ],
+  });
+
+  assert.equal(stats.totals.usageEntries, 1);
+  assert.equal(stats.totals.estimatedEntries, 1);
+  assert.equal(stats.totals.tokenTotal > 0, true);
+  const ledger = markdownSection(markdown, "Usage Ledger");
+  assert.match(ledger, /^Accepted entries: 1$/m);
+  assert.match(ledger, /Estimated entries: 1/);
+  assert.match(ledger, /not billing-grade provider usage/);
+  assert.match(ledger, /`estimated_agent_message \(1 estimated\)`/);
+  assert.match(ledger, /`codex-senti-product`/);
+  assert.doesNotMatch(ledger, /`human-carter`/);
+});
+
 test("buildTranscriptMarkdown: header includes Generated/Started/Live for/Senti actions", () => {
   const { markdown } = buildTranscriptMarkdown({
     sessionMeta: { sessionId: "abc123", createdAt: "2026-04-25T10:00:00.000Z" },

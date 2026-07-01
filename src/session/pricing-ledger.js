@@ -4,10 +4,12 @@ import {
   DEFAULT_PRICE_BOOK_VERSION,
   estimateModelCost,
 } from "../cost/tracker.js";
+import { estimateTokens } from "../cost/tokenizer.js";
 
 const SESSION_USAGE_EVENT = "session_usage";
 export const BILLING_SESSION_USAGE_SCHEMA = "billing/v1";
 export const LOCAL_SESSION_USAGE_SCHEMA = "session_usage/local-v1";
+export const ESTIMATED_MESSAGE_USAGE_SCHEMA = "session_usage/estimated-message-v1";
 const LEGACY_SESSION_USAGE_SCHEMAS = new Set(["", "session_usage/v0"]);
 const SUPPORTED_SESSION_USAGE_SCHEMAS = new Set([
   BILLING_SESSION_USAGE_SCHEMA,
@@ -38,6 +40,19 @@ const USAGE_HINT_KEYS = [
   "cost_usd",
   "cost",
 ];
+const ESTIMATED_MESSAGE_EVENT_KINDS = new Set([
+  "agent_response",
+  "session_message",
+  "session_say",
+]);
+const HUMAN_AGENT_IDS = new Set([
+  "cli-user",
+  "human",
+  "user",
+  "you",
+]);
+const DEFAULT_ESTIMATED_MESSAGE_USAGE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_ESTIMATED_MESSAGE_USAGE_DEDUPE_SEQUENCE_WINDOW = 3;
 
 function n(value) {
   return String(value == null ? "" : value).trim();
@@ -94,6 +109,12 @@ function roundUsd(value) {
   return Math.round(Number(value || 0) * 1_000_000) / 1_000_000;
 }
 
+function positiveInteger(value, fallbackValue) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
+  return Math.floor(parsed);
+}
+
 export function createSessionUsageLedgerId({
   sessionId = "",
   agentId = "",
@@ -114,6 +135,52 @@ function fallbackIdempotencyKey({ sessionId, event, agentId, action, model, tota
   const interaction = n(object(event.payload).interactionId || object(event.payload).interaction_id);
   const source = [sessionId, timestamp, agentId, action, model, totalTokens, interaction].join("\x1f");
   return `event:${createHash("sha256").update(source).digest("hex").slice(0, 32)}`;
+}
+
+function messageEstimateIdempotencyKey({ sessionId, event, agentId, model, text }) {
+  const payload = object(event?.payload);
+  const explicit =
+    n(payload.clientMessageId || payload.client_message_id) ||
+    n(event?.eventId || event?.event_id) ||
+    n(event?.idempotencyToken || event?.idempotency_token) ||
+    n(event?.cursor);
+  if (explicit) return `estimated-message:${explicit}`;
+  const sequence = n(event?.sequenceId ?? event?.sequence_id);
+  if (sequence) return `estimated-message:seq:${sequence}`;
+  const timestamp = n(event?.ts || event?.timestamp);
+  const source = [sessionId, timestamp, agentId, model, text].join("\x1f");
+  return `estimated-message:${createHash("sha256").update(source).digest("hex").slice(0, 32)}`;
+}
+
+function isLikelyHumanAgent({ agentId = "", role = "", model = "" } = {}) {
+  const id = n(agentId).toLowerCase();
+  const normalizedRole = n(role).toLowerCase();
+  const normalizedModel = n(model).toLowerCase();
+  if (!id && !normalizedModel) return true;
+  if (HUMAN_AGENT_IDS.has(id)) return true;
+  if (id.startsWith("human-") || id.startsWith("user-")) return true;
+  if (normalizedModel === "human") return true;
+  const agentLikeRole = ["coder", "reviewer", "tester", "observer", "orchestrator"].includes(normalizedRole);
+  const agentLikeId = /(codex|claude|gpt|gemini|grok|senti|kai-chen|agent|bot|warden|architect|builder)/i.test(id);
+  const agentLikeModel = /(gpt|claude|gemini|grok|codex|sonnet|opus|haiku)/i.test(normalizedModel);
+  if (normalizedRole === "human") return true;
+  if (normalizedRole === "participant" && !agentLikeId && !agentLikeModel) return true;
+  if (!agentLikeRole && !agentLikeId && !agentLikeModel && (!normalizedModel || normalizedModel === "unknown")) {
+    return true;
+  }
+  return false;
+}
+
+function responseText(payload = {}) {
+  if (payload.response && typeof payload.response === "object" && !Array.isArray(payload.response)) {
+    return n(payload.response.text);
+  }
+  return n(payload.response);
+}
+
+function messageText(event = {}) {
+  const payload = object(event?.payload);
+  return n(payload.message) || responseText(payload) || n(payload.text);
 }
 
 function providerCostFromPriceBook({ model, inputTokens, outputTokens, explicitProviderCost }) {
@@ -217,7 +284,137 @@ export function buildUsageLedgerEntry(
     unpriced,
     timestamp: n(event?.ts || event?.timestamp),
     sequenceId: nonNegativeInt(event?.sequenceId ?? event?.sequence_id),
+    estimated: false,
   };
+}
+
+export function buildEstimatedMessageLedgerEntry(
+  event,
+  {
+    sessionId = "",
+    priceBookVersion = DEFAULT_PRICE_BOOK_VERSION,
+    billingTier = "estimated",
+    includeHumanMessages = false,
+    action = "estimated_agent_message",
+  } = {},
+) {
+  const kind = n(event?.event || event?.type);
+  if (!ESTIMATED_MESSAGE_EVENT_KINDS.has(kind)) return null;
+
+  const payload = object(event?.payload);
+  if (hasUsageHints(payload) || hasUsageHints(payload.usage)) return null;
+
+  const text = messageText(event);
+  if (!text) return null;
+
+  const agent = object(event?.agent);
+  const agentId = n(agent.id || event?.agentId) || "unknown";
+  const model = n(agent.model || event?.agentModel || payload.model) || "unknown";
+  const role = n(agent.role || payload.role);
+  const lowerAgentId = agentId.toLowerCase();
+  if (lowerAgentId === "senti" || lowerAgentId === "kai-chen") {
+    return null;
+  }
+  if (!includeHumanMessages && isLikelyHumanAgent({ agentId, role, model })) {
+    return null;
+  }
+
+  const outputTokens = estimateTokens(text, {
+    model,
+    provider: n(agent.provider || payload.provider),
+  });
+  if (outputTokens <= 0) return null;
+
+  const actionName = n(action) || "estimated_agent_message";
+  const idempotencyKey = messageEstimateIdempotencyKey({
+    sessionId,
+    event,
+    agentId,
+    model,
+    text,
+  });
+  const ledgerEntryId = createSessionUsageLedgerId({
+    sessionId,
+    agentId,
+    action: actionName,
+    idempotencyKey,
+  });
+  const { providerCostUsd, unpriced } = providerCostFromPriceBook({
+    model,
+    inputTokens: 0,
+    outputTokens,
+    explicitProviderCost: null,
+  });
+
+  return {
+    ledgerEntryId,
+    idempotencyKey,
+    schema: ESTIMATED_MESSAGE_USAGE_SCHEMA,
+    sessionId: n(sessionId),
+    agentId,
+    action: actionName,
+    model,
+    priceBookVersion: n(priceBookVersion) || DEFAULT_PRICE_BOOK_VERSION,
+    billingTier: n(billingTier) || "estimated",
+    provider: n(agent.provider || payload.provider),
+    inputTokens: 0,
+    outputTokens,
+    totalTokens: outputTokens,
+    providerCostUsd: roundUsd(providerCostUsd),
+    customerCostUsd: null,
+    unpriced,
+    timestamp: n(event?.ts || event?.timestamp),
+    sequenceId: nonNegativeInt(event?.sequenceId ?? event?.sequence_id),
+    estimated: true,
+  };
+}
+
+function collectRealUsageAnchors(events = [], options = {}) {
+  const anchors = new Map();
+  for (const event of events) {
+    const entry = buildUsageLedgerEntry(event, options);
+    if (!entry || entry.estimated) continue;
+    if (!anchors.has(entry.agentId)) anchors.set(entry.agentId, []);
+    anchors.get(entry.agentId).push({
+      timestampMs: Date.parse(n(entry.timestamp)),
+      sequenceId: Number.isFinite(entry.sequenceId) ? entry.sequenceId : null,
+    });
+  }
+  return anchors;
+}
+
+function hasNearbyRealUsageAnchor(entry, anchors, options = {}) {
+  if (!entry || !entry.estimated || !anchors || anchors.size === 0) return false;
+  const agentAnchors = anchors.get(entry.agentId);
+  if (!agentAnchors || agentAnchors.length === 0) return false;
+  const windowMs = positiveInteger(
+    options.estimatedMessageUsageDedupeWindowMs,
+    DEFAULT_ESTIMATED_MESSAGE_USAGE_DEDUPE_WINDOW_MS,
+  );
+  const sequenceWindow = positiveInteger(
+    options.estimatedMessageUsageDedupeSequenceWindow,
+    DEFAULT_ESTIMATED_MESSAGE_USAGE_DEDUPE_SEQUENCE_WINDOW,
+  );
+  const entryTimestampMs = Date.parse(n(entry.timestamp));
+  const hasEntryTimestamp = Number.isFinite(entryTimestampMs);
+  const entrySequenceId = Number.isFinite(entry.sequenceId) ? entry.sequenceId : null;
+  return agentAnchors.some((anchor) => {
+    if (
+      entrySequenceId !== null &&
+      Number.isFinite(anchor.sequenceId) &&
+      Math.abs(entrySequenceId - anchor.sequenceId) <= sequenceWindow
+    ) {
+      return true;
+    }
+    if (
+      hasEntryTimestamp &&
+      Number.isFinite(anchor.timestampMs) &&
+      Math.abs(entryTimestampMs - anchor.timestampMs) <= windowMs
+    ) {
+      return true;
+    }
+    return false;
+  });
 }
 
 function newRollup(label) {
@@ -231,6 +428,7 @@ function newRollup(label) {
     customerCostUsd: 0,
     hasCustomerCost: false,
     unpriced: 0,
+    estimatedEntries: 0,
   };
 }
 
@@ -245,6 +443,7 @@ function addToRollup(rollup, entry) {
     rollup.hasCustomerCost = true;
   }
   if (entry.unpriced) rollup.unpriced += 1;
+  if (entry.estimated) rollup.estimatedEntries += 1;
 }
 
 function finalizeRollup(rollup) {
@@ -257,6 +456,9 @@ export function buildSessionUsageLedger(events = [], options = {}) {
   if (!Array.isArray(events)) {
     throw new Error("events must be an array.");
   }
+  const realUsageAnchors = options.includeEstimatedMessages
+    ? collectRealUsageAnchors(events, options)
+    : new Map();
   const entries = [];
   const totals = newRollup("session");
   const perAgent = new Map();
@@ -266,8 +468,13 @@ export function buildSessionUsageLedger(events = [], options = {}) {
   let duplicatesSkipped = 0;
 
   for (const event of events) {
-    const entry = buildUsageLedgerEntry(event, options);
+    const entry =
+      buildUsageLedgerEntry(event, options) ||
+      (options.includeEstimatedMessages
+        ? buildEstimatedMessageLedgerEntry(event, options)
+        : null);
     if (!entry) continue;
+    if (hasNearbyRealUsageAnchor(entry, realUsageAnchors, options)) continue;
     const dedupeKeys = [
       entry.idempotencyKey ? `idem:${entry.idempotencyKey}` : "",
       entry.ledgerEntryId ? `ledger:${entry.ledgerEntryId}` : "",

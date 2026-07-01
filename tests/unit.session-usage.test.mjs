@@ -11,6 +11,7 @@ import { readStream } from "../src/session/stream.js";
 import {
   BILLING_SESSION_USAGE_SCHEMA,
   DEFAULT_PRICE_BOOK_VERSION,
+  ESTIMATED_MESSAGE_USAGE_SCHEMA,
   LOCAL_SESSION_USAGE_SCHEMA,
   buildSessionUsageLedger,
 } from "../src/session/pricing-ledger.js";
@@ -236,6 +237,92 @@ test("buildSessionUsageLedger dedupes idempotent retries and flags unpriced mode
   assert.deepEqual(ledger.priceBookVersions, [DEFAULT_PRICE_BOOK_VERSION]);
 });
 
+test("buildSessionUsageLedger estimates non-human message output without billing human text", () => {
+  const events = [
+    {
+      event: "session_message",
+      sequenceId: 1,
+      ts: "2026-05-24T14:00:00.000Z",
+      agent: { id: "human-carter", model: "human", role: "human" },
+      payload: { message: "Can you summarize the room?" },
+    },
+    {
+      event: "session_message",
+      sequenceId: 2,
+      ts: "2026-05-24T14:00:10.000Z",
+      agent: { id: "codex-senti-product", model: "gpt-5.4-mini", role: "participant" },
+      payload: {
+        clientMessageId: "codex-estimated-message-1",
+        message: "I found the listener bug and will open a narrow reliability PR.",
+      },
+    },
+    {
+      event: "session_message",
+      sequenceId: 3,
+      ts: "2026-05-24T14:00:20.000Z",
+      agent: { id: "senti", model: "senti", role: "orchestrator" },
+      payload: { message: "Welcome to this Senti coding room." },
+    },
+  ];
+
+  const ledger = buildSessionUsageLedger(events, {
+    sessionId: "estimated-message-session",
+    includeEstimatedMessages: true,
+  });
+
+  assert.equal(ledger.entries.length, 1);
+  assert.equal(ledger.entries[0].schema, ESTIMATED_MESSAGE_USAGE_SCHEMA);
+  assert.equal(ledger.entries[0].estimated, true);
+  assert.equal(ledger.entries[0].action, "estimated_agent_message");
+  assert.equal(ledger.entries[0].agentId, "codex-senti-product");
+  assert.equal(ledger.entries[0].inputTokens, 0);
+  assert.equal(ledger.entries[0].outputTokens > 0, true);
+  assert.equal(ledger.totals.totalTokens, ledger.entries[0].outputTokens);
+  assert.equal(ledger.totals.estimatedEntries, 1);
+  assert.equal(ledger.perAgent.has("human-carter"), false);
+  assert.equal(ledger.perAgent.get("codex-senti-product").estimatedEntries, 1);
+});
+
+test("buildSessionUsageLedger lets nearby real usage rows win over message estimates", () => {
+  const events = [
+    {
+      event: "session_message",
+      sequenceId: 20,
+      ts: "2026-05-24T14:00:00.000Z",
+      agent: { id: "codex-a1", model: "gpt-5.4-mini", role: "coder" },
+      payload: {
+        clientMessageId: "codex-real-usage-paired-message",
+        message: "This response has provider-returned usage right next to it.",
+      },
+    },
+    {
+      event: "session_usage",
+      sequenceId: 21,
+      ts: "2026-05-24T14:00:00.010Z",
+      agent: { id: "codex-a1", model: "gpt-5.4-mini" },
+      payload: {
+        schema: LOCAL_SESSION_USAGE_SCHEMA,
+        idempotencyKey: "codex-real-usage",
+        agentId: "codex-a1",
+        action: "agent_message",
+        model: "gpt-5.4-mini",
+        inputTokens: 400,
+        outputTokens: 200,
+      },
+    },
+  ];
+
+  const ledger = buildSessionUsageLedger(events, {
+    sessionId: "real-usage-wins-session",
+    includeEstimatedMessages: true,
+  });
+
+  assert.equal(ledger.entries.length, 1);
+  assert.equal(ledger.entries[0].estimated, false);
+  assert.equal(ledger.totals.totalTokens, 600);
+  assert.equal(ledger.totals.estimatedEntries, 0);
+});
+
 test("buildSessionUsageLedger separates local stats from API billing/v1 and skips unsupported schemas", () => {
   const events = [
     {
@@ -324,6 +411,7 @@ test("buildSessionUsageLedger ingests legacy payload.usage events without double
   const ledger = buildSessionUsageLedger(events, { sessionId: "legacy-usage-session" });
   assert.equal(ledger.entries.length, 1);
   assert.equal(ledger.entries[0].schema, "legacy");
+  assert.equal(ledger.entries[0].estimated, false);
   assert.equal(ledger.entries[0].agentId, "legacy-agent");
   assert.equal(ledger.totals.totalTokens, 750);
   assert.equal(ledger.totals.providerCostUsd, 0.0075);

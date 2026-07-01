@@ -241,8 +241,8 @@ export async function emitLLMInteraction(
  *   totals: { totalTokens, inputTokens, outputTokens, costUsd, interactions },
  * }}
  */
-export function aggregateSessionUsage(events = []) {
-  const ledger = buildSessionUsageLedger(events);
+export function aggregateSessionUsage(events = [], options = {}) {
+  const ledger = buildSessionUsageLedger(events, options);
   const perAgent = new Map();
   const totals = {
     totalTokens: 0,
