@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.34.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.4...v0.34.5) (2026-07-01)
+
+
+### Bug Fixes
+
+* **ci:** fall back to Google Omar LLM ([5a90153](https://github.com/mrrCarter/create-sentinelayer/commit/5a90153989bd7082a4d1c5806c885297376aab83))
+* **ci:** make Omar scan caps configurable ([79dfe18](https://github.com/mrrCarter/create-sentinelayer/commit/79dfe18c80b459f341e1cd343d10cade9ef65605))
+* **ci:** prefer BYO Omar LLM credentials ([4f94199](https://github.com/mrrCarter/create-sentinelayer/commit/4f9419919738b919e23867bc605bb2faa8c39237))
+* **session:** hide quiet control actions from transcripts ([5816fc8](https://github.com/mrrCarter/create-sentinelayer/commit/5816fc89ce4773bc5bd2ccadcf140a0e69604030))
+* **session:** hide quiet control actions from transcripts ([3551701](https://github.com/mrrCarter/create-sentinelayer/commit/3551701fbf9829b464d63c6a844f0b8e4acc5787))
+
 ## [0.34.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.3...v0.34.4) (2026-07-01)
 
 
