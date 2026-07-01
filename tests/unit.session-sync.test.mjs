@@ -451,6 +451,41 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_stream");
 });
 
+test("Unit session sync: streamSessionEvents aborts a silent stream after idle timeout", async () => {
+  resetSessionSyncStateForTests();
+  let observedSignal = null;
+  const result = await streamSessionEvents("sess-stream-idle", {
+    idleTimeoutMs: 1,
+    resolveAuthSession: async () => ({
+      token: "tok_stream_idle",
+      apiUrl: "https://api.sentinelayer.com/",
+    }),
+    fetchImpl: async (_url, options) => {
+      observedSignal = options.signal;
+      const body = new ReadableStream({
+        start(controller) {
+          options.signal.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("stream idle timeout", "AbortError")),
+            { once: true },
+          );
+        },
+      });
+      return {
+        ok: true,
+        status: 200,
+        body,
+      };
+    },
+  });
+
+  assert.ok(observedSignal, "expected stream fetch to receive an abort signal");
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "stream_idle_timeout");
+  assert.equal(result.cursor, null);
+  assert.equal(result.eventCount, 0);
+});
+
 test("Unit session sync: streamSessionEvents reports SSE error frames", async () => {
   resetSessionSyncStateForTests();
   const errors = [];
