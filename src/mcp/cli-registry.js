@@ -109,14 +109,28 @@ function commandPath(command) {
   return names;
 }
 
-function collectLeafCommands(command, { includeHidden = false } = {}) {
+// Command groups excluded from the generated MCP bridge tool set: they read or mutate
+// credentials / config secrets and must not be remotely tool-callable without dedicated
+// server-side auth. Defense-in-depth beyond per-command output redaction. Opt back in with
+// includeSensitive for local/trusted contexts.
+const SENSITIVE_COMMAND_GROUPS = new Set(["config", "auth"]);
+
+function isSensitiveCommand(command) {
+  const parts = commandPath(command);
+  return parts.length > 0 && SENSITIVE_COMMAND_GROUPS.has(parts[0]);
+}
+
+function collectLeafCommands(command, { includeHidden = false, includeSensitive = false } = {}) {
   const leaves = [];
   for (const child of command.commands || []) {
     if (!includeHidden && isHiddenCommand(child)) {
       continue;
     }
+    if (!includeSensitive && isSensitiveCommand(child)) {
+      continue;
+    }
     if (child.commands && child.commands.length > 0) {
-      leaves.push(...collectLeafCommands(child, { includeHidden }));
+      leaves.push(...collectLeafCommands(child, { includeHidden, includeSensitive }));
       continue;
     }
     leaves.push(child);
@@ -203,20 +217,21 @@ function buildCliTool(command) {
  * The generated registry is intentionally execution-policy-first: every tool is
  * marked as requiring human approval because this is the full CLI surface.
  *
- * @param {{ generatedAt?: string, program?: import("commander").Command, includeHidden?: boolean }} [options]
+ * @param {{ generatedAt?: string, program?: import("commander").Command, includeHidden?: boolean, includeSensitive?: boolean }} [options]
  * @returns {Promise<Record<string, any>>}
  */
 export async function buildSentinelayerCliRegistryTemplate({
   generatedAt = new Date().toISOString(),
   program = null,
   includeHidden = false,
+  includeSensitive = false,
 } = {}) {
   const cliProgram =
     program ||
     (await buildCliProgram({
       invokeLegacy: async () => {},
     }));
-  const tools = collectLeafCommands(cliProgram, { includeHidden }).map(buildCliTool);
+  const tools = collectLeafCommands(cliProgram, { includeHidden, includeSensitive }).map(buildCliTool);
   return {
     version: MCP_TOOL_REGISTRY_SCHEMA_VERSION,
     generated_at: generatedAt,
