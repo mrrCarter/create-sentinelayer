@@ -431,6 +431,52 @@ test("Unit session recap: suppresses current and next details for truncated todo
   }
 });
 
+test("Unit session recap: suppresses current and next details for historical generic todo plans", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-historical-plan-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+
+    const lines = ["# Dogfood Backlog", "", "## Completed"];
+    for (let index = 0; index < 176; index += 1) {
+      lines.push(`- [x] Shipped historical slice ${index}`);
+    }
+    lines.push("", "## Plan");
+    for (let index = 0; index < 17; index += 1) {
+      lines.push(`- [ ] WI-${index + 1}: stale carried work item ${index + 1}`);
+    }
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), lines.join("\n"), "utf-8");
+
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(
+      recap.text,
+      /Plan: 17 open \/ 176 done in tasks\/todo\.md from create-sentinelayer-session-historical-plan-recap-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
+    );
+    assert.match(
+      recap.text,
+      /Current\/next items suppressed because this generic plan is mostly historical completed work/,
+    );
+    assert.doesNotMatch(recap.text, /Current: Plan/);
+    assert.doesNotMatch(recap.text, /Next:/);
+    assert.doesNotMatch(recap.text, /WI-5: stale carried work item/);
+    assert.equal(recap.summary.workPlan.exists, true);
+    assert.equal(recap.summary.workPlan.truncated, false);
+    assert.equal(recap.summary.workPlan.detailSuppressed, true);
+    assert.equal(recap.summary.workPlan.detailSuppressionReason, "historical_generic_plan_section");
+    assert.equal(recap.summary.workPlan.currentSection, "");
+    assert.deepEqual(recap.summary.workPlan.recentOpen, []);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: includes token and cost usage ledger", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-usage-recap-"));
   try {

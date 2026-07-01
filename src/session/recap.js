@@ -22,6 +22,23 @@ const DEFAULT_TASK_SUMMARY_LIMIT = 3;
 const DEFAULT_WORK_PLAN_SUMMARY_LIMIT = 5;
 const MAX_WORK_PLAN_BYTES = 128_000;
 const WORK_PLAN_RELATIVE_PATH = "tasks/todo.md";
+const HISTORICAL_WORK_PLAN_MIN_COMPLETED = 25;
+const HISTORICAL_WORK_PLAN_MIN_TOTAL = 50;
+const HISTORICAL_WORK_PLAN_COMPLETED_RATIO = 0.75;
+const GENERIC_WORK_PLAN_SECTIONS = new Set([
+  "plan",
+  "plans",
+  "todo",
+  "todos",
+  "to do",
+  "tasks",
+  "work items",
+  "workitems",
+  "workstream",
+  "workstreams",
+  "backlog",
+  "next",
+]);
 const RECAP_SOURCE_IGNORED_EVENTS = new Set([
   "agent_heartbeat",
   "agent_join",
@@ -458,6 +475,41 @@ function shortWorkPlanText(value) {
   return `${text.slice(0, 97)}...`;
 }
 
+function normalizedWorkPlanSection(value = "") {
+  return normalizeString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGenericWorkPlanSection(value = "") {
+  const normalized = normalizedWorkPlanSection(value);
+  if (!normalized) {
+    return false;
+  }
+  if (GENERIC_WORK_PLAN_SECTIONS.has(normalized)) {
+    return true;
+  }
+  return /^(active\s+)?(plan|todo|tasks|backlog)(\s+\d+)?$/.test(normalized);
+}
+
+function shouldSuppressHistoricalWorkPlanDetails(summary = emptyWorkPlanSummary()) {
+  const total = Number(summary.total || 0);
+  const open = Number(summary.open || 0);
+  const completed = Number(summary.completed || 0);
+  if (summary.truncated || open <= 0 || completed < HISTORICAL_WORK_PLAN_MIN_COMPLETED) {
+    return false;
+  }
+  if (total < HISTORICAL_WORK_PLAN_MIN_TOTAL) {
+    return false;
+  }
+  if (!isGenericWorkPlanSection(summary.currentSection)) {
+    return false;
+  }
+  return completed / Math.max(1, total) >= HISTORICAL_WORK_PLAN_COMPLETED_RATIO;
+}
+
 function summarizeWorkPlanMarkdown(
   raw = "",
   { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT, truncated = false, sourceContext = {} } = {}
@@ -507,6 +559,10 @@ function summarizeWorkPlanMarkdown(
     .filter((record) => record.status === "open")
     .slice(-normalizedLimit);
   summary.recent = records.slice(-normalizedLimit);
+  if (!summary.detailSuppressed && shouldSuppressHistoricalWorkPlanDetails(summary)) {
+    summary.detailSuppressed = true;
+    summary.detailSuppressionReason = "historical_generic_plan_section";
+  }
   if (summary.detailSuppressed) {
     summary.currentSection = "";
     summary.recentOpen = [];
@@ -785,7 +841,15 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
   const sourceReason = normalizeString(workPlan.sourceReason);
   const sourceReasonText = sourceReason ? ` (${sourceReason})` : "";
   if (workPlan.detailSuppressed || workPlan.truncated) {
-    return `Plan: ${open} open / ${completed} done in recent ${sourceText} window${sourceReasonText}. Current/next items suppressed because the plan file is large.`;
+    const suppressionReason = normalizeString(workPlan.detailSuppressionReason);
+    const sourceWindowText = workPlan.truncated
+      ? `recent ${sourceText} window`
+      : sourceText;
+    const suppressionText =
+      suppressionReason === "historical_generic_plan_section"
+        ? "Current/next items suppressed because this generic plan is mostly historical completed work."
+        : "Current/next items suppressed because the plan file is large.";
+    return `Plan: ${open} open / ${completed} done in ${sourceWindowText}${sourceReasonText}. ${suppressionText}`;
   }
   const currentSection = normalizeString(workPlan.currentSection);
   const currentText = currentSection ? ` Current: ${currentSection}.` : "";

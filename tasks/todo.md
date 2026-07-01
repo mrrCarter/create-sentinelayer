@@ -3294,4 +3294,11 @@ Review:
 - Local review scan passed: `review-20260624-164133-9e09d45e`, P0/P1/P2/P3 all `0`.
 - Local Omar Gate diff passed: `review-20260624-164145-fd3ae870`, P0/P1/P2/P3 all `0`, blocking `false`.
 
+## 2026-07-01 Recap Historical Plan Suppression
+- [x] Reproduce Carter's room-954 symptom: Senti recaps can promote stale `tasks/todo.md` work items when a generic `## Plan` section has many historical completed rows but does not exceed the large-file truncation threshold.
+- [x] Patch `src/session/recap.js` so recaps still show open/done counts and source provenance, but suppress `Current:`/`Next:` details for mostly historical generic plan sections.
+- [x] Add a regression with `176` completed and `17` open generic-plan rows that must not emit `Current: Plan`, `Next:`, or `WI-5` details.
+- [x] Focused proof: `node --import ./tests/setup-env.mjs --test tests/unit.session-recap.test.mjs` passed `19/19`.
+- [x] Broader proof: `npm run check`, `npm run test:unit`, `npm run docs:build`, `npm pack --dry-run`, `sl review scan --path . --mode diff --json`, and `git diff --check` passed.
+- [x] Local Omar proof: `sl omargate deep --path . --diff --json --max-parallel 2 --max-cost 2 --notify-session 954233b7-1822-42bc-9cfe-1eb95eb0357a` produced `omargate-1782930821804-a35d7048` with deterministic P0/P1/P2/P3 all `0`, reconciled P0/P1/P2/P3 all `0`, and `blocking=false`; AI personas reported `MANAGED_LLM_PROVIDER_QUOTA_EXHAUSTED`, matching the known provider-quota outage.
 
