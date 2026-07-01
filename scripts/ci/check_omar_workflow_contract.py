@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -19,12 +20,18 @@ BRIDGE_OR_BROKEN_MARKERS = (
 )
 
 
-def _line_has_managed_llm_enabled(line: str) -> bool:
-    normalized = line.split("#", 1)[0].strip().lower().replace("'", '"')
-    return normalized in {
-        'sentinelayer_managed_llm: "true"',
-        "sentinelayer_managed_llm: true",
-    }
+ALLOWED_OPENAI_API_KEY_LINE = "openai_api_key: ${{ secrets.OPENAI_API_KEY }}"
+MANAGED_LLM_FALLBACK_RE = re.compile(
+    r"^sentinelayer_managed_llm:\s*\$\{\{\s*"
+    r"secrets\.OPENAI_API_KEY\s*==\s*''\s*&&\s*"
+    r"(?:steps\.resolve_omar_credentials\.outputs\.sentinelayer_token|secrets\.[A-Z0-9_]+)"
+    r"\s*!=\s*''\s*\}\}$"
+)
+
+
+def _line_has_managed_llm_fallback(line: str) -> bool:
+    stripped = line.split("#", 1)[0].strip()
+    return bool(MANAGED_LLM_FALLBACK_RE.match(stripped))
 
 
 def _is_job_start(line: str) -> bool:
@@ -91,20 +98,18 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
             raise OmarWorkflowContractError(
                 "full Omar action workflow must not pass bridge-only pr_number"
             )
-        if stripped.startswith(
-            (
-                "anthropic_api_key:",
-                "google_api_key:",
-                "openai_api_key:",
-                "xai_api_key:",
-                "llm_provider:",
-            )
-        ):
+        if stripped.startswith("openai_api_key:") and stripped != ALLOWED_OPENAI_API_KEY_LINE:
             raise OmarWorkflowContractError(
-                "managed Omar workflow must not pass provider-key inputs"
+                "Omar workflow may only bind openai_api_key to secrets.OPENAI_API_KEY"
             )
-        if stripped.startswith("sentinelayer_managed_llm:") and "${{" in stripped:
-            raise OmarWorkflowContractError("sentinelayer_managed_llm must be literal")
+        if stripped.startswith(("anthropic_api_key:", "google_api_key:", "xai_api_key:", "llm_provider:")):
+            raise OmarWorkflowContractError(
+                "Omar workflow must not pass alternate provider-key or provider-selection inputs"
+            )
+        if stripped.startswith("sentinelayer_managed_llm:") and not _line_has_managed_llm_fallback(stripped):
+            raise OmarWorkflowContractError(
+                "sentinelayer_managed_llm must be a BYO OpenAI absent + SentinelLayer token present fallback expression"
+            )
 
 
 def validate_omar_contract(workflow_text: str) -> None:
@@ -118,9 +123,13 @@ def validate_omar_contract(workflow_text: str) -> None:
         raise OmarWorkflowContractError(
             "Omar workflow must use the pinned sentinelayer-v1-action directly"
         )
-    if not any(_line_has_managed_llm_enabled(line) for line in workflow_text.splitlines()):
+    if ALLOWED_OPENAI_API_KEY_LINE not in workflow_text:
         raise OmarWorkflowContractError(
-            'Omar workflow must configure sentinelayer_managed_llm: "true"'
+            "Omar workflow must configure openai_api_key from secrets.OPENAI_API_KEY"
+        )
+    if not any(_line_has_managed_llm_fallback(line) for line in workflow_text.splitlines()):
+        raise OmarWorkflowContractError(
+            "Omar workflow must configure managed LLM as the BYO OpenAI absent fallback"
         )
 
     workflow_lines = workflow_text.splitlines()
@@ -157,26 +166,30 @@ def validate_omar_contract(workflow_text: str) -> None:
         "check_forbidden_omar_surface.py",
         "Verify managed Omar token secret",
         "Run Omar Gate",
-        "Assert Omar managed model contract is active",
-        'REQUESTED_MANAGED_LLM: "true"',
+        "Assert Omar LLM contract is active",
+        "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
+        "sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
+        "REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}",
+        "REQUESTED_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
         "REQUESTED_FAILURE_POLICY: block",
         "REQUESTED_MODEL: gpt-5.3-codex",
         "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
         "REQUESTED_FALLBACK_MODEL: gpt-4.1-mini",
-        'sentinelayer_managed_llm: "true"',
         "model_fallback: gpt-4.1-mini",
         'use_codex: "true"',
         'codex_only: "false"',
         "max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}",
         "min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}",
         "rate_limit_fail_mode: closed",
-        "Omar managed model contract active",
+        "Omar LLM contract active",
         "Omar Gate did not pass",
         "Stage Omar artifacts",
         "omar-artifacts/summary.json",
         "omar_gate_summary",
         "schema_version",
-        '"managed_llm": True',
+        '"llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed"',
+        '"openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT")',
+        '"managed_llm": bool_env("OMAR_MANAGED_LLM")',
         "run_url",
         "Upload Omar artifacts",
         "actions/upload-artifact",
@@ -244,22 +257,24 @@ jobs:
         id: omar
         uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
-          sentinelayer_managed_llm: "true"
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           model_fallback: gpt-4.1-mini
           use_codex: "true"
           codex_only: "false"
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
-      - name: Assert Omar managed model contract is active
+      - name: Assert Omar LLM contract is active
         env:
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
           REQUESTED_FALLBACK_MODEL: gpt-4.1-mini
-          REQUESTED_MANAGED_LLM: "true"
+          REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
+          REQUESTED_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           REQUESTED_FAILURE_POLICY: block
         run: |
-          echo "Omar managed model contract active"
+          echo "Omar LLM contract active"
           echo "Omar Gate did not pass"
       - name: Verify managed Omar token secret
         run: echo "SENTINELAYER_TOKEN is required for Omar telemetry/upload."
@@ -267,7 +282,9 @@ jobs:
         run: |
           echo "omar_gate_summary"
           echo "schema_version"
-          echo '"managed_llm": True'
+          echo '"llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed"'
+          echo '"openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT")'
+          echo '"managed_llm": bool_env("OMAR_MANAGED_LLM")'
           echo "run_url"
           echo "omar-artifacts/summary.json"
       - name: Upload Omar artifacts
@@ -286,15 +303,21 @@ jobs:
     validate_omar_contract(valid_workflow)
 
     _assert_fails(
-        valid_workflow.replace('sentinelayer_managed_llm: "true"', ""),
-    )
-    _assert_fails(
-        valid_workflow.replace('sentinelayer_managed_llm: "true"', 'sentinelayer_managed_llm: "false"'),
+        valid_workflow.replace(
+            "sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
+            "",
+        ),
     )
     _assert_fails(
         valid_workflow.replace(
+            "sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
             'sentinelayer_managed_llm: "true"',
-            'sentinelayer_managed_llm: "true"\n          openai_api_key: ${{ secrets.OPENAI_API_KEY }}',
+        ),
+    )
+    _assert_fails(
+        valid_workflow.replace(
+            "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
+            "openai_api_key: ${{ secrets.BAD_OPENAI_API_KEY }}",
         ),
     )
     _assert_fails(

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runDeterministicReviewPipeline } from "../src/review/local-review.js";
+import { runDeterministicReviewPipeline, runLocalReviewScan } from "../src/review/local-review.js";
 
 async function withTempWorkspace(prefix, fn) {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -23,6 +23,7 @@ test("deterministic review: GitHub Actions context expressions are not hardcoded
         "export const workflow = {",
         "  with: {",
         '    github_token: "${{ github.token }}",',
+        '    openai_api_key: "${{ secrets.OPENAI_API_KEY }}",',
         '    sentinelayer_token: "${{ secrets.SENTINELAYER_TOKEN }}",',
         "  },",
         "};",
@@ -40,6 +41,17 @@ test("deterministic review: GitHub Actions context expressions are not hardcoded
       result.findings.some((finding) => finding.ruleId === "SL-SEC-005"),
       false,
       JSON.stringify(result.findings, null, 2)
+    );
+
+    const localScan = await runLocalReviewScan({
+      targetPath: tempRoot,
+      mode: "full",
+    });
+
+    assert.equal(
+      localScan.findings.some((finding) => finding.ruleId === "SL-SEC-005"),
+      false,
+      JSON.stringify(localScan.findings, null, 2)
     );
   });
 });

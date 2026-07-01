@@ -2520,8 +2520,9 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
           github_token: \${{ github.token }}
+          openai_api_key: \${{ secrets.OPENAI_API_KEY }}
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
-          sentinelayer_managed_llm: "true"
+          sentinelayer_managed_llm: \${{ secrets.OPENAI_API_KEY == '' && secrets.${normalizedSecret} != '' }}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
@@ -2578,6 +2579,8 @@ jobs:
           OMAR_SCAN_MODE: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           OMAR_SEVERITY_GATE: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_P2_MAX_ALLOWED: \${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
+          OMAR_OPENAI_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' }}
+          OMAR_MANAGED_LLM: \${{ secrets.OPENAI_API_KEY == '' && secrets.${normalizedSecret} != '' }}
         run: |
           set -euo pipefail
           mkdir -p omar-artifacts
@@ -2592,6 +2595,9 @@ jobs:
           def int_env(name):
               value = env(name, "0").strip()
               return int(value) if value.isdigit() else 0
+
+          def bool_env(name):
+              return env(name).strip().lower() == "true"
 
           github_run_id = env("GITHUB_RUN_ID")
           server_url = env("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
@@ -2615,7 +2621,9 @@ jobs:
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
                   "action_ref": "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493",
-                  "managed_llm": True,
+                  "llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed",
+                  "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
+                  "managed_llm": bool_env("OMAR_MANAGED_LLM"),
                   "llm_failure_policy": "block",
               },
               "github": {

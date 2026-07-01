@@ -442,9 +442,10 @@ jobs:
         uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
         with:
           github_token: ${{ github.token }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          sentinelayer_managed_llm: "true"
+          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           model: gpt-5.3-codex
@@ -456,7 +457,7 @@ jobs:
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
-      - name: Assert Omar managed model contract is active
+      - name: Assert Omar LLM contract is active
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
@@ -464,20 +465,25 @@ jobs:
           REQUESTED_MODEL: gpt-5.3-codex
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
           REQUESTED_FALLBACK_MODEL: gpt-4.1-mini
-          REQUESTED_MANAGED_LLM: "true"
+          REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
+          REQUESTED_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           REQUESTED_FAILURE_POLICY: block
         run: |
           set -euo pipefail
           gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
-          if [ "${REQUESTED_MANAGED_LLM}" != "true" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gpt-4.1-mini" ]; then
-            echo "::error::Omar managed policy drifted (managed='${REQUESTED_MANAGED_LLM}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
+          if [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gpt-4.1-mini" ]; then
+            echo "::error::Omar model policy drifted (model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
+            exit 1
+          fi
+          if [ "${REQUESTED_OPENAI_KEY_PRESENT}" != "true" ] && [ "${REQUESTED_MANAGED_LLM}" != "true" ]; then
+            echo "::error::Omar has no real LLM credential route configured. Set OPENAI_API_KEY or a SentinelLayer managed token."
             exit 1
           fi
           if [ "${gate_status}" != "passed" ]; then
             echo "::error::Omar Gate did not pass (gate_status='${gate_status}'). Blocking merge."
             exit 1
           fi
-          echo "Omar managed model contract active: model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' gate='${gate_status}'"
+          echo "Omar LLM contract active: openai_key_present='${REQUESTED_OPENAI_KEY_PRESENT}' managed='${REQUESTED_MANAGED_LLM}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' gate='${gate_status}'"
       - name: Validate Omar output contract
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -512,6 +518,8 @@ jobs:
           OMAR_SCAN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           OMAR_SEVERITY_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
+          OMAR_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
+          OMAR_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
         run: |
           set -euo pipefail
           rm -rf omar-artifacts
@@ -538,6 +546,9 @@ jobs:
               value = env(name, "0").strip()
               return int(value) if value.isdigit() else 0
 
+          def bool_env(name):
+              return env(name).strip().lower() == "true"
+
           github_run_id = env("GITHUB_RUN_ID")
           server_url = env("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
           repository = env("GITHUB_REPOSITORY")
@@ -560,7 +571,9 @@ jobs:
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
                   "action_ref": "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493",
-                  "managed_llm": True,
+                  "llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed",
+                  "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
+                  "managed_llm": bool_env("OMAR_MANAGED_LLM"),
                   "llm_failure_policy": "block",
               },
               "github": {

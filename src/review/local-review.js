@@ -95,6 +95,7 @@ const REVIEW_RULES = Object.freeze([
     regex: /\b(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,})\b/,
   },
   {
+    id: "SL-SEC-005",
     severity: "P2",
     message: "Possible hardcoded credential literal.",
     regex: /(api[_-]?key|secret|token)\s*[:=]\s*['\"][^'\"]{20,}['\"]/i,

@@ -5,7 +5,7 @@ import test from "node:test";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
-test("Unit Omar workflow: managed real LLM keeps Omar in fail-closed direct-action mode", async () => {
+test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action mode", async () => {
   const workflowText = await readFile(path.join(repoRoot, ".github", "workflows", "omar-gate.yml"), "utf8");
 
   assert.doesNotMatch(workflowText, /Validate Google key secret for Omar LLM scan/);
@@ -13,8 +13,11 @@ test("Unit Omar workflow: managed real LLM keeps Omar in fail-closed direct-acti
   assert.match(workflowText, /uses:\s*mrrCarter\/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493/);
   assert.doesNotMatch(workflowText, /uses:\s*\.\/\.github\/actions\/omar-gate/);
   assert.doesNotMatch(workflowText, /llm_provider:/);
-  assert.doesNotMatch(workflowText, /openai_api_key:/);
-  assert.match(workflowText, /sentinelayer_managed_llm:\s*"true"/);
+  assert.match(workflowText, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
+  assert.match(
+    workflowText,
+    /sentinelayer_managed_llm:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*==\s*''\s*&&\s*steps\.resolve_omar_credentials\.outputs\.sentinelayer_token\s*!=\s*''\s*\}\}/,
+  );
   assert.match(workflowText, /model:\s*gpt-5\.3-codex/);
   assert.match(workflowText, /codex_model:\s*gpt-5\.3-codex/);
   assert.match(workflowText, /model_fallback:\s*gpt-4\.1-mini/);
@@ -27,10 +30,11 @@ test("Unit Omar workflow: managed real LLM keeps Omar in fail-closed direct-acti
   );
   assert.match(workflowText, /rate_limit_fail_mode:\s*closed/);
   assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"false"/);
+  assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"true"/);
   assert.doesNotMatch(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate Omar workflow contract/);
   assert.match(workflowText, /Verify managed Omar token secret/);
-  assert.match(workflowText, /Assert Omar managed model contract is active/);
+  assert.match(workflowText, /Assert Omar LLM contract is active/);
   assert.match(workflowText, /check_omar_workflow_contract\.py --self-test/);
   assert.match(workflowText, /check_forbidden_omar_surface\.py --self-test/);
   assert.match(workflowText, /python3 scripts\/ci\/check_forbidden_omar_surface\.py/);
@@ -44,7 +48,9 @@ test("Unit Omar workflow: managed real LLM keeps Omar in fail-closed direct-acti
   assert.match(workflowText, /Upload Omar artifacts/);
   assert.match(workflowText, /actions\/upload-artifact/);
   assert.match(workflowText, /omar-artifacts\/\*\*/);
-  assert.match(workflowText, /"managed_llm": True/);
+  assert.match(workflowText, /"llm_route": "openai_api_key" if bool_env\("OMAR_OPENAI_KEY_PRESENT"\) else "sentinelayer_managed"/);
+  assert.match(workflowText, /"openai_key_present": bool_env\("OMAR_OPENAI_KEY_PRESENT"\)/);
+  assert.match(workflowText, /"managed_llm": bool_env\("OMAR_MANAGED_LLM"\)/);
   assert.match(workflowText, /omar_enforce:[\s\S]*if:\s*\$\{\{\s*always\(\)\s*\}\}/);
   assert.match(workflowText, /Require selected Omar scan success/);
   assert.match(workflowText, /Trusted Omar scan did not succeed/);
