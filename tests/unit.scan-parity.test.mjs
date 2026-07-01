@@ -42,13 +42,18 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.match(workflow, /- full-depth/);
   assert.match(workflow, new RegExp(`uses: ${SENTINELAYER_ACTION_REF}`));
   assert.match(workflow, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
+  assert.match(workflow, /google_api_key:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*\}\}/);
+  assert.match(workflow, /llm_provider:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*!=\s*''\s*&&\s*'google'\s*\|\|\s*'openai'\s*\}\}/);
   assert.match(
     workflow,
-    /sentinelayer_managed_llm:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*==\s*''\s*&&\s*secrets\.SENTINELAYER_TOKEN\s*!=\s*''\s*\}\}/,
+    /sentinelayer_managed_llm:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*==\s*''\s*&&\s*secrets\.OPENAI_API_KEY\s*==\s*''\s*&&\s*secrets\.SENTINELAYER_TOKEN\s*!=\s*''\s*\}\}/,
   );
-  assert.doesNotMatch(workflow, /google_api_key:/);
-  assert.match(workflow, /model_fallback:\s*gpt-4\.1-mini/);
-  assert.match(workflow, /use_codex:\s*"true"/);
+  assert.match(workflow, /model:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*!=\s*''\s*&&\s*'gemini-2\.5-pro'\s*\|\|\s*'gpt-5\.3-codex'\s*\}\}/);
+  assert.match(
+    workflow,
+    /model_fallback:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*!=\s*''\s*&&\s*'gemini-2\.5-flash'\s*\|\|\s*'gpt-4\.1-mini'\s*\}\}/,
+  );
+  assert.match(workflow, /use_codex:\s*\$\{\{\s*secrets\.GOOGLE_API_KEY\s*==\s*''\s*\}\}/);
   assert.match(workflow, /codex_only:\s*"false"/);
   assert.match(workflow, /max_daily_scans:\s*\$\{\{\s*vars\.OMAR_MAX_DAILY_SCANS\s*\|\|\s*'200'\s*\}\}/);
   assert.match(
@@ -61,7 +66,14 @@ test("Unit scan parity: generated workflow uses v1-action contract modes and pin
   assert.match(workflow, /omar_gate_summary/);
   assert.match(workflow, /schema_version/);
   assert.match(workflow, /run_url/);
-  assert.match(workflow, /'llm_route': 'openai_api_key' if bool_env\('OMAR_OPENAI_KEY_PRESENT'\) else 'sentinelayer_managed'/);
+  assert.match(workflow, /'llm_provider': env\('OMAR_LLM_PROVIDER', 'openai'\)/);
+  assert.match(workflow, /'model': env\('OMAR_MODEL', 'gpt-5\.3-codex'\)/);
+  assert.match(workflow, /'model_fallback': env\('OMAR_MODEL_FALLBACK', 'gpt-4\.1-mini'\)/);
+  assert.match(
+    workflow,
+    /'llm_route': 'google_api_key' if bool_env\('OMAR_GOOGLE_KEY_PRESENT'\) else \('openai_api_key' if bool_env\('OMAR_OPENAI_KEY_PRESENT'\) else 'sentinelayer_managed'\)/,
+  );
+  assert.match(workflow, /'google_key_present': bool_env\('OMAR_GOOGLE_KEY_PRESENT'\)/);
   assert.match(workflow, /'openai_key_present': bool_env\('OMAR_OPENAI_KEY_PRESENT'\)/);
   assert.match(workflow, /'managed_llm': bool_env\('OMAR_MANAGED_LLM'\)/);
   assert.match(workflow, /actions\/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874/);

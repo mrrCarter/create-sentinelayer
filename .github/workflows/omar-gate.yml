@@ -443,15 +443,17 @@ jobs:
         with:
           github_token: ${{ github.token }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          google_api_key: ${{ secrets.GOOGLE_API_KEY }}
+          llm_provider: ${{ secrets.GOOGLE_API_KEY != '' && 'google' || 'openai' }}
           sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          sentinelayer_managed_llm: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
+          sentinelayer_managed_llm: ${{ secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
+          model: ${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-pro' || 'gpt-5.3-codex' }}
           codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "true"
+          model_fallback: ${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
+          use_codex: ${{ secrets.GOOGLE_API_KEY == '' }}
           codex_only: "false"
           llm_failure_policy: block
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
@@ -462,28 +464,40 @@ jobs:
         shell: bash
         env:
           GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
-          REQUESTED_MODEL: gpt-5.3-codex
+          REQUESTED_PROVIDER: ${{ secrets.GOOGLE_API_KEY != '' && 'google' || 'openai' }}
+          REQUESTED_MODEL: ${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-pro' || 'gpt-5.3-codex' }}
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: gpt-4.1-mini
+          REQUESTED_FALLBACK_MODEL: ${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
           REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
-          REQUESTED_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
+          REQUESTED_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_API_KEY != '' }}
+          REQUESTED_MANAGED_LLM: ${{ secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
+          REQUESTED_USE_CODEX: ${{ secrets.GOOGLE_API_KEY == '' }}
           REQUESTED_FAILURE_POLICY: block
         run: |
           set -euo pipefail
           gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
-          if [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gpt-4.1-mini" ]; then
-            echo "::error::Omar model policy drifted (model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
+          if [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ]; then
+            echo "::error::Omar model policy drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
             exit 1
           fi
-          if [ "${REQUESTED_OPENAI_KEY_PRESENT}" != "true" ] && [ "${REQUESTED_MANAGED_LLM}" != "true" ]; then
-            echo "::error::Omar has no real LLM credential route configured. Set OPENAI_API_KEY or a SentinelLayer managed token."
+          if [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
+            if [ "${REQUESTED_PROVIDER}" != "google" ] || [ "${REQUESTED_MODEL}" != "gemini-2.5-pro" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_USE_CODEX}" != "false" ]; then
+              echo "::error::Omar Google fallback contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
+              exit 1
+            fi
+          elif [ "${REQUESTED_PROVIDER}" != "openai" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gpt-4.1-mini" ] || [ "${REQUESTED_USE_CODEX}" != "true" ]; then
+            echo "::error::Omar OpenAI/Codex contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
+            exit 1
+          fi
+          if [ "${REQUESTED_GOOGLE_KEY_PRESENT}" != "true" ] && [ "${REQUESTED_OPENAI_KEY_PRESENT}" != "true" ] && [ "${REQUESTED_MANAGED_LLM}" != "true" ]; then
+            echo "::error::Omar has no real LLM credential route configured. Set GOOGLE_API_KEY, OPENAI_API_KEY, or a SentinelLayer managed token."
             exit 1
           fi
           if [ "${gate_status}" != "passed" ]; then
             echo "::error::Omar Gate did not pass (gate_status='${gate_status}'). Blocking merge."
             exit 1
           fi
-          echo "Omar LLM contract active: openai_key_present='${REQUESTED_OPENAI_KEY_PRESENT}' managed='${REQUESTED_MANAGED_LLM}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' gate='${gate_status}'"
+          echo "Omar LLM contract active: provider='${REQUESTED_PROVIDER}' google_key_present='${REQUESTED_GOOGLE_KEY_PRESENT}' openai_key_present='${REQUESTED_OPENAI_KEY_PRESENT}' managed='${REQUESTED_MANAGED_LLM}' use_codex='${REQUESTED_USE_CODEX}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' gate='${gate_status}'"
       - name: Validate Omar output contract
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
@@ -519,7 +533,11 @@ jobs:
           OMAR_SEVERITY_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
           OMAR_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
-          OMAR_MANAGED_LLM: ${{ secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
+          OMAR_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_API_KEY != '' }}
+          OMAR_MANAGED_LLM: ${{ secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
+          OMAR_LLM_PROVIDER: ${{ secrets.GOOGLE_API_KEY != '' && 'google' || 'openai' }}
+          OMAR_MODEL: ${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-pro' || 'gpt-5.3-codex' }}
+          OMAR_MODEL_FALLBACK: ${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           rm -rf omar-artifacts
@@ -571,7 +589,11 @@ jobs:
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
                   "action_ref": "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493",
-                  "llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed",
+                  "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
+                  "model": env("OMAR_MODEL", "gpt-5.3-codex"),
+                  "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
+                  "llm_route": "google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else ("openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed"),
+                  "google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT"),
                   "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
                   "managed_llm": bool_env("OMAR_MANAGED_LLM"),
                   "llm_failure_policy": "block",
