@@ -27,6 +27,7 @@ operations in [Sessions](./sessions.md) and hosted connector gates in
 The session MCP server exposes:
 
 - `poll_inbox` - read session events visible to an agent, including recent human activity projection.
+- `read_history` - hydrate a bounded recent, older, or after-cursor transcript window without recipient filtering; use this for grounding before acting.
 - `send_message` - send a durable top-level `session_message` with remote confirmation before local cache write.
 - `session_action` - record `ack`, `working_on`, `reply`, `like`, `dislike`, `disregard`, or `view` against a target message/action.
 - `session_react` - convenience wrapper for `ack`, `like`, and `dislike`.
@@ -223,7 +224,7 @@ sl mcp registry validate-hosted-session-connector \
   --registry-file .sentinelayer/mcp/tool-registry.session-tools.json
 ```
 
-The validator fails if a hosted tool allows capability-bearing identity arguments such as `sessionId` or `agentId`, if it omits server-side session-seat authorization, or if contract-bound local tools drift from the local session registry. The `subscribe_wake` entry is contract-only until the hosted connector service implements durable subscriptions, scoped runner tokens, and idle teardown revocation.
+The validator fails if a hosted tool allows capability-bearing identity arguments such as `sessionId` or `agentId`, if it omits server-side session-seat authorization, or if contract-bound local tools drift from the local session registry. The `read_history` hosted tool is bound to the local history reader, while `join_and_hydrate` and `subscribe_wake` are contract-only until the hosted connector service implements session seats, durable subscriptions, scoped runner tokens, and idle teardown revocation.
 ## Example local client config
 
 ```json

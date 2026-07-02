@@ -564,6 +564,47 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         },
       },
       {
+        name: "read_history",
+        title: "Read Senti History",
+        description:
+          "Hydrate a bounded recent, older, or after-cursor SentinelLayer session transcript window without recipient filtering.",
+        input_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sessionId"],
+          properties: {
+            sessionId: { type: "string" },
+            cursor: { type: "string" },
+            beforeSequence: { type: "integer", minimum: 1 },
+            limit: { type: "integer", minimum: 1, maximum: 200 },
+            actionLimit: { type: "integer", minimum: 1, maximum: 200 },
+            includeActions: { type: "boolean" },
+            includeControlEvents: { type: "boolean" },
+          },
+        },
+        transport: {
+          type: "internal",
+          method: "POST",
+          url: "sentinelayer://session/read_history",
+          timeout_ms: 15000,
+          auth: { mode: "none" },
+        },
+        budgets: {
+          max_calls_per_run: 60,
+          max_runtime_ms: 15000,
+        },
+        security: {
+          requires_human_approval: false,
+          kill_switch: "enabled",
+          scopes: ["session:read"],
+        },
+        metadata: {
+          provider: "sentinelayer",
+          adapter: "sentinelayer-cli",
+          server: "sentinelayer-session-mcp",
+        },
+      },
+      {
         name: "send_message",
         title: "Send Senti Message",
         description:
@@ -986,9 +1027,23 @@ export function buildHostedSentiSessionConnectorContract({
     },
     tools: [
       hostedSessionTool({
+        toolName: "join_and_hydrate",
+        operation: "join_and_hydrate",
+        allowedUserArgs: ["limit", "actionLimit", "includeActions"],
+        requiredScopes: ["session:read"],
+        wakePayload: { policy: "bounded_redacted_window", may_include_message_content: true, max_events: 50 },
+      }),
+      hostedSessionTool({
         toolName: "poll_inbox",
         operation: "read_history",
         allowedUserArgs: ["cursor", "limit", "actionLimit", "includeActions"],
+        requiredScopes: ["session:read"],
+        wakePayload: { policy: "bounded_redacted_window", may_include_message_content: true, max_events: 50 },
+      }),
+      hostedSessionTool({
+        toolName: "read_history",
+        operation: "read_history",
+        allowedUserArgs: ["cursor", "beforeSequence", "limit", "actionLimit", "includeActions"],
         requiredScopes: ["session:read"],
         wakePayload: { policy: "bounded_redacted_window", may_include_message_content: true, max_events: 50 },
       }),
@@ -1279,7 +1334,7 @@ export function validateHostedSentiSessionConnectorContract(payload, { registryP
     const registry = validateMcpToolRegistry(registryPayload);
     const localToolNames = new Set(registry.tools.map((tool) => tool.name));
     const missingLocalTools = parsed.tools
-      .filter((tool) => tool.operation !== "subscribe_wake" && tool.operation !== "presence_renew" && tool.operation !== "runner_teardown")
+      .filter((tool) => tool.operation !== "join_and_hydrate" && tool.operation !== "subscribe_wake" && tool.operation !== "presence_renew" && tool.operation !== "runner_teardown")
       .map((tool) => tool.local_tool_name)
       .filter((toolName) => !localToolNames.has(toolName));
     if (missingLocalTools.length > 0) {
