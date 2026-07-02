@@ -2517,20 +2517,20 @@ jobs:
           fi
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493
+        uses: mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998
         with:
           github_token: \${{ github.token }}
           openai_api_key: \${{ secrets.OPENAI_API_KEY }}
-          google_api_key: \${{ secrets.GOOGLE_API_KEY }}
-          llm_provider: \${{ secrets.GOOGLE_API_KEY != '' && 'google' || 'openai' }}
+          google_api_key: \${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          llm_provider: \${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
           sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
-          sentinelayer_managed_llm: \${{ secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && secrets.${normalizedSecret} != '' }}
+          sentinelayer_managed_llm: \${{ secrets.${normalizedSecret} != '' }}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: \${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-pro' || 'gpt-5.3-codex' }}
+          model: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
           codex_model: gpt-5.3-codex
-          model_fallback: \${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
-          use_codex: \${{ secrets.GOOGLE_API_KEY == '' }}
+          model_fallback: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          use_codex: \${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
           codex_only: "false"
           llm_failure_policy: block
           max_daily_scans: \${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
@@ -2582,11 +2582,11 @@ jobs:
           OMAR_SEVERITY_GATE: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_P2_MAX_ALLOWED: \${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
           OMAR_OPENAI_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' }}
-          OMAR_GOOGLE_KEY_PRESENT: \${{ secrets.GOOGLE_API_KEY != '' }}
-          OMAR_MANAGED_LLM: \${{ secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && secrets.${normalizedSecret} != '' }}
-          OMAR_LLM_PROVIDER: \${{ secrets.GOOGLE_API_KEY != '' && 'google' || 'openai' }}
-          OMAR_MODEL: \${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-pro' || 'gpt-5.3-codex' }}
-          OMAR_MODEL_FALLBACK: \${{ secrets.GOOGLE_API_KEY != '' && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
+          OMAR_GOOGLE_KEY_PRESENT: \${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
+          OMAR_MANAGED_LLM: \${{ secrets.${normalizedSecret} != '' }}
+          OMAR_LLM_PROVIDER: \${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
+          OMAR_MODEL: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          OMAR_MODEL_FALLBACK: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           mkdir -p omar-artifacts
@@ -2626,11 +2626,11 @@ jobs:
               },
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
-                  "action_ref": "mrrCarter/sentinelayer-v1-action@03d7369cba7de2e9f15b959275c982111f0ee493",
+                  "action_ref": "mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998",
                   "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
                   "model": env("OMAR_MODEL", "gpt-5.3-codex"),
                   "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
-                  "llm_route": "google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else ("openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed"),
+                  "llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else ("google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else "sentinelayer_managed"),
                   "google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT"),
                   "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
                   "managed_llm": bool_env("OMAR_MANAGED_LLM"),
