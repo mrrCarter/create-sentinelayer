@@ -5893,7 +5893,7 @@ export function registerSessionCommand(program) {
 
   session
     .command("search <sessionId> <query>")
-    .description("Search durable API session events by text, event type, or agent")
+    .description("Search durable API session events with free text across payload, event type, and agent fields")
     .option("--before-sequence <n>", "Return matches older than this sequence id")
     .option("--limit <n>", "Maximum search results (default 20, max 50)", "20")
     .option("--path <path>", "Workspace path for the session", ".")

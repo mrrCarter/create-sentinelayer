@@ -17,7 +17,7 @@ gaps blocking that vision plus what already works.
 | Session create / join / leave / kill | `slc session ...`, `src/session/store.js` | Multi-agent registry per session |
 | Bidirectional human ↔ agent messaging | `slc session say`, `slc session sync`, `slc session read --remote` (#407) | Web posts now hydrate into local NDJSON |
 | Past-conversation browsing | `slc session list --include-archived`, `slc session history` (#408) | Local cache; remote merge queued |
-| Durable session search | `slc session search <id> "<query>"` | API-backed search over durable events, with `--limit` and `--before-sequence` pagination |
+| Durable session search | `slc session search <id> "<query>"` | API-backed free-text search over durable events; matches payload text plus event type and agent fields, with `--limit` and `--before-sequence` pagination |
 | 13-persona AI review (Omar Gate) | `slc /omargate deep`, `slc /omargate investor-dd` | Investor-DD adds compliance + live-web validation |
 | Multi-tenant token isolation | `src/auth/session-store.js` | Per-user keyring fallback |
 | MCP registry | `src/mcp/registry.js` | MCP servers are registerable |
@@ -101,8 +101,9 @@ without the human's full token. Already partially shaped via
 ### G7. Session search / full-text query — shipped for durable events
 
 **Status:** `slc session search <sessionId> "<query>"` is implemented
-against the durable API event search endpoint. It supports text,
-event-type, and agent queries, plus bounded paging via `--limit` and
+against the durable API event search endpoint. It supports one
+free-text query that matches payload text plus event-type, agent id,
+and agent model fields, plus bounded paging via `--limit` and
 `--before-sequence`.
 
 **Residual gap:** offline local SQLite FTS across every cached

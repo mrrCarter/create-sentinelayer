@@ -1,3 +1,22 @@
+# 2026-07-02 - Senti Search Contract Wording (`codex/session-search-contract-20260702`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled and acknowledge material peer updates while working.
+- [x] Verify `sentinelayer-cli@0.35.3` shipped and the local global CLI is updated before starting a follow-up.
+- [x] Reproduce the operator confusion: `session search` help claimed search "by text, event type, or agent" even though the command exposes only a free-text query plus pagination flags.
+- [x] Verify the current API contract: `/events/search` accepts `q`, `beforeSequence`/`before_sequence`, and `limit`; server-side matching includes payload, event type, agent id, and agent model fields.
+- [x] Clarify CLI help and enterprise audit wording so users do not infer unsupported `--agent` or event-type filter flags.
+- [x] Pin the command description with a command-contract regression test.
+- [x] Run focused command-contract proof, static checks, review scan, and Omar pass-one.
+- [ ] Open PR, request Senti peer review, watch hosted gates, merge only when green, then release only if package publication is needed.
+
+## Review
+- Focused command-contract proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.commands-contracts.test.mjs` (`19/19`).
+- Static proof passed: `npm run check` (`345 files passed`).
+- `git diff --check` passed aside from expected Windows LF/CRLF notices.
+- Review scan passed: `.sentinelayer/reports/review-scan-diff-20260702-170540.md`, scoped files `5`, `P1=0`, `P2=0`, `blocking=false`.
+- Deterministic Omar pass-one passed: `review-20260702-170616-4185197c`, report `.sentinelayer/reports/omargate-deep-20260702-170617.md`, scoped files `5`, `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`.
+
 # 2026-07-02 - Senti Recap Copy Separation (`codex/recap-task-plan-copy-20260702`)
 
 ## Plan

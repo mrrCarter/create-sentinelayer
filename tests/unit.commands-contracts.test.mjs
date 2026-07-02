@@ -477,6 +477,10 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(daemon, "--json");
 
   const search = getCommandByPath(program, "session search");
+  assert.equal(
+    search.description(),
+    "Search durable API session events with free text across payload, event type, and agent fields"
+  );
   assertCommandHasOption(search, "--before-sequence <n>");
   assertCommandHasOption(search, "--limit <n>");
 
