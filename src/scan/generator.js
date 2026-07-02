@@ -239,7 +239,7 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
                 "${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}",
               codex_model: "gpt-5.3-codex",
               model_fallback:
-                "${{ secrets.OPENAI_API_KEY != '' && 'gpt-4.1-mini' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini') }}",
+                "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}",
               use_codex:
                 "${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}",
               codex_only: "false",
@@ -308,7 +308,7 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
               OMAR_MODEL:
                 "${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}",
               OMAR_MODEL_FALLBACK:
-                "${{ secrets.OPENAI_API_KEY != '' && 'gpt-4.1-mini' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini') }}",
+                "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}",
             },
             run: [
               "set -euo pipefail",
