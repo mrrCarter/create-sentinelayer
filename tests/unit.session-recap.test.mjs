@@ -231,7 +231,7 @@ test("Unit session recap: includes task ownership ledger in recap text", async (
       nowIso: "2026-05-19T09:03:00.000Z",
     });
 
-    assert.match(recap.text, /Tasks: 2 active of 2 total/);
+    assert.match(recap.text, /Session tasks: 2 active of 2 total/);
     assert.match(recap.text, /codex-c3d4 \(1 accepted\)/);
     assert.match(recap.text, /claude-a1b2 \(1 pending\)/);
     assert.match(recap.text, /P1 ACCEPTED codex-c3d4: Implement checkpoint restore/);
@@ -273,7 +273,7 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
 
     assert.match(
       recap.text,
-      /Plan: 2 open \/ 1 done in tasks\/todo\.md from create-sentinelayer-session-plan-recap-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
+      /Workspace plan: 2 open \/ 1 done in tasks\/todo\.md from create-sentinelayer-session-plan-recap-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
     );
     assert.match(recap.text, /Current: Active Shipment/);
     assert.match(recap.text, /Active Shipment - Build Senti auto recap/);
@@ -357,7 +357,7 @@ test("Unit session recap: handles empty and single-message transcript boundaries
     assert.equal(emptyRecap.summary.totalFindingsCount, 0);
     assert.equal(emptyRecap.summary.workPlan.exists, false);
     assert.match(emptyRecap.text, /no recent peer activity/);
-    assert.doesNotMatch(emptyRecap.text, /Plan:/);
+    assert.doesNotMatch(emptyRecap.text, /Workspace plan:/);
 
     await appendToStream(session.sessionId, {
       event: "session_message",
@@ -411,7 +411,7 @@ test("Unit session recap: suppresses current and next details for truncated todo
 
     assert.match(
       recap.text,
-      /Plan: 2 open \/ \d+ done in recent tasks\/todo\.md from create-sentinelayer-session-large-plan-recap-[^#]+#[a-f0-9]{8} window \(session_metadata_target_path\)/,
+      /Workspace plan: 2 open \/ \d+ done in recent tasks\/todo\.md from create-sentinelayer-session-large-plan-recap-[^#]+#[a-f0-9]{8} window \(session_metadata_target_path\)/,
     );
     assert.match(
       recap.text,
@@ -457,8 +457,9 @@ test("Unit session recap: suppresses current and next details for historical gen
 
     assert.match(
       recap.text,
-      /Plan: 17 open \/ 176 done in tasks\/todo\.md from create-sentinelayer-session-historical-plan-recap-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
+      /Workspace plan: 17 open \/ 176 done in tasks\/todo\.md from create-sentinelayer-session-historical-plan-recap-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
     );
+    assert.doesNotMatch(recap.text, /(?:^|\s)Plan:/);
     assert.match(
       recap.text,
       /Current\/next items suppressed because this generic plan is mostly historical completed work/,
@@ -792,7 +793,7 @@ test("Unit session recap: CLI recap now emits deterministic JSON", async () => {
     assert.equal(payload.maxEvents, 50);
     assert.equal(payload.ephemeral, true);
     assert.equal(payload.style, "italic-grey");
-    assert.match(payload.recap, /Tasks: 1 active of 1 total/);
+    assert.match(payload.recap, /Session tasks: 1 active of 1 total/);
     assert.equal(payload.summary.pendingTasksForAgent, 1);
     assert.equal(payload.summary.taskLedger.accepted, 1);
     assert.equal(payload.summary.taskLedger.recent[0].taskId, codexTask.task.taskId);
