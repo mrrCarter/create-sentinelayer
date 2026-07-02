@@ -246,3 +246,4 @@
 ## 2026-07-02
 
 - When fixing a generated workflow, patch the generator and parity tests in the same PR as the checked-in YAML; otherwise the next `sl scan init` can recreate the incident you just fixed.
+- `sl session search` is a free-text search whose backend matches payload, event type, agent id, and agent model fields; do not advertise `--agent` or event-type filters unless the CLI and API expose dedicated filter parameters.
