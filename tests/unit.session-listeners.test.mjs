@@ -16,6 +16,16 @@ function heartbeat(agentId, payload = {}, ts = "2026-06-14T08:00:00.000Z", event
   };
 }
 
+function sessionMessage(sequenceId, message = "busy room chatter") {
+  return {
+    event: "session_message",
+    sequenceId,
+    agent: { id: "builder" },
+    payload: { message: `${message} ${sequenceId}` },
+    ts: "2026-06-14T08:00:20Z",
+  };
+}
+
 const NOW = Date.parse("2026-06-14T08:00:30.000Z");
 
 test("Unit listeners: one row per agent from the latest heartbeat, active vs idle cadence", () => {
@@ -124,6 +134,118 @@ test("Unit listeners: fetchSessionListeners summarizes a poll result", async () 
   assert.equal(result.listeners[0].status, "active");
   assert.equal(pollOptions.sessionId, "sess-1");
   assert.equal(pollOptions.options.forceCircuitProbe, true);
+});
+
+test("Unit listeners: fetchSessionListeners walks older pages when the tail is noisy", async () => {
+  const calls = [];
+  const pages = [
+    {
+      ok: true,
+      beforeSequence: 300,
+      events: [
+        sessionMessage(498),
+        sessionMessage(499),
+        sessionMessage(500),
+      ],
+    },
+    {
+      ok: true,
+      beforeSequence: 250,
+      events: [
+        heartbeat(
+          "codex",
+          {
+            active: false,
+            idleIntervalSeconds: 60,
+            presenceIntervalSeconds: 60,
+            presenceKeepaliveSeconds: 180,
+          },
+          "2026-06-14T08:00:10Z",
+        ),
+        sessionMessage(299),
+      ],
+    },
+  ];
+  const fakePoll = async (_sessionId, options) => {
+    calls.push(options);
+    return pages[calls.length - 1];
+  };
+
+  const result = await fetchSessionListeners("sess-noisy", {
+    poll: fakePoll,
+    nowMs: () => NOW,
+    limit: 3,
+    maxPages: 5,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.scannedEventCount, 5);
+  assert.equal(result.listenerEventCount, 1);
+  assert.equal(calls[0].beforeSequence, null);
+  assert.equal(calls[1].beforeSequence, 300);
+  assert.equal(result.listeners.length, 1);
+  assert.equal(result.listeners[0].agentId, "codex");
+  assert.equal(result.listeners[0].status, "idle");
+});
+
+test("Unit listeners: fetchSessionListeners stops after a full page once listeners are found", async () => {
+  const calls = [];
+  const fakePoll = async (_sessionId, options) => {
+    calls.push(options);
+    return {
+      ok: true,
+      beforeSequence: 300,
+      events: [
+        sessionMessage(498),
+        heartbeat("codex", { active: false, idleIntervalSeconds: 60 }, "2026-06-14T08:00:10Z"),
+        sessionMessage(500),
+      ],
+    };
+  };
+
+  const result = await fetchSessionListeners("sess-listeners-in-tail", {
+    poll: fakePoll,
+    nowMs: () => NOW,
+    limit: 3,
+    maxPages: 5,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.pageCount, 1);
+  assert.equal(result.scannedEventCount, 3);
+  assert.equal(result.listenerEventCount, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(result.listeners.length, 1);
+});
+
+test("Unit listeners: fetchSessionListeners stops on non-advancing beforeSequence", async () => {
+  const calls = [];
+  const fakePoll = async (_sessionId, options) => {
+    calls.push(options);
+    return {
+      ok: true,
+      beforeSequence: 40,
+      events: [
+        sessionMessage(98),
+        sessionMessage(99),
+      ],
+    };
+  };
+
+  const result = await fetchSessionListeners("sess-cyclic", {
+    poll: fakePoll,
+    nowMs: () => NOW,
+    limit: 2,
+    maxPages: 10,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.listenerEventCount, 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].beforeSequence, null);
+  assert.equal(calls[1].beforeSequence, 40);
 });
 
 test("Unit listeners: fetch surfaces a failed poll without throwing", async () => {

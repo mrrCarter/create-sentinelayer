@@ -10,6 +10,9 @@ const LISTENER_EVENT_TYPES = new Set([
 // listener likely died without a clean stop — show it as stale, not live.
 const DEFAULT_STALE_AFTER_MS = 180_000;
 const MAX_STALE_GRACE_MS = 60_000;
+const DEFAULT_LISTENER_FETCH_LIMIT = 200;
+const DEFAULT_LISTENER_FETCH_MAX_PAGES = 5;
+const MAX_LISTENER_FETCH_MAX_PAGES = 25;
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -143,24 +146,93 @@ export function summarizeListeners(events = [], { nowMs = Date.now(), staleAfter
 
 /**
  * Fetch recent session events from the API and summarize the listeners.
- * `limit` controls how far back we look for heartbeats.
+ * `limit` controls the raw API page size. Busy rooms can push durable
+ * keepalive heartbeats out of a single tail page, so we walk a small bounded
+ * number of older pages while the tail contains no listener lifecycle events
+ * and the sequence cursor advances.
  */
 export async function fetchSessionListeners(
   sessionId,
   {
     targetPath = process.cwd(),
-    limit = 200,
+    limit = DEFAULT_LISTENER_FETCH_LIMIT,
+    maxPages = DEFAULT_LISTENER_FETCH_MAX_PAGES,
     nowMs = Date.now,
     forceCircuitProbe = true,
     poll = pollSessionEventsBefore,
   } = {}
 ) {
-  const result = await poll(sessionId, { targetPath, limit, forceCircuitProbe });
-  if (!result?.ok) {
-    return { ok: false, reason: normalizeString(result?.reason) || "fetch_failed", listeners: [] };
+  const pageLimit = Math.max(
+    1,
+    Math.min(DEFAULT_LISTENER_FETCH_LIMIT, positiveInt(limit) || DEFAULT_LISTENER_FETCH_LIMIT),
+  );
+  const maxPageCount = Math.max(
+    1,
+    Math.min(MAX_LISTENER_FETCH_MAX_PAGES, positiveInt(maxPages) || DEFAULT_LISTENER_FETCH_MAX_PAGES),
+  );
+  let beforeSequence = null;
+  let latestResult = null;
+  let allEvents = [];
+  let pageCount = 0;
+  let listenerEventCount = 0;
+  let partial = false;
+  let partialReason = "";
+
+  for (let page = 0; page < maxPageCount; page += 1) {
+    const result = await poll(sessionId, {
+      targetPath,
+      beforeSequence,
+      limit: pageLimit,
+      forceCircuitProbe,
+    });
+    pageCount += 1;
+
+    if (!result?.ok) {
+      if (!latestResult) {
+        return {
+          ok: false,
+          reason: normalizeString(result?.reason) || "fetch_failed",
+          listeners: [],
+          pageCount,
+          scannedEventCount: allEvents.length,
+          listenerEventCount: 0,
+          partial: false,
+        };
+      }
+      partial = true;
+      partialReason = normalizeString(result?.reason) || "partial_fetch";
+      break;
+    }
+
+    latestResult = result;
+    const pageEvents = Array.isArray(result.events) ? result.events : [];
+    allEvents = [...pageEvents, ...allEvents];
+    listenerEventCount += pageEvents.filter((event) =>
+      LISTENER_EVENT_TYPES.has(normalizeString(event?.event))
+    ).length;
+
+    if (pageEvents.length < pageLimit) break;
+    if (listenerEventCount > 0) break;
+
+    const candidateBeforeSequence = Number(result.beforeSequence || 0);
+    if (!Number.isFinite(candidateBeforeSequence) || candidateBeforeSequence <= 0) break;
+    const currentBeforeSequence = Number(beforeSequence || 0);
+    if (currentBeforeSequence > 0 && candidateBeforeSequence >= currentBeforeSequence) break;
+    beforeSequence = Math.floor(candidateBeforeSequence);
   }
-  const listeners = summarizeListeners(result.events || [], { nowMs: nowMs() });
-  return { ok: true, sessionId: normalizeString(sessionId), listeners };
+
+  const listeners = summarizeListeners(allEvents, { nowMs: nowMs() });
+  return {
+    ok: true,
+    sessionId: normalizeString(sessionId),
+    listeners,
+    pageCount,
+    scannedEventCount: allEvents.length,
+    listenerEventCount,
+    beforeSequence: latestResult?.beforeSequence || beforeSequence || null,
+    partial,
+    reason: partial ? partialReason : "",
+  };
 }
 
 export function formatListenerLine(row) {

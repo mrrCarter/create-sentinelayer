@@ -4401,6 +4401,7 @@ export function registerSessionCommand(program) {
     )
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--limit <n>", "Recent events to scan for heartbeats (default 200)", "200")
+    .option("--max-pages <n>", "Maximum older event pages to scan for heartbeats (default 5)", "5")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -4410,7 +4411,12 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
       const limit = parsePositiveInteger(options.limit, "limit", 200);
-      const result = await fetchSessionListeners(normalizedSessionId, { targetPath, limit });
+      const maxPages = parsePositiveInteger(options.maxPages, "max-pages", 5);
+      const result = await fetchSessionListeners(normalizedSessionId, {
+        targetPath,
+        limit,
+        maxPages,
+      });
       const listeners = Array.isArray(result.listeners) ? result.listeners : [];
       const live = listeners.filter((row) => row.status === "active" || row.status === "idle").length;
       const payload = {
@@ -4420,6 +4426,11 @@ export function registerSessionCommand(program) {
         reason: result.ok ? undefined : result.reason,
         count: listeners.length,
         liveCount: live,
+        pageCount: Number(result.pageCount || 0),
+        scannedEventCount: Number(result.scannedEventCount || 0),
+        listenerEventCount: Number(result.listenerEventCount || 0),
+        partial: Boolean(result.partial),
+        beforeSequence: result.beforeSequence || null,
         listeners,
       };
       if (shouldEmitJson(options, command)) {
