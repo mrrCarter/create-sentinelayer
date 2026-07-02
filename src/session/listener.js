@@ -292,6 +292,7 @@ export async function listenSessionEvents({
   let activeTransport = normalizedTransport === "poll" ? "poll" : "stream";
   let streamAttempted = false;
   let streamFallbackReason = "";
+  let heartbeatCount = 0;
   let catchupNotified = false;
   let catchupEventCount = 0;
   let catchupMatchingEventCount = 0;
@@ -340,6 +341,7 @@ export async function listenSessionEvents({
     cursor: cursor || null,
     cursorSuffix,
     pollCount,
+    heartbeatCount,
     matched,
     emitted,
     persistedCursor,
@@ -474,6 +476,7 @@ export async function listenSessionEvents({
   }
 
   async function notifyHeartbeat({ stopping = false, nextPollMs = null } = {}) {
+    heartbeatCount += 1;
     const heartbeatAtMs = Number(_nowMs()) || Date.now();
     const humanActive = isRecentActivity(lastHumanActivityMs, heartbeatAtMs, activeWindowMs);
     await notifyLifecycle(

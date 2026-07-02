@@ -146,6 +146,7 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
     _stream: async () => {
       assert.ok(intervalCallback, "expected stream heartbeat timer to be installed");
       await intervalCallback();
+      await intervalCallback();
       return { ok: true, reason: "", cursor: null, eventCount: 0, errorCount: 0 };
     },
     onLifecycle: async (event) => lifecycle.push(event),
@@ -157,10 +158,14 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
   assert.equal(unrefCount, 0);
   assert.deepEqual(
     lifecycle.map((event) => event.type),
-    ["started", "heartbeat", "stopped"],
+    ["started", "heartbeat", "heartbeat", "stopped"],
   );
   assert.equal(lifecycle[1].transport, "stream");
   assert.equal(lifecycle[1].nextPollMs, null);
+  assert.equal(lifecycle[1].pollCount, 0);
+  assert.equal(lifecycle[1].heartbeatCount, 1);
+  assert.equal(lifecycle[2].pollCount, 0);
+  assert.equal(lifecycle[2].heartbeatCount, 2);
 });
 
 test("Unit session listener: stream transport dedupes concurrent duplicate events", async () => {
