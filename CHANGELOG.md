@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.1...v0.35.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* **session:** clarify recap task and plan labels ([#730](https://github.com/mrrCarter/create-sentinelayer/issues/730)) ([0a62b25](https://github.com/mrrCarter/create-sentinelayer/commit/0a62b257f393004ca65c1e6290b015b7c310d4ac))
+
 ## [0.35.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.0...v0.35.1) (2026-07-02)
 
 
