@@ -161,11 +161,12 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
     ["started", "heartbeat", "heartbeat", "stopped"],
   );
   assert.equal(lifecycle[1].transport, "stream");
-  assert.equal(lifecycle[1].nextPollMs, null);
+  assert.equal(lifecycle[1].nextPollMs, 40_000);
   assert.equal(lifecycle[1].pollCount, 0);
   assert.equal(lifecycle[1].heartbeatCount, 1);
   assert.equal(lifecycle[2].pollCount, 0);
   assert.equal(lifecycle[2].heartbeatCount, 2);
+  assert.equal(lifecycle[2].nextPollMs, 40_000);
 });
 
 test("Unit session listener: stream transport dedupes concurrent duplicate events", async () => {

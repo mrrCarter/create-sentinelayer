@@ -507,7 +507,7 @@ export async function listenSessionEvents({
       if (signal?.aborted || streamHeartbeatInFlight) return;
       streamHeartbeatInFlight = true;
       try {
-        await notifyHeartbeat({ nextPollMs: null });
+        await notifyHeartbeat({ nextPollMs: streamHeartbeatMs });
       } finally {
         streamHeartbeatInFlight = false;
       }
@@ -543,7 +543,7 @@ export async function listenSessionEvents({
           });
         },
         onHeartbeat: async () => {
-          await notifyHeartbeat({ nextPollMs: null });
+          await notifyHeartbeat({ nextPollMs: streamHeartbeatMs });
         },
       }).finally(() => {
         stopStreamHeartbeatTimer();
