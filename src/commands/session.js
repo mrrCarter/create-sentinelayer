@@ -4700,7 +4700,7 @@ export function registerSessionCommand(program) {
         });
         if (existingListener.running && !options.force) {
           throw new Error(
-            `A local session listener is already running for session ${normalizedSessionId} as ${agentId} (pid ${existingListener.pid}). Use --force to take over or --allow-duplicate if you intentionally need more than one.`,
+            `A session listener is already running for session ${normalizedSessionId} as ${agentId} (pid ${existingListener.pid}). Use --force to take over or --allow-duplicate if you intentionally need more than one.`,
           );
         }
         if (existingListener.running && options.force) {

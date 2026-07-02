@@ -8,9 +8,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   getListenerProcessStatus,
   normalizeListenerProcessKey,
+  readGlobalListenerPidRecord,
   readListenerPidRecord,
   removeListenerPidRecord,
   requestListenerProcessStop,
+  resolveGlobalListenerPidPath,
   resolveListenerPidPath,
   writeListenerPidRecord,
 } from "../src/session/listener-process.js";
@@ -57,6 +59,7 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
 
     const initial = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
     });
     assert.deepEqual(
       { running: initial.running, pid: initial.pid, stale: initial.stale },
@@ -65,6 +68,7 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
 
     await writeListenerPidRecord(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
       pid: process.pid,
       listenerId: "listener-codex-test",
       transport: "poll",
@@ -74,6 +78,7 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
     });
     const alive = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
       _readProcessCommandLine: async () =>
         listenerCommandLine({ sessionId: session.sessionId, agentId: "Codex" }),
     });
@@ -84,6 +89,7 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
 
     const reused = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
       _readProcessCommandLine: async () => `${process.execPath} unrelated-worker.js`,
     });
     assert.equal(reused.running, false);
@@ -94,10 +100,12 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
     const deadPid = await spawnExitedPid();
     await writeListenerPidRecord(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
       pid: deadPid,
     });
     const stale = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
     });
     assert.equal(stale.running, false);
     assert.equal(stale.stale, true);
@@ -105,14 +113,25 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
     assert.equal(
       await removeListenerPidRecord(session.sessionId, "Codex", {
         targetPath: tempRoot,
+        homeDir: tempRoot,
         onlyForPid: process.pid,
       }),
       false,
     );
-    assert.ok(await readListenerPidRecord(session.sessionId, "Codex", { targetPath: tempRoot }));
+    assert.ok(
+      await readListenerPidRecord(session.sessionId, "Codex", {
+        targetPath: tempRoot,
+      }),
+    );
+    assert.ok(
+      await readGlobalListenerPidRecord(session.sessionId, "Codex", {
+        homeDir: tempRoot,
+      }),
+    );
     assert.equal(
       await removeListenerPidRecord(session.sessionId, "Codex", {
         targetPath: tempRoot,
+        homeDir: tempRoot,
         onlyForPid: deadPid,
       }),
       true,
@@ -121,8 +140,70 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
       await readListenerPidRecord(session.sessionId, "Codex", { targetPath: tempRoot }),
       null,
     );
+    assert.equal(
+      await readGlobalListenerPidRecord(session.sessionId, "Codex", { homeDir: tempRoot }),
+      null,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit listener-process: global pid record blocks duplicates across worktrees", async () => {
+  const homeRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listener-home-"));
+  const firstRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listener-first-"));
+  const secondRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listener-second-"));
+  try {
+    await seedWorkspace(firstRoot);
+    await seedWorkspace(secondRoot);
+    const sessionId = "cross-worktree-session";
+    const agentId = "Codex";
+    assert.match(
+      resolveGlobalListenerPidPath(sessionId, agentId, { homeDir: homeRoot }),
+      /cross-worktree-session[\\/]codex\.json$/,
+    );
+
+    await writeListenerPidRecord(sessionId, agentId, {
+      targetPath: firstRoot,
+      homeDir: homeRoot,
+      pid: process.pid,
+      listenerId: "listener-first-root",
+      transport: "poll",
+    });
+
+    const fromSecondRoot = await getListenerProcessStatus(sessionId, agentId, {
+      targetPath: secondRoot,
+      homeDir: homeRoot,
+      _readProcessCommandLine: async () => listenerCommandLine({ sessionId, agentId }),
+    });
+    assert.equal(fromSecondRoot.running, true);
+    assert.equal(fromSecondRoot.pid, process.pid);
+    assert.equal(fromSecondRoot.recordScope, "global");
+    assert.equal(fromSecondRoot.record.listenerId, "listener-first-root");
+    assert.equal(path.resolve(fromSecondRoot.record.targetPath), path.resolve(firstRoot));
+
+    assert.equal(
+      await readListenerPidRecord(sessionId, agentId, { targetPath: secondRoot }),
+      null,
+    );
+    assert.ok(await readGlobalListenerPidRecord(sessionId, agentId, { homeDir: homeRoot }));
+
+    assert.equal(
+      await removeListenerPidRecord(sessionId, agentId, {
+        targetPath: secondRoot,
+        homeDir: homeRoot,
+        onlyForPid: process.pid,
+      }),
+      true,
+    );
+    assert.equal(
+      await readGlobalListenerPidRecord(sessionId, agentId, { homeDir: homeRoot }),
+      null,
+    );
+  } finally {
+    await rm(homeRoot, { recursive: true, force: true });
+    await rm(firstRoot, { recursive: true, force: true });
+    await rm(secondRoot, { recursive: true, force: true });
   }
 });
 

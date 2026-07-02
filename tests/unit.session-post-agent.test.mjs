@@ -1225,6 +1225,7 @@ test("Unit session listen: refuses duplicate local listener for same session and
     await seedWorkspace(tempRoot);
     await writeListenerPidRecord("remote-listen", "Codex", {
       targetPath: tempRoot,
+      homeDir: tempRoot,
       pid: child.pid,
       listenerId: "listener-codex-existing",
     });

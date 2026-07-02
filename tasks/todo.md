@@ -1,3 +1,20 @@
+# 2026-07-02 - Senti Listener Global Singleton (`codex/session-listener-global-singleton-20260702`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` visible without routine ACK spam while #727 hosted gates finish.
+- [x] Confirm root cause from live dogfood: multiple historical `session listen` processes for the same room/agent can run because pid records are scoped to the launching workspace's `.sentinelayer` directory.
+- [x] Add a home-scoped listener pid record keyed by session id + agent id while preserving the workspace-local pid file.
+- [x] Make duplicate detection, `--force` replacement, and cleanup consult/remove both local and global records.
+- [x] Add cross-worktree regression coverage and run focused verification.
+- [x] Run full verification and publish PR for peer review.
+
+## Review
+- Focused/adjacent proof before rebasing onto #727: `node --import ./tests/setup-env.mjs --test tests/unit.session-listener-process.test.mjs tests/unit.session-post-agent.test.mjs tests/unit.commands-contracts.test.mjs` passed 59/59.
+- Combined listener/session proof after rebasing onto #727: `node --import ./tests/setup-env.mjs --test tests/unit.session-listeners.test.mjs tests/unit.session-listener-process.test.mjs tests/unit.session-listener-presence.test.mjs tests/unit.session-post-agent.test.mjs tests/unit.commands-contracts.test.mjs` passed 73/73.
+- `git diff --check origin/main...HEAD` passed.
+- Full post-rebase proof: `npm run check` passed 345 files; `npm run test:unit` passed 1718/1718; focused listener E2E passed 3/3; `npm run docs:build` passed; `npm pack --dry-run --json` produced `sentinelayer-cli-0.35.0.tgz` with shasum `2aa35840c767775147e3abe35bb7b1704bff8297`.
+- Deterministic post-rebase review proof: full `sl review scan` scanned 702 files with `P1=0`, `P2=1`, `blocking=false`; full deterministic `sl /omargate deep --no-ai` scanned 702 files with `P0=0`, `P1=0`, `P2=30`, `P3=0`, `blocking=false`. Local committed `--mode diff` has no merge-base flag and scans only uncommitted changes, so hosted PR Omar is the authoritative diff gate.
+
 # 2026-07-02 - Senti Listener Roster Backfill (`codex/session-listener-roster-reliability-20260702`)
 
 ## Plan
