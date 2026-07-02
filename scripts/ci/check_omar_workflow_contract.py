@@ -25,8 +25,10 @@ ALLOWED_GOOGLE_API_KEY_LINE = "google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY
 OPENAI_PRESENT_EXPR = "secrets.OPENAI_API_KEY != ''"
 GOOGLE_PRESENT_EXPR = "(secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '')"
 GOOGLE_ABSENT_EXPR = "secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == ''"
-ALLOWED_LLM_PROVIDER_LINE = f"llm_provider: ${{{{ {OPENAI_PRESENT_EXPR} && 'openai' || ({GOOGLE_PRESENT_EXPR} && 'google' || 'openai') }}}}"
+ALLOWED_LLM_PROVIDER_LINE = f"llm_provider: ${{{{ {GOOGLE_PRESENT_EXPR} && 'google' || 'openai' }}}}"
+ALLOWED_MODEL_LINE = f"model: ${{{{ {GOOGLE_PRESENT_EXPR} && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}}}"
 ALLOWED_MODEL_FALLBACK_LINE = f"model_fallback: ${{{{ {GOOGLE_PRESENT_EXPR} && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}}}"
+ALLOWED_USE_CODEX_LINE = f"use_codex: ${{{{ {GOOGLE_ABSENT_EXPR} }}}}"
 MANAGED_LLM_FALLBACK_RE = re.compile(
     r"^sentinelayer_managed_llm:\s*\$\{\{\s*"
     r"secrets\.GOOGLE_GEMINI_API_KEY\s*==\s*''\s*&&\s*"
@@ -116,11 +118,19 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
             )
         if stripped.startswith("llm_provider:") and stripped != ALLOWED_LLM_PROVIDER_LINE:
             raise OmarWorkflowContractError(
-                "Omar workflow must prefer OpenAI when configured, then Google, then managed SentinelLayer"
+                "Omar workflow must prefer Google when configured, then OpenAI/Codex, then managed SentinelLayer"
+            )
+        if stripped.startswith("model:") and stripped != ALLOWED_MODEL_LINE:
+            raise OmarWorkflowContractError(
+                "Omar workflow must route Google-key scans to Gemini before OpenAI/Codex"
             )
         if stripped.startswith("model_fallback:") and stripped != ALLOWED_MODEL_FALLBACK_LINE:
             raise OmarWorkflowContractError(
                 "Omar workflow must use Gemini as the OpenAI fallback whenever a Google key is configured"
+            )
+        if stripped.startswith("use_codex:") and stripped != ALLOWED_USE_CODEX_LINE:
+            raise OmarWorkflowContractError(
+                "Omar workflow must disable Codex whenever a Google LLM key is configured"
             )
         if stripped.startswith(("anthropic_api_key:", "xai_api_key:")):
             raise OmarWorkflowContractError(
@@ -154,6 +164,14 @@ def validate_omar_contract(workflow_text: str) -> None:
     if ALLOWED_LLM_PROVIDER_LINE not in workflow_text:
         raise OmarWorkflowContractError(
             "Omar workflow must configure the Google-when-present provider selector"
+        )
+    if ALLOWED_MODEL_LINE not in workflow_text:
+        raise OmarWorkflowContractError(
+            "Omar workflow must configure the Google-when-present model selector"
+        )
+    if ALLOWED_USE_CODEX_LINE not in workflow_text:
+        raise OmarWorkflowContractError(
+            "Omar workflow must configure Codex only when Google keys are absent"
         )
     if not any(_line_has_managed_llm_fallback(line) for line in workflow_text.splitlines()):
         raise OmarWorkflowContractError(
@@ -197,18 +215,18 @@ def validate_omar_contract(workflow_text: str) -> None:
         "Assert Omar LLM contract is active",
         "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
         "google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}",
-        "llm_provider: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}",
+        "llm_provider: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}",
         "sentinelayer_managed_llm: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
-        "model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}",
+        "model: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}",
         "model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}",
-        "use_codex: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}",
-        "REQUESTED_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}",
-        "REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}",
+        "use_codex: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' }}",
+        "REQUESTED_PROVIDER: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}",
+        "REQUESTED_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}",
         "REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}",
         "REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}",
         "REQUESTED_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}",
         "REQUESTED_MANAGED_LLM: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
-        "REQUESTED_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}",
+        "REQUESTED_USE_CODEX: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' }}",
         "REQUESTED_FAILURE_POLICY: block",
         "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
         'codex_only: "false"',
@@ -224,7 +242,7 @@ def validate_omar_contract(workflow_text: str) -> None:
         '"llm_provider": env("OMAR_LLM_PROVIDER", "openai")',
         '"model": env("OMAR_MODEL", "gpt-5.3-codex")',
         '"model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini")',
-        '"llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else ("google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else "sentinelayer_managed")',
+        '"llm_route": "google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else ("openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed")',
         '"google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT")',
         '"openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT")',
         '"managed_llm": bool_env("OMAR_MANAGED_LLM")',
@@ -297,25 +315,25 @@ jobs:
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
-          llm_provider: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
+          llm_provider: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}
           sentinelayer_managed_llm: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
-          model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          model: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}
           model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
-          use_codex: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
+          use_codex: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' }}
           codex_only: "false"
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
       - name: Assert Omar LLM contract is active
         env:
-          REQUESTED_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          REQUESTED_PROVIDER: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}
+          REQUESTED_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
           REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
           REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
           REQUESTED_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           REQUESTED_MANAGED_LLM: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
-          REQUESTED_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
+          REQUESTED_USE_CODEX: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' }}
           REQUESTED_FAILURE_POLICY: block
         run: |
           echo "Omar LLM contract active"
@@ -329,7 +347,7 @@ jobs:
           echo '"llm_provider": env("OMAR_LLM_PROVIDER", "openai")'
           echo '"model": env("OMAR_MODEL", "gpt-5.3-codex")'
           echo '"model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini")'
-          echo '"llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else ("google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else "sentinelayer_managed")'
+          echo '"llm_route": "google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else ("openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else "sentinelayer_managed")'
           echo '"google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT")'
           echo '"openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT")'
           echo '"managed_llm": bool_env("OMAR_MANAGED_LLM")'
@@ -376,9 +394,21 @@ jobs:
     )
     _assert_fails(
         valid_workflow.replace(
-            "llm_provider: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}",
+            "llm_provider: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}",
             "llm_provider: google",
         ),
+    )
+    _assert_fails(
+        valid_workflow.replace(
+            "model: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}",
+            "model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}",
+        )
+    )
+    _assert_fails(
+        valid_workflow.replace(
+            "use_codex: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' }}",
+            "use_codex: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}",
+        )
     )
     _assert_fails(
         valid_workflow.replace("if: ${{ always() }}", "if: ${{ needs.omar_scan.result == 'success' }}"),
