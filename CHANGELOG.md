@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.35.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.0...v0.35.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **session:** backfill listener roster heartbeats ([ef6ca4b](https://github.com/mrrCarter/create-sentinelayer/commit/ef6ca4be20c16eb96ce0721357e393426c3b5f22))
+* **session:** enforce global listener singleton ([1cd3395](https://github.com/mrrCarter/create-sentinelayer/commit/1cd3395bb85645858965fb58ea58b3c3932ad3c6))
+
 ## [0.35.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.7...v0.35.0) (2026-07-02)
 
 
