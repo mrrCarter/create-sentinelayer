@@ -1,4 +1,5 @@
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { execFile } from "node:child_process";
@@ -9,6 +10,7 @@ import { isProcessAlive } from "./daemon-spawn.js";
 import { resolveSessionPaths } from "./paths.js";
 
 const LISTENER_DIR_NAME = "listeners";
+const GLOBAL_LISTENER_DIR_NAME = "session-listeners";
 const execFileAsync = promisify(execFile);
 
 function normalizeString(value) {
@@ -99,12 +101,21 @@ export function resolveListenerPidPath(
   );
 }
 
-export async function readListenerPidRecord(
+export function resolveGlobalListenerPidPath(
   sessionId,
   agentId,
-  { targetPath = process.cwd() } = {},
+  { homeDir = os.homedir() } = {},
 ) {
-  const pidPath = resolveListenerPidPath(sessionId, agentId, { targetPath });
+  return path.join(
+    path.resolve(String(homeDir || os.homedir())),
+    ".sentinelayer",
+    GLOBAL_LISTENER_DIR_NAME,
+    normalizeListenerProcessKey(sessionId),
+    `${normalizeListenerProcessKey(agentId)}.json`,
+  );
+}
+
+async function readPidRecordAtPath(pidPath) {
   try {
     const raw = await fsp.readFile(pidPath, "utf-8");
     const parsed = JSON.parse(raw);
@@ -115,6 +126,44 @@ export async function readListenerPidRecord(
   } catch {
     return null;
   }
+}
+
+async function writePidRecordAtPath(pidPath, record) {
+  await fsp.mkdir(path.dirname(pidPath), { recursive: true });
+  await fsp.writeFile(pidPath, `${JSON.stringify(record, null, 2)}\n`, "utf-8");
+}
+
+async function removePidRecordAtPath(pidPath, { onlyForPid = null } = {}) {
+  if (onlyForPid != null) {
+    const existing = await readPidRecordAtPath(pidPath);
+    if (existing && Number(existing.pid) !== Number(onlyForPid)) {
+      return false;
+    }
+  }
+  try {
+    await fsp.unlink(pidPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function readListenerPidRecord(
+  sessionId,
+  agentId,
+  { targetPath = process.cwd() } = {},
+) {
+  const pidPath = resolveListenerPidPath(sessionId, agentId, { targetPath });
+  return readPidRecordAtPath(pidPath);
+}
+
+export async function readGlobalListenerPidRecord(
+  sessionId,
+  agentId,
+  { homeDir = os.homedir() } = {},
+) {
+  const pidPath = resolveGlobalListenerPidPath(sessionId, agentId, { homeDir });
+  return readPidRecordAtPath(pidPath);
 }
 
 export async function writeListenerPidRecord(
@@ -129,9 +178,11 @@ export async function writeListenerPidRecord(
     activeIntervalSeconds = null,
     presenceIntervalSeconds = null,
     logFile = "",
+    homeDir = os.homedir(),
   } = {},
 ) {
   const pidPath = resolveListenerPidPath(sessionId, agentId, { targetPath });
+  const globalPidPath = resolveGlobalListenerPidPath(sessionId, agentId, { homeDir });
   const record = {
     pid: Number(pid),
     sessionId: normalizeString(sessionId),
@@ -146,46 +197,42 @@ export async function writeListenerPidRecord(
     logFile: normalizeString(logFile) || undefined,
     startedAt: new Date().toISOString(),
   };
-  await fsp.mkdir(path.dirname(pidPath), { recursive: true });
-  await fsp.writeFile(pidPath, `${JSON.stringify(record, null, 2)}\n`, "utf-8");
+  const globalRecord = {
+    ...record,
+    recordScope: "global",
+    localPidPath: pidPath,
+  };
+  await writePidRecordAtPath(globalPidPath, globalRecord);
+  try {
+    await writePidRecordAtPath(pidPath, record);
+  } catch (error) {
+    await removePidRecordAtPath(globalPidPath, { onlyForPid: pid }).catch(() => {});
+    throw error;
+  }
   return record;
 }
 
 export async function removeListenerPidRecord(
   sessionId,
   agentId,
-  { targetPath = process.cwd(), onlyForPid = null } = {},
+  { targetPath = process.cwd(), onlyForPid = null, homeDir = os.homedir() } = {},
 ) {
   const pidPath = resolveListenerPidPath(sessionId, agentId, { targetPath });
-  if (onlyForPid != null) {
-    const existing = await readListenerPidRecord(sessionId, agentId, { targetPath });
-    if (existing && Number(existing.pid) !== Number(onlyForPid)) {
-      return false;
-    }
-  }
-  try {
-    await fsp.unlink(pidPath);
-    return true;
-  } catch {
-    return false;
-  }
+  const globalPidPath = resolveGlobalListenerPidPath(sessionId, agentId, { homeDir });
+  const localRemoved = await removePidRecordAtPath(pidPath, { onlyForPid });
+  const globalRemoved = await removePidRecordAtPath(globalPidPath, { onlyForPid });
+  return Boolean(localRemoved || globalRemoved);
 }
 
-export async function getListenerProcessStatus(
-  sessionId,
-  agentId,
-  { targetPath = process.cwd(), _readProcessCommandLine = readProcessCommandLine } = {},
+async function listenerStatusFromRecord(
+  record,
+  {
+    sessionId,
+    agentId,
+    recordScope,
+    _readProcessCommandLine = readProcessCommandLine,
+  } = {},
 ) {
-  const record = await readListenerPidRecord(sessionId, agentId, { targetPath });
-  if (!record) {
-    return {
-      running: false,
-      pid: null,
-      stale: false,
-      record: null,
-      listenerKey: normalizeListenerProcessKey(agentId),
-    };
-  }
   const alive = isProcessAlive(record.pid);
   if (!alive) {
     return {
@@ -193,6 +240,7 @@ export async function getListenerProcessStatus(
       pid: null,
       stale: true,
       record,
+      recordScope,
       listenerKey: normalizeListenerProcessKey(agentId),
     };
   }
@@ -205,6 +253,7 @@ export async function getListenerProcessStatus(
       reused: Boolean(commandLine),
       unverified: !commandLine,
       record,
+      recordScope,
       listenerKey: normalizeListenerProcessKey(agentId),
       commandLine,
     };
@@ -214,9 +263,55 @@ export async function getListenerProcessStatus(
     pid: Number(record.pid),
     stale: false,
     record,
+    recordScope,
     listenerKey: normalizeListenerProcessKey(agentId),
     commandLine,
   };
+}
+
+export async function getListenerProcessStatus(
+  sessionId,
+  agentId,
+  {
+    targetPath = process.cwd(),
+    homeDir = os.homedir(),
+    _readProcessCommandLine = readProcessCommandLine,
+  } = {},
+) {
+  const records = [
+    {
+      record: await readGlobalListenerPidRecord(sessionId, agentId, { homeDir }),
+      recordScope: "global",
+    },
+    {
+      record: await readListenerPidRecord(sessionId, agentId, { targetPath }),
+      recordScope: "local",
+    },
+  ];
+  const staleStatuses = [];
+  for (const entry of records) {
+    if (!entry.record) continue;
+    const status = await listenerStatusFromRecord(entry.record, {
+      sessionId,
+      agentId,
+      recordScope: entry.recordScope,
+      _readProcessCommandLine,
+    });
+    if (status.running) {
+      return status;
+    }
+    staleStatuses.push(status);
+  }
+  if (staleStatuses.length === 0) {
+    return {
+      running: false,
+      pid: null,
+      stale: false,
+      record: null,
+      listenerKey: normalizeListenerProcessKey(agentId),
+    };
+  }
+  return staleStatuses[0];
 }
 
 export async function requestListenerProcessStop(
