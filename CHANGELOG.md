@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.3...v0.35.4) (2026-07-02)
+
+
+### Bug Fixes
+
+* **session:** clarify durable search contract ([ac6ef2f](https://github.com/mrrCarter/create-sentinelayer/commit/ac6ef2f3b3b33fd143852c07bf1a15df6a47e63e))
+
 ## [0.35.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.2...v0.35.3) (2026-07-02)
 
 
