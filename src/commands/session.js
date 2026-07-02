@@ -1082,6 +1082,25 @@ function compareIsoDesc(left = "", right = "") {
   return normalizeString(right).localeCompare(normalizeString(left));
 }
 
+function latestIsoTimestamp(...values) {
+  let selected = "";
+  let selectedEpoch = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const normalized = normalizeString(value);
+    if (!normalized) continue;
+    const epoch = Date.parse(normalized);
+    if (!Number.isFinite(epoch)) {
+      if (!selected) selected = normalized;
+      continue;
+    }
+    if (epoch >= selectedEpoch) {
+      selected = new Date(epoch).toISOString();
+      selectedEpoch = epoch;
+    }
+  }
+  return selected;
+}
+
 function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = {}) {
   const byAgentId = new Map();
   for (const agent of Array.isArray(statsAgents) ? statsAgents : []) {
@@ -1100,6 +1119,12 @@ function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = 
     if (!agentId) continue;
     const existing = byAgentId.get(agentId);
     if (existing) {
+      const lastActivityAt = latestIsoTimestamp(
+        existing.lastActivityAt,
+        existing.lastSeen,
+        agent.lastActivityAt,
+        agent.joinedAt,
+      );
       byAgentId.set(agentId, {
         ...existing,
         model: existing.model || normalizeString(agent.model),
@@ -1108,7 +1133,8 @@ function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = 
         registered: true,
         source: "events+registry",
         joinedAt: normalizeString(agent.joinedAt) || existing.joinedAt,
-        lastActivityAt: normalizeString(agent.lastActivityAt) || existing.lastActivityAt,
+        lastSeen: latestIsoTimestamp(existing.lastSeen, lastActivityAt) || existing.lastSeen,
+        lastActivityAt: lastActivityAt || null,
         active: agent.active,
       });
       continue;

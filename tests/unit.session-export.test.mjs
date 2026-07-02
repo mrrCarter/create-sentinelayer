@@ -160,6 +160,68 @@ test("session export: JSON participants are derived from event authors without r
   }
 });
 
+test("session export: registry snapshots do not downgrade event-derived participant freshness", async () => {
+  const root = await makeTempRepo();
+  try {
+    const created = await createSession({ targetPath: root });
+    const registered = await registerAgent(created.sessionId, {
+      targetPath: root,
+      agentId: "codex-live",
+      role: "coder",
+      model: "gpt-5-codex",
+      trackProcessExit: false,
+    });
+    const staleIso = "2026-01-01T00:00:00.000Z";
+    const freshIso = "2026-07-02T20:00:00.000Z";
+    const snapshot = JSON.parse(await fsp.readFile(registered.snapshotPath, "utf-8"));
+    await fsp.writeFile(
+      registered.snapshotPath,
+      `${JSON.stringify(
+        {
+          ...snapshot,
+          joinedAt: staleIso,
+          lastActivityAt: staleIso,
+          updatedAt: staleIso,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+    await appendToStream(
+      created.sessionId,
+      createAgentEvent({
+        event: "session_message",
+        agentId: "codex-live",
+        agentModel: "gpt-5-codex",
+        sessionId: created.sessionId,
+        ts: freshIso,
+        payload: { message: "fresh participant activity proof" },
+      }),
+      { targetPath: root, syncRemote: false },
+    );
+
+    const output = await runSessionCommand([
+      "session",
+      "export",
+      created.sessionId,
+      "--format",
+      "json",
+      "--path",
+      root,
+    ]);
+    const payload = JSON.parse(output);
+    const participant = payload.participants.find((item) => item.agentId === "codex-live");
+    assert.ok(participant);
+    assert.equal(participant.source, "events+registry");
+    assert.equal(participant.lastActivityAt, participant.lastSeen);
+    assert.equal(Date.parse(participant.lastActivityAt) >= Date.parse(freshIso), true);
+    assert.equal(Date.parse(participant.lastActivityAt) > Date.parse(staleIso), true);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("session export: empty transcript has stable zero counts", async () => {
   const root = await makeTempRepo();
   try {
