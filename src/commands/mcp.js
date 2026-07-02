@@ -32,6 +32,7 @@ import { requestHostedMcpAccessToken } from "../mcp/token-service.js";
 import { buildSentinelayerCliRegistryTemplate } from "../mcp/cli-registry.js";
 import { runMcpStdioServer } from "../mcp/session-stdio-server.js";
 import { runMcpDoctorProbes } from "../mcp/doctor.js";
+import { runHostedMcpSmoke } from "../mcp/smoke.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveOutputRoot } from "../config/service.js";
 
@@ -228,6 +229,84 @@ Docs: https://github.com/mrrCarter/create-sentinelayer/blob/main/docs/mcp.md`,
       console.log(`Audience: ${payload.audience}`);
       console.log(`Scope: ${payload.scope}`);
       console.log(pc.gray("Secret value hidden in text output; use --json when you need the bearer value."));
+    });
+
+  mcp
+    .command("smoke")
+    .description(
+      "Smoke the hosted MCP resource with an in-memory bearer; prints only redacted proof"
+    )
+    .option("--session <id>", "Optional Senti session id to read through sessions.events.list")
+    .option("--limit <n>", "Maximum session events to read when --session is set", "5")
+    .option(
+      "--scope <scopes>",
+      "Space- or comma-separated MCP scopes for the smoke token",
+      "sessions:read"
+    )
+    .option("--ttl-seconds <seconds>", "Token lifetime in seconds (API default and maximum are server-configured)")
+    .option("--timeout-ms <ms>", "Sentinelayer API/MCP request timeout in milliseconds", String(DEFAULT_REQUEST_TIMEOUT_MS))
+    .option("--api-url <url>", "Override Sentinelayer API base URL")
+    .option("--no-auto-rotate", "Disable stored CLI token rotation before minting")
+    .option("--json", "Emit machine-readable redacted proof")
+    .action(async (options, command) => {
+      const emitJson = shouldEmitJson(options, command);
+      let result;
+      try {
+        result = await runHostedMcpSmoke({
+          cwd: process.cwd(),
+          env: process.env,
+          explicitApiUrl: options.apiUrl,
+          autoRotate: options.autoRotate !== false,
+          scope: options.scope,
+          ttlSeconds: options.ttlSeconds,
+          timeoutMs: options.timeoutMs,
+          sessionId: options.session,
+          limit: options.limit,
+        });
+      } catch (error) {
+        throw new Error(formatApiError(error));
+      }
+
+      const payload = { command: "mcp smoke", ...result };
+      if (emitJson) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(pc.bold(`Hosted MCP smoke — ${result.mcpUrl}`));
+        console.log(pc.gray("Bearer value is redacted and never printed by this command."));
+        const credentialMetadata = result.token;
+        console.log(`Issuer: ${credentialMetadata.issuer}`);
+        console.log(`Audience: ${credentialMetadata.audience}`);
+        console.log(`Scope: ${credentialMetadata.scope}`);
+        if (credentialMetadata.expiresAt) {
+          console.log(`Expires at: ${credentialMetadata.expiresAt}`);
+        }
+        for (const probe of result.probes) {
+          const mark = probe.verdict === "PASS" ? pc.green("PASS") : pc.red("FAIL");
+          console.log(`  [${mark}] ${probe.label}  (HTTP ${probe.status})`);
+          if (Array.isArray(probe.toolNames) && probe.toolNames.length > 0) {
+            console.log(pc.gray(`         tools=${probe.toolNames.join(", ")}`));
+          }
+          if (probe.eventCount !== undefined) {
+            console.log(
+              pc.gray(
+                `         events=${probe.eventCount} first=${probe.firstSequenceId ?? "-"} last=${probe.lastSequenceId ?? "-"}`
+              )
+            );
+          }
+          if (probe.detail) {
+            console.log(pc.gray(`         ${probe.detail}`));
+          }
+        }
+        console.log(
+          result.ok
+            ? pc.green("Hosted MCP smoke passed.")
+            : pc.red("Hosted MCP smoke FAILED — inspect the failing probe above.")
+        );
+      }
+
+      if (!result.ok) {
+        process.exitCode = 1;
+      }
     });
 
   mcp
