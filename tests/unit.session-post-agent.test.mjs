@@ -1206,11 +1206,26 @@ test("Unit session listen: publishes bounded listener presence for real agent id
 
 test("Unit session listen: refuses duplicate local listener for same session and agent", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-singleton-"));
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      "setInterval(() => {}, 1000)",
+      path.join("node_modules", "sentinelayer-cli", "bin", "sl.js"),
+      "session",
+      "listen",
+      "--session",
+      "remote-listen",
+      "--agent",
+      "Codex",
+    ],
+    { stdio: "ignore" },
+  );
   try {
     await seedWorkspace(tempRoot);
     await writeListenerPidRecord("remote-listen", "Codex", {
       targetPath: tempRoot,
-      pid: process.pid,
+      pid: child.pid,
       listenerId: "listener-codex-existing",
     });
 
@@ -1234,6 +1249,13 @@ test("Unit session listen: refuses duplicate local listener for same session and
     });
     assert.equal(record.listenerId, "listener-codex-existing");
   } finally {
+    if (child.pid) {
+      try {
+        process.kill(child.pid, "SIGTERM");
+      } catch {
+        // Already stopped.
+      }
+    }
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

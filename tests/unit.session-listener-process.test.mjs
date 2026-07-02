@@ -30,6 +30,19 @@ async function spawnExitedPid() {
   return child.pid;
 }
 
+function listenerCommandLine({ sessionId = "sess", agentId = "Codex" } = {}) {
+  return [
+    process.execPath,
+    path.join("node_modules", "sentinelayer-cli", "bin", "sl.js"),
+    "session",
+    "listen",
+    "--session",
+    sessionId,
+    "--agent",
+    agentId,
+  ].join(" ");
+}
+
 test("Unit listener-process: pid record round-trip and stale detection", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listener-pid-"));
   try {
@@ -61,10 +74,22 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
     });
     const alive = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
+      _readProcessCommandLine: async () =>
+        listenerCommandLine({ sessionId: session.sessionId, agentId: "Codex" }),
     });
     assert.equal(alive.running, true);
     assert.equal(alive.pid, process.pid);
     assert.equal(alive.record.listenerId, "listener-codex-test");
+    assert.equal(alive.stale, false);
+
+    const reused = await getListenerProcessStatus(session.sessionId, "Codex", {
+      targetPath: tempRoot,
+      _readProcessCommandLine: async () => `${process.execPath} unrelated-worker.js`,
+    });
+    assert.equal(reused.running, false);
+    assert.equal(reused.stale, true);
+    assert.equal(reused.reused, true);
+    assert.equal(reused.pid, null);
 
     const deadPid = await spawnExitedPid();
     await writeListenerPidRecord(session.sessionId, "Codex", {

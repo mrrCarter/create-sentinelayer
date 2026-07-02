@@ -1,12 +1,15 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { execFile } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 
 import { isProcessAlive } from "./daemon-spawn.js";
 import { resolveSessionPaths } from "./paths.js";
 
 const LISTENER_DIR_NAME = "listeners";
+const execFileAsync = promisify(execFile);
 
 function normalizeString(value) {
   return String(value || "").trim();
@@ -19,6 +22,68 @@ export function normalizeListenerProcessKey(agentId = "") {
       .replace(/[^a-z0-9._-]+/g, "-")
       .replace(/^-+|-+$/g, "") || "agent"
   );
+}
+
+function normalizeCommandLine(value) {
+  return normalizeString(value).toLowerCase();
+}
+
+function listenerCommandLineMatches(commandLine, { sessionId = "", agentId = "" } = {}) {
+  const normalized = normalizeCommandLine(commandLine);
+  if (!normalized) return false;
+  const normalizedSessionId = normalizeString(sessionId).toLowerCase();
+  const normalizedAgentId = normalizeString(agentId).toLowerCase();
+  const hasCliEntry =
+    normalized.includes("sentinelayer-cli") ||
+    /[\\/](?:sl|sentinelayer-cli)\.js\b/.test(normalized);
+  return (
+    hasCliEntry &&
+    normalized.includes("session") &&
+    normalized.includes("listen") &&
+    (!normalizedSessionId || normalized.includes(normalizedSessionId)) &&
+    (!normalizedAgentId || normalized.includes(normalizedAgentId))
+  );
+}
+
+async function readWindowsCommandLine(pid) {
+  const command = [
+    "$ErrorActionPreference = 'Stop';",
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}";`,
+    "if ($p) { $p.CommandLine }",
+  ].join(" ");
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", command],
+    { windowsHide: true, timeout: 2000 },
+  );
+  return normalizeString(stdout);
+}
+
+async function readPosixCommandLine(pid) {
+  if (process.platform === "linux") {
+    try {
+      const raw = await fsp.readFile(`/proc/${Number(pid)}/cmdline`);
+      return normalizeString(raw.toString("utf8").replace(/\0/g, " "));
+    } catch {
+      // Fall through to ps(1), which also covers restricted /proc mounts.
+    }
+  }
+  const { stdout } = await execFileAsync("ps", ["-p", String(Number(pid)), "-o", "command="], {
+    timeout: 2000,
+  });
+  return normalizeString(stdout);
+}
+
+export async function readProcessCommandLine(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return "";
+  try {
+    return process.platform === "win32"
+      ? await readWindowsCommandLine(numericPid)
+      : await readPosixCommandLine(numericPid);
+  } catch {
+    return "";
+  }
 }
 
 export function resolveListenerPidPath(
@@ -109,7 +174,7 @@ export async function removeListenerPidRecord(
 export async function getListenerProcessStatus(
   sessionId,
   agentId,
-  { targetPath = process.cwd() } = {},
+  { targetPath = process.cwd(), _readProcessCommandLine = readProcessCommandLine } = {},
 ) {
   const record = await readListenerPidRecord(sessionId, agentId, { targetPath });
   if (!record) {
@@ -122,12 +187,35 @@ export async function getListenerProcessStatus(
     };
   }
   const alive = isProcessAlive(record.pid);
+  if (!alive) {
+    return {
+      running: false,
+      pid: null,
+      stale: true,
+      record,
+      listenerKey: normalizeListenerProcessKey(agentId),
+    };
+  }
+  const commandLine = await _readProcessCommandLine(record.pid);
+  if (!listenerCommandLineMatches(commandLine, { sessionId, agentId })) {
+    return {
+      running: false,
+      pid: null,
+      stale: true,
+      reused: Boolean(commandLine),
+      unverified: !commandLine,
+      record,
+      listenerKey: normalizeListenerProcessKey(agentId),
+      commandLine,
+    };
+  }
   return {
-    running: alive,
-    pid: alive ? Number(record.pid) : null,
-    stale: !alive,
+    running: true,
+    pid: Number(record.pid),
+    stale: false,
     record,
     listenerKey: normalizeListenerProcessKey(agentId),
+    commandLine,
   };
 }
 
