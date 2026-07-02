@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.35.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.7...v0.35.0) (2026-07-02)
+
+
+### Features
+
+* **mcp:** hydrate Senti session history ([4c59092](https://github.com/mrrCarter/create-sentinelayer/commit/4c59092ddc2e446403da1f9fd924404ae9e35833))
+
+
+### Bug Fixes
+
+* **ci:** prefer working Omar Google route ([a6a5aca](https://github.com/mrrCarter/create-sentinelayer/commit/a6a5aca131b22783be7816ccf74976f39a6d6963))
+* **release:** finalize release please labels ([#724](https://github.com/mrrCarter/create-sentinelayer/issues/724)) ([e93c35b](https://github.com/mrrCarter/create-sentinelayer/commit/e93c35b6fc8ee58c874599d27d1afe823057a6db))
+* **session:** fall back from idle listener streams ([8808baa](https://github.com/mrrCarter/create-sentinelayer/commit/8808baa3110d1bba2789304d2d968cd8f9b1ce92))
+* **session:** prevent duplicate local listeners ([0dcf8bb](https://github.com/mrrCarter/create-sentinelayer/commit/0dcf8bb1c96f7478c8aa540f8729568b12678fc4))
+
 ## [0.34.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.6...v0.34.7) (2026-07-02)
 
 
