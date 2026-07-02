@@ -1851,6 +1851,23 @@ function listenerPresenceHeartbeatFingerprint(lifecycle = {}) {
   );
 }
 
+export function listenerLifecycleIdempotencyStep(lifecycle = {}) {
+  const lifecycleType = normalizeString(lifecycle?.type) || "heartbeat";
+  const heartbeatCount = Number(lifecycle?.heartbeatCount);
+  if (
+    lifecycleType === "heartbeat" &&
+    Number.isInteger(heartbeatCount) &&
+    heartbeatCount > 0
+  ) {
+    return heartbeatCount;
+  }
+  const pollCount = Number(lifecycle?.pollCount);
+  if (Number.isInteger(pollCount) && pollCount >= 0) {
+    return pollCount;
+  }
+  return 0;
+}
+
 export function shouldPublishListenerPresenceHeartbeat({
   lifecycle = {},
   nowMs = Date.now(),
@@ -1900,6 +1917,10 @@ async function publishListenerPresenceEvent({
 } = {}) {
   const normalizedType = normalizeString(lifecycle.type) || "heartbeat";
   const eventName = listenerLifecycleEventName(normalizedType);
+  const idempotencyStep = listenerLifecycleIdempotencyStep({
+    ...lifecycle,
+    type: normalizedType,
+  });
   const identity = inferSessionAgentIdentity({
     agentId,
     model: agentModel,
@@ -1918,8 +1939,8 @@ async function publishListenerPresenceEvent({
       provider: normalizeString(identity.provider) || undefined,
       clientKind: normalizeString(identity.clientKind) || "cli",
     },
-    eventId: `session-listener-${listenerId}-${normalizedType}-${lifecycle.pollCount ?? 0}`,
-    idempotencyToken: `session-listener:${listenerId}:${normalizedType}:${lifecycle.pollCount ?? 0}`,
+    eventId: `session-listener-${listenerId}-${normalizedType}-${idempotencyStep}`,
+    idempotencyToken: `session-listener:${listenerId}:${normalizedType}:${idempotencyStep}`,
     payload: compactPayload({
       source: "session_listen",
       listenerId,
@@ -1930,6 +1951,7 @@ async function publishListenerPresenceEvent({
       cursorSuffix: lifecycle.cursorSuffix,
       cursorSource: lifecycle.cursorSource,
       pollCount: lifecycle.pollCount,
+      heartbeatCount: lifecycle.heartbeatCount,
       matched: lifecycle.matched,
       emitted: lifecycle.emitted,
       persistedCursor: lifecycle.persistedCursor,

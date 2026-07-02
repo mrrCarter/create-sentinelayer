@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { shouldPublishListenerPresenceHeartbeat } from "../src/commands/session.js";
+import {
+  listenerLifecycleIdempotencyStep,
+  shouldPublishListenerPresenceHeartbeat,
+} from "../src/commands/session.js";
 
 function heartbeat(overrides = {}) {
   return {
@@ -103,4 +106,31 @@ test("Unit session listener presence: always publishes non-heartbeat lifecycle e
   });
   assert.equal(started.publish, true);
   assert.equal(started.reason, "lifecycle");
+});
+
+test("Unit session listener presence: heartbeat idempotency uses heartbeat count", () => {
+  assert.equal(
+    listenerLifecycleIdempotencyStep({
+      type: "heartbeat",
+      pollCount: 0,
+      heartbeatCount: 1,
+    }),
+    1,
+  );
+  assert.equal(
+    listenerLifecycleIdempotencyStep({
+      type: "heartbeat",
+      pollCount: 0,
+      heartbeatCount: 2,
+    }),
+    2,
+  );
+  assert.equal(
+    listenerLifecycleIdempotencyStep({
+      type: "started",
+      pollCount: 0,
+      heartbeatCount: 2,
+    }),
+    0,
+  );
 });
