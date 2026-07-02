@@ -1,3 +1,23 @@
+# 2026-07-02 - Senti Listener Roster Backfill (`codex/session-listener-roster-reliability-20260702`)
+
+## Plan
+- [x] Keep `codex-senti-product-0344` quietly connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` without routine ACK spam.
+- [x] Verify current CLI/auth state and live room listener roster before changing code.
+- [x] Identify root cause: `sl session listeners` derives the roster from one recent `/events/before` page, so busy rooms can evict keepalive-throttled listener heartbeats from the scanned window.
+- [x] Add bounded, monotonic older-page scanning to listener roster reads.
+- [x] Add focused regression coverage for noisy tail pages and non-advancing cursors.
+- [x] Run focused listener tests, broader session tests, static checks, package/review gates, then open PR for hosted review.
+
+## Review
+- Focused listener roster proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-listeners.test.mjs` (`10/10`).
+- Expanded listener/session command proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-listeners.test.mjs tests/unit.session-listener-process.test.mjs tests/unit.session-listener-presence.test.mjs tests/unit.commands-contracts.test.mjs tests/unit.session-post-agent.test.mjs` (`72/72`).
+- Full unit proof passed: `npm run test:unit` (`1717/1717`).
+- Focused listener E2E passed: `node --import ./tests/setup-env.mjs --test tests/e2e.session-listener-lifecycle.test.mjs tests/e2e.session-listener-resilience.test.mjs` (`3/3`).
+- Static/docs/package proof passed: `npm run check` (`345 files passed`), `npm run docs:build` validation passed, and `npm pack --dry-run --json` produced `sentinelayer-cli-0.35.0.tgz` shasum `35ede6a799590c6ff5b2e0d5d73ecb037f2da611`.
+- Deterministic review gates passed: `sl review scan --path . --mode diff --json` (`P1=0`, `P2=0`, `blocking=false`) and `sl /omargate deep --path . --scope-mode diff --no-ai --json` (`P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`).
+- Live patched CLI smoke against room `954233b7-1822-42bc-9cfe-1eb95eb0357a` returned `ok=true`, `liveCount=3`, `pageCount=1`, `scannedEventCount=200`, and `listenerEventCount=199`.
+- Follow-up observed during live smoke: duplicate historical listener processes for the same room/agent still compete on displayName/cadence. This is a lifecycle/singleton follow-up, not part of the roster backfill read-path fix.
+
 # 2026-07-02 - Main Omar Provider Route Recovery (`codex/omar-provider-route-main-20260702`)
 
 ## Plan
