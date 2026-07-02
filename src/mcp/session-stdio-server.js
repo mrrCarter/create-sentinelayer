@@ -31,6 +31,8 @@ const SESSION_MCP_CONFIRM_PAGE_LIMIT = 200;
 const SESSION_MCP_CONFIRM_MAX_PAGES = 10;
 const SESSION_MCP_CONFIRM_TOTAL_TIMEOUT_MS = 10_000;
 const SESSION_MCP_CONFIRM_REQUEST_TIMEOUT_MS = 2_000;
+const SESSION_MCP_HISTORY_MAX_PAGES = 10;
+const SESSION_MCP_HISTORY_MIN_RAW_PAGE_LIMIT = DEFAULT_TOOL_LIMIT;
 const JSON_RPC_VERSION = "2.0";
 const CONTENT_LENGTH_PREFIX = "content-length:";
 const SESSION_MESSAGE_ACTION_TYPES = new Set([
@@ -451,6 +453,103 @@ function normalizeHistoryEvents(events = [], { includeControlEvents = false } = 
   });
 }
 
+async function readSessionHistoryWindow({
+  sessionId,
+  targetPath,
+  cursor = null,
+  beforeSequence = null,
+  limit = DEFAULT_TOOL_LIMIT,
+  includeControlEvents = false,
+  forceCircuitProbe = false,
+  pollSessionEventsFn = pollSessionEvents,
+  pollSessionEventsBeforeFn = pollSessionEventsBefore,
+} = {}) {
+  const source = cursor ? "after_cursor" : beforeSequence ? "before_sequence" : "latest_tail";
+  let pageCursor = cursor;
+  let pageBeforeSequence = beforeSequence;
+  let responseCursor = cursor;
+  let responseBeforeSequence = beforeSequence || null;
+  let rawEventCount = 0;
+  let pages = 0;
+  let events = [];
+
+  while (events.length < limit && pages < SESSION_MCP_HISTORY_MAX_PAGES) {
+    const remaining = Math.max(1, limit - events.length);
+    const pageLimit = Math.max(
+      remaining,
+      Math.min(MAX_TOOL_LIMIT, SESSION_MCP_HISTORY_MIN_RAW_PAGE_LIMIT),
+    );
+    const result = cursor
+      ? await pollSessionEventsFn(sessionId, {
+          targetPath,
+          since: pageCursor,
+          limit: pageLimit,
+          forceCircuitProbe,
+        })
+      : await pollSessionEventsBeforeFn(sessionId, {
+          targetPath,
+          beforeSequence: pageBeforeSequence,
+          limit: pageLimit,
+          forceCircuitProbe,
+        });
+    if (!result?.ok) {
+      if (pages > 0) break;
+      return {
+        ok: false,
+        reason: result?.reason || "read_history_failed",
+        source,
+        cursor: responseCursor,
+        beforeSequence: responseBeforeSequence,
+        events: [],
+        eventCount: 0,
+        pages,
+      };
+    }
+
+    pages += 1;
+    const rawEvents = Array.isArray(result.events) ? result.events : [];
+    rawEventCount += rawEvents.length;
+    const materialEvents = normalizeHistoryEvents(rawEvents, { includeControlEvents });
+    if (cursor) {
+      events.push(...materialEvents);
+      const nextCursor = normalizeString(result.cursor) || pageCursor;
+      responseCursor = nextCursor || responseCursor;
+      if (!rawEvents.length || !nextCursor || nextCursor === pageCursor) break;
+      pageCursor = nextCursor;
+      continue;
+    }
+
+    events = [...materialEvents, ...events];
+    if (pages === 1) {
+      responseCursor = normalizeString(result.cursor) || responseCursor;
+    }
+    const nextBeforeSequence = normalizePositiveInteger(result.beforeSequence || result.before_sequence, null);
+    responseBeforeSequence = nextBeforeSequence;
+    if (!rawEvents.length || !nextBeforeSequence || nextBeforeSequence === pageBeforeSequence) break;
+    pageBeforeSequence = nextBeforeSequence;
+  }
+
+  const windowEvents = cursor ? events.slice(0, limit) : events.slice(-limit);
+  const firstWindowEvent = windowEvents[0] || null;
+  const lastWindowEvent = windowEvents[windowEvents.length - 1] || null;
+  const windowCursor = normalizeString(lastWindowEvent?.cursor);
+  const windowBeforeSequence = normalizePositiveInteger(
+    firstWindowEvent?.sequenceId ?? firstWindowEvent?.sequence_id,
+    null,
+  );
+
+  return {
+    ok: true,
+    reason: "",
+    source,
+    cursor: windowCursor || responseCursor,
+    beforeSequence: cursor ? null : windowBeforeSequence || responseBeforeSequence,
+    events: windowEvents,
+    eventCount: rawEventCount,
+    pages,
+  };
+}
+
 function requireSessionId(input = {}) {
   const sessionId = normalizeString(input.sessionId || input.session_id || input.session);
   if (!sessionId) {
@@ -831,25 +930,23 @@ export function createSessionMcpToolHandlers({
       const includeRaw = Boolean(input.includeRaw || input.include_raw);
       const forceCircuitProbe = input.forceCircuitProbe !== false && input.force_circuit_probe !== false;
 
-      const result = cursor
-        ? await pollSessionEventsFn(sessionId, {
-            targetPath,
-            since: cursor,
-            limit,
-            forceCircuitProbe,
-          })
-        : await pollSessionEventsBeforeFn(sessionId, {
-            targetPath,
-            beforeSequence,
-            limit,
-            forceCircuitProbe,
-          });
+      const result = await readSessionHistoryWindow({
+        sessionId,
+        targetPath,
+        cursor,
+        beforeSequence,
+        limit,
+        includeControlEvents,
+        forceCircuitProbe,
+        pollSessionEventsFn,
+        pollSessionEventsBeforeFn,
+      });
       if (!result?.ok) {
         return {
           ok: false,
           reason: result?.reason || "read_history_failed",
           sessionId,
-          source: cursor ? "after_cursor" : beforeSequence ? "before_sequence" : "latest_tail",
+          source: result?.source || (cursor ? "after_cursor" : beforeSequence ? "before_sequence" : "latest_tail"),
           cursor,
           beforeSequence: beforeSequence || null,
           events: [],
@@ -858,8 +955,7 @@ export function createSessionMcpToolHandlers({
         };
       }
 
-      const rawEvents = Array.isArray(result.events) ? result.events : [];
-      const events = normalizeHistoryEvents(rawEvents, { includeControlEvents });
+      const events = Array.isArray(result.events) ? result.events : [];
       const actionResult = includeActions
         ? await listSessionMessageActionsFn(sessionId, {
             targetPath,
@@ -875,11 +971,12 @@ export function createSessionMcpToolHandlers({
         ok: true,
         reason: "",
         sessionId,
-        source: cursor ? "after_cursor" : beforeSequence ? "before_sequence" : "latest_tail",
+        source: result.source,
         cursor: normalizeString(result.cursor) || cursor,
         beforeSequence: normalizePositiveInteger(result.beforeSequence || result.before_sequence, null),
-        eventCount: rawEvents.length,
+        eventCount: normalizePositiveInteger(result.eventCount, 0),
         materialEventCount: events.length,
+        pageCount: normalizePositiveInteger(result.pages, 0),
         recentHumanActivityCount: recentHumanActivity.length,
         recentHumanActivity,
         actionProjection: actionResult

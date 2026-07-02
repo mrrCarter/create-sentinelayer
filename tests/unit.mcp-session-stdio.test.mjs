@@ -152,22 +152,76 @@ test("Unit MCP session stdio: read_history hydrates unfiltered recent transcript
 
   const result = await handlers.read_history({
     sessionId: "sess-1",
-    limit: 25,
+    limit: 2,
     actionLimit: 5,
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.source, "latest_tail");
-  assert.equal(result.beforeSequence, 90);
+  assert.equal(result.beforeSequence, 7);
   assert.equal(result.eventCount, 3);
   assert.equal(result.materialEventCount, 2);
+  assert.equal(result.pageCount, 1);
   assert.deepEqual(
     result.events.map((event) => event.payload.message),
     ["ship the ledger", "self context still matters"],
   );
   assert.equal(result.recentHumanActivityCount, 1);
-  assert.equal(calls[0].options.limit, 25);
+  assert.equal(calls[0].options.limit, 50);
   assert.equal(calls[0].options.forceCircuitProbe, true);
+});
+
+test("Unit MCP session stdio: read_history pages past control-only tails", async () => {
+  const calls = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsBeforeFn: async (sessionId, options) => {
+      calls.push({ sessionId, options });
+      if (!options.beforeSequence) {
+        return {
+          ok: true,
+          sessionId,
+          beforeSequence: 90,
+          cursor: "heartbeat-2",
+          events: [
+            evt("heartbeat-1", "senti", { source: "session_listen", message: "heartbeat" }, { event: "session_listener_heartbeat" }),
+            evt("heartbeat-2", "senti", { source: "session_listen", message: "heartbeat" }, { event: "session_listener_heartbeat" }),
+          ],
+        };
+      }
+      return {
+        ok: true,
+        sessionId,
+        beforeSequence: 88,
+        cursor: "msg-2",
+        events: [
+          evt("msg-1", "human-mrrcarter", { message: "older context" }),
+          evt("msg-2", "claude", { message: "review note" }),
+        ],
+      };
+    },
+    listSessionMessageActionsFn: async () => ({ ok: true, actions: [], projection: { recentActivity: [] } }),
+  });
+
+  const result = await handlers.read_history({
+    sessionId: "sess-1",
+    limit: 2,
+    includeActions: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.source, "latest_tail");
+  assert.equal(result.eventCount, 4);
+  assert.equal(result.materialEventCount, 2);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.beforeSequence, 1);
+  assert.deepEqual(
+    result.events.map((event) => event.payload.message),
+    ["older context", "review note"],
+  );
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].options.beforeSequence, 90);
+  assert.equal(calls[1].options.limit, 50);
 });
 
 test("Unit MCP session stdio: send_message persists remote first and caches local second", async () => {
