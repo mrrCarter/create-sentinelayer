@@ -241,3 +241,8 @@
 
 - When Carter corrects the active Senti room, verify the exact session id and local listener identity before posting or coding. Do not infer the room from stale context or a nearby project; run `sl session read <session> --remote --agent <agent>` and keep a bounded listener for that same session.
 - After a manual signed-tag release, verify the merged Release Please PR label transitions from `autorelease: pending` to `autorelease: tagged`; a stale pending label makes Release Please abort future version PRs even when the tag, GitHub release, and npm dist-tag are already published.
+- If both Google and OpenAI Omar credentials are configured while OpenAI capacity is billing-dry, prefer the known-good Google/Gemini route unless the OpenAI/Codex route has just been proven on the same protected workflow; this is a capacity-state ordering, not a permanent provider preference, and should be revisited once paid OpenAI capacity is healthy.
+
+## 2026-07-02
+
+- When fixing a generated workflow, patch the generator and parity tests in the same PR as the checked-in YAML; otherwise the next `sl scan init` can recreate the incident you just fixed.

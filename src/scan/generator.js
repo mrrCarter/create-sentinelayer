@@ -230,18 +230,17 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
               google_api_key:
                 "${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}",
               llm_provider:
-                "${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}",
+                "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}",
               sentinelayer_token: `\${{ secrets.${normalizedSecret} }}`,
               sentinelayer_managed_llm: `\${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && secrets.${normalizedSecret} != '' }}`,
               scan_mode: profile.scanMode || "deep",
               severity_gate: profile.severityGate || "P1",
               model:
-                "${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}",
+                "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}",
               codex_model: "gpt-5.3-codex",
               model_fallback:
                 "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}",
-              use_codex:
-                "${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}",
+              use_codex: "${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' }}",
               codex_only: "false",
               llm_failure_policy: "block",
               max_daily_scans: "${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}",
@@ -304,9 +303,9 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
                 "${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}",
               OMAR_MANAGED_LLM: `\${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && secrets.${normalizedSecret} != '' }}`,
               OMAR_LLM_PROVIDER:
-                "${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}",
+                "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai' }}",
               OMAR_MODEL:
-                "${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}",
+                "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex' }}",
               OMAR_MODEL_FALLBACK:
                 "${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}",
             },
@@ -353,7 +352,7 @@ export function buildSecurityReviewWorkflow({ secretName = DEFAULT_SCAN_SECRET_N
               "        'llm_provider': env('OMAR_LLM_PROVIDER', 'openai'),",
               "        'model': env('OMAR_MODEL', 'gpt-5.3-codex'),",
               "        'model_fallback': env('OMAR_MODEL_FALLBACK', 'gpt-4.1-mini'),",
-              "        'llm_route': 'openai_api_key' if bool_env('OMAR_OPENAI_KEY_PRESENT') else ('google_api_key' if bool_env('OMAR_GOOGLE_KEY_PRESENT') else 'sentinelayer_managed'),",
+              "        'llm_route': 'google_api_key' if bool_env('OMAR_GOOGLE_KEY_PRESENT') else ('openai_api_key' if bool_env('OMAR_OPENAI_KEY_PRESENT') else 'sentinelayer_managed'),",
               "        'google_key_present': bool_env('OMAR_GOOGLE_KEY_PRESENT'),",
               "        'openai_key_present': bool_env('OMAR_OPENAI_KEY_PRESENT'),",
               "        'managed_llm': bool_env('OMAR_MANAGED_LLM'),",

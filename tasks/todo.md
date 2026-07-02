@@ -1,3 +1,25 @@
+# 2026-07-02 - Main Omar Provider Route Recovery (`codex/omar-provider-route-main-20260702`)
+
+## Plan
+- [x] Keep `codex-senti-product-0344` connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` and post only material release blockers/proof.
+- [x] Diagnose why main `Release Please` failed after #724 even though the PR head gates were green.
+- [x] Identify the failing required check: main `Omar Gate` generated a synthetic fail-closed `P0=1` because the workflow prioritized the configured OpenAI/Codex route, which failed, over the working Google/Gemini route.
+- [x] Patch `.github/workflows/omar-gate.yml` so Google/Gemini is selected whenever a Google key is configured, even if an OpenAI key is also present.
+- [x] Update the Omar workflow contract checker and unit test so OpenAI-first drift and Codex-enabled Google routes are rejected.
+- [x] Patch `src/scan/generator.js` and `tests/unit.scan-parity.test.mjs` so newly generated Omar workflows cannot recreate the OpenAI-first route.
+- [x] Run focused workflow-contract and Omar wrapper tests, static checks, and review scan.
+- [ ] Rerun focused generator/parity proof after the source-fidelity patch, push PR update, wait for hosted Omar/Quality/Attestation, merge, then rerun main Release Please and npm publish flow.
+
+## Review
+- Root cause: main Omar Gate run `28570176467` failed with `P0=1/P1=0` after Codex and LLM fallback both returned `success:false`; check annotations exposed only P3 notices, and Codex-01 independently confirmed bounded no-AI/diff Omar was clean.
+- Patch: `.github/workflows/omar-gate.yml` now chooses Google/Gemini whenever `GOOGLE_GEMINI_API_KEY` or `GOOGLE_API_KEY` is configured, disables Codex on that route, and keeps `llm_failure_policy: block`.
+- Guardrails: `scripts/ci/check_omar_workflow_contract.py` now rejects OpenAI-first provider selection, OpenAI-first model selection, and `use_codex` expressions that keep Codex enabled while a Google key exists.
+- Source fidelity: `src/scan/generator.js` now emits the same Google-first route and summary metadata, and `tests/unit.scan-parity.test.mjs` asserts it so `sl scan init` cannot reintroduce the main-gate failure.
+- Focused proof passed: `python scripts/ci/check_omar_workflow_contract.py --self-test`, `python scripts/ci/check_forbidden_omar_surface.py --self-test`, `python scripts/ci/check_forbidden_omar_surface.py`, `node --import ./tests/setup-env.mjs --test tests/unit.omar-wrapper.test.mjs`, and `node --import ./tests/setup-env.mjs --test tests/unit.scan-parity.test.mjs tests/unit.omar-wrapper.test.mjs`.
+- Regression grep passed: no stale OpenAI-first provider/model, Codex-enabled Google route, or OpenAI-first `llm_route` selector remains in source generator, live workflow, or parity/Omar wrapper tests.
+- Static/package proof passed: `npm run check` (`345 files passed`), `npm run docs:build`, `npm pack --dry-run --json` shasum `b56bd6486e67e63ccd07d91e7f2c91653cebf8ba`, and `git diff --check` clean aside from expected Windows LF/CRLF warnings.
+- Deterministic review scan passed: latest `review-scan-diff-20260702-065239.md`, scoped files `4`, `P1=0`, `P2=0`, `blocking=false`.
+
 # 2026-07-02 - Release Please Label Finalization (`codex/release-label-finalize-20260702`)
 
 ## Plan
@@ -7,7 +29,7 @@
 - [x] Repair the stale #723 release PR label state from `autorelease: pending` to `autorelease: tagged`.
 - [x] Patch `scripts/release-publish.mjs` so the guarded signed-tag flow finalizes Release Please PR labels after GitHub release creation.
 - [x] Add focused unit coverage for the release PR search and label transition contract.
-- [ ] Run focused/static/docs/package/review gates, open PR, and merge only after hosted Omar/Quality/Attestation pass.
+- [x] Run focused/static/docs/package/review gates, open PR, and merge only after hosted Omar/Quality/Attestation pass.
 - [ ] After merge, rerun Release Please on main and cut the next npm release for the #711/#719/#722 Senti reliability set.
 
 ## Review
@@ -18,6 +40,7 @@
 - Static/docs/package proof passed: `npm run check` (`345 files passed`), `npm run docs:build` validation passed, `npm pack --dry-run --json` produced `sentinelayer-cli-0.34.7.tgz` shasum `c6befc10d3869e695944b7fd2eea49ff04ccd789`, and `git diff --check` was clean aside from expected Windows LF/CRLF notices.
 - Deterministic review scan passed: `review-scan-diff-20260702-061431.md`, scoped files `4`, `P1=0`, `P2=0`, `blocking=false`.
 - Local Omar reruns remain AI-blocked with no deterministic findings: latest `omargate-1782972897259-be1b8896` has deterministic `P0=0/P1=0/P2=0/P3=0`, but AI reports P1/P2 claims that `release-publish.mjs` directly uploads/publishes unsigned artifacts and that tests import Jest mocks. Both claims contradict the diff and source: the script invokes `gh release create --verify-tag` only, package publishing/provenance is in `release.yml`, and the tests use `node:test` with dependency injection/file-contract proof, not Jest.
+- PR #724 merged on main as `e93c35b6fc8ee58c874599d27d1afe823057a6db`; post-merge Release Please then exposed a separate main Omar provider-route failure now tracked above.
 
 # 2026-07-01 - Senti Listener Singleton Guard (`codex/senti-listen-singleton-20260701`)
 
