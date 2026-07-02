@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.7](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.6...v0.34.7) (2026-07-02)
+
+
+### Bug Fixes
+
+* **session:** redact wake hook payload ([d3ece45](https://github.com/mrrCarter/create-sentinelayer/commit/d3ece45b6b0f88feb87253b1f263e40f841148d2))
+
 ## [0.34.6](https://github.com/mrrCarter/create-sentinelayer/compare/v0.34.5...v0.34.6) (2026-07-01)
 
 
