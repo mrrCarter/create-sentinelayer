@@ -248,7 +248,7 @@ test("Unit session join: hydrates remote tail before emitting context briefing",
     assert.equal(remoteIndex < briefingIndex, true, "briefing should be built after hydration");
     assert.match(
       String(local[briefingIndex].payload?.recap || ""),
-      /claude-peer: checkpoint card works/,
+      /claude-peer #42: checkpoint card works/,
     );
   } finally {
     globalThis.fetch = originalFetch;
