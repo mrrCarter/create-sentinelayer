@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+// This helper is a signed-tag release handoff only. It never builds package
+// artifacts, publishes npm, or mutates dist-tags directly; the protected
+// `.github/workflows/release.yml` tag workflow owns artifact provenance,
+// attestation verification, OIDC npm publish, install smoke checks, and
+// rollback-readiness validation after this helper pushes a verified tag.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,6 +27,19 @@ export const RELEASE_PLEASE_RUN_RETRY_DELAYS_MS = Object.freeze([
 const RELEASE_PLEASE_RUNS_PER_PAGE = 100;
 const RELEASE_PLEASE_RUN_PAGE_LIMIT = 50;
 export const COMMAND_CAPTURE_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+export const RELEASE_HANDOFF_CONTRACT = Object.freeze({
+  artifactPublisher: false,
+  releaseWorkflowPath: ".github/workflows/release.yml",
+  requiredWorkflowControls: Object.freeze([
+    "actions/attest-build-provenance",
+    "gh attestation verify",
+    "npm publish --provenance",
+    "release-rollback-readiness.sh",
+  ]),
+});
+const RELEASE_PR_SEARCH_LIMIT = 20;
+const RELEASE_PENDING_LABEL = "autorelease: pending";
+const RELEASE_TAGGED_LABEL = "autorelease: tagged";
 
 export function parseArgs(argv) {
   const options = {
@@ -184,6 +202,65 @@ export function buildGhReleaseArgs(tag, options) {
     args.push("--notes-file", options.notesFile);
   } else {
     args.push("--generate-notes");
+  }
+  return args;
+}
+
+export function releasePullRequestTitle(version) {
+  const normalized = String(version || "").trim();
+  if (!normalized) {
+    throw new Error("Release version is required to resolve the Release Please PR.");
+  }
+  return `chore(release): ${normalized}`;
+}
+
+export function buildReleasePullRequestSearch(version) {
+  return `"${releasePullRequestTitle(version)}" in:title base:main`;
+}
+
+function releaseLabelNames(pullRequest) {
+  return new Set(
+    (Array.isArray(pullRequest?.labels) ? pullRequest.labels : [])
+      .map((label) => String(label?.name || "").trim())
+      .filter(Boolean)
+  );
+}
+
+export function releasePullRequestLabelChanges(pullRequests, version) {
+  const title = releasePullRequestTitle(version);
+  return (Array.isArray(pullRequests) ? pullRequests : [])
+    .filter((pullRequest) => String(pullRequest?.title || "").trim() === title)
+    .map((pullRequest) => {
+      const number = Number(pullRequest?.number);
+      const labels = releaseLabelNames(pullRequest);
+      return {
+        number,
+        addLabels: labels.has(RELEASE_TAGGED_LABEL) ? [] : [RELEASE_TAGGED_LABEL],
+        removeLabels: labels.has(RELEASE_PENDING_LABEL) ? [RELEASE_PENDING_LABEL] : [],
+      };
+    })
+    .filter(
+      (change) =>
+        Number.isInteger(change.number) &&
+        change.number > 0 &&
+        (change.addLabels.length > 0 || change.removeLabels.length > 0)
+    );
+}
+
+export function buildReleasePrEditArgs(repository, change) {
+  const number = String(change?.number || "").trim();
+  if (!number) {
+    throw new Error("Release PR number is required before editing labels.");
+  }
+  const args = ["pr", "edit", number, "--repo", repository];
+  for (const label of change?.addLabels || []) {
+    args.push("--add-label", label);
+  }
+  for (const label of change?.removeLabels || []) {
+    args.push("--remove-label", label);
+  }
+  if (args.length === 5) {
+    throw new Error(`Release PR #${number} has no label changes to apply.`);
   }
   return args;
 }
@@ -472,6 +549,40 @@ function remoteTagObject(repository, tagObjectSha) {
   );
 }
 
+export function mergedReleasePullRequests(repository, version) {
+  const output = run(
+    "gh",
+    [
+      "pr",
+      "list",
+      "--repo",
+      repository,
+      "--state",
+      "merged",
+      "--search",
+      buildReleasePullRequestSearch(version),
+      "--limit",
+      String(RELEASE_PR_SEARCH_LIMIT),
+      "--json",
+      "number,title,labels",
+    ],
+    { capture: true }
+  );
+  return JSON.parse(output || "[]");
+}
+
+export function finalizeReleasePullRequestLabels(repository, version, options = {}) {
+  const listPullRequests = options.listPullRequests || mergedReleasePullRequests;
+  const editPullRequest =
+    options.editPullRequest ||
+    ((targetRepository, change) => run("gh", buildReleasePrEditArgs(targetRepository, change)));
+  const changes = releasePullRequestLabelChanges(listPullRequests(repository, version), version);
+  for (const change of changes) {
+    editPullRequest(repository, change);
+  }
+  return changes;
+}
+
 function ensureMainHead() {
   run("git", ["fetch", "origin", "main", "--tags"]);
   const head = run("git", ["rev-parse", "HEAD"], { capture: true }).trim();
@@ -590,6 +701,16 @@ export function main(argv = process.argv.slice(2)) {
   }
 
   run("gh", buildGhReleaseArgs(tag, options));
+  const releasePrLabelChanges = finalizeReleasePullRequestLabels(repository, packageJson.version);
+  if (releasePrLabelChanges.length > 0) {
+    console.log(
+      `Marked Release Please PR label state for ${tag}: ${releasePrLabelChanges
+        .map((change) => `#${change.number}`)
+        .join(", ")}.`
+    );
+  } else {
+    console.log(`No pending Release Please PR label state found for ${tag}.`);
+  }
   console.log(`Created GitHub release ${tag}; tag push will drive the protected Release workflow.`);
 }
 
