@@ -9,11 +9,17 @@ import {
   assertTagMatchesVersion,
   assertTrustedRemoteTag,
   buildGhReleaseArgs,
+  buildReleasePrEditArgs,
+  buildReleasePullRequestSearch,
   COMMAND_CAPTURE_MAX_BUFFER_BYTES,
+  finalizeReleasePullRequestLabels,
   matchingSuccessfulReleasePleaseRuns,
   normalizeReleaseWorkflowPolicy,
   normalizeSshPublicKey,
   parseArgs,
+  RELEASE_HANDOFF_CONTRACT,
+  releasePullRequestLabelChanges,
+  releasePullRequestTitle,
   selectSuccessfulReleasePleaseRun,
   waitForSuccessfulReleasePleaseRun,
   waitForRemoteTagRef,
@@ -192,6 +198,142 @@ test("Release publish helper creates GitHub releases with --verify-tag only", ()
     "v0.17.0",
     "--generate-notes",
   ]);
+});
+
+test("Release publish helper is only the signed-tag handoff", async () => {
+  const script = await readFile(new URL("../scripts/release-publish.mjs", import.meta.url), "utf8");
+  const releaseWorkflow = await readFile(
+    new URL(`../${RELEASE_HANDOFF_CONTRACT.releaseWorkflowPath}`, import.meta.url),
+    "utf8"
+  );
+
+  assert.equal(RELEASE_HANDOFF_CONTRACT.artifactPublisher, false);
+  assert.match(script, /signed-tag release handoff only/);
+  assert.doesNotMatch(script, /run\("npm"/);
+  assert.doesNotMatch(script, /spawnSync\("npm"/);
+  assert.doesNotMatch(script, /npm dist-tag|dist-tag (?:add|rm|ls)/);
+  for (const control of RELEASE_HANDOFF_CONTRACT.requiredWorkflowControls) {
+    if (control === "npm publish --provenance") {
+      assert.match(releaseWorkflow, /publish[\s\S]{0,200}--provenance/);
+    } else {
+      assert.match(releaseWorkflow, new RegExp(control.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+  }
+  assert.match(releaseWorkflow, /environment: package-release/);
+  assert.match(releaseWorkflow, /trusted publishing/);
+});
+
+test("Release publish helper finalizes Release Please PR labels", () => {
+  assert.equal(releasePullRequestTitle("0.34.7"), "chore(release): 0.34.7");
+  assert.equal(
+    buildReleasePullRequestSearch("0.34.7"),
+    '"chore(release): 0.34.7" in:title base:main'
+  );
+
+  const changes = releasePullRequestLabelChanges(
+    [
+      {
+        number: 723,
+        title: "chore(release): 0.34.7",
+        labels: [{ name: "autorelease: pending" }],
+      },
+      {
+        number: 724,
+        title: "chore(release): 0.34.7",
+        labels: [{ name: "autorelease: tagged" }],
+      },
+      {
+        number: 725,
+        title: "chore(release): 0.34.7",
+        labels: [],
+      },
+      {
+        number: 726,
+        title: "fix(session): unrelated",
+        labels: [{ name: "autorelease: pending" }],
+      },
+    ],
+    "0.34.7"
+  );
+
+  assert.deepEqual(changes, [
+    {
+      number: 723,
+      addLabels: ["autorelease: tagged"],
+      removeLabels: ["autorelease: pending"],
+    },
+    {
+      number: 725,
+      addLabels: ["autorelease: tagged"],
+      removeLabels: [],
+    },
+  ]);
+  assert.deepEqual(buildReleasePrEditArgs("mrrCarter/create-sentinelayer", changes[0]), [
+    "pr",
+    "edit",
+    "723",
+    "--repo",
+    "mrrCarter/create-sentinelayer",
+    "--add-label",
+    "autorelease: tagged",
+    "--remove-label",
+    "autorelease: pending",
+  ]);
+});
+
+test("Release publish helper applies Release Please label repairs through one edit path", () => {
+  const editCalls = [];
+  const changes = finalizeReleasePullRequestLabels("mrrCarter/create-sentinelayer", "0.34.7", {
+    listPullRequests: (repository, version) => {
+      assert.equal(repository, "mrrCarter/create-sentinelayer");
+      assert.equal(version, "0.34.7");
+      return [
+        {
+          number: 723,
+          title: "chore(release): 0.34.7",
+          labels: [{ name: "autorelease: pending" }],
+        },
+      ];
+    },
+    editPullRequest: (repository, change) =>
+      editCalls.push(buildReleasePrEditArgs(repository, change)),
+  });
+
+  assert.deepEqual(changes, [
+    {
+      number: 723,
+      addLabels: ["autorelease: tagged"],
+      removeLabels: ["autorelease: pending"],
+    },
+  ]);
+  assert.deepEqual(editCalls, [
+    [
+      "pr",
+      "edit",
+      "723",
+      "--repo",
+      "mrrCarter/create-sentinelayer",
+      "--add-label",
+      "autorelease: tagged",
+      "--remove-label",
+      "autorelease: pending",
+    ],
+  ]);
+});
+
+test("Release publish helper skips Release Please label edits when already tagged", () => {
+  const changes = finalizeReleasePullRequestLabels("mrrCarter/create-sentinelayer", "0.34.7", {
+    listPullRequests: () => [
+      {
+        number: 723,
+        title: "chore(release): 0.34.7",
+        labels: [{ name: "autorelease: tagged" }],
+      },
+    ],
+    editPullRequest: () => assert.fail("already-tagged release PR must not be edited"),
+  });
+
+  assert.deepEqual(changes, []);
 });
 
 test("Release publish helper waits for pushed remote tag refs to become visible", () => {

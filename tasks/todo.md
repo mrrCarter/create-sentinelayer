@@ -1,3 +1,24 @@
+# 2026-07-02 - Release Please Label Finalization (`codex/release-label-finalize-20260702`)
+
+## Plan
+- [x] Keep `codex-senti-product-0344` connected to Senti session `954233b7-1822-42bc-9cfe-1eb95eb0357a` without routine ACK spam.
+- [x] Reproduce why Release Please no-op'd after #722 even though main gates were green.
+- [x] Verify `v0.34.7` was signed, released, and published to npm before mutating release metadata.
+- [x] Repair the stale #723 release PR label state from `autorelease: pending` to `autorelease: tagged`.
+- [x] Patch `scripts/release-publish.mjs` so the guarded signed-tag flow finalizes Release Please PR labels after GitHub release creation.
+- [x] Add focused unit coverage for the release PR search and label transition contract.
+- [ ] Run focused/static/docs/package/review gates, open PR, and merge only after hosted Omar/Quality/Attestation pass.
+- [ ] After merge, rerun Release Please on main and cut the next npm release for the #711/#719/#722 Senti reliability set.
+
+## Review
+- Repaired live metadata first: PR #723 now has `autorelease: tagged`; `v0.34.7` was verified as a signed annotated tag, GitHub release, and npm `latest`.
+- Implemented release PR label finalization in `scripts/release-publish.mjs`: after successful `gh release create`, the helper finds the exact merged `chore(release): <version>` PR and applies one idempotent label edit (`autorelease: tagged`, remove `autorelease: pending`).
+- Added `RELEASE_HANDOFF_CONTRACT` to make the release architecture explicit: `release-publish.mjs` is a signed-tag handoff only; `.github/workflows/release.yml` owns artifact provenance, attestation verification, trusted npm publish, smoke checks, and rollback readiness.
+- Focused release tests passed: `node --import ./tests/setup-env.mjs --test tests/unit.release-publish.test.mjs tests/unit.release-tools.test.mjs` (`32/32`).
+- Static/docs/package proof passed: `npm run check` (`345 files passed`), `npm run docs:build` validation passed, `npm pack --dry-run --json` produced `sentinelayer-cli-0.34.7.tgz` shasum `c6befc10d3869e695944b7fd2eea49ff04ccd789`, and `git diff --check` was clean aside from expected Windows LF/CRLF notices.
+- Deterministic review scan passed: `review-scan-diff-20260702-061431.md`, scoped files `4`, `P1=0`, `P2=0`, `blocking=false`.
+- Local Omar reruns remain AI-blocked with no deterministic findings: latest `omargate-1782972897259-be1b8896` has deterministic `P0=0/P1=0/P2=0/P3=0`, but AI reports P1/P2 claims that `release-publish.mjs` directly uploads/publishes unsigned artifacts and that tests import Jest mocks. Both claims contradict the diff and source: the script invokes `gh release create --verify-tag` only, package publishing/provenance is in `release.yml`, and the tests use `node:test` with dependency injection/file-contract proof, not Jest.
+
 # 2026-07-01 - Senti Listener Singleton Guard (`codex/senti-listen-singleton-20260701`)
 
 ## Plan
