@@ -126,6 +126,7 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
   const lifecycle = [];
   let intervalCallback = null;
   let clearCount = 0;
+  let unrefCount = 0;
 
   const result = await listenSessionEvents({
     sessionId: "sess-stream-heartbeat",
@@ -137,7 +138,7 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
     _setInterval: (callback, ms) => {
       assert.equal(ms, 40_000);
       intervalCallback = callback;
-      return { unref() {} };
+      return { unref() { unrefCount += 1; } };
     },
     _clearInterval: () => {
       clearCount += 1;
@@ -153,6 +154,7 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
   assert.equal(result.streamAttempted, true);
   assert.equal(result.transport, "stream");
   assert.equal(clearCount, 1);
+  assert.equal(unrefCount, 0);
   assert.deepEqual(
     lifecycle.map((event) => event.type),
     ["started", "heartbeat", "stopped"],
@@ -221,6 +223,55 @@ test("Unit session listener: auto transport falls back to durable polling when s
   assert.deepEqual(emitted, ["c1"]);
   assert.equal(result.streamAttempted, true);
   assert.equal(result.streamFallbackReason, "api_404");
+  assert.equal(result.cursor, "c1");
+});
+
+test("Unit session listener: auto transport falls back to polling when stream goes idle", async () => {
+  const emitted = [];
+  const errors = [];
+  const pollCalls = [];
+  const streamCalls = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-idle-fallback",
+    agentId: "codex-1",
+    transport: "auto",
+    intervalSeconds: 60,
+    replay: true,
+    maxPolls: 1,
+    _readCursor: async () => null,
+    _writeCursor: async () => ({ written: true }),
+    _stream: async (sessionId, options) => {
+      streamCalls.push({
+        sessionId,
+        since: options.since,
+        idleTimeoutMs: options.idleTimeoutMs,
+      });
+      return {
+        ok: false,
+        reason: "stream_idle_timeout",
+        cursor: options.since || null,
+        eventCount: 0,
+        errorCount: 0,
+      };
+    },
+    _poll: async (sessionId, options) => {
+      pollCalls.push({ sessionId, since: options.since });
+      return { ok: true, events: [evt("c1", { to: "codex-1" })], cursor: "c1" };
+    },
+    _sleep: async () => {},
+    onError: async (error) => errors.push(error.reason),
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.deepEqual(streamCalls, [
+    { sessionId: "sess-stream-idle-fallback", since: null, idleTimeoutMs: 30_000 },
+  ]);
+  assert.deepEqual(pollCalls, [{ sessionId: "sess-stream-idle-fallback", since: null }]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(emitted, ["c1"]);
+  assert.equal(result.streamFallbackReason, "stream_idle_timeout");
+  assert.equal(result.transport, "poll");
   assert.equal(result.cursor, "c1");
 });
 

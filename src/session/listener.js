@@ -305,6 +305,8 @@ export async function listenSessionEvents({
   const activeWindowMs =
     Math.max(1, normalizePositiveInteger(activeWindowSeconds, DEFAULT_ACTIVE_WINDOW_SECONDS)) *
     1000;
+  const autoStreamIdleTimeoutMs =
+    normalizedTransport === "auto" ? Math.max(5_000, Math.min(idleSleepMs, 30_000)) : 0;
 
   if (fromNow) {
     const latest = await _pollLatest(normalizedSessionId, {
@@ -507,9 +509,6 @@ export async function listenSessionEvents({
         streamHeartbeatInFlight = false;
       }
     }, streamHeartbeatMs);
-    if (streamHeartbeatTimer && typeof streamHeartbeatTimer.unref === "function") {
-      streamHeartbeatTimer.unref();
-    }
   }
 
   await notifyLifecycle(
@@ -527,6 +526,7 @@ export async function listenSessionEvents({
       const streamResult = await _stream(normalizedSessionId, {
         targetPath,
         since: cursor,
+        idleTimeoutMs: autoStreamIdleTimeoutMs,
         signal,
         onEvent: async (event) => {
           await processEventBatch([event], normalizeString(event?.cursor) || cursor);
