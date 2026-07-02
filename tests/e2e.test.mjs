@@ -7680,6 +7680,35 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     assert.equal(joinPayload.command, "session join");
     assert.equal(joinPayload.agentId, "agent-alpha");
 
+    const staleAgentIso = "2026-01-01T00:00:00.000Z";
+    await writeFile(
+      path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "agents", "agent-stale.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: "1.0.0",
+          sessionId,
+          agentId: "agent-stale",
+          model: "gpt-5-codex",
+          displayName: "Stale Agent",
+          provider: "openai",
+          clientKind: "cli",
+          role: "coder",
+          status: "idle",
+          detail: "",
+          file: null,
+          joinedAt: staleAgentIso,
+          lastActivityAt: staleAgentIso,
+          leftAt: null,
+          leaveReason: null,
+          active: true,
+          updatedAt: staleAgentIso,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+
     const sayResult = await runCli({
       cwd: tempRoot,
       env: { ...process.env },
@@ -7703,6 +7732,38 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     await appendFile(
       path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "stream.ndjson"),
       `${JSON.stringify(duplicateCanonical)}\n`,
+      "utf-8",
+    );
+    const heartbeatTimestamp = new Date().toISOString();
+    await appendFile(
+      path.join(tempRoot, ".sentinelayer", "sessions", sessionId, "stream.ndjson"),
+      `${JSON.stringify({
+        stream: "sl_event",
+        event: "session_listener_heartbeat",
+        agent: {
+          id: "agent-listener",
+          model: "gpt-5-codex",
+          role: "listener",
+          displayName: "Listener",
+          provider: "openai",
+          clientKind: "cli",
+        },
+        payload: {
+          active: false,
+          lifecycle: "heartbeat",
+          source: "session_listen",
+          idleIntervalSeconds: 40,
+          activeIntervalSeconds: 10,
+          presenceIntervalSeconds: 45,
+          presenceKeepaliveSeconds: 120,
+          nextPollMs: 40000,
+        },
+        sessionId,
+        cursor: "0000000001002:000003ea",
+        sequenceId: 1002,
+        ts: heartbeatTimestamp,
+        timestamp: heartbeatTimestamp,
+      })}\n`,
       "utf-8",
     );
 
@@ -7729,7 +7790,17 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     const statusPayload = JSON.parse(String(statusResult.stdout || "").trim());
     assert.equal(statusPayload.command, "session status");
     assert.equal(statusPayload.session.sessionId, sessionId);
+    assert.equal(statusPayload.registeredAgents.some((agent) => agent.agentId === "agent-alpha"), true);
+    assert.equal(statusPayload.registeredAgents.some((agent) => agent.agentId === "agent-stale"), true);
     assert.equal(statusPayload.activeAgents.some((agent) => agent.agentId === "agent-alpha"), true);
+    assert.equal(statusPayload.activeAgents.some((agent) => agent.agentId === "agent-stale"), false);
+    assert.equal(statusPayload.staleAgents.some((agent) => agent.agentId === "agent-stale"), true);
+    assert.equal(statusPayload.listenerPresence.source, "local_recent_events");
+    assert.equal(statusPayload.listenerPresence.liveCount, 1);
+    assert.equal(
+      statusPayload.listenerPresence.listeners.some((listener) => listener.agentId === "agent-listener"),
+      true,
+    );
 
     const workItemId = await seedDaemonWorkItem(tempRoot, "/v1/session/lease", "SESSION_LEASE_E2E");
     const leased = await leaseWorkItem({

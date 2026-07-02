@@ -64,7 +64,7 @@ import {
   refreshSessionCacheForRemoteActivity,
   updateSessionTitle,
 } from "../session/store.js";
-import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
+import { fetchSessionListeners, formatListenerLine, summarizeListeners } from "../session/listeners.js";
 import {
   getListenerProcessStatus,
   removeListenerPidRecord,
@@ -1082,6 +1082,25 @@ function compareIsoDesc(left = "", right = "") {
   return normalizeString(right).localeCompare(normalizeString(left));
 }
 
+function latestIsoTimestamp(...values) {
+  let selected = "";
+  let selectedEpoch = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const normalized = normalizeString(value);
+    if (!normalized) continue;
+    const epoch = Date.parse(normalized);
+    if (!Number.isFinite(epoch)) {
+      if (!selected) selected = normalized;
+      continue;
+    }
+    if (epoch >= selectedEpoch) {
+      selected = new Date(epoch).toISOString();
+      selectedEpoch = epoch;
+    }
+  }
+  return selected;
+}
+
 function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = {}) {
   const byAgentId = new Map();
   for (const agent of Array.isArray(statsAgents) ? statsAgents : []) {
@@ -1100,6 +1119,12 @@ function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = 
     if (!agentId) continue;
     const existing = byAgentId.get(agentId);
     if (existing) {
+      const lastActivityAt = latestIsoTimestamp(
+        existing.lastActivityAt,
+        existing.lastSeen,
+        agent.lastActivityAt,
+        agent.joinedAt,
+      );
       byAgentId.set(agentId, {
         ...existing,
         model: existing.model || normalizeString(agent.model),
@@ -1108,7 +1133,8 @@ function buildSessionParticipants({ statsAgents = [], registeredAgents = [] } = 
         registered: true,
         source: "events+registry",
         joinedAt: normalizeString(agent.joinedAt) || existing.joinedAt,
-        lastActivityAt: normalizeString(agent.lastActivityAt) || existing.lastActivityAt,
+        lastSeen: latestIsoTimestamp(existing.lastSeen, lastActivityAt) || existing.lastSeen,
+        lastActivityAt: lastActivityAt || null,
         active: agent.active,
       });
       continue;
@@ -6285,13 +6311,51 @@ export function registerSessionCommand(program) {
       ]);
 
       const staleAgents = detectStaleAgents(agents, {});
+      const staleAgentIds = new Set(staleAgents.map((agent) => normalizeString(agent.agentId)));
+      const activeAgents = agents.filter((agent) => !staleAgentIds.has(normalizeString(agent.agentId)));
+      let listenerRows = summarizeListeners(recentEvents);
+      let listenerPresence = {
+        source: "local_recent_events",
+        ok: true,
+        count: listenerRows.length,
+        liveCount: listenerRows.filter((row) => row.status === "active" || row.status === "idle").length,
+        listeners: listenerRows,
+      };
+      try {
+        const remoteListeners = await fetchSessionListeners(normalizedSessionId, {
+          targetPath,
+          limit: 200,
+          maxPages: 5,
+        });
+        if (remoteListeners?.ok && Array.isArray(remoteListeners.listeners) && remoteListeners.listeners.length > 0) {
+          listenerRows = remoteListeners.listeners;
+          listenerPresence = {
+            source: "remote_events",
+            ok: true,
+            count: listenerRows.length,
+            liveCount: listenerRows.filter((row) => row.status === "active" || row.status === "idle").length,
+            pageCount: Number(remoteListeners.pageCount || 0),
+            scannedEventCount: Number(remoteListeners.scannedEventCount || 0),
+            listenerEventCount: Number(remoteListeners.listenerEventCount || 0),
+            partial: Boolean(remoteListeners.partial),
+            listeners: listenerRows,
+          };
+        } else if (remoteListeners && remoteListeners.ok === false) {
+          listenerPresence.remoteReason = normalizeString(remoteListeners.reason) || "remote_unavailable";
+        }
+      } catch (error) {
+        listenerPresence.remoteReason = normalizeString(error?.message) || "remote_unavailable";
+      }
+      const liveListenerCount = listenerPresence.liveCount;
       const payload = {
         command: "session status",
         targetPath,
         sessionId: normalizedSessionId,
         session: sessionPayload,
-        activeAgents: agents,
+        registeredAgents: agents,
+        activeAgents,
         staleAgents,
+        listenerPresence,
         runtimeRuns,
         activeLeases: leases.assignments,
         activeFileLocks: fileLocks,
@@ -6306,7 +6370,7 @@ export function registerSessionCommand(program) {
       console.log(pc.bold(`Session ${normalizedSessionId}`));
       console.log(
         pc.gray(
-          `status=${sessionPayload.status} agents=${agents.length} stale=${staleAgents.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
+          `status=${sessionPayload.status} active=${activeAgents.length} registered=${agents.length} stale=${staleAgents.length} listeners=${liveListenerCount}/${listenerRows.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
         )
       );
       for (const event of recentEvents) {
