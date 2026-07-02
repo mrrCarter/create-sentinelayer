@@ -1,3 +1,20 @@
+# 2026-07-02 - Senti Recap Copy Separation (`codex/recap-task-plan-copy-20260702`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and post only material findings.
+- [x] Verify the shipped recap no longer leaks stale `Current: Plan` / `WI-*` entries for large historical `tasks/todo.md` files.
+- [x] Identify remaining copy issue: `Tasks: none queued. Plan: ...` compresses the Senti task ledger and workspace plan file into one ambiguous sentence.
+- [x] Rename recap text labels to `Session tasks` and `Workspace plan` while leaving summary JSON contracts unchanged.
+- [x] Update focused regression assertions and run local verification.
+
+## Review
+- Live room proof on `sentinelayer-cli@0.35.1` confirmed stale current/next plan details are suppressed and token/cost totals render.
+- Focused recap proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-recap.test.mjs` (`20/20`).
+- Static proof passed: `node --check src/session/recap.js` and `npm run check` (`345 files passed`).
+- `git diff --check` passed aside from expected Windows LF/CRLF notices.
+- Review scan passed: `sl review scan --path . --mode diff --json` scoped 3 files with `P1=0`, `P2=0`, `blocking=false`.
+- Omar Gate deep scan `omargate-1783002584690-2aa1ecf6` had deterministic `P0=0/P1=0/P2=0/P3=0`; AI-only P2/P3 claims cited nonexistent `sinon.stub(SessionService...)` test code and incorrectly claimed `tasks/todo.md` has no security/resilience roadmap, so they are recorded as false-positive reviewer claims.
+
 # 2026-07-02 - Senti Listener Global Singleton (`codex/session-listener-global-singleton-20260702`)
 
 ## Plan

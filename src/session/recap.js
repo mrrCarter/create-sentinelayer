@@ -786,7 +786,7 @@ function buildRecapText({
 function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
   const total = Number(taskLedger.total || 0);
   if (!total) {
-    return "Tasks: none queued";
+    return "Session tasks: none queued";
   }
   const active = Number(taskLedger.active || 0);
   const counts = [
@@ -813,7 +813,7 @@ function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
           .map((task) => `${task.priority} ${task.status} ${task.owner}: ${task.task}`)
           .join(" | ")}`
       : "";
-  return [`Tasks: ${active} active of ${total} total (${counts})`, ownerText, recentText]
+  return [`Session tasks: ${active} active of ${total} total (${counts})`, ownerText, recentText]
     .filter(Boolean)
     .join(". ");
 }
@@ -849,7 +849,7 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
       suppressionReason === "historical_generic_plan_section"
         ? "Current/next items suppressed because this generic plan is mostly historical completed work."
         : "Current/next items suppressed because the plan file is large.";
-    return `Plan: ${open} open / ${completed} done in ${sourceWindowText}${sourceReasonText}. ${suppressionText}`;
+    return `Workspace plan: ${open} open / ${completed} done in ${sourceWindowText}${sourceReasonText}. ${suppressionText}`;
   }
   const currentSection = normalizeString(workPlan.currentSection);
   const currentText = currentSection ? ` Current: ${currentSection}.` : "";
@@ -866,7 +866,7 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
           .join("; ")}.`
       : "";
   const truncatedText = workPlan.truncated ? " Recent window only." : "";
-  return `Plan: ${open} open / ${completed} done in ${sourceText}${sourceReasonText}.${currentText}${nextText}${truncatedText}`;
+  return `Workspace plan: ${open} open / ${completed} done in ${sourceText}${sourceReasonText}.${currentText}${nextText}${truncatedText}`;
 }
 
 function roundCurrency(value) {
