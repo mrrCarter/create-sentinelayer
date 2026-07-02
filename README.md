@@ -52,14 +52,15 @@ Live MCP entry points:
 
 - Local stdio server: `sl mcp server run --path .`
 - Hosted token mint: `sl mcp token mint --scope "sessions:read" --ttl-seconds 300 --json`
-- Hosted resource smoke: `POST https://api.sentinelayer.com/mcp` with JSON-RPC `tools/list`
+- Hosted MCP paste URL: `https://api.sentinelayer.com/mcp`
+- Hosted resource smoke: `sl mcp smoke --session <senti-session-id> --json`
 - CLI bridge registry: `sl mcp registry init-cli`; credential-bearing commands are blocked from bridge execution
 
 First-debug path:
 
 1. Run `sl auth status`.
 2. For local MCP, run `sl mcp server validate --file .sentinelayer/mcp/server.<id>.json`.
-3. For hosted MCP, mint a 300-second token and smoke `/mcp` with `tools/list`.
+3. For hosted MCP, run `sl mcp doctor`, then `sl mcp smoke --session <senti-session-id> --json`.
 4. If a bearer or bridge output is exposed, set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1`, restart the MCP host, revoke the requesting CLI auth session with `sl auth revoke`, and follow [docs/mcp.md](docs/mcp.md#bearer-exposure-response).
 
 Architecture map: local stdio runtime and incident response are in
@@ -692,6 +693,7 @@ The CLI now includes deterministic MCP registry commands:
 Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for AIdenID provisioning APIs, then customize transport/auth before runtime wiring.
 Use `init-aidenid-adapter` to scaffold a deterministic AIdenID provisioning API contract (tool binding -> HTTP path/method -> response field mapping) and cross-check it against the registry with `validate-aidenid-adapter`.
 Use `token mint` to request a short-lived hosted MCP bearer token from the Sentinelayer API. Text output hides the bearer value; `--json` is the explicit operator path that includes `accessToken`. The command is blocked from the generated CLI MCP bridge.
+Use `smoke` to verify the hosted MCP resource without printing the bearer. The canonical remote MCP paste URL is `https://api.sentinelayer.com/mcp`; the token audience/resource value is `https://mcp.sentinelayer.com` and is handled by the OAuth/MCP flow. `sl mcp smoke` works today through the CLI direct-mint path; third-party browser connectors such as Claude.ai still require the OAuth browser-flow and connector-registration work to complete before users can authenticate from that product.
 Use `init-session` plus `server run` for the local stdio Senti MCP server. It exposes session inbox, durable posts, actions/replies/reactions, file locks, and attention requests to local MCP clients. Hosted Claude-web/ChatGPT connectors need a separate HTTPS/OAuth service and are not shipped by the local stdio server. See [docs/mcp.md](docs/mcp.md).
 Use `init-cli` to generate a bridge registry for every `sl` leaf command from Commander metadata. This exposes the full CLI surface as `sl.<command.path>` tool schemas, but execution still requires a bridge-capable MCP host with OAuth/session-seat policy and human approval enforcement. The hosted connector target contract is documented in [docs/mcp-hosted-connector.md](docs/mcp-hosted-connector.md).
 
@@ -700,10 +702,9 @@ MCP operator verification:
 1. Local stdio demo: run `sl mcp registry init-session`, then
    `sl mcp server init --id sentinelayer-session --registry-file .sentinelayer/mcp/tool-registry.session-tools.json`,
    then configure the MCP host to execute `sl mcp server run --path .`.
-2. Hosted token smoke: run
-   `sl mcp token mint --scope "sessions:read sessions:usage:read" --ttl-seconds 300 --json`,
-   place `accessToken` in a local secret variable, and call hosted `/mcp`
-   `tools/list` as shown in [docs/mcp.md](docs/mcp.md).
+2. Hosted resource smoke: run `sl mcp doctor`, then
+   `sl mcp smoke --session <senti-session-id> --json`. The smoke mints the
+   short-lived bearer in memory, calls `/mcp`, and prints only redacted proof.
 3. Kill switch: set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1` and restart the
    MCP host if a CLI bridge or bearer credential is exposed.
 
@@ -728,8 +729,8 @@ sl mcp registry init-cli --json
   `.sentinelayer/mcp/server.<id>.json`.
 - Hosted token mint: `sl mcp token mint --scope "sessions:read" --ttl-seconds 300 --json`,
   backed by `POST /api/v1/auth/mcp-token`.
-- Hosted resource smoke: `POST https://api.sentinelayer.com/mcp` with
-  `Authorization: Bearer $SENTINELAYER_MCP_TOKEN` and JSON-RPC `tools/list`.
+- Hosted MCP paste URL: `https://api.sentinelayer.com/mcp`.
+- Hosted resource smoke: `sl mcp smoke --session <senti-session-id> --json`.
 - Generated CLI bridge registry: `sl mcp registry init-cli`; secret-bearing
   commands such as `sl mcp token mint` are blocked from bridge execution.
 
@@ -740,6 +741,9 @@ Architecture decisions:
   OAuth, session-seat binding, and server-side authorization.
 - Hosted bearer minting is API-owned. The CLI requests a token with existing
   auth and never signs, verifies, or derives token claims locally.
+- The hosted endpoint and token audience are deliberately separate today:
+  paste `https://api.sentinelayer.com/mcp` into remote MCP clients; the bearer
+  audience/resource is `https://mcp.sentinelayer.com` and must remain strict.
 - The generated CLI bridge is fail-closed for credential-bearing commands; use
   direct operator execution for token minting and the documented kill switch for
   containment.
@@ -1119,6 +1123,7 @@ The CLI now supports a command tree, while keeping slash-command compatibility:
 - `sentinelayer-cli daemon reliability run|status` and `daemon maintenance status|on|off` operate the midnight synthetic lane and maintenance billboard lifecycle
 - `sentinelayer-cli mcp schema|registry|server|bridge ...` manages MCP registry schema, server configs, and VS Code bridge scaffolds
 - `sentinelayer-cli mcp token mint --scope "sessions:read" --ttl-seconds 300 --json` mints a short-lived hosted MCP bearer; text mode hides the secret, and generated CLI bridge execution blocks this command
+- `sentinelayer-cli mcp smoke --session <id> --json` verifies hosted `/mcp` tools and optional Senti room reads without printing bearer values
 - `sentinelayer-cli plugin init|validate|list|order` manages plugin/template/policy packs and deterministic load-order governance
 - `sentinelayer-cli policy list|use <pack-id>` manages active policy pack selection (`community`, `strict`, `compliance-soc2`, `compliance-hipaa`, plugin packs)
 - `sentinelayer-cli ai provision-email` scaffolds and optionally executes AIdenID identity provisioning requests
@@ -1151,5 +1156,6 @@ Roadmap:
 - `GitHub CLI not installed`: install `gh` or run manual fallback.
 - `Invalid repo format`: use exact `owner/repo`.
 - `Missing token in workflow`: ensure `.github/workflows/omar-gate.yml` maps `sentinelayer_token: ${{ secrets.SENTINELAYER_TOKEN }}`.
+- `INVALID_MCP_TOKEN` on hosted MCP: verify the client is calling `https://api.sentinelayer.com/mcp` and using a fresh token whose audience/resource is `https://mcp.sentinelayer.com`; run `sentinelayer-cli mcp smoke --session <id> --json` for redacted proof.
 - `Hosted MCP bearer exposed`: set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1`, restart the MCP host, revoke/rotate the requesting CLI auth session with `sentinelayer-cli auth revoke`, and follow [docs/mcp.md](docs/mcp.md#bearer-exposure-response).
 

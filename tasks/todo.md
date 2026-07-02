@@ -1,3 +1,25 @@
+# 2026-07-02 - Hosted MCP Smoke Proof (`codex/mcp-hosted-smoke-20260702`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and reconcile with verifier/architect lane ownership.
+- [x] Confirm lane split: architect owns OAuth browser RFC compliance; warden verifies; this lane owns repeatable hosted MCP resource smoke proof.
+- [x] Use a clean `create-sentinelayer` worktree from current `origin/main` and take Senti locks for MCP command/test/docs files.
+- [x] Add a redacted `sl mcp smoke` command that mints an in-memory MCP bearer, calls `/mcp` `tools/list`, optionally calls `sessions.events.list`, and never prints the bearer.
+- [x] Add focused unit coverage for tool-list success, optional session-read success, failure reporting, and token redaction.
+- [x] Update MCP docs with the new smoke workflow.
+- [x] Run focused tests/static checks, review scan, Omar diff scan, package smoke, open PR, and request Senti review.
+
+## Review
+- Focused syntax proof passed: `node --check src/mcp/smoke.js` and `node --check src/commands/mcp.js`.
+- Focused tests passed: `node --import ./tests/setup-env.mjs --test tests/unit.mcp-smoke.test.mjs tests/unit.commands-contracts.test.mjs` (`22/22`).
+- Adjacent MCP proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.mcp-smoke.test.mjs tests/unit.mcp-token-service.test.mjs tests/unit.mcp-doctor.test.mjs tests/unit.commands-contracts.test.mjs` (`35/35`).
+- Static/docs/full-unit proof passed: `npm run check` (`346 files passed`), `npm run docs:build`, and `npm run test:unit` (`1722/1722`).
+- Deterministic review gates passed: `sl review scan --path . --mode diff --json` (`P1=0`, `P2=0`, `blocking=false`) and `sl /omargate deep --path . --scope-mode diff --no-ai --json` (`P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`).
+- Package dry-run passed after final edits: `npm pack --dry-run --json` produced `sentinelayer-cli-0.35.3.tgz` with shasum `75687e8745919ba6be4b1a4df30a0b6d08583820`.
+- `git diff --check` passed aside from expected Windows LF/CRLF notices.
+- Live prod smoke from patched CLI passed: `node bin/sl.js mcp smoke --session 954233b7-1822-42bc-9cfe-1eb95eb0357a --limit 2 --ttl-seconds 300 --json` returned `ok=true`, `tools_list` `PASS` with 6 tools, and `session_events_list` `PASS` with 2 events. Output contained only redacted token metadata, no bearer.
+- Senti verifier review from `claude-warden` requested one no-over-claim docs refinement: make explicit that `sl mcp smoke` works today through direct mint, while browser connectors still require OAuth/browser-flow and connector-registration lanes. Addressed in README and `docs/mcp.md`; follow-up docs/static proof passed: `npm run docs:build`, `npm run check`, and `git diff --check`.
+
 # 2026-07-02 - Senti Search Contract Wording (`codex/session-search-contract-20260702`)
 
 ## Plan

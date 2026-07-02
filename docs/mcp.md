@@ -51,6 +51,44 @@ Secret-bearing commands are blocked from bridge execution even when they appear 
 sl mcp token mint --scope "sessions:read sessions:usage:read" --ttl-seconds 300 --json
 ```
 
+## Hosted MCP URL And Audience Contract
+
+Use this user-facing paste URL for hosted MCP clients:
+
+```text
+https://api.sentinelayer.com/mcp
+```
+
+That endpoint is the public HTTPS resource-server URL. The OAuth protected
+resource and minted bearer audience currently use:
+
+```text
+https://mcp.sentinelayer.com
+```
+
+Do not treat the audience string as the paste URL unless DNS/routing is
+explicitly added for that host. Spec-compliant clients discover the protected
+resource metadata from the `WWW-Authenticate` challenge and use the advertised
+`resource` value as the token audience. Operators and buyers should paste
+`https://api.sentinelayer.com/mcp` today.
+
+`INVALID_MCP_TOKEN` usually means one of:
+
+- The bearer expired.
+- The bearer was minted for the wrong audience/resource.
+- The MCP client sent the request to a different endpoint than the one used for
+  discovery.
+- The token was copied through a place that truncated or modified it.
+
+Run `sl mcp doctor` to verify public discovery and enforcement, then run
+`sl mcp smoke --session <senti-session-id> --json` to prove the authenticated
+resource-server path without printing the bearer.
+
+Works today: `sl mcp smoke` uses the CLI direct-mint path to prove bearer-to-MCP
+tool access. Third-party browser connectors such as Claude.ai also need the
+OAuth authorize/token browser flow and a registered connector client before a
+human can paste the hosted URL into that product and complete authentication.
+
 ## Hosted MCP Token Operator Flow
 
 Use this flow when an operator needs a short-lived bearer for the hosted MCP
@@ -69,10 +107,8 @@ resource:
 4. Smoke the hosted resource without printing the token:
 
    ```bash
-   curl -sS https://api.sentinelayer.com/mcp \
-     -H "Authorization: Bearer $SENTINELAYER_MCP_TOKEN" \
-     -H "Content-Type: application/json" \
-     --data '{"jsonrpc":"2.0","id":"smoke","method":"tools/list","params":{}}'
+   sl mcp smoke --json
+   sl mcp smoke --session <senti-session-id> --json
    ```
 
 5. For local stdio demos, skip hosted token minting entirely and point the MCP
@@ -114,6 +150,44 @@ Successful response body:
 
 CLI JSON output maps `access_token` to `accessToken`. Text output intentionally
 omits `accessToken`.
+
+## Smoking The Hosted MCP Resource (`sl mcp smoke`)
+
+`sl mcp smoke` mints a short-lived MCP bearer in memory, calls the hosted
+`/mcp` resource, and prints only redacted proof. It never prints the bearer in
+text or JSON output, so the result can be pasted into Senti, a PR, or an
+incident note.
+
+```bash
+sl mcp smoke
+sl mcp smoke --session 954233b7-1822-42bc-9cfe-1eb95eb0357a --limit 5 --json
+```
+
+The smoke runs:
+
+1. `POST /api/v1/auth/mcp-token` through the existing local CLI auth session.
+2. `POST /mcp` `tools/list` with the short-lived bearer, reporting tool names.
+3. When `--session` is provided, `POST /mcp` `tools/call` for
+   `sessions.events.list`, reporting only event counts and sequence bounds.
+
+Use `sl mcp doctor` first for unauthenticated discovery/enforcement checks, then
+`sl mcp smoke` for authenticated resource-server proof. The smoke proves the
+inner bearer-to-tools path. Browser-hosted clients still need the OAuth
+authorize/token flow to mint their own bearer.
+
+The JSON output intentionally includes only token metadata:
+
+```json
+{
+  "token": {
+    "redacted": true,
+    "audience": "https://mcp.sentinelayer.com",
+    "scope": "sessions:read"
+  }
+}
+```
+
+It does not include `accessToken`.
 
 ## Diagnosing Hosted MCP Auth (`sl mcp doctor`)
 

@@ -340,6 +340,16 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   assertCommandHasOption(tokenMint, "--no-auto-rotate");
   assertCommandHasOption(tokenMint, "--json");
 
+  const smoke = getCommandByPath(program, "mcp smoke");
+  assertCommandHasOption(smoke, "--session <id>");
+  assertCommandHasOption(smoke, "--limit <n>");
+  assertCommandHasOption(smoke, "--scope <scopes>");
+  assertCommandHasOption(smoke, "--ttl-seconds <seconds>");
+  assertCommandHasOption(smoke, "--timeout-ms <ms>");
+  assertCommandHasOption(smoke, "--api-url <url>");
+  assertCommandHasOption(smoke, "--no-auto-rotate");
+  assertCommandHasOption(smoke, "--json");
+
   const initSession = getCommandByPath(program, "mcp registry init-session");
   assertCommandHasOption(initSession, "--path <path>");
   assertCommandHasOption(initSession, "--output-dir <path>");
