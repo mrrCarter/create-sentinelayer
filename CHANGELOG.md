@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.2...v0.35.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* **session:** keep stream listener heartbeats fresh ([#732](https://github.com/mrrCarter/create-sentinelayer/issues/732)) ([548d153](https://github.com/mrrCarter/create-sentinelayer/commit/548d153fe1b55fa7aaaeb2dbfdbc62c2ef7f2e71))
+
 ## [0.35.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.1...v0.35.2) (2026-07-02)
 
 
