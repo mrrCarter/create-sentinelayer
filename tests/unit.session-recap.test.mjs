@@ -735,6 +735,42 @@ test("Unit session recap: listener heartbeats do not trigger recap prompts", asy
   }
 });
 
+test("Unit session recap: recent snippets keep word boundaries and source sequence", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-snippets-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    await appendToStream(
+      session.sessionId,
+      {
+        event: "session_message",
+        agentId: "claude-reviewer",
+        sequenceId: 42,
+        ts: "2026-05-19T12:00:00.000Z",
+        payload: {
+          message:
+            "Please review the roster/export fix before merge because the live room proof shows event-derived freshness should win over stale registry snapshots and this final sentence must not be split midword.",
+        },
+      },
+      { targetPath: tempRoot },
+    );
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      maxEvents: 10,
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T12:01:00.000Z",
+    });
+
+    assert.match(recap.text, /Recent: claude-reviewer #42:/);
+    assert.match(recap.text, /event-derived freshness should win\.\.\./);
+    assert.doesNotMatch(recap.text, /win ov/);
+    assert.equal(recap.summary.snippets[0].startsWith("claude-reviewer #42:"), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: CLI recap now emits deterministic JSON", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-now-"));
   try {

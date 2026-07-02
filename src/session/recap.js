@@ -20,6 +20,7 @@ const DEFAULT_RECAP_INACTIVITY_MS = 600_000;
 const DEFAULT_RECAP_ACTIVITY_THRESHOLD = 5;
 const DEFAULT_TASK_SUMMARY_LIMIT = 3;
 const DEFAULT_WORK_PLAN_SUMMARY_LIMIT = 5;
+const DEFAULT_ACTIVITY_SNIPPET_MAX_CHARS = 120;
 const MAX_WORK_PLAN_BYTES = 128_000;
 const WORK_PLAN_RELATIVE_PATH = "tasks/todo.md";
 const HISTORICAL_WORK_PLAN_MIN_COMPLETED = 25;
@@ -128,6 +129,11 @@ function eventSequenceId(event = {}) {
     return null;
   }
   return Math.floor(parsed);
+}
+
+function formatSequenceMarker(event = {}) {
+  const sequence = eventSequenceId(event);
+  return sequence === null ? "" : ` #${sequence}`;
 }
 
 function eventCursor(event = {}) {
@@ -373,12 +379,30 @@ function summarizeRecentActivity(events = [], { forAgentId = "", limit = 2 } = {
     if (!message) {
       continue;
     }
-    snippets.push(`${agentId}: ${message.replace(/\s+/g, " ").slice(0, 120)}`);
+    snippets.push(
+      `${agentId}${formatSequenceMarker(event)}: ${shortActivitySnippetText(message)}`,
+    );
     if (snippets.length >= Math.max(1, limit)) {
       break;
     }
   }
   return snippets.reverse();
+}
+
+function shortActivitySnippetText(value, maxLength = DEFAULT_ACTIVITY_SNIPPET_MAX_CHARS) {
+  const text = normalizeString(value).replace(/\s+/g, " ");
+  const normalizedMaxLength = normalizePositiveInteger(maxLength, DEFAULT_ACTIVITY_SNIPPET_MAX_CHARS);
+  if (text.length <= normalizedMaxLength) {
+    return text;
+  }
+  const suffix = "...";
+  const cutLimit = Math.max(1, normalizedMaxLength - suffix.length);
+  const preferredBoundary = text.lastIndexOf(" ", cutLimit);
+  const minimumBoundary = Math.floor(normalizedMaxLength * 0.6);
+  const cutIndex =
+    preferredBoundary >= minimumBoundary ? preferredBoundary : cutLimit;
+  const prefix = text.slice(0, cutIndex).replace(/[\s,;:.-]+$/g, "");
+  return `${prefix || text.slice(0, cutLimit)}${suffix}`;
 }
 
 async function readPendingTasks(sessionId, { forAgentId = "", targetPath = process.cwd() } = {}) {
