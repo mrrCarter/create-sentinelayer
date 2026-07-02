@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.4...v0.36.0) (2026-07-02)
+
+
+### Features
+
+* **mcp:** add redacted hosted smoke proof ([#736](https://github.com/mrrCarter/create-sentinelayer/issues/736)) ([397f41c](https://github.com/mrrCarter/create-sentinelayer/commit/397f41c969a77c2a9d9575445e15dcaf96ccb103))
+
 ## [0.35.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.3...v0.35.4) (2026-07-02)
 
 
