@@ -450,9 +450,9 @@ jobs:
           sentinelayer_managed_llm: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
+          model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
           codex_model: gpt-5.3-codex
-          model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
+          model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
           use_codex: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
           codex_only: "false"
           llm_failure_policy: block
@@ -465,9 +465,9 @@ jobs:
         env:
           GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
           REQUESTED_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
+          REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
+          REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
           REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
           REQUESTED_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           REQUESTED_MANAGED_LLM: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
@@ -483,14 +483,14 @@ jobs:
           if [ "${REQUESTED_OPENAI_KEY_PRESENT}" = "true" ]; then
             expected_fallback="gpt-4.1-mini"
             if [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
-              expected_fallback="gemini-2.5-flash"
+              expected_fallback="gemini-3.1-flash-lite"
             fi
             if [ "${REQUESTED_PROVIDER}" != "openai" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "${expected_fallback}" ] || [ "${REQUESTED_USE_CODEX}" != "true" ]; then
               echo "::error::Omar OpenAI/Codex contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
               exit 1
             fi
           elif [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
-            if [ "${REQUESTED_PROVIDER}" != "google" ] || [ "${REQUESTED_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_USE_CODEX}" != "false" ]; then
+            if [ "${REQUESTED_PROVIDER}" != "google" ] || [ "${REQUESTED_MODEL}" != "gemini-3.1-flash-lite" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-3.1-flash-lite" ] || [ "${REQUESTED_USE_CODEX}" != "false" ]; then
               echo "::error::Omar Google fallback contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
               exit 1
             fi
@@ -545,8 +545,8 @@ jobs:
           OMAR_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           OMAR_MANAGED_LLM: ${{ secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '' && secrets.OPENAI_API_KEY == '' && steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           OMAR_LLM_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          OMAR_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
-          OMAR_MODEL_FALLBACK: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
+          OMAR_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          OMAR_MODEL_FALLBACK: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           rm -rf omar-artifacts
