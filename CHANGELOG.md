@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.36.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.0...v0.36.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **session:** make recap snippets navigable ([f86033d](https://github.com/mrrCarter/create-sentinelayer/commit/f86033d5a001ab5f925fdc1638e895d5fd3d6085))
+* **session:** make recap snippets navigable ([8eb0039](https://github.com/mrrCarter/create-sentinelayer/commit/8eb0039531bec318e7ced2806524cffd02978e5b))
+* **session:** preserve event freshness in export participants ([0dbf643](https://github.com/mrrCarter/create-sentinelayer/commit/0dbf64351b95e4a1771b0d3a6a3ade374402f879))
+* **session:** preserve event freshness in export participants ([0936d8b](https://github.com/mrrCarter/create-sentinelayer/commit/0936d8b227fe75737e5ea0a4be08fa7a80178e85))
+* **session:** publish stream listener heartbeat cadence ([c386d91](https://github.com/mrrCarter/create-sentinelayer/commit/c386d91ed9a319bd45e82306a2948706017944f6))
+* **session:** separate status registry from listener presence ([fbb0c50](https://github.com/mrrCarter/create-sentinelayer/commit/fbb0c50b4d1c77323acde9edd3198f9a8973101b))
+* **session:** separate status registry from listener presence ([1c3cfae](https://github.com/mrrCarter/create-sentinelayer/commit/1c3cfae5e4eef54d5a7f0dafa80e3828e83f7953))
+
 ## [0.36.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.35.4...v0.36.0) (2026-07-02)
 
 
