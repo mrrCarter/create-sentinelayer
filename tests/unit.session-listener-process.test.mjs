@@ -7,6 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
   getListenerProcessStatus,
+  listMatchingListenerProcesses,
   normalizeListenerProcessKey,
   readGlobalListenerPidRecord,
   readListenerPidRecord,
@@ -14,6 +15,7 @@ import {
   requestListenerProcessStop,
   resolveGlobalListenerPidPath,
   resolveListenerPidPath,
+  stopMatchingListenerProcesses,
   writeListenerPidRecord,
 } from "../src/session/listener-process.js";
 import { createSession } from "../src/session/store.js";
@@ -204,6 +206,106 @@ test("Unit listener-process: global pid record blocks duplicates across worktree
     await rm(homeRoot, { recursive: true, force: true });
     await rm(firstRoot, { recursive: true, force: true });
     await rm(secondRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit listener-process: process scan detects untracked duplicate listener", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listener-scan-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const sessionId = "scan-session";
+    const agentId = "Codex";
+    const commandLine = listenerCommandLine({ sessionId, agentId });
+    const adjacentAgentCommandLine = listenerCommandLine({ sessionId, agentId: "codex-01" });
+
+    const status = await getListenerProcessStatus(sessionId, agentId, {
+      targetPath: tempRoot,
+      homeDir: tempRoot,
+      _listProcesses: async () => [
+        { pid: 4242, commandLine: `${process.execPath} unrelated-worker.js` },
+        { pid: 4243, commandLine: adjacentAgentCommandLine },
+        { pid: 4343, commandLine },
+      ],
+    });
+
+    assert.equal(status.running, true);
+    assert.equal(status.pid, 4343);
+    assert.equal(status.recordScope, "process_scan");
+    assert.equal(status.untracked, true);
+    assert.equal(status.matchingProcesses.length, 1);
+
+    const matches = await listMatchingListenerProcesses(sessionId, agentId, {
+      _listProcesses: async () => [
+        { pid: process.pid, commandLine },
+        { pid: 4444, commandLine },
+        { pid: 4445, commandLine: adjacentAgentCommandLine },
+      ],
+    });
+    assert.deepEqual(matches.map((match) => match.pid), [4444]);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit listener-process: force cleanup stops every matching untracked listener", async () => {
+  const sessionId = "scan-stop-session";
+  const agentId = "Codex";
+  const children = [
+    spawn(
+      process.execPath,
+      [
+        "-e",
+        "setInterval(() => {}, 1000)",
+        path.join("node_modules", "sentinelayer-cli", "bin", "sl.js"),
+        "session",
+        "listen",
+        "--session",
+        sessionId,
+        "--agent",
+        agentId,
+      ],
+      { stdio: "ignore" },
+    ),
+    spawn(
+      process.execPath,
+      [
+        "-e",
+        "setInterval(() => {}, 1000)",
+        path.join("node_modules", "sentinelayer-cli", "bin", "sl.js"),
+        "session",
+        "listen",
+        "--session",
+        sessionId,
+        "--agent",
+        agentId,
+      ],
+      { stdio: "ignore" },
+    ),
+  ];
+  try {
+    const commandLine = listenerCommandLine({ sessionId, agentId });
+    const result = await stopMatchingListenerProcesses(sessionId, agentId, {
+      timeoutMs: 5000,
+      pollIntervalMs: 50,
+      _listProcesses: async () => children.map((child) => ({ pid: child.pid, commandLine })),
+    });
+
+    assert.equal(result.failedCount, 0);
+    assert.equal(result.stoppedCount, 2);
+    assert.deepEqual(
+      result.results.map((entry) => entry.pid).sort((a, b) => a - b),
+      children.map((child) => child.pid).sort((a, b) => a - b),
+    );
+  } finally {
+    for (const child of children) {
+      if (child.pid) {
+        try {
+          process.kill(child.pid, "SIGTERM");
+        } catch {
+          // Already stopped.
+        }
+      }
+    }
   }
 });
 

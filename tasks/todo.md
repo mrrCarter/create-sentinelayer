@@ -3506,3 +3506,25 @@ Review:
 - [x] Broader proof: `npm run check`, `npm run test:unit`, `npm run docs:build`, `npm pack --dry-run`, `sl review scan --path . --mode diff --json`, and `git diff --check` passed.
 - [x] Local Omar proof: `sl omargate deep --path . --diff --json --max-parallel 2 --max-cost 2 --notify-session 954233b7-1822-42bc-9cfe-1eb95eb0357a` produced `omargate-1782930821804-a35d7048` with deterministic P0/P1/P2/P3 all `0`, reconciled P0/P1/P2/P3 all `0`, and `blocking=false`; AI personas reported `MANAGED_LLM_PROVIDER_QUOTA_EXHAUSTED`, matching the known provider-quota outage.
 
+## 2026-07-03 Room 954 Listener Control-Plane Deduplication
+- [x] Re-check room `954233b7-1822-42bc-9cfe-1eb95eb0357a` for material verifier/user directives and confirm the live listener roster.
+- [x] Reproduce the reliability signal from the exported transcript: material messages are not currently duplicating, but stale/untracked listener processes can emit duplicate control-plane heartbeats.
+- [x] Patch `session listen` singleton detection so untracked same-session/same-agent listener processes are discovered by process-table scan, not only pid files.
+- [x] Patch `session listen --force` so takeover stops every matching same-session/same-agent local listener process before writing a new pid record.
+- [x] Add helper-level and command-level regressions, including an adjacent-agent negative case (`codex` must not match `codex-01`).
+- [x] Run focused tests, `npm run check`, review scan, Omar Gate, and package dry-run before PR.
+- [ ] Open PR, watch hosted gates, merge if clean, and post proof to Senti.
+
+## Initial Findings
+- Room 954 material export showed `0` exact material duplicate groups, `0` duplicate client message IDs, and `0` duplicate idempotency tokens.
+- The same export/control slice showed thousands of listener heartbeats and multiple historical listener IDs for `codex-01`, which can bloat session reads and make any unfiltered surface look noisy or stalled.
+- The existing singleton guard only trusted local/global pid records. Untracked matching listener processes survived restarts and kept emitting presence.
+
+## Review Results
+- Focused helper proof passed: `node --check src\session\listener-process.js`, `node --check src\commands\session.js`, and `node --test tests\unit.session-listener-process.test.mjs` (5/5).
+- Focused command proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-post-agent.test.mjs` (38/38).
+- Broader proof passed: `npm run check` (346 files), `npm run test:unit` (1728/1728), `git diff --check`, and `npm pack --dry-run`.
+- Local review scan passed: `review-scan-diff-20260703-013956.md`, scanned 5 intended files, P1=0, P2=0, blocking=false.
+- Deterministic Omar passed: `review-20260703-014036-948bd927`, P0/P1/P2/P3 all `0`, blocking=false.
+- AI Omar run `omargate-1783042798321-14da0a81` was nonblocking but reported three unsupported P2s. Direct grep showed no production `fetch()` or `spawn()` in `src/session/listener-process.js`; all process-table calls use bounded `execFile` timeouts, and the cited sinon/mockSession evidence does not exist in the touched tests.
+

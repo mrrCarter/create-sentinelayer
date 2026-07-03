@@ -1261,6 +1261,57 @@ test("Unit session listen: refuses duplicate local listener for same session and
   }
 });
 
+test("Unit session listen: refuses untracked duplicate local listener for same session and agent", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-scan-"));
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      "setInterval(() => {}, 1000)",
+      path.join("node_modules", "sentinelayer-cli", "bin", "sl.js"),
+      "session",
+      "listen",
+      "--session",
+      "remote-listen-untracked",
+      "--agent",
+      "Codex",
+    ],
+    { stdio: "ignore" },
+  );
+  try {
+    await seedWorkspace(tempRoot);
+
+    await assert.rejects(
+      runSessionCommand([
+        "session",
+        "listen",
+        "--session",
+        "remote-listen-untracked",
+        "--agent",
+        "Codex",
+        "--path",
+        tempRoot,
+        "--no-coaching",
+      ]),
+      /already running for session remote-listen-untracked as codex/,
+    );
+
+    const record = await readListenerPidRecord("remote-listen-untracked", "Codex", {
+      targetPath: tempRoot,
+    });
+    assert.equal(record, null);
+  } finally {
+    if (child.pid) {
+      try {
+        process.kill(child.pid, "SIGTERM");
+      } catch {
+        // Already stopped.
+      }
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session listen: --log-file writes and rotates listener output", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-log-file-"));
