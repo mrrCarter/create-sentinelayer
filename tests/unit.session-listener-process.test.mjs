@@ -16,6 +16,7 @@ import {
   resolveGlobalListenerPidPath,
   resolveListenerPidPath,
   stopMatchingListenerProcesses,
+  summarizeLocalListenerProcesses,
   writeListenerPidRecord,
 } from "../src/session/listener-process.js";
 import { createSession } from "../src/session/store.js";
@@ -311,6 +312,35 @@ test("Unit listener-process: force cleanup stops every matching untracked listen
       }
     }
   }
+});
+
+test("Unit listener-process: local process summary counts exact agents without command leakage", async () => {
+  const sessionId = "summary-session";
+  const commandLine = listenerCommandLine({ sessionId, agentId: "Codex" });
+  const adjacentAgentCommandLine = listenerCommandLine({ sessionId, agentId: "codex-01" });
+  const firstPid = process.pid + 100_010;
+  const secondPid = process.pid + 100_011;
+  const adjacentPid = process.pid + 100_012;
+
+  const summary = await summarizeLocalListenerProcesses(sessionId, ["Codex", "codex-01"], {
+    _listProcesses: async () => [
+      { pid: process.pid, commandLine },
+      { pid: firstPid, commandLine },
+      { pid: secondPid, commandLine },
+      { pid: adjacentPid, commandLine: adjacentAgentCommandLine },
+    ],
+  });
+
+  assert.equal(summary.processCount, 3);
+  assert.equal(summary.duplicateProcessCount, 1);
+  const codex = summary.agents.find((entry) => entry.agentId === "Codex");
+  const codex01 = summary.agents.find((entry) => entry.agentId === "codex-01");
+  assert.deepEqual(codex.pids, [firstPid, secondPid]);
+  assert.equal(codex.processCount, 2);
+  assert.equal(codex.duplicateProcessCount, 1);
+  assert.deepEqual(codex01.pids, [adjacentPid]);
+  assert.equal(codex01.duplicateProcessCount, 0);
+  assert.equal("commandLine" in codex, false);
 });
 
 test("Unit listener-process: force stop requests SIGTERM and waits for exit", async () => {

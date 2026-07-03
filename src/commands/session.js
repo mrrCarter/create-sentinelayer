@@ -69,6 +69,7 @@ import {
   getListenerProcessStatus,
   removeListenerPidRecord,
   requestListenerProcessStop,
+  summarizeLocalListenerProcesses,
   stopMatchingListenerProcesses,
   writeListenerPidRecord,
 } from "../session/listener-process.js";
@@ -4466,7 +4467,47 @@ export function registerSessionCommand(program) {
         limit,
         maxPages,
       });
-      const listeners = Array.isArray(result.listeners) ? result.listeners : [];
+      let listeners = Array.isArray(result.listeners) ? result.listeners : [];
+      let localProcessScan = {
+        ok: false,
+        reason: listeners.length > 0 ? "not_scanned" : "no_listener_rows",
+        processCount: 0,
+        duplicateProcessCount: 0,
+        agents: [],
+      };
+      if (listeners.length > 0) {
+        try {
+          const summary = await summarizeLocalListenerProcesses(
+            normalizedSessionId,
+            listeners.map((row) => row.agentId),
+          );
+          const byAgent = new Map(summary.agents.map((entry) => [entry.agentId, entry]));
+          listeners = listeners.map((row) => {
+            const local = byAgent.get(row.agentId) || {};
+            const pids = Array.isArray(local.pids) ? local.pids : [];
+            return {
+              ...row,
+              localProcessCount: Number(local.processCount || 0),
+              localDuplicateProcessCount: Number(local.duplicateProcessCount || 0),
+              localProcessPids: pids,
+            };
+          });
+          localProcessScan = {
+            ok: true,
+            processCount: Number(summary.processCount || 0),
+            duplicateProcessCount: Number(summary.duplicateProcessCount || 0),
+            agents: summary.agents,
+          };
+        } catch (error) {
+          localProcessScan = {
+            ok: false,
+            reason: normalizeString(error?.message) || "process_scan_failed",
+            processCount: 0,
+            duplicateProcessCount: 0,
+            agents: [],
+          };
+        }
+      }
       const live = listeners.filter((row) => row.status === "active" || row.status === "idle").length;
       const payload = {
         command: "session listeners",
@@ -4480,6 +4521,7 @@ export function registerSessionCommand(program) {
         listenerEventCount: Number(result.listenerEventCount || 0),
         partial: Boolean(result.partial),
         beforeSequence: result.beforeSequence || null,
+        localProcessScan,
         listeners,
       };
       if (shouldEmitJson(options, command)) {
@@ -4500,6 +4542,16 @@ export function registerSessionCommand(program) {
         if (row.status === "active") console.log(pc.green(`  ${line}`));
         else if (row.status === "idle") console.log(pc.cyan(`  ${line}`));
         else console.log(pc.gray(`  ${line}`));
+      }
+      const duplicateLocalRows = listeners.filter((row) => Number(row.localDuplicateProcessCount || 0) > 0);
+      if (duplicateLocalRows.length > 0) {
+        const summary = duplicateLocalRows
+          .map((row) => `${row.agentId}:${row.localProcessCount}`)
+          .join(", ");
+        console.log(pc.yellow(`Local process warning: multiple matching listener processes detected (${summary}).`));
+        console.log(pc.gray(
+          `Use "sl session listen --session ${normalizedSessionId} --agent <your-agent> --force --from-now" to replace your own duplicate listener; coordinate before touching another agent.`,
+        ));
       }
       return payload;
     });

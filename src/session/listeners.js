@@ -246,5 +246,13 @@ export function formatListenerLine(row) {
         : row.status === "stale"
           ? "◌ stale"
           : "× stopped";
-  return `${statusLabel.padEnd(10)} ${row.agentId.padEnd(24)} cadence=${cadence.padEnd(6)} last_seen=${seen}`;
+  const localProcessCount = Number(row.localProcessCount || 0);
+  const localPids = Array.isArray(row.localProcessPids)
+    ? row.localProcessPids.filter((pid) => Number.isInteger(Number(pid)) && Number(pid) > 0)
+    : [];
+  const local =
+    localProcessCount > 1 && localPids.length > 0
+      ? ` local_pids=${localPids.join(",")}`
+      : "";
+  return `${statusLabel.padEnd(10)} ${row.agentId.padEnd(24)} cadence=${cadence.padEnd(6)} last_seen=${seen}${local}`;
 }

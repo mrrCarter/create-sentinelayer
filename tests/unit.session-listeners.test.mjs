@@ -268,3 +268,16 @@ test("Unit listeners: formatListenerLine renders status, cadence, last-seen", ()
   assert.ok(line.includes("cadence=30s"));
   assert.ok(line.includes("last_seen=10s ago"));
 });
+
+test("Unit listeners: formatListenerLine exposes multiple local listener pids", () => {
+  const line = formatListenerLine({
+    agentId: "codex-01",
+    status: "idle",
+    cadenceSeconds: 45,
+    lastSeenAgoSeconds: 3,
+    localProcessCount: 2,
+    localProcessPids: [1234, 5678],
+  });
+  assert.ok(line.includes("codex-01"));
+  assert.ok(line.includes("local_pids=1234,5678"));
+});
