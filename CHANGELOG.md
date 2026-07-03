@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.3...v0.36.4) (2026-07-03)
+
+
+### Bug Fixes
+
+* **session:** show local listener process matches ([69fd809](https://github.com/mrrCarter/create-sentinelayer/commit/69fd809210ad62a1e7d211d5ef4d4f9570b07375))
+
 ## [0.36.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.2...v0.36.3) (2026-07-03)
 
 
