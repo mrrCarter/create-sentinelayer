@@ -481,37 +481,64 @@ Docs: https://github.com/mrrCarter/create-sentinelayer/blob/main/docs/mcp.md`,
       console.log(pc.gray("Next: validate with registry cross-check before runtime wiring."));
     });
 
-  registry
-    .command("init-session")
-    .description("Write the built-in SentinelLayer session MCP tool registry")
-    .option("--path <path>", "Destination file path override")
-    .option("--output-dir <path>", "Optional artifact output root override")
-    .option("--force", "Overwrite destination file if it already exists")
-    .option("--json", "Emit machine-readable output")
-    .action(async (options, command) => {
-      const defaultPath = await resolveDefaultMcpOutputPath({
-        cwd: process.cwd(),
-        outputDir: options.outputDir,
-        env: process.env,
-      });
-      const outputPath = normalizeOutputPath(options.path, defaultPath.replace(".schema", ".session-tools"));
-      const template = buildSentinelayerSessionRegistryTemplate();
-      validateMcpToolRegistry(template);
-      const writtenPath = await writeJsonFile(outputPath, template, { force: Boolean(options.force) });
-      const payload = {
-        command: "mcp registry init-session",
-        outputPath: writtenPath,
-        toolCount: template.tools.length,
-        tools: template.tools.map((tool) => tool.name),
-      };
+  const registerSessionRegistryInit = ({
+    commandName,
+    description,
+    outputSuffix,
+    payloadCommand,
+    successLabel,
+    nextMessage,
+  }) => {
+    registry
+      .command(commandName)
+      .description(description)
+      .option("--path <path>", "Destination file path override")
+      .option("--output-dir <path>", "Optional artifact output root override")
+      .option("--force", "Overwrite destination file if it already exists")
+      .option("--json", "Emit machine-readable output")
+      .action(async (options, command) => {
+        const defaultPath = await resolveDefaultMcpOutputPath({
+          cwd: process.cwd(),
+          outputDir: options.outputDir,
+          env: process.env,
+        });
+        const outputPath = normalizeOutputPath(options.path, defaultPath.replace(".schema", outputSuffix));
+        const template = buildSentinelayerSessionRegistryTemplate();
+        validateMcpToolRegistry(template);
+        const writtenPath = await writeJsonFile(outputPath, template, { force: Boolean(options.force) });
+        const payload = {
+          command: payloadCommand,
+          outputPath: writtenPath,
+          toolCount: template.tools.length,
+          tools: template.tools.map((tool) => tool.name),
+        };
 
-      if (shouldEmitJson(options, command)) {
-        console.log(JSON.stringify(payload, null, 2));
-        return;
-      }
-      console.log(pc.green(`Wrote SentinelLayer session MCP registry template: ${writtenPath}`));
-      console.log(pc.gray("Next: run 'sl mcp server init --id sentinelayer-session --registry-file <path>'."));
-    });
+        if (shouldEmitJson(options, command)) {
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
+        console.log(pc.green(`Wrote ${successLabel}: ${writtenPath}`));
+        console.log(pc.gray(nextMessage));
+      });
+  };
+
+  registerSessionRegistryInit({
+    commandName: "init-session",
+    description: "Write the built-in SentinelLayer session MCP tool registry",
+    outputSuffix: ".session-tools",
+    payloadCommand: "mcp registry init-session",
+    successLabel: "SentinelLayer session MCP registry template",
+    nextMessage: "Next: run 'sl mcp server init --id sentinelayer-session --registry-file <path>'.",
+  });
+
+  registerSessionRegistryInit({
+    commandName: "init-senti-session",
+    description: "Write the built-in Senti session MCP tool registry",
+    outputSuffix: ".senti-session-tools",
+    payloadCommand: "mcp registry init-senti-session",
+    successLabel: "Senti session MCP registry template",
+    nextMessage: "Next: run 'sl mcp registry init-hosted-session-connector --registry-file <path>' for hosted MCP.",
+  });
 
   registry
     .command("init-hosted-session-connector")
