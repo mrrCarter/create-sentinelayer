@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.37.0...v0.37.1) (2026-07-03)
+
+
+### Bug Fixes
+
+* **session:** ground recaps on active fix plan ([93f3ea5](https://github.com/mrrCarter/create-sentinelayer/commit/93f3ea518d38f9061855c659ba862f6e1dcd989c))
+
 ## [0.37.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.5...v0.37.0) (2026-07-03)
 
 
