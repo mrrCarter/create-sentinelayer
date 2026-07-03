@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.2...v0.36.3) (2026-07-03)
+
+
+### Bug Fixes
+
+* **session:** detect untracked duplicate listeners ([#746](https://github.com/mrrCarter/create-sentinelayer/issues/746)) ([3da79c2](https://github.com/mrrCarter/create-sentinelayer/commit/3da79c25abdd2160a9a2db5ce1e3963bf7a11a8d))
+
 ## [0.36.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.1...v0.36.2) (2026-07-03)
 
 
