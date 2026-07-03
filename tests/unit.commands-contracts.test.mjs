@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { Command } from "commander";
 
@@ -23,6 +23,7 @@ import {
 import { registerOmarGateCommand } from "../src/commands/omargate.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
+import { validateMcpToolRegistry } from "../src/mcp/registry.js";
 
 function buildProgram(registerFn) {
   const program = new Command();
@@ -327,6 +328,7 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
 
   getCommandByPath(program, "mcp token mint");
   getCommandByPath(program, "mcp registry init-session");
+  getCommandByPath(program, "mcp registry init-senti-session");
   getCommandByPath(program, "mcp registry init-hosted-session-connector");
   getCommandByPath(program, "mcp registry init-cli");
   getCommandByPath(program, "mcp registry validate-hosted-session-connector");
@@ -356,6 +358,12 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   assertCommandHasOption(initSession, "--force");
   assertCommandHasOption(initSession, "--json");
 
+  const initSentiSession = getCommandByPath(program, "mcp registry init-senti-session");
+  assertCommandHasOption(initSentiSession, "--path <path>");
+  assertCommandHasOption(initSentiSession, "--output-dir <path>");
+  assertCommandHasOption(initSentiSession, "--force");
+  assertCommandHasOption(initSentiSession, "--json");
+
   const initHostedSession = getCommandByPath(program, "mcp registry init-hosted-session-connector");
   assertCommandHasOption(initHostedSession, "--registry-file <path>");
   assertCommandHasOption(initHostedSession, "--path <path>");
@@ -378,6 +386,56 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
   assertCommandHasOption(serverRun, "--config <path>");
   assertCommandHasOption(serverRun, "--path <path>");
   assertCommandHasOption(serverRun, "--framing <mode>");
+});
+
+test("Unit command contracts: mcp init-senti-session writes a validated Senti registry", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sl-mcp-senti-session-"));
+  const outputPath = path.join(tempRoot, "tool-registry.senti-session-tools.json");
+  const stdout = [];
+  const stderr = [];
+  const program = new Command();
+  program
+    .name("sl")
+    .exitOverride()
+    .configureOutput({
+      writeOut: (value) => stdout.push(value),
+      writeErr: (value) => stderr.push(value),
+    });
+  registerMcpCommand(program);
+  t.mock.method(console, "log", (value = "") => {
+    stdout.push(String(value));
+  });
+
+  try {
+    await program.parseAsync(["mcp", "registry", "init-senti-session", "--path", outputPath, "--json"], {
+      from: "user",
+    });
+
+    assert.equal(stderr.join(""), "");
+    const payload = JSON.parse(stdout.join("").trim());
+    assert.equal(payload.command, "mcp registry init-senti-session");
+    assert.equal(payload.outputPath, outputPath);
+    assert.equal(payload.toolCount, 10);
+    assert.equal(payload.tools.includes("poll_inbox"), true);
+    assert.equal(payload.tools.includes("read_history"), true);
+    assert.equal(payload.tools.includes("send_message"), true);
+
+    const registry = validateMcpToolRegistry(JSON.parse(await readFile(outputPath, "utf-8")));
+    const tools = new Set(registry.tools.map((tool) => tool.name));
+    assert.equal(tools.has("poll_inbox"), true);
+    assert.equal(tools.has("attention_request"), true);
+
+    stdout.length = 0;
+    await assert.rejects(
+      () =>
+        program.parseAsync(["mcp", "registry", "init-senti-session", "--path", outputPath, "--json"], {
+          from: "user",
+        }),
+      /already exists/i
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("Unit command contracts: session exposes D2 ensure and resume controls", () => {

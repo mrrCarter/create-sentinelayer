@@ -30,6 +30,7 @@ test("Unit MCP CLI registry: generated registry validates and exposes known CLI 
   assert.ok(parsed.tools.length > 40);
   assert.equal(names.has("sl.session.say"), true);
   assert.equal(names.has("sl.mcp.registry.init-session"), true);
+  assert.equal(names.has("sl.mcp.registry.init-senti-session"), true);
   assert.equal(names.has("sl.audit.local"), true);
 });
 
@@ -58,6 +59,19 @@ test("Unit MCP CLI registry: init-session schema records bridge command metadata
   assert.equal(tool.description, "Write the built-in SentinelLayer session MCP tool registry");
   assert.deepEqual(tool.metadata.argv, ["mcp", "registry", "init-session"]);
   assert.equal(tool.metadata.command, "mcp registry init-session");
+  assert.equal(tool.metadata.generated_from, "commander");
+  assert.equal(tool.input_schema.properties.path.type, "string");
+  assert.equal(tool.input_schema.properties.force.type, "boolean");
+  assert.equal(tool.input_schema.properties.json.type, "boolean");
+});
+
+test("Unit MCP CLI registry: init-senti-session schema records discoverable Senti command metadata", async () => {
+  const registry = await buildRegistry();
+  const tool = getTool(registry, "sl.mcp.registry.init-senti-session");
+
+  assert.equal(tool.description, "Write the built-in Senti session MCP tool registry");
+  assert.deepEqual(tool.metadata.argv, ["mcp", "registry", "init-senti-session"]);
+  assert.equal(tool.metadata.command, "mcp registry init-senti-session");
   assert.equal(tool.metadata.generated_from, "commander");
   assert.equal(tool.input_schema.properties.path.type, "string");
   assert.equal(tool.input_schema.properties.force.type, "boolean");
