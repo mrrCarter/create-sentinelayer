@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.5...v0.37.0) (2026-07-03)
+
+
+### Features
+
+* **mcp:** add Senti session registry command ([#753](https://github.com/mrrCarter/create-sentinelayer/issues/753)) ([9220835](https://github.com/mrrCarter/create-sentinelayer/commit/92208354efb90628b6aa51b78b1a325b7576eee1))
+
 ## [0.36.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.4...v0.36.5) (2026-07-03)
 
 
