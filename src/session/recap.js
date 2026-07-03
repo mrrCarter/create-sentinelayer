@@ -23,6 +23,7 @@ const DEFAULT_WORK_PLAN_SUMMARY_LIMIT = 5;
 const DEFAULT_ACTIVITY_SNIPPET_MAX_CHARS = 120;
 const MAX_WORK_PLAN_BYTES = 128_000;
 const WORK_PLAN_RELATIVE_PATH = "tasks/todo.md";
+const ACTIVE_WORK_PLAN_FILE_PATTERN = /^reconciled-fix-plan-\d{4}-\d{2}-\d{2}\.md$/;
 const HISTORICAL_WORK_PLAN_MIN_COMPLETED = 25;
 const HISTORICAL_WORK_PLAN_MIN_TOTAL = 50;
 const HISTORICAL_WORK_PLAN_COMPLETED_RATIO = 0.75;
@@ -91,18 +92,22 @@ function normalizePositiveInteger(value, fallbackValue) {
   return Math.max(1, Math.floor(normalized));
 }
 
-function buildWorkPlanSourceContext(targetPath = process.cwd(), { sourceReason = "caller_target_path" } = {}) {
+function buildWorkPlanSourceContext(
+  targetPath = process.cwd(),
+  { sourceReason = "caller_target_path", relativePath = WORK_PLAN_RELATIVE_PATH } = {},
+) {
   const workspacePath = path.resolve(String(targetPath || "."));
   const workspaceLabel = normalizeString(path.basename(workspacePath)) || ".";
   const workspaceFingerprint = createHash("sha256")
     .update(workspacePath)
     .digest("hex")
     .slice(0, 8);
-  const sourceLabel = `${WORK_PLAN_RELATIVE_PATH} from ${workspaceLabel}#${workspaceFingerprint}`;
+  const normalizedRelativePath = normalizeString(relativePath) || WORK_PLAN_RELATIVE_PATH;
+  const sourceLabel = `${normalizedRelativePath} from ${workspaceLabel}#${workspaceFingerprint}`;
   return {
     workspacePath,
-    filePath: path.join(workspacePath, WORK_PLAN_RELATIVE_PATH),
-    path: WORK_PLAN_RELATIVE_PATH,
+    filePath: path.join(workspacePath, normalizedRelativePath),
+    path: normalizedRelativePath,
     workspaceLabel,
     workspaceFingerprint,
     sourceLabel,
@@ -559,6 +564,37 @@ function selectActionableWorkPlanOpenRecords(records = [], { limit = DEFAULT_WOR
   return selected.slice(-Math.max(1, normalizePositiveInteger(limit, DEFAULT_WORK_PLAN_SUMMARY_LIMIT)));
 }
 
+function parseMarkdownTableCells(line = "") {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) {
+    return [];
+  }
+  const cells = trimmed
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => shortWorkPlanText(cell));
+  if (cells.length === 0 || cells.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+    return [];
+  }
+  return cells;
+}
+
+function isCompletedPairProgrammingRow(cells = []) {
+  const joined = cells.map((cell) => normalizeString(cell).toLowerCase()).join(" ");
+  return /\bclosed\b/.test(joined) || /\bfully closed\b/.test(joined);
+}
+
+function pairProgrammingRowTask(cells = []) {
+  const lane = normalizeString(cells[0]);
+  const state = normalizeString(cells[3]);
+  const gate = normalizeString(cells[4]);
+  if (!lane || lane.toLowerCase() === "lane") {
+    return "";
+  }
+  const detail = state || gate;
+  return shortWorkPlanText(detail ? `${lane}: ${detail}` : lane);
+}
+
 function formatWorkPlanOpenItems(items = []) {
   return (Array.isArray(items) ? items : [])
     .map((item) => {
@@ -593,6 +629,25 @@ function summarizeWorkPlanMarkdown(
 
     const taskMatch = /^\s*[-*]\s+\[([ xX])\]\s+(.+?)\s*$/.exec(line);
     if (!taskMatch) {
+      if (/pair-programming matrix/i.test(section)) {
+        const cells = parseMarkdownTableCells(line);
+        const task = pairProgrammingRowTask(cells);
+        if (task) {
+          const record = {
+            status: isCompletedPairProgrammingRow(cells) ? "completed" : "open",
+            section,
+            task,
+          };
+          records.push(record);
+          summary.total += 1;
+          if (record.status === "completed") {
+            summary.completed += 1;
+          } else {
+            summary.open += 1;
+          }
+          summary.currentSection = section || summary.currentSection;
+        }
+      }
       continue;
     }
     const completed = taskMatch[1].toLowerCase() === "x";
@@ -631,12 +686,28 @@ function summarizeWorkPlanMarkdown(
   return summary;
 }
 
-async function readWorkPlanSummary({
-  targetPath = process.cwd(),
-  limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT,
-  sourceReason = "caller_target_path",
-} = {}) {
-  const sourceContext = buildWorkPlanSourceContext(targetPath, { sourceReason });
+async function findActiveWorkPlanSourceContext(targetPath = process.cwd(), { sourceReason = "caller_target_path" } = {}) {
+  const workspacePath = path.resolve(String(targetPath || "."));
+  const tasksPath = path.join(workspacePath, "tasks");
+  try {
+    const entries = await fsp.readdir(tasksPath, { withFileTypes: true });
+    const candidates = entries
+      .filter((entry) => entry.isFile() && ACTIVE_WORK_PLAN_FILE_PATTERN.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a));
+    if (candidates.length === 0) {
+      return null;
+    }
+    return buildWorkPlanSourceContext(targetPath, {
+      sourceReason,
+      relativePath: path.posix.join("tasks", candidates[0]),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function readWorkPlanSummaryFromSource(sourceContext, { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT } = {}) {
   try {
     const stats = await fsp.stat(sourceContext.filePath);
     let source = "";
@@ -666,6 +737,24 @@ async function readWorkPlanSummary({
     }
     return emptyWorkPlanSummary(sourceContext);
   }
+}
+
+async function readWorkPlanSummary({
+  targetPath = process.cwd(),
+  limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT,
+  sourceReason = "caller_target_path",
+} = {}) {
+  const activePlanContext = await findActiveWorkPlanSourceContext(targetPath, { sourceReason });
+  if (activePlanContext) {
+    const activePlanSummary = await readWorkPlanSummaryFromSource(activePlanContext, { limit });
+    if (activePlanSummary.exists && Number(activePlanSummary.total || 0) > 0) {
+      return activePlanSummary;
+    }
+  }
+  return readWorkPlanSummaryFromSource(
+    buildWorkPlanSourceContext(targetPath, { sourceReason }),
+    { limit },
+  );
 }
 
 function summarizeTaskLedger(tasks = [], { limit = DEFAULT_TASK_SUMMARY_LIMIT } = {}) {
