@@ -299,6 +299,65 @@ test("Unit session recap: includes workspace todo plan grounding", async () => {
   }
 });
 
+test("Unit session recap: prefers reconciled fix plan lane matrix over stale todo backlog", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-reconciled-plan-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+    await writeFile(
+      path.join(tempRoot, "tasks", "todo.md"),
+      [
+        "# Historical Backlog",
+        "",
+        "## Plan",
+        "- [ ] WI-5: Deploy stale web release tag",
+        "- [ ] WI-6: Record stale CLI publish blocker note",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    await writeFile(
+      path.join(tempRoot, "tasks", "reconciled-fix-plan-2026-07-03.md"),
+      [
+        "# Reconciled Fix Plan",
+        "",
+        "## Pair-Programming Matrix",
+        "",
+        "| Lane | Driver | Challenger / reviewer | Current state | Merge / done gate |",
+        "| --- | --- | --- | --- | --- |",
+        "| PR2 - AIdenID #463 install-free quickstart | codex-01 | codex-senti-product | Merged; exact-main gates still running | Done after exact-main closeout |",
+        "| PR8A - SwarmBots-base #256 Omar workflow contract guard | codex-senti-product | codex-01 | Merged; exact-main gates are green | Closed as enforcement-only |",
+        "| PR9 - Senti long-room UX / recap hardening | codex-senti-product | codex-01 + Claude/Warden | Active next lane; recap grounding first | Browser/CLI proof on room-954-class transcript |",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(
+      recap.text,
+      /Workspace plan: 2 open \/ 1 done in tasks\/reconciled-fix-plan-2026-07-03\.md from create-sentinelayer-session-reconciled-plan-[^#]+#[a-f0-9]{8} \(session_metadata_target_path\)/,
+    );
+    assert.match(recap.text, /Current: Pair-Programming Matrix/);
+    assert.match(recap.text, /PR2 - AIdenID #463 install-free quickstart/);
+    assert.match(recap.text, /PR9 - Senti long-room UX \/ recap hardening/);
+    assert.doesNotMatch(recap.text, /WI-5: Deploy stale web/);
+    assert.equal(recap.summary.workPlan.path, "tasks/reconciled-fix-plan-2026-07-03.md");
+    assert.equal(recap.summary.workPlan.total, 3);
+    assert.equal(recap.summary.workPlan.open, 2);
+    assert.equal(recap.summary.workPlan.completed, 1);
+    assert.equal(recap.summary.workPlan.currentSection, "Pair-Programming Matrix");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: reads todo plan from session workspace metadata, not caller cache path", async () => {
   const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-cache-"));
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-workspace-"));
