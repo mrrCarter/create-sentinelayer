@@ -484,6 +484,7 @@ function emptyWorkPlanSummary(sourceContext = {}) {
     completed: 0,
     currentSection: "",
     recentOpen: [],
+    actionableOpen: [],
     recent: [],
   };
 }
@@ -534,6 +535,41 @@ function shouldSuppressHistoricalWorkPlanDetails(summary = emptyWorkPlanSummary(
   return completed / Math.max(1, total) >= HISTORICAL_WORK_PLAN_COMPLETED_RATIO;
 }
 
+function isActionableWorkPlanOpenRecord(record = {}) {
+  if (!record || typeof record !== "object" || record.status !== "open") {
+    return false;
+  }
+  const task = normalizeString(record.task);
+  if (!task) {
+    return false;
+  }
+  return !isGenericWorkPlanSection(record.section);
+}
+
+function selectActionableWorkPlanOpenRecords(records = [], { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT } = {}) {
+  const actionable = (Array.isArray(records) ? records : []).filter(isActionableWorkPlanOpenRecord);
+  if (actionable.length === 0) {
+    return [];
+  }
+  const latest = actionable[actionable.length - 1];
+  const latestSection = normalizeString(latest.section);
+  const selected = latestSection
+    ? actionable.filter((record) => normalizeString(record.section) === latestSection)
+    : actionable;
+  return selected.slice(-Math.max(1, normalizePositiveInteger(limit, DEFAULT_WORK_PLAN_SUMMARY_LIMIT)));
+}
+
+function formatWorkPlanOpenItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const section = normalizeString(item.section);
+      const task = normalizeString(item.task);
+      return section ? `${section} - ${task}` : task;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
 function summarizeWorkPlanMarkdown(
   raw = "",
   { limit = DEFAULT_WORK_PLAN_SUMMARY_LIMIT, truncated = false, sourceContext = {} } = {}
@@ -582,6 +618,7 @@ function summarizeWorkPlanMarkdown(
   summary.recentOpen = records
     .filter((record) => record.status === "open")
     .slice(-normalizedLimit);
+  summary.actionableOpen = selectActionableWorkPlanOpenRecords(records, { limit: normalizedLimit });
   summary.recent = records.slice(-normalizedLimit);
   if (!summary.detailSuppressed && shouldSuppressHistoricalWorkPlanDetails(summary)) {
     summary.detailSuppressed = true;
@@ -869,10 +906,17 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
     const sourceWindowText = workPlan.truncated
       ? `recent ${sourceText} window`
       : sourceText;
+    const actionableText = formatWorkPlanOpenItems(workPlan.actionableOpen);
     const suppressionText =
       suppressionReason === "historical_generic_plan_section"
         ? "Current/next items suppressed because this generic plan is mostly historical completed work."
         : "Current/next items suppressed because the plan file is large.";
+    if (actionableText) {
+      const limitText = workPlan.truncated
+        ? "Full current/next scan suppressed because the plan file is large."
+        : suppressionText;
+      return `Workspace plan: ${open} open / ${completed} done in ${sourceWindowText}${sourceReasonText}. Recent open: ${actionableText}. ${limitText}`;
+    }
     return `Workspace plan: ${open} open / ${completed} done in ${sourceWindowText}${sourceReasonText}. ${suppressionText}`;
   }
   const currentSection = normalizeString(workPlan.currentSection);
@@ -880,14 +924,7 @@ function buildWorkPlanText(workPlan = emptyWorkPlanSummary()) {
   const recentOpen = Array.isArray(workPlan.recentOpen) ? workPlan.recentOpen : [];
   const nextText =
     recentOpen.length > 0
-      ? ` Next: ${recentOpen
-          .map((item) => {
-            const section = normalizeString(item.section);
-            const task = normalizeString(item.task);
-            return section ? `${section} - ${task}` : task;
-          })
-          .filter(Boolean)
-          .join("; ")}.`
+      ? ` Next: ${formatWorkPlanOpenItems(recentOpen)}.`
       : "";
   const truncatedText = workPlan.truncated ? " Recent window only." : "";
   return `Workspace plan: ${open} open / ${completed} done in ${sourceText}${sourceReasonText}.${currentText}${nextText}${truncatedText}`;
