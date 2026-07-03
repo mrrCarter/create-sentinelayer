@@ -431,6 +431,66 @@ test("Unit session recap: suppresses current and next details for truncated todo
   }
 });
 
+test("Unit session recap: surfaces recent actionable lane while suppressing stale generic plan details", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-actionable-plan-recap-"));
+  try {
+    await seedWorkspace(tempRoot);
+    await mkdir(path.join(tempRoot, "tasks"), { recursive: true });
+
+    const lines = ["# Historical Dogfood Plan", ""];
+    for (let index = 0; index < 6_000; index += 1) {
+      lines.push(
+        `- [x] Old shipped item ${index} ${"already shipped and should not become live recap context ".repeat(2)}`,
+      );
+    }
+    lines.push(
+      "",
+      "## 2026-07-01 Room 954 Old Lane",
+      "- [ ] Review stale historical lane that should not be current.",
+      "",
+      "## 2026-07-02 Room 954 API Rescue / Session UX Loop",
+      "- [ ] Next reliability lane: continue duplicate/session-loading backlog after #690.",
+      "",
+      "## Plan",
+      "- [ ] WI-5: Deploy stale web release tag",
+      "- [ ] WI-6: Record stale CLI publish blocker note",
+    );
+    await writeFile(path.join(tempRoot, "tasks", "todo.md"), lines.join("\n"), "utf-8");
+
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+
+    const recap = await buildSessionRecap(session.sessionId, {
+      forAgentId: "codex",
+      targetPath: tempRoot,
+      nowIso: "2026-05-19T09:03:00.000Z",
+    });
+
+    assert.match(recap.text, /Recent open: 2026-07-02 Room 954 API Rescue \/ Session UX Loop - Next reliability lane/);
+    assert.match(recap.text, /Full current\/next scan suppressed because the plan file is large/);
+    assert.doesNotMatch(recap.text, /Current: Plan/);
+    assert.doesNotMatch(recap.text, /Next:/);
+    assert.doesNotMatch(recap.text, /Review stale historical lane/);
+    assert.doesNotMatch(recap.text, /WI-5: Deploy stale web/);
+    assert.equal(recap.summary.workPlan.exists, true);
+    assert.equal(recap.summary.workPlan.truncated, true);
+    assert.equal(recap.summary.workPlan.detailSuppressed, true);
+    assert.equal(recap.summary.workPlan.detailSuppressionReason, "large_plan_recent_window");
+    assert.equal(recap.summary.workPlan.currentSection, "");
+    assert.deepEqual(recap.summary.workPlan.recentOpen, []);
+    assert.equal(recap.summary.workPlan.actionableOpen.length, 1);
+    assert.equal(
+      recap.summary.workPlan.actionableOpen[0].section,
+      "2026-07-02 Room 954 API Rescue / Session UX Loop",
+    );
+    assert.equal(
+      recap.summary.workPlan.actionableOpen[0].task,
+      "Next reliability lane: continue duplicate/session-loading backlog after #690.",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session recap: suppresses current and next details for historical generic todo plans", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-historical-plan-recap-"));
   try {
