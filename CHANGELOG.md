@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.1...v0.36.2) (2026-07-03)
+
+
+### Bug Fixes
+
+* **session:** surface actionable recap lanes ([58e2a29](https://github.com/mrrCarter/create-sentinelayer/commit/58e2a29da7c076834c0bd16bf23248ad2e0a14c1))
+* **session:** surface actionable recap lanes ([e37459e](https://github.com/mrrCarter/create-sentinelayer/commit/e37459ef7dd3970878c7286d5b3e4bf542c4b32f))
+
 ## [0.36.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.0...v0.36.1) (2026-07-02)
 
 
