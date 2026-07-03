@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.5](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.4...v0.36.5) (2026-07-03)
+
+
+### Bug Fixes
+
+* **deps:** resolve lighthouse audit cluster ([#751](https://github.com/mrrCarter/create-sentinelayer/issues/751)) ([268af7e](https://github.com/mrrCarter/create-sentinelayer/commit/268af7ebe39924f0ceef1b7f3d49d9d3e577dbef))
+
 ## [0.36.4](https://github.com/mrrCarter/create-sentinelayer/compare/v0.36.3...v0.36.4) (2026-07-03)
 
 
