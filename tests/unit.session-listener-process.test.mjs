@@ -217,19 +217,23 @@ test("Unit listener-process: process scan detects untracked duplicate listener",
     const agentId = "Codex";
     const commandLine = listenerCommandLine({ sessionId, agentId });
     const adjacentAgentCommandLine = listenerCommandLine({ sessionId, agentId: "codex-01" });
+    const unrelatedPid = process.pid + 100_000;
+    const adjacentPid = process.pid + 100_001;
+    const duplicatePid = process.pid + 100_002;
+    const extraDuplicatePid = process.pid + 100_003;
 
     const status = await getListenerProcessStatus(sessionId, agentId, {
       targetPath: tempRoot,
       homeDir: tempRoot,
       _listProcesses: async () => [
-        { pid: 4242, commandLine: `${process.execPath} unrelated-worker.js` },
-        { pid: 4243, commandLine: adjacentAgentCommandLine },
-        { pid: 4343, commandLine },
+        { pid: unrelatedPid, commandLine: `${process.execPath} unrelated-worker.js` },
+        { pid: adjacentPid, commandLine: adjacentAgentCommandLine },
+        { pid: duplicatePid, commandLine },
       ],
     });
 
     assert.equal(status.running, true);
-    assert.equal(status.pid, 4343);
+    assert.equal(status.pid, duplicatePid);
     assert.equal(status.recordScope, "process_scan");
     assert.equal(status.untracked, true);
     assert.equal(status.matchingProcesses.length, 1);
@@ -237,11 +241,11 @@ test("Unit listener-process: process scan detects untracked duplicate listener",
     const matches = await listMatchingListenerProcesses(sessionId, agentId, {
       _listProcesses: async () => [
         { pid: process.pid, commandLine },
-        { pid: 4444, commandLine },
-        { pid: 4445, commandLine: adjacentAgentCommandLine },
+        { pid: extraDuplicatePid, commandLine },
+        { pid: adjacentPid, commandLine: adjacentAgentCommandLine },
       ],
     });
-    assert.deepEqual(matches.map((match) => match.pid), [4444]);
+    assert.deepEqual(matches.map((match) => match.pid), [extraDuplicatePid]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
