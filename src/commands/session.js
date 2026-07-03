@@ -69,6 +69,7 @@ import {
   getListenerProcessStatus,
   removeListenerPidRecord,
   requestListenerProcessStop,
+  stopMatchingListenerProcesses,
   writeListenerPidRecord,
 } from "../session/listener-process.js";
 import {
@@ -4752,10 +4753,26 @@ export function registerSessionCommand(program) {
           );
         }
         if (existingListener.running && options.force) {
-          const stopResult = await requestListenerProcessStop(existingListener.pid);
-          if (!stopResult.stopped) {
+          const stopMatchesResult = await stopMatchingListenerProcesses(normalizedSessionId, agentId);
+          const stoppedPids = new Set(
+            stopMatchesResult.results
+              .filter((result) => result.stopped)
+              .map((result) => Number(result.pid)),
+          );
+          let explicitStopResult = null;
+          if (existingListener.pid && !stoppedPids.has(Number(existingListener.pid))) {
+            explicitStopResult = await requestListenerProcessStop(existingListener.pid);
+          }
+          const failedStops = [
+            ...stopMatchesResult.failed,
+            ...(explicitStopResult && !explicitStopResult.stopped
+              ? [{ pid: existingListener.pid, ...explicitStopResult }]
+              : []),
+          ];
+          if (failedStops.length > 0) {
+            const failed = failedStops[0];
             throw new Error(
-              `Unable to stop existing listener pid ${existingListener.pid} for session ${normalizedSessionId} as ${agentId} (${stopResult.reason}). Stop it manually or use --allow-duplicate if parallel listeners are intentional.`,
+              `Unable to stop existing listener pid ${failed.pid || existingListener.pid} for session ${normalizedSessionId} as ${agentId} (${failed.reason}). Stop it manually or use --allow-duplicate if parallel listeners are intentional.`,
             );
           }
         }

@@ -30,20 +30,120 @@ function normalizeCommandLine(value) {
   return normalizeString(value).toLowerCase();
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function commandLineFlagValueMatches(commandLine, flagName, expectedValue) {
+  const expected = normalizeString(expectedValue).toLowerCase();
+  if (!expected) return { found: false, matches: true };
+  const pattern = new RegExp(
+    `(?:^|\\s)--${escapeRegExp(flagName)}(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|([^\\s]+))`,
+    "gi",
+  );
+  let found = false;
+  for (const match of commandLine.matchAll(pattern)) {
+    found = true;
+    const value = normalizeString(match[1] ?? match[2] ?? match[3]).toLowerCase();
+    if (value === expected) {
+      return { found: true, matches: true };
+    }
+  }
+  return { found, matches: false };
+}
+
 function listenerCommandLineMatches(commandLine, { sessionId = "", agentId = "" } = {}) {
-  const normalized = normalizeCommandLine(commandLine);
+  const rawCommandLine = normalizeString(commandLine);
+  const normalized = normalizeCommandLine(rawCommandLine);
   if (!normalized) return false;
   const normalizedSessionId = normalizeString(sessionId).toLowerCase();
   const normalizedAgentId = normalizeString(agentId).toLowerCase();
   const hasCliEntry =
     normalized.includes("sentinelayer-cli") ||
     /[\\/](?:sl|sentinelayer-cli)\.js\b/.test(normalized);
+  const sessionFlagMatch = commandLineFlagValueMatches(rawCommandLine, "session", normalizedSessionId);
+  const agentFlagMatch = commandLineFlagValueMatches(rawCommandLine, "agent", normalizedAgentId);
   return (
     hasCliEntry &&
     normalized.includes("session") &&
     normalized.includes("listen") &&
-    (!normalizedSessionId || normalized.includes(normalizedSessionId)) &&
-    (!normalizedAgentId || normalized.includes(normalizedAgentId))
+    (!normalizedSessionId ||
+      (sessionFlagMatch.found
+        ? sessionFlagMatch.matches
+        : normalized.includes(normalizedSessionId))) &&
+    (!normalizedAgentId ||
+      (agentFlagMatch.found
+        ? agentFlagMatch.matches
+        : normalized.includes(normalizedAgentId)))
+  );
+}
+
+function normalizeProcessRows(rows = []) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => ({
+      pid: Number(row?.pid ?? row?.ProcessId ?? row?.processId),
+      commandLine: normalizeString(row?.commandLine ?? row?.CommandLine ?? row?.command ?? row?.args),
+    }))
+    .filter((row) => Number.isInteger(row.pid) && row.pid > 0 && row.commandLine);
+}
+
+async function listWindowsProcesses() {
+  const command = [
+    "$ErrorActionPreference = 'Stop';",
+    "$rows = Get-CimInstance Win32_Process |",
+    "Where-Object { $_.CommandLine -and ($_.CommandLine -match 'sentinelayer-cli|[\\\\/](sl|sentinelayer-cli)\\.js') } |",
+    "Select-Object ProcessId,CommandLine;",
+    "if ($rows) { $rows | ConvertTo-Json -Compress }",
+  ].join(" ");
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", command],
+    { windowsHide: true, timeout: 3000, maxBuffer: 10 * 1024 * 1024 },
+  );
+  const text = normalizeString(stdout);
+  if (!text) return [];
+  const parsed = JSON.parse(text);
+  return normalizeProcessRows(Array.isArray(parsed) ? parsed : [parsed]);
+}
+
+async function listPosixProcesses() {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,command="], {
+    timeout: 3000,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return String(stdout || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      return match ? { pid: Number(match[1]), commandLine: normalizeString(match[2]) } : null;
+    })
+    .filter(Boolean);
+}
+
+async function listProcessTable() {
+  try {
+    return process.platform === "win32"
+      ? await listWindowsProcesses()
+      : await listPosixProcesses();
+  } catch {
+    return [];
+  }
+}
+
+export async function listMatchingListenerProcesses(
+  sessionId,
+  agentId,
+  {
+    excludePid = process.pid,
+    _listProcesses = listProcessTable,
+  } = {},
+) {
+  const rows = normalizeProcessRows(await _listProcesses());
+  const excluded = Number(excludePid);
+  return rows.filter((row) =>
+    row.pid !== excluded &&
+    listenerCommandLineMatches(row.commandLine, { sessionId, agentId })
   );
 }
 
@@ -276,6 +376,7 @@ export async function getListenerProcessStatus(
     targetPath = process.cwd(),
     homeDir = os.homedir(),
     _readProcessCommandLine = readProcessCommandLine,
+    _listProcesses = listProcessTable,
   } = {},
 ) {
   const records = [
@@ -302,6 +403,22 @@ export async function getListenerProcessStatus(
     }
     staleStatuses.push(status);
   }
+  const matchingProcesses = await listMatchingListenerProcesses(sessionId, agentId, {
+    _listProcesses,
+  });
+  if (matchingProcesses.length > 0) {
+    return {
+      running: true,
+      pid: matchingProcesses[0].pid,
+      stale: false,
+      record: null,
+      recordScope: "process_scan",
+      untracked: true,
+      listenerKey: normalizeListenerProcessKey(agentId),
+      commandLine: matchingProcesses[0].commandLine,
+      matchingProcesses,
+    };
+  }
   if (staleStatuses.length === 0) {
     return {
       running: false,
@@ -312,6 +429,42 @@ export async function getListenerProcessStatus(
     };
   }
   return staleStatuses[0];
+}
+
+export async function stopMatchingListenerProcesses(
+  sessionId,
+  agentId,
+  {
+    excludePid = process.pid,
+    timeoutMs = 3000,
+    pollIntervalMs = 100,
+    _listProcesses = listProcessTable,
+  } = {},
+) {
+  const matches = await listMatchingListenerProcesses(sessionId, agentId, {
+    excludePid,
+    _listProcesses,
+  });
+  const results = [];
+  for (const match of matches) {
+    const result = await requestListenerProcessStop(match.pid, {
+      timeoutMs,
+      pollIntervalMs,
+    });
+    results.push({
+      pid: match.pid,
+      commandLine: match.commandLine,
+      ...result,
+    });
+  }
+  const failed = results.filter((result) => !result.stopped);
+  return {
+    matches,
+    results,
+    stoppedCount: results.filter((result) => result.stopped).length,
+    failedCount: failed.length,
+    failed,
+  };
 }
 
 export async function requestListenerProcessStop(
