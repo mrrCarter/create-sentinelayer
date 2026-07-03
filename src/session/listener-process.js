@@ -147,6 +147,44 @@ export async function listMatchingListenerProcesses(
   );
 }
 
+export async function summarizeLocalListenerProcesses(
+  sessionId,
+  agentIds = [],
+  {
+    excludePid = process.pid,
+    _listProcesses = listProcessTable,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const uniqueAgentIds = [...new Set((Array.isArray(agentIds) ? agentIds : [])
+    .map((agentId) => normalizeString(agentId))
+    .filter(Boolean))];
+  const rows = normalizeProcessRows(await _listProcesses());
+  const excluded = Number(excludePid);
+  const candidates = rows.filter((row) => row.pid !== excluded);
+  const agents = uniqueAgentIds.map((agentId) => {
+    const matches = candidates
+      .filter((row) => listenerCommandLineMatches(row.commandLine, {
+        sessionId: normalizedSessionId,
+        agentId,
+      }))
+      .sort((a, b) => a.pid - b.pid);
+    const pids = matches.map((match) => match.pid);
+    return {
+      agentId,
+      processCount: pids.length,
+      duplicateProcessCount: Math.max(0, pids.length - 1),
+      pids,
+    };
+  });
+  return {
+    sessionId: normalizedSessionId,
+    processCount: agents.reduce((sum, agent) => sum + agent.processCount, 0),
+    duplicateProcessCount: agents.reduce((sum, agent) => sum + agent.duplicateProcessCount, 0),
+    agents,
+  };
+}
+
 async function readWindowsCommandLine(pid) {
   const command = [
     "$ErrorActionPreference = 'Stop';",
