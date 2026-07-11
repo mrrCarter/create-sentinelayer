@@ -2527,9 +2527,9 @@ jobs:
           sentinelayer_managed_llm: \${{ secrets.${normalizedSecret} != '' }}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          model: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
           codex_model: gpt-5.3-codex
-          model_fallback: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          model_fallback: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
           use_codex: \${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
           codex_only: "false"
           llm_failure_policy: block
@@ -2585,8 +2585,8 @@ jobs:
           OMAR_GOOGLE_KEY_PRESENT: \${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           OMAR_MANAGED_LLM: \${{ secrets.${normalizedSecret} != '' }}
           OMAR_LLM_PROVIDER: \${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          OMAR_MODEL: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
-          OMAR_MODEL_FALLBACK: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          OMAR_MODEL: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
+          OMAR_MODEL_FALLBACK: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           mkdir -p omar-artifacts
