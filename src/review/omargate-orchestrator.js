@@ -376,6 +376,52 @@ function summarizeFindings(findings = []) {
   };
 }
 
+function buildPersonaHealthFindings(personaHealth = {}) {
+  if (personaHealth.healthy || personaHealth.total <= 0) {
+    return [];
+  }
+
+  const warnings = Array.isArray(personaHealth.warnings) ? personaHealth.warnings : [];
+  const errorCount = Number(personaHealth.error || 0);
+  const total = Number(personaHealth.total || 0);
+  const errorRatio = Number(personaHealth.errorRatio || 0);
+  const totalCostUsd = Number(personaHealth.totalCostUsd || 0);
+  const allPersonasFailed = total > 0 && errorCount === total;
+  const severity = allPersonasFailed ? "P0" : "P1";
+  let message = `Omar AI coverage degraded: ${errorCount}/${total} dispatched personas errored (${Math.round(errorRatio * 100)}%).`;
+  if (allPersonasFailed) {
+    message = `Omar AI coverage failed closed: all ${total} dispatched personas errored before producing findings.`;
+  } else if (errorCount === 0 && totalCostUsd <= 0) {
+    message = "Omar AI coverage failed closed: personas reported ok but total AI cost was $0.00, indicating no LLM calls were made.";
+  }
+
+  return [
+    {
+      severity,
+      file: "<omargate>",
+      line: 1,
+      message,
+      category: "Omar AI Coverage",
+      source: "orchestrator",
+      layer: "orchestrator",
+      confidence: 1,
+      confidenceFloor: 0,
+      sources: ["orchestrator"],
+      remediation:
+        "Fix SentinelLayer managed LLM proxy/provider credentials or run with --no-ai when deterministic-only coverage is intentional.",
+      evidence: warnings,
+      personaHealth: {
+        ok: Number(personaHealth.ok || 0),
+        error: errorCount,
+        skipped: Number(personaHealth.skipped || 0),
+        total,
+        errorRatio,
+        totalCostUsd,
+      },
+    },
+  ];
+}
+
 function personaAgentFromIdentity(identity = {}) {
   return {
     id: identity.id,
@@ -443,6 +489,7 @@ async function runOmarPersonaSwarm({
   usageSessionId = "",
   requireUsageLedger = false,
   usageRecorder = undefined,
+  aiReviewRunner = runAiReviewLayer,
 } = {}) {
   const scope = buildPersonaFileScope({ deterministic });
   const decision = decideSwarm({ scope });
@@ -518,7 +565,7 @@ async function runOmarPersonaSwarm({
       }
 
       try {
-        const result = await runAiReviewLayer({
+        const result = await aiReviewRunner({
           targetPath,
           mode: "full",
           runId: subagentRunId,
@@ -827,6 +874,7 @@ export async function runOmarGateOrchestrator({
   requireUsageLedger = false,
   usageSessionId = "",
   usageRecorder = undefined,
+  aiReviewRunner = runAiReviewLayer,
 } = {}) {
   const runId = `omargate-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const startTime = Date.now();
@@ -999,6 +1047,7 @@ export async function runOmarGateOrchestrator({
         requireUsageLedger,
         usageSessionId,
         usageRecorder,
+        aiReviewRunner,
       });
 
       if (swarmResult) {
@@ -1048,7 +1097,7 @@ export async function runOmarGateOrchestrator({
         deterministicSummary: personaDeterministic?.summary || detSummary,
       });
 
-      const result = await runAiReviewLayer({
+      const result = await aiReviewRunner({
         targetPath,
         mode: "full",
         runId: `${runId}-${personaId}`,
@@ -1210,8 +1259,8 @@ export async function runOmarGateOrchestrator({
     defaultConfidenceFloor: OMARGATE_DEFAULT_CONFIDENCE_FLOOR,
     confidenceFloors: OMARGATE_CONFIDENCE_FLOORS,
   });
-  const reconciledFindings = reconciled.findings;
-  const reconciledSummary = reconciled.summary;
+  let reconciledFindings = reconciled.findings;
+  let reconciledSummary = reconciled.summary;
   const droppedBelowConfidence = Number(reconciledSummary?.droppedBelowConfidence || 0);
   const candidateFindingCount = detFindings.length + allAiFindings.length;
   const dedupedCount = Math.max(
@@ -1241,6 +1290,7 @@ export async function runOmarGateOrchestrator({
     skipped: personaSkippedCount,
     total: totalPersonas,
     errorRatio,
+    totalCostUsd: totalCost,
     healthy: aiCoverageHealthy || dryRun,
     warnings: [],
   };
@@ -1259,6 +1309,12 @@ export async function runOmarGateOrchestrator({
         `Personas reported ok status but totalCost=$0.00 — likely silently returned empty findings without making LLM calls.`
       );
     }
+  }
+
+  const personaHealthFindings = buildPersonaHealthFindings(personaHealth);
+  if (personaHealthFindings.length > 0) {
+    reconciledFindings = [...reconciledFindings, ...personaHealthFindings];
+    reconciledSummary = summarizeFindings(reconciledFindings);
   }
 
   const result = {
@@ -1286,6 +1342,7 @@ export async function runOmarGateOrchestrator({
     findingsBySource: {
       deterministic: detFindings.length,
       ai: allAiFindings.length,
+      orchestrator: personaHealthFindings.length,
       reconciled: reconciledFindings.length,
       droppedBelowConfidence,
     },
@@ -1295,6 +1352,7 @@ export async function runOmarGateOrchestrator({
     reconciliation: {
       deterministicFindings: detFindings.length,
       aiFindings: allAiFindings.length,
+      orchestratorFindings: personaHealthFindings.length,
       reconciledFindings: reconciledFindings.length,
       dedupedCount,
       droppedBelowConfidence,

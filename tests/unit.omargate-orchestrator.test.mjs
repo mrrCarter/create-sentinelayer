@@ -288,6 +288,77 @@ describe("runOmarGateOrchestrator swarm path", () => {
       /OmarGate required usage ledger recording failed for 1\/1 persona\(s\)/
     );
   });
+
+  it("turns all-persona AI failures into a blocking P0 orchestrator finding", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security", "backend"],
+      maxCostUsd: 1,
+      dryRun: false,
+      aiReviewRunner: async () => {
+        throw new Error("SentinelLayer LLM proxy error (502 UPSTREAM_ERROR)");
+      },
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/auth.js"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(result.personaHealth.healthy, false);
+    assert.equal(result.personaHealth.error, 2);
+    assert.equal(result.summary.P0, 1);
+    assert.equal(result.summary.blocking, true);
+    assert.equal(result.findingsBySource.orchestrator, 1);
+    assert.equal(result.reconciliation.orchestratorFindings, 1);
+    assert.match(result.findings[0].message, /all 2 dispatched personas errored/);
+    assert.equal(result.findings[0].file, "<omargate>");
+  });
+
+  it("turns zero-cost non-dry-run persona coverage into a blocking P1 orchestrator finding", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security"],
+      maxCostUsd: 1,
+      dryRun: false,
+      aiReviewRunner: async () => ({
+        findings: [],
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        costUsd: 0,
+      }),
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/auth.js"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(result.personaHealth.healthy, false);
+    assert.equal(result.personaHealth.ok, 1);
+    assert.equal(result.summary.P1, 1);
+    assert.equal(result.summary.blocking, true);
+    assert.match(result.findings[0].message, /total AI cost was \$0\.00/);
+  });
 });
 
 describe("runOmarGateOrchestrator changed-file routing", () => {
