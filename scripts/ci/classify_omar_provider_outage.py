@@ -67,6 +67,20 @@ def _load_findings(path: Path) -> list[dict[str, Any]]:
     return findings
 
 
+def _load_run_summary(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    if not path.exists():
+        raise ProviderOutageClassifierError(f"run summary file not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ProviderOutageClassifierError("invalid RUN_SUMMARY.json") from exc
+    if not isinstance(payload, dict):
+        raise ProviderOutageClassifierError("RUN_SUMMARY.json is not a JSON object")
+    return payload
+
+
 def _finding_path(finding: dict[str, Any]) -> str:
     explicit = str(finding.get("file_path") or "").strip()
     if explicit:
@@ -91,7 +105,68 @@ def _finding_message(finding: dict[str, Any]) -> str:
     ).lower()
 
 
-def classify_provider_outage(findings: list[dict[str, Any]]) -> ProviderOutageClassification:
+def _summary_int(summary: dict[str, Any], key: str) -> int | None:
+    value = summary.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _summary_count(summary: dict[str, Any], severity: str) -> int | None:
+    counts = summary.get("counts")
+    if not isinstance(counts, dict):
+        return None
+    value = counts.get(severity)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _is_managed_billing_denied_no_findings(
+    findings: list[dict[str, Any]],
+    counts: dict[str, int],
+    run_summary: dict[str, Any],
+) -> bool:
+    if not run_summary or findings:
+        return False
+    if any(counts[severity] != 0 for severity in ("P0", "P1", "P2")):
+        return False
+    if str(run_summary.get("status") or "").strip().lower() != "failed":
+        return False
+    if str(run_summary.get("progress") or "").strip().lower() != "failed:billing-denied":
+        return False
+    if str(run_summary.get("gate_status") or "").strip().lower() != "error":
+        return False
+    if _summary_int(run_summary, "backend_findings_count") != 0:
+        return False
+    if _summary_int(run_summary, "local_findings_count") != 0:
+        return False
+    if any((_summary_count(run_summary, severity) != 0) for severity in ("P0", "P1", "P2", "P3")):
+        return False
+
+    policy = run_summary.get("llm_policy")
+    if not isinstance(policy, dict):
+        return False
+    if policy.get("sentinelayer_managed_llm") is not True:
+        return False
+    if str(policy.get("llm_failure_policy") or "").strip().lower() != "block":
+        return False
+    return True
+
+
+def classify_provider_outage(
+    findings: list[dict[str, Any]],
+    run_summary: dict[str, Any] | None = None,
+) -> ProviderOutageClassification:
+    run_summary = run_summary or {}
     counts = {"P0": 0, "P1": 0, "P2": 0}
     blocking: list[dict[str, Any]] = []
     for finding in findings:
@@ -108,6 +183,16 @@ def classify_provider_outage(findings: list[dict[str, Any]]) -> ProviderOutageCl
             p0_count=counts["P0"],
             p1_count=counts["P1"],
             p2_count=counts["P2"],
+        )
+
+    if _is_managed_billing_denied_no_findings(findings, counts, run_summary):
+        return ProviderOutageClassification(
+            provider_outage_break_glass=True,
+            reason="managed_billing_denied_no_findings",
+            blocking_count=0,
+            p0_count=0,
+            p1_count=0,
+            p2_count=0,
         )
 
     if counts["P0"] != 1 or len(blocking) != 1:
@@ -195,11 +280,17 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Optional GitHub Actions output file path.",
     )
+    parser.add_argument(
+        "--run-summary",
+        default="",
+        help="Optional RUN_SUMMARY.json from the managed Omar run.",
+    )
     args = parser.parse_args(argv)
 
     try:
         findings = _load_findings(Path(args.findings))
-        result = classify_provider_outage(findings)
+        run_summary = _load_run_summary(Path(args.run_summary)) if args.run_summary else {}
+        result = classify_provider_outage(findings, run_summary)
     except ProviderOutageClassifierError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 2

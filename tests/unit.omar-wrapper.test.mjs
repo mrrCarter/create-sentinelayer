@@ -48,6 +48,8 @@ test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action
   assert.match(workflowText, /continue-on-error:\s*true/);
   assert.match(workflowText, /Classify managed Omar failure/);
   assert.match(workflowText, /classify_omar_provider_outage\.py/);
+  assert.match(workflowText, /RUN_SUMMARY\.json/);
+  assert.match(workflowText, /--run-summary/);
   assert.match(workflowText, /provider_outage_break_glass/);
   assert.match(workflowText, /Run deterministic Omar Gate fallback/);
   assert.match(workflowText, /sentinelayer_managed_llm:\s*"false"/);
