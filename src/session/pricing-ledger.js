@@ -296,6 +296,7 @@ export function buildEstimatedMessageLedgerEntry(
     billingTier = "estimated",
     includeHumanMessages = false,
     action = "estimated_agent_message",
+    estimatedMessageTokenBackend = null,
   } = {},
 ) {
   const kind = n(event?.event || event?.type);
@@ -322,6 +323,7 @@ export function buildEstimatedMessageLedgerEntry(
   const outputTokens = estimateTokens(text, {
     model,
     provider: n(agent.provider || payload.provider),
+    backend: estimatedMessageTokenBackend,
   });
   if (outputTokens <= 0) return null;
 
