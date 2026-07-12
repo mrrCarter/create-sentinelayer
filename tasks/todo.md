@@ -1,3 +1,25 @@
+# 2026-07-12 - A28 Usage Report Customer Cost Hardening (`codex/a28-usage-report-hardening`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and post only material proof or blockers.
+- [x] Compare local and hosted usage report normalization for provider cost, customer cost, unpriced entries, and estimated entries.
+- [x] Fix hosted rollup customer-cost detection so explicit non-billable flags win and billable aliases are still honored when no flag exists.
+- [x] Surface per-agent customer/unpriced/estimated detail in the text summary without changing existing JSON/Markdown contracts.
+- [x] Run focused usage-report tests and static checks.
+- [x] Run full unit, review scan, Omar Gate, audit, package dry-run, and diff hygiene.
+- [x] Open PR, post exact-head proof to Senti, and hold merge for hosted gates plus peer exact-head review.
+
+## Review
+- Focused usage-report proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-usage-report.test.mjs` (`6/6`).
+- Static proof passed: `npm run check` (`354 files passed`).
+- Full unit proof passed: `npm run test:unit` (`1758/1758`).
+- Review scan passed: `.sentinelayer/reports/review-scan-diff-20260712-052524.md`, scoped 3 files, `P1=0`, `P2=0`, `blocking=false`.
+- Omar Gate passed: `review-20260712-052523-2c3cd6db`, scoped 3 files, `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`.
+- Dependency audit passed: `npm audit --audit-level=high` found 0 vulnerabilities.
+- Package dry-run passed: `npm pack --dry-run --json` produced `sentinelayer-cli-0.39.0.tgz` with shasum `b787acf130cc13234487b492dad940a07867dc99`.
+- Diff hygiene passed: `git diff --check` reported only expected Windows LF/CRLF notices.
+- PR opened: https://github.com/mrrCarter/create-sentinelayer/pull/767.
+
 # 2026-07-02 - Hosted MCP Smoke Proof (`codex/mcp-hosted-smoke-20260702`)
 
 ## Plan
