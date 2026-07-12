@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.1...v0.39.2) (2026-07-12)
+
+
+### Bug Fixes
+
+* **session:** keep recap usage estimates on the fast path ([#772](https://github.com/mrrCarter/create-sentinelayer/issues/772)) ([9dd3aef](https://github.com/mrrCarter/create-sentinelayer/commit/9dd3aeff74841be5408f54f6e3a9f649e826a98d))
+
 ## [0.39.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.0...v0.39.1) (2026-07-12)
 
 

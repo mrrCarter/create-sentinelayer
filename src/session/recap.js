@@ -21,6 +21,7 @@ const DEFAULT_RECAP_ACTIVITY_THRESHOLD = 5;
 const DEFAULT_TASK_SUMMARY_LIMIT = 3;
 const DEFAULT_WORK_PLAN_SUMMARY_LIMIT = 5;
 const DEFAULT_ACTIVITY_SNIPPET_MAX_CHARS = 120;
+const RECAP_ESTIMATED_USAGE_CHARS_PER_TOKEN = 4;
 const MAX_WORK_PLAN_BYTES = 128_000;
 const WORK_PLAN_RELATIVE_PATH = "tasks/todo.md";
 const ACTIVE_WORK_PLAN_FILE_PATTERN = /^reconciled-fix-plan-\d{4}-\d{2}-\d{2}\.md$/;
@@ -1041,8 +1042,19 @@ function roundCurrency(value) {
   return Math.round(normalized * 1_000_000) / 1_000_000;
 }
 
+function estimateRecapMessageTokens(text) {
+  const normalized = normalizeString(text);
+  if (!normalized) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(normalized.length / RECAP_ESTIMATED_USAGE_CHARS_PER_TOKEN));
+}
+
 function normalizeUsageSummary(events = []) {
-  const aggregate = aggregateSessionUsage(events, { includeEstimatedMessages: true });
+  const aggregate = aggregateSessionUsage(events, {
+    includeEstimatedMessages: true,
+    estimatedMessageTokenBackend: estimateRecapMessageTokens,
+  });
   const totals = {
     totalTokens: Number(aggregate.totals.totalTokens || 0),
     inputTokens: Number(aggregate.totals.inputTokens || 0),

@@ -695,6 +695,8 @@ test("Unit session recap: estimates non-human message usage when no provider led
       },
       { targetPath: tempRoot },
     );
+    const estimatedMessage =
+      "The transcript download now marks estimated agent-message tokens as non-billing usage.";
     await appendToStream(
       session.sessionId,
       {
@@ -703,11 +705,12 @@ test("Unit session recap: estimates non-human message usage when no provider led
         ts: "2026-05-19T08:02:00.000Z",
         payload: {
           clientMessageId: "recap-estimated-message-1",
-          message: "The transcript download now marks estimated agent-message tokens as non-billing usage.",
+          message: estimatedMessage,
         },
       },
       { targetPath: tempRoot },
     );
+    const expectedEstimatedTokens = Math.ceil(estimatedMessage.length / 4);
 
     const recap = await buildSessionRecap(session.sessionId, {
       forAgentId: "codex-senti-product",
@@ -718,7 +721,8 @@ test("Unit session recap: estimates non-human message usage when no provider led
 
     assert.match(recap.text, /Usage: [1-9][0-9]* tokens \/ \$/);
     assert.match(recap.text, /Top agents: codex-senti-product/);
-    assert.equal(recap.summary.usageTotals.totalTokens > 0, true);
+    assert.equal(recap.summary.usageTotals.totalTokens, expectedEstimatedTokens);
+    assert.equal(recap.summary.usageTotals.outputTokens, expectedEstimatedTokens);
     assert.equal(recap.summary.usageTotals.inputTokens, 0);
     assert.equal(recap.summary.usageTopAgents[0].agentId, "codex-senti-product");
     assert.equal(

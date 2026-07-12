@@ -1,3 +1,21 @@
+# 2026-07-12 - Senti Recap Estimated Usage Fast Path (`codex/senti-recap-estimated-usage-fastpath`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` connected quietly through `codex-senti-product-0344` and avoid ACK spam.
+- [x] Reproduce the post-`#770` hang: `sl session recap now 954233b7-1822-42bc-9cfe-1eb95eb0357a --remote --json` still produced no stdout/stderr past the guard after v0.39.1.
+- [x] Localize the remaining blocker below remote hydration: reading `17,452` local room events took about `291ms`, dedupe took about `377ms`, but `aggregateSessionUsage(... includeEstimatedMessages: true)` did not return because recap estimated every historical agent message through provider tokenizers.
+- [x] Patch recap usage aggregation so billing-grade `session_usage` rows remain exact while non-billing estimated agent-message usage uses a fast recap-local heuristic.
+- [x] Add focused regression proof that estimated-message token backends are honored and recap totals use the fast estimate path.
+- [x] Run full package gates locally.
+- [ ] Open a follow-up PR, request Claude/Warden challenge in Senti, and publish only after hosted gates are green.
+
+## Review
+- Live patched branch proof: `buildSessionRecap` on room `954233b7-1822-42bc-9cfe-1eb95eb0357a` returned in `905ms` after hanging before this patch.
+- Live patched CLI proof: `node bin/sl.js session recap now ... --remote --json --max-events 20` returned in `5120ms` with usage totals and workspace-plan text.
+- Focused proof: `tests/unit.session-recap.test.mjs` + `tests/unit.session-usage.test.mjs` passed `34/34`.
+- Full proof: `npm run test:unit` passed `1758/1758`; `npm run check` passed `354 files`; `git diff --check` passed aside from expected Windows LF/CRLF notices; `npm audit --audit-level=high` reported `0 vulnerabilities`; `npm pack --dry-run --json` produced `sentinelayer-cli-0.39.1.tgz` with shasum `db7c0ac94003af0ae74e0815334adafcb65fb0c2`.
+- Deterministic scans: `sl review scan --mode diff` scanned `5` files with `P1=0/P2=0/blocking=false`; `sl /omargate deep --scope-mode diff --no-ai` scanned the same `5` files with `P0=0/P1=0/P2=0/P3=0/blocking=false`.
+
 # 2026-07-12 - A27 Recap Listener Polish (`codex/a27-recap-listener-polish`)
 
 ## Plan
