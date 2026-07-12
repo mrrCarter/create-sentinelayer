@@ -432,6 +432,13 @@ test("Unit session say identity: joined agent metadata enriches later messages",
       role: "reviewer",
       trackProcessExit: false,
     });
+    const before = await listAgents(session.sessionId, {
+      targetPath: tempRoot,
+      includeInactive: false,
+    });
+    const beforeActivity = before.find((agent) => agent.agentId === "claude-mythos")?.lastActivityAt;
+    assert.ok(beforeActivity);
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
     const output = await runSessionCommand([
       "session",
@@ -450,6 +457,15 @@ test("Unit session say identity: joined agent metadata enriches later messages",
     assert.equal(payload.event.agent.model, "claude-opus-4.1");
     assert.equal(payload.event.agent.role, "reviewer");
     assert.equal(payload.event.agent.clientKind, "cli");
+    assert.equal(payload.agentActivity.persisted, true);
+
+    const after = await listAgents(session.sessionId, {
+      targetPath: tempRoot,
+      includeInactive: false,
+    });
+    const afterActivity = after.find((agent) => agent.agentId === "claude-mythos")?.lastActivityAt;
+    assert.ok(afterActivity);
+    assert.equal(Date.parse(afterActivity) > Date.parse(beforeActivity), true);
   } finally {
     resetSessionSyncStateForTests();
     restoreEnv();
@@ -795,6 +811,19 @@ test("Unit session post-agent: posts canonical agent event and persists only aft
     );
     assert.ok(posted);
     assert.equal(posted.agent.id, "codex");
+
+    const agents = await listAgents(session.sessionId, {
+      targetPath: tempRoot,
+      includeInactive: false,
+    });
+    const codex = agents.find((agent) => agent.agentId === "codex");
+    assert.ok(codex);
+    assert.equal(codex.model, "gpt-5-codex");
+    assert.equal(codex.role, "coder");
+    assert.equal(codex.active, true);
+    assert.equal(payload.agentActivity.persisted, true);
+    assert.equal(payload.agentActivity.agentId, "codex");
+    assert.ok(payload.agentActivity.lastActivityAt);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
