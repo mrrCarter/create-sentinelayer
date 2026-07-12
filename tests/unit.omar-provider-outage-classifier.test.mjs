@@ -45,7 +45,7 @@ test("Unit Omar provider outage classifier: allows current action system LLM out
       provenance: "system",
       scope: { path: "<system>" },
       impact:
-        "LLM analysis failed: primary failed and fallback failed; blocking merge per fail-closed policy. Provider outage detail: OpenAI 429 insufficient_quota; Google 403 PERMISSION_DENIED; Anthropic credit balance is too low.",
+        "LLM analysis failed: primary failed and fallback failed; blocking merge per fail-closed policy. Provider outage detail: OpenAI 429 rate limit; Google 503 provider unavailable; Anthropic capacity exhausted.",
     },
     {
       severity: "P3",
@@ -59,6 +59,23 @@ test("Unit Omar provider outage classifier: allows current action system LLM out
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(outputs, /provider_outage_break_glass=true/);
   assert.match(outputs, /reason=single_system_llm_provider_outage/);
+});
+
+test("Unit Omar provider outage classifier: rejects provider account-credit and auth failures", async () => {
+  const { result, outputs } = await runClassifier([
+    {
+      severity: "P0",
+      category: "LLM Failure",
+      provenance: "system",
+      scope: { path: "<system>" },
+      impact:
+        "LLM analysis failed: primary failed and fallback failed; blocking merge per fail-closed policy. Provider outage detail: Provider attempts: openai/gpt-5.3-codex: failed (openai_quota_exceeded - OpenAI managed Omar call failed: Error code: 429 - insufficient_quota); google/gemini-2.5-flash: failed (google_error - Google managed Omar call failed: HTTP 403 - consumer_suspended); anthropic/claude-sonnet-4-6: failed (anthropic_error - Anthropic managed Omar call failed: Error code: 400 - credit balance is too low. Please purchase credits.)",
+    },
+  ]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(outputs, /provider_outage_break_glass=false/);
+  assert.match(outputs, /reason=llm_failure_provider_account_denied_not_outage/);
 });
 
 test("Unit Omar provider outage classifier: rejects managed billing-denied run with no findings", async () => {
