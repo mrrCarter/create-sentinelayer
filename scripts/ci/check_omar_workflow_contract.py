@@ -246,6 +246,7 @@ def validate_omar_contract(workflow_text: str) -> None:
         'sentinelayer_managed_llm: "false"',
         'use_codex: "false"',
         "llm_failure_policy: deterministic_only",
+        "artifact_name_suffix: provider-outage-fallback",
         "Select Omar Gate result",
         "selected_source",
         "Assert Omar LLM contract is active",
@@ -379,6 +380,7 @@ jobs:
           use_codex: "false"
           codex_only: "false"
           llm_failure_policy: deterministic_only
+          artifact_name_suffix: provider-outage-fallback
       - name: Select Omar Gate result
         run: |
           echo "selected_source"

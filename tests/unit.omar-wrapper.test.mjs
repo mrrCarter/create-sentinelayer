@@ -53,6 +53,7 @@ test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action
   assert.match(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.match(workflowText, /use_codex:\s*"false"/);
   assert.match(workflowText, /llm_failure_policy:\s*deterministic_only/);
+  assert.match(workflowText, /artifact_name_suffix:\s*provider-outage-fallback/);
   assert.match(workflowText, /Select Omar Gate result/);
   assert.match(workflowText, /selected_source/);
   assert.match(workflowText, /Omar provider-outage break-glass contract active/);

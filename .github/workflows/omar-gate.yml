@@ -498,6 +498,7 @@ jobs:
           use_codex: "false"
           codex_only: "false"
           llm_failure_policy: deterministic_only
+          artifact_name_suffix: provider-outage-fallback
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
