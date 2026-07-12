@@ -100,6 +100,7 @@ import {
   listSessionMessageActions,
   listSessionsFromApi,
   probeSessionAccess,
+  pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
   searchSessionEvents,
@@ -237,6 +238,8 @@ const SESSION_SAY_LOCAL_ONLY_REASONS = new Set([
   "remote_sync_disabled_env",
 ]);
 const SESSION_READ_AUTO_VIEW_TIMEOUT_MS = 500;
+const SESSION_RECAP_REMOTE_REQUEST_TIMEOUT_MS = 5_000;
+const SESSION_RECAP_REMOTE_HYDRATE_MAX_PAGES = 1;
 
 function isLocalOnlySessionSayReason(reason) {
   return SESSION_SAY_LOCAL_ONLY_REASONS.has(normalizeString(reason));
@@ -5565,11 +5568,24 @@ export function registerSessionCommand(program) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
           targetPath,
+          eventPageLimit: maxEvents,
+          maxEventPages: SESSION_RECAP_REMOTE_HYDRATE_MAX_PAGES,
+          _poll: (pollSessionId, pollOptions) =>
+            pollHumanMessages(pollSessionId, {
+              ...pollOptions,
+              limit: maxEvents,
+              timeoutMs: SESSION_RECAP_REMOTE_REQUEST_TIMEOUT_MS,
+            }),
+          _pollEvents: (pollSessionId, pollOptions) =>
+            pollSessionEvents(pollSessionId, {
+              ...pollOptions,
+              timeoutMs: SESSION_RECAP_REMOTE_REQUEST_TIMEOUT_MS,
+            }),
         });
         remoteTail = await pollSessionEventsBefore(normalizedSessionId, {
           targetPath,
           limit: maxEvents,
-          timeoutMs: 15_000,
+          timeoutMs: SESSION_RECAP_REMOTE_REQUEST_TIMEOUT_MS,
         });
         if (remoteTail?.ok && Array.isArray(remoteTail.events) && remoteTail.events.length > 0) {
           remoteAppend = await appendMissingRemoteEvents(normalizedSessionId, remoteTail.events, {
