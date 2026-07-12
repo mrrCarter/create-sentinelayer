@@ -21,15 +21,21 @@ BRIDGE_OR_BROKEN_MARKERS = (
 
 
 ALLOWED_OPENAI_API_KEY_LINE = "openai_api_key: ${{ secrets.OPENAI_API_KEY }}"
+ALLOWED_DETERMINISTIC_OPENAI_API_KEY_LINE = 'openai_api_key: ""'
 ALLOWED_GOOGLE_API_KEY_LINE = "google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}"
+ALLOWED_DETERMINISTIC_GOOGLE_API_KEY_LINE = 'google_api_key: ""'
 OPENAI_PRESENT_EXPR = "secrets.OPENAI_API_KEY != ''"
 GOOGLE_PRESENT_EXPR = "(secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '')"
 GOOGLE_ABSENT_EXPR = "secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == ''"
 ACTION_REF = "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d"
 ALLOWED_LLM_PROVIDER_LINE = f"llm_provider: ${{{{ {OPENAI_PRESENT_EXPR} && 'openai' || ({GOOGLE_PRESENT_EXPR} && 'google' || 'openai') }}}}"
+ALLOWED_DETERMINISTIC_LLM_PROVIDER_LINE = "llm_provider: openai"
 ALLOWED_MODEL_LINE = f"model: ${{{{ {OPENAI_PRESENT_EXPR} && 'gpt-5.3-codex' || ({GOOGLE_PRESENT_EXPR} && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}}}"
+ALLOWED_DETERMINISTIC_MODEL_LINE = "model: gpt-5.3-codex"
 ALLOWED_MODEL_FALLBACK_LINE = f"model_fallback: ${{{{ {GOOGLE_PRESENT_EXPR} && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}}}"
+ALLOWED_DETERMINISTIC_MODEL_FALLBACK_LINE = "model_fallback: gpt-4.1-mini"
 ALLOWED_USE_CODEX_LINE = f"use_codex: ${{{{ {OPENAI_PRESENT_EXPR} || ({GOOGLE_ABSENT_EXPR}) }}}}"
+ALLOWED_DETERMINISTIC_USE_CODEX_LINE = 'use_codex: "false"'
 MANAGED_LLM_FALLBACK_RE = re.compile(
     r"^sentinelayer_managed_llm:\s*\$\{\{\s*"
     r"(?:steps\.resolve_omar_credentials\.outputs\.sentinelayer_token|secrets\.[A-Z0-9_]+)"
@@ -106,27 +112,45 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
             raise OmarWorkflowContractError(
                 "full Omar action workflow must not pass bridge-only pr_number"
             )
-        if stripped.startswith("openai_api_key:") and stripped != ALLOWED_OPENAI_API_KEY_LINE:
+        if stripped.startswith("openai_api_key:") and stripped not in {
+            ALLOWED_OPENAI_API_KEY_LINE,
+            ALLOWED_DETERMINISTIC_OPENAI_API_KEY_LINE,
+        }:
             raise OmarWorkflowContractError(
                 "Omar workflow may only bind openai_api_key to secrets.OPENAI_API_KEY"
             )
-        if stripped.startswith("google_api_key:") and stripped != ALLOWED_GOOGLE_API_KEY_LINE:
+        if stripped.startswith("google_api_key:") and stripped not in {
+            ALLOWED_GOOGLE_API_KEY_LINE,
+            ALLOWED_DETERMINISTIC_GOOGLE_API_KEY_LINE,
+        }:
             raise OmarWorkflowContractError(
                 "Omar workflow may only bind google_api_key to secrets.GOOGLE_GEMINI_API_KEY with secrets.GOOGLE_API_KEY fallback"
             )
-        if stripped.startswith("llm_provider:") and stripped != ALLOWED_LLM_PROVIDER_LINE:
+        if stripped.startswith("llm_provider:") and stripped not in {
+            ALLOWED_LLM_PROVIDER_LINE,
+            ALLOWED_DETERMINISTIC_LLM_PROVIDER_LINE,
+        }:
             raise OmarWorkflowContractError(
                 "Omar workflow must prefer OpenAI/Codex when configured, then Google, then managed SentinelLayer"
             )
-        if stripped.startswith("model:") and stripped != ALLOWED_MODEL_LINE:
+        if stripped.startswith("model:") and stripped not in {
+            ALLOWED_MODEL_LINE,
+            ALLOWED_DETERMINISTIC_MODEL_LINE,
+        }:
             raise OmarWorkflowContractError(
                 "Omar workflow must route OpenAI-key scans to Codex before Gemini fallback"
             )
-        if stripped.startswith("model_fallback:") and stripped != ALLOWED_MODEL_FALLBACK_LINE:
+        if stripped.startswith("model_fallback:") and stripped not in {
+            ALLOWED_MODEL_FALLBACK_LINE,
+            ALLOWED_DETERMINISTIC_MODEL_FALLBACK_LINE,
+        }:
             raise OmarWorkflowContractError(
                 "Omar workflow must use Gemini as the OpenAI fallback whenever a Google key is configured"
             )
-        if stripped.startswith("use_codex:") and stripped != ALLOWED_USE_CODEX_LINE:
+        if stripped.startswith("use_codex:") and stripped not in {
+            ALLOWED_USE_CODEX_LINE,
+            ALLOWED_DETERMINISTIC_USE_CODEX_LINE,
+        }:
             raise OmarWorkflowContractError(
                 "Omar workflow must enable Codex whenever OpenAI is configured or no Google key exists"
             )
@@ -134,7 +158,11 @@ def _reject_bridge_or_provider_inputs(text: str) -> None:
             raise OmarWorkflowContractError(
                 "Omar workflow must not pass alternate provider-key or provider-selection inputs"
             )
-        if stripped.startswith("sentinelayer_managed_llm:") and not _line_has_managed_llm_fallback(stripped):
+        if (
+            stripped.startswith("sentinelayer_managed_llm:")
+            and not _line_has_managed_llm_fallback(stripped)
+            and stripped != 'sentinelayer_managed_llm: "false"'
+        ):
             raise OmarWorkflowContractError(
                 "sentinelayer_managed_llm must be a SentinelLayer token-present managed-capacity fallback expression"
             )
@@ -210,6 +238,16 @@ def validate_omar_contract(workflow_text: str) -> None:
         "check_forbidden_omar_surface.py",
         "Verify managed Omar token secret",
         "Run Omar Gate",
+        "continue-on-error: true",
+        "Classify managed Omar failure",
+        "classify_omar_provider_outage.py",
+        "provider_outage_break_glass",
+        "Run deterministic Omar Gate fallback",
+        'sentinelayer_managed_llm: "false"',
+        'use_codex: "false"',
+        "llm_failure_policy: deterministic_only",
+        "Select Omar Gate result",
+        "selected_source",
         "Assert Omar LLM contract is active",
         "openai_api_key: ${{ secrets.OPENAI_API_KEY }}",
         "google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}",
@@ -228,6 +266,8 @@ def validate_omar_contract(workflow_text: str) -> None:
         "REQUESTED_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}",
         "REQUESTED_FAILURE_POLICY: block",
         "REQUESTED_CODEX_MODEL: gpt-5.3-codex",
+        "Omar provider-outage break-glass contract active",
+        "Omar provider-outage break-glass contract drifted",
         'codex_only: "false"',
         "max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}",
         "min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}",
@@ -245,6 +285,8 @@ def validate_omar_contract(workflow_text: str) -> None:
         '"google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT")',
         '"openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT")',
         '"managed_llm": bool_env("OMAR_MANAGED_LLM")',
+        '"selected_source": env("OMAR_SELECTED_SOURCE")',
+        '"provider_outage_break_glass": bool_env("OMAR_PROVIDER_OUTAGE_BREAK_GLASS")',
         "run_url",
         "Upload Omar artifacts",
         "actions/upload-artifact",
@@ -310,6 +352,7 @@ jobs:
           echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"
       - name: Run Omar Gate
         id: omar
+        continue-on-error: true
         uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -323,6 +366,22 @@ jobs:
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
+      - name: Classify managed Omar failure
+        run: |
+          python3 scripts/ci/classify_omar_provider_outage.py --findings .sentinelayer/runs/run/FINDINGS.jsonl --github-output "${GITHUB_OUTPUT}"
+          echo "provider_outage_break_glass"
+      - name: Run deterministic Omar Gate fallback
+        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
+        with:
+          sentinelayer_managed_llm: "false"
+          model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "false"
+          codex_only: "false"
+          llm_failure_policy: deterministic_only
+      - name: Select Omar Gate result
+        run: |
+          echo "selected_source"
       - name: Assert Omar LLM contract is active
         env:
           REQUESTED_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
@@ -335,6 +394,8 @@ jobs:
           REQUESTED_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
           REQUESTED_FAILURE_POLICY: block
         run: |
+          echo "Omar provider-outage break-glass contract active"
+          echo "Omar provider-outage break-glass contract drifted"
           echo "Omar LLM contract active"
           echo "Omar Gate did not pass"
       - name: Verify managed Omar token secret
@@ -350,6 +411,8 @@ jobs:
           echo '"google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT")'
           echo '"openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT")'
           echo '"managed_llm": bool_env("OMAR_MANAGED_LLM")'
+          echo '"selected_source": env("OMAR_SELECTED_SOURCE")'
+          echo '"provider_outage_break_glass": bool_env("OMAR_PROVIDER_OUTAGE_BREAK_GLASS")'
           echo "run_url"
           echo "omar-artifacts/summary.json"
       - name: Upload Omar artifacts

@@ -44,8 +44,19 @@ test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action
     /min_scan_interval_minutes:\s*\$\{\{\s*vars\.OMAR_MIN_SCAN_INTERVAL_MINUTES\s*\|\|\s*'0'\s*\}\}/,
   );
   assert.match(workflowText, /rate_limit_fail_mode:\s*closed/);
-  assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"false"/);
   assert.doesNotMatch(workflowText, /sentinelayer_managed_llm:\s*"true"/);
+  assert.match(workflowText, /continue-on-error:\s*true/);
+  assert.match(workflowText, /Classify managed Omar failure/);
+  assert.match(workflowText, /classify_omar_provider_outage\.py/);
+  assert.match(workflowText, /provider_outage_break_glass/);
+  assert.match(workflowText, /Run deterministic Omar Gate fallback/);
+  assert.match(workflowText, /sentinelayer_managed_llm:\s*"false"/);
+  assert.match(workflowText, /use_codex:\s*"false"/);
+  assert.match(workflowText, /llm_failure_policy:\s*deterministic_only/);
+  assert.match(workflowText, /Select Omar Gate result/);
+  assert.match(workflowText, /selected_source/);
+  assert.match(workflowText, /Omar provider-outage break-glass contract active/);
+  assert.match(workflowText, /Omar provider-outage break-glass contract drifted/);
   assert.doesNotMatch(workflowText, /issues:\s*write/);
   assert.match(workflowText, /Validate Omar workflow contract/);
   assert.match(workflowText, /Verify managed Omar token secret/);
@@ -73,6 +84,8 @@ test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action
   assert.match(workflowText, /"google_key_present": bool_env\("OMAR_GOOGLE_KEY_PRESENT"\)/);
   assert.match(workflowText, /"openai_key_present": bool_env\("OMAR_OPENAI_KEY_PRESENT"\)/);
   assert.match(workflowText, /"managed_llm": bool_env\("OMAR_MANAGED_LLM"\)/);
+  assert.match(workflowText, /"selected_source": env\("OMAR_SELECTED_SOURCE"\)/);
+  assert.match(workflowText, /"provider_outage_break_glass": bool_env\("OMAR_PROVIDER_OUTAGE_BREAK_GLASS"\)/);
   assert.match(workflowText, /omar_enforce:[\s\S]*if:\s*\$\{\{\s*always\(\)\s*\}\}/);
   assert.match(workflowText, /Require selected Omar scan success/);
   assert.match(workflowText, /Trusted Omar scan did not succeed/);
