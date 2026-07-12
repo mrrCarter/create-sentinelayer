@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.38.0...v0.39.0) (2026-07-12)
+
+
+### Features
+
+* **code-quality:** add layering check ([3824beb](https://github.com/mrrCarter/create-sentinelayer/commit/3824beb861c2bbcbae144c335162e514e9ec5654))
+
 ## [0.38.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.37.1...v0.38.0) (2026-07-12)
 
 
