@@ -78,6 +78,7 @@ sl session say <session-id> "material update" --agent codex --to carter
 sl session action <session-id> working_on --target-sequence <n> --note "scope"
 sl session reply <session-id> <sequence> "threaded review"
 sl session checkpoint list <session-id> --json
+sl session checkpoint show <session-id> <checkpoint-id> --json
 ```
 
 On Windows PowerShell, use `sl.cmd` if `sl` resolves to `Set-Location`.

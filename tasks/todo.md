@@ -1,3 +1,27 @@
+# 2026-07-12 - A26 Checkpoint Restore Contract (`codex/a26-checkpoint-restore-contract`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and post only material coordination/proof.
+- [x] Confirm #764 is isolated, green, and still held for peer exact-head review.
+- [x] Audit the checkpoint/recap/usage specs against current CLI behavior and identify the remaining checkpoint restore gap.
+- [x] Add a read-only `sl session checkpoint show <sessionId> <checkpointId>` surface that loads a bounded source-event window around the checkpoint sequence range without mutating session history.
+- [x] Add pure checkpoint restore-window helpers and unit coverage for range validation, API request shape, partial-window flags, and checkpoint id lookup.
+- [x] Add command-contract coverage for the new CLI surface.
+- [x] Run focused tests, static checks, review scan, Omar diff scan, and package dry-run.
+- [x] Open PR and request Senti peer review.
+
+## Review
+- Focused checkpoint/command proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-checkpoints.test.mjs tests/unit.commands-contracts.test.mjs` (`34/34`).
+- Static proof passed: `npm run check` (`354 files passed`).
+- Docs proof passed: `npm run docs:build`.
+- Full unit proof passed: `npm run test:unit` (`1760/1760`).
+- `git diff --check` passed aside from expected Windows LF/CRLF notices.
+- Deterministic review scan passed: `.sentinelayer/reports/review-scan-diff-20260712-050605.md`, scoped files `6`, `P1=0`, `P2=0`, `blocking=false`.
+- Omar no-AI diff scan passed: `review-20260712-050816-79171b06`, scoped files `6`, `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`.
+- Dependency proof passed: `npm audit --audit-level=high` found `0 vulnerabilities`.
+- Package dry-run passed: `npm pack --dry-run --json` produced shasum `6f3019f71f1dbdf222c12f10cd5f911f73d64098`.
+- PR opened: `https://github.com/mrrCarter/create-sentinelayer/pull/765`.
+
 # 2026-07-02 - Hosted MCP Smoke Proof (`codex/mcp-hosted-smoke-20260702`)
 
 ## Plan

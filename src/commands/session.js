@@ -137,6 +137,7 @@ import {
   generateSessionCheckpoint,
   generateSessionCheckpointBatch,
   listSessionCheckpoints,
+  showSessionCheckpoint,
 } from "../session/checkpoints.js";
 import {
   buildCodexExecResumeInvocation,
@@ -6135,7 +6136,7 @@ export function registerSessionCommand(program) {
 
   const checkpoint = session
     .command("checkpoint")
-    .description("List, create, and generate durable session checkpoints");
+    .description("List, show, create, and generate durable session checkpoints");
 
   checkpoint
     .command("list <sessionId>")
@@ -6168,6 +6169,66 @@ export function registerSessionCommand(program) {
       }
       for (const item of result.checkpoints) {
         console.log(formatCheckpointLine(item));
+      }
+    });
+
+  checkpoint
+    .command("show <sessionId> <checkpointId>")
+    .description("Show a checkpoint and a bounded read-only source event window")
+    .option("--context-events <n>", "Adjacent events to include before/after the checkpoint range (default 3)", "3")
+    .option("--max-events <n>", "Maximum events to fetch for restore context (default 120, max 200)", "120")
+    .option("--path <path>", "Workspace path for auth/session context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, checkpointId, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      const normalizedCheckpointId = normalizeString(checkpointId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      if (!normalizedCheckpointId) {
+        throw new Error("checkpoint id is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await showSessionCheckpoint(normalizedSessionId, normalizedCheckpointId, {
+        targetPath,
+        contextEvents: options.contextEvents,
+        maxEvents: options.maxEvents,
+      });
+      const payload = {
+        command: "session checkpoint show",
+        targetPath,
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(pc.bold(`Checkpoint ${result.checkpointId}`));
+      console.log(formatCheckpointLine(result.checkpoint));
+      const sourceRange = `#${result.window.startSequence}-${result.window.endSequence}`;
+      const contextSummary =
+        `${result.window.sourceEventCount}/${result.window.sourceEventCountExpected} source` +
+        `, ${result.window.beforeContextCount} before` +
+        `, ${result.window.afterContextCount} after`;
+      console.log(pc.gray(`Read-only restore window ${sourceRange}: ${contextSummary}.`));
+      if (!result.ok) {
+        console.log(pc.yellow(`Remote event window unavailable: ${result.reason || "unknown"}`));
+        return;
+      }
+      if (result.window.partial) {
+        const missing = result.window.missingSourceEvents
+          ? ` missing=${result.window.missingSourceEvents}`
+          : "";
+        const truncated = result.window.truncatedByLimit ? " truncated-by-limit" : "";
+        console.log(pc.yellow(`Partial checkpoint source range:${missing}${truncated}`.trim()));
+      }
+      for (const event of result.window.events) {
+        const sequence = eventSequenceNumber(event);
+        const inSource =
+          sequence >= result.window.startSequence &&
+          sequence <= result.window.endSequence;
+        console.log(`${inSource ? "*" : " "} ${formatEventLine(event)}`);
       }
     });
 

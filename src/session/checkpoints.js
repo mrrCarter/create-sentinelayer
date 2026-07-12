@@ -3,6 +3,7 @@ import process from "node:process";
 
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
+import { pollSessionEventsBefore } from "./sync.js";
 
 const DEFAULT_API_BASE_URL = "https://api.sentinelayer.com";
 const DEFAULT_CHECKPOINT_LIMIT = 100;
@@ -11,6 +12,10 @@ const DEFAULT_MIN_EVENTS = 20;
 const DEFAULT_MAX_EVENTS = 80;
 const DEFAULT_BATCH_MAX_CHECKPOINTS = 5;
 const MAX_BATCH_MAX_CHECKPOINTS = 50;
+const DEFAULT_RESTORE_CONTEXT_EVENTS = 3;
+const DEFAULT_RESTORE_MAX_EVENTS = 120;
+const MAX_RESTORE_CONTEXT_EVENTS = 50;
+const MAX_RESTORE_EVENTS = 200;
 const DEFAULT_CREATED_BY_AGENT_ID = "senti";
 
 function normalizeString(value) {
@@ -33,6 +38,17 @@ function parsePositiveInteger(value, field, fallbackValue = null) {
   return Math.floor(parsed);
 }
 
+function parseNonNegativeInteger(value, field, fallbackValue = 0) {
+  if (value === undefined || value === null || normalizeString(value) === "") {
+    return Math.max(0, Math.floor(Number(fallbackValue) || 0));
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${field} must be a non-negative integer.`);
+  }
+  return Math.floor(parsed);
+}
+
 function normalizeLimit(value) {
   const parsed = parsePositiveInteger(value, "limit", DEFAULT_CHECKPOINT_LIMIT);
   return Math.max(1, Math.min(MAX_CHECKPOINT_LIMIT, parsed));
@@ -45,6 +61,16 @@ function normalizeBatchMaxCheckpoints(value) {
     DEFAULT_BATCH_MAX_CHECKPOINTS,
   );
   return Math.max(1, Math.min(MAX_BATCH_MAX_CHECKPOINTS, parsed));
+}
+
+function normalizeRestoreMaxEvents(value) {
+  const parsed = parsePositiveInteger(value, "max-events", DEFAULT_RESTORE_MAX_EVENTS);
+  return Math.max(1, Math.min(MAX_RESTORE_EVENTS, parsed));
+}
+
+function normalizeRestoreContextEvents(value) {
+  const parsed = parseNonNegativeInteger(value, "context-events", DEFAULT_RESTORE_CONTEXT_EVENTS);
+  return Math.max(0, Math.min(MAX_RESTORE_CONTEXT_EVENTS, parsed));
 }
 
 function stableHash(value) {
@@ -148,6 +174,20 @@ function normalizeTokenRange({ tokenStart, tokenEnd } = {}) {
   return { start, end };
 }
 
+function checkpointIdOf(checkpoint = {}) {
+  return normalizeString(checkpoint.checkpointId || checkpoint.checkpoint_id);
+}
+
+function checkpointSequenceValue(checkpoint = {}, camelKey, snakeKey) {
+  const parsed = Number(checkpoint[camelKey] ?? checkpoint[snakeKey]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function eventSequenceValue(event = {}) {
+  const parsed = Number(event.sequenceId ?? event.sequence_id ?? event.sequence);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
 export function buildManualCheckpointPayload(sessionId, {
   checkpointId = "",
   startSequence,
@@ -235,6 +275,99 @@ export function buildGenerateCheckpointPayload(sessionId, {
   };
 }
 
+export function findCheckpointById(checkpoints = [], checkpointId = "") {
+  const normalizedCheckpointId = normalizeString(checkpointId);
+  if (!normalizedCheckpointId) return null;
+  return Array.isArray(checkpoints)
+    ? checkpoints.find((checkpoint) => checkpointIdOf(checkpoint) === normalizedCheckpointId) || null
+    : null;
+}
+
+export function buildCheckpointRestoreWindow(checkpoint = {}, {
+  contextEvents = DEFAULT_RESTORE_CONTEXT_EVENTS,
+  maxEvents = DEFAULT_RESTORE_MAX_EVENTS,
+} = {}) {
+  const startSequence = checkpointSequenceValue(checkpoint, "startSequence", "start_sequence");
+  const endSequence = checkpointSequenceValue(checkpoint, "endSequence", "end_sequence");
+  if (startSequence <= 0) {
+    throw new Error("checkpoint startSequence is required for restore.");
+  }
+  if (endSequence <= 0) {
+    throw new Error("checkpoint endSequence is required for restore.");
+  }
+  if (startSequence > endSequence) {
+    throw new Error("checkpoint startSequence must be less than or equal to endSequence.");
+  }
+  const normalizedContext = normalizeRestoreContextEvents(contextEvents);
+  const normalizedMaxEvents = normalizeRestoreMaxEvents(maxEvents);
+  const sourceEventCountExpected = endSequence - startSequence + 1;
+  const requestedEventCount = sourceEventCountExpected + normalizedContext * 2;
+  const limit = Math.min(normalizedMaxEvents, requestedEventCount, MAX_RESTORE_EVENTS);
+  return {
+    checkpointId: checkpointIdOf(checkpoint) || null,
+    startSequence,
+    endSequence,
+    contextEvents: normalizedContext,
+    maxEvents: normalizedMaxEvents,
+    limit,
+    beforeSequence: endSequence + normalizedContext + 1,
+    lowerBoundSequence: Math.max(1, startSequence - normalizedContext),
+    sourceEventCountExpected,
+    truncatedByLimit: limit < requestedEventCount,
+  };
+}
+
+export function classifyCheckpointRestoreEvents(events = [], window = {}) {
+  const normalizedEvents = Array.isArray(events) ? events : [];
+  const startSequence = Number(window.startSequence || 0);
+  const endSequence = Number(window.endSequence || 0);
+  const sourceEventCountExpected = Number(window.sourceEventCountExpected || 0);
+  const beforeContextEvents = [];
+  const sourceEvents = [];
+  const afterContextEvents = [];
+  const sourceSequenceIds = new Set();
+
+  for (const event of normalizedEvents) {
+    const sequence = eventSequenceValue(event);
+    if (sequence <= 0) continue;
+    if (sequence < startSequence) {
+      beforeContextEvents.push(event);
+    } else if (sequence > endSequence) {
+      afterContextEvents.push(event);
+    } else {
+      sourceEvents.push(event);
+      sourceSequenceIds.add(sequence);
+    }
+  }
+
+  const missingStart = startSequence > 0 && !sourceSequenceIds.has(startSequence);
+  const missingEnd = endSequence > 0 && !sourceSequenceIds.has(endSequence);
+  const missingSourceEvents = Math.max(0, sourceEventCountExpected - sourceSequenceIds.size);
+  return {
+    events: normalizedEvents,
+    beforeContextEvents,
+    sourceEvents,
+    afterContextEvents,
+    eventCount: normalizedEvents.length,
+    beforeContextCount: beforeContextEvents.length,
+    sourceEventCount: sourceEvents.length,
+    afterContextCount: afterContextEvents.length,
+    missingStart,
+    missingEnd,
+    missingSourceEvents,
+    completeSourceRange:
+      sourceEventCountExpected > 0 &&
+      !missingStart &&
+      !missingEnd &&
+      missingSourceEvents === 0,
+    partial:
+      Boolean(window.truncatedByLimit) ||
+      missingStart ||
+      missingEnd ||
+      missingSourceEvents > 0,
+  };
+}
+
 export function normalizeCheckpointGenerationResult(payload = {}) {
   const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   const checkpoint =
@@ -305,6 +438,63 @@ export async function listSessionCheckpoints(sessionId, {
     apiUrl,
     checkpoints,
     count: Number(response?.count ?? checkpoints.length) || checkpoints.length,
+  };
+}
+
+export async function showSessionCheckpoint(sessionId, checkpointId, {
+  targetPath = process.cwd(),
+  contextEvents = DEFAULT_RESTORE_CONTEXT_EVENTS,
+  maxEvents = DEFAULT_RESTORE_MAX_EVENTS,
+  resolveAuthSession = resolveActiveAuthSession,
+  request = requestJson,
+  fetchEventsBefore = pollSessionEventsBefore,
+} = {}) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    throw new Error("session id is required.");
+  }
+  const normalizedCheckpointId = normalizeString(checkpointId);
+  if (!normalizedCheckpointId) {
+    throw new Error("checkpoint id is required.");
+  }
+
+  const listed = await listSessionCheckpoints(normalizedSessionId, {
+    targetPath,
+    limit: MAX_CHECKPOINT_LIMIT,
+    resolveAuthSession,
+    request,
+  });
+  const checkpoint = findCheckpointById(listed.checkpoints, normalizedCheckpointId);
+  if (!checkpoint) {
+    throw new Error(`Checkpoint '${normalizedCheckpointId}' was not found in session ${normalizedSessionId}.`);
+  }
+  const restoreWindow = buildCheckpointRestoreWindow(checkpoint, {
+    contextEvents,
+    maxEvents,
+  });
+  const remote = await fetchEventsBefore(normalizedSessionId, {
+    targetPath,
+    beforeSequence: restoreWindow.beforeSequence,
+    limit: restoreWindow.limit,
+    forceCircuitProbe: true,
+    resolveAuthSession,
+  });
+  const classified = classifyCheckpointRestoreEvents(remote?.events || [], restoreWindow);
+  return {
+    ok: Boolean(remote?.ok),
+    reason: normalizeString(remote?.reason),
+    sessionId: normalizedSessionId,
+    checkpointId: normalizedCheckpointId,
+    apiUrl: listed.apiUrl,
+    checkpoint,
+    window: {
+      ...restoreWindow,
+      ...classified,
+      remoteOk: Boolean(remote?.ok),
+      remoteReason: normalizeString(remote?.reason),
+      remoteBeforeSequence: remote?.beforeSequence || null,
+      remoteCursor: remote?.cursor || null,
+    },
   };
 }
 
@@ -446,5 +636,9 @@ export {
   DEFAULT_BATCH_MAX_CHECKPOINTS,
   DEFAULT_MAX_EVENTS,
   DEFAULT_MIN_EVENTS,
+  DEFAULT_RESTORE_CONTEXT_EVENTS,
+  DEFAULT_RESTORE_MAX_EVENTS,
   MAX_BATCH_MAX_CHECKPOINTS,
+  MAX_RESTORE_CONTEXT_EVENTS,
+  MAX_RESTORE_EVENTS,
 };
