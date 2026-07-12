@@ -4,6 +4,7 @@ import { runComplexityMeasure } from "./complexity-measure.js";
 import { runCouplingAnalysis } from "./coupling-analysis.js";
 import { runCycleDetect } from "./cycle-detect.js";
 import { runDepGraph } from "./dep-graph.js";
+import { runLayeringCheck } from "./layering-check.js";
 
 export const CODE_QUALITY_TOOLS = Object.freeze({
   "dep-graph": {
@@ -60,6 +61,20 @@ export const CODE_QUALITY_TOOLS = Object.freeze({
     },
     handler: runComplexityMeasure,
   },
+  "layering-check": {
+    id: "layering-check",
+    description:
+      "Flag lower architectural layers importing higher-level app/UI layers. Uses the dep-graph under the hood and ignores external or unknown-layer imports.",
+    schema: {
+      type: "object",
+      properties: {
+        rootPath: { type: "string" },
+        files: { type: "array", items: { type: "string" } },
+        layers: { type: "array" },
+      },
+    },
+    handler: runLayeringCheck,
+  },
 });
 
 export const CODE_QUALITY_TOOL_IDS = Object.freeze(Object.keys(CODE_QUALITY_TOOLS));
@@ -86,4 +101,5 @@ export {
   runCouplingAnalysis,
   runCycleDetect,
   runDepGraph,
+  runLayeringCheck,
 };

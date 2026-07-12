@@ -15,6 +15,7 @@ import {
   runCouplingAnalysis,
   runCycleDetect,
   runDepGraph,
+  runLayeringCheck,
 } from "../src/agents/code-quality/index.js";
 import {
   buildDependencyGraph,
@@ -33,12 +34,13 @@ async function writeFile(root, relativePath, content) {
   await fsp.writeFile(full, content, "utf-8");
 }
 
-test("CODE_QUALITY_TOOL_IDS surfaces the 4 spec'd tools", () => {
+test("CODE_QUALITY_TOOL_IDS surfaces the 5 spec'd tools", () => {
   assert.deepEqual([...CODE_QUALITY_TOOL_IDS].sort(), [
     "complexity-measure",
     "coupling-analysis",
     "cycle-detect",
     "dep-graph",
+    "layering-check",
   ]);
 });
 
@@ -149,6 +151,47 @@ test("runCycleDetect: clean graph produces 0 findings", async () => {
     await writeFile(root, "a.js", "import { b } from './b.js';\nexport default b;\n");
     await writeFile(root, "b.js", "export const b = 1;\n");
     const findings = await runCycleDetect({ rootPath: root });
+    assert.equal(findings.length, 0);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runLayeringCheck: flags lower layers importing higher layers", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(
+      root,
+      "src/shared/config.js",
+      "import { route } from '../app/router';\nexport const config = route;\n"
+    );
+    await writeFile(
+      root,
+      "src/app/router.js",
+      "import { config } from '../shared/config.js';\nexport const route = config;\n"
+    );
+    const findings = await runLayeringCheck({ rootPath: root });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "code-quality.layer-violation");
+    assert.equal(findings[0].tool, "layering-check");
+    assert.equal(findings[0].file, "src/shared/config.js");
+    assert.match(findings[0].evidence, /shared imports higher app/);
+    assert.match(findings[0].evidence, /src\/app\/router\.js/);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runLayeringCheck: allows higher layers importing lower layers", async () => {
+  const root = await makeTempRepo();
+  try {
+    await writeFile(root, "src/shared/config.js", "export const config = 1;\n");
+    await writeFile(
+      root,
+      "src/app/router.js",
+      "import { config } from '../shared/config.js';\nexport const route = config;\n"
+    );
+    const findings = await runLayeringCheck({ rootPath: root });
     assert.equal(findings.length, 0);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
