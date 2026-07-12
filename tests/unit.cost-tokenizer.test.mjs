@@ -7,6 +7,7 @@ import {
   CHARS_PER_TOKEN,
   PROVIDER_FAMILIES,
   TOKENS_PER_WORD,
+  countWithProviderTokenizer,
   detectProviderFamily,
   estimateTokens,
   estimateTokensForMessages,
@@ -74,15 +75,42 @@ test("estimateTokens: backend returning invalid value falls back to heuristic", 
   assert.ok(tokens > 0);
 });
 
-test("estimateTokens: per-provider ratios are distinct", () => {
+test("countWithProviderTokenizer: uses real Anthropic and OpenAI tokenizers", () => {
+  assert.equal(
+    countWithProviderTokenizer("hello world!", { provider: "anthropic" }),
+    3
+  );
+  assert.equal(
+    countWithProviderTokenizer("hello world!", { provider: "openai", model: "gpt-4o" }),
+    3
+  );
+  assert.equal(
+    countWithProviderTokenizer("hello world!", { model: "gpt-5.3-codex" }),
+    3
+  );
+});
+
+test("countWithProviderTokenizer: returns null for providers without a real tokenizer", () => {
+  assert.equal(
+    countWithProviderTokenizer("hello world!", { provider: "google" }),
+    null
+  );
+  assert.equal(
+    countWithProviderTokenizer("hello world!", { provider: "unknown" }),
+    null
+  );
+});
+
+test("estimateTokens: real and fallback provider counts stay distinct", () => {
   const sample = "The quick brown fox jumps over the lazy dog.".repeat(50);
   const anthropic = estimateTokens(sample, { provider: "anthropic" });
   const openai = estimateTokens(sample, { provider: "openai" });
   const google = estimateTokens(sample, { provider: "google" });
-  // Anthropic's ratio is tighter (fewer chars per token) so it yields more
-  // tokens for the same text than OpenAI or Google.
-  assert.ok(anthropic > openai, "anthropic should estimate more than openai");
-  assert.ok(openai >= google, "openai should estimate ≥ google");
+  // Anthropic/OpenAI are real tokenizer counts; Google intentionally uses the
+  // conservative fallback until a supported Google tokenizer exists.
+  assert.ok(anthropic > openai, "anthropic tokenizer should count more than openai");
+  assert.ok(google > 0, "google fallback should still produce a budget count");
+  assert.notEqual(google, openai, "fallback count should not masquerade as tiktoken");
 });
 
 test("estimateTokens: model id alone infers provider family", () => {
@@ -95,19 +123,17 @@ test("estimateTokens: model id alone infers provider family", () => {
   assert.ok(claude >= gpt);
 });
 
-test("estimateTokens: code-like input produces higher count than length/4 alone", () => {
-  // Old formula: Math.ceil(47 / 4) = 12. Provider-aware should be higher
-  // because camelCase/underscores generate more tokens per character.
+test("estimateTokens: OpenAI path uses real tiktoken rather than length/4", () => {
   const codey = "function renderUserProfileCard(props) { return null; }";
   const tokens = estimateTokens(codey, { provider: "openai" });
-  assert.ok(tokens > Math.ceil(codey.length / 4));
+  assert.equal(tokens, 11);
+  assert.notEqual(tokens, Math.ceil(codey.length / 4));
 });
 
-test("estimateTokens: strips whitespace before measuring", () => {
+test("estimateTokens: real tokenizers count significant whitespace", () => {
   const lean = estimateTokens("hello world", { provider: "openai" });
   const padded = estimateTokens("   hello     world   ", { provider: "openai" });
-  // Whitespace collapses, so the two should match exactly.
-  assert.equal(padded, lean);
+  assert.ok(padded > lean);
 });
 
 test("estimateTokens: minimum output for non-empty string is 1", () => {
