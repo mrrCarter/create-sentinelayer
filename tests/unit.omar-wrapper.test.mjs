@@ -9,7 +9,7 @@ test("Unit Omar workflow: real LLM route keeps Omar in fail-closed direct-action
   const workflowText = await readFile(path.join(repoRoot, ".github", "workflows", "omar-gate.yml"), "utf8");
 
   assert.doesNotMatch(workflowText, /Validate Google key secret for Omar LLM scan/);
-  assert.match(workflowText, /uses:\s*mrrCarter\/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998/);
+  assert.match(workflowText, /uses:\s*mrrCarter\/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d/);
   assert.doesNotMatch(workflowText, /uses:\s*\.\/\.github\/actions\/omar-gate/);
   assert.match(workflowText, /openai_api_key:\s*\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
   assert.match(

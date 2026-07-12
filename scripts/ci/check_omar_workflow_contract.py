@@ -25,7 +25,7 @@ ALLOWED_GOOGLE_API_KEY_LINE = "google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY
 OPENAI_PRESENT_EXPR = "secrets.OPENAI_API_KEY != ''"
 GOOGLE_PRESENT_EXPR = "(secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '')"
 GOOGLE_ABSENT_EXPR = "secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == ''"
-ACTION_REF = "mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998"
+ACTION_REF = "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d"
 ALLOWED_LLM_PROVIDER_LINE = f"llm_provider: ${{{{ {OPENAI_PRESENT_EXPR} && 'openai' || ({GOOGLE_PRESENT_EXPR} && 'google' || 'openai') }}}}"
 ALLOWED_MODEL_LINE = f"model: ${{{{ {OPENAI_PRESENT_EXPR} && 'gpt-5.3-codex' || ({GOOGLE_PRESENT_EXPR} && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}}}"
 ALLOWED_MODEL_FALLBACK_LINE = f"model_fallback: ${{{{ {GOOGLE_PRESENT_EXPR} && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}}}"
@@ -310,7 +310,7 @@ jobs:
           echo "OMAR_SPEC_ID must be a 64-character lowercase hex digest"
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998
+        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
