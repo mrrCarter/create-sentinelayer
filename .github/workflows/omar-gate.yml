@@ -129,12 +129,12 @@ jobs:
     outputs:
       trusted_context: ${{ steps.trust_boundary.outputs.trusted_context }}
       credential_mode: ${{ steps.resolve_omar_credentials.outputs.credential_mode }}
-      run_id: ${{ steps.omar.outputs.run_id }}
-      gate_status: ${{ steps.omar.outputs.gate_status }}
-      p0_count: ${{ steps.omar.outputs.p0_count }}
-      p1_count: ${{ steps.omar.outputs.p1_count }}
-      p2_count: ${{ steps.omar.outputs.p2_count }}
-      p3_count: ${{ steps.omar.outputs.p3_count }}
+      run_id: ${{ steps.omar_result.outputs.run_id }}
+      gate_status: ${{ steps.omar_result.outputs.gate_status }}
+      p0_count: ${{ steps.omar_result.outputs.p0_count }}
+      p1_count: ${{ steps.omar_result.outputs.p1_count }}
+      p2_count: ${{ steps.omar_result.outputs.p2_count }}
+      p3_count: ${{ steps.omar_result.outputs.p3_count }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
       - name: Resolve trusted execution boundary
@@ -439,7 +439,8 @@ jobs:
       - name: Run Omar Gate
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998
+        continue-on-error: true
+        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
         with:
           github_token: ${{ github.token }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -450,24 +451,123 @@ jobs:
           sentinelayer_managed_llm: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
           codex_model: gpt-5.3-codex
-          model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
           use_codex: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
           codex_only: "false"
           llm_failure_policy: block
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
+      - name: Classify managed Omar failure
+        id: managed_failure
+        if: steps.trust_boundary.outputs.trusted_context == 'true' && steps.omar.outcome == 'failure'
+        shell: bash
+        env:
+          MANAGED_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+        run: |
+          set -euo pipefail
+          normalized_run_id="$(echo "${MANAGED_RUN_ID}" | tr -d '\r' | xargs)"
+          if [ -z "${normalized_run_id}" ] || ! echo "${normalized_run_id}" | grep -Eq '^[A-Za-z0-9_-]{8,128}$'; then
+            echo "::error::Managed Omar run_id is invalid or missing."
+            exit 1
+          fi
+          findings_path=".sentinelayer/runs/${normalized_run_id}/FINDINGS.jsonl"
+          if [ ! -f "${findings_path}" ]; then
+            echo "::error::Managed Omar findings file not found at ${findings_path}."
+            exit 1
+          fi
+          python3 scripts/ci/classify_omar_provider_outage.py \
+            --findings "${findings_path}" \
+            --github-output "${GITHUB_OUTPUT}"
+      - name: Run deterministic Omar Gate fallback
+        if: steps.trust_boundary.outputs.trusted_context == 'true' && steps.managed_failure.outputs.provider_outage_break_glass == 'true'
+        id: baseline_omar
+        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
+        with:
+          github_token: ${{ github.token }}
+          sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
+          sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
+          sentinelayer_managed_llm: "false"
+          scan_mode: deep
+          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          model: gpt-5.3-codex
+          codex_model: gpt-5.3-codex
+          model_fallback: gpt-4.1-mini
+          use_codex: "false"
+          codex_only: "false"
+          llm_failure_policy: deterministic_only
+          artifact_name_suffix: provider-outage-fallback
+          max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
+          min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
+          rate_limit_fail_mode: closed
+      - name: Select Omar Gate result
+        id: omar_result
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          MANAGED_OUTCOME: ${{ steps.omar.outcome || '' }}
+          PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
+          PROVIDER_OUTAGE_REASON: ${{ steps.managed_failure.outputs.reason || '' }}
+          MANAGED_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+          MANAGED_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
+          MANAGED_P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
+          MANAGED_P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
+          MANAGED_P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
+          MANAGED_P3_COUNT: ${{ steps.omar.outputs.p3_count || '0' }}
+          BASELINE_RUN_ID: ${{ steps.baseline_omar.outputs.run_id || '' }}
+          BASELINE_GATE_STATUS: ${{ steps.baseline_omar.outputs.gate_status || '' }}
+          BASELINE_P0_COUNT: ${{ steps.baseline_omar.outputs.p0_count || '0' }}
+          BASELINE_P1_COUNT: ${{ steps.baseline_omar.outputs.p1_count || '0' }}
+          BASELINE_P2_COUNT: ${{ steps.baseline_omar.outputs.p2_count || '0' }}
+          BASELINE_P3_COUNT: ${{ steps.baseline_omar.outputs.p3_count || '0' }}
+        run: |
+          set -euo pipefail
+          write_output() {
+            printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT}"
+          }
+          if [ "${PROVIDER_OUTAGE_BREAK_GLASS}" = "true" ]; then
+            selected="baseline"
+            run_id="${BASELINE_RUN_ID}"
+            gate_status="${BASELINE_GATE_STATUS}"
+            p0_count="${BASELINE_P0_COUNT}"
+            p1_count="${BASELINE_P1_COUNT}"
+            p2_count="${BASELINE_P2_COUNT}"
+            p3_count="${BASELINE_P3_COUNT}"
+          else
+            selected="managed"
+            if [ "${MANAGED_OUTCOME}" != "success" ]; then
+              echo "::error::Managed Omar failed and did not qualify for provider-outage break-glass (outcome='${MANAGED_OUTCOME}', reason='${PROVIDER_OUTAGE_REASON:-not_classified}')."
+              exit 1
+            fi
+            run_id="${MANAGED_RUN_ID}"
+            gate_status="${MANAGED_GATE_STATUS}"
+            p0_count="${MANAGED_P0_COUNT}"
+            p1_count="${MANAGED_P1_COUNT}"
+            p2_count="${MANAGED_P2_COUNT}"
+            p3_count="${MANAGED_P3_COUNT}"
+          fi
+          write_output selected_source "${selected}"
+          write_output run_id "${run_id}"
+          write_output gate_status "${gate_status}"
+          write_output p0_count "${p0_count}"
+          write_output p1_count "${p1_count}"
+          write_output p2_count "${p2_count}"
+          write_output p3_count "${p3_count}"
       - name: Assert Omar LLM contract is active
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
-          GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
+          GATE_STATUS: ${{ steps.omar_result.outputs.gate_status || '' }}
+          SELECTED_OMAR_SOURCE: ${{ steps.omar_result.outputs.selected_source || '' }}
+          MANAGED_OMAR_OUTCOME: ${{ steps.omar.outcome || '' }}
+          PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
+          PROVIDER_OUTAGE_REASON: ${{ steps.managed_failure.outputs.reason || '' }}
           REQUESTED_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
           REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
           REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
           REQUESTED_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           REQUESTED_MANAGED_LLM: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
@@ -476,6 +576,16 @@ jobs:
         run: |
           set -euo pipefail
           gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
+          if [ "${PROVIDER_OUTAGE_BREAK_GLASS}" = "true" ]; then
+            if [ "${MANAGED_OMAR_OUTCOME}" != "failure" ] || [ "${SELECTED_OMAR_SOURCE}" != "baseline" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MANAGED_LLM}" != "true" ]; then
+              echo "::error::Omar provider-outage break-glass contract drifted (managed_outcome='${MANAGED_OMAR_OUTCOME}' selected='${SELECTED_OMAR_SOURCE}' managed='${REQUESTED_MANAGED_LLM}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
+              exit 1
+            fi
+            echo "Omar provider-outage break-glass contract active (managed attempted fail-closed; deterministic fallback selected; reason='${PROVIDER_OUTAGE_REASON}')."
+          elif [ "${SELECTED_OMAR_SOURCE}" != "managed" ]; then
+            echo "::error::Omar selected source is invalid: '${SELECTED_OMAR_SOURCE}'."
+            exit 1
+          fi
           if [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ]; then
             echo "::error::Omar model policy drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
             exit 1
@@ -483,14 +593,14 @@ jobs:
           if [ "${REQUESTED_OPENAI_KEY_PRESENT}" = "true" ]; then
             expected_fallback="gpt-4.1-mini"
             if [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
-              expected_fallback="gemini-3.1-flash-lite"
+              expected_fallback="gemini-2.5-flash"
             fi
             if [ "${REQUESTED_PROVIDER}" != "openai" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "${expected_fallback}" ] || [ "${REQUESTED_USE_CODEX}" != "true" ]; then
               echo "::error::Omar OpenAI/Codex contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
               exit 1
             fi
           elif [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
-            if [ "${REQUESTED_PROVIDER}" != "google" ] || [ "${REQUESTED_MODEL}" != "gemini-3.1-flash-lite" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-3.1-flash-lite" ] || [ "${REQUESTED_USE_CODEX}" != "false" ]; then
+            if [ "${REQUESTED_PROVIDER}" != "google" ] || [ "${REQUESTED_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_USE_CODEX}" != "false" ]; then
               echo "::error::Omar Google fallback contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
               exit 1
             fi
@@ -511,12 +621,12 @@ jobs:
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         shell: bash
         env:
-          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
-          OMAR_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
-          OMAR_P0: ${{ steps.omar.outputs.p0_count || '0' }}
-          OMAR_P1: ${{ steps.omar.outputs.p1_count || '0' }}
-          OMAR_P2: ${{ steps.omar.outputs.p2_count || '0' }}
-          OMAR_P3: ${{ steps.omar.outputs.p3_count || '0' }}
+          OMAR_RUN_ID: ${{ steps.omar_result.outputs.run_id || '' }}
+          OMAR_GATE_STATUS: ${{ steps.omar_result.outputs.gate_status || '' }}
+          OMAR_P0: ${{ steps.omar_result.outputs.p0_count || '0' }}
+          OMAR_P1: ${{ steps.omar_result.outputs.p1_count || '0' }}
+          OMAR_P2: ${{ steps.omar_result.outputs.p2_count || '0' }}
+          OMAR_P3: ${{ steps.omar_result.outputs.p3_count || '0' }}
         run: |
           set -euo pipefail
           if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9_-]{8,128}$'; then
@@ -532,12 +642,14 @@ jobs:
         shell: bash
         env:
           OMAR_UPLOAD_LOGS: ${{ vars.OMAR_UPLOAD_LOGS || 'false' }}
-          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
-          OMAR_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
-          OMAR_P0: ${{ steps.omar.outputs.p0_count || '0' }}
-          OMAR_P1: ${{ steps.omar.outputs.p1_count || '0' }}
-          OMAR_P2: ${{ steps.omar.outputs.p2_count || '0' }}
-          OMAR_P3: ${{ steps.omar.outputs.p3_count || '0' }}
+          OMAR_RUN_ID: ${{ steps.omar_result.outputs.run_id || '' }}
+          OMAR_GATE_STATUS: ${{ steps.omar_result.outputs.gate_status || '' }}
+          OMAR_P0: ${{ steps.omar_result.outputs.p0_count || '0' }}
+          OMAR_P1: ${{ steps.omar_result.outputs.p1_count || '0' }}
+          OMAR_P2: ${{ steps.omar_result.outputs.p2_count || '0' }}
+          OMAR_P3: ${{ steps.omar_result.outputs.p3_count || '0' }}
+          OMAR_SELECTED_SOURCE: ${{ steps.omar_result.outputs.selected_source || '' }}
+          OMAR_PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
           OMAR_SCAN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           OMAR_SEVERITY_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
@@ -545,8 +657,8 @@ jobs:
           OMAR_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           OMAR_MANAGED_LLM: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           OMAR_LLM_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          OMAR_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
-          OMAR_MODEL_FALLBACK: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          OMAR_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
+          OMAR_MODEL_FALLBACK: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           rm -rf omar-artifacts
@@ -597,7 +709,7 @@ jobs:
               },
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
-                  "action_ref": "mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998",
+                  "action_ref": "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d",
                   "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
                   "model": env("OMAR_MODEL", "gpt-5.3-codex"),
                   "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
@@ -606,6 +718,8 @@ jobs:
                   "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
                   "managed_llm": bool_env("OMAR_MANAGED_LLM"),
                   "llm_failure_policy": "block",
+                  "selected_source": env("OMAR_SELECTED_SOURCE"),
+                  "provider_outage_break_glass": bool_env("OMAR_PROVIDER_OUTAGE_BREAK_GLASS"),
               },
               "github": {
                   "repository": repository,

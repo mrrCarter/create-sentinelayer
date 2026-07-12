@@ -2517,7 +2517,7 @@ jobs:
           fi
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998
+        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
         with:
           github_token: \${{ github.token }}
           openai_api_key: \${{ secrets.OPENAI_API_KEY }}
@@ -2527,9 +2527,9 @@ jobs:
           sentinelayer_managed_llm: \${{ secrets.${normalizedSecret} != '' }}
           scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
+          model: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
           codex_model: gpt-5.3-codex
-          model_fallback: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          model_fallback: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
           use_codex: \${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
           codex_only: "false"
           llm_failure_policy: block
@@ -2585,8 +2585,8 @@ jobs:
           OMAR_GOOGLE_KEY_PRESENT: \${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
           OMAR_MANAGED_LLM: \${{ secrets.${normalizedSecret} != '' }}
           OMAR_LLM_PROVIDER: \${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          OMAR_MODEL: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-5.3-codex') }}
-          OMAR_MODEL_FALLBACK: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-3.1-flash-lite' || 'gpt-4.1-mini' }}
+          OMAR_MODEL: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
+          OMAR_MODEL_FALLBACK: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           mkdir -p omar-artifacts
@@ -2626,7 +2626,7 @@ jobs:
               },
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
-                  "action_ref": "mrrCarter/sentinelayer-v1-action@5c4d8c175eb117ea5256452e50e01249ab126998",
+                  "action_ref": "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d",
                   "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
                   "model": env("OMAR_MODEL", "gpt-5.3-codex"),
                   "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
