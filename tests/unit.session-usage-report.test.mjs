@@ -141,13 +141,17 @@ test("session usage report surfaces estimated non-human message usage as non-bil
   assert.equal(report.totals.totalTokens > 0, true);
   assert.equal(report.perAgent[0].label, "claude-warden");
   assert.equal(report.perAgent[0].estimatedEntries, 1);
+  assert.equal(report.perAgent[0].customerCostUsd, null);
+  assert.equal(report.totals.customerCostUsd, null);
   assert.equal(report.recentEntries[0].estimated, true);
   assert.match(report.recentEntries[0].idempotencyKeyHash, /^sha256:[0-9a-f]{16}$/);
 
-  const rendered = [
-    renderSessionUsageMarkdown(report),
-    renderSessionUsageSummary(report),
-  ].join("\n");
+  const markdown = renderSessionUsageMarkdown(report);
+  const summary = renderSessionUsageSummary(report);
+  const rendered = [markdown, summary].join("\n");
+  assert.match(markdown, /Customer cost: -/);
+  assert.doesNotMatch(summary, /customer \$/);
+  assert.match(summary, /estimated 1/);
   assert.match(rendered, /Estimated entries: 1/);
   assert.match(rendered, /not billing-grade/);
   assert.match(rendered, /estimated_agent_message \(estimated\)/);
@@ -241,6 +245,7 @@ test("session usage report accepts hosted byAgent and byAction rollup aliases", 
         outputTokens: 125,
         totalTokens: 425,
         providerCostUsd: 0.00425,
+        billableCostUsd: 0.00625,
       },
       byAgent: [
         {
@@ -250,6 +255,7 @@ test("session usage report accepts hosted byAgent and byAction rollup aliases", 
           outputTokens: 25,
           totalTokens: 125,
           providerCostUsd: 0.00125,
+          billable_cost_usd: 0.00175,
         },
         {
           agentId: "omargate-backend",
@@ -258,6 +264,7 @@ test("session usage report accepts hosted byAgent and byAction rollup aliases", 
           outputTokens: 100,
           totalTokens: 300,
           providerCostUsd: 0.003,
+          billableCostUsd: 0.0045,
         },
       ],
       byAction: [
@@ -268,6 +275,7 @@ test("session usage report accepts hosted byAgent and byAction rollup aliases", 
           outputTokens: 125,
           totalTokens: 425,
           providerCostUsd: 0.00425,
+          billableCostUsd: 0.00625,
         },
       ],
       entries: [
@@ -289,13 +297,89 @@ test("session usage report accepts hosted byAgent and byAction rollup aliases", 
   });
 
   assert.equal(report.totals.acceptedEntries, 2);
+  assert.equal(report.totals.customerCostUsd, 0.00625);
   assert.deepEqual(report.totals.priceBookVersions, ["2026-05-19"]);
   assert.deepEqual(
     report.perAgent.map((entry) => entry.label),
     ["omargate-backend", "omargate-testing"],
   );
   assert.equal(report.perAgent[0].totalTokens, 300);
+  assert.equal(report.perAgent[0].customerCostUsd, 0.0045);
   assert.equal(report.perAction[0].label, "omargate_deep");
   assert.equal(report.perAction[0].entries, 2);
-  assert.match(renderSessionUsageSummary(report), /Per agent:/);
+  assert.equal(report.perAction[0].customerCostUsd, 0.00625);
+  assert.match(renderSessionUsageSummary(report), /customer \$0\.004500/);
+});
+
+test("hosted usage report honors explicit non-billable flags over present customer values", () => {
+  const report = buildSessionUsageReportFromLedgerPayload({
+    sessionId: "hosted-explicit-free-session",
+    payload: {
+      sessionId: "hosted-explicit-free-session",
+      totals: {
+        entries: 1,
+        inputTokens: 80,
+        outputTokens: 20,
+        totalTokens: 100,
+        providerCostUsd: 0.001,
+        customerCostUsd: 9.99,
+        has_customer_cost: "false",
+        unpriced: 1,
+        estimated_entries: 1,
+      },
+      byAgent: [
+        {
+          agentId: "senti",
+          entries: 1,
+          inputTokens: 80,
+          outputTokens: 20,
+          totalTokens: 100,
+          providerCostUsd: 0.001,
+          billableCostUsd: 8.88,
+          hasCustomerCost: "0",
+          unpriced: 1,
+          estimatedEntries: 1,
+        },
+      ],
+      byAction: [
+        {
+          action: "session_recap",
+          entries: 1,
+          inputTokens: 80,
+          outputTokens: 20,
+          totalTokens: 100,
+          providerCostUsd: 0.001,
+          billable_cost_usd: 7.77,
+          has_customer_cost: false,
+          unpriced: 1,
+        },
+      ],
+      entries: [
+        {
+          timestamp: "2026-06-30T07:30:00.000Z",
+          ledgerEntryId: "bill_explicit_free",
+          idempotencyKey: "hosted-explicit-free-key",
+          agentId: "senti",
+          action: "session_recap",
+          model: "gpt-5-codex",
+          inputTokens: 80,
+          outputTokens: 20,
+          totalTokens: 100,
+          providerCostUsd: 0.001,
+          customerCostUsd: 9.99,
+        },
+      ],
+    },
+  });
+
+  assert.equal(report.totals.customerCostUsd, null);
+  assert.equal(report.perAgent[0].customerCostUsd, null);
+  assert.equal(report.perAction[0].customerCostUsd, null);
+
+  const markdown = renderSessionUsageMarkdown(report);
+  const summary = renderSessionUsageSummary(report);
+  assert.match(markdown, /Customer cost: -/);
+  assert.doesNotMatch(summary, /customer \$/);
+  assert.match(summary, /unpriced 1/);
+  assert.match(summary, /estimated 1/);
 });
