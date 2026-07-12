@@ -1,21 +1,24 @@
+import { countTokens as countAnthropicTokens } from "@anthropic-ai/tokenizer";
+import { encoding_for_model, get_encoding } from "tiktoken";
+
 // Provider-aware token estimator (#A12, spec §5.2).
 //
 // The rest of the CLI has been guessing token counts with `text.length / 4`
 // since v0.1. That's off by 20-40% vs. the real tokenizer on prose, and
 // wildly off on code (identifiers are much more tokens per char than prose).
-// This module ships a zero-dep heuristic that is significantly more accurate
-// and — critically — provider-aware so budget calculations stop rewarding
-// whoever has the larger BPE vocabulary.
+// This module uses the real Anthropic and OpenAI tokenizers where available
+// and keeps the calibrated provider-aware heuristic as the fail-safe for
+// unsupported providers or tokenizer runtime failures.
 //
 // Design goals:
-//   - Zero runtime dependencies. @anthropic-ai/tokenizer and tiktoken are
-//     multi-MB WASM payloads we're not willing to add at CLI-install time.
-//   - API stable enough that swapping in the real tokenizer later is a
-//     strict drop-in — pass `{ backend: fn }` to `estimateTokens` and the
-//     backend takes precedence over the heuristic.
+//   - Real tokenizer first for supported providers.
+//   - API stable enough for tests and callers that need custom counting:
+//     pass `{ backend: fn }` to `estimateTokens` and the backend takes
+//     precedence over the built-in tokenizers.
 //   - Calibrated ratios per provider family. Numbers below are measured
 //     against published BPE stats for cl100k_base (OpenAI), claude (Anthropic),
-//     and gemini (Google) across a mix of English prose + JS/TS source.
+//     and gemini (Google) across a mix of English prose + JS/TS source, and
+//     are only used when a real tokenizer cannot be applied.
 
 const PROVIDER_FAMILIES = Object.freeze(["anthropic", "openai", "google", "unknown"]);
 
@@ -51,6 +54,8 @@ const MODEL_PROVIDER_RULES = [
   { pattern: /^google[/:]/i, family: "google" },
 ];
 
+const OPENAI_DEFAULT_ENCODING = "cl100k_base";
+
 // Detect provider family from a loose model id: Anthropic conventions like
 // "claude-opus-4-7", OpenAI "gpt-5.3-codex" / "o4-mini" / "codex-mini-2026",
 // Google "gemini-2.5-pro". Unknown ids fall back to the generic tokenizer.
@@ -85,35 +90,15 @@ function countWords(text) {
   return parts.length;
 }
 
-// Estimate token count for a text against a provider family. Uses a blend
-// of char-per-token and word-per-token so short inputs (which are mostly
-// function of token-per-word behavior) and long runs of no-break chars
-// (where the char ratio dominates) both get sensible answers.
-//
-// Options:
-//   - provider: "anthropic" | "openai" | "google" | "unknown" (explicit)
-//   - model:    model id, used to infer provider when provider is omitted
-//   - backend:  fn(text) -> number. Overrides the heuristic. This is the
-//               hook for swapping in @anthropic-ai/tokenizer / tiktoken
-//               without rewriting callers.
-export function estimateTokens(
-  text,
-  { provider = "", model = "", backend = null } = {}
-) {
-  const str = typeof text === "string" ? text : text == null ? "" : String(text);
-  if (!str) {
-    return 0;
+function safePositiveCeil(value) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return null;
   }
-  if (typeof backend === "function") {
-    const custom = Number(backend(str));
-    if (Number.isFinite(custom) && custom >= 0) {
-      return Math.max(1, Math.ceil(custom));
-    }
-  }
-  let family = normalizeProviderFamily(provider);
-  if (family === "unknown" && model) {
-    family = detectProviderFamily(model);
-  }
+  return Math.max(1, Math.ceil(normalized));
+}
+
+function heuristicEstimateTokens(str, family) {
   const charsPerToken = CHARS_PER_TOKEN[family] || CHARS_PER_TOKEN.unknown;
   const tokensPerWord = TOKENS_PER_WORD[family] || TOKENS_PER_WORD.unknown;
 
@@ -129,6 +114,87 @@ export function estimateTokens(
   // of the two, because underestimating token counts blows budgets; this
   // biases cost estimates slightly on the safe side.
   return Math.max(1, charEstimate, wordEstimate);
+}
+
+function countOpenAiTokens(str, model) {
+  let encoder = null;
+  try {
+    encoder = model
+      ? encoding_for_model(String(model).trim())
+      : get_encoding(OPENAI_DEFAULT_ENCODING);
+  } catch {
+    encoder = get_encoding(OPENAI_DEFAULT_ENCODING);
+  }
+
+  try {
+    return encoder.encode(str).length;
+  } finally {
+    if (encoder && typeof encoder.free === "function") {
+      encoder.free();
+    }
+  }
+}
+
+export function countWithProviderTokenizer(
+  text,
+  { provider = "", model = "" } = {}
+) {
+  const str = typeof text === "string" ? text : text == null ? "" : String(text);
+  if (!str || !str.trim()) {
+    return 0;
+  }
+
+  let family = normalizeProviderFamily(provider);
+  if (family === "unknown" && model) {
+    family = detectProviderFamily(model);
+  }
+
+  if (family === "anthropic") {
+    return safePositiveCeil(countAnthropicTokens(str));
+  }
+  if (family === "openai") {
+    return safePositiveCeil(countOpenAiTokens(str, model));
+  }
+  return null;
+}
+
+// Estimate token count for a text against a provider family. Uses a blend
+// of real provider tokenizers and the provider-aware fallback heuristic.
+//
+// Options:
+//   - provider: "anthropic" | "openai" | "google" | "unknown" (explicit)
+//   - model:    model id, used to infer provider when provider is omitted
+//   - backend:  fn(text) -> number. Overrides the built-in tokenizer path.
+export function estimateTokens(
+  text,
+  { provider = "", model = "", backend = null } = {}
+) {
+  const str = typeof text === "string" ? text : text == null ? "" : String(text);
+  if (!str || !str.trim()) {
+    return 0;
+  }
+  if (typeof backend === "function") {
+    const custom = safePositiveCeil(backend(str));
+    if (custom !== null) {
+      return custom;
+    }
+  }
+
+  let family = normalizeProviderFamily(provider);
+  if (family === "unknown" && model) {
+    family = detectProviderFamily(model);
+  }
+
+  try {
+    const tokenizerCount = countWithProviderTokenizer(str, { provider: family, model });
+    if (tokenizerCount !== null) {
+      return tokenizerCount;
+    }
+  } catch {
+    // Keep budget calculations available even if a native/WASM tokenizer
+    // cannot initialize in a constrained runtime.
+  }
+  return heuristicEstimateTokens(str, family);
 }
 
 // Combined token count + cost calculation for a single request. Consumers
@@ -157,4 +223,9 @@ export function estimateTokensForMessages(
   return total;
 }
 
-export { CHARS_PER_TOKEN, PROVIDER_FAMILIES, TOKENS_PER_WORD };
+export {
+  CHARS_PER_TOKEN,
+  OPENAI_DEFAULT_ENCODING,
+  PROVIDER_FAMILIES,
+  TOKENS_PER_WORD,
+};
