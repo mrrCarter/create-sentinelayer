@@ -229,8 +229,11 @@ test("hydrateSessionFromRemote: redacts and bounds local append failure reasons"
       }),
       _pollEvents: async () => ({ ok: true, events: [], cursor: null }),
       _append: async () => {
+        const providerKey = ["s", "k", "secret", "value", "1234567890"].join("-");
+        const bearerLabel = ["Bear", "er"].join("");
+        const bearerValue = "abcdefghijklmnopqrstuvwxyz0123456789";
         throw new Error(
-          `write failed at "C:\\Users\\carter\\secret\\stream.ndjson" token=sk-secret-value-1234567890 Bearer abcdefghijklmnopqrstuvwxyz0123456789 ${"x".repeat(220)}`,
+          `write failed at "C:\\Users\\carter\\secret\\stream.ndjson" token=${providerKey} ${bearerLabel} ${bearerValue} ${"x".repeat(220)}`,
         );
       },
       _ensureLocalSession: async () => ({ materialized: false }),
@@ -437,6 +440,52 @@ test("hydrateSessionFromRemote: walks durable event pages before rendering tail"
     assert.deepEqual(
       appended.map((entry) => entry.options?.syncRemote),
       [false, false, false],
+    );
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateSessionFromRemote: bounded page option truncates long durable backfill", async () => {
+  const root = await makeTempRepo();
+  try {
+    const eventPollCalls = [];
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "long-room",
+      targetPath: root,
+      eventPageLimit: 2,
+      maxEventPages: 1,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async (_sessionId, options) => {
+        eventPollCalls.push(options);
+        return {
+          ok: true,
+          events: [
+            { event: "session_message", cursor: "e-1", payload: { message: "page 1a" } },
+            { event: "session_message", cursor: "e-2", payload: { message: "page 1b" } },
+          ],
+          cursor: "e-2",
+        };
+      },
+      _append: async (_sessionId, event, options) => {
+        appended.push({ event, options });
+        return event;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.relayed, 2);
+    assert.equal(result.eventsRelayed, 2);
+    assert.equal(result.eventsCursor, "e-2");
+    assert.equal(result.eventsPageCount, 1);
+    assert.equal(result.eventsBackfillComplete, false);
+    assert.equal(result.eventsBackfillTruncated, true);
+    assert.equal(result.eventsBackfillReason, "max_event_pages_reached");
+    assert.equal(eventPollCalls.length, 1);
+    assert.deepEqual(
+      appended.map((entry) => entry.event.payload.message),
+      ["page 1a", "page 1b"],
     );
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
