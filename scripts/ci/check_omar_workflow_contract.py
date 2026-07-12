@@ -241,6 +241,8 @@ def validate_omar_contract(workflow_text: str) -> None:
         "continue-on-error: true",
         "Classify managed Omar failure",
         "classify_omar_provider_outage.py",
+        "RUN_SUMMARY.json",
+        "--run-summary",
         "provider_outage_break_glass",
         "Run deterministic Omar Gate fallback",
         'sentinelayer_managed_llm: "false"',
@@ -369,7 +371,8 @@ jobs:
           rate_limit_fail_mode: closed
       - name: Classify managed Omar failure
         run: |
-          python3 scripts/ci/classify_omar_provider_outage.py --findings .sentinelayer/runs/run/FINDINGS.jsonl --github-output "${GITHUB_OUTPUT}"
+          summary_path=".sentinelayer/runs/run/RUN_SUMMARY.json"
+          python3 scripts/ci/classify_omar_provider_outage.py --findings .sentinelayer/runs/run/FINDINGS.jsonl --run-summary "${summary_path}" --github-output "${GITHUB_OUTPUT}"
           echo "provider_outage_break_glass"
       - name: Run deterministic Omar Gate fallback
         uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
@@ -432,6 +435,12 @@ jobs:
 """
     validate_omar_contract(valid_workflow)
 
+    _assert_fails(
+        valid_workflow.replace(
+            ' --run-summary "${summary_path}"',
+            "",
+        ),
+    )
     _assert_fails(
         valid_workflow.replace(
             "sentinelayer_managed_llm: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}",
