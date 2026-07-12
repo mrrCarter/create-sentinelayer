@@ -15,7 +15,7 @@ async function makeTempRepo() {
   return fsp.mkdtemp(path.join(os.tmpdir(), "senti-run-persona-"));
 }
 
-test("SUPPORTED_PERSONA_IDS covers the 12 non-frontend personas", () => {
+test("SUPPORTED_PERSONA_IDS covers the 13 non-frontend personas", () => {
   assert.deepEqual([...SUPPORTED_PERSONA_IDS], [
     "ai-governance",
     "backend",
@@ -24,12 +24,35 @@ test("SUPPORTED_PERSONA_IDS covers the 12 non-frontend personas", () => {
     "documentation",
     "infrastructure",
     "observability",
+    "performance",
     "release",
     "reliability",
     "security",
     "supply-chain",
     "testing",
   ]);
+});
+
+test("runPersona: performance mode runs Arjun tools", async () => {
+  const root = await makeTempRepo();
+  try {
+    await fsp.mkdir(path.join(root, "src", "api"), { recursive: true });
+    await fsp.writeFile(
+      path.join(root, "src", "api", "users.js"),
+      "export async function handler(ids) { for (const id of ids) { await prisma.user.findMany({ where: { id } }); } }\n",
+      "utf-8"
+    );
+    const result = await runPersona({
+      personaId: "performance",
+      mode: "audit",
+      rootPath: root,
+    });
+    assert.equal(result.personaId, "performance");
+    assert.ok(result.findings.some((f) => f.kind === "performance.n-plus-one-loop"));
+    assert.ok(result.mode_config.allowedTools.includes("n-plus-one-detect"));
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("runPersona: unknown persona id throws", async () => {

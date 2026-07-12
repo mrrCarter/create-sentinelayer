@@ -1,9 +1,9 @@
 /**
  * Unified per-persona runner for investor-DD (#investor-dd-4..15).
  *
- * Wires the 13 domain personas (security, backend, code-quality, testing,
- * data-layer, reliability, release, observability, infrastructure,
- * supply-chain, frontend, documentation, ai-governance) into the review
+ * Wires the 14 domain personas (security, backend, code-quality, testing,
+ * data-layer, performance, reliability, release, observability,
+ * infrastructure, supply-chain, frontend, documentation, ai-governance) into the review
  * loop. Each persona dispatches its declared domain tools against every
  * file the router assigns to it, collects findings, and returns a
  * per-persona coverage proof.
@@ -23,6 +23,7 @@ import { DATA_LAYER_TOOLS } from "../agents/data-layer/tools/index.js";
 import { DOCUMENTATION_TOOLS } from "../agents/documentation/tools/index.js";
 import { INFRASTRUCTURE_TOOLS } from "../agents/infrastructure/tools/index.js";
 import { OBSERVABILITY_TOOLS } from "../agents/observability/tools/index.js";
+import { PERFORMANCE_TOOLS } from "../agents/performance/tools/index.js";
 import { RELEASE_TOOLS } from "../agents/release/tools/index.js";
 import { RELIABILITY_TOOLS } from "../agents/reliability/tools/index.js";
 import { SECURITY_TOOLS } from "../agents/security/tools/index.js";
@@ -44,6 +45,7 @@ export const INVESTOR_DD_PERSONA_TOOL_REGISTRY = Object.freeze({
   reliability: RELIABILITY_TOOLS,
   release: RELEASE_TOOLS,
   observability: OBSERVABILITY_TOOLS,
+  performance: PERFORMANCE_TOOLS,
   infrastructure: INFRASTRUCTURE_TOOLS,
   "supply-chain": SUPPLY_CHAIN_TOOLS,
   frontend: FRONTEND_TOOLS,

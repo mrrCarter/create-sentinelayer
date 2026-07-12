@@ -12,6 +12,7 @@ Deliver a deterministic, security-first CLI that scaffolds Sentinelayer artifact
 - Managed LLM proxy client behavior in `src/ai/proxy.js` and `src/ai/client.js`, including quota/paywall denial metadata, retry policy, and structured audit/Senti fallback artifacts in `src/audit/persona-loop.js` and `src/session/daemon.js`.
 - Cost governance surfaces in `src/cost/*`, including provider-aware tokenization, pricing, usage history, budget enforcement, and their unit tests.
 - Investor-DD and Omar due-diligence runner surfaces in `src/review/investor-dd-*`, including `progress.json`, `summary.ddProgress`, `summary.usageTelemetry`, per-persona runtime/LOC metrics, and billing-grade session usage ledger integration when available.
+- Deterministic persona tool registries in `src/agents/*`, including per-persona domain tools, mode/run-persona wiring, and investor-DD persona registry integration.
 
 ## Guardrails
 - Preserve backward-compatible binary aliases (`create-sentinelayer`, `sentinel`).
