@@ -16,7 +16,7 @@
 
 // Persona tool id lists are inlined here instead of imported from each
 // persona module. Rationale: this module has to be importable before all
-// 12 persona PRs (#A13-A24) have merged to main. Once they do, a future
+// persona PRs (#A13-A24) have merged to main. Once they do, a future
 // refactor can swap these for real imports — the tool-id strings are
 // stable anyway.
 
@@ -45,6 +45,7 @@ const DOMAIN_TOOL_IDS_BY_PERSONA = Object.freeze({
   "documentation": Object.freeze(["api-diff", "dead-link-check", "docstring-coverage", "readme-freshness"]),
   "infrastructure": Object.freeze(["checkov-run", "drift-detect", "iam-least-priv-check", "tflint-run"]),
   "observability": Object.freeze(["alert-audit", "dashboard-gap", "log-schema-check", "span-coverage"]),
+  "performance": Object.freeze(["blocking-io-audit", "bundle-budget-check", "cache-policy-audit", "n-plus-one-detect"]),
   "release": Object.freeze(["changelog-diff", "feature-flag-audit", "rollback-verify", "semver-check"]),
   "reliability": Object.freeze(["backpressure-check", "chaos-probe", "graceful-degradation-check", "health-check-audit"]),
   "security": Object.freeze(["authz-audit", "crypto-review", "sast-scan", "secrets-scan"]),

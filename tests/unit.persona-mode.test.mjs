@@ -31,9 +31,9 @@ test("normalizePersonaMode: recognizes both modes, defaults to audit", () => {
   assert.equal(normalizePersonaMode("something-else"), "audit");
 });
 
-test("listKnownPersonaIds: surfaces the 12 non-frontend personas", () => {
+test("listKnownPersonaIds: surfaces the 13 non-frontend personas", () => {
   const ids = listKnownPersonaIds();
-  assert.equal(ids.length, 12);
+  assert.equal(ids.length, 13);
   for (const expected of [
     "security",
     "backend",
@@ -41,6 +41,7 @@ test("listKnownPersonaIds: surfaces the 12 non-frontend personas", () => {
     "code-quality",
     "data-layer",
     "documentation",
+    "performance",
     "reliability",
     "release",
     "observability",
@@ -79,7 +80,7 @@ test("buildPersonaConfigForMode: read-only baseline always present in both modes
   }
 });
 
-test("buildPersonaConfigForMode: all 12 personas exposed in both modes", () => {
+test("buildPersonaConfigForMode: all 13 personas exposed in both modes", () => {
   for (const personaId of listKnownPersonaIds()) {
     for (const mode of PERSONA_MODES) {
       const cfg = buildPersonaConfigForMode(personaId, mode);
@@ -89,6 +90,18 @@ test("buildPersonaConfigForMode: all 12 personas exposed in both modes", () => {
       // persona.
       assert.ok(cfg.allowedTools.length > READONLY_BASELINE.length);
     }
+  }
+});
+
+test("buildPersonaConfigForMode: performance exposes Arjun domain tools", () => {
+  const cfg = buildPersonaConfigForMode("performance", "audit");
+  for (const expected of [
+    "blocking-io-audit",
+    "bundle-budget-check",
+    "cache-policy-audit",
+    "n-plus-one-detect",
+  ]) {
+    assert.ok(cfg.allowedTools.includes(expected), `expected performance tool ${expected}`);
   }
 });
 

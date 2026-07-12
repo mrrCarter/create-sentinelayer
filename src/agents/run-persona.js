@@ -35,6 +35,8 @@ const PERSONA_LOADERS = Object.freeze({
     (await import("./infrastructure/index.js")).runAllInfrastructureTools,
   "observability": async () =>
     (await import("./observability/index.js")).runAllObservabilityTools,
+  "performance": async () =>
+    (await import("./performance/index.js")).runAllPerformanceTools,
   "release": async () =>
     (await import("./release/index.js")).runAllReleaseTools,
   "reliability": async () =>

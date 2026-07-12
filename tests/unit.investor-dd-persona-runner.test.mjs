@@ -26,8 +26,8 @@ async function writeFile(root, relativePath, content) {
   await fsp.writeFile(fullPath, content, "utf-8");
 }
 
-test("registry covers 13 canonical personas including frontend", () => {
-  assert.equal(INVESTOR_DD_PERSONA_IDS.length, 13);
+test("registry covers 14 canonical personas including frontend", () => {
+  assert.equal(INVESTOR_DD_PERSONA_IDS.length, 14);
   const canonical = [
     "security",
     "backend",
@@ -39,6 +39,7 @@ test("registry covers 13 canonical personas including frontend", () => {
     "observability",
     "infrastructure",
     "supply-chain",
+    "performance",
     "frontend",
     "documentation",
     "ai-governance",
