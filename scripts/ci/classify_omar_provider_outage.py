@@ -187,8 +187,8 @@ def classify_provider_outage(
 
     if _is_managed_billing_denied_no_findings(findings, counts, run_summary):
         return ProviderOutageClassification(
-            provider_outage_break_glass=True,
-            reason="managed_billing_denied_no_findings",
+            provider_outage_break_glass=False,
+            reason="managed_billing_denied_not_provider_outage",
             blocking_count=0,
             p0_count=0,
             p1_count=0,

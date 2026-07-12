@@ -61,7 +61,7 @@ test("Unit Omar provider outage classifier: allows current action system LLM out
   assert.match(outputs, /reason=single_system_llm_provider_outage/);
 });
 
-test("Unit Omar provider outage classifier: allows managed billing-denied run with no findings", async () => {
+test("Unit Omar provider outage classifier: rejects managed billing-denied run with no findings", async () => {
   const { result, outputs } = await runClassifier([], {
     status: "failed",
     progress: "failed:billing-denied",
@@ -83,8 +83,8 @@ test("Unit Omar provider outage classifier: allows managed billing-denied run wi
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(outputs, /provider_outage_break_glass=true/);
-  assert.match(outputs, /reason=managed_billing_denied_no_findings/);
+  assert.match(outputs, /provider_outage_break_glass=false/);
+  assert.match(outputs, /reason=managed_billing_denied_not_provider_outage/);
 });
 
 test("Unit Omar provider outage classifier: rejects empty non-billing managed errors", async () => {
