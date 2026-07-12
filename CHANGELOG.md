@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.0...v0.39.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **session:** bound remote recap hydration ([#770](https://github.com/mrrCarter/create-sentinelayer/issues/770)) ([35ff39c](https://github.com/mrrCarter/create-sentinelayer/commit/35ff39ca1a386f9e312d71bab5963779ff0aa186))
+
 ## [0.39.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.38.0...v0.39.0) (2026-07-12)
 
 
