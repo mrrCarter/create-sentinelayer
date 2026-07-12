@@ -268,6 +268,7 @@ test("buildSessionUsageLedger estimates non-human message output without billing
   const ledger = buildSessionUsageLedger(events, {
     sessionId: "estimated-message-session",
     includeEstimatedMessages: true,
+    estimatedMessageTokenBackend: () => 7,
   });
 
   assert.equal(ledger.entries.length, 1);
@@ -276,7 +277,7 @@ test("buildSessionUsageLedger estimates non-human message output without billing
   assert.equal(ledger.entries[0].action, "estimated_agent_message");
   assert.equal(ledger.entries[0].agentId, "codex-senti-product");
   assert.equal(ledger.entries[0].inputTokens, 0);
-  assert.equal(ledger.entries[0].outputTokens > 0, true);
+  assert.equal(ledger.entries[0].outputTokens, 7);
   assert.equal(ledger.totals.totalTokens, ledger.entries[0].outputTokens);
   assert.equal(ledger.totals.estimatedEntries, 1);
   assert.equal(ledger.perAgent.has("human-carter"), false);
