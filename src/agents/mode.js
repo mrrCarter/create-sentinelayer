@@ -40,7 +40,7 @@ const CODEGEN_EXTRA_TOOLS = Object.freeze([
 const DOMAIN_TOOL_IDS_BY_PERSONA = Object.freeze({
   "ai-governance": Object.freeze(["eval-regression", "hitl-audit", "prompt-drift", "provenance-check"]),
   "backend": Object.freeze(["circuit-breaker-check", "idempotency-audit", "retry-audit", "timeout-audit"]),
-  "code-quality": Object.freeze(["complexity-measure", "coupling-analysis", "cycle-detect", "dep-graph"]),
+  "code-quality": Object.freeze(["complexity-measure", "coupling-analysis", "cycle-detect", "dep-graph", "layering-check"]),
   "data-layer": Object.freeze(["index-audit", "migration-scan", "query-explain", "tenancy-scan"]),
   "documentation": Object.freeze(["api-diff", "dead-link-check", "docstring-coverage", "readme-freshness"]),
   "infrastructure": Object.freeze(["checkov-run", "drift-detect", "iam-least-priv-check", "tflint-run"]),

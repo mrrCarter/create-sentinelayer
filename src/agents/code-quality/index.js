@@ -9,4 +9,5 @@ export {
   runCouplingAnalysis,
   runCycleDetect,
   runDepGraph,
+  runLayeringCheck,
 } from "./tools/index.js";
