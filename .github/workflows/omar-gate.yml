@@ -478,8 +478,14 @@ jobs:
             echo "::error::Managed Omar findings file not found at ${findings_path}."
             exit 1
           fi
+          summary_path=".sentinelayer/runs/${normalized_run_id}/RUN_SUMMARY.json"
+          summary_args=()
+          if [ -f "${summary_path}" ]; then
+            summary_args+=(--run-summary "${summary_path}")
+          fi
           python3 scripts/ci/classify_omar_provider_outage.py \
             --findings "${findings_path}" \
+            "${summary_args[@]}" \
             --github-output "${GITHUB_OUTPUT}"
       - name: Run deterministic Omar Gate fallback
         if: steps.trust_boundary.outputs.trusted_context == 'true' && steps.managed_failure.outputs.provider_outage_break_glass == 'true'
