@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.38.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.37.1...v0.38.0) (2026-07-12)
+
+
+### Features
+
+* **cost:** use real tokenizers for A12 budgets ([#758](https://github.com/mrrCarter/create-sentinelayer/issues/758)) ([95fbb4e](https://github.com/mrrCarter/create-sentinelayer/commit/95fbb4eccd06cd48ad0fc96f5e3c2f1673dfd1d2))
+
+
+### Bug Fixes
+
+* **omar:** fail closed on AI coverage failure ([#757](https://github.com/mrrCarter/create-sentinelayer/issues/757)) ([7277b66](https://github.com/mrrCarter/create-sentinelayer/commit/7277b6645c82c2416808f9ec5a72ec899dd44f9c))
+* **omar:** handle managed billing-denied outage fallback ([#759](https://github.com/mrrCarter/create-sentinelayer/issues/759)) ([2aa1d59](https://github.com/mrrCarter/create-sentinelayer/commit/2aa1d59558c612673d9159630f2a65cc8616663d))
+
 ## [0.37.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.37.0...v0.37.1) (2026-07-03)
 
 
