@@ -923,7 +923,10 @@ function buildRecapText({
   const lockText = `${activeLocks} file lock${activeLocks === 1 ? "" : "s"} active`;
   const pendingText =
     pendingTasks > 0 ? `You have ${pendingTasks} pending task${pendingTasks === 1 ? "" : "s"}.` : "";
-  const taskText = buildTaskLedgerText(taskLedger);
+  const taskText = buildTaskLedgerText(taskLedger, {
+    liveListenerCount: liveListeners.length,
+    recentActorCount: recentActors.length,
+  });
   const usageText = buildUsageLedgerText(usageSummary);
   const workPlanText = buildWorkPlanText(workPlan);
   const snippetText = snippets.length > 0 ? `Recent: ${snippets.join(" | ")}` : "";
@@ -933,9 +936,20 @@ function buildRecapText({
   ).trim();
 }
 
-function buildTaskLedgerText(taskLedger = emptyTaskLedgerSummary()) {
+function buildTaskLedgerText(
+  taskLedger = emptyTaskLedgerSummary(),
+  { liveListenerCount = 0, recentActorCount = 0 } = {},
+) {
   const total = Number(taskLedger.total || 0);
   if (!total) {
+    const listeners = Math.max(0, Math.floor(Number(liveListenerCount || 0)));
+    const actors = Math.max(0, Math.floor(Number(recentActorCount || 0)));
+    if (listeners > 0) {
+      return `Session tasks: none queued (${listeners} live listener${listeners === 1 ? "" : "s"}; no Senti task assignments recorded)`;
+    }
+    if (actors > 0) {
+      return `Session tasks: none queued (${actors} recent actor${actors === 1 ? "" : "s"}; no Senti task assignments recorded)`;
+    }
     return "Session tasks: none queued";
   }
   const active = Number(taskLedger.active || 0);
@@ -1135,7 +1149,10 @@ function buildPeriodicText(recap = {}) {
         ? "no live listeners"
         : "listener status unknown";
   const recentActorText = `${recentActors} recent actor${recentActors === 1 ? "" : "s"}`;
-  const taskText = buildTaskLedgerText(summary.taskLedger);
+  const taskText = buildTaskLedgerText(summary.taskLedger, {
+    liveListenerCount: liveListeners,
+    recentActorCount: recentActors,
+  });
   const workPlanText = buildWorkPlanText(summary.workPlan);
   const usageText = buildUsageLedgerText({
     totals: summary.usageTotals,
@@ -1203,6 +1220,7 @@ export async function buildSessionRecap(
   );
   const liveListenerIds = liveListenerRows.map((row) => row.agentId).filter(Boolean);
 
+  const selectedSourceEvents = events.filter(isMeaningfulRecapSourceEvent);
   const actorEvents = visibleEvents.filter(isMeaningfulRecapSourceEvent);
   const recentActorSet = new Set();
   for (const event of actorEvents) {
@@ -1279,6 +1297,10 @@ export async function buildSessionRecap(
       usageTotals: usageSummary.totals,
       usageTopAgents: usageSummary.topAgents,
       snippets,
+      selectedEventCount: events.length,
+      selectedSourceEventCount: selectedSourceEvents.length,
+      visibleSourceEventCount: actorEvents.length,
+      ignoredOperationalEventCount: Math.max(0, events.length - selectedSourceEvents.length),
       elapsedMinutes,
       windowElapsedMinutes,
       sessionStartedAt: sessionMetadata?.createdAt
