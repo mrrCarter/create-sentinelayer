@@ -168,7 +168,10 @@ The smoke runs:
 1. `POST /api/v1/auth/mcp-token` through the existing local CLI auth session.
 2. `POST /mcp` `tools/list` with the short-lived bearer, reporting tool names.
 3. When `--session` is provided, `POST /mcp` `tools/call` for
-   `sessions.events.list`, reporting only event counts and sequence bounds.
+   `sessions_events_list`, reporting only event counts and sequence bounds.
+
+The smoke consumes the exact tool name advertised by the hosted MCP contract.
+Underscores are intentional; dotted legacy aliases are not accepted.
 
 Use `sl mcp doctor` first for unauthenticated discovery/enforcement checks, then
 `sl mcp smoke` for authenticated resource-server proof. The smoke proves the
