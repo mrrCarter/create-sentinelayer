@@ -1,3 +1,22 @@
+# 2026-07-13 - Hosted MCP Canonical Tool Contract (`roadmap/pr-r1-mcp-tool-contract-20260713`)
+
+## Plan
+- [x] Verify the production hosted MCP descriptor and reproduce the CLI smoke failure against its underscore-delimited tool names.
+- [x] Lock the scoped smoke, command, test, documentation, and governance files in Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a`.
+- [x] Replace the stale dotted session-read tool name with the canonical `sessions_events_list` contract.
+- [x] Add regression coverage that rejects the legacy dotted alias instead of silently calling it.
+- [x] Run focused tests, full repository verification, local review, Omar Gate, and audit proof.
+- [ ] Open a PR, obtain Senti peer review, and merge only after hosted checks pass.
+
+## Review
+- Focused MCP and command-contract proof passed (`24/24`), including an explicit legacy dotted-alias rejection.
+- Live production smoke passed with `7` advertised tools and a successful `sessions_events_list` call returning `2` events; token output remained redacted.
+- Full `npm run verify` passed: static checks (`354` files), docs validation, E2E (`120/120`), unit coverage, and package dry-run (`sentinelayer-cli-0.39.2.tgz`, shasum `0d47f751d0063ac237bbde888f9d80ee869e3e1d`).
+- `npm audit --audit-level=high` reported `0` vulnerabilities; `git diff --check` passed aside from expected Windows line-ending notices.
+- Diff review scanned `7` intended files with `P1=0`, `P2=0`, `blocking=false` (`review-scan-diff-20260713-223618.md`).
+- Deterministic Omar Gate scanned the same `7` files with `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false` (`review-20260713-223627-3dadef27`).
+- Repository audit passed with no P1 blockers; its two P2 baseline notices cite untouched `tasks/evals/2026-04-17-pr-335-spec-session-integration.md` and `src/scan/generator.js` (`audit-20260713-223638.md`).
+
 # 2026-07-12 - Senti Recap Estimated Usage Fast Path (`codex/senti-recap-estimated-usage-fastpath`)
 
 ## Plan
@@ -22,7 +41,7 @@
 - [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and reconcile with verifier/architect lane ownership.
 - [x] Confirm lane split: architect owns OAuth browser RFC compliance; warden verifies; this lane owns repeatable hosted MCP resource smoke proof.
 - [x] Use a clean `create-sentinelayer` worktree from current `origin/main` and take Senti locks for MCP command/test/docs files.
-- [x] Add a redacted `sl mcp smoke` command that mints an in-memory MCP bearer, calls `/mcp` `tools/list`, optionally calls `sessions.events.list`, and never prints the bearer.
+- [x] Add a redacted `sl mcp smoke` command that mints an in-memory MCP bearer, calls `/mcp` `tools/list`, optionally calls `sessions_events_list`, and never prints the bearer.
 - [x] Add focused unit coverage for tool-list success, optional session-read success, failure reporting, and token redaction.
 - [x] Update MCP docs with the new smoke workflow.
 - [x] Run focused tests/static checks, review scan, Omar diff scan, package smoke, open PR, and request Senti review.

@@ -1,5 +1,9 @@
 # Lessons
 
+## 2026-07-13
+
+- Hosted MCP clients must consume the exact canonical names returned by `tools/list`; keep underscore-delimited server names in smoke fixtures, help, and docs, and reject hand-maintained dotted aliases so contract drift fails visibly.
+
 ## 2026-05-19
 
 - When the user says CLI auth was refreshed, immediately re-test both Senti read and write paths instead of carrying forward stale auth assumptions.
