@@ -10,12 +10,35 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
+const LOCAL_FIXTURE_TOKEN = "e2e_session_download_fixture_token";
 
-function runCli({ cwd, args, env = {} }) {
+function buildCliEnv({ cwd, env = {}, authenticated = true }) {
+  const childEnv = {
+    ...process.env,
+    SENTINELAYER_SKIP_REMOTE_SYNC: "1",
+    SENTINELAYER_SKIP_SENTI_AUTOSTART: "1",
+    ...(authenticated ? { SENTINELAYER_TOKEN: LOCAL_FIXTURE_TOKEN } : {}),
+    ...env,
+    HOME: cwd,
+    USERPROFILE: cwd,
+    XDG_CONFIG_HOME: path.join(cwd, ".config"),
+  };
+
+  delete childEnv.SENTINELAYER_CLI_SKIP_AUTH;
+  delete childEnv.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+  delete childEnv.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
+  delete childEnv.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+  if (!authenticated) {
+    delete childEnv.SENTINELAYER_TOKEN;
+  }
+  return childEnv;
+}
+
+function runCli({ cwd, args, env = {}, authenticated = true }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env: { ...process.env, ...env },
+      env: buildCliEnv({ cwd, env, authenticated }),
       windowsHide: true,
     });
     let stdout = "";
@@ -38,6 +61,27 @@ function jsonResponse(res, status, payload) {
   });
   res.end(body);
 }
+
+test("CLI session download still requires auth when the fixture token is omitted", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-download-auth-e2e-"));
+  try {
+    await writeFile(path.join(tempRoot, "package.json"), '{"name":"session-download-auth-e2e","version":"1.0.0"}\n', "utf-8");
+    const transcriptPath = path.join(tempRoot, "must-not-exist.md");
+    const result = await runCli({
+      cwd: tempRoot,
+      args: ["session", "download", "missing-session", "--path", tempRoot, "--out", transcriptPath, "--json"],
+      env: { SENTINELAYER_TOKEN: "inherited_token_must_not_authenticate" },
+      authenticated: false,
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Authentication required/);
+    assert.doesNotMatch(result.stderr, /Session 'missing-session' was not found/);
+    await assert.rejects(readFile(transcriptPath, "utf-8"), /ENOENT/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("CLI session download renders billing-grade Usage Ledger markdown", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-download-e2e-"));

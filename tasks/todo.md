@@ -3565,3 +3565,28 @@ Review:
 - Deterministic Omar passed: `review-20260703-014036-948bd927`, P0/P1/P2/P3 all `0`, blocking=false.
 - AI Omar run `omargate-1783042798321-14da0a81` was nonblocking but reported three unsupported P2s. Direct grep showed no production `fetch()` or `spawn()` in `src/session/listener-process.js`; all process-table calls use bounded `execFile` timeouts, and the cited sinon/mockSession evidence does not exist in the touched tests.
 
+## 2026-07-13 - Hermetic Session Download E2E Authentication
+
+## Plan
+- [x] Reproduce the scheduled Quality Gates failure from run `29235510386` and isolate all seven failures to `tests/e2e.session-download.test.mjs`.
+- [x] Confirm the production auth gate is working as designed and the tests were inheriting developer authentication state.
+- [x] Give every spawned CLI an isolated home, explicit fixture token, and locally disabled remote sync.
+- [x] Remove inherited test-bypass variables from the subprocess environment.
+- [x] Add a token-omitted regression proving `session download` still fails at the production auth gate before command execution.
+- [x] Run the whole suite with an empty outer auth context and fold the remaining session-usage-estimation fixture into the same isolation contract.
+- [x] Run focused, full, review, and local Omar gates; hosted PR and post-merge mainline gates follow after push.
+
+## Initial Findings
+- Scheduled run `29235510386` passed 113/120 E2E tests; all seven failures were local session download/export/usage fixtures rejected with `Authentication required`.
+- The same file passed on an authenticated developer machine because its `runCli` helper copied the entire host environment and home directory into each subprocess.
+- `SENTINELAYER_SKIP_REMOTE_SYNC=1` prevents network writes but intentionally does not bypass the global authentication gate.
+- A clean-room full-suite run found one additional timing-dependent leak in `e2e.session-usage-estimation.test.mjs`; scheduled CI had masked it through shared process/home state, so both session fixture files now own the same explicit auth boundary.
+
+## Review Results
+- Focused clean-room session fixtures pass `9/9` with an empty outer auth context and isolated home/config directories.
+- Full `npm run verify` passes after the final environment-precedence hardening: static checks cover 354 files, docs validation passes, E2E passes `121/121`, coverage passes, and `npm pack --dry-run` produces 352 files with SHA-1 `988726d9606fc9feb2a99cb88651664329fb62de`.
+- `npm audit --audit-level=high` reports zero vulnerabilities.
+- Final diff review `.sentinelayer/reports/review-scan-diff-20260713-231723.md` scans four files with `P1=0`, `P2=0`, and `blocking=false`.
+- Full audit `.sentinelayer/reports/audit-20260713-231724.md` passes 716 files with `P1=0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
+- Local Omar Gate run `omargate-1783984599735-e4d77f5b` is deterministically clean (`P0/P1/P2/P3=0`) but fails closed because both routed managed personas returned `502 UPSTREAM_ERROR`. This is the third reproducible upstream-only attempt; the hosted Omar check remains mandatory before merge.
+
