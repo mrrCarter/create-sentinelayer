@@ -25,15 +25,35 @@ class ProviderOutageClassification:
 _CAPACITY_MARKERS = (
     "429",
     "capacity",
+    "overloaded",
+    "provider unavailable",
+    "rate limit",
+    "temporarily unavailable",
+    "timeout",
+    "timed out",
+    "500",
+    "502",
+    "503",
+)
+
+_PROVIDER_ACCOUNT_DENIED_MARKERS = (
+    "401",
+    "403",
+    "api key",
+    "api_key",
+    "apikey",
+    "billing",
     "consumer_suspended",
     "credit balance",
     "credits",
+    "forbidden",
     "insufficient_quota",
+    "invalid api",
+    "invalid_api",
     "permission_denied",
-    "provider unavailable",
-    "quota",
-    "rate limit",
+    "purchase credits",
     "suspended",
+    "unauthorized",
 )
 
 _LLM_FAILURE_MARKERS = (
@@ -187,8 +207,8 @@ def classify_provider_outage(
 
     if _is_managed_billing_denied_no_findings(findings, counts, run_summary):
         return ProviderOutageClassification(
-            provider_outage_break_glass=True,
-            reason="managed_billing_denied_no_findings",
+            provider_outage_break_glass=False,
+            reason="managed_billing_denied_not_provider_outage",
             blocking_count=0,
             p0_count=0,
             p1_count=0,
@@ -224,6 +244,16 @@ def classify_provider_outage(
         return ProviderOutageClassification(
             provider_outage_break_glass=False,
             reason="llm_failure_message_missing_fail_closed_markers",
+            blocking_count=len(blocking),
+            p0_count=counts["P0"],
+            p1_count=counts["P1"],
+            p2_count=counts["P2"],
+        )
+
+    if any(marker in message for marker in _PROVIDER_ACCOUNT_DENIED_MARKERS):
+        return ProviderOutageClassification(
+            provider_outage_break_glass=False,
+            reason="llm_failure_provider_account_denied_not_outage",
             blocking_count=len(blocking),
             p0_count=counts["P0"],
             p1_count=counts["P1"],
