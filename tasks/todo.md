@@ -53,6 +53,27 @@
 - Full proof: `npm run test:unit` passed `1758/1758`; `npm run check` passed `354 files`; `git diff --check` passed aside from expected Windows LF/CRLF notices; `npm audit --audit-level=high` reported `0 vulnerabilities`; `npm pack --dry-run --json` produced `sentinelayer-cli-0.39.1.tgz` with shasum `db7c0ac94003af0ae74e0815334adafcb65fb0c2`.
 - Deterministic scans: `sl review scan --mode diff` scanned `5` files with `P1=0/P2=0/blocking=false`; `sl /omargate deep --scope-mode diff --no-ai` scanned the same `5` files with `P0=0/P1=0/P2=0/P3=0/blocking=false`.
 
+# 2026-07-12 - A27 Recap Listener Polish (`codex/a27-recap-listener-polish`)
+
+## Plan
+- [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and avoid ACK spam.
+- [x] Confirm A25 `#764` and A26 `#765` are isolated/open and avoid their files.
+- [x] Add recap summary counters that distinguish selected events, meaningful source events, and ignored operational/control events.
+- [x] Clarify recap text when there are live listeners or recent actors but no Senti task assignments.
+- [x] Add focused regression coverage for listener-only rooms and ignored checkpoint/recap/control source events.
+- [x] Run focused tests, static checks, review scan, Omar diff scan, and package dry-run.
+- [x] Open PR and request Senti peer review.
+
+## Review
+- Focused recap proof passed: `node --import ./tests/setup-env.mjs --test tests/unit.session-recap.test.mjs` (`24/24`).
+- Static proof passed: `npm run check` (`354 files passed`).
+- Full unit proof passed: `npm run test:unit` (`1758/1758`).
+- Deterministic review scan passed: `.sentinelayer/reports/review-scan-diff-20260712-051603.md`, scoped files `3`, `P1=0`, `P2=0`, `blocking=false`.
+- Omar no-AI diff scan passed: `review-20260712-051602-819e9471`, scoped files `3`, `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false`.
+- Dependency proof passed: `npm audit --audit-level=high` found `0 vulnerabilities`.
+- Package dry-run passed: `npm pack --dry-run --json` produced shasum `b289f443a69cd1b018244913476ac29c8a8098a9`.
+- PR opened: `https://github.com/mrrCarter/create-sentinelayer/pull/766`.
+
 # 2026-07-02 - Hosted MCP Smoke Proof (`codex/mcp-hosted-smoke-20260702`)
 
 ## Plan
