@@ -1,3 +1,32 @@
+# 2026-07-14 - Hosted Action Live-LLM Evidence Contract (`roadmap/pr-0i-action-evidence-contract`)
+
+## Plan
+- [x] Audit the current `a496be3` pin, trusted workflow assertions, deterministic provider-outage fallback, and generated/legacy compatibility surface.
+- [x] Verify the hardened Action tree at `52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5` and enumerate its input, output, pack-integrity, and live-evidence contracts.
+- [x] Define the two-stage ownership boundary: Action validates live execution with `severity_gate=none`; the consumer validates artifacts and applies protected P0/P1/P2 policy.
+- [x] Define a non-circular bootstrap requiring exact-head live proof, negative fail-closed validator tests, immutable provenance, and peer review.
+- [x] Record the stale same-version global CLI incident and require a uniquely versioned post-fix release before package provenance can be merge evidence.
+- [x] Audit fork/same-repo workflow authority and require trusted exact-subject promotion instead of deterministic fork greens or same-repo-name trust.
+- [x] Audit live environment and secret-name placement; require the complete gate/release credential boundary to move behind protected definitions and reviewed environments.
+- [x] Audit generated/legacy interface parity and separate the Action's `pr-diff`/`deep`/`nightly` modes from local CLI persona modes.
+- [x] Run docs/static/diff checks and deterministic review gates.
+- [ ] Receive exact-diff Claude review before starting dependent 0J implementation.
+
+## Review
+- Baseline create-sentinelayer commit `38db9f2` can report a false green because Action `a496be3` exposes no observed live-LLM evidence and the consumer checks requested provider settings plus selected severity counts.
+- The existing provider-outage branch can select a deterministic-only run as the authoritative green result. The migration keeps deterministic scans diagnostic but always non-green for a required live gate.
+- The current primary call is input-compatible with `52fe9cf`; only fallback-only `artifact_name_suffix` is unsupported. A pin-only edit is insufficient because the consumer must validate seven evidence outputs and the original hash-bound pack/findings artifacts.
+- The required `Omar Gate` currently accepts a clean fork deterministic scan as green without live evidence. Same-repo `trusted_context` also does not prove protected workflow code or secret-consuming actor policy.
+- Live config does not match the repository's protected-environment narrative: `security-review` is reviewed but unused and empty; `package-release` has no protection rules or environment secrets; gate and release credential names remain repository-level. Values and scopes were not inspected.
+- Generated and legacy workflows falsely advertise `baseline`/`audit`/`full-depth` as Action modes; the candidate accepts only `pr-diff`/`deep`/`nightly`. Generated `playwright_mode`, `sbom_mode`, and `wait_for_completion` inputs are also unsupported.
+- 0I is docs/spec/eval only. 0J will own all workflow, generator, contract-checker, legacy-template, validator, and regression-test changes after peer review.
+- Protected workflow authority, trusted fork promotion, and complete privileged-credential containment are activation-blocking 0K. Reviewed protected publication and unique post-`#778` package provenance are 0L. 0J must not be presented as trustworthy or activated before 0K.
+- Verification passed: `npm run verify` (`121/121` E2E, `1763/1763` unit tests, 91.79% statement/line coverage, package shasum `411f34cc407b1d28a594bfd2e8a6a970afb3cc3f`); locked install audit reported zero vulnerabilities.
+- Deterministic review passed on the exact five-file diff: `review-scan-diff-20260714-062821.md` (`P1=0`, `P2=0`) and Omar `review-20260714-062826-9ca0e000` (`P0/P1/P2/P3=0`).
+- The environment-policy amendment passes docs/static validation and deterministic review. A fresh live Omar run made two token-bearing provider calls and returned two nonblocking documentation P2s: the incident-runbook claim is contradicted by `docs/spec.md`, `README.md`, `docs/mcp.md`, and `docs/MULTI_AGENT_SESSION_SPEC.md`; the endpoint-inventory claim is inapplicable to this CLI gate contract. Deterministic findings remain zero.
+- `git diff --check` passed aside from expected Windows LF/CRLF notices.
+- Local only, not pushed.
+
 # 2026-07-14 - Omar AI Call Evidence (`roadmap/pr-0h-omargate-call-evidence`)
 
 ## Plan
