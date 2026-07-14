@@ -23,6 +23,7 @@ Deliver a deterministic, security-first CLI that scaffolds Sentinelayer artifact
 - Keep deterministic provider-outage scans diagnostic. They must not replace a required live-LLM result or become a selectable green merge result.
 - Validate live execution evidence before applying repository severity thresholds. The action owns evidence validity; the consuming workflow owns P0/P1/P2 merge policy.
 - Do not treat same-repository pull-request origin as sufficient workflow trust. Merge authority requires a protected workflow/validator definition or documented actor and environment controls that prevent a branch author from changing privileged gate code and consuming secrets.
+- Protect the complete credential boundary, not only LLM provider keys. Gate, release-governance, and package-publication authority must be purpose-scoped to reviewed environments and protected workflow definitions; remove or revoke obsolete repository-level credentials.
 - Keep fork and other untrusted deterministic scans non-authoritative for a required live gate. They may provide diagnostics, but the required check stays non-green until a trusted review is bound to the exact proposed commit.
 - Generated and legacy workflows must use only inputs and scan modes declared by the pinned Action interface. Local CLI persona modes are a separate contract and must not be presented as hosted Action modes.
 

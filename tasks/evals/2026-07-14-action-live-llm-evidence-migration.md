@@ -31,6 +31,7 @@ This split is intentional. It prevents a severity setting from bypassing executi
 - The primary Action call passes six inputs not declared by `a496be3`: `openai_api_key`, `google_api_key`, `llm_provider`, `max_daily_scans`, `min_scan_interval_minutes`, and `rate_limit_fail_mode`. GitHub warns about undeclared inputs but does not make that mismatch a reliable fail-closed contract.
 - For fork pull requests, `omar_enforce` accepts the deterministic-only `omar_untrusted_scan` as the successful required `Omar Gate`; no later trusted live result is required by that check.
 - For same-repository pull requests, `trusted_context` is currently a constant `true` after a repository-name condition. The workflow and validation scripts come from the pull-request merge commit, so same-repository origin alone does not prove that privileged gate code is protected from the branch author.
+- The `security-review` environment has a required reviewer and protected-branch policy, but no Omar job uses it and it contains no secrets. Provider, SentinelLayer, release-governance, and legacy npm credential names remain repository-level. The `package-release` environment exists with no protection rules or environment secrets. This audit inspected names and policy only, not secret values or token scopes.
 - `src/scan/generator.js` and the legacy fallback advertise hosted modes `baseline`, `deep`, `audit`, and `full-depth`. They also emit bridge-only `playwright_mode`, `sbom_mode`, and `wait_for_completion` inputs. The README and parity test currently assert this incompatible surface is aligned.
 
 These conditions can produce a false green: the deterministic scan and severity counts can pass while no live provider call succeeded.
@@ -142,8 +143,8 @@ Extract the evidence validation into one testable structured-data validator reus
 ## Implementation Sequencing
 
 - 0J implements the immutable pin, evidence validator, artifact retention, provider-outage behavior, generated/legacy interface parity, and exact-subject binding.
-- 0K establishes protected workflow-definition authority and trusted promotion for fork/untrusted changes, or proves an equivalent GitHub actor/environment policy. It must treat proposed code as data and must not execute branch-controlled commands with secrets.
-- 0L publishes a uniquely versioned CLI package containing the post-`#778` evidence code and records its tarball integrity.
+- 0K establishes protected workflow-definition authority and trusted promotion for fork/untrusted changes, or proves an equivalent GitHub actor/environment policy. It must treat proposed code as data, must not execute branch-controlled commands with secrets, and must move all still-required provider, SentinelLayer, and release-governance credentials out of repository scope into purpose-specific reviewed environments. Obsolete repository-level credentials must be revoked or removed.
+- 0L configures `package-release` with reviewed protected-ref deployment, binds npm trusted publishing to the protected release workflow and environment, publishes a uniquely versioned CLI package containing the post-`#778` evidence code, and records its tarball integrity. It must not rely on a repository-level classic npm token.
 - 0J must not be described or activated as a trustworthy merge gate until 0K is proven. The 0J/0K train uses the non-circular bootstrap evidence rather than the old count-only check.
 
 ## Security References
