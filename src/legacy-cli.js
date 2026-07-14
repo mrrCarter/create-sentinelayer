@@ -26,6 +26,11 @@ import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
 import { getExpressTemplate, getPackageJsonTemplate, buildReadmeContent } from "./scaffold/templates.js";
 import { generateScaffold } from "./scaffold/generator.js";
 import {
+  buildSecurityReviewWorkflow,
+  GENERATED_WORKFLOW_SUPPORT_FILES,
+  validatePinnedActionWorkflowInterface,
+} from "./scan/generator.js";
+import {
   getCoordinationEtiquetteItems,
   renderCoordinationNumberedList,
 } from "./session/coordination-guidance.js";
@@ -2347,10 +2352,12 @@ export function buildHandoffPrompt({
 - If you later adopt Omar Gate GitHub Action, set secrets.${secretName} and wire sentinelayer_token accordingly.`;
   const workflowTuning =
     authMode === "sentinelayer"
-      ? `- scan_mode: baseline | deep (default) | audit | full-depth
-- severity_gate: P0 | P1 (default) | P2 | none`
-      : `- BYOK workflow is guidance-only and does not call the Sentinelayer action.
-- To enable Omar Gate later, set ${secretName} and configure scan_mode/severity_gate in workflow inputs.`;
+      ? `- Hosted Action scan_mode: pr-diff | deep (default) | nightly
+- Repository severity_gate: P0 | P1 (default) | P2 | none
+- Local CLI persona modes remain baseline | deep | audit | full-depth.`
+      : `- BYOK workflow calls the hosted Action with repository provider credentials.
+- Hosted Action scan_mode: pr-diff | deep (default) | nightly
+- Local CLI persona modes remain baseline | deep | audit | full-depth.`;
 
   return `# Sentinelayer Agent Handoff Prompt
 
@@ -2445,222 +2452,16 @@ ${renderCoordinationNumberedList()}
 
 function fallbackWorkflow({ secretName = "SENTINELAYER_TOKEN", authMode = "sentinelayer", specId = "" } = {}) {
   const normalizedSecret = isValidSecretName(secretName) ? secretName : "SENTINELAYER_TOKEN";
-  const normalizedSpecId = String(specId || "").trim();
-  const specIdBindingLine = normalizedSpecId ? `\n          sentinelayer_spec_id: ${normalizedSpecId}` : "";
-  const workflowName = authMode === "byok" ? "Omar Gate (BYOK Mode)" : "Omar Gate";
-  return `name: ${workflowName}
-
-on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-  workflow_dispatch:
-    inputs:
-      scan_mode:
-        description: Sentinelayer scan profile
-        required: false
-        default: deep
-        type: choice
-        options:
-          - baseline
-          - deep
-          - audit
-          - full-depth
-      severity_gate:
-        description: Severity threshold that blocks merge
-        required: false
-        default: P1
-        type: choice
-        options:
-          - P0
-          - P1
-          - P2
-          - none
-      p2_max_allowed:
-        description: Maximum allowed P2 findings before Omar Gate blocks merge
-        required: false
-        default: "5"
-        type: string
-
-permissions:
-  contents: read
-  checks: write
-  pull-requests: write
-  id-token: write
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-jobs:
-  omar_gate:
-    name: Omar Gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate Sentinelayer token secret
-        shell: bash
-        env:
-          SENTINELAYER_TOKEN: \${{ secrets.${normalizedSecret} }}
-        run: |
-          set -euo pipefail
-          if [ -z "\${SENTINELAYER_TOKEN}" ]; then
-            echo "::warning::SENTINELAYER_TOKEN not set. Set it with: gh secret set ${normalizedSecret} --body <your-token>"
-            echo "Skipping Omar Gate scan — run locally with: npx sentinelayer-cli@latest /omargate deep --path ."
-            exit 0
-          fi
-      - name: Run Omar Gate
-        id: omar
-        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
-        with:
-          github_token: \${{ github.token }}
-          openai_api_key: \${{ secrets.OPENAI_API_KEY }}
-          google_api_key: \${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
-          llm_provider: \${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          sentinelayer_token: \${{ secrets.${normalizedSecret} }}${specIdBindingLine}
-          sentinelayer_managed_llm: \${{ secrets.${normalizedSecret} != '' }}
-          scan_mode: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
-          codex_model: gpt-5.3-codex
-          model_fallback: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
-          use_codex: \${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
-          codex_only: "false"
-          llm_failure_policy: block
-          max_daily_scans: \${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
-          min_scan_interval_minutes: \${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
-          rate_limit_fail_mode: closed
-      - name: Enforce Omar reviewer merge thresholds
-        shell: bash
-        env:
-          P0_COUNT: \${{ steps.omar.outputs.p0_count || '0' }}
-          P1_COUNT: \${{ steps.omar.outputs.p1_count || '0' }}
-          P2_COUNT: \${{ steps.omar.outputs.p2_count || '0' }}
-          P2_MAX_ALLOWED: \${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-        run: |
-          set -euo pipefail
-          p0="\$(echo "\${P0_COUNT}" | tr -d '\\r' | xargs || true)"
-          p1="\$(echo "\${P1_COUNT}" | tr -d '\\r' | xargs || true)"
-          p2="\$(echo "\${P2_COUNT}" | tr -d '\\r' | xargs || true)"
-          p2_max="\$(echo "\${P2_MAX_ALLOWED}" | tr -d '\\r' | xargs || true)"
-          case "\${p0}" in ''|*[!0-9]*) echo "::error::Invalid P0 count" ; exit 1 ;; esac
-          case "\${p1}" in ''|*[!0-9]*) echo "::error::Invalid P1 count" ; exit 1 ;; esac
-          case "\${p2}" in ''|*[!0-9]*) echo "::error::Invalid P2 count" ; exit 1 ;; esac
-          case "\${p2_max}" in ''|*[!0-9]*) echo "::error::Invalid p2_max" ; exit 1 ;; esac
-          if [ "\${p0}" -gt 0 ] || [ "\${p1}" -gt 0 ]; then
-            echo "::error::Omar Gate blocked: P0=\${p0}, P1=\${p1}. Requires P0=0 and P1=0."
-            exit 1
-          fi
-          if [ "\${p2}" -gt "\${p2_max}" ]; then
-            echo "::error::Omar Gate blocked: P2=\${p2} exceeds max \${p2_max}."
-            exit 1
-          fi
-      - name: Emit Omar run summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "## Omar Gate" >> "\$GITHUB_STEP_SUMMARY"
-          echo "- run_id: \\\`\${{ steps.omar.outputs.run_id }}\\\`" >> "\$GITHUB_STEP_SUMMARY"
-          echo "- gate_status: \\\`\${{ steps.omar.outputs.gate_status }}\\\`" >> "\$GITHUB_STEP_SUMMARY"
-          echo "- findings: P0=\${{ steps.omar.outputs.p0_count }} P1=\${{ steps.omar.outputs.p1_count }} P2=\${{ steps.omar.outputs.p2_count }} P3=\${{ steps.omar.outputs.p3_count }}" >> "\$GITHUB_STEP_SUMMARY"
-      - name: Stage Omar summary artifact
-        shell: bash
-        env:
-          OMAR_RUN_ID: \${{ steps.omar.outputs.run_id || '' }}
-          OMAR_GATE_STATUS: \${{ steps.omar.outputs.gate_status || '' }}
-          OMAR_P0: \${{ steps.omar.outputs.p0_count || '0' }}
-          OMAR_P1: \${{ steps.omar.outputs.p1_count || '0' }}
-          OMAR_P2: \${{ steps.omar.outputs.p2_count || '0' }}
-          OMAR_P3: \${{ steps.omar.outputs.p3_count || '0' }}
-          OMAR_SCAN_MODE: \${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          OMAR_SEVERITY_GATE: \${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          OMAR_P2_MAX_ALLOWED: \${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          OMAR_OPENAI_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' }}
-          OMAR_GOOGLE_KEY_PRESENT: \${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
-          OMAR_MANAGED_LLM: \${{ secrets.${normalizedSecret} != '' }}
-          OMAR_LLM_PROVIDER: \${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          OMAR_MODEL: \${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
-          OMAR_MODEL_FALLBACK: \${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
-        run: |
-          set -euo pipefail
-          mkdir -p omar-artifacts
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          def env(name, default=""):
-              return os.environ.get(name, default)
-
-          def int_env(name):
-              value = env(name, "0").strip()
-              return int(value) if value.isdigit() else 0
-
-          def bool_env(name):
-              return env(name).strip().lower() == "true"
-
-          github_run_id = env("GITHUB_RUN_ID")
-          server_url = env("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
-          repository = env("GITHUB_REPOSITORY")
-          run_url = f"{server_url}/{repository}/actions/runs/{github_run_id}" if repository and github_run_id else ""
-          summary = {
-              "schema_version": 1,
-              "kind": "omar_gate_summary",
-              "run_id": env("OMAR_RUN_ID"),
-              "gate_status": env("OMAR_GATE_STATUS"),
-              "findings": {
-                  "P0": int_env("OMAR_P0"),
-                  "P1": int_env("OMAR_P1"),
-                  "P2": int_env("OMAR_P2"),
-                  "P3": int_env("OMAR_P3"),
-              },
-              "threshold": {
-                  "severity_gate": env("OMAR_SEVERITY_GATE", "P1"),
-                  "p2_max_allowed": int_env("OMAR_P2_MAX_ALLOWED"),
-              },
-              "scan": {
-                  "mode": env("OMAR_SCAN_MODE", "deep"),
-                  "action_ref": "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d",
-                  "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
-                  "model": env("OMAR_MODEL", "gpt-5.3-codex"),
-                  "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
-                  "llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else ("google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else "sentinelayer_managed"),
-                  "google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT"),
-                  "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
-                  "managed_llm": bool_env("OMAR_MANAGED_LLM"),
-                  "llm_failure_policy": "block",
-              },
-              "github": {
-                  "repository": repository,
-                  "sha": env("GITHUB_SHA"),
-                  "ref": env("GITHUB_REF"),
-                  "event_name": env("GITHUB_EVENT_NAME"),
-                  "workflow": env("GITHUB_WORKFLOW"),
-                  "run_id": github_run_id,
-                  "run_attempt": env("GITHUB_RUN_ATTEMPT"),
-                  "run_url": run_url,
-              },
-          }
-          Path("omar-artifacts/summary.json").write_text(
-              json.dumps(summary, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          PY
-      - name: Upload Omar summary artifact
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
-        with:
-          name: omar-gate-artifacts
-          path: omar-artifacts/summary.json
-          if-no-files-found: error
-`;
+  return buildSecurityReviewWorkflow({
+    secretName: normalizedSecret,
+    specId,
+    workflowName: authMode === "byok" ? "Omar Gate (BYOK Mode)" : "Omar Gate",
+    profile: {
+      scanMode: "deep",
+      severityGate: "P1",
+    },
+  });
 }
-
 function hasAuthKeywords(text) {
   const lower = String(text || "").toLowerCase();
   return ["login", "signup", "sign up", "register", "authentication", "auth flow", "otp", "verification", "password reset"].some((kw) => lower.includes(kw));
@@ -3397,12 +3198,59 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   if (effectiveAuthMode === "sentinelayer" && !generatedSpecId) {
     throw new Error("Builder response is missing spec_id/spec_hash. Cannot generate a validated Omar Gate workflow.");
   }
-  const workflowMarkdown =
-    (
-      (effectiveAuthMode === "sentinelayer" ? String(generated.omar_gate_yaml || "").trim() : "") ||
-      fallbackWorkflow({ secretName, authMode: effectiveAuthMode, specId: generatedSpecId })
-    ) + "\n";
+  const apiWorkflowMarkdown =
+    effectiveAuthMode === "sentinelayer" ? String(generated.omar_gate_yaml || "").trim() : "";
+  const localWorkflowMarkdown = fallbackWorkflow({
+    secretName,
+    authMode: effectiveAuthMode,
+    specId: generatedSpecId,
+  }).trim();
+  if (apiWorkflowMarkdown) {
+    const apiWorkflowContract = validatePinnedActionWorkflowInterface(apiWorkflowMarkdown);
+    if (!apiWorkflowContract.valid) {
+      throw new Error(
+        `API-provided Omar workflow violates the pinned Action contract: ${apiWorkflowContract.errors.join(" ")}`
+      );
+    }
+    const apiWorkflowSpecId = extractWorkflowSpecId(apiWorkflowMarkdown);
+    if (apiWorkflowSpecId !== generatedSpecId) {
+      throw new Error(
+        `Workflow spec binding mismatch: expected '${generatedSpecId}', received '${apiWorkflowSpecId || "missing"}'.`
+      );
+    }
+    if (apiWorkflowMarkdown !== localWorkflowMarkdown) {
+      throw new Error(
+        "API-provided Omar workflow differs from the locally trusted workflow template. Refusing executable additions or policy drift."
+      );
+    }
+  }
+  const workflowMarkdown = `${localWorkflowMarkdown}\n`;
+  const workflowContract = validatePinnedActionWorkflowInterface(workflowMarkdown);
+  if (!workflowContract.valid) {
+    throw new Error(
+      `Local Omar workflow violates the pinned Action contract: ${workflowContract.errors.join(" ")}`
+    );
+  }
   await writeTextFile(workflowPath, workflowMarkdown);
+
+  const generatedSupportFiles = GENERATED_WORKFLOW_SUPPORT_FILES.map(
+    ({ sourcePath, targetPath }) => ({
+      label: targetPath,
+      source: new URL(`../${sourcePath}`, import.meta.url),
+      target: path.join(projectDir, ...targetPath.split("/")),
+    })
+  );
+  for (const supportFile of generatedSupportFiles) {
+    await fsp.mkdir(path.dirname(supportFile.target), { recursive: true });
+    await fsp.copyFile(supportFile.source, supportFile.target);
+    const [sourceBytes, targetBytes] = await Promise.all([
+      fsp.readFile(supportFile.source),
+      fsp.readFile(supportFile.target),
+    ]);
+    if (!sourceBytes.equals(targetBytes)) {
+      throw new Error(`Generated ${supportFile.label} does not match its source file.`);
+    }
+  }
 
   const workflowSpecIdFromTemplate = extractWorkflowSpecId(workflowMarkdown);
   let workflowSpecId = "";

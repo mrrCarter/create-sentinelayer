@@ -7,9 +7,14 @@ import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "no
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import YAML from "yaml";
 
 import { leaseWorkItem, listAssignments } from "../src/daemon/assignment-ledger.js";
 import { appendAdminErrorEvent, listErrorQueue, runErrorDaemonWorker } from "../src/daemon/error-worker.js";
+import {
+  buildSecurityReviewWorkflow,
+  SENTINELAYER_ACTION_REF,
+} from "../src/scan/generator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
@@ -42,6 +47,8 @@ async function startMockApi({
   requiredSecretName = "SENTINELAYER_TOKEN",
   generatedSpecId = SPEC_ID_FROM_GENERATE,
   workflowSpecId = null,
+  omarWorkflowActionRef = null,
+  omarWorkflowTransform = null,
 } = {}) {
   const state = {
     pollCalls: 0,
@@ -89,18 +96,17 @@ async function startMockApi({
           builder_prompt: "Follow the generated docs.",
         };
         if (includeOmarWorkflowInGenerate) {
-          payload.omar_gate_yaml =
-            `name: Omar Gate
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-jobs:
-  omar_gate:
-    steps:
-      - uses: mrrCarter/sentinelayer-v1-action@v1
-        with:
-          sentinelayer_spec_id: ${resolvedWorkflowSpecId}
-`;
+          const generatedWorkflow = buildSecurityReviewWorkflow({
+            secretName: requiredSecretName,
+            profile: { scanMode: "deep", severityGate: "P1" },
+            specId: resolvedWorkflowSpecId,
+          });
+          const pinnedWorkflow = omarWorkflowActionRef
+            ? generatedWorkflow.replace(SENTINELAYER_ACTION_REF, omarWorkflowActionRef)
+            : generatedWorkflow;
+          payload.omar_gate_yaml = typeof omarWorkflowTransform === "function"
+            ? omarWorkflowTransform(pinnedWorkflow)
+            : pinnedWorkflow;
         }
         if (includeBootstrapInGenerate) {
           payload.bootstrap_token = {
@@ -860,7 +866,8 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(handoffText, /Terminal command options:/);
     assert.match(handoffText, /sentinel \/omargate deep --path \./);
     assert.match(handoffText, /Workflow tuning options:/);
-    assert.match(handoffText, /scan_mode: baseline \| deep \(default\) \| audit \| full-depth/);
+    assert.match(handoffText, /Hosted Action scan_mode: pr-diff \| deep \(default\) \| nightly/);
+    assert.match(handoffText, /Local CLI persona modes remain baseline \| deep \| audit \| full-depth/);
     assert.match(handoffText, /## Multi-Agent Coordination/);
     assert.match(handoffText, /sl session join <id> --name <your-name> --role coder/);
     assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
@@ -955,6 +962,105 @@ test("CLI hard-fails when workflow spec binding mismatches generated spec id", a
     const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
     assert.notEqual(result.code, 0);
     assert.match(`${result.stderr}\n${result.stdout}`, /Workflow spec binding mismatch/);
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects API-provided Omar workflows with a movable Action ref", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({
+    includeBootstrapInGenerate: true,
+    includeOmarWorkflowInGenerate: true,
+    omarWorkflowActionRef: "mrrCarter/sentinelayer-v1-action@v1",
+  });
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(baseInterview()),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+
+    assert.notEqual(result.code, 0);
+    assert.match(
+      `${result.stderr}\n${result.stdout}`,
+      /exact ref|immutable pin|workflow interface validation/i,
+    );
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects executable additions in an API-provided Omar workflow", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({
+    includeBootstrapInGenerate: true,
+    includeOmarWorkflowInGenerate: true,
+    omarWorkflowTransform: (workflow) => workflow.replace(
+      "    steps:\n",
+      "    steps:\n      - name: Untrusted remote addition\n        run: echo should-not-run\n",
+    ),
+  });
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(baseInterview()),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+
+    assert.notEqual(result.code, 0);
+    assert.match(
+      `${result.stderr}\n${result.stdout}`,
+      /locally trusted workflow template|executable additions|policy drift/i,
+    );
+  } finally {
+    await mock.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects policy drift in an API-provided Omar workflow", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
+  const mock = await startMockApi({
+    includeBootstrapInGenerate: true,
+    includeOmarWorkflowInGenerate: true,
+    omarWorkflowTransform: (workflow) => workflow.replace(
+      "default: P1",
+      "default: none",
+    ),
+  });
+
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_API_URL: mock.apiUrl,
+      SENTINELAYER_WEB_URL: "http://127.0.0.1",
+      SENTINELAYER_CLI_NON_INTERACTIVE: "1",
+      SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(baseInterview()),
+    };
+
+    const result = await runCli({ cwd: tempRoot, env, args: ["demo-app", "--non-interactive"] });
+
+    assert.notEqual(result.code, 0);
+    assert.match(
+      `${result.stderr}\n${result.stdout}`,
+      /locally trusted workflow template|policy drift/i,
+    );
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
@@ -1205,7 +1311,7 @@ test("CLI non-interactive BYOK mode scaffolds without Sentinelayer auth/token", 
     assert.match(todoText, /Auth mode: `byok`/);
     assert.match(handoffText, /Sentinelayer token: not configured \(BYOK mode\)/);
     assert.match(handoffText, /sentinel \/apply --plan tasks\/todo\.md --path \./);
-    assert.match(handoffText, /BYOK workflow is guidance-only/);
+    assert.match(handoffText, /BYOK workflow calls the hosted Action with repository provider credentials/);
     assert.match(handoffText, /## Multi-Agent Coordination/);
     assert.match(sessionGuideText, /SentinelLayer Session Guide for AI Agents/);
     assert.match(specText, /## Goal/);
@@ -2334,6 +2440,10 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
     assert.equal(initPayload.profile.playwrightMode, "audit");
     assert.equal(initPayload.profile.sbomMode, "audit");
     assert.match(String(initPayload.workflowPath || ""), /[\\/]omar-gate\.yml$/);
+    assert.deepEqual(initPayload.supportFiles, [
+      ".github/scripts/omar-action-evidence-validator.mjs",
+      ".github/scripts/scan-omar-artifacts.mjs",
+    ]);
     assert.equal(
       initPayload.instructions.some((line) =>
         /gh secret set SENTINELAYER_TOKEN --repo acme\/scan-demo/.test(String(line || ""))
@@ -2351,16 +2461,56 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
     assert.equal(initPayload.instructions.includes(manualSetupInstruction), true);
 
     const workflowText = await readFile(initPayload.workflowPath, "utf-8");
+    const generatedValidator = await readFile(
+      path.join(tempRoot, ".github", "scripts", "omar-action-evidence-validator.mjs"),
+    );
+    const bundledValidator = await readFile(
+      new URL("../src/scan/omar-action-evidence-validator.mjs", import.meta.url),
+    );
+    const generatedScanner = await readFile(
+      path.join(tempRoot, ".github", "scripts", "scan-omar-artifacts.mjs"),
+    );
+    const bundledScanner = await readFile(
+      new URL("../.github/scripts/scan-omar-artifacts.js", import.meta.url),
+    );
+    assert.equal(generatedValidator.equals(bundledValidator), true);
+    assert.equal(generatedScanner.equals(bundledScanner), true);
+    await writeFile(path.join(tempRoot, "package.json"), '{"type":"commonjs"}\n', "utf-8");
+    const scannerSmokeDir = path.join(tempRoot, "scanner-smoke");
+    const scannerSmokeReport = path.join(tempRoot, "scanner-smoke-report.json");
+    const scannerSmokeManifest = path.join(tempRoot, "scanner-smoke-manifest.json");
+    await mkdir(scannerSmokeDir, { recursive: true });
+    await writeFile(path.join(scannerSmokeDir, "safe.txt"), "safe\n", "utf-8");
+    const scannerSmoke = spawnSync(
+      process.execPath,
+      [
+        path.join(tempRoot, ".github", "scripts", "scan-omar-artifacts.mjs"),
+        "--path",
+        scannerSmokeDir,
+        "--report",
+        scannerSmokeReport,
+        "--manifest",
+        scannerSmokeManifest,
+      ],
+      { cwd: tempRoot, encoding: "utf-8" },
+    );
+    assert.equal(scannerSmoke.status, 0, scannerSmoke.stderr || scannerSmoke.stdout);
     assert.match(workflowText, /name: Omar Gate/);
-    assert.match(workflowText, /scan_mode: deep/);
-    assert.match(workflowText, /severity_gate: P2/);
-    assert.match(workflowText, /playwright_mode: audit/);
-    assert.match(workflowText, /sbom_mode: audit/);
+    assert.match(workflowText, /default: deep/);
+    assert.match(workflowText, /default: P2/);
+    assert.doesNotMatch(workflowText, /playwright_mode:/);
+    assert.doesNotMatch(workflowText, /sbom_mode:/);
     assert.match(workflowText, /sentinelayer_token:\s*\$\{\{\s*secrets\.SENTINELAYER_TOKEN\s*\}\}/);
-    assert.match(workflowText, /Stage Omar summary artifact/);
+    assert.match(workflowText, /Stage validated Omar artifacts/);
     assert.match(workflowText, /omar-artifacts\/summary\.json/);
-    assert.match(workflowText, /omar_gate_summary/);
-    assert.match(workflowText, /Upload Omar summary artifact/);
+    assert.match(workflowText, /Seal and scan staged Omar artifacts/);
+    assert.match(workflowText, /--expected-manifest/);
+    assert.match(workflowText, /outputs\.archive_path/);
+    assert.match(workflowText, /artifact-ids:/);
+    assert.match(workflowText, /downloaded_sha256/);
+    assert.match(workflowText, /Verify sealed artifact handoff/);
+    assert.match(workflowText, /omar-gate-artifacts/);
+    assert.match(workflowText, /Upload Omar artifacts/);
     await assert.rejects(
       readFile(path.join(tempRoot, ".github", "workflows", "security-review.yml"), "utf-8")
     );
@@ -2385,6 +2535,83 @@ test("CLI scan init targets omar-gate workflow and includes repo-aware secret in
     assert.equal(validatePayload.aligned, true);
     assert.equal(Array.isArray(validatePayload.mismatches), true);
     assert.equal(validatePayload.mismatches.length, 0);
+
+    await writeFile(
+      path.join(tempRoot, ".github", "scripts", "scan-omar-artifacts.mjs"),
+      "// tampered support file\n",
+      "utf-8",
+    );
+    const driftedSupportResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "validate",
+        "--path",
+        tempRoot,
+        "--has-e2e-tests",
+        "yes",
+        "--json",
+      ],
+    });
+    assert.equal(driftedSupportResult.code, 2, driftedSupportResult.stderr || driftedSupportResult.stdout);
+    const driftedSupportPayload = JSON.parse(String(driftedSupportResult.stdout || "").trim());
+    assert.equal(driftedSupportPayload.aligned, false);
+    assert.equal(
+      driftedSupportPayload.mismatches.some(
+        (mismatch) => mismatch.field === "support_file:.github/scripts/scan-omar-artifacts.mjs",
+      ),
+      true,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLI scan custom workflow path remains aligned with runtime provenance", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-scan-custom-"));
+  const workflowFile = ".github/workflows/security-review.yml";
+  try {
+    await writeFile(
+      path.join(tempRoot, "SPEC.md"),
+      "# SPEC - Custom workflow\n\n## Goal\nProtect authentication boundaries.\n",
+      "utf-8",
+    );
+    const initResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "init",
+        "--path",
+        tempRoot,
+        "--workflow-file",
+        workflowFile,
+        "--non-interactive",
+        "--json",
+      ],
+    });
+    assert.equal(initResult.code, 0, initResult.stderr || initResult.stdout);
+    const initPayload = JSON.parse(String(initResult.stdout || "").trim());
+    assert.equal(path.relative(tempRoot, initPayload.workflowPath).replaceAll("\\", "/"), workflowFile);
+    const workflowText = await readFile(initPayload.workflowPath, "utf-8");
+    assert.match(workflowText, /--expected-workflow-ref/);
+
+    const validateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "validate",
+        "--path",
+        tempRoot,
+        "--workflow-file",
+        workflowFile,
+        "--json",
+      ],
+    });
+    assert.equal(validateResult.code, 0, validateResult.stderr || validateResult.stdout);
+    assert.equal(JSON.parse(String(validateResult.stdout || "").trim()).aligned, true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -2447,7 +2674,7 @@ test("CLI scan validate detects workflow drift against current spec profile", as
     const initPayload = JSON.parse(String(initResult.stdout || "").trim());
 
     const originalWorkflow = await readFile(initPayload.workflowPath, "utf-8");
-    const driftedWorkflow = originalWorkflow.replace("severity_gate: P2", "severity_gate: P1");
+    const driftedWorkflow = originalWorkflow.replace("default: P2", "default: P1");
     await writeFile(initPayload.workflowPath, driftedWorkflow, "utf-8");
 
     const validateResult = await runCli({
@@ -2470,6 +2697,65 @@ test("CLI scan validate detects workflow drift against current spec profile", as
     assert.equal(
       validatePayload.mismatches.some((mismatch) => mismatch.field === "severity_gate"),
       true
+    );
+
+    const driftedActionRef = "mrrCarter/sentinelayer-v1-action@1111111111111111111111111111111111111111";
+    const pinDriftedWorkflow = originalWorkflow.replace(SENTINELAYER_ACTION_REF, driftedActionRef);
+    assert.notEqual(pinDriftedWorkflow, originalWorkflow);
+    await writeFile(initPayload.workflowPath, pinDriftedWorkflow, "utf-8");
+
+    const pinValidateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "validate",
+        "--path",
+        tempRoot,
+        "--has-e2e-tests",
+        "no",
+        "--json",
+      ],
+    });
+    assert.equal(pinValidateResult.code, 2);
+
+    const pinValidatePayload = JSON.parse(String(pinValidateResult.stdout || "").trim());
+    assert.equal(pinValidatePayload.aligned, false);
+    assert.equal(
+      pinValidatePayload.mismatches.some(
+        (mismatch) =>
+          mismatch.field === "action" &&
+          mismatch.expected === SENTINELAYER_ACTION_REF &&
+          mismatch.actual === driftedActionRef
+      ),
+      true
+    );
+
+    const noOpWorkflow = YAML.parse(originalWorkflow);
+    const evidenceGate = noOpWorkflow.jobs.omar_gate.steps.find(
+      (step) => step.name === "Enforce validated Omar evidence",
+    );
+    evidenceGate.run = "true";
+    await writeFile(initPayload.workflowPath, YAML.stringify(noOpWorkflow), "utf-8");
+    const noOpValidateResult = await runCli({
+      cwd: tempRoot,
+      env: { ...process.env },
+      args: [
+        "scan",
+        "validate",
+        "--path",
+        tempRoot,
+        "--has-e2e-tests",
+        "no",
+        "--json",
+      ],
+    });
+    assert.equal(noOpValidateResult.code, 2);
+    const noOpPayload = JSON.parse(String(noOpValidateResult.stdout || "").trim());
+    assert.equal(noOpPayload.aligned, false);
+    assert.equal(
+      noOpPayload.mismatches.some((mismatch) => mismatch.field === "workflow_template"),
+      true,
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

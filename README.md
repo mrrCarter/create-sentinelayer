@@ -922,14 +922,19 @@ Generate and validate a spec-aligned security workflow:
 - `sentinelayer-cli scan init --path . --has-e2e-tests yes --playwright-mode auto`
 - `sentinelayer-cli scan validate --path . --json`
 
-`scan init` writes `.github/workflows/omar-gate.yml` and derives:
+`scan init` writes `.github/workflows/omar-gate.yml` and byte-copies its two runtime support files: `.github/scripts/omar-action-evidence-validator.mjs` and `.github/scripts/scan-omar-artifacts.mjs`.
 
-- `scan_mode` + `severity_gate` from spec risk profile
-- `playwright_mode` from spec signals + optional E2E wizard/flags
-- `sbom_mode` from supply-chain/dependency signals in spec
-- Action bridge parity: generated `scan_mode` options align to `sentinelayer-v1-action` (`baseline`, `deep`, `audit`, `full-depth`) and use the pinned action ref.
+Hosted workflow controls:
 
-`scan validate` checks workflow drift against the current spec profile and exits non-zero when mismatched.
+- Action `scan_mode` values are exactly `pr-diff`, `deep`, and `nightly`.
+- The generated default is derived from spec risk (`pr-diff` for the narrow profile, `deep` for higher risk); `nightly` is available for scheduled or manually selected full-repository runs.
+- The Action runs with `publish_github: false`, `severity_gate: none`, and `llm_failure_policy: block`. The generated workflow validates live evidence and original artifact hashes before applying its repository `P0`/`P1`/`P2` policy.
+- Retained evidence is scanned without recording raw credential matches, checked against the validator digests, sealed with a per-file manifest, uploaded as a content-addressed tar file, then downloaded by artifact ID and hash-verified.
+- Playwright and SBOM signals remain local profile/pre-scan hints. They are not inputs to the hosted Action.
+
+Local Omar persona modes are a separate CLI contract: `baseline`, `deep`, `audit`, and `full-depth`. They must not be used as hosted Action modes.
+
+`scan validate` checks workflow, exact Action interface, and byte-identical support-file drift against the current spec profile. It exits non-zero when any contract is mismatched.
 
 AI-assisted pre-scan triage (budgeted + telemetry-instrumented):
 

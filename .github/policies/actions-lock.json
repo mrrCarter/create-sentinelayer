@@ -10,7 +10,8 @@
     "a26af69be951a213d495a4c3e4e4022e16d87065"
   ],
   "actions/upload-artifact": [
-    "50769540e7f4bd5e21e526ee35c689e35e0d6874"
+    "50769540e7f4bd5e21e526ee35c689e35e0d6874",
+    "ea165f8d65b6e75b540449e92b4886f43607fa02"
   ],
   "actions/download-artifact": [
     "d3f86a106a0bac45b974a628896c90dbdf5c8093"
@@ -25,7 +26,6 @@
     "16a9c90856f42705d54a6fda1823352bdc62cf38"
   ],
   "mrrCarter/sentinelayer-v1-action": [
-    "8595c4ad41e7b710ff6b1de0603da6ad8c0c3c07",
-    "a496be33a466c0cc3f8616d66bbd7d78f7d3c31d"
+    "52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5"
   ]
 }

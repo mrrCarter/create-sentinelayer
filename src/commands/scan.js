@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import pc from "picocolors";
 import prompts from "prompts";
@@ -25,6 +26,7 @@ import {
   buildSecretSetupInstructions,
   buildSecurityReviewWorkflow,
   DEFAULT_SCAN_WORKFLOW_PATH,
+  GENERATED_WORKFLOW_SUPPORT_FILES,
   inferScanProfile,
   SUPPORTED_E2E_HINTS,
   SUPPORTED_PLAYWRIGHT_MODES,
@@ -36,6 +38,64 @@ import { resolveActiveAuthSession } from "../auth/service.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
 const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
+const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+
+function resolveWorkflowSupportFiles(targetPath) {
+  return GENERATED_WORKFLOW_SUPPORT_FILES.map(({ sourcePath, targetPath: relativeTarget }) => ({
+    sourcePath,
+    relativeTarget,
+    source: path.join(PACKAGE_ROOT, ...sourcePath.split("/")),
+    target: path.join(targetPath, ...relativeTarget.split("/")),
+  }));
+}
+
+async function installWorkflowSupportFiles(targetPath) {
+  const installed = [];
+  for (const supportFile of resolveWorkflowSupportFiles(targetPath)) {
+    const sourceBytes = await fsp.readFile(supportFile.source);
+    await fsp.mkdir(path.dirname(supportFile.target), { recursive: true });
+    if (path.resolve(supportFile.source) !== path.resolve(supportFile.target)) {
+      await fsp.writeFile(supportFile.target, sourceBytes, { mode: 0o644 });
+    }
+    const targetBytes = await fsp.readFile(supportFile.target);
+    if (!sourceBytes.equals(targetBytes)) {
+      throw new Error(`Generated workflow support file verification failed: ${supportFile.relativeTarget}`);
+    }
+    installed.push(supportFile.relativeTarget);
+  }
+  return installed;
+}
+
+async function validateWorkflowSupportFiles(targetPath) {
+  const mismatches = [];
+  for (const supportFile of resolveWorkflowSupportFiles(targetPath)) {
+    let sourceBytes;
+    let targetBytes;
+    try {
+      sourceBytes = await fsp.readFile(supportFile.source);
+    } catch {
+      throw new Error(`Bundled workflow support file is missing: ${supportFile.sourcePath}`);
+    }
+    try {
+      targetBytes = await fsp.readFile(supportFile.target);
+    } catch {
+      mismatches.push({
+        field: `support_file:${supportFile.relativeTarget}`,
+        expected: "present and byte-identical to the installed CLI",
+        actual: "missing",
+      });
+      continue;
+    }
+    if (!sourceBytes.equals(targetBytes)) {
+      mismatches.push({
+        field: `support_file:${supportFile.relativeTarget}`,
+        expected: "present and byte-identical to the installed CLI",
+        actual: "content mismatch",
+      });
+    }
+  }
+  return mismatches;
+}
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -395,6 +455,7 @@ export function registerScanCommand(program) {
         profile: appliedProfile,
       });
 
+      const supportFiles = await installWorkflowSupportFiles(targetPath);
       await fsp.mkdir(path.dirname(workflowPath), { recursive: true });
       await fsp.writeFile(workflowPath, workflowMarkdown, "utf-8");
 
@@ -406,6 +467,7 @@ export function registerScanCommand(program) {
         targetPath,
         specPath,
         workflowPath,
+        supportFiles,
         profile: appliedProfile,
         policyPack: activePolicy.selected
           ? {
@@ -483,16 +545,19 @@ export function registerScanCommand(program) {
         expectedProfile,
         expectedSecretName: options.secretName,
       });
+      const supportMismatches = await validateWorkflowSupportFiles(targetPath);
+      const mismatches = [...validation.mismatches, ...supportMismatches];
+      const aligned = validation.aligned && supportMismatches.length === 0;
 
       const payload = {
         command: "scan validate",
         targetPath,
         specPath,
         workflowPath,
-        aligned: validation.aligned,
+        aligned,
         expected: validation.expected,
         actual: validation.actual,
-        mismatches: validation.mismatches,
+        mismatches,
         policyPack: activePolicy.selected
           ? {
               id: activePolicy.selected.id,
@@ -503,20 +568,20 @@ export function registerScanCommand(program) {
 
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
-      } else if (validation.aligned) {
+      } else if (aligned) {
         console.log(pc.bold("Security review workflow matches spec profile."));
         console.log(pc.gray(`Workflow: ${workflowPath}`));
       } else {
         console.log(pc.red("Security review workflow drift detected."));
         console.log(pc.gray(`Workflow: ${workflowPath}`));
-        validation.mismatches.forEach((item, index) => {
+        mismatches.forEach((item, index) => {
           console.log(
             `${index + 1}. ${item.field}: expected '${item.expected}' but found '${item.actual}'.`
           );
         });
       }
 
-      if (!validation.aligned) {
+      if (!aligned) {
         process.exitCode = 2;
       }
     });

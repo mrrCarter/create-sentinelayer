@@ -17,6 +17,7 @@ on:
         default: deep
         type: choice
         options:
+          - pr-diff
           - deep
           - nightly
       severity_gate:
@@ -122,6 +123,7 @@ jobs:
       ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     permissions:
+      actions: read
       contents: read
       id-token: write
       checks: write
@@ -135,14 +137,54 @@ jobs:
       p1_count: ${{ steps.omar_result.outputs.p1_count }}
       p2_count: ${{ steps.omar_result.outputs.p2_count }}
       p3_count: ${{ steps.omar_result.outputs.p3_count }}
+      evidence_digest: ${{ steps.omar_result.outputs.evidence_digest }}
+      idempotency_key: ${{ steps.omar_result.outputs.idempotency_key }}
+      archive_sha256: ${{ steps.artifact_secret_scan.outputs.archive_sha256 }}
+      artifact_id: ${{ steps.artifact_upload.outputs.artifact-id }}
+      upload_digest: ${{ steps.artifact_upload.outputs.artifact-digest }}
+      subject_sha: ${{ steps.omar_result.outputs.subject_sha }}
+      workflow_sha: ${{ steps.omar_result.outputs.workflow_sha }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Resolve trusted execution boundary
         id: trust_boundary
         shell: bash
         run: |
           set -euo pipefail
           echo "trusted_context=true" >> "${GITHUB_OUTPUT}"
+      - name: Bind Omar scan provenance
+        id: provenance
+        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        shell: bash
+        env:
+          TARGET_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          actual_subject_sha="$(git rev-parse HEAD)"
+          expected_subject_sha="$(echo "${TARGET_SUBJECT_SHA}" | tr '[:upper:]' '[:lower:]' | xargs)"
+          workflow_sha="$(echo "${WORKFLOW_SHA}" | tr '[:upper:]' '[:lower:]' | xargs)"
+          if ! echo "${expected_subject_sha}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Expected Omar subject SHA is invalid."
+            exit 1
+          fi
+          if [ "${actual_subject_sha}" != "${expected_subject_sha}" ]; then
+            echo "::error::Checked-out Omar subject mismatch. expected=${expected_subject_sha} actual=${actual_subject_sha}."
+            exit 1
+          fi
+          if ! echo "${workflow_sha}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Omar workflow SHA is invalid."
+            exit 1
+          fi
+          workflow_file_sha256="$(sha256sum .github/workflows/omar-gate.yml | awk '{print $1}')"
+          validator_sha256="$(sha256sum src/scan/omar-action-evidence-validator.mjs | awk '{print $1}')"
+          echo "subject_sha=${actual_subject_sha}" >> "${GITHUB_OUTPUT}"
+          echo "workflow_sha=${workflow_sha}" >> "${GITHUB_OUTPUT}"
+          echo "workflow_file_sha256=${workflow_file_sha256}" >> "${GITHUB_OUTPUT}"
+          echo "validator_sha256=${validator_sha256}" >> "${GITHUB_OUTPUT}"
       - name: Resolve Omar credential mode
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: resolve_omar_credentials
@@ -440,9 +482,11 @@ jobs:
         if: steps.trust_boundary.outputs.trusted_context == 'true'
         id: omar
         continue-on-error: true
-        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
+        uses: mrrCarter/sentinelayer-v1-action@52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5
         with:
           github_token: ${{ github.token }}
+          publish_github: "false"
+          comment_tag: ${{ format('omar-gate-{0}-{1}', github.run_id, github.run_attempt) }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           google_api_key: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' && secrets.GOOGLE_GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
           llm_provider: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
@@ -450,7 +494,7 @@ jobs:
           sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
           sentinelayer_managed_llm: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
           scan_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
+          severity_gate: none
           model: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
           codex_model: gpt-5.3-codex
           model_fallback: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
@@ -460,215 +504,140 @@ jobs:
           max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
           min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
           rate_limit_fail_mode: closed
-      - name: Classify managed Omar failure
-        id: managed_failure
-        if: steps.trust_boundary.outputs.trusted_context == 'true' && steps.omar.outcome == 'failure'
+      - name: Build Omar evidence manifest
+        id: evidence_manifest
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' }}
         shell: bash
         env:
-          MANAGED_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+          OMAR_ACTION_REF: mrrCarter/sentinelayer-v1-action@52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5
+          OMAR_ACTION_OUTCOME: ${{ steps.omar.outcome || '' }}
+          OMAR_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
+          OMAR_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
+          OMAR_IDEMPOTENCY_KEY: ${{ steps.omar.outputs.idempotency_key || '' }}
+          OMAR_ACTION_SCAN_MODE: ${{ steps.omar.outputs.scan_mode || '' }}
+          OMAR_POLICY_PACK: ${{ steps.omar.outputs.policy_pack || '' }}
+          OMAR_POLICY_PACK_VERSION: ${{ steps.omar.outputs.policy_pack_version || '' }}
+          OMAR_P0: ${{ steps.omar.outputs.p0_count || '' }}
+          OMAR_P1: ${{ steps.omar.outputs.p1_count || '' }}
+          OMAR_P2: ${{ steps.omar.outputs.p2_count || '' }}
+          OMAR_P3: ${{ steps.omar.outputs.p3_count || '' }}
+          OMAR_FINDINGS_ARTIFACT: ${{ steps.omar.outputs.findings_artifact || '' }}
+          OMAR_PACK_SUMMARY_ARTIFACT: ${{ steps.omar.outputs.pack_summary_artifact || '' }}
+          OMAR_LLM_ATTEMPTED: ${{ steps.omar.outputs.llm_attempted || '' }}
+          OMAR_LLM_SUCCESS: ${{ steps.omar.outputs.llm_success || '' }}
+          OMAR_LLM_OUTPUT_VALID: ${{ steps.omar.outputs.llm_output_valid || '' }}
+          OMAR_LLM_NO_FINDINGS_REPORTED: ${{ steps.omar.outputs.llm_no_findings_reported || '' }}
+          OMAR_LLM_FINDINGS_COUNT: ${{ steps.omar.outputs.llm_findings_count || '' }}
+          OMAR_LLM_PARSE_ERROR_COUNT: ${{ steps.omar.outputs.llm_parse_error_count || '' }}
+          OMAR_LLM_FAILURE_CLASS: ${{ steps.omar.outputs.llm_failure_class || '' }}
+          OMAR_SUBJECT_SHA: ${{ steps.provenance.outputs.subject_sha || '' }}
+          OMAR_WORKFLOW_SHA: ${{ steps.provenance.outputs.workflow_sha || '' }}
+          OMAR_WORKFLOW_FILE_SHA256: ${{ steps.provenance.outputs.workflow_file_sha256 || '' }}
+          OMAR_VALIDATOR_SHA256: ${{ steps.provenance.outputs.validator_sha256 || '' }}
+          OMAR_WORKFLOW_REF: ${{ github.workflow_ref }}
+          OMAR_EVENT_NAME: ${{ github.event_name }}
+          OMAR_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || '0' }}
+          OMAR_COMMENT_TAG: ${{ format('omar-gate-{0}-{1}', github.run_id, github.run_attempt) }}
         run: |
           set -euo pipefail
-          normalized_run_id="$(echo "${MANAGED_RUN_ID}" | tr -d '\r' | xargs)"
-          if [ -z "${normalized_run_id}" ] || ! echo "${normalized_run_id}" | grep -Eq '^[A-Za-z0-9_-]{8,128}$'; then
-            echo "::error::Managed Omar run_id is invalid or missing."
-            exit 1
-          fi
-          findings_path=".sentinelayer/runs/${normalized_run_id}/FINDINGS.jsonl"
-          if [ ! -f "${findings_path}" ]; then
-            echo "::error::Managed Omar findings file not found at ${findings_path}."
-            exit 1
-          fi
-          summary_path=".sentinelayer/runs/${normalized_run_id}/RUN_SUMMARY.json"
-          summary_args=()
-          if [ -f "${summary_path}" ]; then
-            summary_args+=(--run-summary "${summary_path}")
-          fi
-          python3 scripts/ci/classify_omar_provider_outage.py \
-            --findings "${findings_path}" \
-            "${summary_args[@]}" \
-            --github-output "${GITHUB_OUTPUT}"
-      - name: Run deterministic Omar Gate fallback
-        if: steps.trust_boundary.outputs.trusted_context == 'true' && steps.managed_failure.outputs.provider_outage_break_glass == 'true'
-        id: baseline_omar
-        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
-        with:
-          github_token: ${{ github.token }}
-          sentinelayer_token: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token }}
-          sentinelayer_spec_id: ${{ env.OMAR_SPEC_ID }}
-          sentinelayer_managed_llm: "false"
-          scan_mode: deep
-          severity_gate: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
-          model: gpt-5.3-codex
-          codex_model: gpt-5.3-codex
-          model_fallback: gpt-4.1-mini
-          use_codex: "false"
-          codex_only: "false"
-          llm_failure_policy: deterministic_only
-          artifact_name_suffix: provider-outage-fallback
-          max_daily_scans: ${{ vars.OMAR_MAX_DAILY_SCANS || '200' }}
-          min_scan_interval_minutes: ${{ vars.OMAR_MIN_SCAN_INTERVAL_MINUTES || '0' }}
-          rate_limit_fail_mode: closed
-      - name: Select Omar Gate result
+          mkdir -p omar-validation
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const env = (name) => process.env[name] ?? "";
+          const manifest = {
+            schema_version: "1.0",
+            action: {
+              ref: env("OMAR_ACTION_REF"),
+              outcome: env("OMAR_ACTION_OUTCOME"),
+              gate_status: env("OMAR_GATE_STATUS"),
+              run_id: env("OMAR_RUN_ID"),
+              idempotency_key: env("OMAR_IDEMPOTENCY_KEY"),
+              scan_mode: env("OMAR_ACTION_SCAN_MODE"),
+              policy_pack: env("OMAR_POLICY_PACK"),
+              policy_pack_version: env("OMAR_POLICY_PACK_VERSION"),
+              p0_count: env("OMAR_P0"),
+              p1_count: env("OMAR_P1"),
+              p2_count: env("OMAR_P2"),
+              p3_count: env("OMAR_P3"),
+              findings_artifact: env("OMAR_FINDINGS_ARTIFACT"),
+              pack_summary_artifact: env("OMAR_PACK_SUMMARY_ARTIFACT"),
+              llm_attempted: env("OMAR_LLM_ATTEMPTED"),
+              llm_success: env("OMAR_LLM_SUCCESS"),
+              llm_output_valid: env("OMAR_LLM_OUTPUT_VALID"),
+              llm_no_findings_reported: env("OMAR_LLM_NO_FINDINGS_REPORTED"),
+              llm_findings_count: env("OMAR_LLM_FINDINGS_COUNT"),
+              llm_parse_error_count: env("OMAR_LLM_PARSE_ERROR_COUNT"),
+              llm_failure_class: env("OMAR_LLM_FAILURE_CLASS"),
+            },
+            provenance: {
+              subject_sha: env("OMAR_SUBJECT_SHA"),
+              workflow_sha: env("OMAR_WORKFLOW_SHA"),
+              workflow_ref: env("OMAR_WORKFLOW_REF"),
+              workflow_file_sha256: env("OMAR_WORKFLOW_FILE_SHA256"),
+              validator_sha256: env("OMAR_VALIDATOR_SHA256"),
+              repository: env("GITHUB_REPOSITORY"),
+              github_run_id: env("GITHUB_RUN_ID"),
+              github_run_attempt: env("GITHUB_RUN_ATTEMPT"),
+              event_name: env("OMAR_EVENT_NAME"),
+              pull_request_number: env("OMAR_PULL_REQUEST_NUMBER"),
+              comment_tag: env("OMAR_COMMENT_TAG"),
+            },
+          };
+          fs.writeFileSync(
+            "omar-validation/action-evidence-input.json",
+            `${JSON.stringify(manifest, null, 2)}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          );
+          NODE
+      - name: Validate live Omar evidence
         id: omar_result
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' }}
+        continue-on-error: true
         shell: bash
         env:
-          MANAGED_OUTCOME: ${{ steps.omar.outcome || '' }}
-          PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
-          PROVIDER_OUTAGE_REASON: ${{ steps.managed_failure.outputs.reason || '' }}
-          MANAGED_RUN_ID: ${{ steps.omar.outputs.run_id || '' }}
-          MANAGED_GATE_STATUS: ${{ steps.omar.outputs.gate_status || '' }}
-          MANAGED_P0_COUNT: ${{ steps.omar.outputs.p0_count || '0' }}
-          MANAGED_P1_COUNT: ${{ steps.omar.outputs.p1_count || '0' }}
-          MANAGED_P2_COUNT: ${{ steps.omar.outputs.p2_count || '0' }}
-          MANAGED_P3_COUNT: ${{ steps.omar.outputs.p3_count || '0' }}
-          BASELINE_RUN_ID: ${{ steps.baseline_omar.outputs.run_id || '' }}
-          BASELINE_GATE_STATUS: ${{ steps.baseline_omar.outputs.gate_status || '' }}
-          BASELINE_P0_COUNT: ${{ steps.baseline_omar.outputs.p0_count || '0' }}
-          BASELINE_P1_COUNT: ${{ steps.baseline_omar.outputs.p1_count || '0' }}
-          BASELINE_P2_COUNT: ${{ steps.baseline_omar.outputs.p2_count || '0' }}
-          BASELINE_P3_COUNT: ${{ steps.baseline_omar.outputs.p3_count || '0' }}
+          EXPECTED_SUBJECT_SHA: ${{ steps.provenance.outputs.subject_sha || '' }}
+          EXPECTED_WORKFLOW_SHA: ${{ steps.provenance.outputs.workflow_sha || '' }}
+          EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
-          write_output() {
-            printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT}"
-          }
-          if [ "${PROVIDER_OUTAGE_BREAK_GLASS}" = "true" ]; then
-            selected="baseline"
-            run_id="${BASELINE_RUN_ID}"
-            gate_status="${BASELINE_GATE_STATUS}"
-            p0_count="${BASELINE_P0_COUNT}"
-            p1_count="${BASELINE_P1_COUNT}"
-            p2_count="${BASELINE_P2_COUNT}"
-            p3_count="${BASELINE_P3_COUNT}"
-          else
-            selected="managed"
-            if [ "${MANAGED_OUTCOME}" != "success" ]; then
-              echo "::error::Managed Omar failed and did not qualify for provider-outage break-glass (outcome='${MANAGED_OUTCOME}', reason='${PROVIDER_OUTAGE_REASON:-not_classified}')."
-              exit 1
-            fi
-            run_id="${MANAGED_RUN_ID}"
-            gate_status="${MANAGED_GATE_STATUS}"
-            p0_count="${MANAGED_P0_COUNT}"
-            p1_count="${MANAGED_P1_COUNT}"
-            p2_count="${MANAGED_P2_COUNT}"
-            p3_count="${MANAGED_P3_COUNT}"
-          fi
-          write_output selected_source "${selected}"
-          write_output run_id "${run_id}"
-          write_output gate_status "${gate_status}"
-          write_output p0_count "${p0_count}"
-          write_output p1_count "${p1_count}"
-          write_output p2_count "${p2_count}"
-          write_output p3_count "${p3_count}"
-      - name: Assert Omar LLM contract is active
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        env:
-          GATE_STATUS: ${{ steps.omar_result.outputs.gate_status || '' }}
-          SELECTED_OMAR_SOURCE: ${{ steps.omar_result.outputs.selected_source || '' }}
-          MANAGED_OMAR_OUTCOME: ${{ steps.omar.outcome || '' }}
-          PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
-          PROVIDER_OUTAGE_REASON: ${{ steps.managed_failure.outputs.reason || '' }}
-          REQUESTED_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          REQUESTED_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
-          REQUESTED_CODEX_MODEL: gpt-5.3-codex
-          REQUESTED_FALLBACK_MODEL: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
-          REQUESTED_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
-          REQUESTED_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
-          REQUESTED_MANAGED_LLM: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
-          REQUESTED_USE_CODEX: ${{ secrets.OPENAI_API_KEY != '' || (secrets.GOOGLE_GEMINI_API_KEY == '' && secrets.GOOGLE_API_KEY == '') }}
-          REQUESTED_FAILURE_POLICY: block
-        run: |
-          set -euo pipefail
-          gate_status="$(echo "${GATE_STATUS}" | tr -d '\r' | xargs || true)"
-          if [ "${PROVIDER_OUTAGE_BREAK_GLASS}" = "true" ]; then
-            if [ "${MANAGED_OMAR_OUTCOME}" != "failure" ] || [ "${SELECTED_OMAR_SOURCE}" != "baseline" ] || [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_MANAGED_LLM}" != "true" ]; then
-              echo "::error::Omar provider-outage break-glass contract drifted (managed_outcome='${MANAGED_OMAR_OUTCOME}' selected='${SELECTED_OMAR_SOURCE}' managed='${REQUESTED_MANAGED_LLM}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
-              exit 1
-            fi
-            echo "Omar provider-outage break-glass contract active (managed attempted fail-closed; deterministic fallback selected; reason='${PROVIDER_OUTAGE_REASON}')."
-          elif [ "${SELECTED_OMAR_SOURCE}" != "managed" ]; then
-            echo "::error::Omar selected source is invalid: '${SELECTED_OMAR_SOURCE}'."
-            exit 1
-          fi
-          if [ "${REQUESTED_FAILURE_POLICY}" != "block" ] || [ "${REQUESTED_CODEX_MODEL}" != "gpt-5.3-codex" ]; then
-            echo "::error::Omar model policy drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' failure='${REQUESTED_FAILURE_POLICY}'). Blocking merge."
-            exit 1
-          fi
-          if [ "${REQUESTED_OPENAI_KEY_PRESENT}" = "true" ]; then
-            expected_fallback="gpt-4.1-mini"
-            if [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
-              expected_fallback="gemini-2.5-flash"
-            fi
-            if [ "${REQUESTED_PROVIDER}" != "openai" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "${expected_fallback}" ] || [ "${REQUESTED_USE_CODEX}" != "true" ]; then
-              echo "::error::Omar OpenAI/Codex contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
-              exit 1
-            fi
-          elif [ "${REQUESTED_GOOGLE_KEY_PRESENT}" = "true" ]; then
-            if [ "${REQUESTED_PROVIDER}" != "google" ] || [ "${REQUESTED_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gemini-2.5-flash" ] || [ "${REQUESTED_USE_CODEX}" != "false" ]; then
-              echo "::error::Omar Google fallback contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
-              exit 1
-            fi
-          elif [ "${REQUESTED_PROVIDER}" != "openai" ] || [ "${REQUESTED_MODEL}" != "gpt-5.3-codex" ] || [ "${REQUESTED_FALLBACK_MODEL}" != "gpt-4.1-mini" ] || [ "${REQUESTED_USE_CODEX}" != "true" ]; then
-            echo "::error::Omar OpenAI/Codex contract drifted (provider='${REQUESTED_PROVIDER}' model='${REQUESTED_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' use_codex='${REQUESTED_USE_CODEX}'). Blocking merge."
-            exit 1
-          fi
-          if [ "${REQUESTED_GOOGLE_KEY_PRESENT}" != "true" ] && [ "${REQUESTED_OPENAI_KEY_PRESENT}" != "true" ] && [ "${REQUESTED_MANAGED_LLM}" != "true" ]; then
-            echo "::error::Omar has no real LLM credential route configured. Set GOOGLE_GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, or a SentinelLayer managed token."
-            exit 1
-          fi
-          if [ "${gate_status}" != "passed" ]; then
-            echo "::error::Omar Gate did not pass (gate_status='${gate_status}'). Blocking merge."
-            exit 1
-          fi
-          echo "Omar LLM contract active: provider='${REQUESTED_PROVIDER}' google_key_present='${REQUESTED_GOOGLE_KEY_PRESENT}' openai_key_present='${REQUESTED_OPENAI_KEY_PRESENT}' managed='${REQUESTED_MANAGED_LLM}' use_codex='${REQUESTED_USE_CODEX}' model='${REQUESTED_MODEL}' codex_model='${REQUESTED_CODEX_MODEL}' fallback='${REQUESTED_FALLBACK_MODEL}' gate='${gate_status}'"
-      - name: Validate Omar output contract
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        shell: bash
-        env:
-          OMAR_RUN_ID: ${{ steps.omar_result.outputs.run_id || '' }}
-          OMAR_GATE_STATUS: ${{ steps.omar_result.outputs.gate_status || '' }}
-          OMAR_P0: ${{ steps.omar_result.outputs.p0_count || '0' }}
-          OMAR_P1: ${{ steps.omar_result.outputs.p1_count || '0' }}
-          OMAR_P2: ${{ steps.omar_result.outputs.p2_count || '0' }}
-          OMAR_P3: ${{ steps.omar_result.outputs.p3_count || '0' }}
-        run: |
-          set -euo pipefail
-          if [ -n "${OMAR_RUN_ID}" ] && ! echo "${OMAR_RUN_ID}" | grep -Eq '^[A-Za-z0-9_-]{8,128}$'; then
-            echo "::error::Invalid Omar run_id output: ${OMAR_RUN_ID}"
-            exit 1
-          fi
-          case "${OMAR_GATE_STATUS}" in ''|pass|passed|blocked|fail|failed) ;; *) echo "::error::Invalid Omar gate_status output: ${OMAR_GATE_STATUS}" ; exit 1 ;; esac
-          for value in "${OMAR_P0}" "${OMAR_P1}" "${OMAR_P2}" "${OMAR_P3}"; do
-            case "${value}" in ''|*[!0-9]*) echo "::error::Invalid Omar severity count output: ${value}" ; exit 1 ;; esac
-          done
+          node src/scan/omar-action-evidence-validator.mjs \
+            --input omar-validation/action-evidence-input.json \
+            --workspace-root "${GITHUB_WORKSPACE}" \
+            --expected-subject-sha "${EXPECTED_SUBJECT_SHA}" \
+            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+            --expected-workflow-ref "${EXPECTED_WORKFLOW_REF}" \
+            --summary-out omar-validation/validated-evidence.json \
+            --github-output "${GITHUB_OUTPUT}"
       - name: Stage Omar artifacts (redacted)
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' }}
         shell: bash
         env:
           OMAR_UPLOAD_LOGS: ${{ vars.OMAR_UPLOAD_LOGS || 'false' }}
+          OMAR_ACTION_OUTCOME: ${{ steps.omar.outcome || '' }}
+          OMAR_VALIDATION_OUTCOME: ${{ steps.omar_result.outcome || '' }}
           OMAR_RUN_ID: ${{ steps.omar_result.outputs.run_id || '' }}
           OMAR_GATE_STATUS: ${{ steps.omar_result.outputs.gate_status || '' }}
           OMAR_P0: ${{ steps.omar_result.outputs.p0_count || '0' }}
           OMAR_P1: ${{ steps.omar_result.outputs.p1_count || '0' }}
           OMAR_P2: ${{ steps.omar_result.outputs.p2_count || '0' }}
           OMAR_P3: ${{ steps.omar_result.outputs.p3_count || '0' }}
-          OMAR_SELECTED_SOURCE: ${{ steps.omar_result.outputs.selected_source || '' }}
-          OMAR_PROVIDER_OUTAGE_BREAK_GLASS: ${{ steps.managed_failure.outputs.provider_outage_break_glass || 'false' }}
+          OMAR_PACK_SUMMARY_PATH: ${{ steps.omar_result.outputs.pack_summary_path || '' }}
+          OMAR_FINDINGS_PATH: ${{ steps.omar_result.outputs.findings_path || '' }}
+          OMAR_PACK_SHA256: ${{ steps.omar_result.outputs.pack_sha256 || '' }}
+          OMAR_FINDINGS_SHA256: ${{ steps.omar_result.outputs.findings_sha256 || '' }}
+          OMAR_EVIDENCE_DIGEST: ${{ steps.omar_result.outputs.evidence_digest || '' }}
+          OMAR_IDEMPOTENCY_KEY: ${{ steps.omar_result.outputs.idempotency_key || '' }}
+          OMAR_SUBJECT_SHA: ${{ steps.omar_result.outputs.subject_sha || steps.provenance.outputs.subject_sha || '' }}
+          OMAR_WORKFLOW_SHA: ${{ steps.omar_result.outputs.workflow_sha || steps.provenance.outputs.workflow_sha || '' }}
+          OMAR_LLM_FAILURE_CLASS: ${{ steps.omar.outputs.llm_failure_class || '' }}
           OMAR_SCAN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'deep' }}
           OMAR_SEVERITY_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.severity_gate || 'P1' }}
           OMAR_P2_MAX_ALLOWED: ${{ github.event_name == 'workflow_dispatch' && inputs.p2_max_allowed || '5' }}
-          OMAR_OPENAI_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
-          OMAR_GOOGLE_KEY_PRESENT: ${{ secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' }}
-          OMAR_MANAGED_LLM: ${{ steps.resolve_omar_credentials.outputs.sentinelayer_token != '' }}
-          OMAR_LLM_PROVIDER: ${{ secrets.OPENAI_API_KEY != '' && 'openai' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'google' || 'openai') }}
-          OMAR_MODEL: ${{ secrets.OPENAI_API_KEY != '' && 'gpt-5.3-codex' || ((secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-5.3-codex') }}
-          OMAR_MODEL_FALLBACK: ${{ (secrets.GOOGLE_GEMINI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') && 'gemini-2.5-flash' || 'gpt-4.1-mini' }}
         run: |
           set -euo pipefail
           rm -rf omar-artifacts
-          mkdir -p omar-artifacts/reports omar-artifacts/telemetry
+          mkdir -p omar-artifacts/original omar-artifacts/reports omar-artifacts/telemetry omar-artifacts/validation
           if [ -d ".sentinelayer/reports" ]; then
             cp -R .sentinelayer/reports/. omar-artifacts/reports/ 2>/dev/null || true
           fi
@@ -679,81 +648,100 @@ jobs:
             mkdir -p omar-artifacts/logs
             cp -R .sentinelayer/logs/. omar-artifacts/logs/ 2>/dev/null || true
           fi
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+          cp omar-validation/action-evidence-input.json omar-artifacts/validation/action-evidence-input.json
+          if [ -f omar-validation/validated-evidence.json ]; then
+            cp omar-validation/validated-evidence.json omar-artifacts/validation/validated-evidence.json
+          fi
+          if [ "${OMAR_VALIDATION_OUTCOME}" = "success" ]; then
+            test -f "${OMAR_PACK_SUMMARY_PATH}"
+            test -f "${OMAR_FINDINGS_PATH}"
+            cp "${OMAR_PACK_SUMMARY_PATH}" omar-artifacts/original/PACK_SUMMARY.json
+            cp "${OMAR_FINDINGS_PATH}" omar-artifacts/original/FINDINGS.jsonl
+            staged_pack_sha256="$(sha256sum omar-artifacts/original/PACK_SUMMARY.json | awk '{print $1}')"
+            staged_findings_sha256="$(sha256sum omar-artifacts/original/FINDINGS.jsonl | awk '{print $1}')"
+            if [ "${staged_pack_sha256}" != "${OMAR_PACK_SHA256}" ] || [ "${staged_findings_sha256}" != "${OMAR_FINDINGS_SHA256}" ]; then
+              echo "::error::Staged Omar evidence differs from the validated Action bytes."
+              exit 1
+            fi
+          fi
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
 
-          def env(name, default=""):
-              return os.environ.get(name, default)
-
-          def int_env(name):
-              value = env(name, "0").strip()
-              return int(value) if value.isdigit() else 0
-
-          def bool_env(name):
-              return env(name).strip().lower() == "true"
-
-          github_run_id = env("GITHUB_RUN_ID")
-          server_url = env("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
-          repository = env("GITHUB_REPOSITORY")
-          run_url = f"{server_url}/{repository}/actions/runs/{github_run_id}" if repository and github_run_id else ""
-          summary = {
-              "schema_version": 1,
-              "kind": "omar_gate_summary",
-              "run_id": env("OMAR_RUN_ID"),
-              "gate_status": env("OMAR_GATE_STATUS"),
-              "findings": {
-                  "P0": int_env("OMAR_P0"),
-                  "P1": int_env("OMAR_P1"),
-                  "P2": int_env("OMAR_P2"),
-                  "P3": int_env("OMAR_P3"),
-              },
-              "threshold": {
-                  "severity_gate": env("OMAR_SEVERITY_GATE", "P1"),
-                  "p2_max_allowed": int_env("OMAR_P2_MAX_ALLOWED"),
-              },
-              "scan": {
-                  "mode": env("OMAR_SCAN_MODE", "deep"),
-                  "action_ref": "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d",
-                  "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
-                  "model": env("OMAR_MODEL", "gpt-5.3-codex"),
-                  "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
-                  "llm_route": "openai_api_key" if bool_env("OMAR_OPENAI_KEY_PRESENT") else ("google_api_key" if bool_env("OMAR_GOOGLE_KEY_PRESENT") else "sentinelayer_managed"),
-                  "google_key_present": bool_env("OMAR_GOOGLE_KEY_PRESENT"),
-                  "openai_key_present": bool_env("OMAR_OPENAI_KEY_PRESENT"),
-                  "managed_llm": bool_env("OMAR_MANAGED_LLM"),
-                  "llm_failure_policy": "block",
-                  "selected_source": env("OMAR_SELECTED_SOURCE"),
-                  "provider_outage_break_glass": bool_env("OMAR_PROVIDER_OUTAGE_BREAK_GLASS"),
-              },
-              "github": {
-                  "repository": repository,
-                  "sha": env("GITHUB_SHA"),
-                  "ref": env("GITHUB_REF"),
-                  "event_name": env("GITHUB_EVENT_NAME"),
-                  "workflow": env("GITHUB_WORKFLOW"),
-                  "run_id": github_run_id,
-                  "run_attempt": env("GITHUB_RUN_ATTEMPT"),
-                  "run_url": run_url,
-              },
-          }
-          Path("omar-artifacts/summary.json").write_text(
-              json.dumps(summary, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          PY
-      - name: Scan staged artifacts for secrets
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
+          const env = (name, fallback = "") => process.env[name] ?? fallback;
+          const integer = (name) => {
+            const value = env(name, "0");
+            return /^\d+$/.test(value) ? Number(value) : 0;
+          };
+          const repository = env("GITHUB_REPOSITORY");
+          const githubRunId = env("GITHUB_RUN_ID");
+          const serverUrl = env("GITHUB_SERVER_URL", "https://github.com").replace(/\/$/, "");
+          const summary = {
+            schema_version: "2.0",
+            kind: "validated_omar_gate_summary",
+            validation_succeeded: env("OMAR_VALIDATION_OUTCOME") === "success",
+            action_outcome: env("OMAR_ACTION_OUTCOME"),
+            validation_outcome: env("OMAR_VALIDATION_OUTCOME"),
+            run_id: env("OMAR_RUN_ID"),
+            gate_status: env("OMAR_GATE_STATUS"),
+            findings: {
+              P0: integer("OMAR_P0"),
+              P1: integer("OMAR_P1"),
+              P2: integer("OMAR_P2"),
+              P3: integer("OMAR_P3"),
+            },
+            threshold: {
+              severity_gate: env("OMAR_SEVERITY_GATE", "P1"),
+              p2_max_allowed: integer("OMAR_P2_MAX_ALLOWED"),
+            },
+            evidence: {
+              action_ref: "mrrCarter/sentinelayer-v1-action@52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5",
+              llm_failure_policy: "block",
+              failure_class: env("OMAR_LLM_FAILURE_CLASS"),
+              pack_sha256: env("OMAR_PACK_SHA256"),
+              findings_sha256: env("OMAR_FINDINGS_SHA256"),
+              evidence_digest: env("OMAR_EVIDENCE_DIGEST"),
+              idempotency_key: env("OMAR_IDEMPOTENCY_KEY"),
+            },
+            provenance: {
+              subject_sha: env("OMAR_SUBJECT_SHA"),
+              workflow_sha: env("OMAR_WORKFLOW_SHA"),
+              workflow_ref: env("GITHUB_WORKFLOW_REF"),
+            },
+            github: {
+              repository,
+              event_name: env("GITHUB_EVENT_NAME"),
+              run_id: githubRunId,
+              run_attempt: env("GITHUB_RUN_ATTEMPT"),
+              run_url: repository && githubRunId ? `${serverUrl}/${repository}/actions/runs/${githubRunId}` : "",
+            },
+          };
+          fs.writeFileSync(
+            "omar-artifacts/summary.json",
+            `${JSON.stringify(summary, null, 2)}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          );
+          NODE
+      - name: Seal and scan staged Omar artifacts
+        id: artifact_secret_scan
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' }}
         shell: bash
+        env:
+          OMAR_PACK_SHA256: ${{ steps.omar_result.outputs.pack_sha256 || '' }}
+          OMAR_FINDINGS_SHA256: ${{ steps.omar_result.outputs.findings_sha256 || '' }}
         run: |
           set -euo pipefail
           if [ ! -d "omar-artifacts" ]; then
             exit 0
           fi
-          report="omar-artifacts/secret-scan.json"
+          rm -rf omar-upload omar-archive-verify omar-upload-verify
+          mkdir -p omar-upload omar-validation
+          report="omar-validation/secret-scan.json"
+          manifest="omar-validation/artifact-manifest.json"
           set +e
-          node .github/scripts/scan-omar-artifacts.js --path omar-artifacts --report "${report}"
+          node .github/scripts/scan-omar-artifacts.js \
+            --path omar-artifacts \
+            --report "${report}" \
+            --manifest "${manifest}"
           scan_exit="$?"
           set -e
           if [ "${scan_exit}" -ne 0 ]; then
@@ -761,13 +749,144 @@ jobs:
             echo "::error::Secret scan detected ${findings} potential secret(s) in Omar artifacts. Aborting upload."
             exit 1
           fi
+          manifest_sha256="$(sha256sum "${manifest}" | awk '{print $1}')"
+          cp "${manifest}" omar-artifacts/validation/artifact-manifest.json
+          archive_file_list="$(pwd)/omar-validation/archive-files.nul"
+          MANIFEST_PATH="${manifest}" ARCHIVE_FILE_LIST="${archive_file_list}" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8"));
+          const paths = [
+            ...manifest.files.map((entry) => entry.path),
+            "validation/artifact-manifest.json",
+          ].sort();
+          if (
+            paths.some(
+              (entry) =>
+                typeof entry !== "string" ||
+                entry.length === 0 ||
+                entry.includes("\0") ||
+                entry.startsWith("/") ||
+                entry.split("/").some((segment) => segment === "" || segment === "." || segment === ".."),
+            ) ||
+            new Set(paths).size !== paths.length
+          ) {
+            throw new Error("Artifact manifest contains an unsafe archive member path");
+          }
+          const chunks = paths.flatMap((entry) => [Buffer.from(entry, "utf8"), Buffer.from([0])]);
+          fs.writeFileSync(process.env.ARCHIVE_FILE_LIST, Buffer.concat(chunks), {
+            mode: 0o600,
+          });
+          NODE
+          archive_tmp="omar-upload/omar-gate-artifacts.tar.tmp"
+          tar \
+            --sort=name \
+            --mtime='@0' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            --format=posix \
+            --pax-option=delete=atime,delete=ctime \
+            -cf "${archive_tmp}" \
+            -C omar-artifacts \
+            --null \
+            --verbatim-files-from \
+            --no-recursion \
+            -T "${archive_file_list}"
+          mkdir -p omar-archive-verify
+          tar -xf "${archive_tmp}" -C omar-archive-verify --no-same-owner
+          embedded_manifest="omar-archive-verify/validation/artifact-manifest.json"
+          test "$(sha256sum "${embedded_manifest}" | awk '{print $1}')" = "${manifest_sha256}"
+          node .github/scripts/scan-omar-artifacts.js \
+            --path omar-archive-verify \
+            --report omar-validation/archive-secret-scan.json \
+            --expected-manifest "${embedded_manifest}"
+          extracted_pack_sha256="$(sha256sum omar-archive-verify/original/PACK_SUMMARY.json | awk '{print $1}')"
+          extracted_findings_sha256="$(sha256sum omar-archive-verify/original/FINDINGS.jsonl | awk '{print $1}')"
+          if [ "${extracted_pack_sha256}" != "${OMAR_PACK_SHA256}" ] || [ "${extracted_findings_sha256}" != "${OMAR_FINDINGS_SHA256}" ]; then
+            echo "::error::Sealed Omar archive differs from the validated Action bytes."
+            exit 1
+          fi
+          archive_sha256="$(sha256sum "${archive_tmp}" | awk '{print $1}')"
+          case "${archive_sha256}" in (''|*[!0-9a-f]*) echo "::error::Invalid sealed archive digest"; exit 1;; esac
+          archive_path="omar-upload/omar-gate-artifacts-${archive_sha256}.tar"
+          mv "${archive_tmp}" "${archive_path}"
+          chmod 0444 "${archive_path}"
+          rm -rf omar-artifacts omar-archive-verify
+          echo "archive_path=${archive_path}" >> "${GITHUB_OUTPUT}"
+          echo "archive_sha256=${archive_sha256}" >> "${GITHUB_OUTPUT}"
       - name: Upload Omar artifacts
-        if: steps.trust_boundary.outputs.trusted_context == 'true'
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        id: artifact_upload
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' && steps.artifact_secret_scan.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: omar-gate-artifacts
-          path: omar-artifacts/**
-          if-no-files-found: ignore
+          path: ${{ steps.artifact_secret_scan.outputs.archive_path }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Download uploaded Omar artifact for verification
+        id: artifact_download
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' && steps.artifact_upload.outcome == 'success' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}
+          path: omar-upload-verify
+          merge-multiple: true
+      - name: Verify sealed artifact handoff
+        id: artifact_handoff
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' && steps.artifact_download.outcome == 'success' }}
+        shell: bash
+        env:
+          OMAR_ARCHIVE_PATH: ${{ steps.artifact_secret_scan.outputs.archive_path || '' }}
+          OMAR_ARCHIVE_SHA256: ${{ steps.artifact_secret_scan.outputs.archive_sha256 || '' }}
+          OMAR_ARTIFACT_ID: ${{ steps.artifact_upload.outputs.artifact-id || '' }}
+          OMAR_UPLOAD_DIGEST: ${{ steps.artifact_upload.outputs.artifact-digest || '' }}
+          OMAR_DOWNLOAD_PATH: ${{ steps.artifact_download.outputs.download-path || '' }}
+        run: |
+          set -euo pipefail
+          test -n "${OMAR_ARCHIVE_PATH}"
+          test -f "${OMAR_ARCHIVE_PATH}"
+          test ! -L "${OMAR_ARCHIVE_PATH}"
+          test "$(basename "${OMAR_ARCHIVE_PATH}")" = "omar-gate-artifacts-${OMAR_ARCHIVE_SHA256}.tar"
+          actual_sha256="$(sha256sum "${OMAR_ARCHIVE_PATH}" | awk '{print $1}')"
+          test "${actual_sha256}" = "${OMAR_ARCHIVE_SHA256}"
+          case "${OMAR_ARTIFACT_ID}" in (''|*[!0-9]*) echo "::error::Upload action did not return a canonical artifact id"; exit 1;; esac
+          case "${OMAR_UPLOAD_DIGEST}" in (????????????????????????????????????????????????????????????????) ;; (*) echo "::error::Upload action did not return a canonical artifact digest"; exit 1;; esac
+          case "${OMAR_UPLOAD_DIGEST}" in (*[!0-9a-f]*) echo "::error::Upload action returned an invalid artifact digest"; exit 1;; esac
+          test -d "${OMAR_DOWNLOAD_PATH}"
+          expected_filename="$(basename "${OMAR_ARCHIVE_PATH}")"
+          downloaded_archive="${OMAR_DOWNLOAD_PATH}/${expected_filename}"
+          test -f "${downloaded_archive}"
+          test ! -L "${downloaded_archive}"
+          test "$(find "${OMAR_DOWNLOAD_PATH}" -type f | wc -l | xargs)" = "1"
+          test -z "$(find "${OMAR_DOWNLOAD_PATH}" -type l -print -quit)"
+          downloaded_sha256="$(sha256sum "${downloaded_archive}" | awk '{print $1}')"
+          test "${downloaded_sha256}" = "${OMAR_ARCHIVE_SHA256}"
+      - name: Enforce validated Omar evidence
+        if: ${{ always() && steps.trust_boundary.outputs.trusted_context == 'true' }}
+        shell: bash
+        env:
+          OMAR_ACTION_OUTCOME: ${{ steps.omar.outcome || '' }}
+          OMAR_VALIDATION_OUTCOME: ${{ steps.omar_result.outcome || '' }}
+          OMAR_SECRET_SCAN_OUTCOME: ${{ steps.artifact_secret_scan.outcome || '' }}
+          OMAR_ARTIFACT_UPLOAD_OUTCOME: ${{ steps.artifact_upload.outcome || '' }}
+          OMAR_ARTIFACT_DOWNLOAD_OUTCOME: ${{ steps.artifact_download.outcome || '' }}
+          OMAR_ARTIFACT_HANDOFF_OUTCOME: ${{ steps.artifact_handoff.outcome || '' }}
+          OMAR_LLM_FAILURE_CLASS: ${{ steps.omar.outputs.llm_failure_class || '' }}
+        run: |
+          set -euo pipefail
+          if [ "${OMAR_ACTION_OUTCOME}" != "success" ]; then
+            echo "::error::Omar Action did not succeed; live evidence is non-authoritative (failure_class=${OMAR_LLM_FAILURE_CLASS:-unclassified})."
+            exit 1
+          fi
+          if [ "${OMAR_VALIDATION_OUTCOME}" != "success" ]; then
+            echo "::error::Omar Action evidence validation failed closed."
+            exit 1
+          fi
+          if [ "${OMAR_SECRET_SCAN_OUTCOME}" != "success" ] || [ "${OMAR_ARTIFACT_UPLOAD_OUTCOME}" != "success" ] || [ "${OMAR_ARTIFACT_DOWNLOAD_OUTCOME}" != "success" ] || [ "${OMAR_ARTIFACT_HANDOFF_OUTCOME}" != "success" ]; then
+            echo "::error::Validated Omar evidence was not safely retained."
+            exit 1
+          fi
   omar_enforce:
     name: Omar Gate
     needs: [omar_scan, omar_untrusted_scan]
@@ -778,7 +897,7 @@ jobs:
       checks: write
       pull-requests: write
     steps:
-      - name: Require selected Omar scan success
+      - name: Require authoritative Omar scan success
         shell: bash
         env:
           TRUSTED_SCAN_RESULT: ${{ needs.omar_scan.result }}
@@ -794,7 +913,8 @@ jobs:
               echo "::error::Untrusted Omar scan did not succeed (result=${UNTRUSTED_SCAN_RESULT})."
               exit 1
             fi
-            exit 0
+            echo "::error::Fork Omar scan is diagnostic only and cannot satisfy the required live gate. Trusted exact-subject promotion is required before merge."
+            exit 1
           fi
           if [ "${TRUSTED_SCAN_RESULT}" != "success" ] || [ "${TRUSTED_CONTEXT}" != "true" ]; then
             echo "::error::Trusted Omar scan did not succeed (result=${TRUSTED_SCAN_RESULT}, trusted_context=${TRUSTED_CONTEXT:-<empty>})."

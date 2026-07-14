@@ -25,6 +25,7 @@
   "files": [
     "bin",
     "src",
+    ".github/scripts/scan-omar-artifacts.js",
     "README.md"
   ],
   "engines": {
