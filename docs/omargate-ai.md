@@ -80,6 +80,55 @@ sl omargate deep --ai-dry-run --json
 
 After `sl auth login`, the SentinelLayer proxy is auto-detected. Users never need their own API keys.
 
+## Hosted GitHub Gate Contract
+
+The trusted GitHub lane is a two-stage gate. The pinned Action proves that a live review occurred and produced valid artifacts; the consuming workflow then applies this repository's severity policy. Neither stage may infer the other.
+
+### Immutable runtime
+
+- Pin `mrrCarter/sentinelayer-v1-action` to commit `52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5`. Do not use a branch or movable tag for merge authority.
+- Invoke the Action with `llm_failure_policy: block` and `severity_gate: none`. In this mode, the Action must validate live-LLM evidence before returning `passed`; the consuming workflow remains responsible for the effective P0/P1/P2 threshold.
+- Record the exact Action SHA, workflow commit SHA, run id, and observed evidence digest in the retained gate summary.
+- Supporting CLI evidence must name an immutable repository commit or a uniquely versioned package artifact. A global binary whose semantic version can resolve to different source trees is not merge evidence.
+
+### Required evidence
+
+A trusted run may proceed to severity evaluation only when all of these conditions hold:
+
+1. The Action step completed successfully and emitted `gate_status=passed` from the exact pinned SHA.
+2. Action outputs report `llm_attempted=true`, `llm_success=true`, `llm_output_valid=true`, `llm_parse_error_count=0`, and a valid result shape: either a positive `llm_findings_count` with `llm_no_findings_reported=false`, or zero findings with `llm_no_findings_reported=true`.
+3. `PACK_SUMMARY.json` is complete and contains `llm_evidence.schema_version=1.0`, `attempted=true`, `success=true`, `output_valid=true`, `usage_recorded=true`, zero parse errors, a non-empty observed engine/provider/model, and positive latency.
+4. The summary's reported finding count and explicit-clean flag form the same exclusive result shape as the Action outputs. Requested provider, model, credential presence, and route are diagnostics only; observed values come from `llm_evidence`.
+5. `PACK_SUMMARY.json` has `writer_complete=true`, identifies `FINDINGS.jsonl`, and its SHA-256 matches the exact findings file. Run id and P0-P3 counts must agree across Action outputs, the pack summary, and the consumer summary.
+6. Artifact paths resolve beneath the expected workspace/run directory after canonicalization and do not escape through absolute paths, traversal, or symlinks.
+
+Any missing, malformed, contradictory, or unbound field is a gate error. Validation must parse the JSON artifacts; logs, step-summary prose, requested settings, and a synthetic consumer summary are not substitutes.
+
+### Severity ownership
+
+After live evidence passes, the consumer applies the repository policy to the validated pack counts:
+
+- `P0`: block when P0 is non-zero.
+- `P1`: block when P0 or P1 is non-zero.
+- `P2`: block when P0/P1 is non-zero or P2 exceeds the configured maximum.
+
+Protected refs may harden this policy but may not relax it unless an explicit protected-ref policy permits that operation. Evidence validation always precedes severity bypass or threshold evaluation.
+
+### Provider outage behavior
+
+A provider-outage classifier may trigger a deterministic diagnostic scan and retain its artifacts. That scan must end non-green for the trusted live-LLM gate and must never be selected as the authoritative `gate_status`, run id, or finding counts. Recovery requires a later valid live run or an explicit human-approved workflow outside the automated merge gate.
+
+### Bootstrap proof
+
+The first workflow that enforces this contract cannot certify itself through the older count-only gate. Before publication it requires:
+
+- an exact-head `workflow_dispatch` run using the pinned Action and a real credential route;
+- retained, hash-bound `PACK_SUMMARY.json` and `FINDINGS.jsonl` proving a valid live result;
+- hosted tests of the same validator proving at least `attempted=false`, `success=false`, invalid output shape, missing usage, and hash mismatch all block;
+- an exact-diff peer review and the repository's deterministic quality gates.
+
+See `tasks/evals/2026-07-14-action-live-llm-evidence-migration.md` for the baseline, compatibility matrix, and acceptance cases.
+
 ## NDJSON Streaming Events
 
 When `--stream` is enabled, events are emitted as one JSON object per line:
