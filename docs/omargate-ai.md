@@ -91,6 +91,18 @@ The trusted GitHub lane is a two-stage gate. The pinned Action proves that a liv
 - Record the exact Action SHA, workflow commit SHA, run id, and observed evidence digest in the retained gate summary.
 - Supporting CLI evidence must name an immutable repository commit or a uniquely versioned package artifact. A global binary whose semantic version can resolve to different source trees is not merge evidence.
 
+### Workflow authority
+
+The trusted-context predicate must prove who controls the workflow, validator, and secrets, not only where the pull-request branch is hosted. A same-repository `pull_request` workflow is branch-controlled and therefore is privileged only when documented actor restrictions and secret/environment approvals make every permitted branch author part of the trusted computing base. Otherwise, merge authority must run from a protected base workflow or an equivalent external check that treats the proposed code as data and never executes repository-controlled scripts with secrets.
+
+Fork and other untrusted pull requests may run a deterministic diagnostic scan with a read-only token and no secrets. That result cannot satisfy the required live gate. The required check remains non-green until a maintainer-mediated trusted run binds the protected workflow commit, exact proposed head/merge commit, Action SHA, and validated artifacts. A `pull_request_target` or `workflow_run` design must not check out and execute untrusted code in a privileged context.
+
+### Generated workflow parity
+
+The pinned Action accepts hosted scan modes `pr-diff`, `deep`, and `nightly`. The CLI's local `baseline`, `audit`, and `full-depth` persona modes are a different engine contract and must not be emitted as Action inputs or described as hosted parity.
+
+Generated and legacy workflows must derive their accepted input set and mode enum from `action.yml` and `models.py` at the exact pinned Action SHA, with a digest-bound local fixture for hermetic tests. Inputs from the retired bridge surface, including `playwright_mode`, `sbom_mode`, and `wait_for_completion`, are invalid for `52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5` and must be removed rather than tolerated as GitHub warnings.
+
 ### Required evidence
 
 A trusted run may proceed to severity evaluation only when all of these conditions hold:
@@ -101,6 +113,7 @@ A trusted run may proceed to severity evaluation only when all of these conditio
 4. The summary's reported finding count and explicit-clean flag form the same exclusive result shape as the Action outputs. Requested provider, model, credential presence, and route are diagnostics only; observed values come from `llm_evidence`.
 5. `PACK_SUMMARY.json` has `writer_complete=true`, identifies `FINDINGS.jsonl`, and its SHA-256 matches the exact findings file. Run id and P0-P3 counts must agree across Action outputs, the pack summary, and the consumer summary.
 6. Artifact paths resolve beneath the expected workspace/run directory after canonicalization and do not escape through absolute paths, traversal, or symlinks.
+7. The retained record binds the protected workflow/validator commit and the exact reviewed subject commit. A green result for a different head, merge candidate, or workflow definition is not reusable.
 
 Any missing, malformed, contradictory, or unbound field is a gate error. Validation must parse the JSON artifacts; logs, step-summary prose, requested settings, and a synthetic consumer summary are not substitutes.
 
@@ -125,6 +138,7 @@ The first workflow that enforces this contract cannot certify itself through the
 - an exact-head `workflow_dispatch` run using the pinned Action and a real credential route;
 - retained, hash-bound `PACK_SUMMARY.json` and `FINDINGS.jsonl` proving a valid live result;
 - hosted tests of the same validator proving at least `attempted=false`, `success=false`, invalid output shape, missing usage, and hash mismatch all block;
+- contract tests proving fork diagnostics cannot turn the required check green, subject/workflow SHA mismatches block, and generated inputs/modes are a subset of the pinned Action interface;
 - an exact-diff peer review and the repository's deterministic quality gates.
 
 See `tasks/evals/2026-07-14-action-live-llm-evidence-migration.md` for the baseline, compatibility matrix, and acceptance cases.

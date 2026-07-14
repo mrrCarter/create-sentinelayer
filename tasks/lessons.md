@@ -6,6 +6,8 @@
 - A hosted AI gate must prove observed execution from hash-bound original artifacts; requested credentials/provider/model and a nominal passing status are configuration evidence, not proof that a model ran.
 - Validate live-execution evidence before severity policy, and never promote a deterministic provider-outage fallback into the authoritative green result for a required LLM gate.
 - A package semantic version is not immutable provenance when the same version can identify different source trees; publish a new version after gate-integrity fixes and retain the source/package digest used for certification.
+- Same-repository PR origin does not prove workflow authority: either protect the workflow/validator and secret-consuming actors or run privileged review from a protected definition that treats proposed code only as data.
+- Test generated Action inputs and enum values against an immutable interface fixture; substring tests can regression-lock a false compatibility claim while GitHub merely warns about ignored inputs.
 
 ## 2026-07-13
 

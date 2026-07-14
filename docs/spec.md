@@ -22,6 +22,9 @@ Deliver a deterministic, security-first CLI that scaffolds Sentinelayer artifact
 - Treat a hosted AI gate as passed only when a pinned action reports a successful, structurally valid live review and the consumer independently validates the action's `PACK_SUMMARY.json` and `FINDINGS.jsonl` integrity. Requested credentials, requested provider/model values, zero findings, or `gate_status=passed` are not execution evidence by themselves.
 - Keep deterministic provider-outage scans diagnostic. They must not replace a required live-LLM result or become a selectable green merge result.
 - Validate live execution evidence before applying repository severity thresholds. The action owns evidence validity; the consuming workflow owns P0/P1/P2 merge policy.
+- Do not treat same-repository pull-request origin as sufficient workflow trust. Merge authority requires a protected workflow/validator definition or documented actor and environment controls that prevent a branch author from changing privileged gate code and consuming secrets.
+- Keep fork and other untrusted deterministic scans non-authoritative for a required live gate. They may provide diagnostics, but the required check stays non-green until a trusted review is bound to the exact proposed commit.
+- Generated and legacy workflows must use only inputs and scan modes declared by the pinned Action interface. Local CLI persona modes are a separate contract and must not be presented as hosted Action modes.
 
 ## Operational Anchors
 - Setup and local verification: run `npm ci --ignore-scripts`, `npm run check`, `npm run test:unit`, and `npm run test:e2e` before release-impacting CLI changes.

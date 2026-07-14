@@ -6,6 +6,8 @@
 - [x] Define the two-stage ownership boundary: Action validates live execution with `severity_gate=none`; the consumer validates artifacts and applies protected P0/P1/P2 policy.
 - [x] Define a non-circular bootstrap requiring exact-head live proof, negative fail-closed validator tests, immutable provenance, and peer review.
 - [x] Record the stale same-version global CLI incident and require a uniquely versioned post-fix release before package provenance can be merge evidence.
+- [x] Audit fork/same-repo workflow authority and require trusted exact-subject promotion instead of deterministic fork greens or same-repo-name trust.
+- [x] Audit generated/legacy interface parity and separate the Action's `pr-diff`/`deep`/`nightly` modes from local CLI persona modes.
 - [x] Run docs/static/diff checks and deterministic review gates.
 - [ ] Receive exact-diff Claude review before starting dependent 0J implementation.
 
@@ -13,7 +15,10 @@
 - Baseline create-sentinelayer commit `38db9f2` can report a false green because Action `a496be3` exposes no observed live-LLM evidence and the consumer checks requested provider settings plus selected severity counts.
 - The existing provider-outage branch can select a deterministic-only run as the authoritative green result. The migration keeps deterministic scans diagnostic but always non-green for a required live gate.
 - The current primary call is input-compatible with `52fe9cf`; only fallback-only `artifact_name_suffix` is unsupported. A pin-only edit is insufficient because the consumer must validate seven evidence outputs and the original hash-bound pack/findings artifacts.
+- The required `Omar Gate` currently accepts a clean fork deterministic scan as green without live evidence. Same-repo `trusted_context` also does not prove protected workflow code or secret-consuming actor policy.
+- Generated and legacy workflows falsely advertise `baseline`/`audit`/`full-depth` as Action modes; the candidate accepts only `pr-diff`/`deep`/`nightly`. Generated `playwright_mode`, `sbom_mode`, and `wait_for_completion` inputs are also unsupported.
 - 0I is docs/spec/eval only. 0J will own all workflow, generator, contract-checker, legacy-template, validator, and regression-test changes after peer review.
+- Protected workflow authority/trusted fork promotion is activation-blocking 0K; unique post-`#778` package provenance is 0L. 0J must not be presented as trustworthy or activated before 0K.
 - Verification passed: `npm run verify` (`121/121` E2E, `1763/1763` unit tests, 91.79% statement/line coverage, package shasum `411f34cc407b1d28a594bfd2e8a6a970afb3cc3f`); locked install audit reported zero vulnerabilities.
 - Deterministic review passed on the exact five-file diff: `review-scan-diff-20260714-062821.md` (`P1=0`, `P2=0`) and Omar `review-20260714-062826-9ca0e000` (`P0/P1/P2/P3=0`).
 - `git diff --check` passed aside from expected Windows LF/CRLF notices.

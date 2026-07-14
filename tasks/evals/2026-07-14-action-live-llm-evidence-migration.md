@@ -29,6 +29,9 @@ This split is intentional. It prevents a severity setting from bypassing executi
 - The workflow's "Assert Omar LLM contract is active" step validates requested credentials/provider/model and a selected `gate_status`; it does not validate observed provider execution.
 - The workflow can select a `llm_failure_policy=deterministic_only` fallback as the authoritative green result after a classified provider outage.
 - The primary Action call passes six inputs not declared by `a496be3`: `openai_api_key`, `google_api_key`, `llm_provider`, `max_daily_scans`, `min_scan_interval_minutes`, and `rate_limit_fail_mode`. GitHub warns about undeclared inputs but does not make that mismatch a reliable fail-closed contract.
+- For fork pull requests, `omar_enforce` accepts the deterministic-only `omar_untrusted_scan` as the successful required `Omar Gate`; no later trusted live result is required by that check.
+- For same-repository pull requests, `trusted_context` is currently a constant `true` after a repository-name condition. The workflow and validation scripts come from the pull-request merge commit, so same-repository origin alone does not prove that privileged gate code is protected from the branch author.
+- `src/scan/generator.js` and the legacy fallback advertise hosted modes `baseline`, `deep`, `audit`, and `full-depth`. They also emit bridge-only `playwright_mode`, `sbom_mode`, and `wait_for_completion` inputs. The README and parity test currently assert this incompatible surface is aligned.
 
 These conditions can produce a false green: the deterministic scan and severity counts can pass while no live provider call succeeded.
 
@@ -37,6 +40,8 @@ These conditions can produce a false green: the deterministic scan and severity 
 - Action commit `52fe9cf0d0d4656ce2b6f4af0eb5652fa07b31c5` is the tree released as `v1.3.9` on its hardened release branch; it is not on the Action repository's current default-branch lineage. Pin the commit, not the tag or branch.
 - The candidate accepts every input in the current primary trusted call.
 - The current fallback-only `artifact_name_suffix` input is unsupported and must be removed.
+- The candidate accepts only `pr-diff`, `deep`, and `nightly` as `scan_mode`; generated and legacy mode lists must be corrected independently from local CLI persona modes.
+- The candidate does not declare the generator's `playwright_mode`, `sbom_mode`, or `wait_for_completion` inputs.
 - With `llm_failure_policy=block`, the candidate enables `require_llm_success` even when `severity_gate=none`.
 - It validates the `PACK_SUMMARY.json` live evidence before severity handling and emits seven evidence outputs: attempted, success, output validity, explicit-clean flag, reported finding count, parse-error count, and failure class.
 
@@ -52,6 +57,8 @@ A semantic version that maps to more than one source tree is not acceptable gate
 |---|---|---|---|
 | Primary trusted inputs | Six provider/rate-limit inputs undeclared | Current primary inputs declared | Pin exact candidate SHA and contract-test every input |
 | Fallback inputs | Existing call includes `artifact_name_suffix` | Suffix unsupported | Remove suffix; deterministic output is diagnostic only |
+| Generated inputs | Bridge-only Playwright/SBOM/wait inputs emitted | Three generated inputs unsupported | Remove them and validate against a digest-bound fixture derived from exact-SHA `action.yml` |
+| Hosted modes | Generator claims baseline/deep/audit/full-depth parity | Action accepts pr-diff/deep/nightly | Separate hosted mode vocabulary from local persona modes |
 | Existing outputs | Run id, status, counts, artifact paths | Existing outputs preserved | Preserve consumer compatibility, then validate added evidence |
 | Live evidence outputs | Missing | Seven structured evidence outputs | Require and cross-check all seven |
 | Artifact evidence | Consumer synthesizes summary from selected outputs | Pack contains `llm_evidence` and findings hash | Retain and parse original pack/findings artifacts |
@@ -59,6 +66,8 @@ A semantic version that maps to more than one source tree is not acceptable gate
 | Severity ownership | Action and consumer both receive policy threshold | Evidence can be validated with Action severity disabled | Action `none`; consumer applies protected policy after evidence |
 | Provider/model proof | Requested values recorded | Pack records observed usage metadata | Observed pack fields are authoritative |
 | Pin provenance | Default-branch SHA with incomplete contract | Hardened exact SHA off current main lineage | Exact SHA plus repository contract checker; never movable ref |
+| Fork pull requests | Deterministic scan can satisfy required check | Live evidence still requires privileged credentials | Diagnostic only until trusted exact-subject promotion |
+| Workflow authority | Same-repo origin is treated as trusted | Action pin cannot protect branch-controlled workflow code | Prove protected workflow/validator and secret actor boundary |
 
 ## Candidate Evidence Predicate
 
@@ -66,16 +75,17 @@ The consumer must fail before severity evaluation unless all clauses are true.
 
 ### Invocation and outputs
 
-1. The trusted-context predicate passes and the Action step outcome is `success`.
-2. The action reference equals the full 40-character candidate SHA.
-3. `gate_status` is exactly `passed` and `run_id` matches the bounded run-id grammar.
-4. `llm_attempted`, `llm_success`, and `llm_output_valid` are exactly `true`.
-5. `llm_parse_error_count` is the integer zero.
-6. `llm_findings_count` is a non-negative integer.
-7. Exactly one result shape is true:
+1. The trusted-context predicate proves protected workflow/validator provenance and the permitted secret-consuming actor boundary; same-repository origin alone is insufficient.
+2. The retained subject SHA exactly identifies the proposed head or merge candidate reviewed, and the workflow SHA identifies the protected definition that ran.
+3. The Action step outcome is `success` and the action reference equals the full 40-character candidate SHA.
+4. `gate_status` is exactly `passed` and `run_id` matches the bounded run-id grammar.
+5. `llm_attempted`, `llm_success`, and `llm_output_valid` are exactly `true`.
+6. `llm_parse_error_count` is the integer zero.
+7. `llm_findings_count` is a non-negative integer.
+8. Exactly one result shape is true:
    - `llm_findings_count > 0` and `llm_no_findings_reported=false`; or
    - `llm_findings_count == 0` and `llm_no_findings_reported=true`.
-8. A success result has no contradictory non-empty `llm_failure_class`.
+9. A success result has no contradictory non-empty `llm_failure_class`.
 
 ### Original artifacts
 
@@ -100,6 +110,7 @@ Only after the predicate succeeds, apply the effective protected-ref policy to v
 
 - A classified outage may run a deterministic scan for diagnostics and upload it under a distinct non-authoritative artifact name.
 - The deterministic scan must not feed `omar_result`, job outputs, attestation gate status, or merge counts.
+- A fork/untrusted deterministic scan follows the same non-authoritative rule. It may produce a separate diagnostic check, but the required live check remains non-green until trusted exact-subject promotion.
 - The trusted gate must conclude non-green when live evidence is unavailable.
 - Recovery is a rerun with valid live evidence or a separately governed human exception. The automated workflow must not encode the exception as a passing LLM review.
 
@@ -109,7 +120,7 @@ The old hosted gate cannot certify the migration because it is the faulty bounda
 
 1. A manual `workflow_dispatch` against the exact 0J head with a real provider route.
 2. A successful live result whose original pack and findings artifacts are retained and whose hashes, run id, evidence fields, and observed provider/model pass the candidate validator.
-3. Hosted execution of the same validator tests proving at minimum these cases block: `attempted=false`, `success=false`, `output_valid=false`, parse errors, missing usage, invalid clean/findings shape, blank observed provider/model/engine, non-positive latency, pack/findings hash mismatch, output/pack mismatch, and deterministic selection.
+3. Hosted execution of the same validator tests proving at minimum these cases block: `attempted=false`, `success=false`, `output_valid=false`, parse errors, missing usage, invalid clean/findings shape, blank observed provider/model/engine, non-positive latency, pack/findings hash mismatch, output/pack mismatch, deterministic selection, workflow/subject SHA mismatch, and untrusted-fork promotion without a trusted run.
 4. Repository deterministic quality gates and an exact-diff peer review.
 5. The bootstrap record names the workflow commit, Action SHA, validator commit, GitHub run id, pack SHA-256, findings SHA-256, and observed route without exposing credentials or raw provider responses.
 
@@ -124,8 +135,21 @@ Update every Action pin and generated contract together:
 - the workflow generator and generated-workflow tests
 - the legacy workflow template
 - wrapper/contract fixtures that pin the Action SHA
+- the README's hosted-mode contract and a digest-bound fixture derived from exact-SHA Action `action.yml` and `models.py`
 
 Extract the evidence validation into one testable structured-data validator reused by the workflow. Do not duplicate shell string checks across primary, generated, and legacy paths. Remove unsupported inputs, preserve existing public workflow outputs, retain original Action artifacts, and extend the summary with immutable provenance and evidence digests.
+
+## Implementation Sequencing
+
+- 0J implements the immutable pin, evidence validator, artifact retention, provider-outage behavior, generated/legacy interface parity, and exact-subject binding.
+- 0K establishes protected workflow-definition authority and trusted promotion for fork/untrusted changes, or proves an equivalent GitHub actor/environment policy. It must treat proposed code as data and must not execute branch-controlled commands with secrets.
+- 0L publishes a uniquely versioned CLI package containing the post-`#778` evidence code and records its tarball integrity.
+- 0J must not be described or activated as a trustworthy merge gate until 0K is proven. The 0J/0K train uses the non-circular bootstrap evidence rather than the old count-only check.
+
+## Security References
+
+- [GitHub: Securely using `pull_request_target`](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+- [GitHub: Workflow execution protections](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/actions-policies/workflow-execution-protections)
 
 ## Acceptance Cases
 
@@ -139,6 +163,10 @@ Extract the evidence validation into one testable structured-data validator reus
 | Pack reports clean while output reports findings | Block | Not evaluated |
 | Findings bytes do not match pack SHA-256 | Block | Not evaluated |
 | Provider outage followed by deterministic clean scan | Block | Not evaluated |
+| Fork deterministic scan is clean but no trusted exact-subject run exists | Block | Not evaluated |
+| Same-repo origin with branch-controlled privileged workflow and no actor/environment proof | Block | Not evaluated |
+| Valid live artifacts are bound to a different subject or workflow SHA | Block | Not evaluated |
+| Generated workflow emits unsupported Action input or mode | Contract failure | Not evaluated |
 | Movable Action ref or unexpected SHA | Block | Not evaluated |
 | Stale global CLI reports the expected semantic version only | Not admissible | Not evaluated |
 
