@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.3](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.2...v0.39.3) (2026-07-14)
+
+
+### Bug Fixes
+
+* **mcp:** use canonical hosted tool names ([#775](https://github.com/mrrCarter/create-sentinelayer/issues/775)) ([433e391](https://github.com/mrrCarter/create-sentinelayer/commit/433e391efed16182bed292afdd97abf6a7182710))
+* **omargate:** prove zero-priced AI calls ([#778](https://github.com/mrrCarter/create-sentinelayer/issues/778)) ([38db9f2](https://github.com/mrrCarter/create-sentinelayer/commit/38db9f258b051e0f642a2e921a224de9a35cbeaf))
+
 ## [0.39.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.1...v0.39.2) (2026-07-12)
 
 
