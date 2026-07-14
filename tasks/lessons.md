@@ -1,5 +1,9 @@
 # Lessons
 
+## 2026-07-14
+
+- Review-gate health must distinguish customer price from provider-call proof: require token-bearing usage, a successful token/provider-cost ledger, or a legacy priced-call signal, and still fail closed when all are absent.
+
 ## 2026-07-13
 
 - Hosted MCP clients must consume the exact canonical names returned by `tools/list`; keep underscore-delimited server names in smoke fixtures, help, and docs, and reject hand-maintained dotted aliases so contract drift fails visibly.

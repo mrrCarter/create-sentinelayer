@@ -1,3 +1,21 @@
+# 2026-07-14 - Omar AI Call Evidence (`roadmap/pr-0h-omargate-call-evidence`)
+
+## Plan
+- [x] Reproduce two deep Omar false blocks where successful token-bearing internal calls report zero customer cost.
+- [x] Replace the cost-only AI-health predicate with bounded usage, billing-ledger, provider-cost, or legacy priced-call evidence.
+- [x] Preserve fail-closed P0/P1 behavior when personas error or any successful persona lacks provider-call evidence.
+- [x] Cover single-persona usage, billing-ledger, no-evidence, partial-evidence, and swarm aggregation paths.
+- [x] Run full verification, deterministic review/Omar/audit gates, and live dogfood.
+- [ ] Receive exact-SHA Claude review before any push.
+
+## Review
+- Change class: Class D deterministic review-gate integrity boundary; no prompt, model, provider-routing, or billing-price change.
+- Threat: internal or zero-priced managed calls are billed at zero customer cost, so a cost-only health check can fabricate a blocking P1 after the LLM actually ran; removing the guard entirely would restore silent false greens.
+- Rollback: revert this isolated branch to restore cost-only health detection. No remote state, price book, credential, or retained review artifact is mutated by the code change.
+- Evidence: deep runs `omargate-1784001480577-697c1a65` and `omargate-1784002043271-e66f185b` both returned `status=ok`, token-bearing billing ledgers, and non-zero provider cost while the orchestrator appended the same zero-customer-cost P1.
+- Live dogfood: `omargate-1784003567736-48074a17` completed two provider-backed personas with 3,996 ledger tokens, zero orchestrator findings, and no blocking result.
+- Status: implementation and local gates complete; exact-SHA peer review pending. Local only, not pushed.
+
 # 2026-07-13 - Hosted MCP Canonical Tool Contract (`roadmap/pr-r1-mcp-tool-contract-20260713`)
 
 ## Plan
