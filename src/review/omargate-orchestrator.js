@@ -376,6 +376,79 @@ function summarizeFindings(findings = []) {
   };
 }
 
+function normalizeEvidenceNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function resolveAiResultCostUsd(result = {}) {
+  return Math.max(
+    normalizeEvidenceNumber(result?.costUsd),
+    normalizeEvidenceNumber(result?.usage?.costUsd),
+  );
+}
+
+function buildAiCallEvidence(result = {}, { dryRun = false } = {}) {
+  if (dryRun) {
+    return {
+      confirmedCalls: 0,
+      usageBackedCalls: 0,
+      ledgerBackedCalls: 0,
+      pricedCalls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      providerCostUsd: 0,
+      customerCostUsd: 0,
+    };
+  }
+
+  const usage = result?.usage && typeof result.usage === "object" ? result.usage : {};
+  const ledger = result?.billing?.ok === true && result?.billing?.ledgerEntry
+    ? result.billing.ledgerEntry
+    : {};
+  const usageInputTokens = normalizeEvidenceNumber(usage.inputTokens);
+  const usageOutputTokens = normalizeEvidenceNumber(usage.outputTokens);
+  const usageTotalTokens = normalizeEvidenceNumber(usage.totalTokens);
+  const ledgerInputTokens = normalizeEvidenceNumber(ledger.inputTokens);
+  const ledgerOutputTokens = normalizeEvidenceNumber(ledger.outputTokens);
+  const ledgerTotalTokens = normalizeEvidenceNumber(ledger.totalTokens);
+  const inputTokens = Math.max(usageInputTokens, ledgerInputTokens);
+  const outputTokens = Math.max(usageOutputTokens, ledgerOutputTokens);
+  const totalTokens = Math.max(usageTotalTokens, ledgerTotalTokens, inputTokens + outputTokens);
+  const ledgerProviderCostUsd = normalizeEvidenceNumber(ledger.providerCostUsd);
+  const providerCostUsd = Math.max(resolveAiResultCostUsd(result), ledgerProviderCostUsd);
+  const customerCostUsd = normalizeEvidenceNumber(ledger.customerCostUsd);
+  const usageBacked = usageInputTokens + usageOutputTokens + usageTotalTokens > 0;
+  const ledgerBacked =
+    ledgerInputTokens + ledgerOutputTokens + ledgerTotalTokens > 0 || ledgerProviderCostUsd > 0;
+  const priced = providerCostUsd > 0 || customerCostUsd > 0;
+  const confirmed = usageBacked || ledgerBacked || priced;
+
+  return {
+    confirmedCalls: confirmed ? 1 : 0,
+    usageBackedCalls: usageBacked ? 1 : 0,
+    ledgerBackedCalls: ledgerBacked ? 1 : 0,
+    pricedCalls: priced ? 1 : 0,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    providerCostUsd,
+    customerCostUsd,
+  };
+}
+
+function combineAiCallEvidence(entries = []) {
+  const combined = buildAiCallEvidence({}, { dryRun: true });
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    for (const key of Object.keys(combined)) {
+      combined[key] += normalizeEvidenceNumber(entry[key]);
+    }
+  }
+  return combined;
+}
+
 function buildPersonaHealthFindings(personaHealth = {}) {
   if (personaHealth.healthy || personaHealth.total <= 0) {
     return [];
@@ -386,13 +459,16 @@ function buildPersonaHealthFindings(personaHealth = {}) {
   const total = Number(personaHealth.total || 0);
   const errorRatio = Number(personaHealth.errorRatio || 0);
   const totalCostUsd = Number(personaHealth.totalCostUsd || 0);
+  const aiCallEvidence = personaHealth.aiCallEvidence || {};
+  const okCount = Number(personaHealth.ok || 0);
+  const unverifiedOkCount = Number(personaHealth.unverifiedOk || 0);
   const allPersonasFailed = total > 0 && errorCount === total;
   const severity = allPersonasFailed ? "P0" : "P1";
   let message = `Omar AI coverage degraded: ${errorCount}/${total} dispatched personas errored (${Math.round(errorRatio * 100)}%).`;
   if (allPersonasFailed) {
     message = `Omar AI coverage failed closed: all ${total} dispatched personas errored before producing findings.`;
-  } else if (errorCount === 0 && totalCostUsd <= 0) {
-    message = "Omar AI coverage failed closed: personas reported ok but total AI cost was $0.00, indicating no LLM calls were made.";
+  } else if (errorCount === 0 && unverifiedOkCount > 0) {
+    message = `Omar AI coverage failed closed: ${unverifiedOkCount}/${okCount} successful personas lacked token-bearing usage, billing-ledger, or priced-call evidence.`;
   }
 
   return [
@@ -417,6 +493,9 @@ function buildPersonaHealthFindings(personaHealth = {}) {
         total,
         errorRatio,
         totalCostUsd,
+        okCount,
+        unverifiedOkCount,
+        aiCallEvidence,
       },
     },
   ];
@@ -636,6 +715,8 @@ async function runOmarPersonaSwarm({
           });
           return normalized;
         });
+        const costUsd = resolveAiResultCostUsd(result);
+        const aiCallEvidence = buildAiCallEvidence(result, { dryRun });
 
         if (onEvent) {
           for (const finding of findings) {
@@ -659,11 +740,11 @@ async function runOmarPersonaSwarm({
               fileCount: scopedFiles.length,
               findings: findings.length,
               summary: result?.summary || summarizeFindings(findings),
-              costUsd: result?.usage?.costUsd || 0,
+              costUsd,
               durationMs: Date.now() - subagentStart,
             },
             usage: {
-              costUsd: result?.usage?.costUsd || 0,
+              costUsd,
               durationMs: Date.now() - subagentStart,
               toolCalls: result?.usage?.toolCalls || 0,
             },
@@ -678,7 +759,8 @@ async function runOmarPersonaSwarm({
           files: scopedFiles,
           findings,
           summary: result?.summary || summarizeFindings(findings),
-          costUsd: result?.usage?.costUsd || 0,
+          costUsd,
+          aiCallEvidence,
           model: result?.model || model || null,
           billing: result?.billing || null,
           artifacts: result?.artifacts || null,
@@ -739,6 +821,9 @@ async function runOmarPersonaSwarm({
   );
   const findings = settledSubagents.flatMap((result) => result.findings || []);
   const totalCostUsd = settledSubagents.reduce((sum, result) => sum + (result.costUsd || 0), 0);
+  const aiCallEvidence = combineAiCallEvidence(
+    settledSubagents.map((result) => result.aiCallEvidence),
+  );
   const summary = summarizeFindings(findings);
   const okCount = settledSubagents.filter((result) => result.status === "ok").length;
   const errorCount = settledSubagents.filter((result) => result.status === "error").length;
@@ -811,6 +896,7 @@ async function runOmarPersonaSwarm({
     findings,
     summary,
     costUsd: totalCostUsd,
+    aiCallEvidence,
     model: model || null,
     durationMs: Date.now() - startedAt,
     error: okCount > 0 ? null : settledSubagents.find((result) => result.error)?.error || null,
@@ -829,6 +915,7 @@ async function runOmarPersonaSwarm({
         files: result.files,
         findings: (result.findings || []).length,
         costUsd: result.costUsd || 0,
+        aiCallEvidence: result.aiCallEvidence || null,
         billing: result.billing || null,
         durationMs: result.durationMs || 0,
         error: result.error || null,
@@ -1142,6 +1229,8 @@ export async function runOmarGateOrchestrator({
         confidenceFloor: personaConfidenceFloor,
         personaConfidenceFloor,
       }));
+      const personaCost = resolveAiResultCostUsd(result);
+      const aiCallEvidence = buildAiCallEvidence(result, { dryRun });
 
       if (onEvent) {
         for (const finding of findings) {
@@ -1174,14 +1263,13 @@ export async function runOmarGateOrchestrator({
             identity,
             findings: findings.length,
             summary: result?.summary || {},
-            costUsd: result?.costUsd || 0,
+            costUsd: personaCost,
             durationMs: Date.now() - personaStart,
           },
           runId,
         }));
       }
 
-      const personaCost = result?.costUsd || 0;
       runningCostUsd += personaCost;
 
       return {
@@ -1190,6 +1278,7 @@ export async function runOmarGateOrchestrator({
         findings,
         summary: result?.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
         costUsd: personaCost,
+        aiCallEvidence,
         model: result?.model || model || null,
         billing: result?.billing || null,
         artifacts: result?.artifacts || null,
@@ -1269,28 +1358,35 @@ export async function runOmarGateOrchestrator({
   );
 
   const totalCost = settled.reduce((sum, r) => sum + (r.costUsd || 0), 0);
+  const aiCallEvidence = combineAiCallEvidence(settled.map((result) => result.aiCallEvidence));
   const totalDuration = Date.now() - startTime;
 
-  // Silent-failure detection: if >=50% of personas errored OR total cost is
-  // zero with non-zero personas dispatched, treat as a LOUD orchestrator
-  // warning. Prior behavior silently returned zero AI findings, masking
-  // auth failures or LLM proxy outages as "clean scan".
+  // Silent-failure detection requires evidence of an actual provider call.
+  // Customer cost is not evidence by itself because internal/zero-priced
+  // billing can still carry token-bearing usage and provider-cost receipts.
   const personaErrorCount = settled.filter((r) => r.status === "error").length;
   const personaSkippedCount = settled.filter((r) => r.status === "skipped").length;
   const personaOkCount = settled.filter((r) => r.status === "ok").length;
+  const personaVerifiedOkCount = settled.filter(
+    (r) => r.status === "ok" && Number(r.aiCallEvidence?.confirmedCalls || 0) > 0
+  ).length;
+  const personaUnverifiedOkCount = personaOkCount - personaVerifiedOkCount;
   const totalPersonas = settled.length;
   const errorRatio = totalPersonas > 0 ? personaErrorCount / totalPersonas : 0;
   const aiCoverageHealthy =
     totalPersonas === 0 ||
-    (personaOkCount > 0 && totalCost > 0 && errorRatio < 0.5 && !dryRun);
+    (personaOkCount > 0 && personaUnverifiedOkCount === 0 && errorRatio < 0.5 && !dryRun);
 
   const personaHealth = {
     ok: personaOkCount,
     error: personaErrorCount,
     skipped: personaSkippedCount,
     total: totalPersonas,
+    verifiedOk: personaVerifiedOkCount,
+    unverifiedOk: personaUnverifiedOkCount,
     errorRatio,
     totalCostUsd: totalCost,
+    aiCallEvidence,
     healthy: aiCoverageHealthy || dryRun,
     warnings: [],
   };
@@ -1304,9 +1400,9 @@ export async function runOmarGateOrchestrator({
         `${personaErrorCount}/${totalPersonas} personas errored (${Math.round(errorRatio * 100)}%). AI coverage is degraded.`
       );
     }
-    if (personaOkCount > 0 && totalCost <= 0) {
+    if (personaUnverifiedOkCount > 0) {
       personaHealth.warnings.push(
-        `Personas reported ok status but totalCost=$0.00 — likely silently returned empty findings without making LLM calls.`
+        `${personaUnverifiedOkCount}/${personaOkCount} successful personas lacked token-bearing usage, billing-ledger, or priced-call evidence.`
       );
     }
   }
@@ -1330,6 +1426,7 @@ export async function runOmarGateOrchestrator({
       findings: (r.findings || []).length,
       summary: r.summary || { P0: 0, P1: 0, P2: 0, P3: 0 },
       costUsd: r.costUsd,
+      aiCallEvidence: r.aiCallEvidence || null,
       durationMs: r.durationMs,
       model: r.model || null,
       billing: r.billing || null,
