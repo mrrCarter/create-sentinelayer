@@ -295,6 +295,10 @@
   before publication. Package rollback alone can strand an unavailable hook
   that blocks every edit or split authority across client versions.
 - Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.
+- Resource handles opened before a multi-stage orchestrator must be closed in `finally`; success-path closure hides leaks until an exceptional path runs on a platform that forbids deleting open files.
+- Keep close operations idempotent when the normal path must close a stream before manifest hashing but exceptional paths also require guaranteed cleanup.
+- Cross-platform cleanup KAVs need a Windows runner when Linux unlink semantics would let an open file disappear and falsely pass the same test.
+- Test jobs added beneath workflow-level OIDC permissions must override permissions explicitly; read-only tests should receive only `contents: read`.
 
 ## 2026-07-30
 

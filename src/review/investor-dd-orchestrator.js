@@ -352,10 +352,18 @@ export async function runInvestorDd({
 
   const streamPath = path.join(artifactBase, "stream.ndjson");
   const streamHandle = await fsp.open(streamPath, "w");
+  let streamClosePromise = null;
+
+  const closeStream = () => {
+    streamClosePromise ??= streamHandle.close();
+    return streamClosePromise;
+  };
 
   const emit = (event) => {
     const enriched = { ...event, at: new Date().toISOString(), runId };
-    streamHandle.write(`${JSON.stringify(enriched)}\n`).catch(() => {});
+    if (!streamClosePromise) {
+      streamHandle.write(`${JSON.stringify(enriched)}\n`).catch(() => {});
+    }
     try {
       onEvent(enriched);
     } catch {
@@ -363,6 +371,7 @@ export async function runInvestorDd({
     }
   };
 
+  try {
   const startTime = Date.now();
   emit({ type: "investor_dd_start", rootPath, personas });
 
@@ -593,7 +602,7 @@ export async function runInvestorDd({
   await writeJson(path.join(artifactBase, "progress.json"), ddProgress);
   await writeJson(path.join(artifactBase, "summary.json"), summary);
 
-  await streamHandle.close();
+  await closeStream();
 
   const artifactFiles = await fsp.readdir(artifactBase);
   const manifest = {};
@@ -624,4 +633,7 @@ export async function runInvestorDd({
   }
 
   return runResult;
+  } finally {
+    await closeStream();
+  }
 }
