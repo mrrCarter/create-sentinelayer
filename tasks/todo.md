@@ -3616,7 +3616,8 @@ Review:
 - [x] Add a focused Windows CI lane that executes the existing orchestrator lifecycle KAVs.
 - [x] Run focused, full Windows unit/E2E/coverage, docs, package, audit, and workflow-parse gates.
 - [x] Run Sentinelayer diff review, deterministic Omar, and full audit.
-- [ ] Commit, push, open the PR, and run hosted gate loops.
+- [x] Commit the scoped change, push it, open PR #782, and attempt every hosted gate loop.
+- [ ] Re-run hosted gates after the GitHub account billing lock is cleared; merge only after required checks execute and pass.
 
 Evidence:
 - Unmodified RED: both required-usage rejection cases failed cleanup with `ENOTEMPTY`; log SHA256 `AE96350B18ACFE36914434EB63F64629C1CA31983CA4F676F58118DE333A3867`.
@@ -3630,3 +3631,4 @@ Evidence:
 - Diff review scanned four intended files with P1/P2 `0/0`; deterministic Omar run `review-20260719-134029-ccc0c40c` passed P0/P1/P2/P3 `0/0/0/0`.
 - Full audit passed 717 files with P1 `0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
 - Independent review confirmed RED and GREEN behavior, close-before-manifest ordering, and quality-summary wiring; its OIDC least-privilege finding was fixed with a job-level `contents: read` override.
+- Initial PR #782 hosted runs Omar `29689410926`, Quality `29689410906`, and Attestation `29689410903` all stopped before executing any step; every failure annotation reports that the GitHub account is locked due to a billing issue. The PR remains unmerged.
