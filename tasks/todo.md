@@ -3623,6 +3623,7 @@ Review:
 ## Initial Findings
 - The tokenizer discards `src`, `config`, and `py` for `src/config.py`, leaving no tokens; therefore an exact path in `SPEC.md` could never satisfy `SL-SPEC-002`.
 - Exact matching must use repository-relative path boundaries. Plain suffix matching would let `legacy/src/main.py` incorrectly cover `src/main.py`.
+- Documentation commonly writes the same repository-relative path as `./src/config.py` or `.\\src\\config.py`; separator normalization alone still left the leading `./` outside the bounded exact match.
 - The canonical npm E2E/coverage scripts rely on POSIX shell glob expansion; on Windows, Node receives the literal glob. Local verification uses the identical explicitly enumerated file set while hosted Linux CI runs the canonical scripts.
 
 ## Review Results
@@ -3636,4 +3637,5 @@ Review:
 - The Windows full-unit file set passes `1764/1766`; the two failures expose a pre-existing production leak: `runInvestorDd()` opens `stream.ndjson` before required usage guards and closes it only on success. Rejected runs leave the handle open, causing deterministic `ENOTEMPTY` cleanup failures. The scoped follow-up is an unconditional `try/finally` close plus the existing unchanged failure-path KAVs on Windows.
 - Initial PR #781 hosted runs Omar `29688621481`, Quality `29688621493`, and Attestation `29688621480` all stopped before executing any step; every failure annotation reports that the GitHub account is locked due to a billing issue. The PR remains unmerged.
 - PR #782 implements the separate stream lifecycle fix and has an independent exact-head source key; it remains unmerged under the same hosted billing hold.
+- Independent review reproduced false `SL-SPEC-001` drift for both dot-relative slash forms. The unchanged implementation failed the expanded KAV `4/5` (log SHA256 `0EFAE86A5773D60CBE1086EECC9A69D6FE8F71AB1A245904E6BE56CEAD1F11C1`); the bounded optional-prefix fix passes `5/5` (log SHA256 `6980AE8292415606104E2243BFF01AF502A2B3C9D59664413EBBD788A19D0C44`) while retaining the suffix-confusion negative.
 

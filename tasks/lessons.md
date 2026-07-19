@@ -267,3 +267,4 @@
 - On Windows, Node's `--test` does not expand npm-script globs. When a repository script assumes POSIX expansion, run the same sorted file set explicitly for local evidence and still require the canonical script on hosted Linux CI.
 - SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
 - Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
+- Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.

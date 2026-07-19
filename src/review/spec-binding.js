@@ -209,7 +209,7 @@ function specMentionsExactPath(markdown, relativePath) {
   const escapedPath = normalizedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const normalizedMarkdown = toPosixPath(markdown).toLowerCase();
   return new RegExp(
-    `(^|[^a-z0-9._/-])${escapedPath}(?=$|[^a-z0-9._/-])`,
+    `(^|[^a-z0-9._/-])(?:\\./)?${escapedPath}(?=$|[^a-z0-9._/-])`,
     "m"
   ).test(normalizedMarkdown);
 }
