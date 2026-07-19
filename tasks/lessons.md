@@ -259,3 +259,12 @@
 ## 2026-07-13
 
 - Subprocess E2E tests for authenticated CLI commands must own both sides of the auth boundary: use an isolated `HOME`/`USERPROFILE` plus an explicit non-secret fixture token, and include a token-omitted negative case. Inheriting a developer's stored session makes local green results non-hermetic and hides failures that scheduled CI correctly exposes.
+
+## 2026-07-19
+
+- Spec-binding coverage must check an explicitly documented repository-relative path before applying prose token heuristics. Token stopwords and minimum lengths can reduce short but valid paths such as `src/config.py` to an empty set.
+- Exact path coverage needs boundaries on both sides, not suffix matching; otherwise a documented path such as `legacy/src/main.py` can accidentally satisfy coverage for `src/main.py`.
+- On Windows, Node's `--test` does not expand npm-script globs. When a repository script assumes POSIX expansion, run the same sorted file set explicitly for local evidence and still require the canonical script on hosted Linux CI.
+- SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
+- Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
+- Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.

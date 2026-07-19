@@ -102,3 +102,43 @@ test("Unit spec binding: missing spec disables spec-binding checks without findi
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("Unit spec binding: exact path covers stopword-only source without suffix false matches", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-spec-binding-"));
+  try {
+    await mkdir(path.join(tempRoot, "src"), { recursive: true });
+    const configFile = path.join(tempRoot, "src", "config.py");
+    const mainFile = path.join(tempRoot, "src", "main.py");
+    await writeFile(configFile, "SETTING = 'strict'\n", "utf-8");
+    await writeFile(mainFile, "VALUE = 1\n", "utf-8");
+
+    for (const documentedPath of ["src/config.py", "./src/config.py", ".\\src\\config.py"]) {
+      await writeFile(
+        path.join(tempRoot, "SPEC.md"),
+        [
+          "# SPEC - Configuration",
+          "",
+          "## Implementation files",
+          `- ${documentedPath}`,
+          "- legacy/src/main.py",
+        ].join("\n"),
+        "utf-8"
+      );
+
+      const checks = await runSpecBindingChecks({
+        targetPath: tempRoot,
+        mode: "diff",
+        scopedFilePaths: [configFile, mainFile],
+        maxFindings: 20,
+      });
+      const scopeDriftFiles = checks.findings
+        .filter((finding) => finding.ruleId === "SL-SPEC-001")
+        .map((finding) => finding.file);
+
+      assert.equal(scopeDriftFiles.includes("src/config.py"), false, documentedPath);
+      assert.equal(scopeDriftFiles.includes("src/main.py"), true, documentedPath);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

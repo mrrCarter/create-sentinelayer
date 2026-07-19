@@ -3608,3 +3608,34 @@ Review:
 - Full audit `.sentinelayer/reports/audit-20260713-231724.md` passes 716 files with `P1=0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
 - Local Omar Gate run `omargate-1783984599735-e4d77f5b` is deterministically clean (`P0/P1/P2/P3=0`) but fails closed because both routed managed personas returned `502 UPSTREAM_ERROR`. This is the third reproducible upstream-only attempt; the hosted Omar check remains mandatory before merge.
 
+## 2026-07-19 - Exact Spec-Binding Paths
+
+## Plan
+- [x] Reproduce the false `SL-SPEC-002` finding for an explicitly documented short path such as `src/config.py`.
+- [x] Add a regression proving an exact repository-relative path covers the file while a suffix-only path such as `legacy/src/main.py` does not cover `src/main.py`.
+- [x] Preserve the existing token-overlap fallback for prose-oriented spec coverage.
+- [x] Run the focused unit test, static checks, and the patched CLI against the real Sentinelayer API diff.
+- [x] Eliminate SQL-rule false positives on endpoint-extraction regex literals while preserving true quoted SQL-concatenation findings.
+- [x] Diagnose the Windows full-unit cleanup failures without masking them as test retries.
+- [x] Open PR #781, attempt all hosted gates, and fix the confirmed investor-DD handle leak separately in PR #782.
+- [ ] Re-run PR #781 hosted gates after the GitHub account billing lock is cleared; merge only after required checks execute and pass.
+
+## Initial Findings
+- The tokenizer discards `src`, `config`, and `py` for `src/config.py`, leaving no tokens; therefore an exact path in `SPEC.md` could never satisfy `SL-SPEC-002`.
+- Exact matching must use repository-relative path boundaries. Plain suffix matching would let `legacy/src/main.py` incorrectly cover `src/main.py`.
+- Documentation commonly writes the same repository-relative path as `./src/config.py` or `.\\src\\config.py`; separator normalization alone still left the leading `./` outside the bounded exact match.
+- The canonical npm E2E/coverage scripts rely on POSIX shell glob expansion; on Windows, Node receives the literal glob. Local verification uses the identical explicitly enumerated file set while hosted Linux CI runs the canonical scripts.
+
+## Review Results
+- Focused KAV passed `5/5`, including the exact-path positive case and suffix-confusion negative case.
+- SQL detector KAVs passed `4/4`: endpoint-extraction regex literals remain clean and real quoted SQL concatenation still emits both deterministic findings.
+- Static check passed across `354` files.
+- The patched CLI scanned the actual Sentinelayer API auth diff with deterministic `P0/P1/P2/P3=0`; released `0.39.2` reports only the reproduced impossible short-path P2.
+- Explicit-path Windows E2E passed `121/121`; package dry-run produced `352` files with SHA-1 `4b979e587d1f353a4db2db796bcbda0ee8f2bdee`; `npm audit --audit-level=high` found `0` vulnerabilities.
+- Final diff review is clean (`P1=0`, `P2=0`) and local no-AI Omar run `review-20260719-130724-22294294` is exactly `P0/P1/P2/P3=0`.
+- Full local audit passes with `P1=0`; its two nonblocking P2s are unchanged repository baselines outside this diff.
+- The Windows full-unit file set passes `1764/1766`; the two failures expose a pre-existing production leak: `runInvestorDd()` opens `stream.ndjson` before required usage guards and closes it only on success. Rejected runs leave the handle open, causing deterministic `ENOTEMPTY` cleanup failures. The scoped follow-up is an unconditional `try/finally` close plus the existing unchanged failure-path KAVs on Windows.
+- Initial PR #781 hosted runs Omar `29688621481`, Quality `29688621493`, and Attestation `29688621480` all stopped before executing any step; every failure annotation reports that the GitHub account is locked due to a billing issue. The PR remains unmerged.
+- PR #782 implements the separate stream lifecycle fix and has an independent exact-head source key; it remains unmerged under the same hosted billing hold.
+- Independent review reproduced false `SL-SPEC-001` drift for both dot-relative slash forms. The unchanged implementation failed the expanded KAV `4/5` (log SHA256 `0EFAE86A5773D60CBE1086EECC9A69D6FE8F71AB1A245904E6BE56CEAD1F11C1`); the bounded optional-prefix fix passes `5/5` (log SHA256 `6980AE8292415606104E2243BFF01AF502A2B3C9D59664413EBBD788A19D0C44`) while retaining the suffix-confusion negative.
+
