@@ -3608,3 +3608,25 @@ Review:
 - Full audit `.sentinelayer/reports/audit-20260713-231724.md` passes 716 files with `P1=0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
 - Local Omar Gate run `omargate-1783984599735-e4d77f5b` is deterministically clean (`P0/P1/P2/P3=0`) but fails closed because both routed managed personas returned `502 UPSTREAM_ERROR`. This is the third reproducible upstream-only attempt; the hosted Omar check remains mandatory before merge.
 
+## 2026-07-19 Investor DD Stream Lifecycle
+
+- [x] Reproduce the Windows-only `ENOTEMPTY` cleanup failures on both required usage-ledger rejection paths without source changes.
+- [x] Trace the leak to `runInvestorDd` closing `stream.ndjson` only on the successful path.
+- [x] Make stream closure idempotent and unconditional while preserving the pre-manifest close boundary.
+- [x] Add a focused Windows CI lane that executes the existing orchestrator lifecycle KAVs.
+- [x] Run focused, full Windows unit/E2E/coverage, docs, package, audit, and workflow-parse gates.
+- [x] Run Sentinelayer diff review, deterministic Omar, and full audit.
+- [ ] Commit, push, open the PR, and run hosted gate loops.
+
+Evidence:
+- Unmodified RED: both required-usage rejection cases failed cleanup with `ENOTEMPTY`; log SHA256 `AE96350B18ACFE36914434EB63F64629C1CA31983CA4F676F58118DE333A3867`.
+- Focused GREEN: both rejection cases passed; log SHA256 `79FD8BC4C64CE5CF794B99257EED2B9C08AC612653B54C74BD4BD815065469F7`.
+- Full orchestrator file passed `17/17`; log SHA256 `ECAE979AB40DCEBCDA4308411C17743EDEAF87D396F35A1C60740D58F3F2EB13`.
+- Static check passed `354/354`; docs validation passed.
+- Explicit Windows unit suite passed `1763/1763`; log SHA256 `6B4E52102B9C3959D3CDDEC58CCFD64A439D4BA1622C9B8D4DC945ADC61D3C15`.
+- Explicit Windows E2E suite passed `121/121`; log SHA256 `7576CE536E8EDD83F7F0BB31D9FD0C36B6D8FF764A2137D6C771AB2C2077B11A`.
+- Coverage passed: statements/lines `91.79%`, branches `70.58%`, functions `93.52%`; log SHA256 `D0DBB0F7AFA4194B972885C59C9FF7D8A6C5643F73DF6C55B2F291946CCBDD3D`.
+- Package dry-run produced 352 files, SHA-1 `b67c76528a3aa457e636987a8ff8a80ec088ed54`; `npm audit --audit-level=high` found zero vulnerabilities.
+- Diff review scanned four intended files with P1/P2 `0/0`; deterministic Omar run `review-20260719-134029-ccc0c40c` passed P0/P1/P2/P3 `0/0/0/0`.
+- Full audit passed 717 files with P1 `0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
+- Independent review confirmed RED and GREEN behavior, close-before-manifest ordering, and quality-summary wiring; its OIDC least-privilege finding was fixed with a job-level `contents: read` override.
