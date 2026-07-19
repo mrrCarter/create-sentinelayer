@@ -259,3 +259,10 @@
 ## 2026-07-13
 
 - Subprocess E2E tests for authenticated CLI commands must own both sides of the auth boundary: use an isolated `HOME`/`USERPROFILE` plus an explicit non-secret fixture token, and include a token-omitted negative case. Inheriting a developer's stored session makes local green results non-hermetic and hides failures that scheduled CI correctly exposes.
+
+## 2026-07-19
+
+- Resource handles opened before a multi-stage orchestrator must be closed in `finally`; success-path closure hides leaks until an exceptional path runs on a platform that forbids deleting open files.
+- Keep close operations idempotent when the normal path must close a stream before manifest hashing but exceptional paths also require guaranteed cleanup.
+- Cross-platform cleanup KAVs need a Windows runner when Linux unlink semantics would let an open file disappear and falsely pass the same test.
+- Test jobs added beneath workflow-level OIDC permissions must override permissions explicitly; read-only tests should receive only `contents: read`.
