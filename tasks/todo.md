@@ -3617,7 +3617,8 @@ Review:
 - [x] Run the focused unit test, static checks, and the patched CLI against the real Sentinelayer API diff.
 - [x] Eliminate SQL-rule false positives on endpoint-extraction regex literals while preserving true quoted SQL-concatenation findings.
 - [x] Diagnose the Windows full-unit cleanup failures without masking them as test retries.
-- [ ] Open and gate this scoped PR; fix the confirmed investor-DD handle leak in a separate immediate PR.
+- [x] Open PR #781, attempt all hosted gates, and fix the confirmed investor-DD handle leak separately in PR #782.
+- [ ] Re-run PR #781 hosted gates after the GitHub account billing lock is cleared; merge only after required checks execute and pass.
 
 ## Initial Findings
 - The tokenizer discards `src`, `config`, and `py` for `src/config.py`, leaving no tokens; therefore an exact path in `SPEC.md` could never satisfy `SL-SPEC-002`.
@@ -3633,4 +3634,6 @@ Review:
 - Final diff review is clean (`P1=0`, `P2=0`) and local no-AI Omar run `review-20260719-130724-22294294` is exactly `P0/P1/P2/P3=0`.
 - Full local audit passes with `P1=0`; its two nonblocking P2s are unchanged repository baselines outside this diff.
 - The Windows full-unit file set passes `1764/1766`; the two failures expose a pre-existing production leak: `runInvestorDd()` opens `stream.ndjson` before required usage guards and closes it only on success. Rejected runs leave the handle open, causing deterministic `ENOTEMPTY` cleanup failures. The scoped follow-up is an unconditional `try/finally` close plus the existing unchanged failure-path KAVs on Windows.
+- Initial PR #781 hosted runs Omar `29688621481`, Quality `29688621493`, and Attestation `29688621480` all stopped before executing any step; every failure annotation reports that the GitHub account is locked due to a billing issue. The PR remains unmerged.
+- PR #782 implements the separate stream lifecycle fix and has an independent exact-head source key; it remains unmerged under the same hosted billing hold.
 
