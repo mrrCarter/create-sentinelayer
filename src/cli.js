@@ -124,6 +124,11 @@ const COMMAND_REGISTRARS = {
     exportName: "registerSessionCommand",
     needsLegacy: false,
   },
+  "ring-owner": {
+    loader: () => import("./commands/ring-owner.js"),
+    exportName: "registerRingOwnerCommand",
+    needsLegacy: false,
+  },
 };
 
 const COMMAND_SET = new Set(Object.keys(COMMAND_REGISTRARS));
