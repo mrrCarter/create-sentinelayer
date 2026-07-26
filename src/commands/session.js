@@ -2318,7 +2318,7 @@ export async function resolveMessageActionIdentity({
   return resolveSessionSayIdentity({ sessionId, agentId: agentSeed, targetPath, env });
 }
 
-async function ensureSessionSayAgentRegistered(
+async function recordPublishedSessionAgentActivity(
   sessionId,
   agent = {},
   { targetPath = process.cwd() } = {},
@@ -2329,33 +2329,27 @@ async function ensureSessionSayAgentRegistered(
   }
 
   try {
-    const activeAgents = await listAgents(sessionId, { targetPath, includeInactive: false });
-    if (
-      activeAgents.some(
-        (existing) => normalizeString(existing.agentId).toLowerCase() === agentId.toLowerCase(),
-      )
-    ) {
-      return { persisted: false, reason: "already_registered" };
-    }
-  } catch {
-    // If the local registry is unreadable, let rememberAgentIdentity surface the
-    // filesystem problem with its normal error message.
+    const snapshot = await rememberAgentIdentity(sessionId, {
+      agentId,
+      model: normalizeString(agent.model) || "cli",
+      displayName: normalizeString(agent.displayName),
+      provider: normalizeString(agent.provider),
+      clientKind: normalizeString(agent.clientKind) || "cli",
+      role: sessionSayRegistryRole(agent.role),
+      targetPath,
+    });
+    return {
+      persisted: true,
+      agentId: snapshot.agentId,
+      lastActivityAt: snapshot.lastActivityAt,
+    };
+  } catch (error) {
+    return {
+      persisted: false,
+      reason: "activity_update_failed",
+      detail: normalizeString(error?.message),
+    };
   }
-
-  const registered = await rememberAgentIdentity(sessionId, {
-    agentId,
-    model: normalizeString(agent.model) || "cli",
-    displayName: normalizeString(agent.displayName),
-    provider: normalizeString(agent.provider),
-    clientKind: normalizeString(agent.clientKind) || "cli",
-    role: sessionSayRegistryRole(agent.role),
-    targetPath,
-  });
-
-  return {
-    persisted: true,
-    agentId: registered.agentId,
-  };
 }
 
 async function resolveSessionAgentEnvelope(
@@ -3646,9 +3640,6 @@ export function registerSessionCommand(program) {
         role: options.role,
         displayName: options.displayName,
       });
-      const agentRegistration = await ensureSessionSayAgentRegistered(normalizedSessionId, agent, {
-        targetPath,
-      });
       const event = createAgentEvent({
         event: "session_message",
         agent,
@@ -3700,6 +3691,10 @@ export function registerSessionCommand(program) {
         targetPath,
         syncRemote: false,
       });
+      const agentActivity = await recordPublishedSessionAgentActivity(normalizedSessionId, agent, {
+        targetPath,
+      });
+      const agentRegistration = agentActivity;
       const payload = {
         command: "session say",
         targetPath,
@@ -3711,6 +3706,7 @@ export function registerSessionCommand(program) {
         identitySource: identity.source,
         identityWarning: identity.identityWarning || undefined,
         agentRegistration,
+        agentActivity,
         remoteSync: remoteSync || undefined,
         remoteConfirmationAnchor: remoteConfirmationAnchor || undefined,
         remoteConfirmation: remoteConfirmation || undefined,
@@ -3823,6 +3819,9 @@ export function registerSessionCommand(program) {
         targetPath,
         syncRemote: false,
       });
+      const agentActivity = await recordPublishedSessionAgentActivity(normalizedSessionId, agent, {
+        targetPath,
+      });
       const payload = {
         command: "session post-agent",
         targetPath,
@@ -3831,6 +3830,7 @@ export function registerSessionCommand(program) {
         event: persisted,
         materializedLocalSession: localSession.materialized,
         refreshedLocalSession: Boolean(localSession.refreshed),
+        agentActivity,
         remoteSync,
         remoteConfirmationAnchor,
         remoteConfirmation,
