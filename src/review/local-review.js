@@ -73,6 +73,12 @@ const SEVERITY_ORDER = new Map([
 
 const TEST_OR_FIXTURE_PATH_PATTERN = /(?:^|[\\/])(?:test|tests|__tests__|fixtures?)(?:[\\/]|$)/i;
 const LOCAL_REVIEW_SOURCE_PATH_PATTERN = /(?:^|[\\/])src[\\/]review[\\/]local-review\.js$/i;
+const SQL_STRING_CONCATENATION_PATTERN =
+  /["'`]\s*(?:SELECT|INSERT|UPDATE|DELETE)\b[^\n]{0,160}["'`]\s*\+/i;
+const SQL_CONCAT_EXCLUDE_PATH_PATTERN = new RegExp(
+  `${TEST_LIKE_PATH_PATTERN.source}|${LOCAL_REVIEW_SOURCE_PATH_PATTERN.source}`,
+  "i"
+);
 const WORK_ITEM_MARKER_EXCLUDE_PATH_PATTERN = new RegExp(
   `${TEST_OR_FIXTURE_PATH_PATTERN.source}|${LOCAL_REVIEW_SOURCE_PATH_PATTERN.source}`,
   "i"
@@ -249,11 +255,9 @@ const DETERMINISTIC_REVIEW_RULES = Object.freeze([
     severity: "P2",
     message: "Possible SQL string concatenation detected.",
     suggestedFix: "Use parameterized queries and prepared statements.",
-    regex: /\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^;\n]{0,140}\+/i,
+    regex: SQL_STRING_CONCATENATION_PATTERN,
     sourceOnly: true,
-    // Self-scan dampener: the local-review source itself contains SQL-like
-    // regex literals and must not flag itself.
-    excludePathPattern: LOCAL_REVIEW_SOURCE_PATH_PATTERN,
+    excludePathPattern: SQL_CONCAT_EXCLUDE_PATH_PATTERN,
   },
   {
     id: "SL-SEC-018",
@@ -774,7 +778,7 @@ async function runPatternChecks({ rootPath, filePaths, maxFindings = MAX_FINDING
       }
     }
 
-    const sqlConcat = /\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^\n]{0,160}\+/i.exec(text);
+    const sqlConcat = SQL_STRING_CONCATENATION_PATTERN.exec(text);
     if (
       sqlConcat &&
       findings.length < maxFindings &&

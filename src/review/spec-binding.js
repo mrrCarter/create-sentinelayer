@@ -201,6 +201,19 @@ function tokenizePath(relativePath) {
   return [...tokens];
 }
 
+function specMentionsExactPath(markdown, relativePath) {
+  const normalizedPath = toPosixPath(relativePath).toLowerCase().replace(/^\.\/+/, "");
+  if (!normalizedPath) {
+    return false;
+  }
+  const escapedPath = normalizedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const normalizedMarkdown = toPosixPath(markdown).toLowerCase();
+  return new RegExp(
+    `(^|[^a-z0-9._/-])(?:\\./)?${escapedPath}(?=$|[^a-z0-9._/-])`,
+    "m"
+  ).test(normalizedMarkdown);
+}
+
 function isSourceFile(relativePath) {
   return SOURCE_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase());
 }
@@ -393,7 +406,9 @@ export async function runSpecBindingChecks({
       tokenMatchesByPath.set(relativePath, true);
       continue;
     }
-    const tokenMatches = tokenizePath(relativePath).some((token) => normalizedSpecText.includes(token));
+    const tokenMatches =
+      specMentionsExactPath(spec.markdown, relativePath) ||
+      tokenizePath(relativePath).some((token) => normalizedSpecText.includes(token));
     tokenMatchesByPath.set(relativePath, tokenMatches);
     if (evaluateScopeDrift && !tokenMatches) {
       pushFinding(

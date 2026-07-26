@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -74,5 +74,52 @@ test("deterministic review: real hardcoded token literals still trigger", async 
       true,
       JSON.stringify(result.findings, null, 2)
     );
+  });
+});
+
+test("deterministic review: endpoint extraction regexes are not SQL concatenation", async () => {
+  await withTempWorkspace("create-sentinelayer-local-review-", async (tempRoot) => {
+    const reviewDir = path.join(tempRoot, "src", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(
+      path.join(reviewDir, "spec-binding.js"),
+      [
+        "const verbPattern = /\\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\\b[^\\n]*?\\s(\\/[A-Za-z0-9\\-._~/:{}]+)\\b/g;",
+        "const routePattern = /\\b(?:router)\\s*\\.\\s*(?:get|post|put|patch|delete)\\s*\\(\\s*[\\\"'`](\\/[^\\\"'`)\\s?#]+)*/gi;",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result = await runDeterministicReviewPipeline({
+      targetPath: tempRoot,
+      mode: "full",
+    });
+
+    assert.deepEqual(
+      result.findings.filter((finding) =>
+        ["SL-SEC-017", "SL-PAT-005"].includes(finding.ruleId)
+      ),
+      []
+    );
+  });
+});
+
+test("deterministic review: quoted SQL string concatenation still triggers", async () => {
+  await withTempWorkspace("create-sentinelayer-local-review-", async (tempRoot) => {
+    await writeFile(
+      path.join(tempRoot, "database.js"),
+      'export const query = "SELECT * FROM users WHERE id = " + userId;\n',
+      "utf-8"
+    );
+
+    const result = await runDeterministicReviewPipeline({
+      targetPath: tempRoot,
+      mode: "full",
+    });
+    const ruleIds = new Set(result.findings.map((finding) => finding.ruleId));
+
+    assert.equal(ruleIds.has("SL-SEC-017"), true, JSON.stringify(result.findings, null, 2));
+    assert.equal(ruleIds.has("SL-PAT-005"), true, JSON.stringify(result.findings, null, 2));
   });
 });
