@@ -3,6 +3,12 @@
 ## 2026-07-14
 
 - Review-gate health must distinguish customer price from provider-call proof: require token-bearing usage, a successful token/provider-cost ledger, or a legacy priced-call signal, and still fail closed when all are absent.
+- A hosted AI gate must prove observed execution from hash-bound original artifacts; requested credentials/provider/model and a nominal passing status are configuration evidence, not proof that a model ran.
+- Validate live-execution evidence before severity policy, and never promote a deterministic provider-outage fallback into the authoritative green result for a required LLM gate.
+- A package semantic version is not immutable provenance when the same version can identify different source trees; publish a new version after gate-integrity fixes and retain the source/package digest used for certification.
+- Same-repository PR origin does not prove workflow authority: either protect the workflow/validator and secret-consuming actors or run privileged review from a protected definition that treats proposed code only as data.
+- An environment name in workflow YAML is not an approval boundary by itself; verify its live reviewer and branch policies, place secrets at environment scope, and remove unused repository-level credentials that branch-controlled workflows could request.
+- Test generated Action inputs and enum values against an immutable interface fixture; substring tests can regression-lock a false compatibility claim while GitHub merely warns about ignored inputs.
 
 ## 2026-07-13
 
@@ -259,3 +265,12 @@
 ## 2026-07-13
 
 - Subprocess E2E tests for authenticated CLI commands must own both sides of the auth boundary: use an isolated `HOME`/`USERPROFILE` plus an explicit non-secret fixture token, and include a token-omitted negative case. Inheriting a developer's stored session makes local green results non-hermetic and hides failures that scheduled CI correctly exposes.
+
+## 2026-07-19
+
+- Spec-binding coverage must check an explicitly documented repository-relative path before applying prose token heuristics. Token stopwords and minimum lengths can reduce short but valid paths such as `src/config.py` to an empty set.
+- Exact path coverage needs boundaries on both sides, not suffix matching; otherwise a documented path such as `legacy/src/main.py` can accidentally satisfy coverage for `src/main.py`.
+- On Windows, Node's `--test` does not expand npm-script globs. When a repository script assumes POSIX expansion, run the same sorted file set explicitly for local evidence and still require the canonical script on hosted Linux CI.
+- SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
+- Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
+- Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.

@@ -5,12 +5,16 @@ import { SentinelayerApiError } from "../src/auth/http.js";
 import {
   buildGenerateCheckpointPayload,
   buildManualCheckpointPayload,
+  buildCheckpointRestoreWindow,
+  classifyCheckpointRestoreEvents,
   createSessionCheckpoint,
+  findCheckpointById,
   generateSessionCheckpoint,
   generateSessionCheckpointBatch,
   generateSessionCheckpointBestEffort,
   listSessionCheckpoints,
   normalizeCheckpointGenerationResult,
+  showSessionCheckpoint,
 } from "../src/session/checkpoints.js";
 
 const fakeAuthValue = ["local", "checkpoint", "auth"].join("-");
@@ -154,6 +158,129 @@ test("Unit session checkpoints: list calls checkpoint endpoint with auth", async
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${fakeAuthValue}`);
   assert.equal(result.count, 1);
   assert.equal(result.checkpoints[0].checkpointId, "cp_1");
+});
+
+test("Unit session checkpoints: restore window is bounded around sequence anchors", () => {
+  const checkpoint = {
+    checkpointId: "cp_restore",
+    startSequence: 10,
+    endSequence: 14,
+  };
+  assert.equal(findCheckpointById([checkpoint], "cp_restore"), checkpoint);
+
+  const window = buildCheckpointRestoreWindow(checkpoint, {
+    contextEvents: 2,
+    maxEvents: 20,
+  });
+
+  assert.deepEqual(window, {
+    checkpointId: "cp_restore",
+    startSequence: 10,
+    endSequence: 14,
+    contextEvents: 2,
+    maxEvents: 20,
+    limit: 9,
+    beforeSequence: 17,
+    lowerBoundSequence: 8,
+    sourceEventCountExpected: 5,
+    truncatedByLimit: false,
+  });
+
+  const capped = buildCheckpointRestoreWindow(
+    { checkpoint_id: "cp_wide", start_sequence: 1, end_sequence: 300 },
+    { contextEvents: 100, maxEvents: 999 },
+  );
+  assert.equal(capped.contextEvents, 50);
+  assert.equal(capped.maxEvents, 200);
+  assert.equal(capped.limit, 200);
+  assert.equal(capped.truncatedByLimit, true);
+
+  assert.throws(
+    () => buildCheckpointRestoreWindow({ checkpointId: "cp_bad", startSequence: 10 }),
+    /endSequence is required/i,
+  );
+});
+
+test("Unit session checkpoints: restore classification separates source and context events", () => {
+  const window = buildCheckpointRestoreWindow(
+    { checkpointId: "cp_restore", startSequence: 10, endSequence: 12 },
+    { contextEvents: 1, maxEvents: 10 },
+  );
+  const classified = classifyCheckpointRestoreEvents(
+    [
+      { sequenceId: 9, payload: { message: "before" } },
+      { sequenceId: 10, payload: { message: "first source" } },
+      { sequenceId: 12, payload: { message: "last source" } },
+      { sequenceId: 13, payload: { message: "after" } },
+    ],
+    window,
+  );
+
+  assert.equal(classified.beforeContextCount, 1);
+  assert.equal(classified.sourceEventCount, 2);
+  assert.equal(classified.afterContextCount, 1);
+  assert.equal(classified.missingStart, false);
+  assert.equal(classified.missingEnd, false);
+  assert.equal(classified.missingSourceEvents, 1);
+  assert.equal(classified.completeSourceRange, false);
+  assert.equal(classified.partial, true);
+});
+
+test("Unit session checkpoints: show loads checkpoint source window read-only", async () => {
+  const calls = [];
+  const result = await showSessionCheckpoint("sess-123", "cp_restore", {
+    targetPath: "/repo",
+    contextEvents: 2,
+    maxEvents: 20,
+    resolveAuthSession: fakeAuth,
+    request: async (url, options) => {
+      calls.push({ kind: "list", url, options });
+      return {
+        checkpoints: [
+          {
+            checkpointId: "cp_restore",
+            startSequence: 10,
+            endSequence: 12,
+            title: "Restore",
+            summary: "Bounded context restore.",
+          },
+        ],
+      };
+    },
+    fetchEventsBefore: async (sessionId, options) => {
+      calls.push({ kind: "events", sessionId, options });
+      return {
+        ok: true,
+        reason: "",
+        cursor: "cursor-14",
+        beforeSequence: 9,
+        events: [
+          { sequenceId: 8, event: "session_message", payload: { message: "before range" } },
+          { sequenceId: 10, event: "session_message", payload: { message: "start" } },
+          { sequenceId: 11, event: "session_message", payload: { message: "middle" } },
+          { sequenceId: 12, event: "session_message", payload: { message: "end" } },
+          { sequenceId: 13, event: "session_message", payload: { message: "after range" } },
+        ],
+      };
+    },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(
+    calls[0].url,
+    "https://api.example.com/api/v1/sessions/sess-123/checkpoints?limit=200",
+  );
+  assert.equal(calls[1].sessionId, "sess-123");
+  assert.equal(calls[1].options.beforeSequence, 15);
+  assert.equal(calls[1].options.limit, 7);
+  assert.equal(calls[1].options.forceCircuitProbe, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.checkpointId, "cp_restore");
+  assert.equal(result.window.completeSourceRange, true);
+  assert.equal(result.window.partial, false);
+  assert.equal(result.window.sourceEventCount, 3);
+  assert.equal(result.window.beforeContextCount, 1);
+  assert.equal(result.window.afterContextCount, 1);
 });
 
 test("Unit session checkpoints: create posts stable idempotent checkpoint body", async () => {
