@@ -5,6 +5,7 @@ import { requestHostedMcpAccessToken } from "./token-service.js";
 
 const PASS = "PASS";
 const FAIL = "FAIL";
+const SESSION_EVENTS_LIST_TOOL = "sessions_events_list";
 
 function joinUrl(base, suffix) {
   const normalizedBase = String(base || "").replace(/\/+$/, "");
@@ -233,13 +234,13 @@ export async function runHostedMcpSmoke({
   }
 
   if (normalizedSessionId) {
-    if (!toolNames.includes("sessions.events.list")) {
+    if (!toolNames.includes(SESSION_EVENTS_LIST_TOOL)) {
       probes.push({
         id: "session_events_list",
-        label: "MCP sessions.events.list",
+        label: `MCP ${SESSION_EVENTS_LIST_TOOL}`,
         status: 0,
         verdict: FAIL,
-        detail: "sessions.events.list tool was not advertised by tools/list",
+        detail: `${SESSION_EVENTS_LIST_TOOL} tool was not advertised by tools/list`,
         sessionId: normalizedSessionId,
       });
     } else {
@@ -254,7 +255,7 @@ export async function runHostedMcpSmoke({
           id: "mcp-smoke-events",
           method: "tools/call",
           params: {
-            name: "sessions.events.list",
+            name: SESSION_EVENTS_LIST_TOOL,
             arguments: {
               sessionId: normalizedSessionId,
               limit: normalizedLimit,
@@ -266,7 +267,7 @@ export async function runHostedMcpSmoke({
       if (!eventsResponse.reached) {
         probes.push({
           id: "session_events_list",
-          label: "MCP sessions.events.list",
+          label: `MCP ${SESSION_EVENTS_LIST_TOOL}`,
           status: eventsResponse.status,
           verdict: FAIL,
           detail: eventsResponse.detail,
@@ -275,7 +276,7 @@ export async function runHostedMcpSmoke({
       } else if (eventsResponse.status !== 200) {
         probes.push({
           id: "session_events_list",
-          label: "MCP sessions.events.list",
+          label: `MCP ${SESSION_EVENTS_LIST_TOOL}`,
           status: eventsResponse.status,
           verdict: FAIL,
           detail: `expected HTTP 200, got HTTP ${eventsResponse.status}`,
@@ -284,7 +285,7 @@ export async function runHostedMcpSmoke({
       } else if (eventsResponse.json?.error) {
         probes.push({
           id: "session_events_list",
-          label: "MCP sessions.events.list",
+          label: `MCP ${SESSION_EVENTS_LIST_TOOL}`,
           status: eventsResponse.status,
           verdict: FAIL,
           detail: summarizeJsonRpcError(eventsResponse.json.error, redactionSecrets),
@@ -297,7 +298,7 @@ export async function runHostedMcpSmoke({
           .filter((value) => Number.isFinite(value));
         probes.push({
           id: "session_events_list",
-          label: "MCP sessions.events.list",
+          label: `MCP ${SESSION_EVENTS_LIST_TOOL}`,
           status: eventsResponse.status,
           verdict: PASS,
           detail: `${events.length} event(s) returned`,

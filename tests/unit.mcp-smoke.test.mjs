@@ -9,6 +9,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { writeStoredSession } from "../src/auth/session-store.js";
 import { redactMcpSmokeText, runHostedMcpSmoke } from "../src/mcp/smoke.js";
 
+const HOSTED_TOOL_NAMES = [
+  "sessions_events_list",
+  "sessions_usage_list",
+  "sessions_listener_status",
+];
+
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -27,7 +33,7 @@ async function readJsonBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-async function startSmokeMockApi({ toolsListError = null } = {}) {
+async function startSmokeMockApi({ toolsListError = null, toolNames = HOSTED_TOOL_NAMES } = {}) {
   const state = {
     tokenRequests: [],
     mcpRequests: [],
@@ -77,15 +83,11 @@ async function startSmokeMockApi({ toolsListError = null } = {}) {
             jsonrpc: "2.0",
             id: body.id,
             result: {
-              tools: [
-                { name: "sessions.events.list" },
-                { name: "sessions.usage.list" },
-                { name: "sessions.listener.status" },
-              ],
+              tools: toolNames.map((name) => ({ name })),
             },
           });
         }
-        if (body.method === "tools/call" && body.params?.name === "sessions.events.list") {
+        if (body.method === "tools/call" && body.params?.name === "sessions_events_list") {
           return jsonResponse(res, 200, {
             jsonrpc: "2.0",
             id: body.id,
@@ -123,11 +125,11 @@ async function startSmokeMockApi({ toolsListError = null } = {}) {
   };
 }
 
-async function withStoredSession(callback) {
+async function withStoredSession(callback, mockOptions = {}) {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-smoke-unit-"));
-  const mock = await startSmokeMockApi();
+  const mock = await startSmokeMockApi(mockOptions);
   try {
     await writeStoredSession(
       {
@@ -172,11 +174,7 @@ test("Unit MCP smoke: proves tools/list and session read without returning beare
       result.probes.map((probe) => probe.id),
       ["tools_list", "session_events_list"],
     );
-    assert.deepEqual(result.probes[0].toolNames, [
-      "sessions.events.list",
-      "sessions.usage.list",
-      "sessions.listener.status",
-    ]);
+    assert.deepEqual(result.probes[0].toolNames, HOSTED_TOOL_NAMES);
     assert.equal(result.probes[1].eventCount, 2);
     assert.equal(result.probes[1].firstSequenceId, 101);
     assert.equal(result.probes[1].lastSequenceId, 102);
@@ -190,12 +188,34 @@ test("Unit MCP smoke: proves tools/list and session read without returning beare
     assert.equal(mock.state.mcpRequests.length, 2);
     assert.equal(mock.state.mcpRequests[0].authHeader, `Bearer ${mock.state.mcpAccessToken}`);
     assert.equal(mock.state.mcpRequests[0].body.method, "tools/list");
+    assert.equal(mock.state.mcpRequests[1].body.params.name, "sessions_events_list");
     assert.equal(mock.state.mcpRequests[1].body.params.arguments.sessionId, "session-1");
 
     const serialized = JSON.stringify(result);
     assert.equal(serialized.includes(mock.state.mcpAccessToken), false);
     assert.equal(serialized.includes(mock.state.apiToken), false);
   });
+});
+
+test("Unit MCP smoke: rejects the legacy dotted session tool alias", async () => {
+  await withStoredSession(
+    async ({ tempRoot, mock }) => {
+      const result = await runHostedMcpSmoke({
+        cwd: tempRoot,
+        env: {},
+        homeDir: tempRoot,
+        explicitApiUrl: mock.apiUrl,
+        autoRotate: false,
+        sessionId: "session-1",
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.probes[1].verdict, "FAIL");
+      assert.match(result.probes[1].detail, /sessions_events_list/);
+      assert.equal(mock.state.mcpRequests.length, 1);
+    },
+    { toolNames: ["sessions.events.list"] },
+  );
 });
 
 test("Unit MCP smoke: redacts token-like JSON-RPC errors", async () => {

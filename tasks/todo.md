@@ -1,3 +1,40 @@
+# 2026-07-14 - Omar AI Call Evidence (`roadmap/pr-0h-omargate-call-evidence`)
+
+## Plan
+- [x] Reproduce two deep Omar false blocks where successful token-bearing internal calls report zero customer cost.
+- [x] Replace the cost-only AI-health predicate with bounded usage, billing-ledger, provider-cost, or legacy priced-call evidence.
+- [x] Preserve fail-closed P0/P1 behavior when personas error or any successful persona lacks provider-call evidence.
+- [x] Cover single-persona usage, billing-ledger, no-evidence, partial-evidence, and swarm aggregation paths.
+- [x] Run full verification, deterministic review/Omar/audit gates, and live dogfood.
+- [ ] Receive exact-SHA Claude review before any push.
+
+## Review
+- Change class: Class D deterministic review-gate integrity boundary; no prompt, model, provider-routing, or billing-price change.
+- Threat: internal or zero-priced managed calls are billed at zero customer cost, so a cost-only health check can fabricate a blocking P1 after the LLM actually ran; removing the guard entirely would restore silent false greens.
+- Rollback: revert this isolated branch to restore cost-only health detection. No remote state, price book, credential, or retained review artifact is mutated by the code change.
+- Evidence: deep runs `omargate-1784001480577-697c1a65` and `omargate-1784002043271-e66f185b` both returned `status=ok`, token-bearing billing ledgers, and non-zero provider cost while the orchestrator appended the same zero-customer-cost P1.
+- Live dogfood: `omargate-1784003567736-48074a17` completed two provider-backed personas with 3,996 ledger tokens, zero orchestrator findings, and no blocking result.
+- Status: implementation and local gates complete; exact-SHA peer review pending. Local only, not pushed.
+
+# 2026-07-13 - Hosted MCP Canonical Tool Contract (`roadmap/pr-r1-mcp-tool-contract-20260713`)
+
+## Plan
+- [x] Verify the production hosted MCP descriptor and reproduce the CLI smoke failure against its underscore-delimited tool names.
+- [x] Lock the scoped smoke, command, test, documentation, and governance files in Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a`.
+- [x] Replace the stale dotted session-read tool name with the canonical `sessions_events_list` contract.
+- [x] Add regression coverage that rejects the legacy dotted alias instead of silently calling it.
+- [x] Run focused tests, full repository verification, local review, Omar Gate, and audit proof.
+- [ ] Open a PR, obtain Senti peer review, and merge only after hosted checks pass.
+
+## Review
+- Focused MCP and command-contract proof passed (`24/24`), including an explicit legacy dotted-alias rejection.
+- Live production smoke passed with `7` advertised tools and a successful `sessions_events_list` call returning `2` events; token output remained redacted.
+- Full `npm run verify` passed: static checks (`354` files), docs validation, E2E (`120/120`), unit coverage, and package dry-run (`sentinelayer-cli-0.39.2.tgz`, shasum `0d47f751d0063ac237bbde888f9d80ee869e3e1d`).
+- `npm audit --audit-level=high` reported `0` vulnerabilities; `git diff --check` passed aside from expected Windows line-ending notices.
+- Diff review scanned `7` intended files with `P1=0`, `P2=0`, `blocking=false` (`review-scan-diff-20260713-223618.md`).
+- Deterministic Omar Gate scanned the same `7` files with `P0=0`, `P1=0`, `P2=0`, `P3=0`, `blocking=false` (`review-20260713-223627-3dadef27`).
+- Repository audit passed with no P1 blockers; its two P2 baseline notices cite untouched `tasks/evals/2026-04-17-pr-335-spec-session-integration.md` and `src/scan/generator.js` (`audit-20260713-223638.md`).
+
 # 2026-07-12 - Senti Recap Estimated Usage Fast Path (`codex/senti-recap-estimated-usage-fastpath`)
 
 ## Plan
@@ -46,7 +83,7 @@
 - [x] Keep Senti room `954233b7-1822-42bc-9cfe-1eb95eb0357a` polled quietly and reconcile with verifier/architect lane ownership.
 - [x] Confirm lane split: architect owns OAuth browser RFC compliance; warden verifies; this lane owns repeatable hosted MCP resource smoke proof.
 - [x] Use a clean `create-sentinelayer` worktree from current `origin/main` and take Senti locks for MCP command/test/docs files.
-- [x] Add a redacted `sl mcp smoke` command that mints an in-memory MCP bearer, calls `/mcp` `tools/list`, optionally calls `sessions.events.list`, and never prints the bearer.
+- [x] Add a redacted `sl mcp smoke` command that mints an in-memory MCP bearer, calls `/mcp` `tools/list`, optionally calls `sessions_events_list`, and never prints the bearer.
 - [x] Add focused unit coverage for tool-list success, optional session-read success, failure reporting, and token redaction.
 - [x] Update MCP docs with the new smoke workflow.
 - [x] Run focused tests/static checks, review scan, Omar diff scan, package smoke, open PR, and request Senti review.
@@ -3569,4 +3606,29 @@ Review:
 - Local review scan passed: `review-scan-diff-20260703-013956.md`, scanned 5 intended files, P1=0, P2=0, blocking=false.
 - Deterministic Omar passed: `review-20260703-014036-948bd927`, P0/P1/P2/P3 all `0`, blocking=false.
 - AI Omar run `omargate-1783042798321-14da0a81` was nonblocking but reported three unsupported P2s. Direct grep showed no production `fetch()` or `spawn()` in `src/session/listener-process.js`; all process-table calls use bounded `execFile` timeouts, and the cited sinon/mockSession evidence does not exist in the touched tests.
+
+## 2026-07-13 - Hermetic Session Download E2E Authentication
+
+## Plan
+- [x] Reproduce the scheduled Quality Gates failure from run `29235510386` and isolate all seven failures to `tests/e2e.session-download.test.mjs`.
+- [x] Confirm the production auth gate is working as designed and the tests were inheriting developer authentication state.
+- [x] Give every spawned CLI an isolated home, explicit fixture token, and locally disabled remote sync.
+- [x] Remove inherited test-bypass variables from the subprocess environment.
+- [x] Add a token-omitted regression proving `session download` still fails at the production auth gate before command execution.
+- [x] Run the whole suite with an empty outer auth context and fold the remaining session-usage-estimation fixture into the same isolation contract.
+- [x] Run focused, full, review, and local Omar gates; hosted PR and post-merge mainline gates follow after push.
+
+## Initial Findings
+- Scheduled run `29235510386` passed 113/120 E2E tests; all seven failures were local session download/export/usage fixtures rejected with `Authentication required`.
+- The same file passed on an authenticated developer machine because its `runCli` helper copied the entire host environment and home directory into each subprocess.
+- `SENTINELAYER_SKIP_REMOTE_SYNC=1` prevents network writes but intentionally does not bypass the global authentication gate.
+- A clean-room full-suite run found one additional timing-dependent leak in `e2e.session-usage-estimation.test.mjs`; scheduled CI had masked it through shared process/home state, so both session fixture files now own the same explicit auth boundary.
+
+## Review Results
+- Focused clean-room session fixtures pass `9/9` with an empty outer auth context and isolated home/config directories.
+- Full `npm run verify` passes after the final environment-precedence hardening: static checks cover 354 files, docs validation passes, E2E passes `121/121`, coverage passes, and `npm pack --dry-run` produces 352 files with SHA-1 `988726d9606fc9feb2a99cb88651664329fb62de`.
+- `npm audit --audit-level=high` reports zero vulnerabilities.
+- Final diff review `.sentinelayer/reports/review-scan-diff-20260713-231723.md` scans four files with `P1=0`, `P2=0`, and `blocking=false`.
+- Full audit `.sentinelayer/reports/audit-20260713-231724.md` passes 716 files with `P1=0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
+- Local Omar Gate run `omargate-1783984599735-e4d77f5b` is deterministically clean (`P0/P1/P2/P3=0`) but fails closed because both routed managed personas returned `502 UPSTREAM_ERROR`. This is the third reproducible upstream-only attempt; the hosted Omar check remains mandatory before merge.
 

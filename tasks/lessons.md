@@ -1,5 +1,13 @@
 # Lessons
 
+## 2026-07-14
+
+- Review-gate health must distinguish customer price from provider-call proof: require token-bearing usage, a successful token/provider-cost ledger, or a legacy priced-call signal, and still fail closed when all are absent.
+
+## 2026-07-13
+
+- Hosted MCP clients must consume the exact canonical names returned by `tools/list`; keep underscore-delimited server names in smoke fixtures, help, and docs, and reject hand-maintained dotted aliases so contract drift fails visibly.
+
 ## 2026-05-19
 
 - When the user says CLI auth was refreshed, immediately re-test both Senti read and write paths instead of carrying forward stale auth assumptions.
@@ -247,3 +255,7 @@
 
 - When fixing a generated workflow, patch the generator and parity tests in the same PR as the checked-in YAML; otherwise the next `sl scan init` can recreate the incident you just fixed.
 - `sl session search` is a free-text search whose backend matches payload, event type, agent id, and agent model fields; do not advertise `--agent` or event-type filters unless the CLI and API expose dedicated filter parameters.
+
+## 2026-07-13
+
+- Subprocess E2E tests for authenticated CLI commands must own both sides of the auth boundary: use an isolated `HOME`/`USERPROFILE` plus an explicit non-secret fixture token, and include a token-omitted negative case. Inheriting a developer's stored session makes local green results non-hermetic and hides failures that scheduled CI correctly exposes.
