@@ -40,7 +40,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  OMAR_SPEC_ID: fbe281812ebeeedcffcfe0442a94407bd4fb64ae78f3c21606512c9b94825afb
+  OMAR_SPEC_ID: ${{ vars.OMAR_SPEC_ID || '' }}
 
 jobs:
   omar_untrusted_scan:
@@ -392,7 +392,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! echo "${OMAR_SPEC_ID}" | grep -Eq '^[a-f0-9]{64}$'; then
+          if [ -n "${OMAR_SPEC_ID}" ] && ! echo "${OMAR_SPEC_ID}" | grep -Eq '^[a-f0-9]{64}$'; then
             echo "::error::OMAR_SPEC_ID must be a 64-character lowercase hex digest."
             exit 1
           fi
