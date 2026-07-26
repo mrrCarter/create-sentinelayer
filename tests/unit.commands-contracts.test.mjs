@@ -344,6 +344,9 @@ test("Unit command contracts: mcp exposes session registry and stdio server runt
 
   const smoke = getCommandByPath(program, "mcp smoke");
   assertCommandHasOption(smoke, "--session <id>");
+  const smokeSessionOption = smoke.options.find((option) => option.flags === "--session <id>");
+  assert.match(smokeSessionOption.description, /sessions_events_list/);
+  assert.doesNotMatch(smokeSessionOption.description, /sessions\.events\.list/);
   assertCommandHasOption(smoke, "--limit <n>");
   assertCommandHasOption(smoke, "--scope <scopes>");
   assertCommandHasOption(smoke, "--ttl-seconds <seconds>");

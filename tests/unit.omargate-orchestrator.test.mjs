@@ -325,7 +325,7 @@ describe("runOmarGateOrchestrator swarm path", () => {
     assert.equal(result.findings[0].file, "<omargate>");
   });
 
-  it("turns zero-cost non-dry-run persona coverage into a blocking P1 orchestrator finding", async () => {
+  it("turns non-dry-run persona coverage without call evidence into a blocking P1 finding", async () => {
     const targetPath = await makeTempRoot();
 
     const result = await runOmarGateOrchestrator({
@@ -357,7 +357,171 @@ describe("runOmarGateOrchestrator swarm path", () => {
     assert.equal(result.personaHealth.ok, 1);
     assert.equal(result.summary.P1, 1);
     assert.equal(result.summary.blocking, true);
-    assert.match(result.findings[0].message, /total AI cost was \$0\.00/);
+    assert.match(result.findings[0].message, /lacked token-bearing usage/);
+    assert.equal(result.personaHealth.aiCallEvidence.confirmedCalls, 0);
+  });
+
+  it("accepts zero-priced token-bearing usage as successful AI coverage", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security"],
+      maxCostUsd: 1,
+      dryRun: false,
+      aiReviewRunner: async () => ({
+        findings: [],
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        usage: {
+          inputTokens: 2001,
+          outputTokens: 53,
+          costUsd: 0,
+        },
+      }),
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/auth.js"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(result.totalCostUsd, 0);
+    assert.equal(result.personaHealth.healthy, true);
+    assert.equal(result.personaHealth.aiCallEvidence.confirmedCalls, 1);
+    assert.equal(result.personaHealth.aiCallEvidence.usageBackedCalls, 1);
+    assert.equal(result.personaHealth.aiCallEvidence.ledgerBackedCalls, 0);
+    assert.equal(result.personaHealth.aiCallEvidence.pricedCalls, 0);
+    assert.equal(result.personaHealth.aiCallEvidence.totalTokens, 2054);
+    assert.equal(result.findingsBySource.orchestrator, 0);
+    assert.equal(result.summary.blocking, false);
+  });
+
+  it("accepts a zero-customer-price token-bearing billing ledger as successful AI coverage", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["testing"],
+      maxCostUsd: 1,
+      dryRun: false,
+      aiReviewRunner: async () => ({
+        findings: [],
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        costUsd: 0,
+        billing: {
+          ok: true,
+          event: "session_usage",
+          ledgerEntry: {
+            inputTokens: 1905,
+            outputTokens: 1700,
+            totalTokens: 3605,
+            providerCostUsd: 0.027134,
+            customerCostUsd: null,
+          },
+        },
+      }),
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["tests/runtime.test.mjs"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(result.totalCostUsd, 0);
+    assert.equal(result.personaHealth.healthy, true);
+    assert.equal(result.personaHealth.aiCallEvidence.confirmedCalls, 1);
+    assert.equal(result.personaHealth.aiCallEvidence.ledgerBackedCalls, 1);
+    assert.equal(result.personaHealth.aiCallEvidence.pricedCalls, 1);
+    assert.equal(result.personaHealth.aiCallEvidence.totalTokens, 3605);
+    assert.equal(result.personaHealth.aiCallEvidence.providerCostUsd, 0.027134);
+    assert.equal(result.personaHealth.aiCallEvidence.customerCostUsd, 0);
+    assert.equal(result.findingsBySource.orchestrator, 0);
+    assert.equal(result.summary.blocking, false);
+  });
+
+  it("fails closed when one successful persona lacks provider-call evidence", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security", "testing"],
+      maxCostUsd: 1,
+      dryRun: false,
+      aiReviewRunner: async ({ runId }) => ({
+        findings: [],
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        usage: runId.endsWith("-security")
+          ? { inputTokens: 100, outputTokens: 20, costUsd: 0 }
+          : { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      }),
+      deterministic: {
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        findings: [],
+        scope: {
+          scannedFiles: 1,
+          scannedRelativeFiles: ["src/auth.js"],
+          totalLoc: 120,
+        },
+        layers: {},
+        metadata: {},
+        artifacts: {},
+      },
+    });
+
+    assert.equal(result.personaHealth.ok, 2);
+    assert.equal(result.personaHealth.verifiedOk, 1);
+    assert.equal(result.personaHealth.unverifiedOk, 1);
+    assert.equal(result.personaHealth.healthy, false);
+    assert.equal(result.personaHealth.aiCallEvidence.confirmedCalls, 1);
+    assert.equal(result.findingsBySource.orchestrator, 1);
+    assert.match(result.findings.at(-1).message, /1\/2 successful personas lacked/);
+    assert.equal(result.summary.P1, 1);
+    assert.equal(result.summary.blocking, true);
+  });
+
+  it("aggregates zero-priced token evidence across swarm subagents", async () => {
+    const targetPath = await makeTempRoot();
+
+    const result = await runOmarGateOrchestrator({
+      targetPath,
+      scanMode: "deep",
+      includeOnly: ["security"],
+      maxCostUsd: 1,
+      dryRun: false,
+      aiReviewRunner: async () => ({
+        findings: [],
+        summary: { P0: 0, P1: 0, P2: 0, P3: 0, blocking: false },
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          costUsd: 0,
+        },
+      }),
+      deterministic: bigDeterministic(),
+    });
+
+    assert.equal(result.personaHealth.healthy, true);
+    assert.equal(result.personaHealth.aiCallEvidence.confirmedCalls, 2);
+    assert.equal(result.personaHealth.aiCallEvidence.totalTokens, 240);
+    assert.equal(result.personas[0].swarm.subagentCount, 2);
+    assert.equal(result.findingsBySource.orchestrator, 0);
   });
 });
 
