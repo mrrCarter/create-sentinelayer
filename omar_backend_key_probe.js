@@ -1,4 +1,10 @@
-// omar managed-backend OpenAI key probe -- throwaway PR to force a FRESH omar investigation
-// (a same-sha re-run dedups to a cached result; a new file = new diff = new investigation)
-// delete after reading the scan result.
-export const OMAR_KEY_PROBE = true;
+// omar codex-adjudication probe -- PLANTED command injection to confirm codex actually
+// scans the diff (a real finding here => codex adjudicates; 0/0 => source:none mode-2 phantom).
+import { exec } from 'node:child_process';
+
+export function listDir(userInput) {
+  // INTENTIONAL VULN (command injection): unsanitized user input flows into a shell command
+  exec('ls -la ' + userInput, (err, stdout) => {
+    console.log(stdout);
+  });
+}
