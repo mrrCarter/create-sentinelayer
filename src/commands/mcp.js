@@ -236,7 +236,7 @@ Docs: https://github.com/mrrCarter/create-sentinelayer/blob/main/docs/mcp.md`,
     .description(
       "Smoke the hosted MCP resource with an in-memory bearer; prints only redacted proof"
     )
-    .option("--session <id>", "Optional Senti session id to read through sessions.events.list")
+    .option("--session <id>", "Optional Senti session id to read through sessions_events_list")
     .option("--limit <n>", "Maximum session events to read when --session is set", "5")
     .option(
       "--scope <scopes>",

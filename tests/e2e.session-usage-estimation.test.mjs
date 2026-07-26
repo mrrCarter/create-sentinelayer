@@ -8,12 +8,32 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
+const LOCAL_FIXTURE_TOKEN = "e2e_session_usage_estimation_fixture_token";
+
+function buildCliEnv({ cwd, env = {} }) {
+  const childEnv = {
+    ...process.env,
+    SENTINELAYER_SKIP_REMOTE_SYNC: "1",
+    SENTINELAYER_SKIP_SENTI_AUTOSTART: "1",
+    SENTINELAYER_TOKEN: LOCAL_FIXTURE_TOKEN,
+    ...env,
+    HOME: cwd,
+    USERPROFILE: cwd,
+    XDG_CONFIG_HOME: path.join(cwd, ".config"),
+  };
+
+  delete childEnv.SENTINELAYER_CLI_SKIP_AUTH;
+  delete childEnv.SENTINELAYER_CLI_TEST_BYPASS_NONCE;
+  delete childEnv.SENTINELAYER_CLI_TEST_BYPASS_SECRET;
+  delete childEnv.SENTINELAYER_CLI_TEST_BYPASS_TOKEN;
+  return childEnv;
+}
 
 function runCli({ cwd, args, env = {} }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env: { ...process.env, ...env },
+      env: buildCliEnv({ cwd, env }),
       windowsHide: true,
     });
     let stdout = "";
