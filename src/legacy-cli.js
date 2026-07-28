@@ -2517,7 +2517,7 @@ jobs:
           fi
       - name: Run Omar Gate
         id: omar
-        uses: mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d
+        uses: mrrCarter/sentinelayer-v1-action@8afb7dbb42a5e1c25233d422c4cabe401ba02380
         with:
           github_token: \${{ github.token }}
           openai_api_key: \${{ secrets.OPENAI_API_KEY }}
@@ -2626,7 +2626,7 @@ jobs:
               },
               "scan": {
                   "mode": env("OMAR_SCAN_MODE", "deep"),
-                  "action_ref": "mrrCarter/sentinelayer-v1-action@a496be33a466c0cc3f8616d66bbd7d78f7d3c31d",
+                  "action_ref": "mrrCarter/sentinelayer-v1-action@8afb7dbb42a5e1c25233d422c4cabe401ba02380",
                   "llm_provider": env("OMAR_LLM_PROVIDER", "openai"),
                   "model": env("OMAR_MODEL", "gpt-5.3-codex"),
                   "model_fallback": env("OMAR_MODEL_FALLBACK", "gpt-4.1-mini"),
