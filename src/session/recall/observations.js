@@ -222,3 +222,51 @@ export function buildObservations(events = [], { sessionId = "", includeControlE
     materialCount: observations.length,
   };
 }
+
+/**
+ * ENGRAM §2 generalization — build observations from generic MaaS `items`
+ * (memory.write payloads) rather than session events. An item is mapped onto
+ * the SAME canonical event shape and run through the SAME buildObservations
+ * pipeline, so entity/edge/dedup/text extraction behave identically and the
+ * engine stays session-AGNOSTIC (the whole point of §2 detachability).
+ *
+ * Item shape: `{ id?, idempotencyToken?, text, kind?, author?/agentId?, ts?,
+ *   sequenceId?, topics?, files?, mentions?, trust? }`. `trust` is carried
+ *   through onto the observation (§2 trust seal) without the core caring.
+ *
+ * @param {object[]} items
+ * @param {object} [options]
+ * @param {string} [options.namespace]  Opaque namespace id (id-fallback + meta).
+ * @returns {{observations: object[], droppedControlEvents: number, materialCount: number}}
+ */
+export function buildObservationsFromItems(items = [], { namespace = "" } = {}) {
+  const events = (Array.isArray(items) ? items : []).map((item) => ({
+    stream: "sl_event",
+    event: normalizeString(item?.kind) || "memory",
+    eventId: normalizeString(item?.id) || undefined,
+    idempotencyToken: normalizeString(item?.idempotencyToken) || undefined,
+    agent: { id: normalizeString(item?.author || item?.agentId) || "writer" },
+    payload: {
+      message: normalizeString(item?.text),
+      topics: item?.topics,
+      files: item?.files,
+      to: item?.mentions,
+      // Trust seal rides in the payload so the shared buildObservations
+      // pipeline carries it without a special case; lifted below.
+      __trust: item?.trust,
+      __sealed: item?.sealed === true,
+      __revoked: item?.revoked === true,
+    },
+    ts: normalizeString(item?.ts) || new Date().toISOString(),
+    sequenceId: item?.sequenceId,
+  }));
+  // Items are never control events; index them all.
+  const built = buildObservations(events, { sessionId: namespace, includeControlEvents: true });
+  for (const obs of built.observations) {
+    const payload = obs?.raw?.payload || {};
+    if (payload.__trust) obs.trust = payload.__trust;
+    obs.sealed = payload.__sealed === true;
+    obs.revoked = payload.__revoked === true;
+  }
+  return built;
+}
