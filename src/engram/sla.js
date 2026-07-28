@@ -1,7 +1,7 @@
 /**
  * ENGRAM §2 — the Memory-as-a-Service quality SLA (namespace-agnostic).
  *
- * The §1 8-Needle eval (ENGRAM §11) becomes the MaaS SLA, run OVER A NAMESPACE
+ * The §1 8-Needle harness (ENGRAM §11) becomes the MaaS SLA, run OVER A NAMESPACE
  * through the shared store: corpora are `memory.write`-shaped items written to
  * a namespace, then recalled through the same store the tools use. This proves
  * the SLA holds for ANY namespace (not just sessions), which is the
