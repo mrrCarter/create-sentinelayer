@@ -99,7 +99,6 @@ function bm25Channel(index, queryTokens) {
 /** Entity-match channel with inverse-degree (IDF-like) weighting of hits. */
 function entityChannel(index, matchedEntityIds) {
   const scoreById = new Map();
-  const matched = new Set(matchedEntityIds);
   const seedObs = new Set();
   for (const entityId of matchedEntityIds) {
     const peers = index.graph.entityToObs.get(entityId);
@@ -112,7 +111,6 @@ function entityChannel(index, matchedEntityIds) {
       if (!isHub) seedObs.add(obsId); // only specific entities seed expansion
     }
   }
-  void matched;
   return { scoreById, ranked: sortedByScoreDesc(scoreById, index.order), seedObs };
 }
 
@@ -272,7 +270,6 @@ export function recall(index, {
   // Cap the pool deterministically by pool score.
   let poolIds = sortedByScoreDesc(poolScoreById, index.order);
   if (poolIds.length > cfg.poolCap) poolIds = poolIds.slice(0, cfg.poolCap);
-  const pooledSet = new Set(poolIds);
 
   // --- 5. Fusion score over the pool ---
   // Evidence TIER dominates the ordering, then the fusion blend orders within
@@ -373,6 +370,5 @@ export function recall(index, {
     matchedEntityIds,
     weights: w,
     tuning: cfg,
-    _pooledSet: pooledSet, // internal; harness reads candidatePoolIds
   };
 }
