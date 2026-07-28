@@ -46,12 +46,23 @@ New engine (isolated in `src/session/recall/`, no changes to
    ^20, native-dep + publish fragility, and the eval requires determinism), so
    the same BM25 *mechanism* is implemented in pure JS. Only the storage
    engine differs from the doc's consumer-app context (§8).
-2. **Bounded graph diffusion.** A literal single hop cannot complete an
-   8-memory chain (the tail is ~7 hops from the head). Expansion is bounded,
-   decayed, hub-skipping BFS — the first diffusion hops of §7's forward-push
-   PPR, and the same bounded BFS §7 already specifies for path evidence. Full
-   ACL push-PPR with α-teleport + edge-type priors + residual ranking remains
-   the **P1** upgrade.
+2. **Bounded graph diffusion (multi-hop).** §7's spreading activation *is*
+   8-hop diffusion ("8 hops as diffusion"); a literal single hop cannot
+   complete an 8-memory chain (the tail is ~7 hops from the head). Expansion
+   is bounded, decayed, hub-skipping BFS to `expansionHops=8` — the bounded
+   diffusion §7 describes, and the same BFS §7 uses for path evidence. Full
+   ACL forward-push PPR (α-teleport + edge-type priors + residual ranking)
+   remains the **P1** upgrade.
+3. **Hard TIER ordering is a P0 stub-compensation, not the final ranker.**
+   The default embedder is the deterministic hash-projection stub, whose raw
+   cosine is noisy on short texts; a plain soft-weighted `σ(w·…)` fusion lets
+   that noise outrank legitimately graph-diffused hits. So P0 orders by a hard
+   tier (direct match > graph-diffused > weak-signal) and applies §7's
+   `cos + log(1+PPR-mass) + B(m)` blend *within* each tier. The tier is also a
+   sensible recall ordering on its own. **P1 target:** §7's learned
+   soft-logistic fusion over a real EmbeddingGemma embedder with
+   rehearsal-trained weights — which revisits whether the hard tier is still
+   needed.
 
 ## Baseline vs candidate
 
@@ -90,8 +101,11 @@ synthetic events), deterministic hash-projection stub embedder:
 | Needle-Scatter (relevants in pre-rerank pool) | ≥ 95% | **100.0%** |
 | recall@10 vs exact ground truth | ≥ 95% | **100.0%** |
 
-CI unit test (`tests/unit.engram-8needle.test.mjs`) runs a 150-chain / 60-query
-subset (~1s) and asserts the same gates; robust across seeds 1–5.
+The CI unit test (`tests/unit.engram-8needle.test.mjs`) runs the Needle-Chain
+at a **150-chain / 60-query subset for speed** (~1s) and asserts the same three
+gates; the **full §11 500-chain scale (table above) is verified at 100%** on
+all three gates (reproduce command below). Both use the deterministic stub and
+are robust across seeds 1–5.
 
 **Teeth check (regression guard on the benchmark itself):** with graph
 diffusion disabled (`expansionHops: 0`), Needle-Chain collapses to **0.7%**.
@@ -115,10 +129,17 @@ The tail is lexically disjoint from the head (opaque per-chain tokens), so a
   (`provider: "api"`) with stub fallback. The stub is lexical-leaning; deep
   semantic paraphrase quality improves with the real embedder (chain
   completion here is carried by the graph, by design).
-- **P1 upgrades (not regressions):** forward-push PPR (α-teleport + edge-type
-  priors) replacing bounded BFS; learned fusion weights trained on the
-  rehearsal loop; LLM topic/relation extraction (ENGRAM Pass-3) beyond the
-  current conservative explicit-tag topics.
+- **P1 upgrades (not regressions):**
+  - full forward-push PPR (α-teleport + edge-type priors + residual ranking)
+    replacing the bounded BFS diffusion;
+  - real **EmbeddingGemma-class** embedder (256-d Matryoshka) behind the
+    existing pluggable interface, replacing the deterministic stub;
+  - §7 **learned soft-logistic fusion** with rehearsal-trained weights —
+    revisits whether the P0 hard-tier ordering is still needed;
+  - LLM topic/relation extraction (ENGRAM Pass-3) beyond conservative
+    explicit-tag topics;
+  - cross-session **org-namespace** memory (stack-doc §4) accumulating
+    decisions/lessons across every session.
 - Recall over a session requires a complete local mirror; `runSessionRecall`
   forces a `tail:0` hydrate and surfaces `eventsBackfillComplete=false` as a
   warning so a truncated mirror is never silently indexed.
