@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.40.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.2...v0.40.0) (2026-07-28)
+
+
+### Features
+
+* **ring-owner:** sl ring-owner CLI — trigger a Senti Pocket ring from an agent/CLI ([#783](https://github.com/mrrCarter/create-sentinelayer/issues/783)) ([dafffe6](https://github.com/mrrCarter/create-sentinelayer/commit/dafffe6dde6a12b9bae9ef11df5716797833dcdb))
+* **session:** add checkpoint restore view ([#765](https://github.com/mrrCarter/create-sentinelayer/issues/765)) ([b1ab588](https://github.com/mrrCarter/create-sentinelayer/commit/b1ab588f180bfeb85133e9ade3bebf53016a9549))
+
+
+### Bug Fixes
+
+* **mcp:** use canonical hosted tool names ([#775](https://github.com/mrrCarter/create-sentinelayer/issues/775)) ([433e391](https://github.com/mrrCarter/create-sentinelayer/commit/433e391efed16182bed292afdd97abf6a7182710))
+* **omar-gate:** surgical spec-drop — restore cs hardening, drop supply-chain spec (redo [#787](https://github.com/mrrCarter/create-sentinelayer/issues/787)) ([#789](https://github.com/mrrCarter/create-sentinelayer/issues/789)) ([d6bd085](https://github.com/mrrCarter/create-sentinelayer/commit/d6bd08546029b28df62027e890d2dfade762c849))
+* **omargate:** prove zero-priced AI calls ([#778](https://github.com/mrrCarter/create-sentinelayer/issues/778)) ([38db9f2](https://github.com/mrrCarter/create-sentinelayer/commit/38db9f258b051e0f642a2e921a224de9a35cbeaf))
+* **review:** honor exact spec paths ([#781](https://github.com/mrrCarter/create-sentinelayer/issues/781)) ([f6e7d4c](https://github.com/mrrCarter/create-sentinelayer/commit/f6e7d4cca28c61eb97b50d3a9894afaa8f7d909f))
+
 ## [0.39.2](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.1...v0.39.2) (2026-07-12)
 
 
