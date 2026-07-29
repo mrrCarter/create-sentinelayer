@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   mkdtemp,
+  mkdir,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 
@@ -173,7 +175,12 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
         lease.revision += 1;
         lease.renewedAt = new Date(nowMs).toISOString();
         lease.expiresAt = new Date(nowMs + body.ttlSeconds * 1_000).toISOString();
-        return { ok: true, renewed: true, lease: publicLease(lease) };
+        return {
+          ok: true,
+          authoritative: true,
+          renewed: true,
+          lease: publicLease(lease),
+        };
       }
       const wasActive = lease.status === "active" && Date.parse(lease.expiresAt) > nowMs;
       lease.status = wasActive ? "released" : "expired";
@@ -181,6 +188,7 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
       lease.releaseReason = wasActive ? body.reason : "ttl_expired";
       return {
         ok: true,
+        authoritative: true,
         released: wasActive,
         expired: !wasActive,
         alreadyReleased: lease.status === "released" && !wasActive,
@@ -199,6 +207,7 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
     ) {
       return {
         ok: true,
+        authoritative: true,
         acquired: false,
         duplicate: true,
         lease: publicLease(exact),
@@ -230,6 +239,7 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
     leases.set(lease.leaseId, lease);
     return {
       ok: true,
+      authoritative: true,
       acquired: true,
       duplicate: false,
       lease: publicLease(lease),
@@ -371,6 +381,15 @@ test("Unit session file leases: acquire renew guard release write zero transcrip
       source,
       /["']file_(?:lock|unlock|lock_expired|lock_renewed)["']/u,
     );
+    const daemonSource = await readFile(
+      new URL("../src/session/daemon.js", import.meta.url),
+      "utf-8",
+    );
+    assert.doesNotMatch(daemonSource, /from\s+["']\.\/file-locks\.js["']/u);
+    assert.doesNotMatch(
+      daemonSource,
+      /file_(?:lock|unlock)_denied|parseSessionDirective|splitFileAndIntent/u,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -509,6 +528,8 @@ test("Unit session file leases: release-all uses holder capabilities and reports
     assert.equal(released.releasedCount, 1);
     assert.deepEqual(released.failures, []);
     assert.deepEqual(released.unresolved, []);
+    assert.equal(released.unresolvedKnown, true);
+    assert.equal(released.authority.authoritative, true);
     assert.deepEqual(released.events, []);
     assert.equal((await listFileLocks(
       "sess-release-all",
@@ -517,6 +538,44 @@ test("Unit session file leases: release-all uses holder capabilities and reports
   } finally {
     await rm(rootA, { recursive: true, force: true });
     await rm(rootB, { recursive: true, force: true });
+  }
+});
+
+test("Unit session file leases: release-all cleanup reports unknown authority without blocking", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-cleanup-"));
+  try {
+    await seedWorkspace(tempRoot);
+    const result = await releaseFileLocksForAgent(
+      "sess-cleanup-outage",
+      "codex",
+      {
+        targetPath: tempRoot,
+        resolveAuthSession: async () => ({
+          apiUrl: API_URL,
+          token: AUTH_TOKEN,
+        }),
+        request: async () => {
+          throw new SentinelayerApiError("authority unavailable", {
+            status: 503,
+            code: "FILE_LEASE_STORAGE_UNAVAILABLE",
+          });
+        },
+        requestMutation: async () => {
+          throw new Error("must not release without a cached capability");
+        },
+      },
+    );
+
+    assert.equal(result.releasedCount, 0);
+    assert.deepEqual(result.unresolved, []);
+    assert.equal(result.unresolvedKnown, false);
+    assert.deepEqual(result.authority, {
+      ok: false,
+      authoritative: false,
+      code: "FILE_LEASE_STORAGE_UNAVAILABLE",
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -573,5 +632,220 @@ test("Unit session file leases: authority outage blocks even when a local capabi
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session file leases: lifecycle responses without authority proof fail closed", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-marker-"));
+  const authority = createLeaseAuthority();
+  try {
+    await seedWorkspace(tempRoot);
+    await assert.rejects(
+      lockFile(
+        "sess-authority-marker",
+        "codex",
+        "src/auth.js",
+        {
+          ...leaseOptions(authority, tempRoot),
+          requestMutation: async (...args) => ({
+            ...(await authority.requestMutation(...args)),
+            authoritative: false,
+          }),
+        },
+      ),
+      /invalid acquire response/u,
+    );
+    const paths = resolveSessionPaths("sess-authority-marker", {
+      targetPath: tempRoot,
+    });
+    await assert.rejects(
+      readFile(paths.fileLeaseCapabilitiesPath, "utf-8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session file leases: expired lease can be atomically reacquired by a second holder", async () => {
+  const rootA = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-expire-a-"));
+  const rootB = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-expire-b-"));
+  const authority = createLeaseAuthority();
+  try {
+    await seedWorkspace(rootA);
+    await seedWorkspace(rootB);
+    const first = await lockFile("sess-expired-reacquire", "codex", "src/auth.js", {
+      ...leaseOptions(authority, rootA),
+      ttlSeconds: 15,
+    });
+    authority.setNow(Date.parse("2026-07-29T12:00:16.000Z"));
+    const second = await lockFile(
+      "sess-expired-reacquire",
+      "claude",
+      "src/auth.js",
+      leaseOptions(authority, rootB),
+    );
+
+    assert.equal(first.locked, true);
+    assert.equal(second.locked, true);
+    assert.equal(second.lock.agentId, "claude");
+    const active = await listFileLocks(
+      "sess-expired-reacquire",
+      leaseOptions(authority, rootA),
+    );
+    assert.deepEqual(active.map((lease) => lease.agentId), ["claude"]);
+  } finally {
+    await rm(rootA, { recursive: true, force: true });
+    await rm(rootB, { recursive: true, force: true });
+  }
+});
+
+test("Unit session file leases: forged capability cannot renew or release", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-forgery-"));
+  const authority = createLeaseAuthority();
+  try {
+    await seedWorkspace(tempRoot);
+    const options = leaseOptions(authority, tempRoot);
+    await lockFile("sess-forged-capability", "codex", "src/auth.js", options);
+    const paths = resolveSessionPaths("sess-forged-capability", {
+      targetPath: tempRoot,
+    });
+    const store = JSON.parse(
+      await readFile(paths.fileLeaseCapabilitiesPath, "utf-8"),
+    );
+    const originalToken = store.claims[0].leaseToken;
+    store.claims[0].leaseToken = "Z".repeat(43);
+    await writeFile(
+      paths.fileLeaseCapabilitiesPath,
+      `${JSON.stringify(store, null, 2)}\n`,
+      "utf-8",
+    );
+
+    await assert.rejects(
+      renewFileLease(
+        "sess-forged-capability",
+        "codex",
+        "src/auth.js",
+        options,
+      ),
+      (error) => error?.code === "FILE_LEASE_HOLDER_MISMATCH",
+    );
+    await assert.rejects(
+      unlockFile(
+        "sess-forged-capability",
+        "codex",
+        "src/auth.js",
+        options,
+      ),
+      (error) => error?.code === "FILE_LEASE_HOLDER_MISMATCH",
+    );
+    assert.equal(
+      (await listFileLocks("sess-forged-capability", options)).length,
+      1,
+    );
+
+    store.claims[0].leaseToken = originalToken;
+    await writeFile(
+      paths.fileLeaseCapabilitiesPath,
+      `${JSON.stringify(store, null, 2)}\n`,
+      "utf-8",
+    );
+    assert.equal(
+      (await unlockFile(
+        "sess-forged-capability",
+        "codex",
+        "src/auth.js",
+        options,
+      )).unlocked,
+      true,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session file leases: symlink aliases canonicalize to one authority path", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-alias-"));
+  const authority = createLeaseAuthority();
+  try {
+    await seedWorkspace(tempRoot);
+    const realDir = path.join(tempRoot, "src", "shared");
+    const aliasDir = path.join(tempRoot, "src", "alias");
+    await mkdir(realDir, { recursive: true });
+    await writeFile(path.join(realDir, "auth.js"), "export {};\n", "utf-8");
+    try {
+      await symlink(
+        realDir,
+        aliasDir,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    } catch (error) {
+      if (error?.code === "EPERM") {
+        t.skip("symlink creation is unavailable for this test user");
+        return;
+      }
+      throw error;
+    }
+
+    const options = leaseOptions(authority, tempRoot);
+    const direct = await lockFile(
+      "sess-path-alias",
+      "codex",
+      "src/shared/auth.js",
+      options,
+    );
+    const alias = await lockFile(
+      "sess-path-alias",
+      "claude",
+      "src/alias/auth.js",
+      options,
+    );
+
+    assert.equal(direct.locked, true);
+    assert.equal(direct.file, "src/shared/auth.js");
+    assert.equal(alias.locked, false);
+    assert.equal(alias.file, "src/shared/auth.js");
+    assert.equal(alias.heldBy, "codex");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session file leases: symlink escape outside workspace is rejected", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-escape-"));
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-outside-"));
+  const authority = createLeaseAuthority();
+  try {
+    await seedWorkspace(tempRoot);
+    const aliasDir = path.join(tempRoot, "src", "outside");
+    await mkdir(path.dirname(aliasDir), { recursive: true });
+    await writeFile(path.join(outsideRoot, "secret.js"), "secret\n", "utf-8");
+    try {
+      await symlink(
+        outsideRoot,
+        aliasDir,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    } catch (error) {
+      if (error?.code === "EPERM") {
+        t.skip("symlink creation is unavailable for this test user");
+        return;
+      }
+      throw error;
+    }
+
+    await assert.rejects(
+      lockFile(
+        "sess-path-escape",
+        "codex",
+        "src/outside/secret.js",
+        leaseOptions(authority, tempRoot),
+      ),
+      /outside the workspace/u,
+    );
+    assert.equal(authority.calls.length, 0);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
   }
 });

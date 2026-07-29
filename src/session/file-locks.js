@@ -20,7 +20,7 @@ const DEFAULT_CAPABILITY_LOCK_TIMEOUT_MS = 10_000;
 const DEFAULT_CAPABILITY_LOCK_STALE_MS = 30_000;
 const DEFAULT_CAPABILITY_LOCK_POLL_MS = 25;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$/;
 const LEASE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,128}$/;
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[/\\]/;
 
@@ -41,7 +41,7 @@ function normalizeSessionId(value) {
 function normalizeAgentId(value) {
   const normalized = normalizeString(value).toLowerCase();
   if (!AGENT_ID_PATTERN.test(normalized)) {
-    throw new Error("agentId must match ^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$.");
+    throw new Error("agentId must match ^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$.");
   }
   return normalized;
 }
@@ -130,6 +130,57 @@ function normalizeFilePath(filePath, { targetPath = process.cwd() } = {}) {
     throw new Error("normalized filePath must be 1024 characters or fewer.");
   }
   return normalized;
+}
+
+async function resolveRealPathThroughNearestAncestor(absolutePath) {
+  let cursor = path.resolve(absolutePath);
+  const missingSegments = [];
+  while (true) {
+    try {
+      const realAncestor = await fsp.realpath(cursor);
+      return path.join(realAncestor, ...missingSegments);
+    } catch (error) {
+      if (
+        !error ||
+        typeof error !== "object" ||
+        !["ENOENT", "ENOTDIR"].includes(error.code)
+      ) {
+        throw error;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) {
+        throw new Error("Unable to resolve filePath through an existing workspace ancestor.", {
+          cause: error,
+        });
+      }
+      missingSegments.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+async function canonicalizeFilePath(
+  filePath,
+  { targetPath = process.cwd() } = {},
+) {
+  const workspaceRoot = path.resolve(String(targetPath || "."));
+  const realWorkspaceRoot = await fsp.realpath(workspaceRoot);
+  const lexicalPath = normalizeFilePath(filePath, { targetPath: workspaceRoot });
+  const realCandidate = await resolveRealPathThroughNearestAncestor(
+    path.join(workspaceRoot, ...lexicalPath.split("/")),
+  );
+  const relative = path.relative(realWorkspaceRoot, realCandidate);
+  if (
+    !relative ||
+    path.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(
+      "filePath resolves through a symlink or junction outside the workspace.",
+    );
+  }
+  return normalizeFilePath(relative, { targetPath: realWorkspaceRoot });
 }
 
 function pathKey(value) {
@@ -530,8 +581,10 @@ export async function guardFileLeases(
 ) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const files = (Array.isArray(filePaths) ? filePaths : [filePaths]).map((file) =>
-    normalizeFilePath(file, { targetPath }),
+  const files = await Promise.all(
+    (Array.isArray(filePaths) ? filePaths : [filePaths]).map((file) =>
+      canonicalizeFilePath(file, { targetPath }),
+    ),
   );
   if (files.length === 0) {
     throw new Error("At least one file path is required for the file-lease guard.");
@@ -562,7 +615,7 @@ export async function lockFile(
 ) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
   const normalizedIntent = normalizeBoundedText(intent, {
     field: "intent",
     maxLength: 512,
@@ -647,7 +700,11 @@ export async function lockFile(
     }
     throw error;
   }
-  if (response?.ok !== true || !response?.lease) {
+  if (
+    response?.ok !== true
+    || response?.authoritative !== true
+    || !response?.lease
+  ) {
     throw new Error("File-lease authority returned an invalid acquire response.");
   }
   const lease = presentLease(response.lease);
@@ -691,7 +748,10 @@ export async function lockFile(
           },
         },
       );
-      compensated = Boolean(release?.released || release?.alreadyReleased || release?.expired);
+      compensated = Boolean(
+        release?.authoritative === true
+        && (release?.released || release?.alreadyReleased || release?.expired),
+      );
     } catch {
       compensated = false;
     }
@@ -749,12 +809,17 @@ async function releaseCapabilityClaim(
       error instanceof SentinelayerApiError &&
       error.code === "FILE_LEASE_NOT_FOUND"
     ) {
-      response = { ok: true, released: false, alreadyReleased: true };
+      response = {
+        ok: true,
+        authoritative: true,
+        released: false,
+        alreadyReleased: true,
+      };
     } else {
       throw error;
     }
   }
-  if (response?.ok !== true) {
+  if (response?.ok !== true || response?.authoritative !== true) {
     throw new Error("File-lease authority returned an invalid release response.");
   }
   await removeCapabilityClaims(
@@ -779,7 +844,7 @@ export async function unlockFile(
 ) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
   const normalizedReason =
     normalizeBoundedText(reason || "manual_release", {
       field: "reason",
@@ -869,7 +934,7 @@ export async function renewFileLease(
 ) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
   const normalizedTtlSeconds = normalizeTtlSeconds(ttlSeconds);
   const store = await readCapabilityStore(normalizedSessionId, { targetPath });
   const claim = findCoveringClaim(
@@ -899,7 +964,12 @@ export async function renewFileLease(
       },
     },
   );
-  if (response?.ok !== true || response?.renewed !== true || !response?.lease) {
+  if (
+    response?.ok !== true
+    || response?.authoritative !== true
+    || response?.renewed !== true
+    || !response?.lease
+  ) {
     throw new Error("File-lease authority returned an invalid renew response.");
   }
   const lease = presentLease(response.lease);
@@ -932,7 +1002,7 @@ export async function checkFileLock(
     request = requestJson,
   } = {},
 ) {
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
   const leases = await listRemoteLeases(sessionId, {
     targetPath,
     resolveAuthSession,
@@ -1009,19 +1079,35 @@ export async function releaseFileLocksForAgent(
     }
   }
 
-  const active = await listRemoteLeases(normalizedSessionId, {
-    targetPath,
-    resolveAuthSession,
-    request,
-  });
-  const unresolved = active.filter(
-    (lease) => lease.agentId === normalizedAgentId,
-  );
+  let unresolved = [];
+  let authority = {
+    ok: true,
+    authoritative: true,
+    code: null,
+  };
+  try {
+    const active = await listRemoteLeases(normalizedSessionId, {
+      targetPath,
+      resolveAuthSession,
+      request,
+    });
+    unresolved = active.filter(
+      (lease) => lease.agentId === normalizedAgentId,
+    );
+  } catch (error) {
+    authority = {
+      ok: false,
+      authoritative: false,
+      code: normalizeString(error?.code) || "FILE_LEASE_LIST_FAILED",
+    };
+  }
   return {
     releasedCount: released.length,
     released,
     failures,
     unresolved,
+    unresolvedKnown: authority.ok,
+    authority,
     events: [],
     expiredEvents: [],
   };
@@ -1033,5 +1119,6 @@ export {
   MIN_FILE_LOCK_TTL_SECONDS,
   fileLeasePathCovers,
   fileLeasePathsOverlap,
+  canonicalizeFilePath,
   normalizeFilePath,
 };

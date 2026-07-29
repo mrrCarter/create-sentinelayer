@@ -23,11 +23,6 @@ import {
   unregisterAgent,
 } from "./agent-registry.js";
 import {
-  DEFAULT_FILE_LOCK_TTL_SECONDS,
-  lockFile,
-  unlockFile,
-} from "./file-locks.js";
-import {
   DEFAULT_MAX_EVENTS as DEFAULT_CHECKPOINT_MAX_EVENTS,
   DEFAULT_MIN_EVENTS as DEFAULT_CHECKPOINT_MIN_EVENTS,
   generateSessionCheckpointBestEffort,
@@ -65,8 +60,6 @@ const DEFAULT_CHECKPOINT_INTERVAL_MS = 60_000;
 const DEFAULT_CHECKPOINT_EVENT_THRESHOLD = DEFAULT_CHECKPOINT_MIN_EVENTS;
 const DEFAULT_CHECKPOINT_IDLE_MS = DEFAULT_RECAP_INACTIVITY_MS_OVERRIDE;
 const CHECKPOINT_MEANINGFUL_EVENT_NAMES = new Set([
-  "file_lock",
-  "file_unlock",
   "finding",
   "help_request",
   "help_response",
@@ -84,6 +77,9 @@ const CHECKPOINT_IGNORED_EVENT_NAMES = new Set([
   "agent_status",
   "context_briefing",
   "daemon_alert",
+  "file_lock",
+  "file_lock_expired",
+  "file_unlock",
   "session_checkpoint",
   "session_listen_error",
   "session_recap",
@@ -731,126 +727,12 @@ async function runHelpWatcher(daemonState) {
   }
 }
 
-function splitFileAndIntent(raw = "") {
-  const normalized = normalizeString(raw);
-  if (!normalized) {
-    return {
-      filePath: "",
-      intent: "",
-    };
-  }
-  const separatorMatch = /\s(?:—|–|-)\s/.exec(normalized);
-  if (!separatorMatch) {
-    return {
-      filePath: normalizeString(normalized),
-      intent: "",
-    };
-  }
-  const separatorIndex = Number(separatorMatch.index || 0);
-  return {
-    filePath: normalizeString(normalized.slice(0, separatorIndex)),
-    intent: normalizeString(normalized.slice(separatorIndex + separatorMatch[0].length)),
-  };
-}
-
-function parseSessionDirective(event = {}) {
-  if (normalizeString(event.event) !== "session_message") {
-    return null;
-  }
-  const message = normalizeString(event.payload?.message);
-  if (!message) {
-    return null;
-  }
-  const directive = /^(lock|unlock)\s*:\s*(.+)$/i.exec(message);
-  if (!directive) {
-    return null;
-  }
-  const action = normalizeString(directive[1]).toLowerCase();
-  const body = normalizeString(directive[2]);
-  const parsed = splitFileAndIntent(body);
-  if (!parsed.filePath) {
-    return null;
-  }
-  return {
-    action,
-    filePath: parsed.filePath,
-    intent: parsed.intent,
-  };
-}
-
-async function maybeHandleSessionDirective(daemonState, event) {
+async function maybeHandleTaskDirective(daemonState, event) {
   const agentId = normalizeString(event.agent?.id);
   if (!agentId || agentId === SENTI_IDENTITY.id) {
     return null;
   }
   const nowIso = normalizeIsoTimestamp(event.ts, new Date().toISOString());
-  const fileDirective = parseSessionDirective(event);
-  if (fileDirective) {
-    if (fileDirective.action === "lock") {
-      const result = await lockFile(
-        daemonState.sessionId,
-        agentId,
-        fileDirective.filePath,
-        {
-          intent: fileDirective.intent,
-          ttlSeconds: DEFAULT_FILE_LOCK_TTL_SECONDS,
-          targetPath: daemonState.targetPath,
-          nowIso,
-        }
-      );
-      if (!result.locked) {
-        await emitSentiEvent(
-          daemonState.sessionId,
-          "daemon_alert",
-          {
-            alert: "file_lock_denied",
-            file: result.file || fileDirective.filePath,
-            requestedBy: agentId,
-            heldBy: result.heldBy || null,
-            since: result.since || null,
-            suggestion: `${fileDirective.filePath} is locked by ${result.heldBy || "another agent"} (${result.since || "recently"}). Coordinate before editing.`,
-          },
-          {
-            targetPath: daemonState.targetPath,
-            nowIso,
-          }
-        );
-      }
-      return result;
-    }
-    if (fileDirective.action === "unlock") {
-      const result = await unlockFile(
-        daemonState.sessionId,
-        agentId,
-        fileDirective.filePath,
-        {
-          reason: "session_message_unlock",
-          targetPath: daemonState.targetPath,
-          nowIso,
-        }
-      );
-      if (!result.unlocked && result.reason === "held_by_other_agent") {
-        await emitSentiEvent(
-          daemonState.sessionId,
-          "daemon_alert",
-          {
-            alert: "file_unlock_denied",
-            file: result.file || fileDirective.filePath,
-            requestedBy: agentId,
-            heldBy: result.heldBy || null,
-            since: result.since || null,
-            suggestion: `${fileDirective.filePath} is locked by ${result.heldBy || "another agent"}. Only the lock holder can release it.`,
-          },
-          {
-            targetPath: daemonState.targetPath,
-            nowIso,
-          }
-        );
-      }
-      return result;
-    }
-  }
-
   try {
     return await handleTaskDirective(daemonState.sessionId, event, {
       targetPath: daemonState.targetPath,
@@ -891,7 +773,7 @@ async function runSessionDirectiveWatcher(daemonState) {
       if (normalizeString(event.event) !== "session_message") {
         continue;
       }
-      await maybeHandleSessionDirective(daemonState, event);
+      await maybeHandleTaskDirective(daemonState, event);
     }
   } catch (error) {
     if (error && typeof error === "object" && error.name === "AbortError") {

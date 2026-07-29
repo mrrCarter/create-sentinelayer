@@ -787,7 +787,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_lock",
         title: "Lock Senti Files",
         description:
-          "Claim session-scoped file locks before editing files, using the same fail-closed lock registry as the CLI.",
+          "Claim session-scoped file leases through the authoritative SentinelLayer API before editing. Lease lifecycle operations never create session events.",
         input_schema: {
           type: "object",
           additionalProperties: false,
@@ -803,8 +803,16 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
             },
             intent: { type: "string" },
             ttlSeconds: { type: "integer", minimum: 1 },
-            syncRemote: { type: "boolean" },
-            awaitRemoteSync: { type: "boolean" },
+            syncRemote: {
+              type: "boolean",
+              description:
+                "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+            },
+            awaitRemoteSync: {
+              type: "boolean",
+              description:
+                "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+            },
           },
         },
         transport: {
@@ -833,7 +841,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_unlock",
         title: "Unlock Senti Files",
         description:
-          "Release session-scoped file locks held by an agent.",
+          "Release authoritative session-scoped file leases held by an agent without writing to the session transcript.",
         input_schema: {
           type: "object",
           additionalProperties: false,
@@ -849,8 +857,16 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
             },
             reason: { type: "string" },
             force: { type: "boolean" },
-            syncRemote: { type: "boolean" },
-            awaitRemoteSync: { type: "boolean" },
+            syncRemote: {
+              type: "boolean",
+              description:
+                "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+            },
+            awaitRemoteSync: {
+              type: "boolean",
+              description:
+                "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+            },
           },
         },
         transport: {
@@ -879,7 +895,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_locks",
         title: "List Senti File Locks",
         description:
-          "List active file locks for a session.",
+          "List active authoritative file leases for a session.",
         input_schema: {
           type: "object",
           additionalProperties: false,

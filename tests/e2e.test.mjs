@@ -7797,6 +7797,9 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     assert.equal(statusPayload.staleAgents.some((agent) => agent.agentId === "agent-stale"), true);
     assert.equal(statusPayload.listenerPresence.source, "local_recent_events");
     assert.equal(statusPayload.listenerPresence.liveCount, 1);
+    assert.deepEqual(statusPayload.activeFileLocks, []);
+    assert.equal(statusPayload.fileLeaseAuthority.ok, false);
+    assert.equal(statusPayload.fileLeaseAuthority.authoritative, false);
     assert.equal(
       statusPayload.listenerPresence.listeners.some((listener) => listener.agentId === "agent-listener"),
       true,
