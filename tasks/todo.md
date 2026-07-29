@@ -3695,18 +3695,33 @@ Review:
 # Authoritative Session File Leases + Edit Guard (2026-07-29)
 
 ## Plan
-- [ ] Replace local JSON/transcript-backed `session lock` authority with the authenticated session file-lease API.
-- [ ] Persist only holder capability tokens locally; keep lease ownership, TTL, conflicts, and lifecycle server-authoritative.
-- [ ] Add holder-bound renew/release and a fail-closed, machine-readable `session guard` command.
-- [ ] Add a Claude pre-tool edit hook and terminal/VS Code preflight setup that invokes the guard and never posts lock/heartbeat events to chat.
-- [ ] Preserve legacy command/MCP compatibility while removing lock/unlock/expiry event emission.
-- [ ] Add API-client, path, token-store, guard, hook, CLI, and no-chat-event regression coverage.
-- [ ] Run focused tests, `npm run verify` where practical, local review/Omar/audit, and record exact evidence.
+- [x] Replace local JSON/transcript-backed `session lock` authority with the authenticated session file-lease API.
+- [x] Persist only holder capability tokens locally; keep lease ownership, TTL, conflicts, and lifecycle server-authoritative.
+- [x] Add holder-bound renew/release and a fail-closed, machine-readable `session guard` command.
+- [x] Add a Claude pre-tool edit hook and terminal/VS Code preflight setup that invokes the guard and never posts lock/heartbeat events to chat.
+- [x] Preserve legacy command/MCP compatibility while removing lock/unlock/expiry event emission.
+- [x] Add API-client, path, token-store, guard, hook, CLI, and no-chat-event regression coverage.
+- [x] Run focused tests, `npm run verify`, local review/Omar/audit, and record exact evidence.
 
 ## Scope Notes
 - Repo/base: `create-sentinelayer` at `origin/main` `d8adcec8a1b2d6ee90b0dff4c95b1810ce50dd3f`.
 - Same-OS-user/raw-shell bypass remains possible without separate OS identities, container isolation, or a privileged filesystem broker. Supported hooks and guarded commands fail closed; they are not a kernel security boundary.
 
 ## Review Results
-- Pending implementation and verification.
+- File ownership, TTL, conflicts, and lifecycle now come only from authenticated API file-lease endpoints. The local `file-lease-capabilities.json` is mode-`0600`, explicitly non-authoritative, and stores only holder capability material required for renew/release.
+- Acquire, renew, release, list, and guard reject responses without `authoritative: true`; an authority outage or malformed/forged allow response denies the edit. The read-only `session status` and best-effort process cleanup report authority degradation without manufacturing local ownership.
+- Paths are normalized with segment-aware workspace containment and filesystem realpath resolution through the nearest existing ancestor. Adversarial coverage proves traversal/outside-workspace rejection, symlink/junction alias convergence, and symlink escape rejection.
+- Holder/user/capability binding is covered for conflict denial, expiry and reacquisition, and forged renew/release. Cross-workspace tests prove a second holder is denied by shared API state and that stale local cache cannot override the server.
+- Lock lifecycle operations no longer import or append session events. Regression coverage proves acquire/renew/release/expiry and the machine guard create zero transcript changes; the daemon ignores historical `lock:`/`unlock:` chat directives.
+- `session guard-install` idempotently merges Claude `PreToolUse` enforcement, fail-closed terminal wrappers, and VS Code preflight tasks without replacing unrelated settings. Real PowerShell process tests prove denial prevents mutation and allow permits it; real CLI/server tests prove a forged non-authoritative allow exits `2` as machine JSON.
+- MCP lock/unlock/list compatibility now delegates to the same API-authoritative core. Legacy `syncRemote`/`awaitRemoteSync` inputs are accepted but explicitly ignored and cannot enable a fallback.
+- Focused file-lease/daemon/MCP/integration verification passed `55/55`; the final bearer-fixture cleanup rerun passed `7/7`.
+- Full `npm run verify` passed after dependency hardening: static check `358` files; docs validation `5` files / `6` headings; E2E `121/121`; unit coverage `1,788/1,788` across `64` suites; coverage statements/branches/functions/lines `91.81% / 70.60% / 93.53% / 91.81%`; package dry-run `356` files with SHA-1 `8357b5313a892bbfd349f9ecc1ed0ed7c8423ce3`.
+- Supply-chain verification uses a clean `npm ci`. `npm audit --audit-level=high` reports `0` vulnerabilities after upgrading the Node-20-compatible coverage tool to `c8@11` and removing the unused vulnerable license-checker dependency.
+- Full review report `.sentinelayer/reports/review-scan-full-20260729-072834.md` scanned `724` files with `P1=0`, `P2=1`, nonblocking; the sole finding is the pre-existing work-item marker in `tasks/evals/2026-04-17-pr-335-spec-session-integration.md`.
+- Full no-AI Omar Gate run `review-20260729-072841-5ee5a3b0` scanned `724` files with `P0=0`, `P1=0`, `P2=6`, nonblocking. All six are pre-existing repository-wide heuristics (four config key-name literals, one live-source loop, and one historical redact-test bearer fixture); the new file-lease lane contributes none.
+- Local audit report `.sentinelayer/reports/audit-20260729-072854.md` is `PASS`, scanned `725` files, and reports `P1=0`, `P2=2`; both findings are pre-existing and outside this lane.
+- Enforcement coverage is intentionally explicit in `docs/file-leases.md`: Claude edits and guarded terminal invocations are preflighted; VS Code tasks provide an opt-in preflight but the native save API cannot reliably cancel all saves; MCP hosts and other file-mutating tools must call guard separately.
+- This is an application-level coordination control, not a kernel security boundary. A same-OS user can bypass it with an unguarded raw process or tamper with same-user integration files. Hard prevention requires separate OS identities, container isolation, or a privileged/mediated filesystem.
+- Changes are local-only on `roadmap/pr-tbd-session-file-leases-cli-20260729`; no push, deployment, listener, or Senti post was performed.
 
