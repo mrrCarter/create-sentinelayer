@@ -3692,3 +3692,21 @@ Review:
 - PR #782 implements the separate stream lifecycle fix and has an independent exact-head source key; it remains unmerged under the same hosted billing hold.
 - Independent review reproduced false `SL-SPEC-001` drift for both dot-relative slash forms. The unchanged implementation failed the expanded KAV `4/5` (log SHA256 `0EFAE86A5773D60CBE1086EECC9A69D6FE8F71AB1A245904E6BE56CEAD1F11C1`); the bounded optional-prefix fix passes `5/5` (log SHA256 `6980AE8292415606104E2243BFF01AF502A2B3C9D59664413EBBD788A19D0C44`) while retaining the suffix-confusion negative.
 
+# Authoritative Session File Leases + Edit Guard (2026-07-29)
+
+## Plan
+- [ ] Replace local JSON/transcript-backed `session lock` authority with the authenticated session file-lease API.
+- [ ] Persist only holder capability tokens locally; keep lease ownership, TTL, conflicts, and lifecycle server-authoritative.
+- [ ] Add holder-bound renew/release and a fail-closed, machine-readable `session guard` command.
+- [ ] Add a Claude pre-tool edit hook and terminal/VS Code preflight setup that invokes the guard and never posts lock/heartbeat events to chat.
+- [ ] Preserve legacy command/MCP compatibility while removing lock/unlock/expiry event emission.
+- [ ] Add API-client, path, token-store, guard, hook, CLI, and no-chat-event regression coverage.
+- [ ] Run focused tests, `npm run verify` where practical, local review/Omar/audit, and record exact evidence.
+
+## Scope Notes
+- Repo/base: `create-sentinelayer` at `origin/main` `d8adcec8a1b2d6ee90b0dff4c95b1810ce50dd3f`.
+- Same-OS-user/raw-shell bypass remains possible without separate OS identities, container isolation, or a privileged filesystem broker. Supported hooks and guarded commands fail closed; they are not a kernel security boundary.
+
+## Review Results
+- Pending implementation and verification.
+
