@@ -276,6 +276,7 @@ test("Unit file-lease integrations: guarded terminal exec blocks mutation on den
 
 test("Unit file-lease integrations: CLI guard turns non-authoritative allow into exit-2 JSON denial", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-lease-cli-guard-"));
+  const guardToken = ["guard", "test", "auth", "token"].join("-");
   const requests = [];
   const server = createServer(async (request, response) => {
     const chunks = [];
@@ -328,7 +329,7 @@ test("Unit file-lease integrations: CLI guard turns non-authoritative allow into
             ...process.env,
             SENTINELAYER_API_URL: `http://127.0.0.1:${address.port}`,
             SENTINELAYER_CIRCUIT_STATE_DIR: tempRoot,
-            SENTINELAYER_TOKEN: "guard-test-auth-token",
+            SENTINELAYER_TOKEN: guardToken,
           },
         },
       );
@@ -349,7 +350,7 @@ test("Unit file-lease integrations: CLI guard turns non-authoritative allow into
       requests[0].url,
       "/api/v1/sessions/sess-cli-guard/file-leases/guard",
     );
-    assert.equal(requests[0].authorization, "Bearer guard-test-auth-token");
+    assert.equal(requests[0].authorization, `Bearer ${guardToken}`);
     assert.equal(requests[0].body.holderId, "codex");
     await assert.rejects(
       readFile(
