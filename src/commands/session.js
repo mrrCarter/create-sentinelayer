@@ -64,7 +64,7 @@ import {
   refreshSessionCacheForRemoteActivity,
   updateSessionTitle,
 } from "../session/store.js";
-import { fetchSessionListeners, formatListenerLine, summarizeListeners } from "../session/listeners.js";
+import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import {
   getListenerProcessStatus,
   removeListenerPidRecord,
@@ -103,9 +103,11 @@ import {
   pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
+  renewSessionPresence,
   searchSessionEvents,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
+  updateSessionReadCursor,
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { mergeLiveSources } from "../session/live-source.js";
@@ -960,12 +962,12 @@ function normalizeAutoViewTimeoutMs(value) {
   return Math.max(50, Math.min(5_000, Math.floor(parsed)));
 }
 
-async function writeSessionReadViews(sessionId, writeTargets = [], {
+async function writeSessionReadCursor(sessionId, target = null, {
   targetPath,
   agentId,
   timeoutMs = SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
 } = {}) {
-  if (!Array.isArray(writeTargets) || writeTargets.length === 0) {
+  if (!target) {
     return;
   }
   const totalTimeoutMs = normalizeAutoViewTimeoutMs(timeoutMs);
@@ -983,50 +985,31 @@ async function writeSessionReadViews(sessionId, writeTargets = [], {
   }
 
   try {
-    for (const target of writeTargets) {
-      if (controller.signal.aborted) {
-        break;
-      }
-      const elapsedMs = Math.max(0, Date.now() - startedAt);
-      const remainingMs = Math.max(1, totalTimeoutMs - elapsedMs);
-      const result = await createSessionMessageAction(sessionId, {
-        actionType: "view",
-        targetPath,
-        targetSequenceId: target.targetSequenceId,
-        targetCursor: target.targetCursor,
-        metadata: {
-          source: "cli_read",
-          agentId,
-        },
-        idempotencyKey: defaultActionIdempotencyKey({
-          actionType: "view",
-          targetSequenceId: target.targetSequenceId,
-          targetCursor: target.targetCursor,
-          agentId,
-        }),
-        timeoutMs: remainingMs,
-        signal: controller.signal,
-      });
-      if (!result?.ok) {
-        break;
-      }
-    }
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    const remainingMs = Math.max(1, totalTimeoutMs - elapsedMs);
+    await updateSessionReadCursor(sessionId, {
+      targetPath,
+      targetSequenceId: target.targetSequenceId,
+      targetCursor: target.targetCursor,
+      agentId,
+      timeoutMs: remainingMs,
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timeoutHandle);
   }
 }
 
-function recordSessionReadViews(sessionId, events = [], {
+function recordSessionReadCursor(sessionId, events = [], {
   targetPath,
   agentId,
   enabled = false,
-  maxTargets = 50,
   timeoutMs = SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
 } = {}) {
-  const maxAutoViewTargets = Math.max(0, Math.min(200, Number(maxTargets) || 0));
+  const normalizedAgentId = normalizeString(agentId);
   const summary = {
     enabled: Boolean(enabled),
-    agentId: normalizeString(agentId) || "cli-user",
+    agentId: normalizedAgentId || "cli-user",
     targetCount: 0,
     attempted: 0,
     recorded: 0,
@@ -1042,26 +1025,22 @@ function recordSessionReadViews(sessionId, events = [], {
     return summary;
   }
 
-  const seenTargets = new Set();
-  const targets = [];
+  let target = null;
   for (const event of Array.isArray(events) ? events : []) {
-    const target = sessionReadViewTarget(event);
-    if (!target || seenTargets.has(target.key)) {
-      continue;
+    const candidate = sessionReadViewTarget(event);
+    if (!candidate) continue;
+    summary.targetCount += 1;
+    if (
+      !target ||
+      Number(candidate.targetSequenceId || 0) >= Number(target.targetSequenceId || 0)
+    ) {
+      target = candidate;
     }
-    seenTargets.add(target.key);
-    targets.push(target);
   }
-  summary.targetCount = targets.length;
+  summary.skipped = Math.max(0, summary.targetCount - (target ? 1 : 0));
+  summary.queued = target ? 1 : 0;
 
-  const writeTargets = maxAutoViewTargets > 0 ? targets.slice(-maxAutoViewTargets) : [];
-  summary.skipped = Math.max(0, targets.length - writeTargets.length);
-  summary.queued = writeTargets.length;
-  if (summary.skipped > 0) {
-    summary.reason = "target_cap_reached";
-  }
-
-  if (writeTargets.length === 0) {
+  if (!target) {
     if (!summary.reason) {
       summary.reason = "no_targets";
     }
@@ -1069,13 +1048,13 @@ function recordSessionReadViews(sessionId, events = [], {
   }
 
   summary.background = true;
-  if (!summary.reason) {
-    summary.reason = "queued_best_effort";
-  }
+  summary.reason = "queued_monotonic_upsert";
 
-  void writeSessionReadViews(sessionId, writeTargets, {
+  void writeSessionReadCursor(sessionId, target, {
     targetPath,
-    agentId: summary.agentId,
+    // Omit a placeholder identity so the server can bind human reads to the
+    // authenticated principal. Explicit agent reads still carry their grant.
+    agentId: normalizedAgentId,
     timeoutMs,
   }).catch(() => {
     // Best-effort view receipts must never affect transcript rendering.
@@ -1855,13 +1834,6 @@ function normalizeSessionObservationText(rawValue, fieldName, maxLength) {
   return value;
 }
 
-function listenerLifecycleEventName(type = "") {
-  const normalized = normalizeString(type).toLowerCase();
-  if (normalized === "started") return "session_listener_started";
-  if (normalized === "stopped") return "session_listener_stopped";
-  return "session_listener_heartbeat";
-}
-
 function compactPayload(record = {}) {
   return Object.fromEntries(
     Object.entries(record).filter(([, value]) => value !== undefined)
@@ -1948,11 +1920,6 @@ async function publishListenerPresenceEvent({
   lifecycle = {},
 } = {}) {
   const normalizedType = normalizeString(lifecycle.type) || "heartbeat";
-  const eventName = listenerLifecycleEventName(normalizedType);
-  const idempotencyStep = listenerLifecycleIdempotencyStep({
-    ...lifecycle,
-    type: normalizedType,
-  });
   const identity = inferSessionAgentIdentity({
     agentId,
     model: agentModel,
@@ -1960,49 +1927,23 @@ async function publishListenerPresenceEvent({
     provider,
     clientKind,
   });
-  const event = createAgentEvent({
-    event: eventName,
-    sessionId,
-    agent: {
-      id: agentId,
-      model: normalizeString(identity.model) || "cli",
-      role: "listener",
-      displayName: normalizeString(identity.displayName) || agentId,
-      provider: normalizeString(identity.provider) || undefined,
-      clientKind: normalizeString(identity.clientKind) || "cli",
-    },
-    eventId: `session-listener-${listenerId}-${normalizedType}-${idempotencyStep}`,
-    idempotencyToken: `session-listener:${listenerId}:${normalizedType}:${idempotencyStep}`,
-    payload: compactPayload({
-      source: "session_listen",
-      listenerId,
-      lifecycle: normalizedType,
-      state: normalizeString(lifecycle.state) || normalizedType,
-      active: lifecycle.active,
-      cursor: lifecycle.cursor || null,
-      cursorSuffix: lifecycle.cursorSuffix,
-      cursorSource: lifecycle.cursorSource,
-      pollCount: lifecycle.pollCount,
-      heartbeatCount: lifecycle.heartbeatCount,
-      matched: lifecycle.matched,
-      emitted: lifecycle.emitted,
-      persistedCursor: lifecycle.persistedCursor,
-      idleIntervalSeconds: lifecycle.idleIntervalSeconds,
-      activeIntervalSeconds: lifecycle.activeIntervalSeconds,
-      activeWindowSeconds: lifecycle.activeWindowSeconds,
-      presenceIntervalSeconds: lifecycle.presenceIntervalSeconds,
-      presenceKeepaliveSeconds: lifecycle.presenceKeepaliveSeconds,
-      lastHumanActivityAt: lifecycle.lastHumanActivityAt,
-      lastSleepMs: lifecycle.lastSleepMs,
-      nextPollMs: lifecycle.nextPollMs,
-      reason: lifecycle.reason || null,
-      startedAt: lifecycle.startedAt,
-      stoppedAt: lifecycle.stoppedAt,
-      aborted: lifecycle.aborted,
-      stopping: lifecycle.stopping,
-    }),
+  return renewSessionPresence(sessionId, {
+    targetPath,
+    agentId,
+    state:
+      normalizedType === "stopped"
+        ? "stopped"
+        : normalizeString(lifecycle.state) || normalizedType,
+    listenerId,
+    model: normalizeString(identity.model) || "cli",
+    displayName: normalizeString(identity.displayName) || agentId,
+    provider: normalizeString(identity.provider),
+    clientKind: normalizeString(identity.clientKind) || "cli",
+    observedAt:
+      lifecycle.stoppedAt ||
+      lifecycle.startedAt ||
+      new Date().toISOString(),
   });
-  return syncSessionEventToApi(sessionId, event, { targetPath });
 }
 
 function formatListenerCatchupNotice(catchup = {}) {
@@ -4451,11 +4392,11 @@ export function registerSessionCommand(program) {
   session
     .command("listeners <sessionId>")
     .description(
-      "List who is actively listening to the session and at what poll cadence (active/idle/stale/stopped), derived from listener presence heartbeats. Mirrors the web roster.",
+      "List the authoritative ephemeral listener presence roster. Presence is unknown when the server capability or Redis is unavailable; transcript heartbeats are never scanned.",
     )
     .option("--path <path>", "Workspace path for the session", ".")
-    .option("--limit <n>", "Recent events to scan for heartbeats (default 200)", "200")
-    .option("--max-pages <n>", "Maximum older event pages to scan for heartbeats (default 5)", "5")
+    .option("--limit <n>", "Deprecated compatibility option; no event rows are scanned", "200")
+    .option("--max-pages <n>", "Deprecated compatibility option; no event rows are scanned", "5")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -4512,12 +4453,18 @@ export function registerSessionCommand(program) {
           };
         }
       }
-      const live = listeners.filter((row) => row.status === "active" || row.status === "idle").length;
+      const live = listeners.filter(
+        (row) => row.status === "present" || row.status === "active" || row.status === "idle",
+      ).length;
       const payload = {
         command: "session listeners",
         sessionId: normalizedSessionId,
         ok: Boolean(result.ok),
         reason: result.ok ? undefined : result.reason,
+        authoritative: Boolean(result.authoritative),
+        presenceStatus: result.presenceStatus || "degraded",
+        presenceEnabled: result.enabled ?? null,
+        retryAfterMs: result.retryAfterMs || null,
         count: listeners.length,
         liveCount: live,
         pageCount: Number(result.pageCount || 0),
@@ -4533,17 +4480,21 @@ export function registerSessionCommand(program) {
         return payload;
       }
       if (!result.ok) {
-        console.log(pc.yellow(`Could not read listeners (${result.reason}).`));
+        console.log(
+          pc.yellow(
+            `Listener presence is unknown (${result.reason}); durable heartbeat history was not scanned.`,
+          ),
+        );
         return payload;
       }
       if (listeners.length === 0) {
-        console.log(pc.gray("No listeners detected (no recent presence heartbeats)."));
+        console.log(pc.gray("No listeners are currently present."));
         return payload;
       }
       console.log(pc.bold(`Listeners (${live} live / ${listeners.length} seen)`));
       for (const row of listeners) {
         const line = formatListenerLine(row);
-        if (row.status === "active") console.log(pc.green(`  ${line}`));
+        if (row.status === "present" || row.status === "active") console.log(pc.green(`  ${line}`));
         else if (row.status === "idle") console.log(pc.cyan(`  ${line}`));
         else console.log(pc.gray(`  ${line}`));
       }
@@ -4624,8 +4575,8 @@ export function registerSessionCommand(program) {
     .option("--interval <seconds>", "Idle polling interval in seconds (default 60)", "60")
     .option(
       "--active-interval <seconds>",
-      "Polling interval after recent human activity (default 5)",
-      "5",
+      "Polling interval after recent human activity (default 60)",
+      "60",
     )
     .option(
       "--active-window <seconds>",
@@ -4634,17 +4585,17 @@ export function registerSessionCommand(program) {
     )
     .option(
       "--presence-interval <seconds>",
-      "Minimum seconds between remote listener heartbeat events (default 60)",
+      "Minimum seconds between ephemeral presence renewals (default 60)",
       "60",
     )
     .option(
       "--presence-keepalive <seconds>",
-      "Maximum seconds between unchanged remote listener heartbeat events (default 180)",
+      "Maximum seconds between unchanged ephemeral presence renewals (default 180)",
       "180",
     )
     .option(
       "--no-presence",
-      "Do not publish durable listener lifecycle/heartbeat events",
+      "Do not renew ephemeral remote presence",
     )
     .option(
       "--model <model>",
@@ -4653,7 +4604,7 @@ export function registerSessionCommand(program) {
     )
     .option("--display-name <name>", "Human-readable listener name for presence")
     .option("--emit <format>", "Output format: ndjson or text", "ndjson")
-    .option("--transport <mode>", "Listen transport: auto, stream, or poll (default auto)", "auto")
+    .option("--transport <mode>", "Listen transport: poll, auto, or stream (default poll)", "poll")
     .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--since <cursor>", "Override the persisted listen cursor")
@@ -4705,7 +4656,7 @@ export function registerSessionCommand(program) {
       const activeIntervalSeconds = parsePositiveInteger(
         options.activeInterval,
         "active-interval",
-        5,
+        60,
       );
       const activeWindowSeconds = parsePositiveInteger(options.activeWindow, "active-window", 300);
       const presenceIntervalSeconds = parsePositiveInteger(
@@ -4781,7 +4732,7 @@ export function registerSessionCommand(program) {
           "--wake-host requires a valid host (claude|codex) and --resume-session <host-session-id>.",
         );
       }
-      const requestedTransport = normalizeString(options.transport).toLowerCase() || "auto";
+      const requestedTransport = normalizeString(options.transport).toLowerCase() || "poll";
       if (!["auto", "stream", "poll"].includes(requestedTransport)) {
         throw new Error("--transport must be one of: auto, stream, poll.");
       }
@@ -4865,14 +4816,15 @@ export function registerSessionCommand(program) {
       const ac = new AbortController();
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
-      const durablePresenceEnabled = options.presence !== false;
-      const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
+      const remotePresenceEnabled = options.presence !== false;
+      const publishPresence = remotePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
       const effectivePresenceKeepaliveSeconds =
         Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds, intervalSeconds, 1);
       const presenceKeepaliveMs = effectivePresenceKeepaliveSeconds * 1000;
       let lastPresenceHeartbeatMs = 0;
       let lastPresenceHeartbeatFingerprint = "";
+      let nextPresenceAttemptMs = 0;
 
       // Periodic in-session success reminders (ack, claim work, reply
       // in-thread). Long-running interactive listeners only — skipped under
@@ -4920,10 +4872,10 @@ export function registerSessionCommand(program) {
             `Listening to session ${normalizedSessionId} as ${agentId}; transport=${listenTransport} idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
           ),
         );
-        if (!durablePresenceEnabled) {
+        if (!remotePresenceEnabled) {
           console.log(
             pc.gray(
-              "Remote listener presence is disabled; no durable lifecycle events will be written.",
+              "Remote listener presence is disabled; no liveness writes will be made.",
             ),
           );
         } else if (!publishPresence) {
@@ -5054,13 +5006,17 @@ export function registerSessionCommand(program) {
             }
             if (!publishPresence) return;
             const lifecycleType = normalizeString(lifecycle?.type);
+            const presenceAttemptMs = Date.now();
+            if (lifecycleType !== "stopped" && presenceAttemptMs < nextPresenceAttemptMs) {
+              return;
+            }
             const publishLifecycle = {
               ...lifecycle,
               presenceIntervalSeconds,
               presenceKeepaliveSeconds: effectivePresenceKeepaliveSeconds,
             };
             if (lifecycleType === "heartbeat") {
-              const nowMs = Date.now();
+              const nowMs = presenceAttemptMs;
               const heartbeatDecision = shouldPublishListenerPresenceHeartbeat({
                 lifecycle: publishLifecycle,
                 nowMs,
@@ -5075,7 +5031,7 @@ export function registerSessionCommand(program) {
               lastPresenceHeartbeatFingerprint = heartbeatDecision.fingerprint;
               lastPresenceHeartbeatMs = nowMs;
             }
-            await publishListenerPresenceEvent({
+            const presenceResult = await publishListenerPresenceEvent({
               sessionId: normalizedSessionId,
               targetPath,
               agentId,
@@ -5086,6 +5042,15 @@ export function registerSessionCommand(program) {
               listenerId,
               lifecycle: publishLifecycle,
             });
+            if (presenceResult?.ok) {
+              nextPresenceAttemptMs = 0;
+              return;
+            }
+            const retryAfterMs = Math.max(
+              presenceIntervalMs,
+              Number(presenceResult?.retryAfterMs) || 0,
+            );
+            nextPresenceAttemptMs = presenceAttemptMs + retryAfterMs;
           },
         });
       } finally {
@@ -5565,6 +5530,8 @@ export function registerSessionCommand(program) {
       let hydration = null;
       let remoteTail = null;
       let remoteAppend = null;
+      let listenerPresence = null;
+      let readCursor = null;
       if (options.remote) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
@@ -5592,12 +5559,27 @@ export function registerSessionCommand(program) {
           remoteAppend = await appendMissingRemoteEvents(normalizedSessionId, remoteTail.events, {
             targetPath,
           });
+          readCursor = recordSessionReadCursor(normalizedSessionId, remoteTail.events, {
+            targetPath,
+            agentId,
+            enabled: true,
+          });
         }
+        listenerPresence = await fetchSessionListeners(normalizedSessionId, {
+          targetPath,
+        }).catch((error) => ({
+          ok: false,
+          authoritative: false,
+          presenceStatus: "degraded",
+          reason: normalizeString(error?.message) || "presence_read_failed",
+          listeners: [],
+        }));
       }
       const current = await buildSessionRecap(normalizedSessionId, {
         forAgentId: agentId,
         maxEvents,
         targetPath,
+        listenerPresence,
       });
       const payload = {
         command: "session recap now",
@@ -5622,6 +5604,8 @@ export function registerSessionCommand(program) {
                   }
                 : null,
               appendedTail: remoteAppend,
+              listenerPresence,
+              readCursor,
             }
           : null,
       };
@@ -5841,11 +5825,10 @@ export function registerSessionCommand(program) {
           ? filterSessionActionEventsForTranscriptWindow(visibleActionEvents, transcriptEvents)
           : visibleActionEvents;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
-        const autoView = recordSessionReadViews(normalizedSessionId, events, {
+        const autoView = recordSessionReadCursor(normalizedSessionId, events, {
           targetPath,
           agentId: readAgentId,
           enabled: Boolean(options.remote && options.view !== false),
-          maxTargets: process.env.SENTINELAYER_SESSION_READ_VIEW_MAX_TARGETS || 50,
           timeoutMs: process.env.SENTINELAYER_SESSION_READ_VIEW_TIMEOUT_MS || SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
         });
         const remoteVerified = Boolean(
@@ -6459,38 +6442,46 @@ export function registerSessionCommand(program) {
       const staleAgents = detectStaleAgents(agents, {});
       const staleAgentIds = new Set(staleAgents.map((agent) => normalizeString(agent.agentId)));
       const activeAgents = agents.filter((agent) => !staleAgentIds.has(normalizeString(agent.agentId)));
-      let listenerRows = summarizeListeners(recentEvents);
+      const materialRecentEvents = filterSessionMaterialEvents(recentEvents);
+      const hiddenControlEventCount = recentEvents.length - materialRecentEvents.length;
+      let listenerRows = [];
       let listenerPresence = {
-        source: "local_recent_events",
-        ok: true,
-        count: listenerRows.length,
-        liveCount: listenerRows.filter((row) => row.status === "active" || row.status === "idle").length,
-        listeners: listenerRows,
+        source: "remote_presence",
+        ok: false,
+        authoritative: false,
+        presenceStatus: "degraded",
+        reason: "presence_unknown",
+        count: 0,
+        liveCount: 0,
+        listeners: [],
       };
       try {
         const remoteListeners = await fetchSessionListeners(normalizedSessionId, {
           targetPath,
-          limit: 200,
-          maxPages: 5,
         });
-        if (remoteListeners?.ok && Array.isArray(remoteListeners.listeners) && remoteListeners.listeners.length > 0) {
+        if (remoteListeners?.ok && Array.isArray(remoteListeners.listeners)) {
           listenerRows = remoteListeners.listeners;
           listenerPresence = {
-            source: "remote_events",
+            source: "remote_presence",
             ok: true,
+            authoritative: true,
+            presenceStatus: remoteListeners.presenceStatus || "ok",
             count: listenerRows.length,
-            liveCount: listenerRows.filter((row) => row.status === "active" || row.status === "idle").length,
-            pageCount: Number(remoteListeners.pageCount || 0),
-            scannedEventCount: Number(remoteListeners.scannedEventCount || 0),
-            listenerEventCount: Number(remoteListeners.listenerEventCount || 0),
-            partial: Boolean(remoteListeners.partial),
+            liveCount: listenerRows.filter(
+              (row) => row.status === "present" || row.status === "active" || row.status === "idle",
+            ).length,
             listeners: listenerRows,
           };
         } else if (remoteListeners && remoteListeners.ok === false) {
-          listenerPresence.remoteReason = normalizeString(remoteListeners.reason) || "remote_unavailable";
+          listenerPresence = {
+            ...listenerPresence,
+            presenceStatus: remoteListeners.presenceStatus || "degraded",
+            reason: normalizeString(remoteListeners.reason) || "remote_unavailable",
+            retryAfterMs: remoteListeners.retryAfterMs || null,
+          };
         }
       } catch (error) {
-        listenerPresence.remoteReason = normalizeString(error?.message) || "remote_unavailable";
+        listenerPresence.reason = normalizeString(error?.message) || "remote_unavailable";
       }
       const liveListenerCount = listenerPresence.liveCount;
       const payload = {
@@ -6506,7 +6497,8 @@ export function registerSessionCommand(program) {
         activeLeases: leases.assignments,
         activeFileLocks: fileLocks,
         activeTasks: activeTasks.tasks,
-        recentEvents,
+        recentEvents: materialRecentEvents,
+        hiddenControlEventCount,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -6514,12 +6506,15 @@ export function registerSessionCommand(program) {
       }
 
       console.log(pc.bold(`Session ${normalizedSessionId}`));
+      const listenerText = listenerPresence.authoritative
+        ? `${liveListenerCount}/${listenerRows.length}`
+        : `unknown(${listenerPresence.presenceStatus || "degraded"})`;
       console.log(
         pc.gray(
-          `status=${sessionPayload.status} active=${activeAgents.length} registered=${agents.length} stale=${staleAgents.length} listeners=${liveListenerCount}/${listenerRows.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
+          `status=${sessionPayload.status} active=${activeAgents.length} registered=${agents.length} stale=${staleAgents.length} listeners=${listenerText} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
         )
       );
-      for (const event of recentEvents) {
+      for (const event of materialRecentEvents) {
         console.log(formatEventLine(event));
       }
     });

@@ -176,7 +176,7 @@ test("Unit spec session: scaffold templates include todo, handoff, and session g
   });
   assert.match(handoff, /## Multi-Agent Coordination \(if session active\)/);
   assert.match(handoff, /sl session join <id> --name <your-name> --role coder/);
-  assert.match(handoff, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson --no-presence/);
+  assert.match(handoff, /sl session listen --session <id> --agent <your-name> --transport poll --interval 60 --active-interval 60 --emit ndjson --no-presence/);
   assert.match(handoff, /sl session sync <id> --json/);
   assert.match(handoff, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
   assert.match(handoff, /sl session recap now <id> --remote --agent <your-name> --json/);

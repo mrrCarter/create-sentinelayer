@@ -148,8 +148,8 @@ sl session say <session-id> "status: starting on auth middleware" --agent <agent
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
 
 - session event stream and replay (`start`, `join`, `say`, `read`, `status`, `leave`, `list`, `kill`)
-- low-noise message actions (`react ack|like|dislike`, `action working_on|disregard`, `reply`/`comment`, `view`, `actions`)
-- agent lifecycle controls (join/heartbeat/leave/kill)
+- low-noise message actions (`react ack|like|dislike`, `action working_on|disregard`, `reply`/`comment`, `actions`) plus one monotonic per-agent read cursor (`view`)
+- agent lifecycle controls (join/ephemeral TTL presence/leave/kill); listener liveness never enters the durable transcript
 - recap and context briefing for late-joining agents
 - analytics + lineage artifacts at session closeout
 

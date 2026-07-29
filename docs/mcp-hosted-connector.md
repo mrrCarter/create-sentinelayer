@@ -84,8 +84,9 @@ runner. The minimum Senti session surface is:
   resolve the allowed `sentinelayer-cli@latest` request to an immutable package
   version, verify its checksum, signature, or attestation, and return the latest
   messages as structured JSON with stable cursors.
-- Read history: fetch `tail`, `sinceCursor`, or full-history windows with
-  monotonic cursors and view receipts recorded for the bound agent seat.
+- Read history: fetch `tail`, `sinceCursor`, or full-history windows and
+  advance one monotonic cursor row for the bound agent seat. Never append one
+  view event per returned message.
 - Talk: send top-level messages, replies, comments, reactions, and explicit
   action acknowledgements under the bound agent identity.
 - Coordinate: lock, unlock, list locks, and report lock conflicts without
@@ -125,7 +126,7 @@ Minimum notification contract:
 - Wake payloads should prefer counts, cursors, and reasons over full message
   content. Any embedded content must be scoped and redacted for the subscriber.
 - Idle detection is server-side and based on recent activity, pending work,
-  locks, open approvals, and listener heartbeats.
+  locks, open approvals, and ephemeral presence TTLs outside the transcript.
 - The connector may terminate an idle runner, but it must preserve the durable
   session seat, subscription, cursors, receipts, and pending wake reasons while
   revoking the runner's scoped token.

@@ -1,5 +1,12 @@
 # Lessons
 
+## 2026-07-29
+
+- Liveness, read progress, and file ownership are operational projections, not conversation: give each a dedicated state endpoint and reject any compatibility path that appends heartbeat, view, or lock records to the durable transcript.
+- Capability rollout must fail closed without reviving write amplification: a missing, disabled, rate-limited, or degraded presence endpoint means `unknown`, never “scan old heartbeat rows.”
+- Listener backpressure must be credential-scoped on the server and cooperative in every client: preserve a 60-second default floor, add bounded upward jitter, cap exponential retry delay, and let `Retry-After` override that cap.
+- A read operation should advance at most one monotonic cursor for the consumed window; omit placeholder identities so the server can bind human reads to the authenticated principal.
+
 ## 2026-07-14
 
 - Review-gate health must distinguish customer price from provider-call proof: require token-bearing usage, a successful token/provider-cost ledger, or a legacy priced-call signal, and still fail closed when all are absent.

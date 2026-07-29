@@ -26,6 +26,7 @@ function evt(cursor, agentId, payload = {}, extra = {}) {
 }
 
 test("Unit MCP session stdio: poll_inbox filters recipients and advances returned cursor", async () => {
+  const cursorWrites = [];
   const handlers = createSessionMcpToolHandlers({
     targetPath: "workspace",
     pollSessionEventsFn: async (sessionId, options) => ({
@@ -41,6 +42,10 @@ test("Unit MCP session stdio: poll_inbox filters recipients and advances returne
       options,
     }),
     listSessionMessageActionsFn: async () => ({ ok: true, actions: [], projection: { recentActivity: [] } }),
+    updateSessionReadCursorFn: async (sessionId, options) => {
+      cursorWrites.push({ sessionId, options });
+      return { ok: true, updated: true, lastReadSequenceId: options.targetSequenceId };
+    },
   });
 
   const result = await handlers.poll_inbox({
@@ -55,6 +60,10 @@ test("Unit MCP session stdio: poll_inbox filters recipients and advances returne
   assert.equal(result.eventCount, 4);
   assert.equal(result.inboxCount, 1);
   assert.equal(result.events[0].payload.message, "broadcast");
+  assert.equal(result.readCursor.ok, true);
+  assert.equal(cursorWrites.length, 1);
+  assert.equal(cursorWrites[0].options.targetSequenceId, 4);
+  assert.equal(cursorWrites[0].options.agentId, "codex");
 });
 
 test("Unit MCP session stdio: poll_inbox surfaces recent human action activity", async () => {
@@ -116,6 +125,7 @@ test("Unit MCP session stdio: poll_inbox surfaces recent human action activity",
 
 test("Unit MCP session stdio: read_history hydrates unfiltered recent transcript context", async () => {
   const calls = [];
+  const cursorWrites = [];
   const handlers = createSessionMcpToolHandlers({
     targetPath: "workspace",
     pollSessionEventsBeforeFn: async (sessionId, options) => {
@@ -148,6 +158,10 @@ test("Unit MCP session stdio: read_history hydrates unfiltered recent transcript
         },
       ],
     }),
+    updateSessionReadCursorFn: async (sessionId, options) => {
+      cursorWrites.push({ sessionId, options });
+      return { ok: true, updated: true, lastReadSequenceId: options.targetSequenceId };
+    },
   });
 
   const result = await handlers.read_history({
@@ -169,6 +183,9 @@ test("Unit MCP session stdio: read_history hydrates unfiltered recent transcript
   assert.equal(result.recentHumanActivityCount, 1);
   assert.equal(calls[0].options.limit, 50);
   assert.equal(calls[0].options.forceCircuitProbe, true);
+  assert.equal(cursorWrites.length, 1);
+  assert.equal(cursorWrites[0].options.targetSequenceId, 8);
+  assert.equal(result.readCursor.updated, true);
 });
 
 test("Unit MCP session stdio: read_history pages past control-only tails", async () => {

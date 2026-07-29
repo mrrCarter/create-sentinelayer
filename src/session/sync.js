@@ -17,6 +17,16 @@ const HUMAN_MESSAGE_FETCH_LIMIT = 50;
 const SESSION_EVENT_FETCH_LIMIT = 200;
 const SESSION_ACTION_FETCH_LIMIT = 500;
 const SESSION_SEARCH_FETCH_LIMIT = 50;
+const NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES = new Set([
+  "file_lock",
+  "file_lock_expired",
+  "file_unlock",
+  "session_listener_heartbeat",
+  "session_listener_started",
+  "session_listener_stopped",
+  "session_view",
+  "view",
+]);
 
 // Audit §2.9: crash-recovery contract for in-memory circuit state.
 // Persist outbound/inbound circuit state to disk so a process restart
@@ -875,6 +885,14 @@ export async function syncSessionEventToApi(
   if (!normalizedSessionId || !event || typeof event !== "object" || Array.isArray(event)) {
     return { synced: false, reason: "invalid_input" };
   }
+  const eventType = normalizeString(event.event || event.type).toLowerCase();
+  if (NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES.has(eventType)) {
+    return {
+      synced: false,
+      reason: "non_semantic_transcript_event_rejected",
+      eventType,
+    };
+  }
 
   // Test-fixture leak guard. Tests in this repo (and downstream consumers)
   // create + tear down sessions using a temp workspace; on a developer
@@ -1464,6 +1482,421 @@ export async function pollSessionEvents(
       reason: normalizeString(error?.message) || "poll_failed",
       events: [],
       cursor: normalizedSince || null,
+    };
+  }
+}
+
+/**
+ * Read the membership-gated, three-state ephemeral listener roster.
+ *
+ * Compatibility is deliberately fail-closed: an older server (404), a server
+ * with presence disabled, or a degraded Redis dependency is reported as
+ * unknown/unsupported. Callers must never reconstruct liveness by scanning
+ * durable listener heartbeat events.
+ */
+export async function fetchSessionPresence(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    forceCircuitProbe = false,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return {
+      ok: false,
+      reason: "invalid_session_id",
+      status: "unsupported",
+      enabled: false,
+      present: [],
+    };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (!forceCircuitProbe && isCircuitOpen(inboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      status: "degraded",
+      enabled: null,
+      present: [],
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "no_session",
+      status: "unsupported",
+      enabled: null,
+      present: [],
+    };
+  }
+  if (!session?.token) {
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      status: "unsupported",
+      enabled: null,
+      present: [],
+    };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/presence`;
+  try {
+    const { response, payload } = await fetchJsonWithFullTimeout(
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.token}` },
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
+    );
+
+    if (!response?.ok) {
+      if (response?.status === 404) {
+        return {
+          ok: false,
+          reason: "presence_unsupported",
+          status: "unsupported",
+          enabled: false,
+          present: [],
+        };
+      }
+      if (isRateLimitResponse(response, payload)) {
+        return {
+          ok: false,
+          reason: "rate_limited",
+          status: "degraded",
+          enabled: null,
+          retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+          present: [],
+        };
+      }
+      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        status: "degraded",
+        enabled: null,
+        retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+        present: [],
+      };
+    }
+
+    recordCircuitSuccess(inboundCircuit);
+    const enabled = payload?.enabled !== false;
+    const status = enabled
+      ? normalizeString(payload?.status).toLowerCase() || "ok"
+      : "unsupported";
+    const present = enabled && Array.isArray(payload?.present)
+      ? payload.present.filter((entry) => entry && typeof entry === "object")
+      : [];
+    return {
+      ok: enabled && status === "ok",
+      reason: enabled
+        ? status === "ok"
+          ? ""
+          : "presence_degraded"
+        : "presence_disabled",
+      status: status === "ok" ? "ok" : status === "unsupported" ? "unsupported" : "degraded",
+      enabled,
+      present,
+    };
+  } catch (error) {
+    recordCircuitFailure(inboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "presence_read_failed",
+      status: "degraded",
+      enabled: null,
+      present: [],
+    };
+  }
+}
+
+/**
+ * Renew one listener's ephemeral TTL. This endpoint is a hard protocol
+ * boundary: it never falls back to POST /events on older or degraded servers.
+ */
+export async function renewSessionPresence(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    agentId,
+    state = "idle",
+    listenerId = "",
+    model = "",
+    displayName = "",
+    provider = "",
+    clientKind = "cli",
+    observedAt = new Date().toISOString(),
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    signal = undefined,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const normalizedAgentId = normalizeString(agentId);
+  if (!normalizedSessionId || !normalizedAgentId) {
+    return {
+      ok: false,
+      reason: "invalid_input",
+      status: "unsupported",
+      recorded: false,
+    };
+  }
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
+    return {
+      ok: false,
+      reason: "remote_sync_disabled_env",
+      status: "unsupported",
+      recorded: false,
+    };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(outboundCircuit, normalizedNowMs)) {
+    return {
+      ok: false,
+      reason: "circuit_breaker_open",
+      status: "degraded",
+      recorded: false,
+    };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "no_session",
+      status: "unsupported",
+      recorded: false,
+    };
+  }
+  if (!session?.token) {
+    return {
+      ok: false,
+      reason: "not_authenticated",
+      status: "unsupported",
+      recorded: false,
+    };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/presence`;
+  const body = {
+    agentId: normalizedAgentId,
+    state: normalizeString(state).toLowerCase() || "idle",
+    listenerId: normalizeString(listenerId) || undefined,
+    model: normalizeString(model) || undefined,
+    displayName: normalizeString(displayName) || undefined,
+    provider: normalizeString(provider) || undefined,
+    clientKind: normalizeString(clientKind) || "cli",
+    observedAt: normalizeIsoTimestamp(observedAt),
+  };
+
+  try {
+    const { response, payload } = await fetchJsonWithFullTimeout(
+      endpoint,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
+    );
+    if (!response?.ok) {
+      if (response?.status === 404) {
+        return {
+          ok: false,
+          reason: "presence_unsupported",
+          status: "unsupported",
+          recorded: false,
+        };
+      }
+      if (isRateLimitResponse(response, payload)) {
+        return {
+          ok: false,
+          reason: "rate_limited",
+          status: "degraded",
+          recorded: false,
+          retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+        };
+      }
+      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        status: "degraded",
+        recorded: false,
+        retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+      };
+    }
+    recordCircuitSuccess(outboundCircuit);
+    const status = normalizeString(payload?.status).toLowerCase() || "ok";
+    return {
+      ok: status === "ok" && Boolean(payload?.recorded ?? true),
+      reason: status === "ok" ? "" : "presence_degraded",
+      status: status === "ok" ? "ok" : "degraded",
+      recorded: Boolean(payload?.recorded ?? status === "ok"),
+      ttlSeconds: normalizePositiveInteger(payload?.ttlSeconds || payload?.ttl_seconds, null),
+    };
+  } catch (error) {
+    recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "presence_write_failed",
+      status: "degraded",
+      recorded: false,
+    };
+  }
+}
+
+/**
+ * Monotonically advance one authenticated actor's read cursor in place.
+ *
+ * No compatibility fallback is allowed: calling the legacy `view` action
+ * could append one durable row per displayed event when the server flag is
+ * disabled or races a rollout.
+ */
+export async function updateSessionReadCursor(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    targetSequenceId = null,
+    targetCursor = "",
+    agentId = "",
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    signal = undefined,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  const normalizedTargetSequence = Number(targetSequenceId);
+  const normalizedTargetCursor = normalizeString(targetCursor);
+  if (
+    !normalizedSessionId ||
+    ((!Number.isFinite(normalizedTargetSequence) || normalizedTargetSequence <= 0) &&
+      !normalizedTargetCursor)
+  ) {
+    return { ok: false, reason: "invalid_input", updated: false };
+  }
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
+    return { ok: false, reason: "remote_sync_disabled_env", updated: false };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(outboundCircuit, normalizedNowMs)) {
+    return { ok: false, reason: "circuit_breaker_open", updated: false };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", updated: false };
+  }
+  if (!session?.token) {
+    return { ok: false, reason: "not_authenticated", updated: false };
+  }
+
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/read-cursor`;
+  const body = {
+    targetSequenceId:
+      Number.isFinite(normalizedTargetSequence) && normalizedTargetSequence > 0
+        ? Math.floor(normalizedTargetSequence)
+        : undefined,
+    targetCursor: normalizedTargetCursor || undefined,
+    agentId: normalizeString(agentId) || undefined,
+  };
+  try {
+    const { response, payload } = await fetchJsonWithFullTimeout(
+      endpoint,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
+    );
+    if (!response?.ok) {
+      if (response?.status === 404) {
+        return { ok: false, reason: "read_cursor_unsupported", updated: false };
+      }
+      if (isRateLimitResponse(response, payload)) {
+        return {
+          ok: false,
+          reason: "rate_limited",
+          status: response?.status || 429,
+          retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+          updated: false,
+        };
+      }
+      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+        updated: false,
+      };
+    }
+    recordCircuitSuccess(outboundCircuit);
+    return {
+      ok: Boolean(payload?.ok ?? true),
+      reason: "",
+      updated: Boolean(payload?.updated ?? true),
+      lastReadSequenceId: normalizePositiveInteger(
+        payload?.lastReadSequenceId || payload?.last_read_sequence_id,
+        Number.isFinite(normalizedTargetSequence) && normalizedTargetSequence > 0
+          ? Math.floor(normalizedTargetSequence)
+          : null,
+      ),
+    };
+  } catch (error) {
+    recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "read_cursor_write_failed",
+      updated: false,
     };
   }
 }
@@ -2158,6 +2591,37 @@ export async function createSessionMessageAction(
   const normalizedActionType = normalizeString(actionType).toLowerCase();
   if (!normalizedSessionId || !normalizedActionType) {
     return { ok: false, reason: "invalid_input", action: null };
+  }
+  if (normalizedActionType === "view") {
+    const actorAgentId = normalizeString(
+      metadata?.agentId ||
+      metadata?.agent_id ||
+      metadata?.actorAgentId ||
+      metadata?.actor_agent_id,
+    );
+    const readCursor = await updateSessionReadCursor(normalizedSessionId, {
+      targetPath,
+      targetSequenceId,
+      targetCursor,
+      agentId: actorAgentId,
+      timeoutMs,
+      signal,
+      resolveAuthSession,
+      fetchImpl,
+      nowMs,
+    });
+    return {
+      ...readCursor,
+      duplicate: false,
+      readCursor: readCursor.ok,
+      action: readCursor.ok
+        ? {
+            actionType: "view",
+            targetSequenceId: readCursor.lastReadSequenceId || targetSequenceId || null,
+            actorId: actorAgentId || null,
+          }
+        : null,
+    };
   }
   if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
     return { ok: false, reason: "remote_sync_disabled_env", action: null };

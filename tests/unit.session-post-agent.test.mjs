@@ -1160,7 +1160,7 @@ test("Unit session post-agent: accepted remote write must be canonically visible
   }
 });
 
-test("Unit session listen: publishes bounded listener presence for real agent ids", async () => {
+test("Unit session listen: renews bounded ephemeral presence for real agent ids", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-"));
   const restoreEnv = installAuthEnv();
@@ -1207,24 +1207,22 @@ test("Unit session listen: publishes bounded listener presence for real agent id
     assert.equal(output, "");
     const pollCalls = calls.filter((call) => call.options.method === "GET");
     assert.equal(pollCalls.length, 1);
-    const postCalls = calls.filter((call) => call.options.method === "POST");
-    assert.equal(postCalls.length, 3);
-    const events = postCalls.map((call) => JSON.parse(call.options.body).event);
-    assert.deepEqual(
-      events.map((event) => event.event),
-      ["session_listener_started", "session_listener_heartbeat", "session_listener_stopped"],
+    const presenceCalls = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(presenceCalls.length, 3);
+    assert.ok(
+      presenceCalls.every((call) =>
+        call.url.endsWith("/api/v1/sessions/remote-listen/presence")
+      ),
     );
-    assert.ok(events.every((event) => event.agent.id === "codex"));
-    assert.ok(events.every((event) => event.agent.model === "gpt-5.3-codex"));
-    assert.ok(events.every((event) => event.agent.displayName === "Codex Listener"));
-    assert.ok(events.every((event) => event.agent.provider === "openai"));
-    assert.ok(events.every((event) => event.agent.role === "listener"));
-    assert.ok(events.every((event) => event.agent.clientKind === "cli"));
-    assert.ok(events.every((event) => event.payload.listenerId.startsWith("listener-codex-")));
-    assert.equal(events[1].payload.lifecycle, "heartbeat");
-    assert.equal(events[1].payload.state, "idle");
-    assert.equal(events[1].payload.stopping, true);
-    assert.equal(events[1].payload.nextPollMs, null);
+    const presence = presenceCalls.map((call) => JSON.parse(call.options.body));
+    assert.ok(presence.every((entry) => entry.agentId === "codex"));
+    assert.ok(presence.every((entry) => entry.model === "gpt-5.3-codex"));
+    assert.ok(presence.every((entry) => entry.displayName === "Codex Listener"));
+    assert.ok(presence.every((entry) => entry.provider === "openai"));
+    assert.ok(presence.every((entry) => entry.clientKind === "cli"));
+    assert.ok(presence.every((entry) => entry.listenerId.startsWith("listener-codex-")));
+    assert.equal(presence.at(-1).state, "stopped");
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
@@ -1392,7 +1390,7 @@ test("Unit session listen: --log-file writes and rotates listener output", async
   }
 });
 
-test("Unit session listen: advertised presence keepalive covers the idle poll interval", async () => {
+test("Unit session listen: idle lifecycle renewals stay outside the durable log", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-keepalive-"));
   const restoreEnv = installAuthEnv();
@@ -1436,14 +1434,15 @@ test("Unit session listen: advertised presence keepalive covers the idle poll in
       "180",
     ]);
 
-    const events = calls
-      .filter((call) => call.options.method === "POST")
-      .map((call) => JSON.parse(call.options.body).event);
-    const heartbeat = events.find((event) => event.event === "session_listener_heartbeat");
-    assert.ok(heartbeat, "expected listener heartbeat presence event");
-    assert.equal(heartbeat.payload.idleIntervalSeconds, 240);
-    assert.equal(heartbeat.payload.presenceIntervalSeconds, 60);
-    assert.equal(heartbeat.payload.presenceKeepaliveSeconds, 240);
+    const presenceCalls = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(presenceCalls.length, 3);
+    assert.ok(
+      presenceCalls.every((call) =>
+        call.url.endsWith("/api/v1/sessions/remote-listen/presence")
+      ),
+    );
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+    assert.equal(JSON.parse(presenceCalls.at(-1).options.body).state, "stopped");
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
