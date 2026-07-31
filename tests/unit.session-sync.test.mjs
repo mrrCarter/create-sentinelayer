@@ -10,6 +10,7 @@ import {
   pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
+  requestSessionListenerStop,
   renewSessionPresence,
   resetSessionSyncStateForTests,
   searchSessionEvents,
@@ -100,8 +101,9 @@ test("Unit session sync: non-semantic coordination events are rejected before fe
   }
 });
 
-test("Unit session sync: canonical control events are rejected before fetch except listener_stop", async () => {
+test("Unit session sync: every canonical control event is rejected before durable fetch", async () => {
   const rejectedEvents = [
+    { event: "listener_stop", payload: { targetAgentId: "codex" } },
     { event: "file_lock", payload: {} },
     { event: "file_unlock", payload: {} },
     { event: "file_lock_expired", payload: {} },
@@ -141,24 +143,75 @@ test("Unit session sync: canonical control events are rejected before fetch exce
     );
     assert.equal(fetchCount, 0);
   }
+});
 
-  let listenerStopFetchCount = 0;
-  const listenerStop = await syncSessionEventToApi(
-    "sess-control-boundary",
-    { event: "listener_stop", payload: { targetAgentId: "codex" } },
-    {
-      resolveAuthSession: async () => ({
-        token: "tok_control_boundary",
-        apiUrl: "https://api.sentinelayer.com",
-      }),
-      fetchImpl: async () => {
-        listenerStopFetchCount += 1;
-        return { ok: true, status: 202 };
-      },
+test("Unit session sync: listener stop uses only the ephemeral control endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await requestSessionListenerStop("sess-control-boundary", {
+    targetAgentId: "codex",
+    idempotencyKey: "sl-listener-stop-contract-test",
+    resolveAuthSession: async () => ({
+      token: "tok_control_boundary",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 202,
+        json: async () => ({
+          recorded: true,
+          control: {
+            controlId: "control-1",
+            type: "stop",
+            issuedAt: "2026-07-31T05:30:00.000Z",
+          },
+        }),
+      };
     },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recorded, true);
+  assert.equal(result.control.controlId, "control-1");
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-control-boundary/listener-controls/stop",
   );
-  assert.equal(listenerStop.synced, true);
-  assert.equal(listenerStopFetchCount, 1);
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { targetAgentId: "codex" });
+  assert.equal(
+    calls[0].options.headers["Idempotency-Key"],
+    "sl-listener-stop-contract-test",
+  );
+  assert.equal(calls[0].url.endsWith("/events"), false);
+});
+
+test("Unit session sync: missing listener-control endpoint never falls back to events", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await requestSessionListenerStop("sess-control-unsupported", {
+    resolveAuthSession: async () => ({
+      token: "tok_control_boundary",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ error: { code: "NOT_FOUND" } }),
+      };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "listener_control_unsupported");
+  assert.equal(result.recorded, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.endsWith("/listener-controls/stop"), true);
 });
 
 test("Unit session sync: presence read and renewal use only the ephemeral endpoint", async () => {
@@ -654,6 +707,7 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   const result = await pollSessionEvents("sess-events", {
     since: "cursor-1",
     limit: 500,
+    listenerAgentId: "codex-1",
     resolveAuthSession: async () => ({
       token: "tok_test_123",
       apiUrl: "https://api.sentinelayer.com/",
@@ -671,6 +725,17 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
               payload: { message: "hello" },
             },
           ],
+          listenerControls: {
+            status: "ok",
+            items: [
+              {
+                controlId: "control-1",
+                type: "listener_stop",
+                issuedAtMs: 1_785_478_200_000,
+                targetAgentId: "codex-1",
+              },
+            ],
+          },
         }),
       };
     },
@@ -680,10 +745,12 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   assert.equal(result.ok, true);
   assert.equal(result.cursor, "cursor-2");
   assert.equal(result.events.length, 1);
+  assert.equal(result.listenerControls.length, 1);
+  assert.equal(result.listenerControls[0].controlId, "control-1");
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0].url,
-    "https://api.sentinelayer.com/api/v1/sessions/sess-events/events?after=cursor-1&limit=200"
+    "https://api.sentinelayer.com/api/v1/sessions/sess-events/events?after=cursor-1&listenerAgentId=codex-1&limit=200"
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");

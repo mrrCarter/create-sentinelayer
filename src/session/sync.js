@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { randomUUID } from "node:crypto";
 
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
@@ -31,18 +32,8 @@ const NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES = new Set([
   "session_view",
   "view",
 ]);
-const TEMPORARY_DURABLE_CONTROL_EVENT_TYPES = new Set([
-  // Remote listeners currently receive stop directives from the durable event
-  // stream. Keep this one compatibility exception until the dedicated
-  // ephemeral listener-control endpoint lands; rejecting it now would make
-  // `sl session stop-listener` report success without reaching its target.
-  "listener_stop",
-]);
 
 function isNonSemanticTranscriptEvent(event, eventType) {
-  if (TEMPORARY_DURABLE_CONTROL_EVENT_TYPES.has(eventType)) {
-    return false;
-  }
   return (
     NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES.has(eventType) ||
     isSessionControlEvent(event)
@@ -1364,18 +1355,21 @@ export async function pollHumanMessages(
  * / `agent_response` events. The result was codex and claude talking
  * past each other ("Apologies — I missed your 5 updates").
  *
- * Endpoint contract: `GET /api/v1/sessions/{id}/events?after=<cursor>&limit=N`.
+ * Endpoint contract:
+ * `GET /api/v1/sessions/{id}/events?after=<cursor>&limit=N&listenerAgentId=<id>`.
  * The API returns events in chronological order with cursor-based
- * pagination. We map each row to the local NDJSON envelope shape so
- * `appendToStream` accepts it without modification.
+ * pagination. When `listenerAgentId` is present, Redis-backed listener
+ * controls are returned separately in `listenerControls`; they never join
+ * the durable event list or participate in its cursor.
  *
  * @param {string} sessionId
  * @param {object} [options]
  * @param {string} [options.targetPath]
  * @param {string|null} [options.since] - cursor to start after; null = full history
  * @param {number} [options.limit]      - default 200 (max from API)
+ * @param {string} [options.listenerAgentId] - optional listener control recipient
  * @param {number} [options.timeoutMs]  - per-request deadline
- * @returns {Promise<{ok: boolean, reason: string, events: Array<object>, cursor: string|null}>}
+ * @returns {Promise<{ok: boolean, reason: string, events: Array<object>, listenerControls: Array<object>, cursor: string|null}>}
  */
 export async function pollSessionEvents(
   sessionId,
@@ -1383,6 +1377,7 @@ export async function pollSessionEvents(
     targetPath = process.cwd(),
     since = null,
     limit = 200,
+    listenerAgentId = "",
     timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
     forceCircuitProbe = false,
     resolveAuthSession = resolveActiveAuthSession,
@@ -1396,6 +1391,7 @@ export async function pollSessionEvents(
       ok: false,
       reason: "invalid_session_id",
       events: [],
+      listenerControls: [],
       cursor: normalizeString(since) || null,
     };
   }
@@ -1406,6 +1402,7 @@ export async function pollSessionEvents(
       ok: false,
       reason: "circuit_breaker_open",
       events: [],
+      listenerControls: [],
       cursor: normalizeString(since) || null,
     };
   }
@@ -1422,6 +1419,7 @@ export async function pollSessionEvents(
       ok: false,
       reason: "no_session",
       events: [],
+      listenerControls: [],
       cursor: normalizeString(since) || null,
     };
   }
@@ -1430,6 +1428,7 @@ export async function pollSessionEvents(
       ok: false,
       reason: "not_authenticated",
       events: [],
+      listenerControls: [],
       cursor: normalizeString(since) || null,
     };
   }
@@ -1439,6 +1438,10 @@ export async function pollSessionEvents(
   const normalizedSince = normalizeString(since);
   if (normalizedSince) {
     query.set("after", normalizedSince);
+  }
+  const normalizedListenerAgentId = normalizeString(listenerAgentId);
+  if (normalizedListenerAgentId) {
+    query.set("listenerAgentId", normalizedListenerAgentId);
   }
   query.set(
     "limit",
@@ -1465,6 +1468,7 @@ export async function pollSessionEvents(
           status: response?.status || 429,
           retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
           events: [],
+          listenerControls: [],
           cursor: normalizedSince || null,
         };
       }
@@ -1473,12 +1477,23 @@ export async function pollSessionEvents(
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
         events: [],
+        listenerControls: [],
         cursor: normalizedSince || null,
       };
     }
     recordCircuitSuccess(inboundCircuit);
 
     const items = Array.isArray(payload?.events) ? payload.events : [];
+    const listenerControlProjection =
+      payload?.listenerControls ?? payload?.listener_controls;
+    const listenerControlItems = Array.isArray(listenerControlProjection)
+      ? listenerControlProjection
+      : Array.isArray(listenerControlProjection?.items)
+        ? listenerControlProjection.items
+        : [];
+    const listenerControls = listenerControlItems.filter(
+      (control) => control && typeof control === "object" && !Array.isArray(control),
+    );
     const acceptedEvents = [];
     let lastCursor = normalizedSince || null;
     for (const item of items) {
@@ -1494,6 +1509,7 @@ export async function pollSessionEvents(
       ok: true,
       reason: "",
       events: acceptedEvents,
+      listenerControls,
       cursor: lastCursor,
     };
   } catch (error) {
@@ -1502,6 +1518,7 @@ export async function pollSessionEvents(
       ok: false,
       reason: normalizeString(error?.message) || "poll_failed",
       events: [],
+      listenerControls: [],
       cursor: normalizedSince || null,
     };
   }
@@ -1795,6 +1812,125 @@ export async function renewSessionPresence(
       ok: false,
       reason: normalizeString(error?.message) || "presence_write_failed",
       status: "degraded",
+      recorded: false,
+    };
+  }
+}
+
+/**
+ * Enqueue an ephemeral Redis-backed listener stop control.
+ *
+ * This endpoint is the only remote delivery path for stop requests. It never
+ * falls back to the durable session event stream.
+ */
+export async function requestSessionListenerStop(
+  sessionId,
+  {
+    targetPath = process.cwd(),
+    targetAgentId = "",
+    idempotencyKey = "",
+    timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+    resolveAuthSession = resolveActiveAuthSession,
+    fetchImpl = fetchWithTimeout,
+    nowMs = Date.now,
+  } = {},
+) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId) {
+    return { ok: false, reason: "invalid_session_id", recorded: false };
+  }
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
+    return { ok: false, reason: "remote_sync_disabled_env", recorded: false };
+  }
+
+  const normalizedNowMs = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(outboundCircuit, normalizedNowMs)) {
+    return { ok: false, reason: "circuit_breaker_open", recorded: false };
+  }
+
+  let session = null;
+  try {
+    session = await resolveAuthSession({
+      cwd: targetPath,
+      env: process.env,
+      autoRotate: false,
+    });
+  } catch {
+    return { ok: false, reason: "no_session", recorded: false };
+  }
+  if (!session?.token) {
+    return { ok: false, reason: "not_authenticated", recorded: false };
+  }
+
+  const normalizedTargetAgentId = normalizeString(targetAgentId);
+  const normalizedIdempotencyKey =
+    normalizeString(idempotencyKey) || `sl-listener-stop-${randomUUID()}`;
+  const apiBaseUrl = resolveApiBaseUrl(session);
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/listener-controls/stop`;
+  const body = normalizedTargetAgentId
+    ? { targetAgentId: normalizedTargetAgentId }
+    : { broadcast: true };
+
+  try {
+    const { response, payload } = await fetchJsonWithFullTimeout(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+          "Idempotency-Key": normalizedIdempotencyKey,
+        },
+        body: JSON.stringify(body),
+      },
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
+      { readErrorBody: true },
+    );
+    if (!response?.ok) {
+      if (response?.status === 404) {
+        return {
+          ok: false,
+          reason: "listener_control_unsupported",
+          recorded: false,
+        };
+      }
+      if (isRateLimitResponse(response, payload)) {
+        return {
+          ok: false,
+          reason: "rate_limited",
+          recorded: false,
+          retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
+        };
+      }
+      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      return {
+        ok: false,
+        reason: `api_${response ? response.status : "no_response"}`,
+        recorded: false,
+      };
+    }
+
+    recordCircuitSuccess(outboundCircuit);
+    const control =
+      payload?.control && typeof payload.control === "object" && !Array.isArray(payload.control)
+        ? payload.control
+        : payload?.listenerControl &&
+            typeof payload.listenerControl === "object" &&
+            !Array.isArray(payload.listenerControl)
+          ? payload.listenerControl
+          : null;
+    return {
+      ok: true,
+      reason: "",
+      recorded: Boolean(payload?.recorded ?? true),
+      control,
+    };
+  } catch (error) {
+    recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    return {
+      ok: false,
+      reason: normalizeString(error?.message) || "listener_control_write_failed",
       recorded: false,
     };
   }

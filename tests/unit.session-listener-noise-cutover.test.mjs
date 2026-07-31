@@ -35,6 +35,7 @@ async function startMockApi() {
     actionWrites: [],
     readCursorWrites: [],
     eventReads: 0,
+    listenerAgentIds: [],
   };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -43,8 +44,10 @@ async function startMockApi() {
       url.pathname === "/api/v1/sessions/sess-noise/events"
     ) {
       state.eventReads += 1;
+      state.listenerAgentIds.push(url.searchParams.get("listenerAgentId"));
       return jsonResponse(res, 200, {
         sessionId: "sess-noise",
+        listenerControls: [],
         events: [],
         cursor: null,
       });
@@ -163,6 +166,7 @@ test("Unit session listener cutover: one poll writes presence only, never durabl
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
     assert.equal(mock.state.eventReads, 1);
+    assert.deepEqual(mock.state.listenerAgentIds, ["codex"]);
     assert.ok(mock.state.presenceWrites.length >= 1);
     assert.equal(mock.state.durableEventWrites.length, 0);
     assert.equal(mock.state.actionWrites.length, 0);

@@ -103,6 +103,7 @@ import {
   pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
+  requestSessionListenerStop,
   renewSessionPresence,
   searchSessionEvents,
   syncSessionEventToApi,
@@ -4506,7 +4507,7 @@ export function registerSessionCommand(program) {
   session
     .command("stop-listener <sessionId>")
     .description(
-      "Ask an agent's listener to stop (save energy). Posts a listener_stop directive the listener honors on its next poll, then exits cleanly. Targets one agent with --agent; omit it to stop every listener in the room.",
+      "Ask an agent's listener to stop through the ephemeral listener-control plane. Targets one agent with --agent; omit it to stop every listener in the room.",
     )
     .option("--agent <id>", "Agent whose listener to stop (omit to stop all listeners in the room)")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -4519,27 +4520,21 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const targetAgent = normalizeString(options.agent);
       await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
-      const event = createAgentEvent({
-        event: "listener_stop",
-        agent: { id: "session-control", model: "control", persona: "Session Control" },
-        sessionId: normalizedSessionId,
-        payload: {
-          // targetAgentId routes the directive to that agent's listener (an
-          // event recipient); omitting it broadcasts to every listener.
-          ...(targetAgent ? { targetAgentId: targetAgent } : { broadcast: true }),
-          reason: "operator_stop",
-        },
+      const listenerControl = await requestSessionListenerStop(normalizedSessionId, {
+        targetPath,
+        targetAgentId: targetAgent,
       });
-      const remoteSync = await syncSessionEventToApi(normalizedSessionId, event, { targetPath }).catch(
-        (error) => ({ synced: false, reason: normalizeString(error?.message) || "sync_failed" }),
-      );
-      await appendToStream(normalizedSessionId, event, { targetPath, syncRemote: false }).catch(() => {});
+      if (!listenerControl?.ok || !listenerControl?.recorded) {
+        throw new Error(
+          `Listener stop request failed (${normalizeString(listenerControl?.reason) || "not_recorded"}).`,
+        );
+      }
       const payload = {
         command: "session stop-listener",
         sessionId: normalizedSessionId,
         targetAgent: targetAgent || null,
         scope: targetAgent ? "agent" : "all",
-        remoteSync: remoteSync || undefined,
+        listenerControl,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -4918,21 +4913,17 @@ export function registerSessionCommand(program) {
               console.log(pc.yellow(formatListenerCatchupNotice(catchup)));
             }
           },
-          onEvent: async (event) => {
-            // Cut-listener: a `listener_stop` directive addressed to this
-            // agent (from the web "stop listening" control or
-            // `sl session stop-listener`) cleanly exits this listener to save
-            // energy. Untargeted (no targetAgentId) stops every listener.
-            if (normalizeString(event?.event) === "listener_stop") {
-              const target = normalizeString(event?.payload?.targetAgentId);
-              if (!target || target === agentId) {
-                if (emitFormat !== "ndjson") {
-                  console.log(pc.yellow(`Listener stop requested for ${agentId}; exiting.`));
-                }
-                ac.abort();
-                return;
-              }
+          onControl: async (control) => {
+            const controlType = normalizeString(
+              control?.type || control?.action || control?.event,
+            ).toLowerCase();
+            if (!["stop", "listener_stop"].includes(controlType)) return;
+            if (emitFormat !== "ndjson") {
+              console.log(pc.yellow(`Listener stop requested for ${agentId}; exiting.`));
             }
+            ac.abort();
+          },
+          onEvent: async (event) => {
             if (emitFormat === "ndjson") {
               console.log(JSON.stringify(event));
             } else {

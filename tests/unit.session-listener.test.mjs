@@ -309,18 +309,16 @@ test("Unit session listener: advances across listener presence without emitting 
   assert.equal(result.emitted, 1);
 });
 
-test("Unit session listener: emits listener_stop directives while skipping lifecycle noise", async () => {
-  const emitted = [];
-  const heartbeat = evt(
-    "c1",
-    { source: "session_listen", listenerId: "listener-codex-1" },
-    { event: "session_listener_heartbeat", agent: { id: "codex-1" } },
-  );
+test("Unit session listener: delivers fresh controls before semantic events and cursor writes", async () => {
+  const order = [];
+  const pollOptions = [];
+  const message = evt("c2", { to: "codex-1" }, { ts: "2026-07-31T05:30:01.000Z" });
   const stop = {
-    event: "listener_stop",
-    cursor: "c2",
-    agent: { id: "session-control" },
-    payload: { targetAgentId: "codex-1", reason: "operator_stop" },
+    controlId: "control-1",
+    type: "listener_stop",
+    issuedAtMs: Date.parse("2026-07-31T05:30:01.000Z"),
+    targetAgentId: "codex-1",
+    reason: "operator_stop",
   };
 
   const result = await listenSessionEvents({
@@ -328,77 +326,128 @@ test("Unit session listener: emits listener_stop directives while skipping lifec
     agentId: "codex-1",
     replay: true,
     maxPolls: 1,
-    _readCursor: async () => null,
-    _writeCursor: async () => ({ written: true }),
-    _poll: async () => ({ ok: true, events: [heartbeat, stop], cursor: "c2" }),
+    _nowMs: () => Date.parse("2026-07-31T05:30:00.500Z"),
+    _readCursor: async () => "c1",
+    _writeCursor: async (_sessionId, cursor) => {
+      order.push(`write:${cursor}`);
+      return { written: true };
+    },
+    _updateReadCursor: async () => {
+      order.push("read-cursor");
+      return { ok: true, updated: true };
+    },
+    _poll: async (_sessionId, options) => {
+      pollOptions.push(options);
+      return {
+        ok: true,
+        listenerControls: [stop],
+        events: [message],
+        cursor: "c2",
+      };
+    },
     _sleep: async () => {},
-    onEvent: async (event) => emitted.push(event.event),
+    onControl: async (control) => order.push(`control:${control.controlId}`),
+    onEvent: async (event) => order.push(`event:${event.cursor}`),
   });
 
-  assert.deepEqual(emitted, ["listener_stop"]);
+  assert.equal(pollOptions[0]?.listenerAgentId, "codex-1");
+  assert.deepEqual(order, ["control:control-1", "event:c2", "write:c2", "read-cursor"]);
   assert.equal(result.cursor, "c2");
   assert.equal(result.emitted, 1);
+  assert.equal(result.deliveredControls, 1);
+  assert.equal(result.ignoredControls, 0);
 });
 
-test("Unit session listener: ignores stale listener_stop directives from stored-cursor catch-up", async () => {
+test("Unit session listener: ignores stale controls without blocking semantic progress", async () => {
+  const controls = [];
   const emitted = [];
   const writes = [];
   const stop = {
-    event: "listener_stop",
-    cursor: "c2",
-    ts: "2026-04-28T03:59:59.000Z",
-    agent: { id: "session-control" },
-    payload: { targetAgentId: "codex-1", reason: "operator_stop" },
+    controlId: "control-stale",
+    type: "stop",
+    issuedAt: "2026-07-31T05:29:59.000Z",
+    targetAgentId: "codex-1",
+    reason: "old_operator_stop",
   };
-  const message = evt("c3", { to: "codex-1" }, { ts: "2026-04-28T04:00:01.000Z" });
+  const message = evt("c3", { to: "codex-1" }, { ts: "2026-07-31T05:30:01.000Z" });
 
   const result = await listenSessionEvents({
     sessionId: "sess-stale-stop",
     agentId: "codex-1",
     maxPolls: 1,
-    _nowMs: () => Date.parse("2026-04-28T04:00:00.500Z"),
+    _nowMs: () => Date.parse("2026-07-31T05:30:00.500Z"),
     _readCursor: async () => "c1",
     _writeCursor: async (sessionId, cursor, options) => {
       writes.push({ sessionId, cursor, options });
       return { written: true };
     },
-    _poll: async () => ({ ok: true, events: [stop, message], cursor: "c3" }),
+    _poll: async () => ({
+      ok: true,
+      listenerControls: [stop],
+      events: [message],
+      cursor: "c3",
+    }),
     _sleep: async () => {},
+    onControl: async (control) => controls.push(control),
     onEvent: async (event) => emitted.push(event.event),
   });
 
+  assert.deepEqual(controls, []);
   assert.deepEqual(emitted, ["session_message"]);
   assert.equal(result.cursor, "c3");
   assert.equal(result.emitted, 1);
-  assert.equal(result.catchupNotified, true);
+  assert.equal(result.deliveredControls, 0);
+  assert.equal(result.ignoredControls, 1);
+  assert.equal(result.catchupNotified, false);
   assert.deepEqual(writes.map((write) => write.cursor), ["c3"]);
 });
 
-test("Unit session listener: emits fresh listener_stop directives created after listener start", async () => {
+test("Unit session listener: a fresh stop aborts before event or cursor mutation", async () => {
+  const controller = new AbortController();
   const emitted = [];
+  const writes = [];
+  const readCursorWrites = [];
   const stop = {
-    event: "listener_stop",
-    cursor: "c2",
-    ts: "2026-04-28T04:00:01.000Z",
-    agent: { id: "session-control" },
-    payload: { targetAgentId: "codex-1", reason: "operator_stop" },
+    controlId: "control-fresh",
+    type: "listener_stop",
+    issuedAtMs: Date.parse("2026-07-31T05:30:01.000Z"),
+    targetAgentId: "codex-1",
+    reason: "operator_stop",
   };
 
   const result = await listenSessionEvents({
     sessionId: "sess-fresh-stop",
     agentId: "codex-1",
+    signal: controller.signal,
     maxPolls: 1,
-    _nowMs: () => Date.parse("2026-04-28T04:00:00.500Z"),
+    _nowMs: () => Date.parse("2026-07-31T05:30:00.500Z"),
     _readCursor: async () => "c1",
-    _writeCursor: async () => ({ written: true }),
-    _poll: async () => ({ ok: true, events: [stop], cursor: "c2" }),
+    _writeCursor: async (...args) => {
+      writes.push(args);
+      return { written: true };
+    },
+    _updateReadCursor: async (...args) => {
+      readCursorWrites.push(args);
+      return { ok: true, updated: true };
+    },
+    _poll: async () => ({
+      ok: true,
+      listenerControls: [stop],
+      events: [evt("c2", { to: "codex-1" })],
+      cursor: "c2",
+    }),
     _sleep: async () => {},
+    onControl: async () => controller.abort(),
     onEvent: async (event) => emitted.push(event.event),
   });
 
-  assert.deepEqual(emitted, ["listener_stop"]);
-  assert.equal(result.cursor, "c2");
-  assert.equal(result.emitted, 1);
+  assert.deepEqual(emitted, []);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(readCursorWrites, []);
+  assert.equal(result.cursor, "c1");
+  assert.equal(result.emitted, 0);
+  assert.equal(result.deliveredControls, 1);
+  assert.equal(result.ignoredControls, 0);
 });
 
 test("Unit session listener: ignores malformed poll records while advancing valid events", async () => {

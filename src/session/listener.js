@@ -45,10 +45,6 @@ function normalizePositiveInteger(value, fallbackValue) {
   return Math.floor(normalized);
 }
 
-function isListenerStopDirective(event = {}) {
-  return normalizeString(event?.event) === "listener_stop";
-}
-
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -188,6 +184,41 @@ function eventIdentityKey(event = {}) {
   });
 }
 
+function listenerControlType(control = {}) {
+  return normalizeLower(control?.type || control?.action || control?.event);
+}
+
+function listenerControlIssuedAtMs(control = {}) {
+  for (const key of ["issuedAtMs", "issued_at_ms"]) {
+    const epoch = Number(control?.[key]);
+    if (Number.isFinite(epoch) && epoch > 0) return epoch;
+  }
+  for (const key of ["issuedAt", "issued_at"]) {
+    const epoch = Date.parse(normalizeString(control?.[key]));
+    if (Number.isFinite(epoch)) return epoch;
+  }
+  return 0;
+}
+
+function listenerControlIdentityKey(control = {}) {
+  const explicitId = normalizeString(
+    control?.controlId || control?.control_id || control?.id,
+  );
+  if (explicitId) return `control:${explicitId}`;
+  return JSON.stringify({
+    type: listenerControlType(control),
+    issuedAt: normalizeString(control?.issuedAt || control?.issued_at),
+    targetAgentId: normalizeComparableId(
+      control?.targetAgentId ||
+        control?.target_agent_id ||
+        control?.payload?.targetAgentId ||
+        control?.payload?.target_agent_id,
+    ),
+    broadcast: Boolean(control?.broadcast || control?.payload?.broadcast),
+    reason: normalizeString(control?.reason || control?.payload?.reason),
+  });
+}
+
 function eventTimestampMs(event = {}) {
   for (const key of ["ts", "timestamp", "createdAt", "at"]) {
     const epoch = Date.parse(normalizeString(event?.[key]));
@@ -298,6 +329,7 @@ export async function listenSessionEvents({
   maxPolls = null,
   signal,
   onEvent = async () => {},
+  onControl = async () => {},
   onError = async () => {},
   onCatchup = async () => {},
   onLifecycle = async () => {},
@@ -347,10 +379,13 @@ export async function listenSessionEvents({
   let consecutivePollFailures = 0;
   let readCursorUpdates = 0;
   let readCursorReason = "";
+  let deliveredControls = 0;
+  let ignoredControls = 0;
   let catchupNotified = false;
   let catchupEventCount = 0;
   let catchupMatchingEventCount = 0;
   const emittedKeys = new Set();
+  const deliveredControlKeys = new Set();
   const maxPollCount = normalizePositiveInteger(maxPolls, 0);
   const pollLimit = normalizePositiveInteger(limit, 200);
   const idleSleepMs = Math.max(1, normalizePositiveInteger(intervalSeconds, 60)) * 1000;
@@ -414,6 +449,8 @@ export async function listenSessionEvents({
     consecutivePollFailures,
     readCursorUpdates,
     readCursorReason,
+    deliveredControls,
+    ignoredControls,
     reason: lastReason,
     ...extra,
   });
@@ -473,7 +510,6 @@ export async function listenSessionEvents({
       if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
         lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
       }
-      if (timestampMs && timestampMs < startedAtMs && isListenerStopDirective(event)) continue;
       if (isSessionListenerLifecycleEvent(event)) continue;
       if (!eventMatchesAgent(event, normalizedAgentId)) continue;
       visibleEvents.push(event);
@@ -559,6 +595,43 @@ export async function listenSessionEvents({
       processed: true,
       retryAfterMs: Number(readCursorResult?.retryAfterMs) || null,
     };
+  }
+
+  async function processControlBatch(controlsInput = []) {
+    const controls = Array.isArray(controlsInput) ? controlsInput : [];
+    const observedAtMs = Number(_nowMs()) || Date.now();
+    for (const control of controls) {
+      if (!isPlainObject(control)) {
+        ignoredControls += 1;
+        continue;
+      }
+      const issuedAtMs = listenerControlIssuedAtMs(control);
+      const fresh =
+        issuedAtMs >= startedAtMs &&
+        issuedAtMs <= observedAtMs + MAX_CLOCK_SKEW_MS;
+      if (
+        !listenerControlType(control) ||
+        !fresh ||
+        !eventMatchesAgent(control, normalizedAgentId)
+      ) {
+        ignoredControls += 1;
+        continue;
+      }
+      const key = listenerControlIdentityKey(control);
+      if (deliveredControlKeys.has(key)) {
+        ignoredControls += 1;
+        continue;
+      }
+      deliveredControlKeys.add(key);
+      try {
+        await onControl(control);
+        deliveredControls += 1;
+      } catch (error) {
+        deliveredControlKeys.delete(key);
+        throw error;
+      }
+      if (signal?.aborted) break;
+    }
   }
 
   async function notifyHeartbeat({ stopping = false, nextPollMs = null } = {}) {
@@ -653,12 +726,15 @@ export async function listenSessionEvents({
         targetPath,
         since: cursor,
         limit: pollLimit,
+        listenerAgentId: normalizedAgentId,
       });
 
       let cursorRetryAfterMs = null;
       if (result?.ok) {
         lastReason = "";
         consecutivePollFailures = 0;
+        await processControlBatch(result.listenerControls);
+        if (signal?.aborted) break;
         const processed = await processEventBatch(result.events, result.cursor);
         cursorRetryAfterMs = Number(processed?.retryAfterMs) || null;
       } else {
@@ -724,6 +800,8 @@ export async function listenSessionEvents({
     persistedCursor,
     readCursorUpdates,
     readCursorReason,
+    deliveredControls,
+    ignoredControls,
     consecutivePollFailures,
     catchupNotified,
     catchupEventCount,

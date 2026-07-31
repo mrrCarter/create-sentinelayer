@@ -1231,6 +1231,89 @@ test("Unit session listen: renews bounded ephemeral presence for real agent ids"
   }
 });
 
+test("Unit session listen: fresh stop control exits before events and publishes stopped presence", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-stop-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: "ok", recorded: true, ttlSeconds: 90 }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          listenerControls: [
+            {
+              controlId: "control-stop-listen",
+              type: "stop",
+              issuedAt: new Date(Date.now() + 30_000).toISOString(),
+              targetAgentId: "codex",
+              reason: "operator_stop",
+            },
+          ],
+          events: [
+            {
+              event: "session_message",
+              cursor: "cursor-must-not-advance",
+              ts: new Date(Date.now() + 30_000).toISOString(),
+              payload: { message: "must not emit", to: "codex" },
+            },
+          ],
+          cursor: "cursor-must-not-advance",
+        }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen-stop",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "2",
+      "--emit",
+      "text",
+    ]);
+
+    assert.match(output, /Listener stop requested for codex; exiting\./);
+    assert.doesNotMatch(output, /must not emit/);
+    const pollCalls = calls.filter((call) => call.options.method === "GET");
+    assert.equal(pollCalls.length, 1);
+    assert.match(pollCalls[0].url, /listenerAgentId=codex/);
+    const presenceCalls = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(presenceCalls.length, 2);
+    const presence = presenceCalls.map((call) => JSON.parse(call.options.body));
+    assert.deepEqual(presence.map((entry) => entry.state), ["started", "stopped"]);
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+    assert.equal(
+      await readSyncCursor("remote-listen-stop", {
+        targetPath: tempRoot,
+        suffix: listenCursorSuffix("codex"),
+      }),
+      null,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session listen: refuses duplicate local listener for same session and agent", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-singleton-"));
   const child = spawn(
@@ -1577,7 +1660,10 @@ test("Unit session listen: emits a bounded catch-up status before stored-cursor 
           json: async () => ({}),
         };
       }
-      assert.match(String(url), /\/api\/v1\/sessions\/remote-listen-catchup\/events\?after=1779364717000%3A000026d3&limit=200$/);
+      assert.match(
+        String(url),
+        /\/api\/v1\/sessions\/remote-listen-catchup\/events\?after=1779364717000%3A000026d3&listenerAgentId=codex&limit=200$/,
+      );
       return {
         ok: true,
         status: 200,
@@ -1665,7 +1751,10 @@ test("Unit session listen: --from-now primes and persists latest cursor without 
           json: async () => ({ events: [latestEvent] }),
         };
       }
-      assert.match(rawUrl, /\/api\/v1\/sessions\/remote-listen-from-now\/events\?after=1779369999000%3A000026d9&limit=200$/);
+      assert.match(
+        rawUrl,
+        /\/api\/v1\/sessions\/remote-listen-from-now\/events\?after=1779369999000%3A000026d9&listenerAgentId=codex&limit=200$/,
+      );
       return {
         ok: true,
         status: 200,
