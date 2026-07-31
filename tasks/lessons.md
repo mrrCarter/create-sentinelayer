@@ -284,8 +284,21 @@
 - On Windows, Node's `--test` does not expand npm-script globs. When a repository script assumes POSIX expansion, run the same sorted file set explicitly for local evidence and still require the canonical script on hosted Linux CI.
 - SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
 - Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
+- A file-lease denial is useful only if the exact editor/terminal mutation sees
+  the locked path, holder, and expiry. Never discard a fail-closed guard's
+  output merely to keep successful preflights quiet.
+- Removing chat-based lock parsing also requires removing every generated,
+  legacy, and documentation instruction that teaches `lock:`/`unlock:` chat
+  messages; otherwise noise persists while the messages stop acquiring locks.
+- Any persistent hook installed by a CLI needs a compatible, fingerprint-owned
+  uninstall path and explicit API-first upgrade/client-first rollback order
+  before publication. Package rollback alone can strand an unavailable hook
+  that blocks every edit or split authority across client versions.
 - Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.
 
 ## 2026-07-30
 
 - A liveness cutover is incomplete if join/leave/status/identity, onboarding briefings, recaps, views, or lock state can still reach the remote transcript. Keep those local or in their authoritative presence/cursor/lease surfaces; the durable remote log is for semantic conversation.
+- Marking an event `ephemeral: true` does not make it ephemeral if the producer still appends it. Derived room-health and daemon-alert projections must bypass the transcript storage path entirely.
+- Read-only hydration, search, join, and recap commands must never mint durable recap or onboarding rows as a side effect; observation cannot be a write.
+- Treat a fast all-PASS experiment verdict as a claim, not evidence. Require receipt completeness, invalid-transition coverage, lease/noise counts, resource usage, and evidence hashes before accepting a proof-class result.

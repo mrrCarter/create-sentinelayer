@@ -593,13 +593,17 @@ test("Unit MCP session stdio: file lock tools use real lock primitives and repor
   assert.equal(locked.results[1].heldBy, "claude");
   assert.equal(lockCalls[0].options.intent, "edit MCP surface");
   assert.equal(lockCalls[0].options.ttlSeconds, 60);
-  assert.equal(lockCalls[0].options.syncRemote, false);
-  assert.equal(lockCalls[0].options.awaitRemoteSync, false);
+  assert.equal(lockCalls[0].options.syncRemote, undefined);
+  assert.equal(lockCalls[0].options.awaitRemoteSync, undefined);
   assert.equal(unlocked.ok, false);
   assert.equal(unlocked.failedCount, 1);
   assert.equal(unlockCalls[0].options.reason, "done");
-  assert.equal(unlockCalls[0].options.force, false);
+  assert.equal(unlockCalls[0].options.force, undefined);
   assert.equal(unlockTool.inputSchema.properties.force, undefined);
+  assert.match(
+    unlockTool.inputSchema.properties.syncRemote.description,
+    /ignored because the authenticated API is always authoritative/u,
+  );
   assert.equal(listed.ok, true);
   assert.equal(listed.lockCount, 1);
   assert.equal(listed.locks[0].file, "src/a.js");

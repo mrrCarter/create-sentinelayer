@@ -45,7 +45,7 @@ async function waitForStreamEvent(sessionId, predicate, {
   return null;
 }
 
-test("Unit session daemon: welcome event includes codebase synopsis and health tick detects stale + file conflict", async () => {
+test("Unit session daemon: health projections detect stale + file conflict without transcript rows", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-daemon-"));
   let sessionId = "";
   try {
@@ -93,27 +93,19 @@ test("Unit session daemon: welcome event includes codebase synopsis and health t
     });
     assert.equal(summary.activeAgentCount, 2);
 
-    const stream = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
-    const welcome = stream.find(
-      (event) => event.event === "daemon_alert" && event.payload.alert === "senti_online"
-    );
-    assert.ok(welcome);
-    assert.equal(validateAgentEvent(welcome, { allowLegacy: false }), true);
-    assert.match(String(welcome.payload.message || ""), /Codebase:/);
-    assert.match(String(welcome.payload.message || ""), /codex-c3d4/);
-    assert.match(String(welcome.payload.message || ""), /claude-a1b2/);
-
-    const staleDetected = stream.find(
-      (event) => event.event === "daemon_alert" && event.payload.alert === "stuck_detected"
-    );
+    const staleDetected = summary.staleAgents[0]?.event;
     assert.ok(staleDetected);
     assert.equal(validateAgentEvent(staleDetected, { allowLegacy: false }), true);
+    assert.equal(staleDetected.payload.alert, "stuck_detected");
+    assert.equal(staleDetected.payload.ephemeral, true);
+    assert.equal(staleDetected.payload.projection, "session_health");
 
-    const conflictDetected = stream.find(
-      (event) => event.event === "daemon_alert" && event.payload.alert === "file_conflict"
-    );
+    const conflictDetected = summary.conflictAlerts[0]?.event;
     assert.ok(conflictDetected);
     assert.equal(conflictDetected.payload.file, "src/auth/login.js");
+
+    const stream = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
+    assert.equal(stream.some((event) => event.event === "daemon_alert"), false);
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});
@@ -524,7 +516,7 @@ test("Unit session daemon: unanswered help_request gets auto-response within tim
   }
 });
 
-test("Unit session daemon: lock/unlock directives from session messages enforce exclusive file ownership", async () => {
+test("Unit session daemon: legacy lock/unlock chat directives emit zero file lifecycle noise", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-lock-directives-"));
   let sessionId = "";
   try {
@@ -572,24 +564,6 @@ test("Unit session daemon: lock/unlock directives from session messages enforce 
       }),
       { targetPath: tempRoot }
     );
-    const lockEvent = await waitForStreamEvent(
-      session.sessionId,
-      (event) => event.event === "file_lock" && event.payload?.file === "src/routes/auth.js",
-      { targetPath: tempRoot }
-    );
-    assert.ok(lockEvent);
-    assert.equal(lockEvent.agent.id, "codex-c3d4");
-    assert.equal(lockEvent.payload.file, "src/routes/auth.js");
-
-    const denied = await waitForStreamEvent(
-      session.sessionId,
-      (event) => event.event === "daemon_alert" && event.payload?.alert === "file_lock_denied",
-      { targetPath: tempRoot }
-    );
-    assert.ok(denied);
-    assert.equal(denied.payload.file, "src/routes/auth.js");
-    assert.equal(denied.payload.heldBy, "codex-c3d4");
-
     await appendToStream(
       session.sessionId,
       createAgentEvent({
@@ -602,13 +576,24 @@ test("Unit session daemon: lock/unlock directives from session messages enforce 
       }),
       { targetPath: tempRoot }
     );
-    const unlockEvent = await waitForStreamEvent(
-      session.sessionId,
-      (event) => event.event === "file_unlock" && event.payload?.file === "src/routes/auth.js",
-      { targetPath: tempRoot }
+
+    await sleep(300);
+    const stream = await readStream(session.sessionId, { tail: 0, targetPath: tempRoot });
+    const lifecycleNoise = stream.filter((event) => (
+      ["file_lock", "file_unlock", "file_lock_expired"].includes(event.event)
+      || (
+        event.event === "daemon_alert"
+        && ["file_lock_denied", "file_unlock_denied"].includes(event.payload?.alert)
+      )
+    ));
+    assert.deepEqual(lifecycleNoise, []);
+    assert.equal(
+      stream.filter((event) => (
+        event.event === "session_message"
+        && /^(?:lock|unlock):\s*src\/routes\/auth\.js\b/i.test(event.payload?.message || "")
+      )).length,
+      3
     );
-    assert.ok(unlockEvent);
-    assert.equal(unlockEvent.payload.file, "src/routes/auth.js");
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});

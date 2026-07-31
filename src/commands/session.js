@@ -42,11 +42,20 @@ import {
 } from "../session/daemon-spawn.js";
 import { listRuntimeRuns } from "../session/runtime-bridge.js";
 import {
+  guardFileLeases,
   listFileLocks,
   lockFile,
   releaseFileLocksForAgent,
+  renewFileLease,
   unlockFile,
 } from "../session/file-locks.js";
+import {
+  formatFileLeaseDenialSummary,
+  installFileLeaseIntegrations,
+  runFileLeaseGuardHook,
+  safeFileLeaseErrorMessage,
+  uninstallFileLeaseIntegrations,
+} from "../session/file-lease-integrations.js";
 import {
   injectSessionGuides,
   setupSessionGuides,
@@ -2342,17 +2351,6 @@ async function resolveSessionAgentEnvelope(
   return Object.fromEntries(Object.entries(envelope).filter(([, value]) => value !== undefined));
 }
 
-// Builds the lock/unlock say-convention directive the session daemon parses
-// into the authoritative file-lock registry. Kept pure + exported for testing.
-export function buildSessionLockDirective(verb, file, intent = "") {
-  const normalizedFile = normalizeString(file);
-  const normalizedIntent = normalizeString(intent);
-  if (verb === "unlock") {
-    return `unlock: ${normalizedFile} - ${normalizedIntent || "done"}`;
-  }
-  return normalizedIntent ? `lock: ${normalizedFile} - ${normalizedIntent}` : `lock: ${normalizedFile}`;
-}
-
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
   const normalizedItems = Array.isArray(items) ? items : [];
   const normalizedConcurrency = Math.max(
@@ -4270,15 +4268,17 @@ export function registerSessionCommand(program) {
       if (verb === "lock") {
         const result = await lockFile(normalizedSessionId, identity.agentId, file, {
           intent,
+          ttlSeconds: options.ttl,
           targetPath,
-          awaitRemoteSync: true,
         });
         const record = {
           file: result.file || file,
           locked: Boolean(result.locked),
           reason: result.reason || (result.locked ? "locked" : "held_by_other_agent"),
           heldBy: result.heldBy || null,
+          intent: result.lock?.intent || result.lease?.intent || null,
           since: result.since || null,
+          expiresAt: result.lock?.expiresAt || result.lease?.expiresAt || null,
         };
         results.push(record);
         if (result.locked) {
@@ -4292,7 +4292,6 @@ export function registerSessionCommand(program) {
       const result = await unlockFile(normalizedSessionId, identity.agentId, file, {
         reason: intent || "manual_release",
         targetPath,
-        awaitRemoteSync: true,
       });
       const record = {
         file: result.file || file,
@@ -4300,6 +4299,7 @@ export function registerSessionCommand(program) {
         reason: result.reason || (result.unlocked ? "unlocked" : "not_locked"),
         heldBy: result.heldBy || null,
         since: result.since || null,
+        expiresAt: result.lock?.expiresAt || result.lease?.expiresAt || null,
       };
       results.push(record);
       if (result.unlocked) {
@@ -4311,12 +4311,6 @@ export function registerSessionCommand(program) {
       }
     }
 
-    if (failed.length > 0) {
-      const summary = failed
-        .map((item) => `${item.file}${item.heldBy ? ` held by ${item.heldBy}` : ""}`)
-        .join(", ");
-      throw new Error(`session ${verb} failed for ${summary}`);
-    }
     const payload = {
       command: `session ${verb}`,
       sessionId: normalizedSessionId,
@@ -4324,16 +4318,38 @@ export function registerSessionCommand(program) {
       files: processed,
       results,
       skipped,
+      failed,
     };
     if (shouldEmitJson(options, command)) {
       console.log(JSON.stringify(payload, null, 2));
+      if (failed.length > 0) {
+        process.exitCode = 2;
+      }
       return payload;
     }
-    const action = verb === "lock" ? "Requested lock on" : "Released";
+    if (failed.length > 0) {
+      for (const item of failed) {
+        const details = [
+          item.heldBy ? `held by ${item.heldBy}` : "",
+          item.intent ? `intent: ${item.intent}` : "",
+          item.expiresAt ? `expires ${item.expiresAt}` : "",
+        ].filter(Boolean);
+        console.error(
+          pc.red(
+            `Blocked ${item.file}: ${item.reason}${details.length > 0 ? ` (${details.join(", ")})` : ""}`,
+          ),
+        );
+      }
+      process.exitCode = 2;
+      return payload;
+    }
+    const action = verb === "lock" ? "Acquired lease for" : "Released";
     console.log(pc.green(`${action} ${processed.length} file(s) as ${identity.agentId}: ${processed.join(", ")}`));
     if (verb === "lock") {
       console.log(
-        pc.gray("Senti enforces fail-closed; locks auto-release on TTL. Release with `sl session unlock`."),
+        pc.gray(
+          "The SentinelLayer API is authoritative; leases expire by TTL and can be released with `sl session unlock`.",
+        ),
       );
     }
     return payload;
@@ -4341,8 +4357,9 @@ export function registerSessionCommand(program) {
 
   session
     .command("lock <sessionId> <files...>")
-    .description("Claim exclusive file locks via Senti (fail-closed, TTL auto-release)")
+    .description("Claim exclusive API-backed file leases (fail-closed, TTL expiry)")
     .option("--intent <text>", "Why you're locking these files (shown to peers)")
+    .option("--ttl <seconds>", "Lease TTL in seconds (15-3600)", "300")
     .option("--agent <id>", "Agent id claiming the lock (defaults to the joined session agent)")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -4352,7 +4369,7 @@ export function registerSessionCommand(program) {
 
   session
     .command("unlock <sessionId> <files...>")
-    .description("Release file locks you hold (Senti only lets the holder release)")
+    .description("Release API-backed file leases you hold")
     .option("--intent <text>", "Optional note on the release")
     .option("--agent <id>", "Agent id releasing the lock (defaults to the joined session agent)")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -4362,8 +4379,263 @@ export function registerSessionCommand(program) {
     });
 
   session
+    .command("renew <sessionId> <files...>")
+    .description("Renew holder-bound file leases without writing session events")
+    .option("--ttl <seconds>", "Renewed lease TTL in seconds (15-3600)", "300")
+    .option("--agent <id>", "Agent id renewing the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, files, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const fileList = (Array.isArray(files) ? files : [files])
+        .map((file) => normalizeString(file))
+        .filter(Boolean);
+      if (fileList.length === 0) {
+        throw new Error("session renew requires at least one file path.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+      const identity = await resolveMessageActionIdentity({
+        sessionId: normalizedSessionId,
+        optionAgent: options.agent,
+        targetPath,
+        env: process.env,
+      });
+      if (shouldBlockImplicitCliUserSessionSay(identity)) {
+        throw new Error(
+          identity.identityWarning ||
+            "session renew requires an agent identity; pass --agent <id>.",
+        );
+      }
+      const results = [];
+      for (const file of fileList) {
+        results.push(
+          await renewFileLease(normalizedSessionId, identity.agentId, file, {
+            ttlSeconds: options.ttl,
+            targetPath,
+          }),
+        );
+      }
+      const payload = {
+        command: "session renew",
+        sessionId: normalizedSessionId,
+        agentId: identity.agentId,
+        allowed: results.every((result) => result.renewed),
+        results,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (payload.allowed) {
+        console.log(
+          pc.green(`Renewed ${results.length} file lease(s) as ${identity.agentId}.`),
+        );
+      } else {
+        console.error(
+          pc.red("One or more file leases could not be renewed; edit access is not assured."),
+        );
+      }
+      if (!payload.allowed) {
+        process.exitCode = 2;
+      }
+      return payload;
+    });
+
+  session
+    .command("guard <sessionId> <files...>")
+    .description("Fail-closed authoritative preflight for file edits")
+    .requiredOption("--agent <id>", "Agent id presenting holder capabilities")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, files, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const fileList = (Array.isArray(files) ? files : [files])
+        .map((file) => normalizeString(file))
+        .filter(Boolean);
+      if (fileList.length === 0) {
+        throw new Error("session guard requires at least one file path.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const requestedAgentId = normalizeString(options.agent).toLowerCase();
+      let result;
+      try {
+        result = await guardFileLeases(
+          normalizedSessionId,
+          requestedAgentId,
+          fileList,
+          { targetPath },
+        );
+      } catch (error) {
+        const message = safeFileLeaseErrorMessage(error);
+        result = {
+          ok: false,
+          allowed: false,
+          authoritative: false,
+          sessionId: normalizedSessionId,
+          holderId: requestedAgentId || null,
+          checkedAt: new Date().toISOString(),
+          validUntil: null,
+          files: fileList,
+          guarded: [],
+          denials: fileList.map((file) => ({
+            path: file,
+            reason: "guard_failed",
+          })),
+          error: {
+            code: normalizeString(error?.code) || "FILE_LEASE_GUARD_FAILED",
+            message,
+          },
+        };
+      }
+      const payload = {
+        command: "session guard",
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (result.allowed) {
+        console.log(
+          pc.green(`File-lease guard allowed ${fileList.length} edit target(s).`),
+        );
+      } else {
+        if (result.error?.message) {
+          console.error(pc.red(`Authoritative guard failed: ${result.error.message}`));
+        }
+        if ((result.denials || []).length > 0) {
+          console.error(
+            pc.red(`Edit blocked: ${formatFileLeaseDenialSummary(result)}`),
+          );
+        }
+      }
+      if (!result.allowed) {
+        process.exitCode = 2;
+      }
+      return payload;
+    });
+
+  session
+    .command("guard-hook <sessionId>")
+    .description("Claude PreToolUse hook: read tool JSON on stdin and block denied edits")
+    .requiredOption("--agent <id>", "Agent id presenting holder capabilities")
+    .option("--path <path>", "Workspace root", ".")
+    .action(async (sessionId, options) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await runFileLeaseGuardHook({
+        sessionId,
+        agentId: options.agent,
+        targetPath,
+      });
+      process.exitCode = result.exitCode;
+      return result;
+    });
+
+  session
+    .command("guard-install <sessionId>")
+    .description("Install Claude, terminal, and VS Code authoritative lease preflights")
+    .requiredOption("--agent <id>", "Agent id presenting holder capabilities")
+    .option("--path <path>", "Workspace root", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await installFileLeaseIntegrations(
+        sessionId,
+        options.agent,
+        { targetPath },
+      );
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify({
+          command: "session guard-install",
+          ...result,
+        }, null, 2));
+      } else {
+        console.log(
+          pc.green(
+            "Installed Claude PreToolUse blocking plus terminal and VS Code lease preflights.",
+          ),
+        );
+        console.log(
+          pc.yellow(
+            "VS Code native Save cannot be cancelled reliably; run the generated guard task before edits or make it a dependency of mutation tasks.",
+          ),
+        );
+      }
+      return result;
+    });
+
+  session
+    .command("guard-uninstall <sessionId>")
+    .description("Safely remove only fingerprinted SentinelLayer lease preflights before CLI rollback")
+    .requiredOption("--agent <id>", "Agent id that owns the managed integration")
+    .option("--path <path>", "Workspace root", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      let result;
+      try {
+        result = await uninstallFileLeaseIntegrations(
+          sessionId,
+          options.agent,
+          { targetPath },
+        );
+      } catch (error) {
+        result = {
+          ok: false,
+          uninstalled: false,
+          reason: "guard_uninstall_failed",
+          sessionId: normalizeString(sessionId),
+          agentId: normalizeString(options.agent),
+          activeLeases: [],
+          residuals: [],
+          error: {
+            code: normalizeString(error?.code) || "FILE_LEASE_GUARD_UNINSTALL_FAILED",
+            message: safeFileLeaseErrorMessage(error),
+          },
+        };
+      }
+      const payload = {
+        command: "session guard-uninstall",
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (result.ok) {
+        console.log(pc.green("Removed the managed SentinelLayer lease preflights."));
+      } else {
+        if (result.error?.message) {
+          console.error(pc.red(`Guard uninstall blocked: ${result.error.message}`));
+        }
+        for (const lease of result.activeLeases || []) {
+          const file = normalizeString(lease.file || lease.path) || "(unknown path)";
+          const holder = normalizeString(lease.agentId || lease.holderId) || "unknown";
+          const expiresAt = normalizeString(lease.expiresAt);
+          console.error(
+            pc.red(
+              `Guard uninstall blocked by ${file} (held by ${holder}${expiresAt ? `, expires ${expiresAt}` : ""}).`,
+            ),
+          );
+        }
+        for (const residual of result.residuals || []) {
+          console.error(
+            pc.red(
+              `Managed artifact retained: ${residual.path || residual.label || residual.artifact} (${residual.reason}).`,
+            ),
+          );
+        }
+      }
+      if (!result.ok) {
+        process.exitCode = 2;
+      }
+      return payload;
+    });
+
+  session
     .command("locks <sessionId>")
-    .description("List active file locks for the session (who holds what, and when they expire)")
+    .description("List authoritative active file leases for the session")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -6405,7 +6677,14 @@ export function registerSessionCommand(program) {
         throw new Error(`Session '${normalizedSessionId}' was not found.`);
       }
 
-      const [agents, runtimeRuns, leases, fileLocks, activeTasks, recentEvents] = await Promise.all([
+      const [
+        agents,
+        runtimeRuns,
+        leases,
+        fileLeaseStatus,
+        activeTasks,
+        recentEvents,
+      ] = await Promise.all([
         listAgents(normalizedSessionId, {
           targetPath,
           includeInactive: false,
@@ -6424,10 +6703,22 @@ export function registerSessionCommand(program) {
           includeExpired: true,
           limit: 100,
         }),
-        listFileLocks(normalizedSessionId, {
-          targetPath,
-          emitExpiredEvents: false,
-        }),
+        listFileLocks(normalizedSessionId, { targetPath })
+          .then((activeFileLocks) => ({
+            ok: true,
+            authoritative: true,
+            activeFileLocks,
+            error: null,
+          }))
+          .catch((error) => ({
+            ok: false,
+            authoritative: false,
+            activeFileLocks: [],
+            error: {
+              code: normalizeString(error?.code) || "FILE_LEASE_LIST_FAILED",
+              message: safeFileLeaseErrorMessage(error),
+            },
+          })),
         listSessionTasks(normalizedSessionId, {
           targetPath,
           statuses: ["PENDING", "ACCEPTED"],
@@ -6438,6 +6729,7 @@ export function registerSessionCommand(program) {
           tail: 10,
         }),
       ]);
+      const fileLocks = fileLeaseStatus.activeFileLocks;
 
       const staleAgents = detectStaleAgents(agents, {});
       const staleAgentIds = new Set(staleAgents.map((agent) => normalizeString(agent.agentId)));
@@ -6496,6 +6788,11 @@ export function registerSessionCommand(program) {
         runtimeRuns,
         activeLeases: leases.assignments,
         activeFileLocks: fileLocks,
+        fileLeaseAuthority: {
+          ok: fileLeaseStatus.ok,
+          authoritative: fileLeaseStatus.authoritative,
+          error: fileLeaseStatus.error,
+        },
         activeTasks: activeTasks.tasks,
         recentEvents: materialRecentEvents,
         hiddenControlEventCount,

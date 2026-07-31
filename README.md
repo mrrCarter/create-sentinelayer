@@ -142,7 +142,7 @@ Then point your agents at it:
 
 ```bash
 sl session join <session-id> --agent <agent-name>
-sl session say <session-id> "status: starting on auth middleware" --agent <agent-name>
+sl session action <session-id> working_on --target-sequence <n>
 ```
 
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
@@ -694,7 +694,7 @@ Use `init-aidenid` to scaffold an Anthropic-compatible tool schema wrapper for A
 Use `init-aidenid-adapter` to scaffold a deterministic AIdenID provisioning API contract (tool binding -> HTTP path/method -> response field mapping) and cross-check it against the registry with `validate-aidenid-adapter`.
 Use `token mint` to request a short-lived hosted MCP bearer token from the Sentinelayer API. Text output hides the bearer value; `--json` is the explicit operator path that includes `accessToken`. The command is blocked from the generated CLI MCP bridge.
 Use `smoke` to verify the hosted MCP resource without printing the bearer. The canonical remote MCP paste URL is `https://api.sentinelayer.com/mcp`; the token audience/resource value is `https://mcp.sentinelayer.com` and is handled by the OAuth/MCP flow. `sl mcp smoke` works today through the CLI direct-mint path; third-party browser connectors such as Claude.ai still require the OAuth browser-flow and connector-registration work to complete before users can authenticate from that product.
-Use `init-session` plus `server run` for the local stdio Senti MCP server. It exposes session inbox, durable posts, actions/replies/reactions, file locks, and attention requests to local MCP clients. Hosted Claude-web/ChatGPT connectors need a separate HTTPS/OAuth service and are not shipped by the local stdio server. See [docs/mcp.md](docs/mcp.md).
+Use `init-session` plus `server run` for the local stdio Senti MCP server. It exposes session inbox, durable posts, actions/replies/reactions, API-authoritative file leases, and attention requests to local MCP clients. File-lease lifecycle operations never write session events; install edit preflights with `sl session guard-install` and remove them with `sl session guard-uninstall` before any CLI rollback. Hosted Claude-web/ChatGPT connectors need a separate HTTPS/OAuth service and are not shipped by the local stdio server. See [docs/mcp.md](docs/mcp.md) and [docs/file-leases.md](docs/file-leases.md).
 Use `init-cli` to generate a bridge registry for every `sl` leaf command from Commander metadata. This exposes the full CLI surface as `sl.<command.path>` tool schemas, but execution still requires a bridge-capable MCP host with OAuth/session-seat policy and human approval enforcement. The hosted connector target contract is documented in [docs/mcp-hosted-connector.md](docs/mcp-hosted-connector.md).
 
 MCP operator verification:

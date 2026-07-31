@@ -2586,7 +2586,8 @@ test("CLI guide export emits jira, linear, and github-issues formats", async () 
     assert.equal(linearFile.format, "linear");
     assert.equal(Array.isArray(linearFile.issues), true);
     assert.equal(linearFile.issues.length, 2);
-    assert.match(linearFile.issues[0].description, /lock: <file> - <intent>/);
+    assert.match(linearFile.issues[0].description, /sl session lock <id> <file>/);
+    assert.doesNotMatch(linearFile.issues[0].description, /["'`]lock:\s*<file>/u);
 
     const githubResult = await runCli({
       cwd: tempRoot,
@@ -7799,6 +7800,9 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     assert.equal(statusPayload.listenerPresence.authoritative, false);
     assert.equal(statusPayload.listenerPresence.liveCount, 0);
     assert.deepEqual(statusPayload.listenerPresence.listeners, []);
+    assert.deepEqual(statusPayload.activeFileLocks, []);
+    assert.equal(statusPayload.fileLeaseAuthority.ok, false);
+    assert.equal(statusPayload.fileLeaseAuthority.authoritative, false);
     assert.equal(
       statusPayload.recentEvents.some((event) => event.event === "session_listener_heartbeat"),
       false,

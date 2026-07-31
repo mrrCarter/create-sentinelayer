@@ -3732,3 +3732,72 @@ Review:
 - PR #782 implements the separate stream lifecycle fix and has an independent exact-head source key; it remains unmerged under the same hosted billing hold.
 - Independent review reproduced false `SL-SPEC-001` drift for both dot-relative slash forms. The unchanged implementation failed the expanded KAV `4/5` (log SHA256 `0EFAE86A5773D60CBE1086EECC9A69D6FE8F71AB1A245904E6BE56CEAD1F11C1`); the bounded optional-prefix fix passes `5/5` (log SHA256 `6980AE8292415606104E2243BFF01AF502A2B3C9D59664413EBBD788A19D0C44`) while retaining the suffix-confusion negative.
 
+# Authoritative Session File Leases + Edit Guard (2026-07-29)
+
+## Plan
+- [x] Replace local JSON/transcript-backed `session lock` authority with the authenticated session file-lease API.
+- [x] Persist only holder capability tokens locally; keep lease ownership, TTL, conflicts, and lifecycle server-authoritative.
+- [x] Add holder-bound renew/release and a fail-closed, machine-readable `session guard` command.
+- [x] Add a Claude pre-tool edit hook and terminal/VS Code preflight setup that invokes the guard and never posts lock/heartbeat events to chat.
+- [x] Preserve legacy command/MCP compatibility while removing lock/unlock/expiry event emission.
+- [x] Add API-client, path, token-store, guard, hook, CLI, and no-chat-event regression coverage.
+- [x] Surface denied terminal/editor edits with path, holder, and expiry; keep
+  successful guarded commands quiet.
+- [x] Remove every first-party instruction that tells agents to post
+  `lock:`/`unlock:` chat directives.
+- [x] Add API-probed, fingerprint-owned install metadata plus a fail-closed,
+  idempotent `guard-uninstall` required before CLI rollback.
+- [x] Run focused tests, `npm run verify`, local review/Omar/audit, and record exact evidence.
+
+## Scope Notes
+- Repo/base: `create-sentinelayer` at `origin/main` `d8adcec8a1b2d6ee90b0dff4c95b1810ce50dd3f`.
+- Same-OS-user/raw-shell bypass remains possible without separate OS identities, container isolation, or a privileged filesystem broker. Supported hooks and guarded commands fail closed; they are not a kernel security boundary.
+
+## Review Results
+- File ownership, TTL, conflicts, and lifecycle now come only from authenticated API file-lease endpoints. The local `file-lease-capabilities.json` is mode-`0600`, explicitly non-authoritative, and stores only holder capability material required for renew/release.
+- Acquire, renew, release, list, and guard reject responses without `authoritative: true`; an authority outage or malformed/forged allow response denies the edit. The read-only `session status` and best-effort process cleanup report authority degradation without manufacturing local ownership.
+- Paths are normalized with segment-aware workspace containment and filesystem realpath resolution through the nearest existing ancestor. Adversarial coverage proves traversal/outside-workspace rejection, symlink/junction alias convergence, and symlink escape rejection.
+- Holder/user/capability binding is covered for conflict denial, expiry and reacquisition, and forged renew/release. Cross-workspace tests prove a second holder is denied by shared API state and that stale local cache cannot override the server.
+- Lock lifecycle operations no longer import or append session events. Regression coverage proves acquire/renew/release/expiry and the machine guard create zero transcript changes; the daemon ignores historical `lock:`/`unlock:` chat directives.
+- `session guard-install` idempotently merges Claude `PreToolUse` enforcement, fail-closed terminal wrappers, and VS Code preflight tasks without replacing unrelated settings. Real PowerShell process tests prove denial prevents mutation and allow permits it; real CLI/server tests prove a forged non-authoritative allow exits `2` as machine JSON.
+- MCP lock/unlock/list compatibility now delegates to the same API-authoritative core. Legacy `syncRemote`/`awaitRemoteSync` inputs are accepted but explicitly ignored and cannot enable a fallback.
+- Focused file-lease/daemon/MCP/integration verification passed `55/55`; the final bearer-fixture cleanup rerun passed `7/7`.
+- Full `npm run verify` passed after dependency hardening: static check `358` files; docs validation `5` files / `6` headings; E2E `121/121`; unit coverage `1,788/1,788` across `64` suites; coverage statements/branches/functions/lines `91.81% / 70.60% / 93.53% / 91.81%`; package dry-run `356` files with SHA-1 `8357b5313a892bbfd349f9ecc1ed0ed7c8423ce3`.
+- Supply-chain verification uses a clean `npm ci`. `npm audit --audit-level=high` reports `0` vulnerabilities after upgrading the Node-20-compatible coverage tool to `c8@11` and removing the unused vulnerable license-checker dependency.
+- Full review report `.sentinelayer/reports/review-scan-full-20260729-072834.md` scanned `724` files with `P1=0`, `P2=1`, nonblocking; the sole finding is the pre-existing work-item marker in `tasks/evals/2026-04-17-pr-335-spec-session-integration.md`.
+- Full no-AI Omar Gate run `review-20260729-072841-5ee5a3b0` scanned `724` files with `P0=0`, `P1=0`, `P2=6`, nonblocking. All six are pre-existing repository-wide heuristics (four config key-name literals, one live-source loop, and one historical redact-test bearer fixture); the new file-lease lane contributes none.
+- Local audit report `.sentinelayer/reports/audit-20260729-072854.md` is `PASS`, scanned `725` files, and reports `P1=0`, `P2=2`; both findings are pre-existing and outside this lane.
+- Enforcement coverage is intentionally explicit in `docs/file-leases.md`: Claude edits and guarded terminal invocations are preflighted; VS Code tasks provide an opt-in preflight but the native save API cannot reliably cancel all saves; MCP hosts and other file-mutating tools must call guard separately.
+- This is an application-level coordination control, not a kernel security boundary. A same-OS user can bypass it with an unguarded raw process or tamper with same-user integration files. Hard prevention requires separate OS identities, container isolation, or a privileged/mediated filesystem.
+- Changes are local-only on `roadmap/pr-tbd-session-file-leases-cli-20260729`; no push, deployment, listener, or Senti post was performed.
+- Independent review of PR `#794` blocked the prior exact head because terminal
+  wrappers discarded conflict output, denial paths omitted expiry, `--json`
+  lock conflicts threw before producing JSON, stale first-party guidance still
+  prescribed chat directives, and persistent hooks lacked safe rollback.
+  The follow-up preserves the no-transcript architecture while closing those
+  terminal UX and rollback gaps. API migration/routes must still deploy and
+  pass live no-event smoke before this CLI candidate can merge/publish.
+- Follow-up adversarial review approved the corrected lane after independently
+  reproducing and closing manifest file/hook/task injection, unowned
+  script/manifest collisions, partial activation, and junction escape. Current
+  proof: focused combined suite `66/66`, static check `358` files, docs
+  validation, diff integrity, and a successful full-unit rerun. Release remains
+  API-first and does not claim raw-shell or native VS Code save mediation.
+
+# Semantic Transcript + Authoritative Lease Integration (2026-07-31)
+
+## Plan
+- [x] Merge the presence/cursor cutover and authoritative file-lease lines into one release branch.
+- [x] Resolve guidance and test conflicts in favor of 60-second backpressured polling, monotonic cursors, and API-authoritative leases.
+- [x] Keep join/onboarding/recap/daemon-health projections out of durable conversation storage.
+- [x] Include file, holder, intent, and expiry in editor/terminal lease denials.
+- [x] Prove the focused daemon, lease, MCP, guide, and spec suite.
+- [ ] Run full static/unit/E2E/package gates and independent diff review.
+- [ ] Push the integration branch and open/update the release PR only after the exact head is green.
+
+## Review Results
+- Merge conflicts were resolved without restoring the stale five-second active polling cadence or chat-based lock directives.
+- `daemon_alert` events now return as `ephemeral` `session_health` projections and bypass `appendToStream`; durable help responses and explicit administrative events remain semantic.
+- Guard denials report the blocked path, holder, lease intent, and expiry while preserving fail-closed behavior and redaction.
+- Focused combined verification passed `66/66`.
+

@@ -695,9 +695,7 @@ test("Unit command contracts: session daemon once runs a Senti tick and exits", 
     assert.equal(payload.summary.checkpoint.reason, "disabled");
 
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
-    assert.ok(
-      events.some((event) => event.event === "daemon_alert" && event.payload?.alert === "senti_online"),
-    );
+    assert.equal(events.some((event) => event.event === "daemon_alert"), false);
     assert.ok(events.some((event) => event.event === "agent_killed" && event.payload?.target === "senti"));
   } finally {
     console.log = originalLog;
