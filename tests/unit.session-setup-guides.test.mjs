@@ -73,7 +73,8 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.match(firstGuide, /SentinelLayer Session Guide for AI Agents/);
     assert.match(firstAgents, /Find the recent Senti session for this codebase/);
     assert.match(firstAgents, /sl session post-agent <id> "status: <update>" --agent <your-agent-id>/);
-    assert.match(firstAgents, /lock: <file> - <intent>/);
+    assert.match(firstAgents, /sl session lock <id> <file> --agent <your-name> --intent "<scope>"/);
+    assert.doesNotMatch(firstAgents, /lock: <file>/);
     assert.match(firstAgents, /sl review --diff/);
     assert.match(firstAgents, /sl --help/);
     assert.match(firstAgents, /sl session react <id> ack --target-sequence <n>/);
@@ -236,7 +237,7 @@ test("Unit session setup-guides: `session inject-guide` only mutates existing in
 
     const agentsText = await readFile(path.join(tempRoot, "AGENTS.md"), "utf-8");
     assert.match(agentsText, /Keep this file and append coordination section only\./);
-    assert.match(agentsText, /plan: <scope>; files: <paths>/);
+    assert.match(agentsText, /post a short semantic plan only when peers need it/);
     assert.equal(countCoordinationMarkers(agentsText), 1);
 
     const claudeText = await readOptionalFile(path.join(tempRoot, "CLAUDE.md"));

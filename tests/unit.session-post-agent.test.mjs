@@ -2098,9 +2098,9 @@ test("Unit session join: refreshes expired local cache after remote verification
     assert.equal(payload.agentJoinRelayed, false);
 
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
-    const joinEvent = events.find((event) => event.event === "agent_join");
-    assert.ok(joinEvent);
-    assert.equal(joinEvent.agent.id, "codex");
+    assert.equal(events.some((event) => event.event === "agent_join"), false);
+    assert.equal(payload.onboardingBriefing.forAgent, "codex");
+    assert.equal(payload.onboardingBriefing.persisted, false);
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();

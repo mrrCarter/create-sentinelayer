@@ -3310,7 +3310,7 @@ export function registerSessionCommand(program) {
     .option("--name <name>", "Agent display name (legacy alias for --agent)")
     .option(
       "--agent <id>",
-      "Granted agent id to emit an agent_join event as. Behaves like post-agent for human/placeholder ids — those are recorded in the local registry only.",
+      "Granted agent id to register in the participant roster. Join state and onboarding are returned locally and never appended to the transcript.",
     )
     .option("--invite-token <token>", "Invitation token to accept before joining the session")
     .option("--seat-key <key>", "Reserved session seat key to claim while accepting an invite")
@@ -3399,11 +3399,9 @@ export function registerSessionCommand(program) {
       const model = normalizeString(options.model) || "cli";
       const hasConcreteAgentIdentity = Boolean(explicitAgent || acceptedAgentId);
 
-      // `registerAgent` writes join identity and onboarding context to local
-      // coordination state. Those events are intentionally rejected at the
-      // outbound transcript boundary; the remote log is semantic conversation
-      // only. Keep this compatibility field false so callers do not mistake a
-      // local registration for a durable remote append.
+      // Registration updates the local participant projection and returns
+      // onboarding directly to this process. It never writes join, identity,
+      // or coaching rows into the transcript.
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
         agentId: resolvedAgentId,
@@ -3415,6 +3413,11 @@ export function registerSessionCommand(program) {
         awaitRemoteSync: hasConcreteAgentIdentity,
       });
       const agentJoinRelayed = false;
+      const localBriefingPayload =
+        joined.onboarding?.contextBriefing?.event?.payload &&
+        typeof joined.onboarding.contextBriefing.event.payload === "object"
+          ? joined.onboarding.contextBriefing.event.payload
+          : null;
       const onboardingBrief = await writeSessionOnboardingBrief(normalizedSessionId, {
         targetPath,
         onboarding: acceptedOnboarding,
@@ -3455,6 +3458,17 @@ export function registerSessionCommand(program) {
         agentCount: Number.isFinite(agentCount) ? agentCount : 0,
         lastActivityAt: lastActivityIso || null,
         agentJoinRelayed,
+        onboardingBriefing: localBriefingPayload
+          ? {
+              forAgent: localBriefingPayload.forAgent || joined.agentId,
+              message: localBriefingPayload.message || "",
+              recap: localBriefingPayload.recap || "",
+              rules: localBriefingPayload.rules || null,
+              generatedAt: localBriefingPayload.generatedAt || null,
+              delivery: "joining_process",
+              persisted: false,
+            }
+          : null,
         invitationAccepted: Boolean(invitationAcceptResult?.ok || invitationAccept),
         invitationAccept: invitationAccept
           ? {
@@ -3492,6 +3506,9 @@ export function registerSessionCommand(program) {
       console.log(pc.gray(`agent=${joined.agentId} role=${joined.role} model=${joined.model}`));
       if (payload.onboardingGuide?.markdownPath) {
         console.log(pc.gray(`onboarding=${payload.onboardingGuide.markdownPath}`));
+      }
+      if (payload.onboardingBriefing?.recap) {
+        console.log(payload.onboardingBriefing.recap);
       }
     });
 

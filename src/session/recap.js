@@ -6,7 +6,7 @@ import process from "node:process";
 import { createAgentEvent } from "../events/schema.js";
 import { dedupeSessionEvents } from "./event-identity.js";
 import { resolveSessionPaths } from "./paths.js";
-import { appendToStream, readStream } from "./stream.js";
+import { readStream } from "./stream.js";
 import { getSession } from "./store.js";
 import { aggregateSessionUsage } from "./usage.js";
 
@@ -1108,7 +1108,7 @@ const AGENT_JOIN_RULES = [
   "",
   "**Polling cadence** — Poll new events at most once per 60s (`sl session listen --transport poll` or `sl session read --remote --tail N`). The listener adds bounded jitter, backs off exponentially after transient failures, and treats `429 Retry-After` as a hard floor. `session listen` is only a delivery cursor, not a grounding command; join or recap before acting.",
   "",
-  "**Session grounding** — Long-lived rooms should have one visible daemon owner running `sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60`. If no durable `session_recap` or `session_checkpoint` is appearing, run `sl session recap now <id> --remote --agent <your-name> --json` before posting a long plan.",
+  "**Session grounding** — Use `sl session recap now <id> --remote --agent <your-name> --json` when you need a current grounding summary. Routine room health is a derived status projection and never a chat message; explicit `session_checkpoint` artifacts remain durable.",
   "",
   "**Writing back** — You can use **markdown**: bold, italic, lists, fenced code, and `inline code`. The web dashboard renders it. Plain text also works. Keep posts terse and technical — link to the work, don't recap it.",
   "",
@@ -1305,7 +1305,7 @@ export async function buildSessionRecap(
   };
 }
 
-export async function emitContextBriefing(
+export async function buildContextBriefing(
   sessionId,
   {
     forAgentId = "",
@@ -1313,7 +1313,6 @@ export async function emitContextBriefing(
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
     includeJoinRules = true,
-    awaitRemoteSync = false,
   } = {}
 ) {
   const recap = await buildSessionRecap(sessionId, {
@@ -1342,14 +1341,19 @@ export async function emitContextBriefing(
       summary: recap.summary,
     },
   });
-  const persisted = await appendToStream(sessionId, event, {
-    targetPath,
-    awaitRemoteSync,
-  });
   return {
     recap,
-    event: persisted,
+    event,
+    persisted: false,
+    delivery: "joining_process",
   };
+}
+
+// Backward-compatible name for callers that have not yet migrated. This
+// returns the briefing directly to the joining process; it never appends it to
+// the session stream.
+export async function emitContextBriefing(sessionId, options = {}) {
+  return buildContextBriefing(sessionId, options);
 }
 
 export async function shouldEmitRecap(
@@ -1536,28 +1540,27 @@ export function emitPeriodicRecap(
           summary: recap.summary,
         },
       });
-      const persisted = await appendToStream(state.sessionId, event, {
-        targetPath: state.targetPath,
-      });
       state.lastRecapAt = nowIso;
       rememberRecapSource(state, trigger.sourceEvent, nowIso);
-      state.lastRecapEvent = persisted;
+      state.lastRecapEvent = event;
       state.lastDecision = {
         emitted: true,
+        persisted: false,
+        delivery: "room_health_projection",
         mode: trigger.mode,
         reason: "",
-        eventId: persisted.eventId || null,
+        eventId: event.eventId || null,
         sourceEventCount: trigger.policy.sourceEventCount,
         policy: trigger.policy,
       };
 
       if (typeof onEmit === "function") {
-        await onEmit(persisted, recap);
+        await onEmit(event, recap);
       }
       if (trigger.stopAfterEmit) {
         stop("inactive");
       }
-      return persisted;
+      return event;
     } finally {
       state.inFlight = false;
     }

@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 
-import { validateAgentEvent } from "../src/events/schema.js";
 import {
   detectStaleAgents,
   generateAgentId,
@@ -77,11 +76,11 @@ test("Unit session agent registry: register/heartbeat/list/stale detection", asy
     assert.equal(staleLater[0].idleSeconds >= 90, true);
 
     const events = await readStream(session.sessionId, { tail: 10, targetPath: tempRoot });
-    assert.equal(events.length >= 1, true);
-    const joinEvent = events.find((event) => event.event === "agent_join");
-    assert.ok(joinEvent);
-    assert.equal(validateAgentEvent(joinEvent, { allowLegacy: false }), true);
-    assert.equal(joinEvent.sessionId, session.sessionId);
+    assert.deepEqual(events, [], "roster registration must not append transcript rows");
+    assert.equal(registered.emittedJoinEvent, false);
+    assert.equal(registered.emittedContextBriefing, false);
+    assert.equal(registered.returnedContextBriefing, true);
+    assert.equal(registered.onboarding.contextBriefing.persisted, false);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -103,11 +102,11 @@ test("Unit session agent registry: active re-register refreshes without join or 
       targetPath: tempRoot,
     });
     const firstEvents = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
-    assert.equal(first.emittedJoinEvent, true);
-    assert.equal(first.emittedContextBriefing, true);
+    assert.equal(first.emittedJoinEvent, false);
+    assert.equal(first.emittedContextBriefing, false);
+    assert.equal(first.returnedContextBriefing, true);
     assert.equal(first.refreshedExistingAgent, false);
-    assert.equal(firstEvents.filter((event) => event.event === "agent_join").length, 1);
-    assert.equal(firstEvents.filter((event) => event.event === "context_briefing").length, 1);
+    assert.equal(firstEvents.length, 0);
 
     const refreshed = await registerAgent(session.sessionId, {
       agentId: "codex",
@@ -124,8 +123,8 @@ test("Unit session agent registry: active re-register refreshes without join or 
       Date.parse(refreshed.lastActivityAt) >= Date.parse(first.lastActivityAt),
       true
     );
-    assert.equal(refreshedEvents.filter((event) => event.event === "agent_join").length, 1);
-    assert.equal(refreshedEvents.filter((event) => event.event === "context_briefing").length, 1);
+    assert.equal(refreshed.returnedContextBriefing, undefined);
+    assert.equal(refreshedEvents.length, 0);
 
     await heartbeatAgent(session.sessionId, "codex", {
       status: "coding",
@@ -170,14 +169,13 @@ test("Unit session agent registry: active re-register refreshes without join or 
     assert.equal(parallelB.refreshedExistingAgent, true);
     assert.equal(parallelA.model, "gpt-5");
     assert.equal(parallelB.displayName, "Codex Primary");
-    assert.equal(parallelEvents.filter((event) => event.event === "agent_join").length, 1);
-    assert.equal(parallelEvents.filter((event) => event.event === "context_briefing").length, 1);
+    assert.equal(parallelEvents.length, 0);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test("Unit session agent registry: re-register after leave emits a real rejoin", async () => {
+test("Unit session agent registry: re-register after leave refreshes roster without transcript noise", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-agents-rejoin-"));
   try {
     await seedWorkspace(tempRoot);
@@ -202,18 +200,17 @@ test("Unit session agent registry: re-register after leave emits a real rejoin",
     });
     const events = await readStream(session.sessionId, { tail: 20, targetPath: tempRoot });
 
-    assert.equal(rejoined.emittedJoinEvent, true);
-    assert.equal(rejoined.emittedContextBriefing, true);
+    assert.equal(rejoined.emittedJoinEvent, false);
+    assert.equal(rejoined.emittedContextBriefing, false);
+    assert.equal(rejoined.returnedContextBriefing, true);
     assert.equal(rejoined.refreshedExistingAgent, false);
-    assert.equal(events.filter((event) => event.event === "agent_join").length, 2);
-    assert.equal(events.filter((event) => event.event === "context_briefing").length, 2);
-    assert.equal(events.filter((event) => event.event === "agent_leave").length, 1);
+    assert.equal(events.length, 0);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test("Unit session agent registry: unregister emits leave and inactives are filterable", async () => {
+test("Unit session agent registry: unregister updates roster without transcript noise", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-leave-"));
   try {
     await seedWorkspace(tempRoot);
@@ -245,11 +242,7 @@ test("Unit session agent registry: unregister emits leave and inactives are filt
     assert.equal(allAgents[0].active, false);
 
     const events = await readStream(session.sessionId, { tail: 10, targetPath: tempRoot });
-    const leaveEvent = events.find((event) => event.event === "agent_leave");
-    assert.ok(leaveEvent);
-    assert.equal(leaveEvent.payload.reason, "task_complete");
-    assert.equal(validateAgentEvent(leaveEvent, { allowLegacy: false }), true);
-    assert.equal(leaveEvent.sessionId, session.sessionId);
+    assert.deepEqual(events, []);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

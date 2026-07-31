@@ -72,8 +72,9 @@ test("Unit spec session: session tooling forces coordination phase by default", 
     sessionActive: false,
   });
   assert.match(markdown, /Multi-Agent Coordination Protocol/);
-  assert.match(markdown, /plan: <scope>; files: <paths>/);
-  assert.match(markdown, /lock: <file> - <intent>/);
+  assert.match(markdown, /post a short semantic plan only when peers need it/);
+  assert.match(markdown, /sl session lock <id> <file> --agent <your-name> --intent "<scope>"/);
+  assert.doesNotMatch(markdown, /lock: <file>/);
   assert.match(markdown, /sl review --diff/);
   assert.match(markdown, /sl --help/);
 });
@@ -104,7 +105,7 @@ Ship a deterministic CLI feature.
   });
   assert.match(prompt, /Find the recent Senti session for this codebase/);
   assert.match(prompt, /session listen` is only a delivery cursor, not a grounding command/);
-  assert.match(prompt, /plan: <scope>; files: <paths>/);
+  assert.match(prompt, /post a short semantic plan only when peers need it/);
   assert.match(prompt, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
   assert.match(prompt, /sl session recap now <id> --remote --agent <your-name> --json/);
   assert.match(prompt, /sl session react <id> ack --target-sequence <n>/);
@@ -144,7 +145,11 @@ Ship deterministic coordination.
   const github = renderGuideExport({ format: "github-issues", guide });
 
   assert.match(jira.issues[0].description, /Coordination rules:/);
-  assert.match(linear.issues[0].description, /lock: <file> - <intent>/);
+  assert.match(
+    linear.issues[0].description,
+    /sl session lock <id> <file> --agent <your-name> --intent "<scope>"/,
+  );
+  assert.doesNotMatch(linear.issues[0].description, /lock: <file>/);
   assert.match(github, /sl --help/);
 });
 
