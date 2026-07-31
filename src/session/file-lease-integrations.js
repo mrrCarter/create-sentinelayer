@@ -270,6 +270,15 @@ async function acquireIntegrationMutex(workspaceRoot) {
   const mutexDirectoryExisted = (await lstatIfPresent(mutexDirectory)) !== null;
   await fsp.mkdir(mutexDirectory, { recursive: true });
   let handle;
+  const cleanupCreatedMutex = async () => {
+    await handle?.close().catch(() => {});
+    if (handle) {
+      await fsp.rm(mutexPath, { force: true }).catch(() => {});
+    }
+    if (!mutexDirectoryExisted) {
+      await fsp.rmdir(mutexDirectory).catch(() => {});
+    }
+  };
   try {
     handle = await fsp.open(mutexPath, "wx", 0o600);
     await handle.writeFile(
@@ -280,21 +289,20 @@ async function acquireIntegrationMutex(workspaceRoot) {
       "utf-8",
     );
   } catch (error) {
-    await handle?.close().catch(() => {});
-    if (error && typeof error === "object" && error.code === "EEXIST") {
+    await cleanupCreatedMutex();
+    if (
+      !handle
+      && error
+      && typeof error === "object"
+      && error.code === "EEXIST"
+    ) {
       throw new Error(
         "Another SentinelLayer file-lease integration change is in progress; no integration files were changed.",
       );
     }
     throw error;
   }
-  return async () => {
-    await handle.close().catch(() => {});
-    await fsp.rm(mutexPath, { force: true }).catch(() => {});
-    if (!mutexDirectoryExisted) {
-      await fsp.rmdir(mutexDirectory).catch(() => {});
-    }
-  };
+  return cleanupCreatedMutex;
 }
 
 async function statIfPresent(filePath) {
@@ -332,6 +340,27 @@ async function restoreSnapshots(snapshots) {
     } else {
       await fsp.rm(filePath, { force: true });
     }
+  }
+}
+
+async function snapshotDirectoryExistence(directoryPaths) {
+  const snapshots = new Map();
+  for (const directoryPath of new Set(directoryPaths)) {
+    snapshots.set(
+      directoryPath,
+      (await lstatIfPresent(directoryPath)) !== null,
+    );
+  }
+  return snapshots;
+}
+
+async function removeNewEmptyDirectories(directorySnapshots) {
+  const deepestFirst = [...directorySnapshots.entries()]
+    .filter(([, existed]) => !existed)
+    .map(([directoryPath]) => directoryPath)
+    .sort((left, right) => right.length - left.length);
+  for (const directoryPath of deepestFirst) {
+    await fsp.rmdir(directoryPath).catch(() => {});
   }
 }
 
@@ -795,6 +824,9 @@ export async function installFileLeaseIntegrations(
     vscodeTasksPath,
     enforcementConfigPath,
   ];
+  const mutationDirectorySnapshots = await snapshotDirectoryExistence(
+    mutationTargets.map((filePath) => path.dirname(filePath)),
+  );
   const snapshots = new Map();
   for (const filePath of mutationTargets) {
     snapshots.set(filePath, await snapshotFile(filePath));
@@ -821,7 +853,11 @@ export async function installFileLeaseIntegrations(
       { mode: 0o600 },
     );
   } catch (error) {
-    await restoreSnapshots(snapshots);
+    try {
+      await restoreSnapshots(snapshots);
+    } finally {
+      await removeNewEmptyDirectories(mutationDirectorySnapshots);
+    }
     throw error;
   }
 

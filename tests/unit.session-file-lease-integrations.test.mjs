@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import {
+import fsp, {
   chmod,
   mkdir,
   mkdtemp,
@@ -349,6 +349,141 @@ test("Unit file-lease integrations: install authority failure and active-lease u
     assert.equal(await readFile(vscodePath, "utf-8"), installedVsCode);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit file-lease integrations: mutex metadata failure leaves no stale lock and permits immediate retry", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-lease-mutex-failure-"));
+  try {
+    const originalOpen = fsp.open;
+    let injected = false;
+    try {
+      fsp.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        if (
+          !injected
+          && String(args[0]).endsWith("file-lease-integration.lock")
+        ) {
+          injected = true;
+          handle.writeFile = async () => {
+            const error = new Error("injected mutex metadata write failure");
+            error.code = "EIO";
+            throw error;
+          };
+        }
+        return handle;
+      };
+      await assert.rejects(
+        installFileLeaseIntegrations("sess-mutex-retry", "codex", {
+          targetPath: tempRoot,
+          listLeases: async () => [],
+        }),
+        /injected mutex metadata write failure/u,
+      );
+    } finally {
+      fsp.open = originalOpen;
+    }
+
+    assert.deepEqual(await fsp.readdir(tempRoot), []);
+    const retry = await installFileLeaseIntegrations(
+      "sess-mutex-retry",
+      "codex",
+      {
+        targetPath: tempRoot,
+        listLeases: async () => [],
+      },
+    );
+    assert.equal(retry.ok, true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit file-lease integrations: late install failure removes only directories created by the attempt", async () => {
+  const emptyRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-lease-rollback-empty-"));
+  const existingRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-lease-rollback-existing-"));
+
+  async function expectLateFailure(targetPath, sessionId) {
+    const originalRename = fsp.rename;
+    let renameCount = 0;
+    try {
+      fsp.rename = async (...args) => {
+        if (String(args[0]).startsWith(targetPath)) {
+          renameCount += 1;
+          if (renameCount === 6) {
+            const error = new Error("injected late integration write failure");
+            error.code = "EIO";
+            throw error;
+          }
+        }
+        return originalRename(...args);
+      };
+      await assert.rejects(
+        installFileLeaseIntegrations(sessionId, "codex", {
+          targetPath,
+          listLeases: async () => [],
+        }),
+        /injected late integration write failure/u,
+      );
+    } finally {
+      fsp.rename = originalRename;
+    }
+    assert.ok(renameCount >= 6);
+  }
+
+  try {
+    await expectLateFailure(emptyRoot, "sess-rollback-empty");
+    assert.deepEqual(await fsp.readdir(emptyRoot), []);
+
+    await mkdir(path.join(existingRoot, ".claude"), { recursive: true });
+    await mkdir(path.join(existingRoot, ".vscode"), { recursive: true });
+    await mkdir(
+      path.join(existingRoot, ".sentinelayer", "hooks"),
+      { recursive: true },
+    );
+    const originalClaude = "{\n  // preserve exact user bytes\n  \"keep\": true,\n}\n";
+    const originalVsCode =
+      "{\"version\":\"2.0.0\",\"tasks\":[],\"keep\":\"exact\"}\n";
+    await writeFile(
+      path.join(existingRoot, ".claude", "settings.local.json"),
+      originalClaude,
+      "utf-8",
+    );
+    await writeFile(
+      path.join(existingRoot, ".vscode", "tasks.json"),
+      originalVsCode,
+      "utf-8",
+    );
+    await expectLateFailure(existingRoot, "sess-rollback-existing");
+    assert.deepEqual(
+      (await fsp.readdir(existingRoot)).sort(),
+      [".claude", ".sentinelayer", ".vscode"],
+    );
+    assert.equal(
+      await readFile(
+        path.join(existingRoot, ".claude", "settings.local.json"),
+        "utf-8",
+      ),
+      originalClaude,
+    );
+    assert.equal(
+      await readFile(
+        path.join(existingRoot, ".vscode", "tasks.json"),
+        "utf-8",
+      ),
+      originalVsCode,
+    );
+    assert.deepEqual(
+      await fsp.readdir(path.join(existingRoot, ".sentinelayer")),
+      ["hooks"],
+    );
+    assert.deepEqual(
+      await fsp.readdir(path.join(existingRoot, ".sentinelayer", "hooks")),
+      [],
+    );
+  } finally {
+    await rm(emptyRoot, { recursive: true, force: true });
+    await rm(existingRoot, { recursive: true, force: true });
   }
 });
 

@@ -3744,3 +3744,24 @@ Review:
   validation, diff integrity, and a successful full-unit rerun. Release remains
   API-first and does not claim raw-shell or native VS Code save mediation.
 
+## PR #794 Final Mutex/Rollback Cleanup (2026-07-31)
+
+### Plan
+- [x] Remove a mutex file created by this call when post-open initialization
+  fails, and remove its newly created directory only when empty.
+- [x] Remove only integration directories created by a failed install attempt,
+  preserving every directory that existed before the attempt.
+- [x] Add fault-injection coverage for mutex metadata failure, immediate retry,
+  late install rollback, and pre-existing directory preservation.
+- [x] Run the focused integration suite, static check, and diff integrity gate.
+
+### Review
+- Post-open mutex metadata failure now closes the handle, removes only the lock
+  created by that call, and removes a newly created empty mutex directory.
+  Immediate retry succeeds.
+- Late install write failure restores exact pre-existing config bytes, removes
+  every file and empty directory created solely by the attempt, and preserves
+  pre-existing empty integration directories.
+- Verification: focused integration suite `18/18`, combined session/lease/MCP
+  regression suite `68/68`, static check `358` files, and clean diff integrity.
+

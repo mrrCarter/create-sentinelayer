@@ -283,4 +283,8 @@
   uninstall path and explicit API-first upgrade/client-first rollback order
   before publication. Package rollback alone can strand an unavailable hook
   that blocks every edit or split authority across client versions.
+- A filesystem mutex is not acquired safely until its metadata write succeeds.
+  If post-open initialization fails, close and remove only the lock created by
+  that call, then remove newly created empty directories so transient I/O
+  failure cannot strand a false owner or brick immediate retry.
 - Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.
