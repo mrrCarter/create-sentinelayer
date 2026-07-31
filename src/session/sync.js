@@ -18,9 +18,16 @@ const SESSION_EVENT_FETCH_LIMIT = 200;
 const SESSION_ACTION_FETCH_LIMIT = 500;
 const SESSION_SEARCH_FETCH_LIMIT = 50;
 const NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES = new Set([
+  "agent_heartbeat",
+  "agent_identified",
+  "agent_join",
+  "agent_leave",
+  "agent_status",
+  "context_briefing",
   "file_lock",
   "file_lock_expired",
   "file_unlock",
+  "session_recap",
   "session_listener_heartbeat",
   "session_listener_started",
   "session_listener_stopped",
@@ -899,8 +906,8 @@ export async function syncSessionEventToApi(
   // machine those calls inherit the user's stored auth and silently posted
   // hundreds of orphan rooms to prod (Carter saw ~200 "<null>" sessions).
   // Honoring SENTINELAYER_SKIP_REMOTE_SYNC=1 keeps everything local while
-  // still exercising the appendToStream + agent_join code paths the tests
-  // care about. Local NDJSON durability is unaffected.
+  // still exercising the appendToStream paths the tests care about. Local
+  // NDJSON durability is unaffected.
   if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") {
     return { synced: false, reason: "remote_sync_disabled_env" };
   }

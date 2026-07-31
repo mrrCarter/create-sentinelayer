@@ -59,11 +59,18 @@ test("Unit session sync: syncSessionEventToApi posts canonical event payload", a
   assert.equal(payload.event.sessionId, "sess-123");
 });
 
-test("Unit session sync: non-semantic liveness/read/lock events are rejected before fetch", async () => {
+test("Unit session sync: non-semantic coordination events are rejected before fetch", async () => {
   for (const eventType of [
+    "agent_heartbeat",
+    "agent_identified",
+    "agent_join",
+    "agent_leave",
+    "agent_status",
+    "context_briefing",
     "session_listener_started",
     "session_listener_heartbeat",
     "session_listener_stopped",
+    "session_recap",
     "session_view",
     "file_lock",
     "file_unlock",

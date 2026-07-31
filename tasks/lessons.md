@@ -281,3 +281,7 @@
 - SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
 - Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
 - Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.
+
+## 2026-07-30
+
+- A liveness cutover is incomplete if join/leave/status/identity, onboarding briefings, recaps, views, or lock state can still reach the remote transcript. Keep those local or in their authoritative presence/cursor/lease surfaces; the durable remote log is for semantic conversation.

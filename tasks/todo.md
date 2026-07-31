@@ -5,13 +5,14 @@
 - [x] Replace listener lifecycle event writes with the dedicated fail-closed ephemeral presence contract.
 - [x] Replace event-scanned listener rosters with the membership-gated three-state presence contract; unsupported/degraded presence remains unknown and never falls back to transcript heartbeats.
 - [x] Collapse automatic and explicit view receipts into one monotonic read-cursor upsert per consumed window.
+- [x] Keep join/leave/status/identity, onboarding briefings, and recaps local instead of relaying them into the remote transcript.
 - [x] Add bounded jittered polling, exponential transient backoff, and strict `Retry-After` floors.
 - [x] Prove listener/read/status/recap paths perform zero durable heartbeat/view appends and do not scan durable liveness events.
 - [x] Update CLI/MCP/setup guidance, run focused and full verification, package dry-run, deterministic review, Omar, and audit.
 - [x] Commit locally only and hand off exact SHA plus any server-contract gaps.
 
 ## Review
-- Durable append boundary rejects `session_listener_*`, `session_view`/`view`, and `file_lock`/`file_unlock`/expiry control types before auth or fetch. Listener presence uses only membership-gated `GET`/`PUT /api/v1/sessions/:id/presence`; status, listeners, and recap never reconstruct liveness from durable history.
+- Durable append boundary rejects agent join/leave/status/identity/heartbeat, context briefings, recaps, `session_listener_*`, `session_view`/`view`, and `file_lock`/`file_unlock`/expiry control types before auth or fetch. Listener presence uses only membership-gated `GET`/`PUT /api/v1/sessions/:id/presence`; status, listeners, and recap never reconstruct liveness from durable history.
 - CLI reads, MCP `poll_inbox`/`read_history`, listener batches, and explicit `view` advance at most one `PUT /api/v1/sessions/:id/read-cursor` for the consumed window. There is no action/event compatibility fallback.
 - Regression proof covers three consecutive no-new-event polls at an unchanged transport cursor: zero local cursor persists, zero read-cursor `PUT`s, and `readCursorUpdates=0`. Separate 404/503 presence/read-cursor cases make exactly four operational endpoint calls and zero `/events` or `/actions` fallbacks.
 - Polling defaults to 60 seconds, adds 0-20% upward jitter, exponentially backs off transient failures to a 300-second client cap, and honors a longer `Retry-After` as a hard floor. Default transport is pull-only `poll`.
