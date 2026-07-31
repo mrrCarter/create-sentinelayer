@@ -395,6 +395,86 @@ test("Unit session file leases: acquire renew guard release write zero transcrip
   }
 });
 
+test("Unit session file leases: authoritative allow binds exact unique paths and capabilities", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-binding-"));
+  const authority = createLeaseAuthority();
+  try {
+    await seedWorkspace(tempRoot);
+    const options = leaseOptions(authority, tempRoot);
+    await lockFile("sess-guard-binding", "codex", "src/one.js", options);
+    await lockFile("sess-guard-binding", "codex", "src/two.js", options);
+
+    const guardWith = (mutate) =>
+      guardFileLeases(
+        "sess-guard-binding",
+        "codex",
+        ["src/one.js", "src/two.js"],
+        {
+          ...options,
+          requestMutation: async (...args) => {
+            const response = await authority.requestMutation(...args);
+            return mutate(response);
+          },
+        },
+      );
+
+    const reordered = await guardWith((response) => ({
+      ...response,
+      guarded: [...response.guarded].reverse(),
+    }));
+    assert.equal(reordered.allowed, true);
+
+    await assert.rejects(
+      guardWith((response) => ({
+        ...response,
+        guarded: [response.guarded[0], response.guarded[0]],
+      })),
+      /inconsistent allow decision/u,
+    );
+    await assert.rejects(
+      guardWith((response) => ({
+        ...response,
+        guarded: [
+          response.guarded[0],
+          { ...response.guarded[1], path: "src/unrequested.js" },
+        ],
+      })),
+      /inconsistent allow decision/u,
+    );
+    await assert.rejects(
+      guardWith((response) => ({
+        ...response,
+        guarded: [
+          { ...response.guarded[0], lease: response.guarded[1].lease },
+          response.guarded[1],
+        ],
+      })),
+      /inconsistent allow decision/u,
+    );
+    await assert.rejects(
+      guardWith((response) => ({
+        ...response,
+        guarded: [
+          { ...response.guarded[0], leaseToken: "Z".repeat(43) },
+          response.guarded[1],
+        ],
+      })),
+      /inconsistent allow decision/u,
+    );
+    await assert.rejects(
+      guardFileLeases(
+        "sess-guard-binding",
+        "codex",
+        ["src/one.js", "src/one.js"],
+        options,
+      ),
+      /inconsistent allow decision/u,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session file leases: stale local capability cannot override server revocation", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sentinelayer-file-lease-stale-cache-"));
   const authority = createLeaseAuthority();

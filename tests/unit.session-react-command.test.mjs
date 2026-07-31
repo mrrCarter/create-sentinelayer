@@ -304,10 +304,49 @@ test("Unit session view command: advances the monotonic read cursor", async () =
     assert.equal(payload.actionType, "view");
     assert.equal(payload.event, null);
     assert.equal(payload.localAppend.appended, false);
-    assert.equal(payload.localAppend.reason, "no_event");
+    assert.equal(payload.localAppend.reason, "read_cursor_projection");
+    assert.deepEqual(payload.readCursorProjection, {
+      updated: true,
+      lastReadSequenceId: 42,
+      targetCursor: null,
+    });
     assert.equal(mock.state.actionPayloads.length, 0);
     assert.equal(mock.state.readCursorPayload.targetSequenceId, 42);
     assert.equal(mock.state.readCursorPayload.agentId, "codex");
+    const humanResult = await runCli(
+      [
+        "session",
+        "view",
+        "sess-actions",
+        "43",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+    assert.equal(humanResult.code, 0, humanResult.stderr);
+    assert.match(
+      humanResult.stdout,
+      /Advanced read cursor through #43; no transcript event appended\./,
+    );
+    assert.equal(mock.state.actionPayloads.length, 0);
+
+    const streamRaw = await readFile(
+      path.join(tmp, ".sentinelayer", "sessions", "sess-actions", "stream.ndjson"),
+      "utf8",
+    );
+    const stream = streamRaw.trim()
+      ? JSON.parse(`[${streamRaw.trim().split(/\r?\n/).join(",")}]`)
+      : [];
+    assert.equal(
+      stream.some((event) => event.event === "session_action" && event.payload?.actionType === "view"),
+      false,
+    );
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });

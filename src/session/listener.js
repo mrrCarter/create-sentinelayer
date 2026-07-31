@@ -607,7 +607,7 @@ export async function listenSessionEvents({
       }
       const issuedAtMs = listenerControlIssuedAtMs(control);
       const fresh =
-        issuedAtMs >= startedAtMs &&
+        issuedAtMs >= startedAtMs - MAX_CLOCK_SKEW_MS &&
         issuedAtMs <= observedAtMs + MAX_CLOCK_SKEW_MS;
       if (
         !listenerControlType(control) ||
@@ -651,7 +651,7 @@ export async function listenSessionEvents({
   }
 
   let streamHeartbeatTimer = null;
-  let streamHeartbeatInFlight = false;
+  let streamMaintenanceInFlight = null;
   const streamHeartbeatMs = Math.max(1_000, Math.min(idleSleepMs, 60_000));
 
   function stopStreamHeartbeatTimer() {
@@ -662,14 +662,49 @@ export async function listenSessionEvents({
 
   function startStreamHeartbeatTimer() {
     stopStreamHeartbeatTimer();
-    streamHeartbeatTimer = _setInterval(async () => {
-      if (signal?.aborted || streamHeartbeatInFlight) return;
-      streamHeartbeatInFlight = true;
-      try {
-        await notifyHeartbeat({ nextPollMs: streamHeartbeatMs });
-      } finally {
-        streamHeartbeatInFlight = false;
+    streamHeartbeatTimer = _setInterval(() => {
+      if (signal?.aborted || streamMaintenanceInFlight) {
+        return streamMaintenanceInFlight;
       }
+      const maintenance = (async () => {
+        const result = await _poll(normalizedSessionId, {
+          targetPath,
+          since: cursor,
+          limit: 1,
+          listenerAgentId: normalizedAgentId,
+          signal,
+        });
+        if (signal?.aborted) return;
+        if (result?.ok) {
+          await processControlBatch(result.listenerControls);
+        } else {
+          await onError({
+            ok: false,
+            reason: `control_poll_${normalizeString(result?.reason) || "failed"}`,
+            cursor: cursor || null,
+            retryAfterMs: Number(result?.retryAfterMs) || null,
+            status: Number(result?.status) || null,
+          });
+        }
+        if (!signal?.aborted) {
+          await notifyHeartbeat({ nextPollMs: streamHeartbeatMs });
+        }
+      })().catch(async (error) => {
+        if (signal?.aborted || shouldAbort(error, signal)) return;
+        await onError({
+          ok: false,
+          reason: "control_poll_failed",
+          cursor: cursor || null,
+          detail: normalizeString(error?.message),
+        }).catch(() => {});
+      });
+      streamMaintenanceInFlight = maintenance;
+      maintenance.finally(() => {
+        if (streamMaintenanceInFlight === maintenance) {
+          streamMaintenanceInFlight = null;
+        }
+      });
+      return maintenance;
     }, streamHeartbeatMs);
   }
 
@@ -704,8 +739,9 @@ export async function listenSessionEvents({
         onHeartbeat: async () => {
           await notifyHeartbeat({ nextPollMs: streamHeartbeatMs });
         },
-      }).finally(() => {
+      }).finally(async () => {
         stopStreamHeartbeatTimer();
+        await streamMaintenanceInFlight;
       });
       if (!streamResult?.ok) {
         streamFallbackReason = normalizeString(streamResult?.reason) || lastReason || "stream_failed";

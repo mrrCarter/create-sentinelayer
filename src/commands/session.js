@@ -4031,10 +4031,23 @@ export function registerSessionCommand(program) {
     if (!result.ok || !result.action) {
       throw new Error(`Session action failed (${result.reason || "unknown"}).`);
     }
-    const actionEvent = buildSessionActionEvent(normalizedSessionId, result.action);
-    const localAppend = await appendActionEventIfMissing(normalizedSessionId, actionEvent, {
-      targetPath,
-    });
+    const isReadCursorProjection = normalizedActionType === "view";
+    const actionEvent = isReadCursorProjection
+      ? null
+      : buildSessionActionEvent(normalizedSessionId, result.action);
+    const localAppend = isReadCursorProjection
+      ? { appended: false, reason: "read_cursor_projection", event: null }
+      : await appendActionEventIfMissing(normalizedSessionId, actionEvent, {
+          targetPath,
+        });
+    const readCursorProjection = isReadCursorProjection
+      ? {
+          updated: Boolean(result.updated),
+          lastReadSequenceId:
+            Number(result.lastReadSequenceId || result.action.targetSequenceId || 0) || null,
+          targetCursor: targetCursor || null,
+        }
+      : null;
     const payload = {
       command: commandName,
       targetPath,
@@ -4047,9 +4060,20 @@ export function registerSessionCommand(program) {
         appended: Boolean(localAppend.appended),
         reason: localAppend.reason || "",
       },
+      ...(readCursorProjection ? { readCursorProjection } : {}),
     };
     if (shouldEmitJson(options, command)) {
       console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    }
+    if (readCursorProjection) {
+      const targetLabel = readCursorProjection.lastReadSequenceId
+        ? `#${readCursorProjection.lastReadSequenceId}`
+        : readCursorProjection.targetCursor || "target";
+      const status = readCursorProjection.updated ? "Advanced" : "Confirmed";
+      console.log(
+        pc.green(`${status} read cursor through ${targetLabel}; no transcript event appended.`),
+      );
       return payload;
     }
     if (localAppend.event || actionEvent) {

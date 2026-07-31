@@ -557,11 +557,68 @@ async function guardRemoteClaims(
   ) {
     throw new Error("File-lease authority returned an invalid guard response; edit blocked.");
   }
-  if (
-    response.allowed &&
-    (response.denials.length > 0 || response.guarded.length !== paths.length)
-  ) {
-    throw new Error("File-lease authority returned an inconsistent allow decision; edit blocked.");
+  if (response.allowed) {
+    const requestedByPath = new Map(
+      paths.map((file, index) => [
+        normalizeString(file).normalize("NFC"),
+        { claim: claims[index] },
+      ]),
+    );
+    const guardedPaths = new Set();
+    let bindingIsValid =
+      response.denials.length === 0 &&
+      response.guarded.length === paths.length &&
+      requestedByPath.size === paths.length;
+
+    for (const guarded of response.guarded) {
+      const guardedPath = normalizeString(guarded?.path).normalize("NFC");
+      const requested = requestedByPath.get(guardedPath);
+      if (!requested || guardedPaths.has(guardedPath)) {
+        bindingIsValid = false;
+        continue;
+      }
+      guardedPaths.add(guardedPath);
+
+      const submittedLeaseId = normalizeString(requested.claim?.leaseId);
+      const submittedLeaseToken = normalizeString(requested.claim?.leaseToken);
+      if (!submittedLeaseId || !submittedLeaseToken) {
+        bindingIsValid = false;
+        continue;
+      }
+
+      const responseLease =
+        guarded?.lease && typeof guarded.lease === "object" && !Array.isArray(guarded.lease)
+          ? guarded.lease
+          : {};
+      const returnedLeaseIds = [
+        guarded?.leaseId,
+        responseLease.leaseId,
+        responseLease.id,
+      ]
+        .filter((value) => value !== undefined && value !== null)
+        .map((value) => normalizeString(value).toLowerCase());
+      const returnedLeaseTokens = [
+        guarded?.leaseToken,
+        responseLease.leaseToken,
+      ]
+        .filter((value) => value !== undefined && value !== null)
+        .map((value) => normalizeString(value));
+      if (
+        returnedLeaseIds.some(
+          (leaseId) => !leaseId || leaseId !== submittedLeaseId.toLowerCase(),
+        ) ||
+        returnedLeaseTokens.some(
+          (leaseToken) => !leaseToken || leaseToken !== submittedLeaseToken,
+        )
+      ) {
+        bindingIsValid = false;
+      }
+    }
+    if (!bindingIsValid || guardedPaths.size !== paths.length) {
+      throw new Error(
+        "File-lease authority returned an inconsistent allow decision; edit blocked.",
+      );
+    }
   }
   return {
     ...response,

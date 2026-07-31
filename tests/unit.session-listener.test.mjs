@@ -126,6 +126,7 @@ test("Unit session listener: auto transport consumes stream before polling fallb
 
 test("Unit session listener: stream transport emits lifecycle heartbeats without stream heartbeat frames", async () => {
   const lifecycle = [];
+  const controlPolls = [];
   let intervalCallback = null;
   let clearCount = 0;
   let unrefCount = 0;
@@ -144,6 +145,10 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
     },
     _clearInterval: () => {
       clearCount += 1;
+    },
+    _poll: async (sessionId, options) => {
+      controlPolls.push({ sessionId, options });
+      return { ok: true, listenerControls: [], events: [evt("ignored")], cursor: "ignored" };
     },
     _stream: async () => {
       assert.ok(intervalCallback, "expected stream heartbeat timer to be installed");
@@ -169,6 +174,182 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
   assert.equal(lifecycle[2].pollCount, 0);
   assert.equal(lifecycle[2].heartbeatCount, 2);
   assert.equal(lifecycle[2].nextPollMs, 40_000);
+  assert.equal(controlPolls.length, 2);
+  assert.equal(controlPolls[0].sessionId, "sess-stream-heartbeat");
+  assert.equal(controlPolls[0].options.listenerAgentId, "codex-1");
+  assert.equal(controlPolls[0].options.limit, 1);
+  assert.equal(result.cursor, null);
+  assert.equal(result.emitted, 0);
+});
+
+test("Unit session listener: stream maintenance delivers controls without consuming semantic events", async () => {
+  const controller = new AbortController();
+  const controls = [];
+  const emitted = [];
+  const writes = [];
+  const pollCalls = [];
+  let intervalCallback = null;
+  let clearCount = 0;
+  const stop = {
+    controlId: "control-stream-stop",
+    type: "listener_stop",
+    issuedAtMs: Date.parse("2026-07-31T05:30:00.750Z"),
+    targetAgentId: "codex-1",
+    reason: "operator_stop",
+  };
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-control",
+    agentId: "codex-1",
+    transport: "stream",
+    signal: controller.signal,
+    _nowMs: () => Date.parse("2026-07-31T05:30:00.500Z"),
+    _readCursor: async () => "c1",
+    _writeCursor: async (...args) => {
+      writes.push(args);
+      return { written: true };
+    },
+    _setInterval: (callback) => {
+      intervalCallback = callback;
+      return {};
+    },
+    _clearInterval: () => {
+      clearCount += 1;
+    },
+    _poll: async (sessionId, options) => {
+      pollCalls.push({ sessionId, options });
+      return {
+        ok: true,
+        listenerControls: [stop],
+        events: [evt("c2", { to: "codex-1" })],
+        cursor: "c2",
+      };
+    },
+    _stream: async () => {
+      await intervalCallback();
+      return { ok: true, reason: "", cursor: "c2", eventCount: 1, errorCount: 0 };
+    },
+    onControl: async (control) => {
+      controls.push(control.controlId);
+      controller.abort();
+    },
+    onEvent: async (event) => emitted.push(event.cursor),
+  });
+
+  assert.equal(pollCalls.length, 1);
+  assert.equal(pollCalls[0].sessionId, "sess-stream-control");
+  assert.equal(pollCalls[0].options.since, "c1");
+  assert.equal(pollCalls[0].options.limit, 1);
+  assert.equal(pollCalls[0].options.listenerAgentId, "codex-1");
+  assert.equal(pollCalls[0].options.signal, controller.signal);
+  assert.deepEqual(controls, ["control-stream-stop"]);
+  assert.deepEqual(emitted, []);
+  assert.deepEqual(writes, []);
+  assert.equal(clearCount, 1);
+  assert.equal(result.cursor, "c1");
+  assert.equal(result.pollCount, 0);
+  assert.equal(result.deliveredControls, 1);
+  assert.equal(result.emitted, 0);
+});
+
+test("Unit session listener: stream maintenance permits only one control poll in flight", async () => {
+  const controller = new AbortController();
+  let intervalCallback = null;
+  let releasePoll;
+  const pollGate = new Promise((resolve) => {
+    releasePoll = resolve;
+  });
+  let pollCalls = 0;
+  let deliveredControls = 0;
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-control-concurrency",
+    agentId: "codex-1",
+    transport: "stream",
+    signal: controller.signal,
+    _nowMs: () => Date.parse("2026-07-31T05:30:00.500Z"),
+    _readCursor: async () => null,
+    _setInterval: (callback) => {
+      intervalCallback = callback;
+      return {};
+    },
+    _clearInterval: () => {},
+    _poll: async () => {
+      pollCalls += 1;
+      await pollGate;
+      return {
+        ok: true,
+        listenerControls: [{
+          controlId: "control-aborted-in-flight",
+          type: "listener_stop",
+          issuedAtMs: Date.parse("2026-07-31T05:30:00.750Z"),
+          targetAgentId: "codex-1",
+        }],
+        events: [],
+        cursor: null,
+      };
+    },
+    _stream: async () => {
+      const first = intervalCallback();
+      const second = intervalCallback();
+      assert.equal(first, second);
+      assert.equal(pollCalls, 1);
+      controller.abort();
+      releasePoll();
+      await Promise.all([first, second]);
+      return { ok: true, reason: "", cursor: null, eventCount: 0, errorCount: 0 };
+    },
+    onControl: async () => {
+      deliveredControls += 1;
+    },
+  });
+
+  assert.equal(pollCalls, 1);
+  assert.equal(deliveredControls, 0);
+  assert.equal(result.deliveredControls, 0);
+  assert.equal(result.pollCount, 0);
+});
+
+test("Unit session listener: stream abort suppresses control-poll cancellation noise", async () => {
+  const controller = new AbortController();
+  const errors = [];
+  let intervalCallback = null;
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-control-abort",
+    agentId: "codex-1",
+    transport: "stream",
+    signal: controller.signal,
+    _readCursor: async () => null,
+    _setInterval: (callback) => {
+      intervalCallback = callback;
+      return {};
+    },
+    _clearInterval: () => {},
+    _poll: async (_sessionId, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => {
+            const error = new Error("operator aborted listener");
+            error.name = "AbortError";
+            reject(error);
+          },
+          { once: true },
+        );
+      }),
+    _stream: async () => {
+      const maintenance = intervalCallback();
+      controller.abort();
+      await maintenance;
+      return { ok: true, reason: "", cursor: null, eventCount: 0, errorCount: 0 };
+    },
+    onError: async (error) => errors.push(error),
+  });
+
+  assert.deepEqual(errors, []);
+  assert.equal(result.pollCount, 0);
+  assert.equal(result.deliveredControls, 0);
 });
 
 test("Unit session listener: stream transport dedupes concurrent duplicate events", async () => {
@@ -365,7 +546,7 @@ test("Unit session listener: ignores stale controls without blocking semantic pr
   const stop = {
     controlId: "control-stale",
     type: "stop",
-    issuedAt: "2026-07-31T05:29:59.000Z",
+    issuedAt: "2026-07-31T05:28:59.000Z",
     targetAgentId: "codex-1",
     reason: "old_operator_stop",
   };
@@ -400,6 +581,37 @@ test("Unit session listener: ignores stale controls without blocking semantic pr
   assert.equal(result.ignoredControls, 1);
   assert.equal(result.catchupNotified, false);
   assert.deepEqual(writes.map((write) => write.cursor), ["c3"]);
+});
+
+test("Unit session listener: accepts controls issued within client clock skew", async () => {
+  const controls = [];
+  const stop = {
+    controlId: "control-clock-skew",
+    type: "listener_stop",
+    issuedAt: "2026-07-31T05:29:30.500Z",
+    targetAgentId: "codex-1",
+    reason: "operator_stop",
+  };
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-clock-skew-stop",
+    agentId: "codex-1",
+    maxPolls: 1,
+    _nowMs: () => Date.parse("2026-07-31T05:30:00.500Z"),
+    _readCursor: async () => null,
+    _poll: async () => ({
+      ok: true,
+      listenerControls: [stop],
+      events: [],
+      cursor: null,
+    }),
+    _sleep: async () => {},
+    onControl: async (control) => controls.push(control.controlId),
+  });
+
+  assert.deepEqual(controls, ["control-clock-skew"]);
+  assert.equal(result.deliveredControls, 1);
+  assert.equal(result.ignoredControls, 0);
 });
 
 test("Unit session listener: a fresh stop aborts before event or cursor mutation", async () => {

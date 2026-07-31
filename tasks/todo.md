@@ -3792,12 +3792,31 @@ Review:
 - [x] Keep join/onboarding/recap/daemon-health projections out of durable conversation storage.
 - [x] Include file, holder, intent, and expiry in editor/terminal lease denials.
 - [x] Prove the focused daemon, lease, MCP, guide, and spec suite.
-- [ ] Run full static/unit/E2E/package gates and independent diff review.
-- [ ] Push the integration branch and open/update the release PR only after the exact head is green.
+- [x] Bind every authoritative allow decision to the exact unique requested
+  paths and submitted lease capabilities.
+- [x] Deliver Redis-backed listener controls to explicit stream listeners
+  without consuming semantic tail events or advancing cursors.
+- [x] Make `session view` a cursor-only projection locally as well as remotely.
+- [x] Run full static/unit/E2E/package gates and independent diff review.
+- [ ] Push the integration branch and update the release PR only after the exact head is green.
 
 ## Review Results
 - Merge conflicts were resolved without restoring the stale five-second active polling cadence or chat-based lock directives.
 - `daemon_alert` events now return as `ephemeral` `session_health` projections and bypass `appendToStream`; durable help responses and explicit administrative events remain semantic.
 - Guard denials report the blocked path, holder, lease intent, and expiry while preserving fail-closed behavior and redaction.
 - Focused combined verification passed `66/66`.
+- Independent review found and closed three final fail-closed gaps: malformed
+  allow responses can no longer substitute duplicate/unrelated paths, stream
+  listeners probe only the control projection at the capped maintenance
+  cadence, and `view` no longer synthesizes a local durable action event.
+- Stream control probes permit one in-flight request, tolerate bounded
+  client/server clock skew, ignore returned semantic events/cursors, and treat
+  listener abort as quiet cancellation rather than an operational error.
+- Full `npm run verify` passes: static checks cover `358` files; docs validation
+  covers `5` files / `6` headings; E2E passes `121/121`; unit coverage passes
+  `1,812/1,812` across `64` suites; coverage remains
+  `91.81% / 70.60% / 93.53% / 91.81%`.
+- `npm pack --dry-run` contains `356` files with SHA-1
+  `108e06c02917bd25b8055541c4c130a5b2f77ace`; high-severity npm audit reports
+  zero vulnerabilities.
 
