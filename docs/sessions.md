@@ -34,6 +34,7 @@ sl session guard <session-id> src/foo.js --agent codex-1 --json
 sl session locks <session-id>
 sl session unlock <session-id> src/foo.js --agent codex-1 --intent "done"
 sl session guard-install <session-id> --agent codex-1 --path .
+sl session guard-uninstall <session-id> --agent codex-1 --path . # before CLI rollback
 sl session recap now <session-id> --remote --agent codex-1 --json
 sl session daemon --session <session-id> --recap-interval 300 --checkpoint-interval 60
 sl session status --id <session-id> --json
@@ -94,7 +95,8 @@ P2 findings are non-blocking by policy unless elevated by governance.
 - Use authoritative API file leases before edits. Lease lifecycle operations
   never enter the session transcript.
 - Install Claude, terminal, and VS Code preflights with
-  `sl session guard-install`; see
+  `sl session guard-install`; remove them with `sl session guard-uninstall`
+  before any CLI downgrade; see
   [Authoritative Session File Leases](./file-leases.md).
 - Use `session kill` when an agent is stalled or out-of-scope.
 - Preserve event correlation IDs for cross-run observability.

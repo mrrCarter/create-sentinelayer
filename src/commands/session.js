@@ -53,6 +53,7 @@ import {
   installFileLeaseIntegrations,
   runFileLeaseGuardHook,
   safeFileLeaseErrorMessage,
+  uninstallFileLeaseIntegrations,
 } from "../session/file-lease-integrations.js";
 import {
   injectSessionGuides,
@@ -4324,6 +4325,7 @@ export function registerSessionCommand(program) {
           reason: result.reason || (result.locked ? "locked" : "held_by_other_agent"),
           heldBy: result.heldBy || null,
           since: result.since || null,
+          expiresAt: result.lock?.expiresAt || result.lease?.expiresAt || null,
         };
         results.push(record);
         if (result.locked) {
@@ -4344,6 +4346,7 @@ export function registerSessionCommand(program) {
         reason: result.reason || (result.unlocked ? "unlocked" : "not_locked"),
         heldBy: result.heldBy || null,
         since: result.since || null,
+        expiresAt: result.lock?.expiresAt || result.lease?.expiresAt || null,
       };
       results.push(record);
       if (result.unlocked) {
@@ -4355,12 +4358,6 @@ export function registerSessionCommand(program) {
       }
     }
 
-    if (failed.length > 0) {
-      const summary = failed
-        .map((item) => `${item.file}${item.heldBy ? ` held by ${item.heldBy}` : ""}`)
-        .join(", ");
-      throw new Error(`session ${verb} failed for ${summary}`);
-    }
     const payload = {
       command: `session ${verb}`,
       sessionId: normalizedSessionId,
@@ -4368,9 +4365,28 @@ export function registerSessionCommand(program) {
       files: processed,
       results,
       skipped,
+      failed,
     };
     if (shouldEmitJson(options, command)) {
       console.log(JSON.stringify(payload, null, 2));
+      if (failed.length > 0) {
+        process.exitCode = 2;
+      }
+      return payload;
+    }
+    if (failed.length > 0) {
+      for (const item of failed) {
+        const details = [
+          item.heldBy ? `held by ${item.heldBy}` : "",
+          item.expiresAt ? `expires ${item.expiresAt}` : "",
+        ].filter(Boolean);
+        console.error(
+          pc.red(
+            `Blocked ${item.file}: ${item.reason}${details.length > 0 ? ` (${details.join(", ")})` : ""}`,
+          ),
+        );
+      }
+      process.exitCode = 2;
       return payload;
     }
     const action = verb === "lock" ? "Acquired lease for" : "Released";
@@ -4538,9 +4554,14 @@ export function registerSessionCommand(program) {
         }
         for (const denial of result.denials || []) {
           const holder = normalizeString(denial?.lease?.holderId);
+          const expiresAt = normalizeString(denial?.lease?.expiresAt);
+          const details = [
+            holder ? `held by ${holder}` : "",
+            expiresAt ? `expires ${expiresAt}` : "",
+          ].filter(Boolean);
           console.error(
             pc.red(
-              `Blocked ${denial.path}: ${denial.reason}${holder ? ` (held by ${holder})` : ""}`,
+              `Blocked ${denial.path}: ${denial.reason}${details.length > 0 ? ` (${details.join(", ")})` : ""}`,
             ),
           );
         }
@@ -4598,6 +4619,72 @@ export function registerSessionCommand(program) {
         );
       }
       return result;
+    });
+
+  session
+    .command("guard-uninstall <sessionId>")
+    .description("Safely remove only fingerprinted SentinelLayer lease preflights before CLI rollback")
+    .requiredOption("--agent <id>", "Agent id that owns the managed integration")
+    .option("--path <path>", "Workspace root", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      let result;
+      try {
+        result = await uninstallFileLeaseIntegrations(
+          sessionId,
+          options.agent,
+          { targetPath },
+        );
+      } catch (error) {
+        result = {
+          ok: false,
+          uninstalled: false,
+          reason: "guard_uninstall_failed",
+          sessionId: normalizeString(sessionId),
+          agentId: normalizeString(options.agent),
+          activeLeases: [],
+          residuals: [],
+          error: {
+            code: normalizeString(error?.code) || "FILE_LEASE_GUARD_UNINSTALL_FAILED",
+            message: safeFileLeaseErrorMessage(error),
+          },
+        };
+      }
+      const payload = {
+        command: "session guard-uninstall",
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (result.ok) {
+        console.log(pc.green("Removed the managed SentinelLayer lease preflights."));
+      } else {
+        if (result.error?.message) {
+          console.error(pc.red(`Guard uninstall blocked: ${result.error.message}`));
+        }
+        for (const lease of result.activeLeases || []) {
+          const file = normalizeString(lease.file || lease.path) || "(unknown path)";
+          const holder = normalizeString(lease.agentId || lease.holderId) || "unknown";
+          const expiresAt = normalizeString(lease.expiresAt);
+          console.error(
+            pc.red(
+              `Guard uninstall blocked by ${file} (held by ${holder}${expiresAt ? `, expires ${expiresAt}` : ""}).`,
+            ),
+          );
+        }
+        for (const residual of result.residuals || []) {
+          console.error(
+            pc.red(
+              `Managed artifact retained: ${residual.path || residual.label || residual.artifact} (${residual.reason}).`,
+            ),
+          );
+        }
+      }
+      if (!result.ok) {
+        process.exitCode = 2;
+      }
+      return payload;
     });
 
   session

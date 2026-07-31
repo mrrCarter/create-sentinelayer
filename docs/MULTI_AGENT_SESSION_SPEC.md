@@ -1064,7 +1064,7 @@ agents in AGENTS.md, "team" or "pair" in description, or session-active flag), a
 ## Phase N: Multi-Agent Coordination Protocol
 1. Check for active sessions: `sl session list`
 2. If session exists, join: `sl session join <id> --name <your-name> --role coder`
-3. Emit status updates every 5 minutes: `sl session say <id> "status: <what you're doing>"`
+3. Keep transient activity in the low-noise `working_on` action; post only material decisions, findings, blockers, handoffs, and completions
 4. Before modifying a shared file, check recent session activity on that file
 5. On unexpected file change, ask instead of stopping: `sl session say <id> "help: <question>"`
 6. Post findings to session: `sl session say <id> "finding: [P2] <title> in <file>:<line>"`
@@ -1079,7 +1079,7 @@ to Operating Rules:
 
 ```
 - Multi-agent coordination: use `sl session` commands to communicate with other agents
-- Always update the session chat room with your current activity so joining agents have context
+- Keep routine activity in actions/presence; add chat messages only when the content is useful to a human reader
 - Never break your autonomous loop on unexpected file changes — ask in the session first
 ```
 
@@ -1088,7 +1088,7 @@ to Operating Rules:
 Add a checklist item:
 
 ```markdown
-- [ ] If working with other agents, join the SentinelLayer session and emit status updates
+- [ ] If working with other agents, join the SentinelLayer session and record material milestones
 - [ ] Update tasks/lessons.md with coordination patterns learned during this session
 ```
 
@@ -1103,7 +1103,7 @@ A standalone file that any agent can read to understand session participation:
 1. Check: `sl session list` — is there an active session?
 2. Join: `sl session join <id> --name <your-short-name> --role <coder|reviewer|tester>`
 3. Read context: `sl session read <id> --tail 20` — see what others are doing
-4. Work: emit status every 5 min, post findings, ask for help instead of stopping
+4. Work: use low-noise ownership actions, post material findings, and ask for help instead of stopping
 5. Leave: `sl session leave <id>` when done
 
 ## Why This Matters
@@ -1113,7 +1113,7 @@ A standalone file that any agent can read to understand session participation:
 - The daemon monitors your health and will alert if you appear stuck
 
 ## What to Emit
-- Status: `sl session say <id> "status: implementing JWT middleware in src/middleware/auth.js"`
+- Ownership: `sl session action <id> working_on --target-sequence <n>`
 - Finding: `sl session say <id> "finding: [P2] missing rate limit on POST /api/auth/login"`
 - Help: `sl session say <id> "help: unexpected change in package.json — who installed lodash?"`
 - Done: `sl session say <id> "done: PR #3 merged, JWT auth complete"`
@@ -1129,7 +1129,7 @@ Add this section:
 If a SentinelLayer session is active (check `sl session list`):
 
 1. **On start:** Run `sl session join <id> --name <your-name> --role coder`
-2. **Periodically:** Run `sl session say <id> "status: working on <file>"` so others know what you're doing
+2. **While working:** Use `sl session action <id> working_on --target-sequence <n>` instead of periodic status chat
 3. **On unexpected file change:** Instead of stopping, run:
    `sl session say <id> "help: unexpected change in <file> — who modified this?"`
    Then check `sl session read <id> --tail 5` for the answer and continue.
@@ -1235,11 +1235,12 @@ in 5 reverts. Agents need to declare intent before editing and respect each othe
 export async function lockFile(sessionId, agentId, filePath, { intent, ttlSeconds = 300 })
 // -> acquires lock if file is unlocked or lock expired
 // -> emits stream event: { event: "file_lock", agent, payload: { file, intent } }
-// -> returns { locked: true } or { locked: false, heldBy: "codex-c3d4", since: "2m ago" }
-// -> TTL: 5 minutes default, auto-expires if agent doesn't release or heartbeat
+// -> returns { locked: true } or
+//    { locked: false, heldBy: "codex-c3d4", expiresAt: "<RFC3339>" }
+// -> TTL: 5 minutes default; renew explicitly for longer work
 
 export async function unlockFile(sessionId, agentId, filePath)
-// -> releases lock, emits stream event: { event: "file_unlock" }
+// -> releases the API-backed lease without adding a transcript event
 
 export async function checkFileLock(sessionId, filePath)
 // -> returns lock info or null if unlocked
@@ -1251,26 +1252,31 @@ export async function listFileLocks(sessionId)
 #### How agents use it
 
 ```bash
-# Before editing a file:
-sl session say <id> "lock: src/routes/auth.js — implementing JWT middleware"
+# Install terminal/editor preflights once:
+sl session guard-install <id> --agent codex-c3d4
 
-# Daemon parses "lock:" prefix, acquires lock
-# Other agents see: "codex-c3d4 locked src/routes/auth.js (implementing JWT middleware)"
-# If claude-a1b2 tries to edit auth.js:
-# Daemon warns: "src/routes/auth.js is locked by codex-c3d4 (2m ago). Wait or ask to coordinate."
+# Before editing a file (this does not add a chat message):
+sl session lock <id> src/routes/auth.js --agent codex-c3d4 \
+  --intent "implementing JWT middleware"
 
-# When done:
-sl session say <id> "unlock: src/routes/auth.js — done, pushed to feat/jwt-auth"
+# A conflicting terminal/editor edit is blocked at the edit boundary and shows:
+# "src/routes/auth.js: held_by_other_agent
+#  (held by codex-c3d4, expires 2026-07-31T12:34:56Z)"
+
+# Renew long work, then release when done:
+sl session renew <id> src/routes/auth.js --agent codex-c3d4
+sl session unlock <id> src/routes/auth.js --agent codex-c3d4
 ```
 
-The 5x revert cycle is prevented because Agent A says "lock: omar-gate.yml — fixing
-workflow", Agent B sees the lock and works on something else, and no conflicts occur.
+The 5x revert cycle is prevented because Agent A acquires an authoritative lease
+for `omar-gate.yml`, and Agent B's editor/terminal preflight blocks the conflicting
+edit with the holder and expiry while the transcript stays focused on conversation.
 
 **Tests:** `tests/unit.session-file-locks.test.mjs`
 - Lock acquire, verify exclusive
 - Lock expire after TTL
 - Concurrent lock attempt returns held-by info
-- Unlock emits event
+- Lock/renew/guard/unlock append zero transcript events
 - Agent kill releases held locks immediately
 
 ---
@@ -1405,9 +1411,10 @@ session.command("setup-guides <sessionId>")
 - Read recent context: \`sl session read <id> --tail 20\`
 
 ### While Working
-- Emit status every 5 min: \`sl session say <id> "status: <what you're doing>"\`
-- Lock files before editing: \`sl session say <id> "lock: <file> — <intent>"\`
-- Unlock when done: \`sl session say <id> "unlock: <file> — done"\`
+- Keep transient status outside chat with \`sl session action <id> working_on --target-sequence <n>\`; post only material milestones
+- Install edit preflights once: \`sl session guard-install <id> --agent <your-agent>\`
+- Claim files outside chat: \`sl session lock <id> <file> --agent <your-agent> --intent "<intent>"\`
+- Renew/release outside chat: \`sl session renew <id> <file> --agent <your-agent>\` / \`sl session unlock <id> <file> --agent <your-agent>\`
 - Post findings: \`sl session say <id> "finding: [P2] <title> in <file>:<line>"\`
 
 ### On Problems
@@ -1710,7 +1717,7 @@ real-time tech standup. Also extends `src/daemon/operator-control.js` (ODCP
 
 5. Human watches the dashboard as agents coordinate:
    [codex-1]  status: building POST /api/auth/register
-   [codex-1]  lock: src/routes/auth.js — JWT implementation
+   [leases]   src/routes/auth.js held by codex-1 (outside transcript)
    [claude-1] watching for PRs...
    [codex-1]  done: pushed PR #1 to feat/jwt-auth
    [claude-1] PR detected. Running Omar Gate... P0=0 P1=0 P2=2.
@@ -2676,10 +2683,10 @@ works.
 [00:01] [codex-1]  joined session. Role: coder.
 [00:02] [claude-1] joined session. Role: reviewer.
 [00:03] [codex-1]  status: working on rate limiting — editing src/routes/swarm.py
-[00:05] [codex-1]  lock: .github/workflows/omar-gate.yml — adding post-merge trigger
+[00:05] [leases]   omar-gate.yml held by codex-1 (outside transcript)
 [00:06] [claude-1] noted. Will hold off on workflow changes.
 [00:12] [claude-1] status: reviewing PR #78 findings. Taking P2 auth fixes.
-[00:15] [codex-1]  unlock: omar-gate.yml — done. Pushed to fix/rate-limit.
+[00:15] [leases]   omar-gate.yml released (outside transcript)
 [00:15] [claude-1] PR detected. Running Omar Gate... P0=0 P1=0. Merging.
 [00:16] [codex-1]  assign: @claude-1 Wire rate limit middleware into auth routes
 [00:16] [claude-1] accepted. Starting auth route integration.
@@ -3075,8 +3082,8 @@ Final acceptance for the entire workstream. Every item is evidence-first per SWE
 
 1. `sl session start --json` creates session with codebase synopsis in < 2s.
 2. `sl session join <id> --name codex-1 --json` registers agent and receives context briefing.
-3. `sl session say <id> "message"` appends to encrypted stream with file locking (no
-   corruption under 3 concurrent writers).
+3. `sl session say <id> "message"` appends atomically to the encrypted stream
+   (no corruption under 3 concurrent writers); file leases use their separate API.
 4. `sl session read <id> --tail 20 --json` decrypts and returns last 20 events in < 100ms.
 5. `sl session read <id> --follow` tails new events in real-time (within 1s of write).
 6. `sl session status <id>` shows elapsed timer, agents, and health.

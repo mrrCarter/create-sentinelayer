@@ -55,7 +55,13 @@ The installer merges, without deleting unrelated settings:
   `file-lease-exec.ps1`: guard a declared target immediately before spawning a
   mutation command;
 - `.sentinelayer/file-lease-enforcement.json`: non-authoritative integration
-  metadata and explicit security limits.
+  ownership manifest, exact artifact fingerprints, and explicit security
+  limits.
+
+Installation first probes the authoritative API. A missing, unavailable, or
+non-authoritative file-lease surface leaves the workspace unchanged. Existing
+Claude hooks or VS Code tasks that collide with SentinelLayer's managed names
+but do not have the exact expected content also fail without replacement.
 
 Claude's hook reads the tool JSON from stdin. A denied or unavailable guard
 exits `2`, which Claude treats as a blocking `PreToolUse` error even in
@@ -70,6 +76,10 @@ Terminal guarded-exec examples:
 powershell -File .sentinelayer/hooks/file-lease-exec.ps1 `
   src/auth/login.ts -- node scripts/update-auth.mjs
 ```
+
+A denied guarded command prints the machine-readable guard response to stderr,
+including the path, current holder, and lease expiry. Successful preflights stay
+quiet.
 
 The declared target must cover every path the spawned command will mutate.
 For a multi-file command, acquire and guard a parent directory scope or run
@@ -108,6 +118,41 @@ requires separate OS identities, containers/VMs, or a mediated filesystem.
 The legacy MCP `syncRemote` and `awaitRemoteSync` inputs remain accepted for
 client compatibility, but they are ignored. They cannot disable or replace API
 authority.
+
+## Uninstall and rollback
+
+Remove managed edit preflights before downgrading or uninstalling the CLI:
+
+```bash
+sl session guard-uninstall <session-id> --agent codex --path . --json
+```
+
+Uninstall first releases capabilities held by that agent and then requires the
+authoritative session lease list to be empty. If any lease remains, it exits
+`2`, names the path, holder, and expiry, and changes no editor configuration.
+It removes only hook/task/script values whose hashes match the ownership
+manifest. Modified or ambiguous artifacts are retained and reported as
+residuals for manual review. Re-running a completed uninstall is safe.
+
+Release order is mandatory:
+
+1. Deploy the API code and migration `062_session_file_leases`.
+2. Live-smoke acquire/conflict/guard/renew/release/list and prove the session
+   event count does not change.
+3. Publish and install the compatible CLI.
+4. Quiesce editing clients, remove any chat-based lock guidance, then run
+   `guard-install` in each workspace.
+5. Resume collaborative edits only after every active editor uses the API
+   authority.
+
+Rollback order is the reverse at the client boundary: freeze edits; run
+`guard-uninstall` with the still-compatible CLI in every managed workspace;
+verify the authoritative lease list and hook/task references are empty; only
+then downgrade the CLI. Keep the additive API routes/table during a CLI
+rollback. Roll back the API binary only after new clients are gone; database
+downgrade is last and optional, with a backup and zero active lease rows.
+Downgrading the CLI first is unsafe because older clients use local lock state
+and do not recognize API leases.
 
 ## API contract
 

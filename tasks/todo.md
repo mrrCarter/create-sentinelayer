@@ -3701,6 +3701,12 @@ Review:
 - [x] Add a Claude pre-tool edit hook and terminal/VS Code preflight setup that invokes the guard and never posts lock/heartbeat events to chat.
 - [x] Preserve legacy command/MCP compatibility while removing lock/unlock/expiry event emission.
 - [x] Add API-client, path, token-store, guard, hook, CLI, and no-chat-event regression coverage.
+- [x] Surface denied terminal/editor edits with path, holder, and expiry; keep
+  successful guarded commands quiet.
+- [x] Remove every first-party instruction that tells agents to post
+  `lock:`/`unlock:` chat directives.
+- [x] Add API-probed, fingerprint-owned install metadata plus a fail-closed,
+  idempotent `guard-uninstall` required before CLI rollback.
 - [x] Run focused tests, `npm run verify`, local review/Omar/audit, and record exact evidence.
 
 ## Scope Notes
@@ -3724,4 +3730,17 @@ Review:
 - Enforcement coverage is intentionally explicit in `docs/file-leases.md`: Claude edits and guarded terminal invocations are preflighted; VS Code tasks provide an opt-in preflight but the native save API cannot reliably cancel all saves; MCP hosts and other file-mutating tools must call guard separately.
 - This is an application-level coordination control, not a kernel security boundary. A same-OS user can bypass it with an unguarded raw process or tamper with same-user integration files. Hard prevention requires separate OS identities, container isolation, or a privileged/mediated filesystem.
 - Changes are local-only on `roadmap/pr-tbd-session-file-leases-cli-20260729`; no push, deployment, listener, or Senti post was performed.
+- Independent review of PR `#794` blocked the prior exact head because terminal
+  wrappers discarded conflict output, denial paths omitted expiry, `--json`
+  lock conflicts threw before producing JSON, stale first-party guidance still
+  prescribed chat directives, and persistent hooks lacked safe rollback.
+  The follow-up preserves the no-transcript architecture while closing those
+  terminal UX and rollback gaps. API migration/routes must still deploy and
+  pass live no-event smoke before this CLI candidate can merge/publish.
+- Follow-up adversarial review approved the corrected lane after independently
+  reproducing and closing manifest file/hook/task injection, unowned
+  script/manifest collisions, partial activation, and junction escape. Current
+  proof: focused combined suite `66/66`, static check `358` files, docs
+  validation, diff integrity, and a successful full-unit rerun. Release remains
+  API-first and does not claim raw-shell or native VS Code save mediation.
 
