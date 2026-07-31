@@ -6,6 +6,9 @@
 - Capability rollout must fail closed without reviving write amplification: a missing, disabled, rate-limited, or degraded presence endpoint means `unknown`, never “scan old heartbeat rows.”
 - Listener backpressure must be credential-scoped on the server and cooperative in every client: preserve a 60-second default floor, add bounded upward jitter, cap exponential retry delay, and let `Retry-After` override that cap.
 - A read operation should advance at most one monotonic cursor for the consumed window; omit placeholder identities so the server can bind human reads to the authenticated principal.
+- Outbound transcript filtering must reuse the canonical control-event classifier; parallel hand-maintained event lists drift as soon as new listener/control types are introduced.
+- A temporary durable control exception needs a named constant, an adversarial test proving its exact scope, and a concrete removal dependency. Here, `listener_stop` remains the only exception until ephemeral listener-control delivery exists.
+- Transport, circuit-breaker, and payload-contract tests must use semantic `session_message` fixtures. Using coordination events as generic positive-write fixtures makes correct noise suppression look like a transport regression.
 
 ## 2026-07-14
 

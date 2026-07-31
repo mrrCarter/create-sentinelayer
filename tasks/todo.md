@@ -11,8 +11,17 @@
 - [x] Update CLI/MCP/setup guidance, run focused and full verification, package dry-run, deterministic review, Omar, and audit.
 - [x] Commit locally only and hand off exact SHA plus any server-contract gaps.
 
+## Independent Re-review Correction
+- [x] Reuse the canonical `isSessionControlEvent` classifier at the outbound append boundary instead of maintaining a narrower second list.
+- [x] Add adversarial zero-fetch coverage for every canonical quiet control type, `payload.source=session_listen`, and an unknown future `session_listener_*` lifecycle name.
+- [x] Keep explicit identity/liveness/read aliases fail-closed, including `agent_identity` and `agent_left`.
+- [x] Update all seven hosted unit failures so transport/circuit positive fixtures use semantic `session_message`, while join/onboarding tests require zero durable `/events` POSTs.
+- [x] Make the compatibility JSON field truthful: local agent registration returns `agentJoinRelayed=false`.
+- [ ] Move `listener_stop` to a dedicated ephemeral listener-control endpoint, remove its named temporary durable exception, and flip its regression to zero-fetch.
+- [ ] Re-run hosted Quality Gates on the corrected head after the owning agent commits and pushes.
+
 ## Review
-- Durable append boundary rejects agent join/leave/status/identity/heartbeat, context briefings, recaps, `session_listener_*`, `session_view`/`view`, and `file_lock`/`file_unlock`/expiry control types before auth or fetch. Listener presence uses only membership-gated `GET`/`PUT /api/v1/sessions/:id/presence`; status, listeners, and recap never reconstruct liveness from durable history.
+- Durable append boundary rejects agent join/leave/status/identity/heartbeat, context briefings, recaps, every canonical quiet control event, arbitrary `session_listener_*`, `session_view`/`view`, and `file_lock`/`file_unlock`/expiry before auth or fetch. The sole named exception is `listener_stop`, which still uses the durable stream until its dedicated ephemeral delivery endpoint lands. Listener presence uses only membership-gated `GET`/`PUT /api/v1/sessions/:id/presence`; status, listeners, and recap never reconstruct liveness from durable history.
 - CLI reads, MCP `poll_inbox`/`read_history`, listener batches, and explicit `view` advance at most one `PUT /api/v1/sessions/:id/read-cursor` for the consumed window. There is no action/event compatibility fallback.
 - Regression proof covers three consecutive no-new-event polls at an unchanged transport cursor: zero local cursor persists, zero read-cursor `PUT`s, and `readCursorUpdates=0`. Separate 404/503 presence/read-cursor cases make exactly four operational endpoint calls and zero `/events` or `/actions` fallbacks.
 - Polling defaults to 60 seconds, adds 0-20% upward jitter, exponentially backs off transient failures to a 300-second client cap, and honors a longer `Retry-After` as a hard floor. Default transport is pull-only `poll`.
@@ -23,6 +32,7 @@
 - Live Omar scanned the same 24-file diff with `P0=0`, `P1=0`, five non-blocking generic P2s, and no deterministic findings (`omargate-1785309452607-d08af708`). The P2s are contradicted by existing architecture/incident/onboarding sections in `README.md` and `docs/ENGINEERING_ONBOARDING.md`, the 121-case E2E suite (including lifecycle and transient-recovery files), and explicit malformed/duplicate/abort/fault/429 listener tests.
 - Repository audit passed (`P1=0`); its two P2 baseline notices cite untouched `tasks/evals/2026-04-17-pr-335-spec-session-integration.md` and `src/scan/generator.js` (`audit-20260729-072544.md`).
 - Activation depends on the API implementing the exact fail-closed contracts: membership-gated `GET`/`PUT /sessions/:id/presence` backed by TTL state, and monotonic `PUT /sessions/:id/read-cursor` backed by one actor row. Until those endpoints deploy, clients report unsupported/degraded and intentionally do not revive durable events/actions.
+- Independent correction proof passed: the seven previously failing hosted contract files plus outbound sync coverage passed `95/95`; `npm run check` passed all `357` files; and the complete local unit suite passed `1785/1785`.
 - Local only: no push, deployment, npm publication, or Senti coordination write was performed from this worktree.
 
 # 2026-07-14 - Hosted Action Live-LLM Evidence Contract (`roadmap/pr-0i-action-evidence-contract`)

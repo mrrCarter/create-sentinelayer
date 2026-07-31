@@ -1996,9 +1996,17 @@ test("Unit session join: refreshes expired local cache after remote verification
         (call) =>
           call.options.method === "GET" &&
           call.url.endsWith(`/api/v1/sessions/${session.sessionId}`),
-      ),
+        ),
     );
-    assert.ok(calls.filter((call) => call.options.method === "POST").length >= 1);
+    assert.equal(
+      calls.filter(
+        (call) =>
+          call.options.method === "POST" &&
+          call.url.endsWith(`/api/v1/sessions/${session.sessionId}/events`),
+      ).length,
+      0,
+    );
+    assert.equal(payload.agentJoinRelayed, false);
 
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
     const joinEvent = events.find((event) => event.event === "agent_join");

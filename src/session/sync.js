@@ -5,6 +5,7 @@ import process from "node:process";
 
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
+import { isSessionControlEvent } from "./control-events.js";
 
 const DEFAULT_API_BASE_URL = "https://api.sentinelayer.com";
 const DEFAULT_SYNC_TIMEOUT_MS = 5_000;
@@ -20,20 +21,33 @@ const SESSION_SEARCH_FETCH_LIMIT = 50;
 const NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES = new Set([
   "agent_heartbeat",
   "agent_identified",
+  "agent_identity",
   "agent_join",
   "agent_leave",
+  "agent_left",
   "agent_status",
   "context_briefing",
-  "file_lock",
-  "file_lock_expired",
-  "file_unlock",
   "session_recap",
-  "session_listener_heartbeat",
-  "session_listener_started",
-  "session_listener_stopped",
   "session_view",
   "view",
 ]);
+const TEMPORARY_DURABLE_CONTROL_EVENT_TYPES = new Set([
+  // Remote listeners currently receive stop directives from the durable event
+  // stream. Keep this one compatibility exception until the dedicated
+  // ephemeral listener-control endpoint lands; rejecting it now would make
+  // `sl session stop-listener` report success without reaching its target.
+  "listener_stop",
+]);
+
+function isNonSemanticTranscriptEvent(event, eventType) {
+  if (TEMPORARY_DURABLE_CONTROL_EVENT_TYPES.has(eventType)) {
+    return false;
+  }
+  return (
+    NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES.has(eventType) ||
+    isSessionControlEvent(event)
+  );
+}
 
 // Audit §2.9: crash-recovery contract for in-memory circuit state.
 // Persist outbound/inbound circuit state to disk so a process restart
@@ -893,7 +907,7 @@ export async function syncSessionEventToApi(
     return { synced: false, reason: "invalid_input" };
   }
   const eventType = normalizeString(event.event || event.type).toLowerCase();
-  if (NON_SEMANTIC_TRANSCRIPT_EVENT_TYPES.has(eventType)) {
+  if (isNonSemanticTranscriptEvent(event, eventType)) {
     return {
       synced: false,
       reason: "non_semantic_transcript_event_rejected",

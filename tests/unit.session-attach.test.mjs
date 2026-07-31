@@ -296,7 +296,7 @@ test("Unit session join: 404 from singleton + empty list fallback exits with fri
   }
 });
 
-test("Unit session join: --agent <granted> relays agent_join canonical event", async () => {
+test("Unit session join: --agent <granted> keeps join identity and briefing out of the remote transcript", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-agent-"));
   const restoreEnv = installAuthEnv();
@@ -343,24 +343,8 @@ test("Unit session join: --agent <granted> relays agent_join canonical event", a
 
     const payload = JSON.parse(stdout);
     assert.equal(payload.command, "session join");
-    assert.equal(payload.agentJoinRelayed, true);
-
-    // registerAgent fan-outs an `agent_join` to /events through appendToStream
-    // — exactly the relay path the spec calls for. Other auxiliary events
-    // (agent_identified, etc.) may piggy-back, but at least one POST must
-    // be the canonical agent_join with the granted agent id.
-    assert.ok(eventPosts.length >= 1, "expected at least one relayed event");
-    const joinPost = eventPosts.find((entry) => entry.body?.event?.event === "agent_join");
-    assert.ok(joinPost, "expected an agent_join POST to /events");
-    const agentBlock = joinPost.body.event.agent || {};
-    assert.equal(agentBlock.id || joinPost.body.event.agentId, "codex");
-    assert.equal(agentBlock.model, "gpt-5-codex");
-    assert.equal(agentBlock.displayName, "Codex");
-    assert.equal(agentBlock.provider, "openai");
-    assert.equal(agentBlock.clientKind, "cli");
-    assert.equal(joinPost.body.event.payload.model, "gpt-5-codex");
-    assert.equal(joinPost.body.event.payload.displayName, "Codex");
-    assert.equal(joinPost.body.event.payload.provider, "openai");
+    assert.equal(payload.agentJoinRelayed, false);
+    assert.equal(eventPosts.length, 0, "coordination-only join events must not POST to /events");
     assert.equal(payload.model, "gpt-5-codex");
     assert.equal(payload.displayName, "Codex");
     assert.equal(payload.provider, "openai");
@@ -502,7 +486,7 @@ test("Unit session join: spawned CLI does not emit process-exit agent_leave", as
     const localEventNames = local.map((event) => event.event);
     const remoteEventNames = eventPosts.map((entry) => entry.event?.event);
     assert.deepEqual(localEventNames, ["agent_join", "context_briefing"]);
-    assert.deepEqual(remoteEventNames, ["agent_join", "context_briefing"]);
+    assert.deepEqual(remoteEventNames, []);
     assert.equal(localEventNames.includes("agent_leave"), false);
     assert.equal(remoteEventNames.includes("agent_leave"), false);
   } finally {

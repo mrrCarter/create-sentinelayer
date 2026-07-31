@@ -63,8 +63,10 @@ test("Unit session sync: non-semantic coordination events are rejected before fe
   for (const eventType of [
     "agent_heartbeat",
     "agent_identified",
+    "agent_identity",
     "agent_join",
     "agent_leave",
+    "agent_left",
     "agent_status",
     "context_briefing",
     "session_listener_started",
@@ -96,6 +98,67 @@ test("Unit session sync: non-semantic coordination events are rejected before fe
     assert.equal(result.eventType, eventType);
     assert.equal(fetchCount, 0);
   }
+});
+
+test("Unit session sync: canonical control events are rejected before fetch except listener_stop", async () => {
+  const rejectedEvents = [
+    { event: "file_lock", payload: {} },
+    { event: "file_unlock", payload: {} },
+    { event: "file_lock_expired", payload: {} },
+    { event: "session_coaching", payload: {} },
+    { event: "session_listen_catchup", payload: {} },
+    { event: "session_listen_error", payload: {} },
+    { event: "session_reaction", payload: {} },
+    { event: "session_listener_future_lifecycle", payload: {} },
+    { event: "custom_control", payload: { source: "session_listen" } },
+    { event: "session_action", payload: { actionType: "ack" } },
+    { event: "session_action", payload: { actionType: "dislike" } },
+    { event: "session_action", payload: { actionType: "disregard" } },
+    { event: "session_action", payload: { actionType: "like" } },
+    { event: "session_action", payload: { actionType: "view" } },
+  ];
+
+  for (const event of rejectedEvents) {
+    let fetchCount = 0;
+    const result = await syncSessionEventToApi(
+      "sess-control-boundary",
+      event,
+      {
+        resolveAuthSession: async () => ({
+          token: "tok_control_boundary",
+          apiUrl: "https://api.sentinelayer.com",
+        }),
+        fetchImpl: async () => {
+          fetchCount += 1;
+          throw new Error("durable append must not be attempted");
+        },
+      },
+    );
+    assert.equal(
+      result.reason,
+      "non_semantic_transcript_event_rejected",
+      `${event.event}:${event.payload?.actionType || event.payload?.source || ""}`,
+    );
+    assert.equal(fetchCount, 0);
+  }
+
+  let listenerStopFetchCount = 0;
+  const listenerStop = await syncSessionEventToApi(
+    "sess-control-boundary",
+    { event: "listener_stop", payload: { targetAgentId: "codex" } },
+    {
+      resolveAuthSession: async () => ({
+        token: "tok_control_boundary",
+        apiUrl: "https://api.sentinelayer.com",
+      }),
+      fetchImpl: async () => {
+        listenerStopFetchCount += 1;
+        return { ok: true, status: 202 };
+      },
+    },
+  );
+  assert.equal(listenerStop.synced, true);
+  assert.equal(listenerStopFetchCount, 1);
 });
 
 test("Unit session sync: presence read and renewal use only the ephemeral endpoint", async () => {

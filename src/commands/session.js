@@ -3398,13 +3398,11 @@ export function registerSessionCommand(program) {
       const model = normalizeString(options.model) || "cli";
       const hasConcreteAgentIdentity = Boolean(explicitAgent || acceptedAgentId);
 
-      // `registerAgent` already writes the canonical `agent_join` event to the
-      // local NDJSON and best-effort relays it to /events via appendToStream
-      // → syncSessionEventToApi. That gives us the exact `post-agent` parity
-      // the spec calls for when `--agent <granted>` or an accepted reserved
-      // seat provides a concrete agent id. We don't double-emit; we record
-      // whether a durable agent identity path was used
-      // so the JSON output can advertise it to callers (and tests).
+      // `registerAgent` writes join identity and onboarding context to local
+      // coordination state. Those events are intentionally rejected at the
+      // outbound transcript boundary; the remote log is semantic conversation
+      // only. Keep this compatibility field false so callers do not mistake a
+      // local registration for a durable remote append.
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
         agentId: resolvedAgentId,
@@ -3415,13 +3413,7 @@ export function registerSessionCommand(program) {
         trackProcessExit: false,
         awaitRemoteSync: hasConcreteAgentIdentity,
       });
-      const agentJoinRelayed =
-        joined.emittedJoinEvent !== false &&
-        hasConcreteAgentIdentity &&
-        Boolean(resolvedAgentId) &&
-        resolvedAgentId !== "cli-user" &&
-        resolvedAgentId !== "unknown" &&
-        !resolvedAgentId.startsWith("human-");
+      const agentJoinRelayed = false;
       const onboardingBrief = await writeSessionOnboardingBrief(normalizedSessionId, {
         targetPath,
         onboarding: acceptedOnboarding,
