@@ -113,7 +113,7 @@ export function cosineInt8(a, b, normA, normB) {
  * @param {"stub"|"api"} [options.provider="stub"]
  * @param {string} [options.endpoint="")]  Real-embedder HTTP endpoint (provider="api").
  * @param {string} [options.apiKey=""]
- * @param {Function} [options.fetchImpl]   Injected fetch (tests/provider).
+ * @param {Function} [options.fetchImpl]   Injected fetch implementation for tests/provider.
  * @returns {{
  *   name: string, dim: number,
  *   embedFloat: (text: string) => Float32Array,
