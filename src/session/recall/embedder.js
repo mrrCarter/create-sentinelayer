@@ -132,6 +132,10 @@ export function createEmbedder({
   const embedFloat = (text) => hashProjectionFloat(text, normalizedDim);
   const embed = (text) => quantizeInt8(embedFloat(text));
 
+  // Bound the remote embedder call so a hung provider can't stall recall; on
+  // timeout AbortSignal rejects the fetch and we fall back to the deterministic
+  // stub via the catch below.
+  const EMBED_REMOTE_TIMEOUT_MS = 10_000;
   async function embedRemote(text) {
     const canUseApi =
       provider === "api" && endpoint && typeof fetchImpl === "function";
@@ -146,6 +150,7 @@ export function createEmbedder({
           ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({ text: String(text ?? ""), dim: normalizedDim }),
+        signal: AbortSignal.timeout(EMBED_REMOTE_TIMEOUT_MS),
       });
       if (!response || !response.ok) {
         throw new Error(`embedder api ${response ? response.status : "no_response"}`);
